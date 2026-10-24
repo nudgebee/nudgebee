@@ -398,3 +398,23 @@ func TestStrictReadOnlyTurnDispatchesOnlyTheAgentsTools(t *testing.T) {
 		require.NotContains(t, err.Error(), "in this check")
 	}
 }
+
+// The planner adds the notebook tool to every notebook-enabled agent, so the strict check must dispatch it
+// too, or the plan update the model was offered fails as "not one of remediation's tools".
+func TestStrictReadOnlyTurnDispatchesTheNotebookTool(t *testing.T) {
+	for _, name := range []string{toolcore.NotebookToolName, toolcore.NotebookV2ToolName} {
+		if _, ok := toolcore.GetNBTool("test-account", name); !ok {
+			toolcore.RegisterNBToolFactory(name, func(_ string) (toolcore.NBTool, error) { return mockTool{name: name}, nil })
+		}
+	}
+	agent := mockAgentWithTools{mockPlainAgent: mockPlainAgent{name: "remediation"}, tools: []toolcore.NBTool{mockTool{name: "own_read"}}}
+	ctx := security.NewRequestContextForSuperAdmin()
+	strict := NBAgentRequest{AccountId: "test-account", QueryConfig: toolcore.NBQueryConfig{ReadOnlyRun: true, StrictReadOnly: true}}
+	for _, name := range []string{toolcore.NotebookToolName, toolcore.NotebookV2ToolName} {
+		_, _, err := IsAgentToolAuthorizedToProcessRequest(ctx, agent, strict, NBAgentPlannerToolAction{Tool: name})
+		require.NoError(t, err, name)
+	}
+	// A notebook-like alias is not a registered notebook tool and could name an account's own tool.
+	_, _, err := IsAgentToolAuthorizedToProcessRequest(ctx, agent, strict, NBAgentPlannerToolAction{Tool: "write_notebook"})
+	require.ErrorContains(t, err, "not one of remediation's tools in this check")
+}

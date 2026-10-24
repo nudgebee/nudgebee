@@ -74,8 +74,11 @@ func authorizeToolRequest(ctx *security.RequestContext, agent NBAgent, request N
 	}
 
 	// The alert's follow-up check (#40734) runs unattended: it dispatches only its agent's own tools, with no
-	// builtin, watch, notebook, client, discovered or registry fallback below.
-	if !found && request.QueryConfig.StrictReadOnly {
+	// builtin, watch, client, discovered or registry fallback below. The notebook is the exception: the
+	// planner adds it to every notebook-enabled agent, and it only records the plan. Only the two registered
+	// names: isNotebookToolName's aliases could resolve to an account's custom or MCP tool.
+	if !found && request.QueryConfig.StrictReadOnly &&
+		!strings.EqualFold(toolName, toolcore.NotebookToolName) && !strings.EqualFold(toolName, toolcore.NotebookV2ToolName) {
 		return nil, nil, fmt.Errorf("auth: %s is not one of %s's tools in this check", toolName, agent.GetName())
 	}
 
