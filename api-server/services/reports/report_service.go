@@ -378,7 +378,7 @@ func getTroubleshootHighlights(context *security.RequestContext, tenantId string
 func SendDailyHighlightEmailReport(context *security.RequestContext, request TenantReportRequest) error {
 	startTime := time.Now()
 
-	tenants, err := tenant.ListTenantsWithActiveAccounts(context)
+	tenants, err := tenant.ListTenantsWithActiveAccounts(context, false)
 	if err != nil {
 		context.GetLogger().Error("error sending daily_highlight_report slack notification", "error", err)
 		return err
@@ -386,7 +386,7 @@ func SendDailyHighlightEmailReport(context *security.RequestContext, request Ten
 
 	for _, tenant := range tenants {
 
-		accounts, err := account.ListActiveAccountsWithConnectedAgents(context, tenant.Id)
+		accounts, err := account.ListActiveAccountsWithConnectedAgents(context, tenant.Id, false)
 		if err != nil {
 			context.GetLogger().Error("error getting agent status by tenant", "error", err)
 			continue
@@ -523,7 +523,7 @@ func calculateTotalPotentialSavings(data map[string]interface{}) float64 {
 func SendDailyAgentStatusEmail(context *security.RequestContext, query TenantReportRequest) error {
 	startTime := time.Now()
 
-	tenants, err := tenant.ListTenantsWithActiveAccounts(context)
+	tenants, err := tenant.ListTenantsWithActiveAccounts(context, false)
 	if err != nil {
 		context.GetLogger().Error("Error listing tenants", "error", err)
 		return err
@@ -531,7 +531,7 @@ func SendDailyAgentStatusEmail(context *security.RequestContext, query TenantRep
 
 	for _, tenant := range tenants {
 
-		accounts, err := account.ListActiveAccountsWithConnectedAgents(context, tenant.Id)
+		accounts, err := account.ListActiveAccountsWithConnectedAgents(context, tenant.Id, false)
 		if err != nil {
 			context.GetLogger().Error("Error listing active accounts with connected agents for tenant", "tenant", tenant.Id, "error", err)
 			continue
@@ -788,7 +788,7 @@ func prepareTroubleshootSummaryQuery(tenant, startDate, endDate string, accountI
 func SendDailyEventsSummaryReport(context *security.RequestContext, request TenantReportRequest) error {
 	startTime := time.Now()
 
-	tenants, err := tenant.ListTenantsWithActiveAccounts(context)
+	tenants, err := tenant.ListTenantsWithActiveAccounts(context, false)
 	if err != nil {
 		context.GetLogger().Error("error sending events summary notification", "error", err)
 		return err
@@ -796,7 +796,7 @@ func SendDailyEventsSummaryReport(context *security.RequestContext, request Tena
 
 	for _, tenant := range tenants {
 
-		accounts, err := account.ListActiveAccountsWithConnectedAgents(context, tenant.Id)
+		accounts, err := account.ListActiveAccountsWithConnectedAgents(context, tenant.Id, false)
 		if err != nil {
 			context.GetLogger().Error("error getting agent status by tenant", "error", err)
 			continue

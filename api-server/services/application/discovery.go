@@ -69,7 +69,7 @@ func Discover(ctx *security.RequestContext) {
 // agent row for the first query to find, yet its metrics are reachable through
 // the relay's PromQL override.
 func discoverableAccounts(ctx *security.RequestContext, tenantId string) ([]models.Account, error) {
-	withAgents, err := account.ListActiveAccountsWithConnectedAgents(ctx, tenantId)
+	withAgents, err := account.ListActiveAccountsWithConnectedAgents(ctx, tenantId, false)
 	if err != nil {
 		return nil, err
 	}

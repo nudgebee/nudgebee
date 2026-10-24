@@ -2129,12 +2129,19 @@ func ListAccounts(ctx *security.RequestContext, tenantId string) ([]models.Accou
 	return rowsMap, nil
 }
 
-func ListActiveAccountsWithConnectedAgents(ctx *security.RequestContext, tenantId string) ([]models.Account, error) {
+// ListActiveAccountsWithConnectedAgents returns a tenant's active accounts.
+// When includeCloudAccounts is false (the original behavior), only K8s
+// accounts with a CONNECTED agent qualify. When true, every active account of
+// any cloud_provider qualifies, except a K8s account whose agent is not
+// CONNECTED — so stale recommendations from a disconnected cluster are still
+// excluded, but AWS/Azure/GCP accounts (which have no agent row at all) are
+// never gated on agent status.
+func ListActiveAccountsWithConnectedAgents(ctx *security.RequestContext, tenantId string, includeCloudAccounts bool) ([]models.Account, error) {
 	databaseManager, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return []models.Account{}, err
 	}
-	rows, err := databaseManager.Db.Queryx(`SELECT DISTINCT ca.id, ca.cloud_provider, ca.account_number, ca.account_name,
+	query := `SELECT DISTINCT ca.id, ca.cloud_provider, ca.account_number, ca.account_name,
 			ca.created_at, ca.created_by, ca.updated_at, ca.updated_by, ca.billing_source, ca.start_date,
 			ca.tenant, ca.assume_role, ca.region, ca.status, ca.account_url, ca.budget, ca.synced_at,
 			ca.sync_status, ca.account_access, ca.account_purpose, ca.data, ca.access_key,
@@ -2143,7 +2150,23 @@ func ListActiveAccountsWithConnectedAgents(ctx *security.RequestContext, tenantI
 			ca.parent_account_id, ca.access_secret_v2, ca.account_env
 		FROM cloud_accounts ca, agent ag
 		WHERE ca.cloud_provider = 'K8s' AND ca.status = 'active' AND ca.id = ag.cloud_account_id
-			AND ag.status = 'CONNECTED' AND ca.tenant = $1`, tenantId)
+			AND ag.status = 'CONNECTED' AND ca.tenant = $1`
+	if includeCloudAccounts {
+		query = `SELECT DISTINCT ca.id, ca.cloud_provider, ca.account_number, ca.account_name,
+			ca.created_at, ca.created_by, ca.updated_at, ca.updated_by, ca.billing_source, ca.start_date,
+			ca.tenant, ca.assume_role, ca.region, ca.status, ca.account_url, ca.budget, ca.synced_at,
+			ca.sync_status, ca.account_access, ca.account_purpose, ca.data, ca.access_key,
+			ca.access_secret, ca.account_type, ca.agent_access_key, ca.agent_access_secret,
+			ca.agent_synced_at, ca.sync_status_message, ca.external_id, ca.etl_attempt,
+			ca.parent_account_id, ca.access_secret_v2, ca.account_env
+		FROM cloud_accounts ca
+		WHERE ca.status = 'active' AND ca.tenant = $1
+			AND (
+				ca.cloud_provider <> 'K8s'
+				OR EXISTS (SELECT 1 FROM agent ag WHERE ag.cloud_account_id = ca.id AND ag.status = 'CONNECTED')
+			)`
+	}
+	rows, err := databaseManager.Db.Queryx(query, tenantId)
 	if err != nil {
 		return []models.Account{}, err
 	}

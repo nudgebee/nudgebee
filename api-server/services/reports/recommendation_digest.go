@@ -40,14 +40,14 @@ func SendRecommendationNudgeDigest(ctx *security.RequestContext) error {
 		return err
 	}
 
-	tenants, err := tenant.ListTenantsWithActiveAccounts(ctx)
+	tenants, err := tenant.ListTenantsWithActiveAccounts(ctx, true)
 	if err != nil {
 		ctx.GetLogger().Error("recommendation digest: error listing tenants", "error", err)
 		return err
 	}
 
 	for _, t := range tenants {
-		accounts, err := account.ListActiveAccountsWithConnectedAgents(ctx, t.Id)
+		accounts, err := account.ListActiveAccountsWithConnectedAgents(ctx, t.Id, true)
 		if err != nil {
 			ctx.GetLogger().Error("recommendation digest: error listing accounts", "error", err, "tenant", t.Id)
 			continue

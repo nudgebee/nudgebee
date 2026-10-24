@@ -110,12 +110,27 @@ func ListTenants(context *security.RequestContext) ([]models.Tenant, error) {
 	return tenants, nil
 }
 
-func ListTenantsWithActiveAccounts(context *security.RequestContext) ([]models.Tenant, error) {
+// ListTenantsWithActiveAccounts returns tenants with at least one active
+// account. When includeCloudAccounts is false (the original behavior), a
+// tenant qualifies only via a K8s account with a CONNECTED agent — cloud-only
+// tenants (AWS/Azure/GCP with no Kubernetes cluster) are excluded. When true,
+// any active account of any cloud_provider qualifies the tenant, except a K8s
+// account whose agent isn't CONNECTED (mirrors account.ListActiveAccountsWithConnectedAgents).
+func ListTenantsWithActiveAccounts(context *security.RequestContext, includeCloudAccounts bool) ([]models.Tenant, error) {
 	manager, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return []models.Tenant{}, err
 	}
-	rows, err := manager.Db.Queryx("SELECT DISTINCT t.id, t.name FROM tenant t JOIN cloud_accounts ca ON t.id = ca.tenant JOIN agent ag ON ca.id = ag.cloud_account_id WHERE ca.cloud_provider = 'K8s' AND ca.status = 'active' AND ag.status = 'CONNECTED'")
+	query := "SELECT DISTINCT t.id, t.name FROM tenant t JOIN cloud_accounts ca ON t.id = ca.tenant JOIN agent ag ON ca.id = ag.cloud_account_id WHERE ca.cloud_provider = 'K8s' AND ca.status = 'active' AND ag.status = 'CONNECTED'"
+	if includeCloudAccounts {
+		query = `SELECT DISTINCT t.id, t.name FROM tenant t JOIN cloud_accounts ca ON t.id = ca.tenant
+			WHERE ca.status = 'active'
+				AND (
+					ca.cloud_provider <> 'K8s'
+					OR EXISTS (SELECT 1 FROM agent ag WHERE ag.cloud_account_id = ca.id AND ag.status = 'CONNECTED')
+				)`
+	}
+	rows, err := manager.Db.Queryx(query)
 	if err != nil {
 		return []models.Tenant{}, err
 	}

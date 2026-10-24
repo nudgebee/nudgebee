@@ -25,14 +25,14 @@ func SendSecurityPostureAlert(ctx *security.RequestContext) error {
 		return err
 	}
 
-	tenants, err := tenant.ListTenantsWithActiveAccounts(ctx)
+	tenants, err := tenant.ListTenantsWithActiveAccounts(ctx, false)
 	if err != nil {
 		ctx.GetLogger().Error("security posture alert: error listing tenants", "error", err)
 		return err
 	}
 
 	for _, t := range tenants {
-		accounts, err := account.ListActiveAccountsWithConnectedAgents(ctx, t.Id)
+		accounts, err := account.ListActiveAccountsWithConnectedAgents(ctx, t.Id, false)
 		if err != nil {
 			ctx.GetLogger().Error("security posture alert: error listing accounts", "error", err, "tenant", t.Id)
 			continue
