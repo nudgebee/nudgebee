@@ -228,6 +228,41 @@ def test_batch_fast_fails_rest_of_batch_once_connection_is_unrecoverable(email_c
     assert plain.return_value.sendmail.call_count == 2
 
 
+def test_batch_keeps_sending_when_a_message_is_refused_after_a_reconnect(email_config, smtp_mocks):
+    email_config()
+    plain, _ = smtp_mocks
+    plain.return_value.sendmail.side_effect = [
+        smtplib.SMTPServerDisconnected("dropped"),
+        smtplib.SMTPDataError(552, b"too big"),
+        None,
+    ]
+    messages = [_message(), _message()]
+    del messages[1]["To"]
+    messages[1]["To"] = "other@example.com"
+
+    with pytest.raises(sender.EmailBatchError) as exc_info:
+        sender.send_email_batch(messages)
+
+    assert list(exc_info.value.failures) == ["user@example.com"]
+    assert plain.return_value.sendmail.call_count == 3
+
+
+def test_batch_skips_the_rest_once_the_reconnect_itself_fails(email_config, smtp_mocks):
+    email_config()
+    plain, _ = smtp_mocks
+    plain.side_effect = [plain.return_value, ConnectionRefusedError("refused")]
+    plain.return_value.sendmail.side_effect = [smtplib.SMTPServerDisconnected("dropped")]
+    messages = [_message(), _message()]
+    del messages[1]["To"]
+    messages[1]["To"] = "other@example.com"
+
+    with pytest.raises(sender.EmailBatchError) as exc_info:
+        sender.send_email_batch(messages)
+
+    assert sorted(exc_info.value.failures) == ["other@example.com", "user@example.com"]
+    assert plain.return_value.sendmail.call_count == 1
+
+
 @pytest.fixture
 def sleeps(monkeypatch):
     waited = []

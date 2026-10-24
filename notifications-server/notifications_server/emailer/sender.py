@@ -248,11 +248,15 @@ def _send_batch_message(smtp_server, connect, from_email, message, allow_reconne
         LOG.warning("SMTP server disconnected mid-batch, reconnecting once: %s", e)
         try:
             smtp_server = connect()
+        except Exception as e2:
+            LOG.warning("Failed to reconnect to the SMTP server: %s", e2)
+            return smtp_server, True, e2, True
+        try:
             _sendmail_with_backoff(smtp_server, from_email, message, delays)
             return smtp_server, True, None, False
         except Exception as e2:
             LOG.warning("Failed to send email to %s after reconnect: %s", to, e2)
-            return smtp_server, True, e2, True
+            return smtp_server, True, e2, isinstance(e2, smtplib.SMTPServerDisconnected)
     except Exception as e:
         LOG.warning("Failed to send email to %s: %s", to, e)
         return smtp_server, False, e, False
