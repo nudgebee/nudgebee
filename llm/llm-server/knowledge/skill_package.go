@@ -291,15 +291,20 @@ var scriptRuntimes = map[string]string{
 var providedRuntimes = map[string]bool{"python": true, "shell": true, "node": true}
 
 // knownPythonPackages maps a module a skill's script commonly imports to its
-// pip package and whether the workspace image's python3 has it (checked with
-// importlib in llm/code-analysis's image; it has few). Explicit, like
+// pip package and whether the workspace image's python3 has it. Explicit, like
 // knownSkillCLIs: the standard library and the skill's own modules are not
 // listed, so they are never flagged; add a row when the image changes.
+// Checked against the built image, not a local copy (an old one gave wrong
+// rows): docker run --platform linux/amd64 --entrypoint python3
+// <dev registry>/code-analysis-agent:<tag>-amd64 -c 'import importlib.util as u;
+// print(u.find_spec("yaml"))'. pyyaml and packaging come with Alpine's
+// yamllint (llm/code-analysis/Dockerfile); nothing else on this list is there.
 var knownPythonPackages = map[string]struct {
 	Package  string
 	Provided bool
 }{
-	"yaml": {"pyyaml", false}, "requests": {"requests", false}, "jinja2": {"jinja2", false},
+	"yaml": {"pyyaml", true}, "packaging": {"packaging", true},
+	"requests": {"requests", false}, "jinja2": {"jinja2", false},
 	"numpy": {"numpy", false}, "pandas": {"pandas", false}, "matplotlib": {"matplotlib", false},
 	"boto3": {"boto3", false}, "botocore": {"botocore", false}, "kubernetes": {"kubernetes", false},
 	"httpx": {"httpx", false}, "pydantic": {"pydantic", false}, "click": {"click", false},
@@ -308,9 +313,8 @@ var knownPythonPackages = map[string]struct {
 	"markdown": {"markdown", false}, "tabulate": {"tabulate", false}, "psycopg2": {"psycopg2", false},
 	"pymysql": {"pymysql", false}, "redis": {"redis", false}, "jsonschema": {"jsonschema", false},
 	"toml": {"toml", false}, "tqdm": {"tqdm", false}, "dotenv": {"python-dotenv", false},
-	"prometheus_client": {"prometheus-client", false},
-	"dateutil":          {"python-dateutil", true}, "urllib3": {"urllib3", true}, "certifi": {"certifi", true},
-	"cryptography": {"cryptography", true}, "packaging": {"packaging", true},
+	"prometheus_client": {"prometheus-client", false}, "dateutil": {"python-dateutil", false},
+	"urllib3": {"urllib3", false}, "certifi": {"certifi", false}, "cryptography": {"cryptography", false},
 }
 
 // pythonImportRe matches "import a, b" and "from a.b import c" lines.

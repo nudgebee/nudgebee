@@ -153,8 +153,8 @@ func TestDetectSkillRequirements_PythonImports(t *testing.T) {
 	assert.Equal(t, []SkillRequirement{
 		{Kind: "runtime", Name: "python", Provided: true},
 		{Kind: "runtime", Name: "shell", Provided: true},
-		{Kind: "python", Name: "pyyaml"},
-		{Kind: "python", Name: "python-dateutil", Provided: true},
+		{Kind: "python", Name: "pyyaml", Provided: true},
+		{Kind: "python", Name: "python-dateutil"},
 		{Kind: "python", Name: "requests"},
 		{Kind: "python", Name: "jinja2"},
 	}, reqs)
