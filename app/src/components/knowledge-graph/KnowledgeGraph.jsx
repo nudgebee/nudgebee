@@ -651,6 +651,58 @@ const findShortestPath = (adjacencyMap, startId, endId) => {
   return null;
 };
 
+// Selected nodes arrive in different shapes: a Node-filter option carries the
+// unique key as displayLabel and no name/type/account, and breadcrumb
+// navigation keeps only { label, value }. Take what the chip and its tooltip
+// read from the graph's own record so every chip renders alike. label/value
+// stay as given — they feed back into the Node filter's draft state.
+const withGraphNodeFields = (node, nodesById) => {
+  const record = nodesById.get(node.value);
+  if (!record) return node;
+  const { displayLabel, name, nodeType, uniqueKey, accountName, accountId } = record;
+  return { ...node, displayLabel, name, nodeType, uniqueKey, accountName, accountId };
+};
+
+// Full breadcrumb path: the user-selected nodes plus the intermediate nodes and
+// edge types on the shortest path between each consecutive pair.
+export const buildBreadcrumbPath = (selectedNodes, adjacencyMap, nodesById, edgeTypeLookup) => {
+  const fullPath = [];
+  for (let i = 0; i < selectedNodes.length; i++) {
+    const currNode = withGraphNodeFields(selectedNodes[i], nodesById);
+    if (i === 0) {
+      fullPath.push({ ...currNode, isUserSelected: true, edgeFromPrev: null });
+      continue;
+    }
+    const prevNode = selectedNodes[i - 1];
+    const pathBetween = findShortestPath(adjacencyMap, prevNode.value, currNode.value);
+
+    if (!pathBetween) {
+      // Disconnected subgraphs — no path exists, mark as disconnected
+      fullPath.push({ ...currNode, isUserSelected: true, edgeFromPrev: null, isDisconnected: true });
+    } else if (pathBetween.length > 2) {
+      // Add intermediate nodes (skip first as it's already in path)
+      for (let j = 1; j < pathBetween.length - 1; j++) {
+        const intermediateId = pathBetween[j];
+        const prevId = pathBetween[j - 1];
+        const nodeData = nodesById.get(intermediateId);
+        if (nodeData) {
+          const edgeType = edgeTypeLookup.get(`${prevId}->${intermediateId}`) || null;
+          fullPath.push({ ...nodeData, isUserSelected: false, edgeFromPrev: edgeType });
+        }
+      }
+      // Edge from last intermediate to current node
+      const lastIntermediateId = pathBetween[pathBetween.length - 2];
+      const edgeToFinal = edgeTypeLookup.get(`${lastIntermediateId}->${currNode.value}`) || null;
+      fullPath.push({ ...currNode, isUserSelected: true, edgeFromPrev: edgeToFinal });
+    } else {
+      // Direct connection (no intermediate nodes)
+      const edgeType = edgeTypeLookup.get(`${prevNode.value}->${currNode.value}`) || null;
+      fullPath.push({ ...currNode, isUserSelected: true, edgeFromPrev: edgeType });
+    }
+  }
+  return fullPath;
+};
+
 // --- 3. SHARED ACCOUNT LOOKUP HOOK ---
 const useAccountLookup = (accounts) => {
   return useMemo(() => {
@@ -2284,50 +2336,10 @@ const ServiceMapContent = ({ cardElevation, height }) => {
   }, [selectedAccountIds, selectedNodes, selectedNodeTypes, selectedLevel, labelFilters, attributeFilters, fetchGraph, pushToHistory]);
 
   // Compute full breadcrumb path including intermediate nodes and edge types
-  const fullBreadcrumbPath = useMemo(() => {
-    if (selectedNodes.length === 0) {
-      return [];
-    }
-    if (selectedNodes.length === 1) {
-      return [{ ...selectedNodes[0], isUserSelected: true, edgeFromPrev: null }];
-    }
-
-    const fullPath = [];
-    for (let i = 0; i < selectedNodes.length; i++) {
-      if (i === 0) {
-        fullPath.push({ ...selectedNodes[0], isUserSelected: true, edgeFromPrev: null });
-      } else {
-        const prevNode = selectedNodes[i - 1];
-        const currNode = selectedNodes[i];
-        const pathBetween = findShortestPath(adjacencyMap, prevNode.value, currNode.value);
-
-        if (!pathBetween) {
-          // Disconnected subgraphs — no path exists, mark as disconnected
-          fullPath.push({ ...currNode, isUserSelected: true, edgeFromPrev: null, isDisconnected: true });
-        } else if (pathBetween.length > 2) {
-          // Add intermediate nodes (skip first as it's already in path)
-          for (let j = 1; j < pathBetween.length - 1; j++) {
-            const intermediateId = pathBetween[j];
-            const prevId = pathBetween[j - 1];
-            const nodeData = uniqueServiceKeysMap.get(intermediateId);
-            if (nodeData) {
-              const edgeType = edgeTypeLookup.get(`${prevId}->${intermediateId}`) || null;
-              fullPath.push({ ...nodeData, isUserSelected: false, edgeFromPrev: edgeType });
-            }
-          }
-          // Edge from last intermediate to current node
-          const lastIntermediateId = pathBetween[pathBetween.length - 2];
-          const edgeToFinal = edgeTypeLookup.get(`${lastIntermediateId}->${currNode.value}`) || null;
-          fullPath.push({ ...currNode, isUserSelected: true, edgeFromPrev: edgeToFinal });
-        } else {
-          // Direct connection (no intermediate nodes)
-          const edgeType = edgeTypeLookup.get(`${prevNode.value}->${currNode.value}`) || null;
-          fullPath.push({ ...currNode, isUserSelected: true, edgeFromPrev: edgeType });
-        }
-      }
-    }
-    return fullPath;
-  }, [selectedNodes, adjacencyMap, uniqueServiceKeysMap, edgeTypeLookup]);
+  const fullBreadcrumbPath = useMemo(
+    () => buildBreadcrumbPath(selectedNodes, adjacencyMap, uniqueServiceKeysMap, edgeTypeLookup),
+    [selectedNodes, adjacencyMap, uniqueServiceKeysMap, edgeTypeLookup]
+  );
 
   // Breadcrumb handlers - truncate to clicked node (for both user-selected and intermediate)
   const handleBreadcrumbNavigate = useCallback(
