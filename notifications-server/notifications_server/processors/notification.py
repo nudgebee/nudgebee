@@ -125,6 +125,10 @@ class NotificationProcessor:
         email_list.extend(configured_emails)
         exclusion_set = {e.strip().lower() for e in exclusion_emails}
         final_email_list = list({e.strip().lower() for e in email_list} - exclusion_set)
+        retry_recipients = email_task.get("retry_recipients")
+        if retry_recipients:
+            # A retry only goes to the recipients the previous attempt failed to reach.
+            final_email_list = [e for e in retry_recipients if e not in exclusion_set]
         await processor_email.process_email_task(final_email_list, email_task)
         LOG.info("task %s processed successfully", email_task.get("template_type"))
 
@@ -163,6 +167,9 @@ class NotificationProcessor:
             retry_destinations = getattr(e, "retry_destinations", None)
             if retry_destinations:
                 task["retry_destinations"] = retry_destinations
+            failed_recipients = getattr(e, "failures", None)
+            if failed_recipients:
+                task["retry_recipients"] = sorted(failed_recipients)
             try:
                 attempt = int((headers or {}).get("nb-retry-count") or 0)
             except (ValueError, TypeError):

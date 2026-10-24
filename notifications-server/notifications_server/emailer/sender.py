@@ -3,6 +3,7 @@ import logging
 import smtplib
 import ssl
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 from email.utils import formatdate, getaddresses, make_msgid, parseaddr
 
@@ -10,6 +11,16 @@ from notifications_server.configs.settings import get_smtp_params, settings
 from notifications_server.utils.encode_utils import is_valid_port
 
 LOG = logging.getLogger(__name__)
+
+
+class EmailBatchError(RuntimeError):
+    """Some messages of a batch were not sent. failures maps each recipient that
+    was not sent to the error its send raised."""
+
+    def __init__(self, message, failures):
+        super().__init__(message)
+        self.failures = failures
+
 
 # Default ports used to infer the connection type when EMAIL_SERVER_TLS is "auto".
 SMTP_SSL_PORT = "465"
@@ -22,6 +33,10 @@ TLS_NONE = "none"
 
 # Bounds every blocking socket operation so an unresponsive server can't pin an email worker thread.
 SMTP_TIMEOUT_SECONDS = 60
+
+# A batch message the server answers with a temporary (4xx) error, such as a sending-rate
+# limit, is sent again after each of these waits.
+TRANSIENT_RETRY_DELAYS_SECONDS = (1, 2, 4)
 
 
 def _resolve_tls_mode(port):
@@ -144,7 +159,7 @@ def _send_email_to_user_smtp(server, port, email, password, message, from_email,
     try:
         smtp_server = _create_smtp_connection(server, port, context)
         if smtp_server is None:
-            return
+            raise RuntimeError(f"Cannot determine SMTP connection type for port {port}")
         with smtp_server:
             _login_if_configured(smtp_server, email, password)
             smtp_server.sendmail(_envelope_sender(from_email), rcpt, message.as_string())
@@ -153,6 +168,7 @@ def _send_email_to_user_smtp(server, port, email, password, message, from_email,
 
     except Exception as e:
         LOG.exception(f"Could not send mail using server {server} and port {port} with email {email}. Error {str(e)}")
+        raise
 
 
 def _send_email_from_default_service(message, rcpt=None):
@@ -177,10 +193,78 @@ def _send_email_from_default_service(message, rcpt=None):
             )
     except subprocess.SubprocessError as e:
         LOG.exception("Failed to send email via sendmail: %s", e)
+        raise
+
+
+def _is_transient(error):
+    """Whether the server refused with a temporary (4xx) error and kept the connection open."""
+    if isinstance(error, smtplib.SMTPRecipientsRefused):
+        codes = [code for code, _ in error.recipients.values()]
+    elif isinstance(error, smtplib.SMTPResponseException):
+        codes = [error.smtp_code]
+    else:
+        return False
+    # 421 means the server closed the connection, so there is nothing to send again on.
+    return bool(codes) and all(400 <= code < 500 and code != 421 for code in codes)
+
+
+def _sendmail_with_backoff(smtp_server, from_email, message, delays):
+    """Send one message, sending it again after each of `delays` while the server
+    answers with a temporary error. Raises the last attempt's error."""
+    to = message.get("To")
+    envelope_from, body = _envelope_sender(from_email), message.as_string()
+    for delay in delays:
+        try:
+            smtp_server.sendmail(envelope_from, to, body)
+            return
+        except (smtplib.SMTPResponseException, smtplib.SMTPRecipientsRefused) as e:
+            if not _is_transient(e):
+                raise
+            LOG.warning("Temporary SMTP error sending to %s, retrying in %ss: %s", to, delay, e)
+            # smtplib leaves the transaction open when the DATA command itself is refused.
+            smtp_server.rset()
+            time.sleep(delay)
+    smtp_server.sendmail(envelope_from, to, body)
+
+
+def _send_batch_message(smtp_server, connect, from_email, message, allow_reconnect, delays):
+    """Send one message of a batch over `smtp_server`, backing off on temporary
+    errors (see _sendmail_with_backoff).
+
+    On SMTPServerDisconnected, reconnects once when `allow_reconnect` and
+    retries. Returns (smtp_server, reconnected, error, connection_dead), error
+    being the exception the send raised — connection_dead means the connection
+    is unrecoverable, so the caller should stop sending on it instead of
+    blocking on every remaining message.
+    """
+    to = message.get("To")
+    try:
+        _sendmail_with_backoff(smtp_server, from_email, message, delays)
+        return smtp_server, False, None, False
+    except smtplib.SMTPServerDisconnected as e:
+        if not allow_reconnect:
+            LOG.warning("Failed to send email to %s: %s", to, e)
+            return smtp_server, False, e, True
+        LOG.warning("SMTP server disconnected mid-batch, reconnecting once: %s", e)
+        try:
+            smtp_server = connect()
+            _sendmail_with_backoff(smtp_server, from_email, message, delays)
+            return smtp_server, True, None, False
+        except Exception as e2:
+            LOG.warning("Failed to send email to %s after reconnect: %s", to, e2)
+            return smtp_server, True, e2, True
+    except Exception as e:
+        LOG.warning("Failed to send email to %s: %s", to, e)
+        return smtp_server, False, e, False
 
 
 def send_email_batch(messages):
-    """Send multiple emails over a single SMTP connection."""
+    """Send multiple emails over a single SMTP connection.
+
+    Reconnects once if the server drops the connection mid-batch. Raises when
+    any recipient failed to send, so callers can't mistake a partial failure
+    for a full success.
+    """
     if not messages:
         return
 
@@ -192,26 +276,66 @@ def send_email_batch(messages):
         port, server, email, password, from_email = smtp_params
         ctx = ssl.create_default_context()
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-        try:
+
+        def _connect():
             smtp_server = _create_smtp_connection(server, port, ctx)
             if smtp_server is None:
-                return
+                raise RuntimeError(f"Cannot determine SMTP connection type for port {port}")
+            _login_if_configured(smtp_server, email, password)
+            return smtp_server
 
-            with smtp_server:
-                _login_if_configured(smtp_server, email, password)
-                for message in messages:
-                    try:
-                        smtp_server.sendmail(_envelope_sender(from_email), message.get("To"), message.as_string())
-                    except Exception as e:
-                        LOG.warning("Failed to send email to %s: %s", message.get("To"), e)
-            LOG.info("Batch of %d emails sent successfully via SMTP", len(messages))
+        try:
+            smtp_server = _connect()
         except Exception as e:
             LOG.exception("Could not send batch via SMTP %s:%s - %s", server, port, e)
+            raise
+
+        failures = {}
+        reconnected = False
+        connection_dead = False
+        delays = TRANSIENT_RETRY_DELAYS_SECONDS
+        for message in messages:
+            to = message.get("To")
+            if connection_dead:
+                failures[to] = smtplib.SMTPServerDisconnected("SMTP connection lost; rest of batch skipped")
+                continue
+            smtp_server, used_reconnect, error, connection_dead = _send_batch_message(
+                smtp_server, _connect, from_email, message, not reconnected, delays
+            )
+            reconnected = reconnected or used_reconnect
+            if error:
+                failures[to] = error
+                # Waiting didn't clear it, so don't make every remaining message wait too.
+                delays = () if _is_transient(error) else delays
+
+        try:
+            smtp_server.quit()
+        except Exception:
+            pass
+
+        if failures:
+            raise EmailBatchError(
+                f"Failed to send {len(failures)}/{len(messages)} emails in batch: "
+                + str({to: str(error) for to, error in failures.items()}),
+                failures,
+            )
+        LOG.info("Batch of %d emails sent successfully via SMTP", len(messages))
         return
 
-    # Fallback to default sendmail for each message
+    # Fallback to default sendmail for each message. Each send stands alone, as
+    # over SMTP, so the error names only the recipients that failed.
+    failures = {}
     for message in messages:
-        _send_email_from_default_service(message)
+        try:
+            _send_email_from_default_service(message)
+        except Exception as error:
+            failures[message.get("To")] = error
+    if failures:
+        raise EmailBatchError(
+            f"Failed to send {len(failures)}/{len(messages)} emails via sendmail: "
+            + str({to: str(error) for to, error in failures.items()}),
+            failures,
+        )
 
 
 # Thread pool for async email sending

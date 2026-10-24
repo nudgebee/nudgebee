@@ -7,10 +7,13 @@ messages on every retry)."""
 
 import asyncio
 import json
+import smtplib
 
 import pytest
 
 from notifications_server.configs.settings import settings
+from notifications_server.emailer.sender import EmailBatchError
+from notifications_server.processors import notification as processor_module
 from notifications_server.processors.notification import NotificationProcessor, NotificationSendFailed
 
 
@@ -274,3 +277,71 @@ def test_a_whole_message_failure_on_a_retry_keeps_the_earlier_scope():
     )
 
     assert retried["retry_destinations"] == scope and retried["retry_platforms"] == ["slack"]
+
+
+class _Emailer:
+    def __init__(self, error=None):
+        self.error = error
+        self.sent_to = []
+
+    async def process_email_task(self, emails, _task):
+        self.sent_to.append(sorted(emails))
+        if self.error:
+            raise self.error
+
+
+def _email_retry(monkeypatch, error, task, rules=(["a@x.io", "b@x.io", "c@x.io"], [], False)):
+    async def configured_rules(*_args):
+        return rules
+
+    emailer = _Emailer(error)
+    monkeypatch.setattr(processor_module.ProcessorFactory, "get", lambda _kind: emailer)
+    producer = _FakeTaskProducer()
+    processor = _processor([], producer)
+    processor._get_configured_email_rules = configured_rules
+    asyncio.run(processor.process_task({}, json.dumps(task).encode()))
+    return emailer.sent_to, [message for _queue, message in producer.calls]
+
+
+def _throttled():
+    return smtplib.SMTPDataError(454, b"Throttling failure")
+
+
+def test_an_email_retry_names_only_the_recipients_that_failed(monkeypatch):
+    error = EmailBatchError("2 of 3 failed", {"c@x.io": _throttled(), "a@x.io": _throttled()})
+    sent_to, [retried] = _email_retry(monkeypatch, error, {"kind": "email", "tenant_id": "t1"})
+
+    assert sent_to == [["a@x.io", "b@x.io", "c@x.io"]]
+    assert retried["retry_recipients"] == ["a@x.io", "c@x.io"]
+
+
+def test_an_email_retry_is_sent_only_to_the_recipients_that_failed(monkeypatch):
+    error = EmailBatchError("1 of 1 failed", {"c@x.io": _throttled()})
+    task = {"kind": "email", "tenant_id": "t1", "retry_recipients": ["a@x.io", "c@x.io"]}
+    sent_to, [retried] = _email_retry(monkeypatch, error, task)
+
+    assert sent_to == [["a@x.io", "c@x.io"]]
+    assert retried["retry_recipients"] == ["c@x.io"]
+
+
+def test_a_whole_email_failure_on_a_retry_keeps_the_earlier_recipients(monkeypatch):
+    task = {"kind": "email", "tenant_id": "t1", "retry_recipients": ["c@x.io"]}
+    _sent_to, [retried] = _email_retry(monkeypatch, smtplib.SMTPServerDisconnected("gone"), task)
+
+    assert retried["retry_recipients"] == ["c@x.io"]
+
+
+def test_an_email_retry_skips_a_recipient_excluded_since_the_first_attempt(monkeypatch):
+    task = {"kind": "email", "tenant_id": "t1", "retry_recipients": ["a@x.io", "c@x.io"]}
+    sent_to, retried = _email_retry(monkeypatch, None, task, rules=(["a@x.io", "c@x.io"], ["c@x.io"], False))
+
+    assert sent_to == [["a@x.io"]]
+    assert retried == []
+
+
+def test_an_email_retry_a_rule_now_stops_is_not_sent(monkeypatch):
+    task = {"kind": "email", "tenant_id": "t1", "retry_recipients": ["c@x.io"]}
+    sent_to, retried = _email_retry(monkeypatch, None, task, rules=None)
+
+    assert sent_to == []
+    assert retried == []

@@ -497,6 +497,17 @@ func SendEmail(ctx *security.RequestContext, request SendEmailRequest) (SendEmai
 		return SendEmailResponse{Success: false, Error: "unable to parse response"}, err
 	}
 
+	// A 200 with success=false shouldn't be silently treated as a success;
+	// surface it as an error so the automation step fails instead of
+	// reporting every recipient as sent.
+	if !response.Success {
+		errMsg := response.Error
+		if errMsg == "" {
+			errMsg = "unknown error"
+		}
+		return response, fmt.Errorf("notifications: unable to send email - %s", errMsg)
+	}
+
 	return response, nil
 }
 
