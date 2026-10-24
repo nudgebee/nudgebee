@@ -17,6 +17,7 @@ import MarkDowns from '@shared/viewers/MarkDowns';
 import { getNubiIconUrl, getAssistantName } from '@hooks/useTenantBranding';
 import { ds } from '@utils/colors';
 import { unwrapTypedValueString } from '@utils/common';
+import { getGraphqlErrorMessage } from '@lib/errorMessages';
 
 const ZERO_UUID = '00000000-0000-0000-0000-000000000000';
 
@@ -275,7 +276,11 @@ const FollowupSheet = ({ followup, accountId, conversationId, selectedModel, pop
           };
         }
 
-        await apiAskNudgebee.aiFollowupResponse(requestPayload);
+        const res = await apiAskNudgebee.aiFollowupResponse(requestPayload);
+        const failure = getGraphqlErrorMessage(res, 'Couldn’t submit your response. Please try again.');
+        if (failure) {
+          throw new Error(failure);
+        }
         if (onSubmitted) {
           onSubmitted();
         }
@@ -294,9 +299,8 @@ const FollowupSheet = ({ followup, accountId, conversationId, selectedModel, pop
         setPendingAnswer(null);
         setIsSubmitting(false);
         if (onSubmitError) {
-          onSubmitError();
+          onSubmitError(err?.message);
         }
-        throw err;
       }
     },
     [accountId, conversationId, followup, isSubmitting, onSubmitted, onOptimisticSubmit, onSubmitError, selectedModel]

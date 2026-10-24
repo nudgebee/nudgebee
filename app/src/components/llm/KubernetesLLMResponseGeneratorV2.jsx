@@ -2335,9 +2335,9 @@ const KubernetesLLMResponseGenerator = ({
                     popup={popup}
                     onStop={handleStopInvestigation}
                     onOptimisticSubmit={(answer) => setOptimisticFollowupAnswer({ key: activeFollowupKey, answer })}
-                    onSubmitError={() => {
+                    onSubmitError={(message) => {
                       setOptimisticFollowupAnswer(null);
-                      snackbar.error('Couldn’t submit your response. Please try again.');
+                      snackbar.error(message || 'Couldn’t submit your response. Please try again.');
                     }}
                   />
                 </Box>

@@ -121,7 +121,7 @@ func checkBudgetAndRestartMessage(dao core.IConversationDao, message core.Conver
 	}
 
 	// Check budget limits before restarting
-	budgetExceeded, budgetErrorMsg := budget.CheckBudgetLimits(conversation.TenantID.String(), message.AccountID.String(), module, logger)
+	budgetExceeded, budgetErrorMsg := budget.CheckBudgetLimitsForReply(conversation.TenantID.String(), message.AccountID.String(), module, logger)
 	if budgetExceeded {
 		logger.Warn("sync: budget limit exceeded, marking conversation as failed instead of restarting", "error", budgetErrorMsg)
 		// Mark message and conversation as failed due to budget limit - prevent infinite retry

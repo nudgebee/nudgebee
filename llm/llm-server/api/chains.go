@@ -486,7 +486,7 @@ func dispatchQueuedMessage(parent *security.RequestContext, conversation core.Co
 		if strings.HasPrefix(conversation.SessionID, events.SessionIdPrefixEvent) {
 			module = budget.ModuleInvestigation
 		}
-		if exceeded, reason := budget.CheckBudgetLimits(sc.GetTenantId(), msg.AccountID.String(), module, logger); exceeded {
+		if exceeded, reason := budget.CheckBudgetLimitsForReply(sc.GetTenantId(), msg.AccountID.String(), module, logger); exceeded {
 			fail(errors.New(reason))
 			return
 		}
@@ -808,7 +808,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		timer.mark("session_and_access")
-		budgetExceeded := budget.CheckBudgetAndRespond(c, agentContext.GetSecurityContext().GetTenantId(), request.AccountId, module, logger)
+		budgetExceeded := checkChatBudgetAndRespond(c, agentContext.GetSecurityContext().GetTenantId(), request.AccountId, request.SessionId, request.AgentId, agentContext.GetSecurityContext().GetUserId(), nil, module, logger)
 		timer.mark("budget")
 		if budgetExceeded {
 			return
@@ -1260,7 +1260,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			module = budget.ModuleInvestigation
 		}
 
-		if budget.CheckBudgetAndRespond(c, agentContext.GetSecurityContext().GetTenantId(), request.AccountId, module, logger) {
+		if checkChatBudgetAndRespond(c, agentContext.GetSecurityContext().GetTenantId(), request.AccountId, request.SessionId, request.AgentId, agentContext.GetSecurityContext().GetUserId(), nil, module, logger) {
 			return
 		}
 

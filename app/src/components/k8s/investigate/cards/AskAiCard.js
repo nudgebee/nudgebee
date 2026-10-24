@@ -22,6 +22,8 @@ import EventRaisePrPanel from './EventRaisePrPanel';
 import { FiArrowRight } from 'react-icons/fi';
 import { useConversationSuggestions } from '@hooks/useConversationSuggestions';
 import { safeJSONParse } from '@utils/common';
+import { getGraphqlErrorMessage } from '@lib/errorMessages';
+import { toast } from '@ui/Toast';
 import { reportContainsInvestigation } from '@utils/investigationReport';
 import { formatClockCompact } from '@shared/format/Datetime';
 
@@ -457,7 +459,7 @@ class AskAiCard {
           try {
             const resolvedParentAgentId = item.parent_agent_id === ZERO_UUID || !item.parent_agent_id ? item.agent_id : item.parent_agent_id;
 
-            await apiAskNudgebee.aiFollowupResponse({
+            const res = await apiAskNudgebee.aiFollowupResponse({
               account_id: item.account_id,
               query: responseText,
               conversation_id: item.conversation_id,
@@ -465,6 +467,11 @@ class AskAiCard {
               agent_id: item.agent_id,
               parent_agent_id: resolvedParentAgentId,
             });
+            const failure = getGraphqlErrorMessage(res, 'Couldn’t submit your response. Please try again.');
+            if (failure) {
+              toast.error(failure);
+              return;
+            }
 
             // Remove answered item from list
             setWaitingFollowUpItems((prev) => prev.filter((i) => i.id !== item.id));
@@ -598,11 +605,17 @@ class AskAiCard {
           setFollowUpMessages((prev) => [...prev, { type: 'question', text: questionText }]);
 
           try {
-            await apiAskNudgebee.aiGenerateInvestigate({
+            const res = await apiAskNudgebee.aiGenerateInvestigate({
               account_id: event.cloud_account_id,
               query: questionText,
               session_id: sessionId,
             });
+            const failure = getGraphqlErrorMessage(res, 'Failed to get a response. Please try again.');
+            if (failure) {
+              setFollowUpMessages((prev) => [...prev, { type: 'answer', text: failure }]);
+              setFollowUpLoading(false);
+              return;
+            }
 
             // Reset the fetcher so this submit starts from a clean cursor on
             // the new (account_id, session_id) pair. The fetcher auto-resets
