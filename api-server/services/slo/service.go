@@ -399,7 +399,7 @@ func CreateOrUpdateSLOConfig(context *security.RequestContext, sloConfigRequest 
 		return data, fmt.Errorf("unauthorized")
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(sloConfigRequest.AccountId, security.SecurityAccessTypeCreate) {
+	if !context.GetSecurityContext().CanAccessAccount(sloConfigRequest.AccountId, security.SecurityAccessTypeCreate) {
 		return data, fmt.Errorf("unauthorized")
 	}
 
@@ -491,7 +491,7 @@ func DeleteSLOConfig(context *security.RequestContext, request SLODeleteRequest)
 	if sc.GetUserId() == "" || sc.GetTenantId() == "" {
 		return data, fmt.Errorf("unauthorized")
 	}
-	if !sc.HasAccountAccess(request.AccountId, security.SecurityAccessTypeDelete) {
+	if !context.GetSecurityContext().CanAccessAccount(request.AccountId, security.SecurityAccessTypeDelete) {
 		return data, fmt.Errorf("unauthorized")
 	}
 	if request.WorkloadName == "" || request.Namespace == "" {
@@ -572,7 +572,7 @@ func GetSLOConfig(context *security.RequestContext, sloListRequest SLOListReques
 		return nil, fmt.Errorf("unauthorized")
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(sloListRequest.AccountId, security.SecurityAccessTypeRead) {
+	if !context.GetSecurityContext().CanAccessAccount(sloListRequest.AccountId, security.SecurityAccessTypeRead) {
 		return nil, fmt.Errorf("unauthorized")
 	}
 

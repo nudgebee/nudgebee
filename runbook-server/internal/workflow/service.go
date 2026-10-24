@@ -1763,7 +1763,7 @@ const optimizationEventType = "optimization.recommendation"
 // the gates EventRegistry.Match applies, in order, with the same evaluator. Read-only:
 // nothing stored, no run, no tenant data read. Tenancy is checked here instead.
 func (s *Service) CheckTriggerMatch(ctx *security.RequestContext, accountId string, request model.CheckTriggerMatchRequest) (model.CheckTriggerMatchResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanAccessAccount(accountId, security.SecurityAccessTypeRead) {
 		return model.CheckTriggerMatchResponse{}, common.ErrorUnauthorized("account not accessible")
 	}
 	if request.Payload == nil {

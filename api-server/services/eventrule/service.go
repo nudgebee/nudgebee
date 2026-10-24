@@ -441,16 +441,15 @@ func EventRuleExists(context *security.RequestContext, accountID, alert string) 
 func CreateEventRule(context *security.RequestContext, eventRequest EventConfig) (map[string]bool, error) {
 	data := make(map[string]bool)
 
-	// Allow tenant admin without userId for internal system calls (webhook processing, event queue consumers)
-	// that use NewSecurityContextForTenantAdmin with no userId.
-	// Account-level access is still enforced by HasAccountAccess below.
-	if !context.GetSecurityContext().IsSuperAdmin() &&
-		(context.GetSecurityContext().GetTenantId() == "" ||
-			!context.GetSecurityContext().IsTenantAdmin()) {
+	// Creating a rule needs create access to the rule's account, as updating and
+	// disabling one do: a tenant or account admin, or a custom role granted the
+	// action on that account (or tenant-wide). Internal system calls (webhook
+	// processing, event queue consumers) use a tenant-admin context and pass.
+	if sc := context.GetSecurityContext(); sc == nil || (!sc.IsSuperAdmin() && sc.GetTenantId() == "") {
 		return data, fmt.Errorf("unauthorized")
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(eventRequest.AccountID, security.SecurityAccessTypeCreate) {
+	if !context.GetSecurityContext().CanAccessAccount(eventRequest.AccountID, security.SecurityAccessTypeCreate) {
 		return data, fmt.Errorf("account unauthorized")
 	}
 
@@ -566,7 +565,7 @@ func UpdateEventRule(context *security.RequestContext, eventRequest EventConfig)
 		return data, common.ErrorUnauthorized("unauthorized")
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(eventRequest.AccountID, security.SecurityAccessTypeUpdate) {
+	if !context.GetSecurityContext().CanAccessAccount(eventRequest.AccountID, security.SecurityAccessTypeUpdate) {
 		return data, common.ErrorUnauthorized("unauthorized")
 	}
 
@@ -803,7 +802,7 @@ func DisableEventRule(context *security.RequestContext, eventRequest DisableEven
 		return data, fmt.Errorf("unauthorized")
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(eventRequest.AccountID, security.SecurityAccessTypeUpdate) {
+	if !context.GetSecurityContext().CanAccessAccount(eventRequest.AccountID, security.SecurityAccessTypeUpdate) {
 		return data, common.ErrorUnauthorized("unauthorized")
 	}
 

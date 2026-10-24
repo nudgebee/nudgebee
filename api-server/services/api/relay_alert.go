@@ -214,7 +214,7 @@ func handleEventRuleAction(actionPayload *ActionRequest, c *gin.Context, tracer 
 			return
 		}
 		// Provider credentials are resolved from the account id alone.
-		if syncRequest.AccountId != "" && !ctx.CanAccessAccount(syncRequest.AccountId, security.SecurityAccessTypeUpdate) {
+		if syncRequest.AccountId != "" && !ctx.GetSecurityContext().CanAccessAccount(syncRequest.AccountId, security.SecurityAccessTypeUpdate) {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+syncRequest.AccountId))
 			return
 		}

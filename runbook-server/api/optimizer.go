@@ -24,7 +24,7 @@ func optimizationEnabledMiddleware() gin.HandlerFunc {
 }
 
 func (s *Server) getAutoOptimizerRecommendation(c *gin.Context) {
-	sc, args, accountID, processRequest := s.getActionRequestDetails(c)
+	sc, args, accountID, processRequest := s.getActionRequestDetails(c, security.SecurityAccessTypeRead)
 	if !processRequest {
 		return
 	}
@@ -62,7 +62,7 @@ func (s *Server) getAutoOptimizerRecommendation(c *gin.Context) {
 }
 
 func (s *Server) getAutoOptimizerWorkload(c *gin.Context) {
-	sc, args, accountID, processRequest := s.getActionRequestDetails(c)
+	sc, args, accountID, processRequest := s.getActionRequestDetails(c, security.SecurityAccessTypeRead)
 	if !processRequest {
 		return
 	}
@@ -103,7 +103,7 @@ func (s *Server) getAutoOptimizerWorkload(c *gin.Context) {
 }
 
 func (s *Server) autoPilotExecutionSkip(c *gin.Context) {
-	sc, args, accountID, processRequest := s.getActionRequestDetails(c)
+	sc, args, accountID, processRequest := s.getActionRequestDetails(c, security.SecurityAccessTypeRead)
 	if !processRequest {
 		return
 	}
@@ -151,18 +151,13 @@ func (s *Server) autoPilotExecutionSkip(c *gin.Context) {
 }
 
 func (s *Server) autoOptimizerUpdate(c *gin.Context) {
-	sc, args, accountID, processRequest := s.getActionRequestDetails(c)
+	sc, args, accountID, processRequest := s.getActionRequestDetails(c, security.SecurityAccessTypeUpdate)
 	if !processRequest {
 		return
 	}
 	accUUID, err := uuid.Parse(accountID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid account id"})
-		return
-	}
-
-	if !sc.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeUpdate) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized to update auto optimize"})
 		return
 	}
 
@@ -195,18 +190,13 @@ func (s *Server) autoOptimizerUpdate(c *gin.Context) {
 }
 
 func (s *Server) autoOptimizerCreate(c *gin.Context) {
-	sc, args, accountID, processRequest := s.getActionRequestDetails(c)
+	sc, args, accountID, processRequest := s.getActionRequestDetails(c, security.SecurityAccessTypeCreate)
 	if !processRequest {
 		return
 	}
 	accUUID, err := uuid.Parse(accountID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid account id"})
-		return
-	}
-
-	if !sc.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeCreate) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized to create auto optimize"})
 		return
 	}
 
@@ -234,18 +224,13 @@ func (s *Server) autoOptimizerCreate(c *gin.Context) {
 }
 
 func (s *Server) autoOptimizerChangeStatus(c *gin.Context) {
-	sc, args, accountID, processRequest := s.getActionRequestDetails(c)
+	sc, args, accountID, processRequest := s.getActionRequestDetails(c, security.SecurityAccessTypeUpdate)
 	if !processRequest {
 		return
 	}
 	accUUID, err := uuid.Parse(accountID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid account id"})
-		return
-	}
-
-	if !sc.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeUpdate) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized to change status"})
 		return
 	}
 
@@ -291,7 +276,7 @@ func (s *Server) autoOptimizerChangeStatus(c *gin.Context) {
 }
 
 func (s *Server) autoOptimizerTrigger(c *gin.Context) {
-	sc, args, accountID, processRequest := s.getActionRequestDetails(c)
+	sc, args, accountID, processRequest := s.getActionRequestDetails(c, security.SecurityAccessTypeRead)
 	if !processRequest {
 		return
 	}
@@ -337,18 +322,13 @@ func (s *Server) autoOptimizerTrigger(c *gin.Context) {
 }
 
 func (s *Server) autoOptimizerDecideApproval(c *gin.Context) {
-	sc, args, accountID, processRequest := s.getActionRequestDetails(c)
+	sc, args, accountID, processRequest := s.getActionRequestDetails(c, security.SecurityAccessTypeUpdate)
 	if !processRequest {
 		return
 	}
 	accUUID, err := uuid.Parse(accountID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid account id"})
-		return
-	}
-
-	if !sc.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeUpdate) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized to decide auto optimize approvals"})
 		return
 	}
 

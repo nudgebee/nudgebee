@@ -47,14 +47,18 @@ const (
 )
 
 type SecurityContext struct {
-	tenantId        string
-	accountIds      []string
-	userId          string
-	roles           []string
-	scopedEntityIds map[string][]string
-	k8sUser         map[string]string
-	k8sGroup        map[string][]string
-	k8sNamespaces   map[string][]string
+	// actionPermission is the current action's "<module>:<Class>" grant key
+	// (ActionKey). Each request loads its own copy of the context, and the key
+	// is not part of the wire form (MarshalJSON), so it never leaks.
+	actionPermission string
+	tenantId         string
+	accountIds       []string
+	userId           string
+	roles            []string
+	scopedEntityIds  map[string][]string
+	k8sUser          map[string]string
+	k8sGroup         map[string][]string
+	k8sNamespaces    map[string][]string
 	// customPermissions is the set of dynamic-RBAC custom-role grants the user
 	// holds, keyed "<module>:<class>" (e.g. "notifications:Write"). Mirrors the
 	// api-server's security_context_v2 wire shape (scPub.CustomPermissions); the

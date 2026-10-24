@@ -45,7 +45,8 @@ func ExecuteQuery(context *security.RequestContext, query QueryRequest) (QueryRe
 		accountIdColumnName := tableDef.AccountIdColumnName
 		if binary != nil && binary[accountIdColumnName] != nil && binary[accountIdColumnName][Eq] != nil {
 			account_id := binary[accountIdColumnName][Eq]
-			if account_id == "" {
+			accountIdStr, isString := account_id.(string)
+			if !isString || accountIdStr == "" {
 				return QueryResponse{
 					Errors: []common.Error{
 						common.ErrorBadRequest("account_id is required"),
@@ -53,7 +54,7 @@ func ExecuteQuery(context *security.RequestContext, query QueryRequest) (QueryRe
 					ExecutionTimeMs: time.Since(startTime).Milliseconds(),
 				}, nil
 			}
-			sourceDef := tableDef.SourceGenerator(context, account_id.(string), query)
+			sourceDef := tableDef.SourceGenerator(context, accountIdStr, query)
 			tableDef.Source = sourceDef
 			sourceType = sourceDef
 		}
@@ -164,7 +165,11 @@ func ExecuteQuery(context *security.RequestContext, query QueryRequest) (QueryRe
 			query.Columns = lo.Filter(query.Columns, func(column QueryColumn, i int) bool {
 				return column.Name != accountIdColumnName
 			})
-			if !context.GetSecurityContext().HasAccountAccess(account_id.(string), security.SecurityAccessTypeRead) {
+			// The table's PermissionModule, not the request's action key: the engine
+			// is reached from other actions too (a dashboard panel, an AI tool), and
+			// their grant must not open this table (as in the metastore branch).
+			accountIdStr, isString := account_id.(string)
+			if !isString || !context.GetSecurityContext().CanReadAccountData(accountIdStr, tableDef.PermissionModule) {
 				return QueryResponse{
 					Errors: []common.Error{
 						common.ErrorUnauthorized("Access Denied"),
@@ -176,13 +181,13 @@ func ExecuteQuery(context *security.RequestContext, query QueryRequest) (QueryRe
 			queryArgs = append(queryArgs, tableDef.Source)
 
 			if slices.Contains(context.GetSecurityContext().GetRoles(), security.AUTH_K8S_NAMESPACE_ADMIN_ROLE) || slices.Contains(context.GetSecurityContext().GetRoles(), security.AUTH_K8S_NAMESPACE_READ_ADMIN_ROLE) {
-				queryWithNamespace, queryResponse, err := updateQueryWithNamespace(context, tableDef, query, context, startTime, accountIdColumnName, []string{account_id.(string)})
+				queryWithNamespace, queryResponse, err := updateQueryWithNamespace(context, tableDef, query, context, startTime, accountIdColumnName, []string{accountIdStr})
 				if err != nil {
 					return queryResponse, err
 				}
 				query = queryWithNamespace
 			}
-			requestedAccountId = account_id.(string)
+			requestedAccountId = accountIdStr
 		} else {
 			return QueryResponse{
 				Errors: []common.Error{
@@ -201,7 +206,8 @@ func ExecuteQuery(context *security.RequestContext, query QueryRequest) (QueryRe
 		accountIdColumnName := tableDef.AccountIdColumnName
 		if binary != nil && binary[accountIdColumnName] != nil && binary[accountIdColumnName][Eq] != nil {
 			account_id := binary[accountIdColumnName][Eq]
-			if !context.GetSecurityContext().HasAccountAccess(account_id.(string), security.SecurityAccessTypeRead) {
+			accountIdStr, isString := account_id.(string)
+			if !isString || !context.GetSecurityContext().CanReadAccountData(accountIdStr, tableDef.PermissionModule) {
 				return QueryResponse{
 					Errors: []common.Error{
 						common.ErrorUnauthorized("Access Denied"),
@@ -209,7 +215,7 @@ func ExecuteQuery(context *security.RequestContext, query QueryRequest) (QueryRe
 					ExecutionTimeMs: time.Since(startTime).Milliseconds(),
 				}, nil
 			}
-			requestedAccountId = account_id.(string)
+			requestedAccountId = accountIdStr
 		} else {
 			return QueryResponse{
 				Errors: []common.Error{

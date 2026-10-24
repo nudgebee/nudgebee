@@ -96,6 +96,9 @@ const MODULE_ALIASES: Record<string, string> = {
   // so they share the workflows grant (bees_update_modes stays tenant-admin in
   // the handler whatever the grant; bees_install/_uninstall are non-grantable).
   bees: 'workflows',
+  // executions_* list workflow runs. runbook-server checks them against the
+  // workflows grant (ResolveAccountScope), so they classify there too.
+  executions: 'workflows',
   event: 'events',
   // Feature flags are tenant settings, not a domain of their own. Their two
   // reads (featureflags_list, features_list) are app-bootstrap calls EVERY role
@@ -127,6 +130,17 @@ const MODULE_ALIASES: Record<string, string> = {
 // verb in any token (no `<verb>`, no `_vN`/`grouping` query suffix). Keyed by
 // the RAW action name. Keep this list minimal — prefer fixing the action name.
 const ACTION_OVERRIDES: Record<string, PermissionClass> = {
+  // Approving lets the autopilot apply its planned changes: a run, granted
+  // apart from configuring the autopilot (autooptimize:Write).
+  autooptimize_update_approval: 'Execute',
+  // Asks for the same access as the rollback it previews (ApplyEventResolution).
+  events_check_rollback: 'Write',
+  // A batch read of resource owners; `resolve` is not an operation here.
+  ownership_resolve: 'Read',
+  // The flight checks run kubectl/AWS describe through the relay and store the
+  // health check against the plan, so they are runs, not reads.
+  upgrade_pre_flight_check: 'Execute',
+  upgrade_post_flight_check: 'Execute',
   aws_cloud_formation: 'Read', // returns a CloudFormation onboarding URL
   aws_org_status: 'Read',
   critiques_trend_all: 'Read', // `trend` is not a taxonomy verb; reads a critique time series like critiques_aggregate_all
@@ -157,6 +171,9 @@ const ACTION_OVERRIDES: Record<string, PermissionClass> = {
 // name → normalized module. The class still derives from the verb/`_v2` rule —
 // this only re-homes the module. Keep minimal; prefer renaming the action.
 const MODULE_OVERRIDES: Record<string, string> = {
+  // A forecast of a metric: the handler reads it with the metrics grant, as the
+  // AI's metric_forecast tool does.
+  forecast_generate: 'metrics',
   // Channel↔account mapping is Slack/Teams/etc. platform config, so it's
   // governed by the "Message Platform" (messagingplatforms) permission, not
   // notifications. Read (`_v2`) + the three write mutations move together.
@@ -280,6 +297,8 @@ const MODULE_OVERRIDES: Record<string, string> = {
 const NON_GRANTABLE_MODULES = new Set<string>([
   'auth',
   'billing',
+  // branding overrides are super-admin only (ee/branding/service.go)
+  'branding',
   'nudgebee',
   'product',
   'relay',
@@ -341,6 +360,11 @@ const NON_GRANTABLE_ACTIONS = new Set<string>([
   // every key in the tenant, and revoking any of them, is tenant-admin only, #38965
   'users_list_tenant_tokens',
   'users_delete_tenant_token',
+  // installing a Worker Bee creates its account and the role it acts with, and
+  // uninstalling removes them: privilege administration, tenant-admin only.
+  // Creating or deleting a bee's principal, or the user behind it, is the same.
+  'bees_install',
+  'bees_uninstall',
   // sign-in internals, called only by the app server (NextAuth, SAML) as super
   // admin. Their tables have no tenant column, so a grant would read any
   // tenant's users: credential and token hashes (auth_by_username), roles and
@@ -349,10 +373,21 @@ const NON_GRANTABLE_ACTIONS = new Set<string>([
   'users_get_by_provider_account',
   'users_get_super_admin_role',
   'tenant_by_user_v2',
-  // installing a Worker Bee creates its account and the role it acts with, and
-  // uninstalling removes them: privilege administration, tenant-admin only
-  'bees_install',
-  'bees_uninstall',
+  'bees_create_principal',
+  'bees_delete_principal',
+  'users_create_bee',
+  // Changing how far an installed bee goes, and previewing an install, are
+  // tenant-admin only in runbook-server (bee/modes.go, install.go checkInstaller).
+  'bees_update_modes',
+  'bees_check_install',
+  // Reloads the shared system templates for every tenant, not the caller's:
+  // tenant-admin only, never a grant.
+  'workflow_sync_templates',
+  // Their tables have no tenant column (query/service.go applies no tenant or
+  // account filter on a non-warehouse source), so no grant can be honoured
+  // safely; built-in roles only until the tables are tenant-scoped.
+  'traces_groupings_v2',
+  'traces_heatmap_v2',
 ]);
 
 export function normalizeModule(rawModule: string): string {
@@ -439,8 +474,6 @@ const MODULE_SCOPE: Record<string, ModuleScope> = {
   // family resolves the provider per account).
   critiques: 'account',
   database: 'account',
-  // executions_* are workflow runs — same per-account surface as `workflows`.
-  executions: 'account',
   k8s: 'account',
   agents: 'account',
   anomalies: 'account',

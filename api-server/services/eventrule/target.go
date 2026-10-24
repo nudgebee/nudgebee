@@ -799,7 +799,7 @@ func resolveRuleTargets(ctx *security.RequestContext, db *sqlx.DB, ids []string,
 
 	out := make([]*RuleTarget, 0, len(rows))
 	for _, r := range rows {
-		if !sc.HasAccountAccess(r.AccountID, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountOrTenantUsage(r.AccountID) {
 			continue
 		}
 		t := r.toTarget()

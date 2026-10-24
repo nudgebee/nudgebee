@@ -23,14 +23,14 @@ const (
 // canAdministerUsers reports whether the caller may run a user-administration
 // operation at all: tenant_admin (built-in) OR a users:Write custom grant.
 func canAdministerUsers(sc *security.SecurityContext) bool {
-	return sc.CanManage(moduleUsers, classWrite)
+	return sc != nil && sc.CanManage(moduleUsers, classWrite)
 }
 
 // mayAssignTenantRole reports whether the caller may set or change a user's
 // tenant role. Deliberately IsTenantAdmin-only: a custom grant admitted through
 // canAdministerUsers must not be able to escalate itself or anyone else.
 func mayAssignTenantRole(sc *security.SecurityContext) bool {
-	return sc.IsTenantAdmin() || sc.IsSuperAdmin()
+	return sc != nil && (sc.IsTenantAdmin() || sc.IsSuperAdmin())
 }
 
 // syncableRole reports whether role sync (SyncUserRoles) may write role as a

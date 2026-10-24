@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -11,7 +12,7 @@ import (
 // An account admin writes declarations only in their own accounts; one outside
 // any account belongs to the tenant, so it needs tenant-wide access.
 func TestManualAccountAuthorizer(t *testing.T) {
-	ctxFor := func(role string, scoped []string) *security.SecurityContext {
+	ctxFor := func(role string, scoped []string) *security.RequestContext {
 		t.Helper()
 		raw := fmt.Sprintf(`{"TenantId":"t1","UserId":"u1","Roles":[%q],"AccountIds":["acctA","acctB"],"ScopedEntityIds":{%q:%s}}`,
 			role, role, mustJSON(t, scoped))
@@ -19,11 +20,12 @@ func TestManualAccountAuthorizer(t *testing.T) {
 		if err := json.Unmarshal([]byte(raw), &sc); err != nil {
 			t.Fatalf("security context: %v", err)
 		}
-		return &sc
+		// No action key: exactly the built-in check.
+		return security.NewRequestContext(context.Background(), &sc, nil, nil, nil)
 	}
 	cases := []struct {
 		name    string
-		sc      *security.SecurityContext
+		sc      *security.RequestContext
 		access  security.SecurityAccessType
 		account string
 		want    bool

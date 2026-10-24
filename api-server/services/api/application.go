@@ -159,7 +159,7 @@ func handleApplicationEvent(actionPayload *ActionRequest, c *gin.Context, tracer
 		if handleError(c, err, 500) {
 			return
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(vmServiceMapRequest.AccountID, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanAccessAccount(vmServiceMapRequest.AccountID, security.SecurityAccessTypeRead) {
 			c.JSON(403, common.ErrorActionForbidden("unauthorized"))
 			return
 		}

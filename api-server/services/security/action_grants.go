@@ -1,6 +1,9 @@
 package security
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // CanAccessAccount is the authorization check for an operation on accountId: a
 // built-in role that grants `access` on the account (HasAccountAccess), OR a
@@ -8,16 +11,20 @@ import "strings"
 // (tenant-wide, or bound to that account).
 //
 // actionKey is the "<module>:<Class>" key the app gateway classified the RPC
-// action as (RequestContext.CanAccessAccount passes it). Taking the module from
+// action as (SetActionPermission records it, from the request). Taking the module from
 // the classification means a handler cannot drift from the module the role
 // editor grants (the bug class behind 9be4d473bc, c6f1820ff2, 3ace9ff156). With
 // an empty key it is exactly HasAccountAccess. Custom grants never widen data
 // scope: HasScopedPermission only admits accounts of the caller's own tenant.
 // A nil context fails closed.
-func (sc *SecurityContext) CanAccessAccount(accountId string, access SecurityAccessType, actionKey string) bool {
+func (sc *SecurityContext) CanAccessAccount(accountId string, access SecurityAccessType) bool {
 	if sc == nil {
 		return false
 	}
+	return sc.canAccessAccount(accountId, access, sc.actionPermission)
+}
+
+func (sc *SecurityContext) canAccessAccount(accountId string, access SecurityAccessType, actionKey string) bool {
 	if sc.HasAccountAccess(accountId, access) {
 		return true
 	}
@@ -41,10 +48,24 @@ func (sc *SecurityContext) CanAccessAccount(accountId string, access SecurityAcc
 // assignments): those stay IsTenantAdmin()-only so a custom role cannot escalate
 // itself. The gateway classifies those actions as non-grantable, so the key is
 // empty for them anyway. A nil context fails closed.
-func (sc *SecurityContext) CanAccessTenant(access SecurityAccessType, actionKey string) bool {
+func (sc *SecurityContext) CanAccessTenant(access SecurityAccessType) bool {
 	if sc == nil {
 		return false
 	}
+	return sc.canAccessTenant(access, sc.actionPermission)
+}
+
+// CanAccessTenantForAction is CanAccessTenant against another action's grant
+// key (by name), for a check that decides on that action's behalf: the
+// ownership reads ask whether the caller may assign an owner.
+func (sc *SecurityContext) CanAccessTenantForAction(access SecurityAccessType, actionName string) bool {
+	if sc == nil {
+		return false
+	}
+	return sc.canAccessTenant(access, ActionKey(actionName, ""))
+}
+
+func (sc *SecurityContext) canAccessTenant(access SecurityAccessType, actionKey string) bool {
 	if sc.HasTenantAccess(access) {
 		return true
 	}
@@ -53,6 +74,26 @@ func (sc *SecurityContext) CanAccessTenant(access SecurityAccessType, actionKey 
 		return false
 	}
 	return sc.HasPermission(module, class) || (class == "Read" && sc.HasPermission(module, "Write"))
+}
+
+// SetActionPermission records the current action's grant key (ActionKey), which
+// CanAccessAccount and CanAccessTenant check custom grants against.
+func (sc *SecurityContext) SetActionPermission(key string) {
+	if sc != nil {
+		sc.actionPermission = key
+	}
+}
+
+// CanReadAccountOrTenantUsage is the account check for a read that is also open
+// to tenant_usage: a role (or the action's grant) that reads the account, or
+// tenant_usage on an account of the caller's tenant (it has no per-account
+// scope, so a tenant check is all it gets).
+func (sc *SecurityContext) CanReadAccountOrTenantUsage(accountId string) bool {
+	if sc == nil {
+		return false
+	}
+	return sc.CanAccessAccount(accountId, SecurityAccessTypeRead) ||
+		(slices.Contains(sc.GetRoles(), AUTH_TENANT_USAGE_ROLE) && sc.IsTenantAccount(accountId))
 }
 
 // actionGrant returns the (module, class) of an action's grant key when it may

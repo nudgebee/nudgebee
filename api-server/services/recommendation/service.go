@@ -160,7 +160,7 @@ func hasInProgressRecommendation(existingRecommendations []models.Recommendation
 }
 
 func ApplyRecommendation(ctx *security.RequestContext, query RecommendationApplyRequest) (RecommendationApplyResponse, error) {
-	if !ctx.CanAccessAccount(query.AccountId, security.SecurityAccessTypeCreate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(query.AccountId, security.SecurityAccessTypeCreate) {
 		return RecommendationApplyResponse{}, common.ErrorUnauthorized("error: account access not found")
 	}
 	if query.ProviderConfig == nil {
@@ -738,7 +738,7 @@ func ScanImage(ctx *security.RequestContext, query RecommendationScanImageReques
 
 	// Grant-aware: a custom role holding the action's grant on this account
 	// (automation accounts hold one) may scan, not only the built-in roles.
-	if !ctx.CanAccessAccount(query.AccountId, security.SecurityAccessTypeCreate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(query.AccountId, security.SecurityAccessTypeCreate) {
 		return RecommendationApplyResponse{}, common.ErrorUnauthorized("unauthorized")
 	}
 
@@ -911,7 +911,7 @@ var recommendationJobProviderMap = map[string]string{
 func CreateRecommendationJob(ctx *security.RequestContext, query RecommendationJobCreateRequest) (RecommendationJobCreateResponse, error) {
 	ctx.GetLogger().Info("Creating recommendation job", "query", slog.AnyValue(query))
 
-	if !ctx.CanAccessAccount(query.AccountId, security.SecurityAccessTypeCreate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(query.AccountId, security.SecurityAccessTypeCreate) {
 		return RecommendationJobCreateResponse{}, common.ErrorUnauthorized("error: account access not found")
 	}
 

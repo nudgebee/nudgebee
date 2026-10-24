@@ -267,6 +267,9 @@ func isAITriggeredRequest(c *gin.Context) bool {
 
 type ActionRequestAction struct {
 	Name string `json:"name"`
+	// Permission is the action's "<module>:<Class>" grant key as the app gateway
+	// classified it; empty from callers that skip the gateway.
+	Permission string `json:"permission"`
 }
 
 type ActionRequest struct {
@@ -295,7 +298,11 @@ func (d *DefaultSecurityContextBuilder) BuildContextFromPayload(ctx context.Cont
 	return buildContextFromPayload(ctx, c, h, tracer, meter, logger)
 }
 
-func (s *Server) getActionRequestDetails(c *gin.Context) (*security.RequestContext, map[string]any, string, bool) {
+// getActionRequestDetails builds the context for an /autopilot action request
+// and admits the caller to the request's account with the access the operation
+// needs: a built-in role granting it, or a custom grant for the action's key
+// (SecurityContext.CanAccessAccount). A Read-classified key never admits a write.
+func (s *Server) getActionRequestDetails(c *gin.Context, access security.SecurityAccessType) (*security.RequestContext, map[string]any, string, bool) {
 	var actionReq ActionRequest
 	if err := c.ShouldBindJSON(&actionReq); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request format: " + err.Error()})
@@ -325,7 +332,7 @@ func (s *Server) getActionRequestDetails(c *gin.Context) (*security.RequestConte
 		return nil, nil, "", false
 	}
 
-	if !sc.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeRead) {
+	if !sc.GetSecurityContext().CanAccessAccount(accountID, access) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return nil, nil, "", false
 	}
@@ -393,6 +400,7 @@ func buildContextFromPayload(ctx context.Context, c *gin.Context, h *ActionReque
 	span := trace.SpanFromContext(ctx)
 	childLogger := logger.With("tenant_id", tenantId, "user_id", userId, "trace_id", span.SpanContext().TraceID().String())
 	rc := security.NewRequestContext(ctx, securityContext, childLogger, tracer, meter)
+	rc.SetActionPermission(security.ActionKey(h.Action.Name, h.Action.Permission))
 	rc.SetAITriggered(isAITriggeredRequest(c))
 	rc.SetBeeRunID(beeRunIDFromRequest(c))
 	rc.SetBeeConversationID(headerValue(c, HeaderBeeConversationID))

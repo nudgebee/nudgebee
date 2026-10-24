@@ -2,6 +2,7 @@ package security
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -53,7 +54,7 @@ func TestCanAccessAccount(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := grantCtx(tc.sc, tc.permission).CanAccessAccount(tc.account, tc.access); got != tc.want {
+			if got := grantCtx(tc.sc, tc.permission).GetSecurityContext().CanAccessAccount(tc.account, tc.access); got != tc.want {
 				t.Fatalf("CanAccessAccount = %v, want %v", got, tc.want)
 			}
 		})
@@ -79,7 +80,7 @@ func TestCanAccessTenant(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := grantCtx(tc.sc, tc.permission).CanAccessTenant(tc.access); got != tc.want {
+			if got := grantCtx(tc.sc, tc.permission).GetSecurityContext().CanAccessTenant(tc.access); got != tc.want {
 				t.Fatalf("CanAccessTenant = %v, want %v", got, tc.want)
 			}
 		})
@@ -88,29 +89,52 @@ func TestCanAccessTenant(t *testing.T) {
 
 func TestGrantChecksFailClosedOnNilRequestContext(t *testing.T) {
 	var rc *RequestContext
-	if rc.CanAccessAccount("a1", SecurityAccessTypeRead) {
+	if rc.GetSecurityContext().CanAccessAccount("a1", SecurityAccessTypeRead) {
 		t.Fatal("CanAccessAccount on nil RequestContext = true, want false")
 	}
-	if rc.CanAccessTenant(SecurityAccessTypeRead) {
+	if rc.GetSecurityContext().CanAccessTenant(SecurityAccessTypeRead) {
 		t.Fatal("CanAccessTenant on nil RequestContext = true, want false")
 	}
 }
 
-// The checks live on SecurityContext with the action key passed in; the
-// RequestContext methods only supply the key.
-func TestSecurityContextGrantChecksTakeTheActionKey(t *testing.T) {
+// The checks live on SecurityContext and read the action key it carries; the
+// RequestContext only hands the key over.
+func TestSecurityContextGrantChecksUseItsActionKey(t *testing.T) {
 	sc := &SecurityContext{tenantId: "t1", accountIds: []string{"a1"}, customPermissions: map[string]bool{"cloud:Execute": true}}
-	if !sc.CanAccessAccount("a1", SecurityAccessTypeUpdate, "cloud:Execute") {
-		t.Fatal("cloud:Execute grant should pass for its own action key")
-	}
-	if sc.CanAccessAccount("a1", SecurityAccessTypeUpdate, "accounts:Write") {
-		t.Fatal("a grant for another module must not pass")
-	}
-	if sc.CanAccessAccount("a1", SecurityAccessTypeUpdate, "") {
+	if sc.CanAccessAccount("a1", SecurityAccessTypeUpdate) {
 		t.Fatal("no action key means built-in roles only")
 	}
+	sc.SetActionPermission("cloud:Execute")
+	if !sc.CanAccessAccount("a1", SecurityAccessTypeUpdate) {
+		t.Fatal("cloud:Execute grant should pass for its own action key")
+	}
+	sc.SetActionPermission("accounts:Write")
+	if sc.CanAccessAccount("a1", SecurityAccessTypeUpdate) {
+		t.Fatal("a grant for another module must not pass")
+	}
+	if !sc.CanAccessTenantForAction(SecurityAccessTypeUpdate, "cloud_execute_command") {
+		t.Fatal("another action's key, by name")
+	}
+	raw, err := sc.MarshalJSON()
+	if err != nil || strings.Contains(string(raw), "accounts:Write") {
+		t.Fatalf("the action key must not be serialized: %s %v", raw, err)
+	}
 	var missing *SecurityContext
-	if missing.CanAccessAccount("a1", SecurityAccessTypeRead, "cloud:Read") || missing.CanAccessTenant(SecurityAccessTypeRead, "cloud:Read") {
+	missing.SetActionPermission("cloud:Read")
+	if missing.CanAccessAccount("a1", SecurityAccessTypeRead) || missing.CanAccessTenant(SecurityAccessTypeRead) || missing.CanAccessTenantForAction(SecurityAccessTypeRead, "cloud_execute_command") {
+		t.Fatal("a nil security context must fail closed")
+	}
+}
+
+// A missing security context fails closed through every read check a handler
+// reaches it by (GetSecurityContext on a nil RequestContext is nil).
+func TestReadChecksFailClosedWithoutASecurityContext(t *testing.T) {
+	var rc *RequestContext
+	if rc.GetSecurityContext() != nil {
+		t.Fatal("nil RequestContext must yield a nil SecurityContext")
+	}
+	var sc *SecurityContext
+	if sc.CanReadAccountData("a1", "events") || sc.CanReadAccountOrTenantUsage("a1") {
 		t.Fatal("a nil security context must fail closed")
 	}
 }

@@ -9,7 +9,6 @@ import (
 	"nudgebee/services/internal/database"
 	"nudgebee/services/internal/database/models"
 	"nudgebee/services/security"
-	"slices"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -74,7 +73,7 @@ func handleCloudMetrics(actionPayload *ActionRequest, c *gin.Context, ctx *secur
 		return
 	}
 
-	if request.AccountId != "" && !canReadAccountOrTenantUsage(ctx, request.AccountId) {
+	if request.AccountId != "" && !ctx.GetSecurityContext().CanReadAccountOrTenantUsage(request.AccountId) {
 		c.JSON(403, common.ErrorActionForbidden("access denied for account"))
 		return
 	}
@@ -129,7 +128,7 @@ func handleCloudListNotificationTargets(actionPayload *ActionRequest, c *gin.Con
 
 	// Gate on access to the target account. tenant_admin passes for any
 	// account in the tenant; account_admin only for its assigned accounts.
-	if !ctx.CanAccessAccount(request.AccountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanAccessAccount(request.AccountId, security.SecurityAccessTypeRead) {
 		c.JSON(403, []common.Error{
 			{
 				Message: "access denied for account: " + request.AccountId,
@@ -276,7 +275,7 @@ func handleDatabasePerformance(actionPayload *ActionRequest, c *gin.Context, ctx
 		return
 	}
 
-	if request.AccountId != "" && !canReadAccountOrTenantUsage(ctx, request.AccountId) {
+	if request.AccountId != "" && !ctx.GetSecurityContext().CanReadAccountOrTenantUsage(request.AccountId) {
 		c.JSON(403, common.ErrorActionForbidden("access denied for account"))
 		return
 	}
@@ -316,7 +315,7 @@ func handleTriggerCloudSync(actionPayload *ActionRequest, c *gin.Context, ctx *s
 		return
 	}
 
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(accountId, security.SecurityAccessTypeUpdate) {
 		c.JSON(403, common.ErrorActionForbidden("access denied for account"))
 		return
 	}
@@ -364,7 +363,7 @@ func handleSyncCloudService(actionPayload *ActionRequest, c *gin.Context, ctx *s
 		}
 	}
 
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(accountId, security.SecurityAccessTypeUpdate) {
 		c.JSON(403, common.ErrorActionForbidden("access denied for account"))
 		return
 	}
@@ -417,7 +416,7 @@ func handleCloudApplyCommand(actionPayload *ActionRequest, c *gin.Context, ctx *
 	// Gate on access to the target account. tenant_admin passes for any
 	// account in the tenant; account_admin only for its assigned accounts.
 	// Required because callers now include account_admin (actions.yaml).
-	if !ctx.CanAccessAccount(request.AccountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(request.AccountId, security.SecurityAccessTypeUpdate) {
 		c.JSON(403, []common.Error{
 			{
 				Message: "access denied for account: " + request.AccountId,
@@ -510,7 +509,7 @@ func handleCloudExecuteCommand(actionPayload *ActionRequest, c *gin.Context, ctx
 	// Gate on access to the target account. tenant_admin passes for any
 	// account in the tenant; account_admin only for its assigned accounts.
 	// Required because callers now include account_admin (actions.yaml).
-	if !ctx.CanAccessAccount(request.AccountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(request.AccountId, security.SecurityAccessTypeUpdate) {
 		c.JSON(403, []common.Error{
 			{
 				Message: "access denied for account: " + request.AccountId,
@@ -716,16 +715,4 @@ func handleCloudExecuteCommand(actionPayload *ActionRequest, c *gin.Context, ctx
 	}
 
 	c.JSON(200, resp)
-}
-
-// canReadAccountOrTenantUsage is the account check for a read that is also open
-// to tenant_usage: a role that reads the account, or
-// tenant_usage on an account of the caller's tenant (it has no per-account
-// scope, so a tenant check is all it gets, as in relay_alert.go).
-func canReadAccountOrTenantUsage(ctx *security.RequestContext, accountId string) bool {
-	if ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
-		return true
-	}
-	sc := ctx.GetSecurityContext()
-	return sc != nil && slices.Contains(sc.GetRoles(), security.AUTH_TENANT_USAGE_ROLE) && sc.IsTenantAccount(accountId)
 }

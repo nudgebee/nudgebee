@@ -57,15 +57,21 @@ func init() {
 }
 
 type SecurityContext struct {
-	tenantId        string
-	accountIds      []string
-	userId          string
-	displayName     string
-	roles           []string
-	scopedEntityIds map[string][]string
-	k8sUser         map[string]string
-	k8sGroup        map[string][]string
-	k8sNamespaces   map[string][]string
+	// actionPermission is the current action's "<module>:<Class>" grant key
+	// (ActionKey). Each request works on its own copy of the context (it is
+	// unmarshalled from the cache per request), and the key is not part of the
+	// wire form (MarshalJSON), so it never leaks into the cache or to another
+	// service.
+	actionPermission string
+	tenantId         string
+	accountIds       []string
+	userId           string
+	displayName      string
+	roles            []string
+	scopedEntityIds  map[string][]string
+	k8sUser          map[string]string
+	k8sGroup         map[string][]string
+	k8sNamespaces    map[string][]string
 	// customPermissions is the set of dynamic-RBAC custom-role grants the user
 	// holds, keyed "<module>:<class>" (e.g. "notifications:Write"). Resolved from
 	// custom_role_assignments → custom_role_permissions (direct + via groups).
@@ -320,6 +326,9 @@ func (sc *SecurityContext) CanManage(module string, class string) bool {
 // still read the data their custom grant authorizes — mirroring the query
 // engine's PermissionModule skip.
 func (sc *SecurityContext) CanReadAccountData(accountId string, module string) bool {
+	if sc == nil {
+		return false
+	}
 	return sc.HasAccountAccess(accountId, SecurityAccessTypeRead) ||
 		sc.HasScopedPermission(accountId, module, "Read") ||
 		sc.HasScopedPermission(accountId, module, "Write")

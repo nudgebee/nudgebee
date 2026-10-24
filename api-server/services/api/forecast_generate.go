@@ -8,6 +8,7 @@ import (
 
 	"nudgebee/services/common"
 	"nudgebee/services/forecast"
+	"nudgebee/services/security"
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/metric"
@@ -79,7 +80,10 @@ func handleForecastGenerate(actionPayload *ActionRequest, c *gin.Context, tracer
 		c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 		return
 	}
-	if !ctx.GetSecurityContext().CanReadAccountData(req.AccountId, "metrics") {
+	// Read access: built-in read-only roles generate forecasts (actions.yaml admits
+	// them). A custom role needs the action's own grant (metrics:Execute), which
+	// CanAccessAccount checks for any access level.
+	if !ctx.GetSecurityContext().CanAccessAccount(req.AccountId, security.SecurityAccessTypeRead) {
 		c.JSON(403, common.ErrorActionForbidden("access denied for account: "+req.AccountId))
 		return
 	}

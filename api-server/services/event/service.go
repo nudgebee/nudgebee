@@ -486,7 +486,7 @@ func loadResolutionTarget(ctx *security.RequestContext, accountId, eventId strin
 }
 
 func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendationApplyRequest) (EventRecommendationApplyResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(query.AccountId, security.SecurityAccessTypeCreate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(query.AccountId, security.SecurityAccessTypeCreate) {
 		return EventRecommendationApplyResponse{}, common.ErrorUnauthorized("error: account access not found")
 	}
 
@@ -1684,8 +1684,9 @@ func prepareRevert(ctx *security.RequestContext, alert models.Event, cr models.R
 // change that lands in between is still caught there.
 func CheckEventRollback(ctx *security.RequestContext, query EventRollbackCheckRequest) (EventRollbackCheckResponse, error) {
 	// Same access as the apply: the answer names changes on the workload, and only someone who
-	// may roll back is shown the dialog that asks.
-	if !ctx.GetSecurityContext().HasAccountAccess(query.AccountId, security.SecurityAccessTypeCreate) {
+	// may roll back is shown the dialog that asks. A custom grant passes only when the action is
+	// classified as a write: a Read key never authorizes this (see security.actionGrant).
+	if !ctx.GetSecurityContext().CanAccessAccount(query.AccountId, security.SecurityAccessTypeCreate) {
 		return EventRollbackCheckResponse{}, common.ErrorUnauthorized("error: account access not found")
 	}
 	r, cr, err := loadResolutionTarget(ctx, query.AccountId, query.EventId)
@@ -4953,7 +4954,7 @@ func UpdateEvent(ctx *security.RequestContext, request models.UpdateEventRequest
 	if r.CloudAccountId == nil || *r.CloudAccountId == "" {
 		return models.Event{}, fmt.Errorf("event %s has no account association", request.EventId)
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(*r.CloudAccountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(*r.CloudAccountId, security.SecurityAccessTypeUpdate) {
 		return models.Event{}, common.ErrorUnauthorized("access denied for account: " + *r.CloudAccountId)
 	}
 	if request.Urgency != "" {
@@ -5125,7 +5126,7 @@ func UpdateEventStatus(ctx *security.RequestContext, request UpdateEventStatusRe
 	if r.CloudAccountId == nil || *r.CloudAccountId == "" {
 		return nil, fmt.Errorf("event %s has no account association", request.EventID)
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(*r.CloudAccountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(*r.CloudAccountId, security.SecurityAccessTypeUpdate) {
 		return nil, common.ErrorUnauthorized("access denied for account: " + *r.CloudAccountId)
 	}
 
@@ -5260,7 +5261,7 @@ func GetEventManualStatusChanges(ctx *security.RequestContext, eventIDs []string
 		// account the caller can't see — event_history carries no row-level
 		// scoping of its own, so this is the only check standing between an
 		// arbitrary event id and another account's "who closed this" data.
-		if !ctx.GetSecurityContext().HasAccountAccess(row.CloudAccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanAccessAccount(row.CloudAccountId, security.SecurityAccessTypeRead) {
 			continue
 		}
 		status := stringFromJSON(row.NewValue)

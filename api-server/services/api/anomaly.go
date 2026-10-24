@@ -75,7 +75,7 @@ func handleAnomaly(actionPayload *ActionRequest, c *gin.Context, tracer *trace.T
 		}
 		// The account id comes from the caller, and ExecuteForAccount resolves the
 		// tenant from the account itself, so check access before anything is queued.
-		if !ctx.CanAccessAccount(request.AccountId, security.SecurityAccessTypeUpdate) {
+		if !ctx.GetSecurityContext().CanAccessAccount(request.AccountId, security.SecurityAccessTypeUpdate) {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}

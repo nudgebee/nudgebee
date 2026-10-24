@@ -1767,7 +1767,8 @@ func handleEventApplyThresholdSuggestion(h *ActionRequest, c *gin.Context, ctx *
 		c.JSON(http.StatusBadRequest, gin.H{"error": "alert_rule_key and cloud_account_id are required"})
 		return
 	}
-	if !requireTriageAccountAccess(c, ctx, req.CloudAccountID, "events", security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(req.CloudAccountID, security.SecurityAccessTypeUpdate) {
+		c.JSON(http.StatusForbidden, common.ErrorActionForbidden("access denied for account"))
 		return
 	}
 
@@ -1813,7 +1814,8 @@ func handleEventRevertThresholdSuggestion(h *ActionRequest, c *gin.Context, ctx 
 		c.JSON(http.StatusBadRequest, gin.H{"error": "alert_rule_key and cloud_account_id are required"})
 		return
 	}
-	if !requireTriageAccountAccess(c, ctx, cloudAccountID, "events", security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(cloudAccountID, security.SecurityAccessTypeUpdate) {
+		c.JSON(http.StatusForbidden, common.ErrorActionForbidden("access denied for account"))
 		return
 	}
 

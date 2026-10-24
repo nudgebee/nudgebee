@@ -2301,7 +2301,7 @@ func DiagnoseIntegrationConnectionForAccount(ctx *security.RequestContext, integ
 	if accountID == "" {
 		return errors.New("integrations: account_id is required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanAccessAccount(accountID, security.SecurityAccessTypeRead) {
 		return errors.New("integrations: connection test is not permitted")
 	}
 	return testIntegrationConnection(ctx, integrationID, accountID, true)

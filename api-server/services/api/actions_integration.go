@@ -801,7 +801,7 @@ func diagnoseIntegrationConnection(ctx *security.RequestContext, integrationID s
 	}
 	authorizedAccountID := ""
 	for _, accountID := range accountIDs {
-		if ctx.CanAccessAccount(accountID, security.SecurityAccessTypeRead) {
+		if ctx.GetSecurityContext().CanAccessAccount(accountID, security.SecurityAccessTypeRead) {
 			authorizedAccountID = accountID
 			break
 		}

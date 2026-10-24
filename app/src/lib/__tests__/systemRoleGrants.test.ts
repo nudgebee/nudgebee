@@ -41,20 +41,25 @@ function readMigrationUpSql(): string {
   return readMigration(/_V\d+_seed_system_roles\.up\.sql$/);
 }
 
-// Modules the retirement migration drops from custom_role_permissions. The seed
+// Modules the retirement migrations drop from custom_role_permissions. The seed
 // migration is applied and immutable (atlas.sum), so a module that stops being
 // grantable is removed by a LATER migration rather than by editing the seed —
-// the effective seeded state is `seed − retired`. Parsed from that migration's
-// `DELETE ... WHERE "module" IN (...)` so retiring another module needs no edit
-// here.
+// the effective seeded state is `seed − retired`. Parsed from every
+// `*_retire_*_grants` migration's `DELETE ... WHERE "module" IN (...)`, so
+// retiring another module needs no edit here.
 function readRetiredModules(): Set<string> {
-  const sql = readMigration(/_V\d+_retire_featureflags_product_grants\.up\.sql$/);
-  // Whitespace-tolerant and case-insensitive: the statement spans lines today,
-  // but a reformat (SQL formatter, editor, a future edit that joins the lines)
-  // must not turn "the migration was reformatted" into "the seed drifted".
-  const clause = /DELETE\s+FROM\s+"public"\."custom_role_permissions"\s+WHERE\s+"module"\s+IN\s*\(([^)]*)\)/i.exec(sql);
-  if (!clause) throw new Error('retirement migration has no recognizable module DELETE');
-  return new Set([...clause[1].matchAll(/'(\w+)'/g)].map((m) => m[1]));
+  const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => /_V\d+_retire_\w+_grants\.up\.sql$/.test(f));
+  if (files.length === 0) throw new Error('no retirement migration found');
+  const retired = new Set<string>();
+  for (const file of files) {
+    const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8');
+    // Whitespace-tolerant and case-insensitive: a reformat of the statement must
+    // not turn "the migration was reformatted" into "the seed drifted".
+    const clause = /DELETE\s+FROM\s+"public"\."custom_role_permissions"\s+WHERE\s+"module"\s+IN\s*\(([^)]*)\)/i.exec(sql);
+    if (!clause) throw new Error(`retirement migration ${file} has no recognizable module DELETE`);
+    for (const m of clause[1].matchAll(/'(\w+)'/g)) retired.add(m[1]);
+  }
+  return retired;
 }
 
 // Parse the seeded grant tuples ('system_key', 'module', 'Class') from the SQL.

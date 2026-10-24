@@ -18,9 +18,13 @@ var validResourceTypes = map[string]bool{
 	ResourceTypeCloudResource: true,
 }
 
-func requireTenantAdmin(ctx *security.RequestContext) (string, error) {
-	if !ctx.GetSecurityContext().IsTenantAdmin() && !ctx.GetSecurityContext().IsSuperAdmin() {
-		return "", common.ErrorUnauthorized("Only tenant admins can manage ownership")
+// requireTenantWrite admits a tenant admin, a super admin, or a custom-role user
+// holding the action's tenant-wide ownership grant. Ownership is tenant-scoped
+// governance, so the grant is the tenant-wide one (CanAccessTenant), never an
+// account-bound one.
+func requireTenantWrite(ctx *security.RequestContext, access security.SecurityAccessType) (string, error) {
+	if !ctx.GetSecurityContext().CanAccessTenant(access) {
+		return "", common.ErrorUnauthorized("You are not allowed to manage ownership")
 	}
 	tenantId := ctx.GetSecurityContext().GetTenantId()
 	if tenantId == "" {
@@ -51,7 +55,7 @@ func AssignOwner(ctx *security.RequestContext, req AssignOwnerRequest) (StatusRe
 	if req.OwnerType != OwnerTypeUser && req.OwnerType != OwnerTypeGroup {
 		return StatusResponse{}, common.ErrorBadRequest("owner_type must be 'user' or 'group'")
 	}
-	tenantId, err := requireTenantAdmin(ctx)
+	tenantId, err := requireTenantWrite(ctx, security.SecurityAccessTypeUpdate)
 	if err != nil {
 		return StatusResponse{}, err
 	}
@@ -98,7 +102,7 @@ func RemoveOwner(ctx *security.RequestContext, req DeleteOwnerRequest) (StatusRe
 	if err := common.ValidateStruct(req); err != nil {
 		return StatusResponse{}, err
 	}
-	tenantId, err := requireTenantAdmin(ctx)
+	tenantId, err := requireTenantWrite(ctx, security.SecurityAccessTypeDelete)
 	if err != nil {
 		return StatusResponse{}, err
 	}
@@ -181,10 +185,14 @@ func Resolve(ctx *security.RequestContext, req ResolveRequest) ([]OwnerResult, e
 // active resource. Reads only need a tenant, and resource ids are derived from names,
 // so answering everyone would let a user probe for resources in accounts they cannot
 // see. The one use of the answer is deciding whether an owner can be assigned, so it
-// goes to exactly the callers who may assign one.
+// goes to exactly the callers who may assign one: a tenant or super admin, or a
+// custom-role user holding the grant ownership_assign is checked against. The
+// action being served here is a read (ownership_get / ownership_resolve), so its
+// own key does not answer that; ask with ownership_assign's key instead. Like
+// requireTenantWrite, it needs a concrete tenant.
 func canSeeResourceState(ctx *security.RequestContext) bool {
-	_, err := requireTenantAdmin(ctx)
-	return err == nil
+	sc := ctx.GetSecurityContext()
+	return sc != nil && sc.GetTenantId() != "" && sc.CanAccessTenantForAction(security.SecurityAccessTypeUpdate, "ownership_assign")
 }
 
 // hideResourceState clears NoActiveResource in place.
@@ -328,7 +336,7 @@ func ListOwners(ctx *security.RequestContext, req ListOwnersRequest) ([]OwnerDto
 
 // CleanupOrphans purges manual rows whose resource no longer exists.
 func CleanupOrphans(ctx *security.RequestContext, _ struct{}) (StatusResponse, error) {
-	tenantId, err := requireTenantAdmin(ctx)
+	tenantId, err := requireTenantWrite(ctx, security.SecurityAccessTypeDelete)
 	if err != nil {
 		return StatusResponse{}, err
 	}
@@ -410,7 +418,7 @@ func UpsertRule(ctx *security.RequestContext, req UpsertRuleRequest) (StatusResp
 	if err := validateRuleRequest(req); err != nil {
 		return StatusResponse{}, err
 	}
-	tenantId, err := requireTenantAdmin(ctx)
+	tenantId, err := requireTenantWrite(ctx, security.SecurityAccessTypeUpdate)
 	if err != nil {
 		return StatusResponse{}, err
 	}
@@ -464,7 +472,7 @@ func DeleteRule(ctx *security.RequestContext, req DeleteRuleRequest) (StatusResp
 	if err := common.ValidateStruct(req); err != nil {
 		return StatusResponse{}, err
 	}
-	tenantId, err := requireTenantAdmin(ctx)
+	tenantId, err := requireTenantWrite(ctx, security.SecurityAccessTypeDelete)
 	if err != nil {
 		return StatusResponse{}, err
 	}

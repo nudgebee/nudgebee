@@ -23,7 +23,7 @@ const scanTimeout = 15 * time.Minute
 // shape: the RPC caller gets an ack, the real work runs detached with its
 // own timeout.
 func ScanPackages(ctx *security.RequestContext, req ScanRequest) (ScanResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(req.AccountId, security.SecurityAccessTypeCreate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(req.AccountId, security.SecurityAccessTypeCreate) {
 		return ScanResponse{}, common.ErrorUnauthorized("unauthorized")
 	}
 

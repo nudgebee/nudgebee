@@ -493,7 +493,7 @@ func GetEventAlertControls(ctx *security.RequestContext, req EventAlertControlsR
 	if req.EventID == "" || req.AccountID == "" {
 		return nil, fmt.Errorf("event_id and account_id are required")
 	}
-	if !sc.HasAccountAccess(req.AccountID, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanReadAccountOrTenantUsage(req.AccountID) {
 		return nil, fmt.Errorf("account unauthorized")
 	}
 	dbms, err := database.GetDatabaseManager(database.Metastore)
@@ -517,7 +517,7 @@ func UpdateEventMute(ctx *security.RequestContext, req UpdateEventMuteRequest) (
 	if req.EventID == "" || req.AccountID == "" {
 		return nil, fmt.Errorf("event_id and account_id are required")
 	}
-	if !sc.HasAccountAccess(req.AccountID, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(req.AccountID, security.SecurityAccessTypeUpdate) {
 		return nil, fmt.Errorf("account unauthorized")
 	}
 	if req.Muted && !slices.Contains(muteDurationsHours, req.DurationHours) {

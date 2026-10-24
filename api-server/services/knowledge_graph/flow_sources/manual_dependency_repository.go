@@ -120,8 +120,8 @@ type ManualDependencyRepository struct {
 }
 
 // WithAccountAuthorizer returns the repository with user writes checked
-// against authorize: create, update, delete, pin, single re-resolve and every
-// imported dependency.
+// against authorize: create, update, delete, pin, single and bulk re-resolve
+// and every imported dependency.
 func (r *ManualDependencyRepository) WithAccountAuthorizer(authorize ManualAccountAuthorizer) *ManualDependencyRepository {
 	c := *r
 	c.authorize = authorize
@@ -1017,7 +1017,9 @@ func (r *ManualDependencyRepository) resolveAndPinPartial(
 // ReresolveAll calls ResolveAndPersist for every row matching the filter,
 // returning per-row results. statusFilter narrows; pass nil for "all
 // active". Errors on individual rows are logged and aggregated; the call
-// returns the per-row outcomes either way.
+// returns the per-row outcomes either way. With an authorizer, a row the
+// caller may not write (checkExisting) is skipped, as a single re-resolve of
+// it would be refused.
 func (r *ManualDependencyRepository) ReresolveAll(ctx context.Context, tenantID string, statusFilter []string) ([]ManualDependency, error) {
 	if tenantID == "" {
 		return nil, ErrTenantIDRequired
@@ -1028,7 +1030,15 @@ func (r *ManualDependencyRepository) ReresolveAll(ctx context.Context, tenantID 
 	}
 
 	out := make([]ManualDependency, 0, len(rows))
-	for _, dep := range rows {
+	for i := range rows {
+		dep := &rows[i]
+		if err := r.checkExisting(dep); err != nil {
+			if !errors.Is(err, ErrManualDependencyForbidden) {
+				r.logger.Warn("reresolve row authorization failed",
+					"id", dep.ID, "tenant_id", tenantID, "error", err)
+			}
+			continue
+		}
 		updated, err := r.ResolveAndPersist(ctx, tenantID, dep.ID)
 		if err != nil {
 			r.logger.Warn("reresolve row failed",

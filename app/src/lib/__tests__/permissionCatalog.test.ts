@@ -127,6 +127,27 @@ describe('permissionCatalog', () => {
     // above; the handler is tenant-admin only.
     'bees_install',
     'bees_uninstall',
+    // Creating or deleting a bee's principal, or the user behind it, is the same
+    // privilege administration.
+    'bees_create_principal',
+    'bees_delete_principal',
+    'users_create_bee',
+    // Changing an installed bee's dial and previewing an install are tenant-admin
+    // only in runbook-server.
+    'bees_update_modes',
+    'bees_check_install',
+    // Reloads the shared system templates for every tenant.
+    'workflow_sync_templates',
+    // Trace aggregates whose tables have no tenant column.
+    'traces_groupings_v2',
+    'traces_heatmap_v2',
+    // branding: tenant branding overrides are super-admin only
+    // (ee/branding/service.go), so there is no grant to offer.
+    'branding_list_overrides',
+    'branding_get_override',
+    'branding_upsert_override',
+    'branding_apply_previous_override',
+    'branding_delete_override',
   ];
 
   it('classifies every action in actions.yaml except the non-grantable ones', () => {

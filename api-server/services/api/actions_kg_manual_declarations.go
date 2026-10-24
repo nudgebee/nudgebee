@@ -65,7 +65,7 @@ func handleKgCreateManualDeclarations(actionPayload *ActionRequest, c *gin.Conte
 	sc := ctx.GetSecurityContext()
 	// Every node is checked against its account and every dependency against
 	// the accounts it touches; a refused item is rejected, the rest proceed.
-	authorize := manualAccountAuthorizer(sc, security.SecurityAccessTypeCreate)
+	authorize := manualAccountAuthorizer(ctx, security.SecurityAccessTypeCreate)
 	deps := manualDepWriter(ctx, flow_sources.NewManualDependencyRepository(dbManager, ctx.GetLogger()), security.SecurityAccessTypeCreate)
 
 	result, err := flow_sources.NewManualDeclarationsImporter(nodes, deps, kg).Import(ctx.GetContext(), tenantID, sc.GetUserId(), authorize, manualNewKindAuthorizer(sc), doc)

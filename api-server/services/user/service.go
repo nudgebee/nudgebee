@@ -230,6 +230,12 @@ func CreateUser(context *security.RequestContext, userRequest UserCreateRequest)
 		// custom grant now also reaches it, which makes the gate load-bearing:
 		// without it any grant holder could create a user, and `role` below writes
 		// user_roles, so they could mint a tenant_admin.
+		//
+		// Every authorization decision is made here, before the first write: a
+		// users:Write holder may create a user and add them to this tenant, but
+		// any tenant role in `role` (tenant_admin, tenant_admin_readonly — the
+		// only roles IsValidTenantRole admits, both tenant-wide privilege) needs a
+		// real tenant admin.
 		if !canAdministerUsers(context.GetSecurityContext()) {
 			return UserCreateResponse{}, common.ErrorUnauthorized("Not Allowed")
 		}
@@ -284,9 +290,6 @@ func CreateUser(context *security.RequestContext, userRequest UserCreateRequest)
 
 	var userTenantId string
 	if context.GetSecurityContext().GetTenantId() != "" {
-		if !context.GetSecurityContext().IsTenantAdmin() && !context.GetSecurityContext().IsSuperAdmin() {
-			return UserCreateResponse{}, common.ErrorUnauthorized("Only tenant admins can add users to a tenant")
-		}
 		context.GetLogger().Info("AssignUser to tenant", "userId", userModel.Id, "tenantId", context.GetSecurityContext().GetTenantId())
 		err = createUserTenant(dbms, userModel.Id, context.GetSecurityContext().GetTenantId(), createdBy)
 		if err != nil {

@@ -1556,6 +1556,7 @@ var table_metadata = map[string]TableDefinition{
 		Source:              getSource("metric_groupings_v2"),
 		Def:                 "cloud_resource_metrics",
 		Name:                "metric_groupings_v2",
+		PermissionModule:    "metrics",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
 		Columns: map[string]ColumnDefinition{
@@ -3235,6 +3236,7 @@ var table_metadata = map[string]TableDefinition{
 			return baseQuery, request, nil
 		},
 		Name:                "traces_v2",
+		PermissionModule:    "traces",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
 		NamespaceColumnName: "workload_namespace",
@@ -4770,6 +4772,7 @@ var table_metadata = map[string]TableDefinition{
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
 		Name:                "llm_conversation_agent_critiques_v2",
+		PermissionModule:    "critiques",
 		Def: `(
 			SELECT
 				cr.id::text as id,
@@ -6333,6 +6336,7 @@ var table_metadata = map[string]TableDefinition{
 		  sr.tenant_id,
 		  sr.timestamp, sr.status) as sro`,
 		Name:                "slo_report_observation_v2",
+		PermissionModule:    "slo",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
 		Columns: map[string]ColumnDefinition{
@@ -6487,6 +6491,7 @@ var table_metadata = map[string]TableDefinition{
 			WHERE evaluated_at >= NOW() - INTERVAL '1 month'
 			GROUP BY namespace, name, anomaly_type, account_id, tenant ORDER BY MAX(evaluated_at) DESC) as anomaly_group`,
 		Name:                "anomaly_v3",
+		PermissionModule:    "anomalies",
 		TenantIdColumnName:  "tenant",
 		AccountIdColumnName: "account_id",
 		Columns: map[string]ColumnDefinition{
@@ -6994,6 +6999,7 @@ var table_metadata = map[string]TableDefinition{
 		Source:              database.Metastore,
 		Def:                 `application_profile`,
 		Name:                "application_profile_v2",
+		PermissionModule:    "applications",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "cloud_account_id",
 		Columns: map[string]ColumnDefinition{
@@ -8146,6 +8152,7 @@ var table_metadata = map[string]TableDefinition{
 		Type:                Normal,
 		Source:              database.Metastore,
 		Name:                "user_account_ids_by_tenant_v2",
+		PermissionModule:    "users",
 		Def:                 "cloud_accounts",
 		TenantIdColumnName:  "tenant",
 		AccountIdColumnName: "id",
@@ -8514,6 +8521,7 @@ var table_metadata = map[string]TableDefinition{
 		Source:              database.Metastore,
 		Def:                 "slo_config",
 		Name:                "slo_config_v2",
+		PermissionModule:    "slo",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "cloud_account_id",
 		Columns: map[string]ColumnDefinition{
@@ -8544,9 +8552,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"slo_report_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "slo_report_v2",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "slo_report_v2",
+		PermissionModule: "slo",
 		Def: `(SELECT sr.*,
 			json_build_object(
 				'name', sc.name,
@@ -8639,6 +8648,7 @@ var table_metadata = map[string]TableDefinition{
 		Source:              database.Metastore,
 		Def:                 "agent_playbook",
 		Name:                "agent_playbook_v2",
+		PermissionModule:    "agents",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "cloud_account_id",
 		Columns: map[string]ColumnDefinition{
@@ -8693,9 +8703,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"auto_pilot_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "auto_pilot_v2",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "auto_pilot_v2",
+		PermissionModule: "autooptimize",
 		Def: `(SELECT ap.id, ap.name, ap.account_id, ap.tenant_id, ap.rule, ap.notification,
 			ap.schedule_time, ap.next_schedule_time, ap.last_executed_time, ap.created_by,
 			ap.creation_date, ap.start_at, ap.end_at, ap.attributes,
@@ -8749,6 +8760,7 @@ var table_metadata = map[string]TableDefinition{
 		Source:              database.Metastore,
 		Def:                 "(SELECT id, tenant_id, account_id, status::text as status, category::text as category, name FROM auto_pilot) as auto_pilot_agg",
 		Name:                "auto_pilot_groupings_v2",
+		PermissionModule:    "autooptimize",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
 		Columns: map[string]ColumnDefinition{
@@ -8766,9 +8778,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"upgrade_plan_audit_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "upgrade_plan_audit_v2",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "upgrade_plan_audit_v2",
+		PermissionModule: "upgrade",
 		Def: `(SELECT upa.*,
 			json_build_object('display_name', u.display_name) as user_actioned_by
 			FROM upgrade_plan_audit upa
@@ -9717,9 +9730,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"application_group_mapping_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "application_group_mapping_v2",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "application_group_mapping_v2",
+		PermissionModule: "applications",
 		Def: `(SELECT agm.*,
 			ca.account_name as account_name,
 			kw.is_active as workload_is_active,
@@ -9753,6 +9767,7 @@ var table_metadata = map[string]TableDefinition{
 		Source:              database.Metastore,
 		Def:                 "application_group_mapping",
 		Name:                "application_group_mapping_groupings_v2",
+		PermissionModule:    "applications",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
 		Columns: map[string]ColumnDefinition{
@@ -9767,9 +9782,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"auto_pilot_task_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "auto_pilot_task_v2",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "auto_pilot_task_v2",
+		PermissionModule: "autooptimize",
 		Def: `(SELECT apt.*,
 			ap.category as auto_pilot_category,
 			ap.account_id as auto_pilot_account_id,
@@ -9875,6 +9891,7 @@ var table_metadata = map[string]TableDefinition{
 		Source:              database.Metastore,
 		Def:                 "auto_pilot_approvals",
 		Name:                "auto_pilot_approvals_groupings_v2",
+		PermissionModule:    "autooptimize",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
 		Columns: map[string]ColumnDefinition{
@@ -9889,9 +9906,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"auto_pilot_approval_policy_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "auto_pilot_approval_policy_v2",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "auto_pilot_approval_policy_v2",
+		PermissionModule: "autooptimize",
 		Def: `(SELECT apap.*,
 			ca.account_name as account_name,
 			uc.display_name as created_by_display_name,
@@ -9918,9 +9936,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"recommendation_resolution_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "recommendation_resolution_v2",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "recommendation_resolution_v2",
+		PermissionModule: "recommendations",
 		Def: `(SELECT
 			rr.id,
 			rr.recommendation_id,
@@ -10016,6 +10035,7 @@ var table_metadata = map[string]TableDefinition{
 			) THEN GREATEST(COALESCE(r.estimated_savings, 0), 0) ELSE 0 END as rec_savings_once
 			FROM recommendation_resolution rr LEFT JOIN recommendation r ON r.id = rr.recommendation_id) as rr_agg`,
 		Name:                "recommendation_resolution_groupings_v2",
+		PermissionModule:    "recommendations",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
 		Columns: map[string]ColumnDefinition{
@@ -10123,9 +10143,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"llm_agents_installation_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "llm_agents_installation_v2",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "llm_agents_installation_v2",
+		PermissionModule: "ai_agents",
 		Def: `(SELECT lai.*,
 			ca.tenant as tenant_id
 			FROM llm_agents_installation lai
@@ -10911,6 +10932,7 @@ var table_metadata = map[string]TableDefinition{
 		Type:                Normal,
 		Source:              database.Metastore,
 		Name:                "user_history_v2",
+		PermissionModule:    "users",
 		Def:                 "user_history",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
@@ -10932,6 +10954,7 @@ var table_metadata = map[string]TableDefinition{
 		Type:               Normal,
 		Source:             database.Metastore,
 		Name:               "tenant_v2",
+		PermissionModule:   "tenants",
 		Def:                "tenant",
 		TenantIdColumnName: "id",
 		Columns: map[string]ColumnDefinition{

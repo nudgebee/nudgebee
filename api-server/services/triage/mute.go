@@ -74,7 +74,7 @@ func UpdateRuleMute(ctx *security.RequestContext, req UpdateRuleMuteRequest) (ev
 	if req.RuleID == "" || req.AccountID == "" {
 		return eventrule.RuleCapabilities{}, fmt.Errorf("rule_id and account_id are required")
 	}
-	if !sc.HasAccountAccess(req.AccountID, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(req.AccountID, security.SecurityAccessTypeUpdate) {
 		return eventrule.RuleCapabilities{}, fmt.Errorf("account unauthorized")
 	}
 

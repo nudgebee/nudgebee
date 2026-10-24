@@ -74,7 +74,7 @@ func handleExportRecommendations(c *gin.Context, tracer *trace.Tracer, meter *me
 		return
 	}
 	// The exporters select by account id alone, with no tenant filter.
-	if request.AccountID != "" && !ctx.CanAccessAccount(request.AccountID, security.SecurityAccessTypeRead) {
+	if request.AccountID != "" && !ctx.GetSecurityContext().CanAccessAccount(request.AccountID, security.SecurityAccessTypeRead) {
 		c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountID))
 		return
 	}

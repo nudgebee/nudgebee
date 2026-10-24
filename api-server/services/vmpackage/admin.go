@@ -207,7 +207,7 @@ type VMActiveRequest struct {
 // The row is marked meta.nb_decommissioned so the sweep can tell an operator's
 // decision from cloud-collector retiring an instance (see resolveByIdentity).
 func UpdateVMActive(ctx *security.RequestContext, req VMActiveRequest) error {
-	if !ctx.GetSecurityContext().HasAccountAccess(req.AccountId, security.SecurityAccessTypeCreate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(req.AccountId, security.SecurityAccessTypeCreate) {
 		return common.ErrorUnauthorized("unauthorized")
 	}
 

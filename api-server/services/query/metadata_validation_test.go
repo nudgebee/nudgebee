@@ -333,6 +333,19 @@ func TestAccountScopableModulesPinned(t *testing.T) {
 		// (the standalone featureflags module was folded in).
 		"tenants": true,
 		"tickets": true,
+		// Every grantable query action's table now carries its action's module
+		// (TestQueryTablesCarryTheirActionsModule), so these read under a custom
+		// grant too: tenant-wide grants read every account, account-bound grants
+		// that account. `users` is tenant-scoped in the role editor (MODULE_SCOPE),
+		// which never offers to bind it to an account.
+		"agents":    true,
+		"ai_agents": true,
+		"critiques": true,
+		"metrics":   true,
+		"slo":       true,
+		"traces":    true,
+		"upgrade":   true,
+		"users":     true,
 	}
 	assert.Equal(t, want, got, "account-scopable module set changed — sync app/src/lib/permissionCatalog.ts ACCOUNT_SCOPABLE_MODULES")
 }

@@ -52,7 +52,7 @@ func CreateConversationAiFeedback(context *security.RequestContext, feedbackRequ
 	// so it's gated on Read access (the same level required to view the
 	// conversation) rather than Create — otherwise read-only roles could see
 	// the conversation but not react to it.
-	if !context.GetSecurityContext().HasAccountAccess(feedbackRequest.CloudAccountId, security.SecurityAccessTypeRead) {
+	if !context.GetSecurityContext().CanAccessAccount(feedbackRequest.CloudAccountId, security.SecurityAccessTypeRead) {
 		return data, fmt.Errorf("unauthorized")
 	}
 
@@ -121,7 +121,7 @@ func ListOwnConversationFeedback(context *security.RequestContext, req ListOwnCo
 	if req.CloudAccountId == "" {
 		return rows, fmt.Errorf("cloud_account_id cannot be empty")
 	}
-	if !context.GetSecurityContext().HasAccountAccess(req.CloudAccountId, security.SecurityAccessTypeRead) {
+	if !context.GetSecurityContext().CanAccessAccount(req.CloudAccountId, security.SecurityAccessTypeRead) {
 		return rows, fmt.Errorf("unauthorized")
 	}
 	if len(req.SessionId) == 0 {

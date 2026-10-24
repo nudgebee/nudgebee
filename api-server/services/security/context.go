@@ -14,38 +14,22 @@ type RequestContext struct {
 	tracer          *trace.Tracer
 	meter           *metric.Meter
 	context         context.Context
-	// actionPermission is the "<module>:<Class>" grant key the app gateway
-	// classified the current RPC action as (empty outside a gateway-forwarded
-	// action). It describes this call, not the caller, so it is kept here rather
-	// than on the SecurityContext, which is serialized into the cache and passed
-	// to other services. The checks themselves live on SecurityContext.
-	actionPermission string
 }
 
-// SetActionPermission records the current action's classified grant key.
+// SetActionPermission records the current action's grant key on the caller's
+// SecurityContext, where the access checks read it.
 func (rc *RequestContext) SetActionPermission(permission string) {
-	rc.actionPermission = permission
-}
-
-// CanAccessAccount checks the caller against the current action's grant key.
-// See SecurityContext.CanAccessAccount.
-func (rc *RequestContext) CanAccessAccount(accountId string, access SecurityAccessType) bool {
-	if rc == nil {
-		return false
+	if rc != nil {
+		rc.securityContext.SetActionPermission(permission)
 	}
-	return rc.securityContext.CanAccessAccount(accountId, access, rc.actionPermission)
 }
 
-// CanAccessTenant checks the caller against the current action's grant key.
-// See SecurityContext.CanAccessTenant.
-func (rc *RequestContext) CanAccessTenant(access SecurityAccessType) bool {
-	if rc == nil {
-		return false
-	}
-	return rc.securityContext.CanAccessTenant(access, rc.actionPermission)
-}
-
+// GetSecurityContext is nil for a nil RequestContext, so a check made through it
+// (GetSecurityContext().CanAccessAccount, …) fails closed.
 func (rc *RequestContext) GetSecurityContext() *SecurityContext {
+	if rc == nil {
+		return nil
+	}
 	return rc.securityContext
 }
 

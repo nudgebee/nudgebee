@@ -270,10 +270,12 @@ describe('RBAC enforcement matrix — built-in (system) roles', () => {
       'ai_misc:Execute',
       'ai_rca:Write',
       'applications:Execute',
+      // dashboards_execute_query: running a panel's queries, a read in effect.
+      'dashboards:Execute',
       'events:Execute',
-      'llm:Write',
+      // forecast_generate (a forecast of a metric; read-only roles may run it).
+      'metrics:Execute',
       'ml:Execute',
-      'ownership:Execute',
       'tickets:Write',
       'users:Write',
       'workflows:Execute',
@@ -286,10 +288,12 @@ describe('RBAC enforcement matrix — built-in (system) roles', () => {
       'ai_misc:Execute',
       'ai_rca:Write',
       'applications:Execute',
+      // dashboards_execute_query: running a panel's queries, a read in effect.
+      'dashboards:Execute',
       'events:Execute',
-      'llm:Write',
+      // forecast_generate (a forecast of a metric; read-only roles may run it).
+      'metrics:Execute',
       'ml:Execute',
-      'ownership:Execute',
       'recommendations:Execute',
       'tickets:Write',
       'users:Write',
@@ -301,9 +305,9 @@ describe('RBAC enforcement matrix — built-in (system) roles', () => {
       'ai_misc:Execute',
       'ai_rca:Write',
       'applications:Execute',
-      'llm:Write',
+      // dashboards_execute_query: running a panel's queries, a read in effect.
+      'dashboards:Execute',
       'ml:Execute',
-      'ownership:Execute',
       'tickets:Write',
       'users:Write',
       'workflows:Execute',
