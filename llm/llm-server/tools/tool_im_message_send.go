@@ -62,7 +62,8 @@ func (t IMMessageSendTool) GetType() core.NBToolType { return core.NBToolTypeToo
 func (t IMMessageSendTool) Description() string {
 	return "Sends (posts / shares) a message to a Slack, Microsoft Teams or Google Chat channel when the user asks, e.g. \"send this summary to #ops\". " +
 		"The user approves the exact message before it is posted, and it is signed as sent by them via Nubi. " +
-		"Inputs: channel (required — channel name like ops or #ops, or its id), message (required — markdown; use headings, bullets and links, no tables or code blocks), " +
+		"Call it yourself, never through delegate_agent: the user approves the message in this conversation. " +
+		"Inputs: channel (required — channel name like ops or #ops, or its id), message (required — markdown headings and bullets; write links as plain URLs; no tables or code blocks), " +
 		"platform (optional: slack, ms_teams, google_chat — set it when the user names the app), team (optional — the Microsoft Teams team name, when channel names repeat across teams). " +
 		"When the channel is not found or matches more than one, nothing is sent and the candidates are returned: ask the user which one."
 }
@@ -72,7 +73,7 @@ func (t IMMessageSendTool) InputSchema() core.ToolSchema {
 		Type: core.ToolSchemaTypeObject,
 		Properties: map[string]core.ToolSchemaProperty{
 			"channel":  {Type: core.ToolSchemaTypeString, Description: "Channel name (ops or #ops) or channel id."},
-			"message":  {Type: core.ToolSchemaTypeString, Description: "The message to post, in markdown: headings, bullets and links only."},
+			"message":  {Type: core.ToolSchemaTypeString, Description: "The message to post, in markdown: headings and bullets, links as plain URLs."},
 			"platform": {Type: core.ToolSchemaTypeString, Description: "slack, ms_teams or google_chat. Leave empty to look in every connected app."},
 			"team":     {Type: core.ToolSchemaTypeString, Description: "Microsoft Teams only: the team's name or id."},
 		},
@@ -140,7 +141,7 @@ func (t IMMessageSendTool) Call(nbCtx core.NbToolContext, input core.NBToolCallR
 		return errNBLLMToolResponse(destinationNotFoundError(channel, candidates)), nil
 	}
 
-	text := messageWithSignature(message, nbCtx.Ctx.GetSecurityContext().GetDisplayName(), chatConversationURL(nbCtx.AccountId, nbCtx.SessionId))
+	text := messageWithSignature(message, nbCtx.Ctx.GetSecurityContext().GetDisplayName(), chatConversationURL(nbCtx.AccountId, nbCtx.SessionId), destination.Platform)
 	results, err := sendChatMessage(nbCtx.Ctx, *destination, text, nbCtx.AccountId)
 	if err != nil {
 		nbCtx.Ctx.GetLogger().Error("im_message_send: send failed", "error", err, "platform", destination.Platform)
@@ -153,6 +154,10 @@ func (t IMMessageSendTool) Call(nbCtx core.NbToolContext, input core.NBToolCallR
 // investigation, a Bee) and one without a signed-in person, whatever approval
 // rule would let it through: the message goes to people outside Nubi.
 func imMessageAttended(nbCtx core.NbToolContext) error {
+	if nbCtx.Source == "" {
+		// A sub-agent's call carries no conversation source.
+		return fmt.Errorf("nothing was sent: %s must be called directly in the conversation, not by a sub-agent, so the user can approve the message", ToolIMMessageSend)
+	}
 	if !imMessageAttendedSources[nbCtx.Source] {
 		return errors.New("messages can only be sent to a chat channel from a conversation with a person in it, not from an automation or an automatic investigation")
 	}
@@ -336,17 +341,22 @@ func destinationNotFoundError(channel string, candidates []chatDestination) erro
 // by spaces, not escaped, because Slack's markup has no escape character.
 var signatureNameMarkup = strings.NewReplacer("[", " ", "]", " ", "(", " ", ")", " ", "<", " ", ">", " ", "|", " ", "_", " ", "*", " ", "`", " ", "~", " ")
 
-// messageWithSignature adds who sent the message, and the conversation it came
-// from when there is a link to it.
-func messageWithSignature(message, displayName, conversationURL string) string {
-	sender := "Sent via Nubi"
+// messageWithSignature adds who sent the message, and a link to the
+// conversation it came from when there is one. The link is written the way the
+// platform renders it: Slack and Google Chat take <url|text>, Teams markdown.
+func messageWithSignature(message, displayName, conversationURL, platform string) string {
+	signature := "_Sent via Nubi_"
 	if name := strings.Join(strings.Fields(signatureNameMarkup.Replace(displayName)), " "); name != "" {
-		sender = "Sent by " + name + " via Nubi"
+		signature = "_Sent by " + name + " via Nubi_"
 	}
 	if conversationURL != "" {
-		sender = "[" + sender + "](" + conversationURL + ")"
+		if platform == "ms_teams" {
+			signature += " · [conversation](" + conversationURL + ")"
+		} else {
+			signature += " · <" + conversationURL + "|conversation>"
+		}
 	}
-	return message + "\n\n_" + sender + "_"
+	return message + "\n\n" + signature
 }
 
 // chatConversationURL is the app page of the conversation, or "" when the

@@ -132,6 +132,16 @@ func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTo
 	if err != nil {
 		return toolcore.NBToolResponse{Status: toolcore.NBToolResponseStatusError, Data: fmt.Sprintf("Invalid input: %s", err)}, nil
 	}
+	// A message posted outside Nudgebee is approved by the person in this
+	// conversation, and a sub-agent cannot carry that approval.
+	for _, name := range toolNames {
+		if strings.EqualFold(strings.TrimSpace(name), tools.ToolIMMessageSend) {
+			return toolcore.NBToolResponse{
+				Status: toolcore.NBToolResponseStatusError,
+				Data:   fmt.Sprintf("%s cannot run inside %s: call %s directly, so the user can approve the message.", tools.ToolIMMessageSend, DelegateAgentToolName, tools.ToolIMMessageSend),
+			}, nil
+		}
+	}
 
 	// Resolve requested tools with security validation. flattenInstructions carries
 	// the static guidance of any flattenable agent (helm/redis) whose leaf tools were

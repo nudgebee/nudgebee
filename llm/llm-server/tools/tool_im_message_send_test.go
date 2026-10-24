@@ -120,7 +120,6 @@ func TestIMMessageSend_RefusesRunsWithoutAPerson(t *testing.T) {
 	for name, nbCtx := range map[string]core.NbToolContext{
 		"automation":            imToolContext("Automation", imTestUser),
 		"alert investigation":   imToolContext("Investigation", imTestUser),
-		"unknown source":        imToolContext("", imTestUser),
 		"system user":           imToolContext("UserInvestigation", security.GetSystemUserId()),
 		"no user":               imToolContext("UserInvestigation", ""),
 		"recommendation review": imToolContext("recommendation", imTestUser),
@@ -198,9 +197,20 @@ func TestIMMessageSendConfirmationShowsDestinationAndMessage(t *testing.T) {
 }
 
 func TestMessageWithSignature(t *testing.T) {
-	assert.Equal(t, "hi\n\n_Sent by Ana via Nubi_", messageWithSignature("hi", "Ana", ""))
-	assert.Equal(t, "hi\n\n_[Sent via Nubi](https://app/x)_", messageWithSignature("hi", "", "https://app/x"))
+	const conversation = "https://app.example/ask-nudgebee?accountId=a&session_id=s"
+
+	assert.Equal(t, "hi\n\n_Sent by Ana via Nubi_", messageWithSignature("hi", "Ana", "", "slack"))
+	assert.Equal(t, "hi\n\n_Sent via Nubi_ · <"+conversation+"|conversation>", messageWithSignature("hi", "", conversation, "slack"))
+	assert.Equal(t, "hi\n\n_Sent by Ana via Nubi_ · <"+conversation+"|conversation>", messageWithSignature("hi", "Ana", conversation, "google_chat"))
+	assert.Equal(t, "hi\n\n_Sent by Ana via Nubi_ · [conversation]("+conversation+")", messageWithSignature("hi", "Ana", conversation, "ms_teams"))
 	assert.Equal(t, "hi\n\n_Sent by Ana click here http://evil.example via Nubi_",
-		messageWithSignature("hi", "Ana] [click here](http://evil.example)", ""))
-	assert.Equal(t, "hi\n\n_Sent by Ana Lee !here via Nubi_", messageWithSignature("hi", "Ana_Lee <!here>*", ""))
+		messageWithSignature("hi", "Ana] [click here](http://evil.example)", "", "ms_teams"))
+	assert.Equal(t, "hi\n\n_Sent by Ana Lee !here via Nubi_", messageWithSignature("hi", "Ana_Lee <!here>*", "", "slack"))
+}
+
+func TestIMMessageSend_SubAgentCallIsSentBackToTheConversation(t *testing.T) {
+	resp := callIMSend(t, imToolContext("", imTestUser), map[string]any{"channel": "ops", "message": "hello"})
+
+	assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
+	assert.Contains(t, resp.Data, "must be called directly in the conversation")
 }
