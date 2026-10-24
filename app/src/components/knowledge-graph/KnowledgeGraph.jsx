@@ -789,7 +789,13 @@ export function buildNodeTypeOptions(nodeTypes, specificTypesByNodeType) {
 // every group a leaf could belong to (even ones absent from `specificTypesByNodeType`) is
 // accounted for — otherwise a selected leaf whose node_type has no map entry would vanish from
 // both output arrays, silently turning a scoped selection into "no filter at all".
-function splitNodeTypeSelection(selectedValues, nodeTypes, specificTypesByNodeType) {
+// A selected leaf can still be missing from every group: picking an account rebuilds the list
+// from that account's types, and the dropdown keeps showing a chosen type the account lacks
+// (#41503). Such a leaf matches nothing, so next to a leaf that is still listed it changes no
+// result and is left out — sending it would AND it with the other array and empty the graph.
+// When every selected leaf is missing, they are sent as specific_types so the backend matches
+// nothing instead of everything.
+export function splitNodeTypeSelection(selectedValues, nodeTypes, specificTypesByNodeType) {
   const selectedSet = new Set(selectedValues || []);
   const resultNodeTypes = [];
   const resultSpecificTypes = [];
@@ -803,6 +809,9 @@ function splitNodeTypeSelection(selectedValues, nodeTypes, specificTypesByNodeTy
       resultSpecificTypes.push(...selectedInGroup);
     }
   });
+  if (selectedSet.size > 0 && resultNodeTypes.length === 0 && resultSpecificTypes.length === 0) {
+    return { nodeTypes: [], specificTypes: [...selectedSet] };
+  }
   return { nodeTypes: resultNodeTypes, specificTypes: resultSpecificTypes };
 }
 
