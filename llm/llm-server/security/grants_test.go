@@ -65,28 +65,62 @@ func TestMayUseIntegrationCases(t *testing.T) {
 	}
 }
 
-func TestToolPathChecksUseGrantsOnlyInAGrantScopedRun(t *testing.T) {
+func TestToolPathChecksHonourGrantsForPeopleWithoutABuiltInRole(t *testing.T) {
 	sc := caseContext(t, map[string]any{"ScopedCustomPermissions": map[string]any{"acct-a": map[string]any{"k8s:Read": true}}})
 	person := NewRequestContext(t.Context(), sc, nil, nil, nil)
 	bee := WithGrantScopedRun(person)
 
 	assert.False(t, IsGrantScopedRun(person))
 	assert.True(t, IsGrantScopedRun(bee))
+	// Both are grant-checked on acct-a: the person has no built-in role there.
+	assert.True(t, IsGrantCheckedRun(person, "acct-a"))
+	assert.True(t, IsGrantCheckedRun(bee, "acct-a"))
 
-	// A person keeps the built-in role check; the bee's run reads through its grant.
-	assert.False(t, ToolPathAccountAccess(person, "acct-a", "k8s", SecurityAccessTypeRead))
-	assert.True(t, ToolPathAccountAccess(bee, "acct-a", "k8s", SecurityAccessTypeRead))
-	assert.False(t, ToolPathAccountAccess(bee, "acct-a", "k8s", SecurityAccessTypeCreate))
-	assert.False(t, ToolPathAccountAccess(bee, "acct-a", "cloud", SecurityAccessTypeRead))
+	// A person and a bee read through the k8s:Read grant, and only that.
+	for name, ctx := range map[string]*RequestContext{"person": person, "bee": bee} {
+		assert.True(t, ToolPathAccountAccess(ctx, "acct-a", "k8s", SecurityAccessTypeRead), name)
+		assert.False(t, ToolPathAccountAccess(ctx, "acct-a", "k8s", SecurityAccessTypeCreate), name+": Read does not run changes")
+		assert.False(t, ToolPathAccountAccess(ctx, "acct-a", "cloud", SecurityAccessTypeRead), name+": a grant covers only its module")
+		assert.False(t, ToolPathAccountAccess(ctx, "acct-a", "", SecurityAccessTypeRead), name+": a tool with no module needs a built-in role")
 
-	// Integration use is checked only in a grant-scoped run.
-	assert.NoError(t, CheckIntegrationUse(person, "acct-a", "jira", true))
-	err := CheckIntegrationUse(bee, "acct-a", "jira", false)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "integrations.jira:Read on account acct-a")
-	err = CheckIntegrationUse(bee, "acct-a", "", false)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "integration type is unknown")
+		// Integration use needs its own grant.
+		err := CheckIntegrationUse(ctx, "acct-a", "jira", false)
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), "integrations.jira:Read on account acct-a")
+		err = CheckIntegrationUse(ctx, "acct-a", "", false)
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), "integration type is unknown")
+	}
+}
+
+// No context means no proven built-in role: the grant checks apply and refuse.
+// (true from IsGrantCheckedRun is the strict answer; false would skip the checks.)
+func TestGrantChecksFailClosedWithoutAContext(t *testing.T) {
+	for name, ctx := range map[string]*RequestContext{
+		"nil request context":  nil,
+		"nil security context": NewRequestContext(t.Context(), nil, nil, nil, nil),
+	} {
+		assert.True(t, IsGrantCheckedRun(ctx, "acct-a"), name)
+		assert.False(t, ToolPathAccountAccess(ctx, "acct-a", "k8s", SecurityAccessTypeRead), name)
+		assert.Error(t, CheckIntegrationUse(ctx, "acct-a", "jira", false), name)
+		assert.Error(t, CheckIntegrationUse(ctx, "acct-a", "", false), name)
+	}
+}
+
+// A person with a built-in role on the account keeps the built-in checks: no
+// grant lookup, no integration-use check, exactly as before.
+func TestToolPathChecksUnchangedForABuiltInRole(t *testing.T) {
+	sc := caseContext(t, map[string]any{
+		"AccountIds":      []any{"acct-a"},
+		"Roles":           []any{"account_admin"},
+		"ScopedEntityIds": map[string]any{"account_admin": []any{"acct-a"}},
+	})
+	admin := NewRequestContext(t.Context(), sc, nil, nil, nil)
+	assert.False(t, IsGrantCheckedRun(admin, "acct-a"))
+	assert.True(t, ToolPathAccountAccess(admin, "acct-a", "k8s", SecurityAccessTypeCreate))
+	assert.True(t, ToolPathAccountAccess(admin, "acct-a", "", SecurityAccessTypeRead))
+	assert.NoError(t, CheckIntegrationUse(admin, "acct-a", "jira", true))
+	assert.NoError(t, CheckIntegrationUse(admin, "acct-a", "", true))
 }
 
 func TestGrantChecksRefuseANilContext(t *testing.T) {

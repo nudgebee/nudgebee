@@ -11,7 +11,6 @@ import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
-	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 )
 
@@ -105,10 +104,11 @@ type searchToolCandidate struct {
 }
 
 func (t *searchToolsTool) Call(ctx toolcore.NbToolContext, input toolcore.NBToolCallRequest) (toolcore.NBToolResponse, error) {
-	// Defense-in-depth read gate. GetEnabledNBTools self-guards on account read
-	// access and returns empty otherwise, but ListAgents (the other enumeration
+	// Defense-in-depth gate. GetEnabledNBTools self-guards on the same rule (a
+	// built-in role that reads the account, or a custom-role right to run AI on
+	// it) and returns empty otherwise, but ListAgents (the other enumeration
 	// source) has no such guard — so enforce it here before enumerating either.
-	if !ctx.Ctx.GetSecurityContext().HasAccountAccess(t.accountId, security.SecurityAccessTypeRead) {
+	if sc := ctx.Ctx.GetSecurityContext(); sc == nil || !sc.CanRunAI(t.accountId) {
 		ctx.Ctx.GetLogger().Warn("tool: search_tools unauthorized — no account read access", "account_id", t.accountId)
 		common.MetricsToolOperationsTotal(toolcore.ToolImplTypeBuiltin, t.Name(), "error", ctx.AccountId)
 		return toolcore.NBToolResponse{
@@ -172,7 +172,9 @@ func (t *searchToolsTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTool
 func (t *searchToolsTool) collectCandidates(ctx toolcore.NbToolContext) []searchToolCandidate {
 	return collectSearchToolCandidates(
 		core.ListAgents(ctx.Ctx, t.accountId, true),
-		toolcore.GetEnabledNBTools(ctx.Ctx, t.accountId),
+		// Only the tools this caller may use (a person with custom roles only
+		// sees what their grants allow); dispatch still checks each call.
+		core.ToolsForPrompt(ctx.Ctx, t.accountId, toolcore.GetEnabledNBTools(ctx.Ctx, t.accountId)),
 	)
 }
 

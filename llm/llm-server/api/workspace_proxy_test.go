@@ -1079,8 +1079,14 @@ func TestWorkspaceTokenCarriesAGrantScopedRun(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(`{"TenantId":"bee-tenant","UserId":"bee","AccountIds":["bee-workspace","bee-target"],"ScopedCustomPermissions":{"bee-target":{"k8s:Read":true}}}`), &sc))
 	person := security.NewRequestContext(context.Background(), &sc, slog.Default(), nil, nil)
 
+	// A person whose access to the target comes from a k8s:Read grant reads it
+	// too; with no grant there the target stays out of reach.
 	_, err := workspace.ExecutionToken(person, "bee-workspace", "bee-target", time.Minute)
-	require.ErrorContains(t, err, "access denied", "outside a bee run a grant does not reach the target")
+	require.NoError(t, err, "a person's k8s:Read grant reaches the target")
+	var noGrant security.SecurityContext
+	require.NoError(t, json.Unmarshal([]byte(`{"TenantId":"bee-tenant","UserId":"bee","AccountIds":["bee-workspace","bee-target"]}`), &noGrant))
+	_, err = workspace.ExecutionToken(security.NewRequestContext(context.Background(), &noGrant, slog.Default(), nil, nil), "bee-workspace", "bee-target", time.Minute)
+	require.ErrorContains(t, err, "access denied", "no built-in role and no grant on the target")
 
 	token, err := workspace.ExecutionToken(security.WithGrantScopedRun(person), "bee-workspace", "bee-target", time.Minute)
 	require.NoError(t, err)

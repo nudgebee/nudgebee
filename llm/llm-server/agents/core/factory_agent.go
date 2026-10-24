@@ -668,3 +668,7 @@ func subAgentCacheContext(ctx *security.RequestContext) *security.RequestContext
 	}
 	return ctx.WithContext(context.WithValue(goCtx, llmruntime.ContextKeyDisableCaching, false))
 }
+
+// GrantScope: an agent wrapper reads nothing itself; the agent it delegates to
+// has each of its own tool calls checked at dispatch.
+func (m *nbAgentTool) GrantScope() toolcore.GrantScope { return toolcore.GrantScope{Unscoped: true} }

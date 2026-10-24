@@ -442,8 +442,16 @@ func withMCPIntegrationToolDtos(cached []ToolDto, accountId string) []ToolDto {
 	return append(slices.Clip(cached), ListMCPIntegrationToolDtos(accountId)...)
 }
 
+// GetEnabledNBTools is the account's whole tool list (cached per account, never
+// per caller), for a caller who may use the AI there: a built-in role that reads
+// the account, or a custom-role right to run AI on it (CanRunAI). Callers that
+// show it to a model filter it per caller (agents/core ToolsForPrompt); each
+// call is checked again at dispatch.
 func GetEnabledNBTools(context *security.RequestContext, accountId string) []NBTool {
-	if !context.GetSecurityContext().HasAccountAccess(accountId, "read") {
+	if context == nil || context.GetSecurityContext() == nil {
+		return []NBTool{}
+	}
+	if !context.GetSecurityContext().CanRunAI(accountId) {
 		slog.Error("tools: unauthorized access to get enabled tools", "account_id", accountId)
 		return []NBTool{}
 	}

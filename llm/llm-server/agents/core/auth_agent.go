@@ -244,27 +244,88 @@ func authorizeToolRequest(ctx *security.RequestContext, agent NBAgent, request N
 	if requestType == "" {
 		requestType = toolcore.ToolRequestTypeRead
 	}
+	if requestType == toolcore.ToolRequestTypeRead {
+		if missing := readGrantMissing(ctx, tool, request.AccountId); missing != "" {
+			ctx.GetLogger().Info("auth: read refused, missing custom-role grant", "tool", toolName, "agent", agent.GetName(), "user", ctx.GetSecurityContext().GetUserId(), "account", request.AccountId, "missing", missing)
+			return &NBAgentPlannerFinishAction{
+				Data: fmt.Sprintf("auth: %s needs %s on this account, which you do not have; ask an admin for that grant", toolName, missing),
+			}, &requestType, nil
+		}
+	}
 	return nil, &requestType, nil
 }
 
-// mayWrite reports whether the caller may make a tool's change on account. A
-// run that acts only through its grants (a bee's) needs Execute on the module
-// the tool changes, k8s for clusters and cloud for cloud accounts; a tool that
-// uses an integration is left to the integration check where the call
-// resolves it (callNbTool), and any other tool is refused. Anyone else needs
-// a built-in role that may create on the account.
+// readGrantMissing returns what a person whose access to account comes from
+// custom roles (no built-in role there) lacks to read through tool: the
+// "<module>:Read" grants of the tool's scope (toolcore.ToolGrantScope), or a
+// note that the tool needs a built-in role. "" when the read may go ahead. A
+// person with a built-in role on the account, and a bee's run, keep their
+// existing checks. A tool that uses an integration is checked again where the
+// call resolves it (security.CheckIntegrationUse).
+func readGrantMissing(ctx *security.RequestContext, tool toolcore.NBTool, account string) string {
+	if ctx == nil || ctx.GetSecurityContext() == nil {
+		return "a built-in role"
+	}
+	if security.IsGrantScopedRun(ctx) || !security.IsGrantCheckedRun(ctx, account) {
+		return ""
+	}
+	scope, known := toolcore.ToolGrantScope(tool)
+	if known && scope.Unscoped {
+		return ""
+	}
+	var missing []string
+	for _, module := range scope.Modules {
+		if !mayReadModule(ctx.GetSecurityContext(), account, module) {
+			missing = append(missing, module+":Read")
+		}
+	}
+	if len(missing) > 0 {
+		return strings.Join(missing, " and ")
+	}
+	if len(scope.Modules) > 0 || toolcore.UsesIntegration(ctx, tool) || (known && scope.IntegrationOnly) {
+		return ""
+	}
+	return "a built-in role"
+}
+
+// mayWrite reports whether the caller may make a tool's change on account: a
+// built-in role that may create there (not for a bee's run, which acts only
+// through its grants), or Execute on the module the tool changes (k8s for
+// clusters, cloud for cloud accounts). A tool that uses an integration is left to
+// the integration check where the call resolves it (callNbTool) — but only in a
+// grant-checked run, the one where that check runs; anyone else needs the
+// built-in role. Any other tool with no module is refused.
 func mayWrite(ctx *security.RequestContext, tool toolcore.NBTool, account string) bool {
 	if ctx == nil || ctx.GetSecurityContext() == nil {
 		return false
 	}
-	if !security.IsGrantScopedRun(ctx) {
-		return ctx.GetSecurityContext().HasAccountAccess(account, security.SecurityAccessTypeCreate)
-	}
-	if toolcore.UsesIntegration(ctx, tool) {
+	sc := ctx.GetSecurityContext()
+	if !security.IsGrantScopedRun(ctx) && sc.HasAccountAccess(account, security.SecurityAccessTypeCreate) {
 		return true
 	}
-	module := tools.WriteGrantModule(ctx, tool, "")
-	return module != "" && ctx.GetSecurityContext().Can(account, module, "Execute")
+	if toolcore.UsesIntegration(ctx, tool) {
+		return security.IsGrantCheckedRun(ctx, account)
+	}
+	modules := []string{}
+	if module := tools.WriteGrantModule(ctx, tool, ""); module != "" {
+		modules = append(modules, module)
+	} else if !security.IsGrantScopedRun(ctx) {
+		// A person's change through any other tool needs Execute on every module
+		// of its scope (tools/core/tool_modules.json). A bee's run keeps its own
+		// rule: only the modules WriteGrantModule names.
+		if scope, ok := toolcore.ToolGrantScope(tool); ok {
+			modules = scope.Modules
+		}
+	}
+	if len(modules) == 0 {
+		return false
+	}
+	for _, module := range modules {
+		if !sc.Can(account, module, "Execute") {
+			return false
+		}
+	}
+	return true
 }
 
 func inferToolRequestTypeFromPrompt(ctx *security.RequestContext, request NBAgentRequest, agent NBAgent, toolName string, action NBAgentPlannerToolAction, toolValidator toolcore.ToolRequestInferencePrompt) (toolcore.ToolRequestType, error) {
@@ -354,3 +415,43 @@ func wrapUntrustedToolInput(input string) string {
 
 // toolInputClosingTag matches a closing tag in any case or spacing.
 var toolInputClosingTag = regexp.MustCompile(`(?i)<\s*/\s*tool_input\s*>`)
+
+// ToolsForPrompt is the tool list shown to the model. For a person whose access
+// to account comes from custom roles it keeps only the tools they may read
+// through (readGrantMissing), so the model is not offered tools it would be
+// refused; anyone else gets the list unchanged. It filters a copy: the account's
+// cached tool list and the dispatch resolver (SupportedToolsForRequest) stay
+// whole, so a forced call of a filtered tool still reaches the dispatch gate and
+// gets the refusal that names the missing grant.
+func ToolsForPrompt(ctx *security.RequestContext, account string, tools []toolcore.NBTool) []toolcore.NBTool {
+	if ctx == nil || ctx.GetSecurityContext() == nil || security.IsGrantScopedRun(ctx) || !security.IsGrantCheckedRun(ctx, account) {
+		return tools
+	}
+	kept := make([]toolcore.NBTool, 0, len(tools))
+	for _, tool := range tools {
+		if readGrantMissing(ctx, tool, account) == "" {
+			kept = append(kept, tool)
+		}
+	}
+	return kept
+}
+
+// mayReadModule is Read on module, except an integration's module, which follows
+// the use-grant rule (security.MayUseIntegration): Write there manages the
+// integration but does not let its holder use it.
+func mayReadModule(sc *security.SecurityContext, account, module string) bool {
+	if integrationType, ok := strings.CutPrefix(module, "integrations."); ok {
+		return sc.MayUseIntegration(account, integrationType, false)
+	}
+	return sc.Can(account, module, "Read")
+}
+
+// TargetReadGrantMissing is readGrantMissing on the account a read call resolved
+// to (its target), when that differs from the conversation's account: the module
+// grant must hold where the data is read, not only where the chat started.
+func TargetReadGrantMissing(ctx *security.RequestContext, tool toolcore.NBTool, conversationAccount, targetAccount string) string {
+	if targetAccount == "" || targetAccount == conversationAccount {
+		return ""
+	}
+	return readGrantMissing(ctx, tool, targetAccount)
+}

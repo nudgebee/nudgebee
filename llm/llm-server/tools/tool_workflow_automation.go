@@ -641,3 +641,9 @@ func (t *automationTool) runAndWait(ctx core.NbToolContext, inputs map[string]an
 	}
 	return core.NBToolResponse{Data: string(out), Type: core.NBToolResponseTypeJson}, nil
 }
+
+// GrantScope: an automation exposed as a tool runs it, which needs
+// workflows:Execute; runbook-server checks the same grant again.
+func (t *automationTool) GrantScope() core.GrantScope {
+	return core.GrantScope{Modules: []string{"workflows"}}
+}

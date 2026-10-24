@@ -2651,6 +2651,8 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 	}))
 
 	tools = FilterTools(tools, request.Capabilities)
+	// After default-tool injection, so injected tools are filtered too.
+	tools = ToolsForPrompt(ctx, request.AccountId, tools)
 
 	tmpl := prompts.NewChatPromptTemplate(messageFormatters)
 

@@ -54,6 +54,9 @@ func (m DocsAgentTool) InputSchema() core.ToolSchema {
 }
 
 func (m DocsAgentTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	if withheld, ok := knowledgeWithheld(nbRequestContext); ok {
+		return withheld, nil
+	}
 	query := strings.TrimSpace(input.Command)
 	response, refs, err := searchDocumentation(nbRequestContext, query)
 	if err != nil {

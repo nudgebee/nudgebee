@@ -33,3 +33,7 @@ func (c *ClientToolWrapper) Call(ctx NbToolContext, input NBToolCallRequest) (NB
 func (c *ClientToolWrapper) GetType() NBToolType {
 	return NBToolTypeTool
 }
+
+// GrantScope: a client tool runs on the person's own machine and reads no
+// account data.
+func (c *ClientToolWrapper) GrantScope() GrantScope { return GrantScope{Unscoped: true} }

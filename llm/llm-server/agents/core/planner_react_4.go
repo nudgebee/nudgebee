@@ -176,6 +176,7 @@ type refinementRecord struct {
 func NewReActAgent4(ctx *security.RequestContext, request NBAgentRequest, nbAgent NBAgent, systemMessage string, extraMessages []prompts.MessageFormatter, initialNotebook string) (*NBReActPlanner4, error) {
 	notebookV2 := resolveNotebookV2Enabled(request, nbAgent)
 	tools, agentAdditionalPrompt := resolveReact4Tools(ctx, request, nbAgent, systemMessage)
+	tools = ToolsForPrompt(ctx, request.AccountId, tools)
 	isTopLevel := request.ParentAgentId == "" || request.ParentAgentId == request.AgentId
 	llmTools := withReact4ThoughtSchemas(nbToolsToLlmTools(tools))
 	if notebookV2 {

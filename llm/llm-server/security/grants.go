@@ -84,41 +84,67 @@ func IsGrantScopedRun(ctx *RequestContext) bool {
 	return scoped
 }
 
+// IsGrantCheckedRun reports whether this run's use of tools on accountId is
+// decided by custom grants rather than built-in roles: always in a grant-scoped
+// run (a Bee), and for a person who holds no built-in read on the account (their
+// access there comes from custom roles only). A person with a built-in role on the
+// account keeps the built-in checks, unchanged. With no context it reports true:
+// true applies the grant checks, so a missing context is checked, not waved through.
+func IsGrantCheckedRun(ctx *RequestContext, accountId string) bool {
+	if IsGrantScopedRun(ctx) {
+		return true
+	}
+	if ctx == nil || ctx.GetSecurityContext() == nil {
+		return true
+	}
+	return !ctx.GetSecurityContext().HasAccountAccess(accountId, SecurityAccessTypeRead)
+}
+
+// grantClassFor maps a tool's access to the grant class it needs: read: Read,
+// create: Execute (running a change), update and delete: Write.
+func grantClassFor(access SecurityAccessType) string {
+	switch access {
+	case SecurityAccessTypeRead:
+		return "Read"
+	case SecurityAccessTypeCreate:
+		return "Execute"
+	default:
+		return "Write"
+	}
+}
+
 // ToolPathAccountAccess is the account check on the tool path: in a
 // grant-scoped run, Can on module (read: Read, create: Execute, update and
-// delete: Write); otherwise HasAccountAccess, as before.
+// delete: Write); otherwise a built-in role that allows the access, or the same
+// custom grant on module (a person whose access comes from custom roles).
 func ToolPathAccountAccess(ctx *RequestContext, accountId string, module string, access SecurityAccessType) bool {
 	if ctx == nil || ctx.GetSecurityContext() == nil {
 		return false
 	}
 	sc := ctx.GetSecurityContext()
 	if !IsGrantScopedRun(ctx) {
-		return sc.HasAccountAccess(accountId, access)
+		return sc.HasAccountAccess(accountId, access) ||
+			(module != "" && sc.Can(accountId, module, grantClassFor(access)))
 	}
-	switch access {
-	case SecurityAccessTypeRead:
-		return sc.Can(accountId, module, "Read")
-	case SecurityAccessTypeCreate:
-		return sc.Can(accountId, module, "Execute")
-	default:
-		return sc.Can(accountId, module, "Write")
-	}
+	return sc.Can(accountId, module, grantClassFor(access))
 }
 
 // ToolPathTargetReadable reports whether a command may target accountId (a
-// cluster or a cloud account) as a read: in a grant-scoped run, a Read grant on
-// k8s or cloud there; otherwise read access through a built-in role.
+// cluster or a cloud account) as a read: a built-in role that reads it, or a
+// Read grant on k8s or cloud there.
 func ToolPathTargetReadable(ctx *RequestContext, accountId string) bool {
 	return ToolPathAccountAccess(ctx, accountId, "k8s", SecurityAccessTypeRead) ||
-		IsGrantScopedRun(ctx) && ToolPathAccountAccess(ctx, accountId, "cloud", SecurityAccessTypeRead)
+		ToolPathAccountAccess(ctx, accountId, "cloud", SecurityAccessTypeRead)
 }
 
-// CheckIntegrationUse refuses, in a grant-scoped run, a tool's use of an
+// CheckIntegrationUse refuses, in a grant-checked run (IsGrantCheckedRun: a Bee,
+// or a person without a built-in role on the account), a tool's use of an
 // integration of integrationType on accountId that the principal holds no use
 // grant for; the error names the grant. An empty type means the integration
-// could not be told and is refused. Outside a grant-scoped run it allows.
+// could not be told and is refused. A person with a built-in role on the account
+// is allowed, as before.
 func CheckIntegrationUse(ctx *RequestContext, accountId string, integrationType string, write bool) error {
-	if !IsGrantScopedRun(ctx) {
+	if !IsGrantCheckedRun(ctx, accountId) {
 		return nil
 	}
 	class := "Read"
@@ -128,7 +154,7 @@ func CheckIntegrationUse(ctx *RequestContext, accountId string, integrationType 
 	if strings.TrimSpace(integrationType) == "" {
 		return fmt.Errorf("permission denied: this run may use an integration only with a grant for its type, and this call's integration type is unknown")
 	}
-	if ctx.GetSecurityContext() == nil || !ctx.GetSecurityContext().MayUseIntegration(accountId, integrationType, write) {
+	if ctx == nil || ctx.GetSecurityContext() == nil || !ctx.GetSecurityContext().MayUseIntegration(accountId, integrationType, write) {
 		return fmt.Errorf("permission denied: this run needs %s:%s on account %s to use this %s integration",
 			IntegrationModule(integrationType), class, accountId, integrationType)
 	}

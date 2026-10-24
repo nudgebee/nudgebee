@@ -18,8 +18,9 @@ var resolveProviderForUse = func(accountId, providerType, requestedProvider stri
 	return GetObservabilityProvider(*lookup, accountId, providerType, requestedProvider)
 }
 
-// checkObservabilityUse refuses, in a run that acts only through its grants (a
-// bee's), reading logs, metrics or traces of accountId, or their series and
+// checkObservabilityUse refuses, in a grant-checked run (security.IsGrantCheckedRun:
+// a bee's, or a person's without a built-in role on accountId), reading logs,
+// metrics or traces of accountId, or their series and
 // label names, that the principal may not read: Read on the logs, metrics or
 // traces module (the grant services-server's query actions check), and for
 // data from an integration also integrations.<type>:Read. The provider is
@@ -27,7 +28,7 @@ var resolveProviderForUse = func(accountId, providerType, requestedProvider stri
 // provider is held to the integration that answers. Outside such a run it
 // allows without a lookup.
 func checkObservabilityUse(ctx security.RequestContext, accountId, providerType, provider, source string) error {
-	if !security.IsGrantScopedRun(&ctx) {
+	if !security.IsGrantCheckedRun(&ctx, accountId) {
 		return nil
 	}
 	resolved := ObservabilityProvider{Provider: provider, IntegrationSource: source}

@@ -37,11 +37,26 @@ func stubProviderForUse(t *testing.T, provider ObservabilityProvider, err error)
 	return &calls
 }
 
-func TestObservabilityUseIsCheckedOnlyInAGrantScopedRun(t *testing.T) {
+// A person with a built-in role on the account keeps the built-in path: no
+// provider lookup and no grant check. A person whose access there comes from
+// custom roles is checked like a bee.
+func TestObservabilityUseIsCheckedOnlyInAGrantCheckedRun(t *testing.T) {
 	calls := stubProviderForUse(t, ObservabilityProvider{Provider: "datadog", IntegrationSource: "user"}, nil)
+	raw, err := json.Marshal(map[string]any{
+		"TenantId": "t", "UserId": "u", "AccountIds": []string{"acct-a"},
+		"Roles": []string{"account_admin"}, "ScopedEntityIds": map[string]any{"account_admin": []string{"acct-a"}},
+	})
+	require.NoError(t, err)
+	var sc security.SecurityContext
+	require.NoError(t, json.Unmarshal(raw, &sc))
+	admin := security.NewRequestContext(t.Context(), &sc, nil, nil, nil)
+	assert.NoError(t, checkObservabilityUse(*admin, "acct-a", "logs", "", ""))
+	assert.Zero(t, *calls, "no lookup for a built-in role")
+
 	person := grantContext(t, nil)
-	assert.NoError(t, checkObservabilityUse(*person, "acct-a", "logs", "", ""))
-	assert.Zero(t, *calls, "no lookup outside a grant-scoped run")
+	err = checkObservabilityUse(*person, "acct-a", "logs", "", "")
+	require.Error(t, err, "a person with no built-in role and no logs grant is refused")
+	assert.Contains(t, err.Error(), "logs:Read")
 }
 
 // The same module services-server's query actions check: logs, metrics or

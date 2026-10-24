@@ -1,13 +1,16 @@
 package agents
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"nudgebee/llm/agents/core"
+	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type searchToolsTestTool struct {
@@ -197,4 +200,30 @@ func TestParseSearchToolsQuery(t *testing.T) {
 		Command: "list helm releases",
 	}))
 	assert.Equal(t, "", parseSearchToolsQuery(toolcore.NBToolCallRequest{}))
+}
+
+// A person whose access to the account comes only from custom roles searches
+// tools when a grant lets them run the AI there; ToolsForPrompt then narrows
+// what is found to their grants.
+func TestSearchToolsAllowsAPersonWhoMayRunAI(t *testing.T) {
+	asPerson := func(grants map[string]bool) toolcore.NbToolContext {
+		raw, err := json.Marshal(map[string]any{
+			"TenantId": "t", "UserId": "u", "AccountIds": []string{"acct-a"},
+			"ScopedCustomPermissions": map[string]any{"acct-a": grants},
+		})
+		require.NoError(t, err)
+		var sc security.SecurityContext
+		require.NoError(t, json.Unmarshal(raw, &sc))
+		return toolcore.NbToolContext{AccountId: "acct-a", Ctx: security.NewRequestContext(t.Context(), &sc, nil, nil, nil)}
+	}
+	search := &searchToolsTool{accountId: "acct-a"}
+	query := toolcore.NBToolCallRequest{Command: "events"}
+
+	resp, err := search.Call(asPerson(map[string]bool{"ai_misc:Execute": true}), query)
+	require.NoError(t, err)
+	assert.Equal(t, toolcore.NBToolResponseStatusSuccess, resp.Status)
+
+	resp, err = search.Call(asPerson(map[string]bool{"k8s:Read": true}), query)
+	require.NoError(t, err)
+	assert.Equal(t, toolcore.NBToolResponseStatusError, resp.Status, "no right to run the AI here")
 }

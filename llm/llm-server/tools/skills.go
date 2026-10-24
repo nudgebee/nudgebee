@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"nudgebee/llm/security"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -170,6 +171,9 @@ func extractSkillName(val any) string {
 }
 
 func (m LoadSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	if withheld, ok := knowledgeWithheld(ctx); ok {
+		return withheld, nil
+	}
 	skillName := resolveSkillCandidatePath(ctx, m.ParseSkillName(input))
 	if skill, ok := splitSkillFolderName(skillName); ok {
 		return m.callSkillFolder(ctx, skill)
@@ -619,6 +623,9 @@ func (s SearchSkillsTool) InputSchema() core.ToolSchema {
 }
 
 func (s SearchSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	if withheld, ok := knowledgeWithheld(ctx); ok {
+		return withheld, nil
+	}
 	query := ""
 	if val, ok := input.Arguments["query"]; ok {
 		if q, ok := val.(string); ok {
@@ -1003,4 +1010,21 @@ func (m LoadSkillsTool) callSkillFile(ctx core.NbToolContext, input core.NBToolC
 		Data:       fmt.Sprintf("File %s of skill %s (%d bytes). Use keyword or start_line for selective reads.\n%s", f.Path, f.SkillName, len(f.Content), text),
 		References: []core.NBToolResponseReference{{Text: f.SkillName + "/" + f.Path, Url: f.SkillID, Type: "skill"}},
 	}, nil
+}
+
+// knowledgeWithheld is the response a knowledge tool gives a person whose access
+// to the account comes from custom roles without ai_kbs:Read: the tool stays
+// callable (planning relies on it) but returns none of the tenant's knowledge.
+// ok is false when the caller may read knowledge (a built-in role, a bee's run,
+// or the grant).
+func knowledgeWithheld(ctx core.NbToolContext) (core.NBToolResponse, bool) {
+	if ctx.Ctx == nil || security.IsGrantScopedRun(ctx.Ctx) || !security.IsGrantCheckedRun(ctx.Ctx, ctx.AccountId) ||
+		security.ToolPathAccountAccess(ctx.Ctx, ctx.AccountId, "ai_kbs", security.SecurityAccessTypeRead) {
+		return core.NBToolResponse{}, false
+	}
+	return core.NBToolResponse{
+		Data:   "No knowledge base content is available to you on this account: it needs the ai_kbs:Read grant.",
+		Type:   core.NBToolResponseTypeText,
+		Status: core.NBToolResponseStatusSuccess,
+	}, true
 }

@@ -4900,7 +4900,9 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 	// only with a grant for its type, checked on the integration the call
 	// resolved. A call nothing classified counts as a change, unless it is an
 	// MCP tool its server marks read-only.
-	if security.IsGrantScopedRun(nbRequestContext) && toolcore.UsesIntegration(nbRequestContext, tool) {
+	// CheckIntegrationUse decides whether the run is grant-checked on the account
+	// (a bee, or a person without a built-in role there); anyone else passes.
+	if toolcore.UsesIntegration(nbRequestContext, tool) {
 		account := toolContext.AccountId
 		if toolContext.TargetAccountId != "" {
 			account = toolContext.TargetAccountId
@@ -4912,6 +4914,15 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 		if useErr := security.CheckIntegrationUse(nbRequestContext, account, toolcore.BoundIntegrationType(tool, toolContext.ToolConfig), write); useErr != nil {
 			nbRequestContext.GetLogger().Info("plannerexecutor: integration use refused", "tool", tool.Name(), "account_id", account, "error", useErr)
 			return toolcore.NBToolResponse{Status: toolcore.NBToolResponseStatusError, Data: useErr.Error() + ". Do not retry this call; answer with what you have, or list what you could not check."}, nil
+		}
+	}
+
+	// A read that resolved to another account is held to the tool's module grant
+	// there too (the dispatch check saw only the conversation's account).
+	if requestType == toolcore.ToolRequestTypeRead {
+		if missing := TargetReadGrantMissing(nbRequestContext, tool, toolContext.AccountId, toolContext.TargetAccountId); missing != "" {
+			nbRequestContext.GetLogger().Info("plannerexecutor: read on target refused", "tool", tool.Name(), "account_id", toolContext.TargetAccountId, "missing", missing)
+			return toolcore.NBToolResponse{Status: toolcore.NBToolResponseStatusError, Data: fmt.Sprintf("permission denied: this needs %s on account %s. Do not retry this call; answer with what you have, or list what you could not check.", missing, toolContext.TargetAccountId)}, nil
 		}
 	}
 
