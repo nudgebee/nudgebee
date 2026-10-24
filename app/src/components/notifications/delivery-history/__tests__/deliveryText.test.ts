@@ -90,6 +90,7 @@ describe('labels', () => {
 
   it('names types and destinations', () => {
     expect(typeLabel('grouped_slo_alert')).toBe('Hourly summary');
+    expect(typeLabel('nubi_message')).toBe('Sent from Nubi');
     expect(typeLabel('email:daily_recap')).toBe('Email');
     expect(destinationLabel({ platform: 'slack', destination: 'C1', destination_name: 'alerts' })).toBe('#alerts');
     expect(destinationLabel({ platform: 'ms_teams', destination: '19:x', destination_name: 'Incidents' })).toBe('Incidents');

@@ -54,6 +54,7 @@ from notifications_server.services.response_helpers import (
 from notifications_server.services.rules import (
     DEFAULT_CHANNELS,
     DEFAULT_DELIVER,
+    NUBI_SOURCE,
     OPT_IN_SOURCES,
     OPTIMIZE_EVENT_BY_MESSAGE_TYPE,
     OPTIMIZE_SOURCE,
@@ -1292,7 +1293,8 @@ class MessageService:
         # Convert to dict once for downstream code that still uses dict access
         payload = request.dict(exclude_none=True, by_alias=True)
         dispatch = self._dispatch_for(request, payload)
-        results = await self._send(request, payload, dispatch)
+        send = self._send_from_nubi if request.source == NUBI_SOURCE and not request.thread else self._send
+        results = await send(request, payload, dispatch)
         await delivery_records.record_results(getattr(self, "engine", None), dispatch, results)
         return results
 
@@ -1414,6 +1416,41 @@ class MessageService:
         except Exception:
             LOG.exception("Can't send message, tenant_id=%s, type=%s", tenant_id, type_)
             return [failure("system", INTERNAL_ERROR)]
+
+    async def _send_from_nubi(self, request, payload, dispatch):
+        """A message a person sent from Nubi goes to the channels they named and
+        nowhere else: no rule, snooze or default channel applies to it."""
+        dispatch.requested = True
+        if not payload.get("channels"):
+            return [not_sent_response("system", NO_DESTINATION)]
+        try:
+            return await self._deliver_to_requested_channels(request, payload, dispatch)
+        except Exception:
+            LOG.exception("Can't send a message from Nubi (tenant %s)", request.tenant_id)
+            return [failure("system", INTERNAL_ERROR)]
+
+    async def _deliver_to_requested_channels(self, request, payload, dispatch):
+        tenant_id = request.tenant_id
+        parameters = payload.get("parameters", {})
+        async with BaseDB.async_session(self.engine)() as session:
+            installed_platforms = await self.get_installed_platforms_from_cache_or_db(session, tenant_id)
+            installed_platforms = self._scope_to_retry_platforms(
+                installed_platforms, getattr(request, "retry_platforms", None)
+            )
+            self.get_channels_from_request_or_defaults(
+                installed_platforms, [], NUBI_SOURCE, payload, use_defaults=False
+            )
+            self._scope_to_retry_destinations(installed_platforms, getattr(request, "retry_destinations", None))
+            if not any(ip.to_channel for ip in installed_platforms):
+                return [not_sent_response("system", NO_DESTINATION)]
+
+            fingerprint = get_fingerprint(request.type, payload)
+            return await send_in_rounds(
+                installed_platforms,
+                lambda platforms: self.trigger_notification(
+                    session, fingerprint, platforms, payload, parameters, [], tenant_id, request.type, dispatch=dispatch
+                ),
+            )
 
     async def _maybe_handle_grouped_message(self, source, parameters, tenant_id, kwargs):
         if source and source.lower() == "slo":

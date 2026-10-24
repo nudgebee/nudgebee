@@ -122,6 +122,9 @@ TENANT_WIDE_SOURCES = ("daily_recap", "weekly_digest", "ai_cost", "llm_budget")
 # Automation and optimize messages carry an account, but a rule may cover every account.
 AUTOMATION_SOURCE = "automation"
 OPTIMIZE_SOURCE = "optimize"
+# A message a person sent from Nubi to the channel they named. It is not a rule
+# type: no rule, snooze or default policy routes, silences or redirects it.
+NUBI_SOURCE = "nubi"
 ACCOUNT_OPTIONAL_SOURCES = TENANT_WIDE_SOURCES + (AUTOMATION_SOURCE, OPTIMIZE_SOURCE)
 
 # Every type a rule can cover. The singletons are each managed as the tenant's

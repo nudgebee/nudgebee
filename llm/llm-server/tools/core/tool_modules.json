@@ -1,5 +1,5 @@
 {
-  "_about": "Custom-role module each AI tool needs, for a person without a built-in role on the account (and Bee runs). Reads need <module>:Read, changes need <module>:Execute; all listed modules are required. integration_only tools are checked where the call resolves its integration (integrations.<type>, CheckIntegrationUse). unscoped tools read no account data. Agent wrappers, automation tools and client tools declare their own scope (toolcore.GrantScoped). A registered tool missing from all three lists is refused for such callers; TestEveryRegisteredToolHasAGrantScope keeps the map complete. builtin_only tools read the account's shared workspace (files saved by other people's conversations), so a person without a built-in role may not use them.",
+  "_about": "Custom-role module each AI tool needs, for a person without a built-in role on the account (and Bee runs). Reads need <module>:Read, changes need <module>:Execute; all listed modules are required. integration_only tools are checked where the call resolves its integration (integrations.<type>, CheckIntegrationUse). unscoped tools read no account data. Agent wrappers, automation tools and client tools declare their own scope (toolcore.GrantScoped). A registered tool missing from all three lists is refused for such callers; TestEveryRegisteredToolHasAGrantScope keeps the map complete. builtin_only tools read the account's shared workspace (files saved by other people's conversations), or make a change no custom-role module covers yet (im_message_send posts to the tenant's chat channels), so a person without a built-in role may not use them.",
   "modules": {
     "aggregate_events": [
       "events"
@@ -397,6 +397,7 @@
   ],
   "builtin_only": [
     "analyze_metric_series",
+    "im_message_send",
     "shell_execute",
     "standard_diagnostic_grep"
   ]

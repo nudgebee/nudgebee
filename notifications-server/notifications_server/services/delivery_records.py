@@ -33,7 +33,7 @@ from notifications_server.services.delivery_errors import (
     delivery_channel_id,
     email_reason,
 )
-from notifications_server.services.rules import AUTOMATION_SOURCE
+from notifications_server.services.rules import AUTOMATION_SOURCE, NUBI_SOURCE
 from notifications_server.utils.datetime_utils import utc_now
 
 LOG = logging.getLogger(__name__)
@@ -46,6 +46,7 @@ REMEDIATION = "remediation"
 REMEDIATION_MARKER = "remediation_marker"
 REMEDIATION_PENDING = "remediation_pending"
 NUBI_ANSWER = "nubi_answer"
+NUBI_MESSAGE = "nubi_message"
 EMAIL_PREFIX = "email:"
 # The kinds whose Teams rows hold a card that clicks update.
 TEAMS_CARD_KINDS = (FINDING, APPROVAL, NUBI_ANSWER)
@@ -115,6 +116,8 @@ def kind_of(type_, parameters, source=None) -> str:
             return APPROVAL
         if source == AUTOMATION_SOURCE:
             return AUTOMATION
+        if source == NUBI_SOURCE:
+            return NUBI_MESSAGE
         return "generic"
     return type_
 
@@ -199,7 +202,7 @@ def title_of(kind, parameters) -> Optional[str]:
         if kind == APPROVAL:
             workflow = params.get("workflow_name")
             return _cap(f"Approval for {workflow}" if workflow else "Approval request")
-        if kind in (AUTOMATION, "generic"):
+        if kind in (AUTOMATION, NUBI_MESSAGE, "generic"):
             return _cap(_first_line(params.get("message")))
         if kind in _SUMMARY_NAMES:
             return _cap(f"{_SUMMARY_NAMES[kind]} ({len(params.get('events') or [])} alerts)")

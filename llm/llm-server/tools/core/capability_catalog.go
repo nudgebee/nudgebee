@@ -241,6 +241,7 @@ var capabilityScopeTable = map[string]CapabilityScope{
 	"get_event_triage_explanation":            CapabilityScopeNarrow,
 	"get_triage_rule_events":                  CapabilityScopeNarrow,
 	"get_triage_rules":                        CapabilityScopeNarrow,
+	"im_message_send":                         CapabilityScopeNarrow,
 	"kg_get_node":                             CapabilityScopeNarrow,
 	"list_events":                             CapabilityScopeNarrow,
 	"list_threshold_suggestions":              CapabilityScopeNarrow,

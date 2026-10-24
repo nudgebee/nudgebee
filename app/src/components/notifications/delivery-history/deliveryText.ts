@@ -32,6 +32,7 @@ export const TYPE_FILTERS = [
   { label: 'Hourly summary', value: 'summary', kinds: ['grouped_anomaly', 'grouped_slo_alert'] },
   { label: 'Weekly digest', value: 'digest', kinds: ['weekly_digest_events', 'recommendation_nudge_digest'] },
   { label: 'Approval', value: 'approval', kinds: ['approval', 'email:approval_request'] },
+  { label: 'Sent from Nubi', value: 'nubi', kinds: ['nubi_message'] },
 ];
 
 export const STATUS_FILTERS = [
@@ -49,6 +50,7 @@ const KIND_LABELS: Record<string, string> = {
   recommendation_nudge_digest: 'Recommendation digest',
   approval: 'Approval',
   automation: 'Automation',
+  nubi_message: 'Sent from Nubi',
   remediation: 'Remediation',
   generic: 'Message',
   'email:approval_request': 'Approval',

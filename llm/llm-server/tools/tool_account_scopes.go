@@ -34,7 +34,7 @@ func init() {
 		"update_notebook", "update_notebook_v2",
 	)
 	toolcore.DeclareOriginBound(toolcore.OriginBoundWrite,
-		"recommendation_apply", "recommendation_execute_cli", "recommendation_record_ticket_resolution",
+		"im_message_send", "recommendation_apply", "recommendation_execute_cli", "recommendation_record_ticket_resolution",
 		"recommendation_set_dismissal", "remediation_execute", "remediation_generate", "run_step", "trigger_cis_scan",
 		"trigger_image_scan", "watch_cancel", "watch_resource",
 	)
