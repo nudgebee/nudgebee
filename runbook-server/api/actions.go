@@ -1015,6 +1015,11 @@ func (s *Server) handleSaveConfig(c *gin.Context, sc *security.RequestContext, a
 	}
 
 	id, err := s.configService.SaveConfig(c.Request.Context(), config)
+	var commonErr common.Error
+	if errors.As(err, &commonErr) {
+		c.JSON(http.StatusBadRequest, common.ErrorActionBadRequest(commonErr.Message))
+		return
+	}
 	if err != nil {
 		s.logger.Error("failed to save config via RPC", "error", err)
 		c.JSON(http.StatusBadRequest, common.ErrorActionInternal("failed to save config"))

@@ -1057,6 +1057,11 @@ func (s *Server) saveConfig(c *gin.Context) {
 	}
 
 	id, err := s.configService.SaveConfig(c.Request.Context(), config)
+	var commonErr common.Error
+	if errors.As(err, &commonErr) {
+		c.JSON(commonErr.Code, gin.H{"error": commonErr.Message})
+		return
+	}
 	if err != nil {
 		s.logger.Error("failed to save config", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save config"})
