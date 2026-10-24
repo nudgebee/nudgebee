@@ -34,6 +34,8 @@ import {
   getDropdownOptionsForField,
   getExamplePlaceholder,
   isWebhookProvider,
+  notConnectedHint,
+  notConnectedLabel,
   parseJsonExample,
   PROVIDER_LABELS,
   resolveFieldType,
@@ -393,6 +395,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
   const [imChannelOptions, setImChannelOptions] = useState<{ label: string; value: string }[]>([]);
   const [imTeamOptions, setImTeamOptions] = useState<{ label: string; value: string; channels?: { label: string; value: string }[] }[]>([]);
   const [imChannelLoading, setImChannelLoading] = useState(false);
+  const [imNotConnected, setImNotConnected] = useState(false);
 
   // State for DM notification user dropdown (notifications.dm task)
   const [dmUserOptions, setDmUserOptions] = useState<{ label: string; value: string }[]>([]);
@@ -409,6 +412,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
   // State for Approval task IM channel dropdown (core.approval task)
   const [approvalChannelOptions, setApprovalChannelOptions] = useState<{ label: string; value: string }[]>([]);
   const [approvalChannelLoading, setApprovalChannelLoading] = useState(false);
+  const [approvalNotConnected, setApprovalNotConnected] = useState(false);
   const [approvalTeamOptions, setApprovalTeamOptions] = useState<{ label: string; value: string; channels?: { label: string; value: string }[] }[]>(
     []
   );
@@ -910,6 +914,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
     selectedActionType === 'notifications.read_thread';
 
   useEffect(() => {
+    setImNotConnected(false);
     if (!isImNotificationTask) {
       setImChannelOptions([]);
       setImTeamOptions([]);
@@ -937,6 +942,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
       .then((res: any) => {
         if (cancelled) return;
         const response = res?.data?.data || [];
+        setImNotConnected(res?.data?.hint === 'not_connected');
 
         if (provider === 'ms_teams') {
           // MS Teams has nested team/channel structure
@@ -1105,6 +1111,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
 
   // Fetch channels for Approval task IM notification
   useEffect(() => {
+    setApprovalNotConnected(false);
     if (!isApprovalTask) {
       setApprovalChannelOptions([]);
       setApprovalTeamOptions([]);
@@ -1125,6 +1132,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
       .then((res: any) => {
         if (cancelled) return;
         const response = res?.data?.data || [];
+        setApprovalNotConnected(res?.data?.hint === 'not_connected');
         if (provider === 'ms_teams') {
           // Teams lists teams, each with its channels; channels follow the picked team.
           setApprovalTeamOptions(response.map((item: any) => ({ label: item.name, value: item.id, channels: mapMsTeamsChannels(item.channels) })));
@@ -2260,10 +2268,15 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
               return 'Select webhook';
             }
             if (imChannelLoading) return 'Loading channels...';
+            if (imNotConnected) return notConnectedLabel(provider);
             if (imChannelOptions.length === 0) return 'No channels available';
             return 'Select channel';
           };
-          const channelHint = isWebhook ? `Your ${PROVIDER_LABELS[provider]} integrations. Add one in Integrations.` : fieldSchema.description;
+          const channelHint = isWebhook
+            ? `Your ${PROVIDER_LABELS[provider]} integrations. Add one in Integrations.`
+            : imNotConnected && !isTeamsWithoutTeam
+            ? notConnectedHint(selectedActionType, provider)
+            : fieldSchema.description;
 
           return (
             <Box key={fieldName} sx={{ mb: ds.space[4], display: 'flex', alignItems: 'flex-start', gap: ds.space[4], flexWrap: 'wrap' }}>
@@ -2323,6 +2336,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
 
           const getTeamPlaceholder = () => {
             if (imChannelLoading) return 'Loading teams...';
+            if (imNotConnected) return notConnectedLabel(provider);
             if (imTeamOptions.length === 0) return 'No teams available';
             return 'Select team';
           };
@@ -2366,7 +2380,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                   isDropTarget={isDraggingOver === fieldName}
                 />
                 <Typography variant='caption' color='text.secondary' sx={{ mt: ds.space[1], display: 'block' }}>
-                  MS Teams Team
+                  {imNotConnected ? notConnectedHint(selectedActionType, provider) : 'MS Teams Team'}
                 </Typography>
               </Box>
             </Box>
@@ -2568,6 +2582,9 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
             if (approvalChannelLoading) {
               return 'Loading channels...';
             }
+            if (approvalNotConnected) {
+              return notConnectedLabel(provider);
+            }
             if (approvalChannelOptions.length === 0) {
               return 'No channels available';
             }
@@ -2608,10 +2625,16 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                   onDragLeave={viewOnlyMode ? undefined : handleDragLeave}
                   isDropTarget={isDraggingOver === fieldName}
                 />
-                {fieldSchema.description && (
+                {approvalNotConnected && !needsTeam ? (
                   <Typography variant='caption' color='text.secondary' sx={{ mt: ds.space[1], display: 'block' }}>
-                    {fieldSchema.description}
+                    {notConnectedHint(selectedActionType, provider)}
                   </Typography>
+                ) : (
+                  fieldSchema.description && (
+                    <Typography variant='caption' color='text.secondary' sx={{ mt: ds.space[1], display: 'block' }}>
+                      {fieldSchema.description}
+                    </Typography>
+                  )
                 )}
               </Box>
             </Box>
@@ -2627,6 +2650,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
 
           const getApprovalTeamPlaceholder = () => {
             if (approvalChannelLoading) return 'Loading teams...';
+            if (approvalNotConnected) return notConnectedLabel(provider);
             if (approvalTeamOptions.length === 0) return 'No teams available';
             return 'Select team';
           };
@@ -2668,10 +2692,16 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                   onDragLeave={viewOnlyMode ? undefined : handleDragLeave}
                   isDropTarget={isDraggingOver === fieldName}
                 />
-                {fieldSchema.description && (
+                {approvalNotConnected ? (
                   <Typography variant='caption' color='text.secondary' sx={{ mt: ds.space[1], display: 'block' }}>
-                    {fieldSchema.description}
+                    {notConnectedHint(selectedActionType, provider)}
                   </Typography>
+                ) : (
+                  fieldSchema.description && (
+                    <Typography variant='caption' color='text.secondary' sx={{ mt: ds.space[1], display: 'block' }}>
+                      {fieldSchema.description}
+                    </Typography>
+                  )
                 )}
               </Box>
             </Box>

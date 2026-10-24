@@ -140,6 +140,10 @@ class CommonService:
             messaging_platform = installations[0] if installations else None
             if not messaging_platform:
                 LOG.info("Unable to list channels for %s, no installation in tenant: %s ", platform, tenant)
+                if platform in ("slack", "ms_teams"):
+                    # The hint lets a picker say the app isn't connected, rather than
+                    # that a connected app sees no channels.
+                    return {"data": [], "hint": "not_connected"}
                 return {"data": []}
 
             if platform == "slack":

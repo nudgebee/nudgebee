@@ -24,8 +24,27 @@ export const PROVIDER_LABELS: Record<string, string> = {
   google_chat_webhook: 'Google Chat webhook',
 };
 
+// Chat apps whose channel list says when the app isn't connected for the tenant.
+const APP_PROVIDER_LABELS: Record<string, string> = {
+  slack: 'Slack',
+  ms_teams: 'Microsoft Teams',
+};
+
 export const isWebhookProvider = (provider: unknown): provider is string =>
   typeof provider === 'string' && Object.prototype.hasOwnProperty.call(PROVIDER_LABELS, provider);
+
+// What a picker says when the chat app isn't connected: connect it, or the other
+// way the step can send. Only Send IM can post through a webhook, and an approval
+// can't (a webhook carries no buttons).
+export const notConnectedLabel = (provider: string) => `${APP_PROVIDER_LABELS[provider] ?? provider} isn't connected`;
+
+export const notConnectedHint = (actionType: string, provider: string) => {
+  const app = APP_PROVIDER_LABELS[provider] ?? provider;
+  const webhook = PROVIDER_LABELS[`${provider}_webhook`];
+  if (actionType === 'notifications.im' && webhook) return `Connect ${app} in Integrations, or pick the ${webhook} provider.`;
+  if (actionType === 'core.approval') return `Connect ${app} in Integrations, or pick another provider.`;
+  return `Connect ${app} in Integrations.`;
+};
 
 // Static dbms_type dropdown options. Lives here (not in ActionDetailsSidebar)
 // so SubTaskParamForm can import it without a sidebar → foreach-editor →
