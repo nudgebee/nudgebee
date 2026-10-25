@@ -97,7 +97,7 @@ func TestWorkflowSearchGroupsOtherAccountsApartFromThisOne(t *testing.T) {
 	assert.Equal(t, "https://app.example.com/automation/wf-b?accountId=acct-b", got.OtherAccounts[0].Workflows[0]["url"],
 		"a link opens the automation on its own account")
 	assert.Contains(t, got.Note, otherAccountsNote)
-	assert.Contains(t, got.Note, "showing 1 of 3")
+	assert.NotContains(t, got.Note, "showing", "a search's total counts automations that did not match; it is not \"more to see\"")
 
 	require.Len(t, *calls, 2)
 	assert.Equal(t, "", (*calls)[0].scope)
@@ -141,7 +141,7 @@ func TestWorkflowSearchWithNoUserSearchesOnlyThisAccount(t *testing.T) {
 func TestWorkflowListGroupsOtherAccounts(t *testing.T) {
 	fakeRunbook(t,
 		`{"workflows":[{"id":"wf-a","name":"a","status":"ACTIVE","account_id":"acct","tenant_id":"t"}],"total_count":1}`,
-		`{"workflows":[{"id":"wf-b","name":"b","status":"PAUSED","account_id":"acct-b","tenant_id":"t"}],"total_count":1}`)
+		`{"workflows":[{"id":"wf-b","name":"b","status":"PAUSED","account_id":"acct-b","tenant_id":"t"}],"total_count":40}`)
 
 	resp, err := WorkflowListTool{}.Call(workflowAccountsContext("user-1"), core.NBToolCallRequest{Arguments: map[string]any{}})
 	require.NoError(t, err)
@@ -152,6 +152,7 @@ func TestWorkflowListGroupsOtherAccounts(t *testing.T) {
 	assert.Equal(t, "PAUSED", b["status"])
 	assert.NotContains(t, b, "tenant_id", "other accounts' rows are projected like this account's")
 	assert.Equal(t, "https://app.example.com/automation/wf-b?accountId=acct-b", b["url"])
+	assert.Contains(t, got.Note, "Other accounts: showing 1 of 40; filter by name to see the rest.")
 }
 
 func TestWorkflowGetOnAnotherAccount(t *testing.T) {
@@ -176,7 +177,8 @@ func TestWorkflowCallsRefuseAnAccountTheUserCannotRead(t *testing.T) {
 	foreign := map[string]any{"id": "wf-c", "execution_id": "ex-1", "account_id": "acct-c"}
 
 	for _, tool := range []core.NBTool{WorkflowGetTool{}, WorkflowTriggerTool{accountId: "acct"}, WorkflowExecutionGetTool{},
-		WorkflowExecutionsTool{}, WorkflowExecutionRetriggerTool{accountId: "acct"}, WorkflowExecutionCancelTool{accountId: "acct"}} {
+		WorkflowExecutionsTool{}, WorkflowExecutionRetriggerTool{accountId: "acct"}, WorkflowExecutionCancelTool{accountId: "acct"},
+		WorkflowDryRunTool{accountId: "acct"}} {
 		_, err := tool.Call(ctx, core.NBToolCallRequest{Arguments: foreign})
 		require.Error(t, err, tool.Name())
 		assert.Contains(t, err.Error(), `account_id "acct-c"`)
@@ -240,4 +242,40 @@ func TestWorkflowSearchSaysWhenOtherAccountsCouldNotBeRead(t *testing.T) {
 	got := parseGrouped(t, resp.Data)
 	require.Len(t, got.ThisAccount.Workflows, 1)
 	assert.Contains(t, got.Note, "Other accounts could not be searched")
+}
+
+func TestWorkflowDryRunOnAnotherAccount(t *testing.T) {
+	calls := fakeRunbook(t, `{"definition":{"tasks":[]},"status":"COMPLETED"}`, "")
+	dryRun := WorkflowDryRunTool{accountId: "acct"}
+	assert.Equal(t, "acct-b", dryRun.RequestedAccountID(`{"id":"wf-b","account_id":"acct-b"}`))
+
+	resp, err := dryRun.Call(workflowAccountsContext("user-1"), core.NBToolCallRequest{Arguments: map[string]any{"id": "wf-b", "account_id": "acct-b"}})
+	require.NoError(t, err)
+	ran, _ := resp.AdditionalDetails[core.MetadataExecutedTarget].(map[string]any)
+	assert.Equal(t, "acct-b", ran["account_id"])
+	require.Len(t, *calls, 2, "fetch the definition, then dry-run it")
+	for _, call := range *calls {
+		assert.Equal(t, "acct-b", call.account, call.path)
+	}
+}
+
+// An automation not found on the conversation's account says how to reach one
+// listed under another account.
+func TestWorkflowNotFoundHereNamesAccountID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"workflow not found"}`))
+	}))
+	t.Cleanup(srv.Close)
+	endpoint := config.Config.WorkflowServerEndpoint
+	config.Config.WorkflowServerEndpoint = srv.URL
+	t.Cleanup(func() { config.Config.WorkflowServerEndpoint = endpoint })
+
+	_, err := WorkflowGetTool{}.Call(workflowAccountsContext("user-1"), core.NBToolCallRequest{Arguments: map[string]any{"id": "wf-b"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pass its account_id")
+
+	_, err = WorkflowGetTool{}.Call(workflowAccountsContext("user-1"), core.NBToolCallRequest{Arguments: map[string]any{"id": "wf-b", "account_id": "acct-b"}})
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "pass its account_id", "a call that named the account gets the plain error")
 }

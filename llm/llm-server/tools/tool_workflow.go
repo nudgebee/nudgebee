@@ -69,7 +69,7 @@ func init() {
 		return WorkflowConfigSaveTool{}, nil
 	})
 	core.RegisterNBToolFactory(ToolWorkflowDryRun, func(accountId string) (core.NBTool, error) {
-		return WorkflowDryRunTool{}, nil
+		return WorkflowDryRunTool{accountId: accountId}, nil
 	})
 	core.RegisterNBToolFactory(ToolWorkflowListVersions, func(accountId string) (core.NBTool, error) {
 		return WorkflowListVersionsTool{}, nil
@@ -428,14 +428,14 @@ func (t WorkflowGetTool) Call(ctx core.NbToolContext, input core.NBToolCallReque
 	if err != nil {
 		return core.NBToolResponse{}, err
 	}
-	resp, err := t.get(ctx, accountId, id)
+	resp, err := t.get(ctx, input, accountId, id)
 	return ranOnWorkflowAccount(resp, ctx, accountId), err
 }
 
-func (t WorkflowGetTool) get(ctx core.NbToolContext, accountId, id string) (core.NBToolResponse, error) {
+func (t WorkflowGetTool) get(ctx core.NbToolContext, input core.NBToolCallRequest, accountId, id string) (core.NBToolResponse, error) {
 	resp, err := DoRunbookRequest("GET", fmt.Sprintf("workflows/%s", id), nil, accountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
 	if err != nil {
-		return core.NBToolResponse{}, err
+		return core.NBToolResponse{}, withOtherAccountHint(err, input, ctx.AccountId)
 	}
 
 	link := core.BuildAutomationURL(accountId, id, nil, "")
@@ -1810,12 +1810,22 @@ func (t WorkflowConfigSaveTool) Call(ctx core.NbToolContext, input core.NBToolCa
 // ground failure diagnosis in real task-level errors. It is classified `create`
 // so the executor gates it behind explicit user approval — dry-run is not assumed
 // to be free of side effects.
-type WorkflowDryRunTool struct{}
+type WorkflowDryRunTool struct {
+	// accountId is the conversation's account; Call dry-runs on the one a call
+	// names (account_id), else this one.
+	accountId string
+}
+
+// RequestedAccountID is the other account a dry-run names, so its approval,
+// write-access check and card are that account's.
+func (t WorkflowDryRunTool) RequestedAccountID(toolInput string) string {
+	return requestedWorkflowAccount(confirmationArgs(toolInput), t.accountId)
+}
 
 func (t WorkflowDryRunTool) Name() string             { return ToolWorkflowDryRun }
 func (t WorkflowDryRunTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 func (t WorkflowDryRunTool) Description() string {
-	return "Dry-runs an automation: executes its tasks against the engine without persisting external side effects, returning per-task status and errors. Use it to verify an automation works and to diagnose why a run failed. Provide either an automation `id` or a raw `definition`."
+	return "Dry-runs an automation: executes its tasks against the engine without persisting external side effects, returning per-task status and errors. Use it to verify an automation works and to diagnose why a run failed. Provide either an automation `id` or a raw `definition`; pass account_id for an automation listed under other_accounts."
 }
 
 // InferToolRequestType classifies dry-run as create so it is gated behind user
@@ -1828,15 +1838,25 @@ func (t WorkflowDryRunTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
 		Properties: map[string]core.ToolSchemaProperty{
-			"id":         {Type: core.ToolSchemaTypeString, Description: "The ID of an existing automation to dry-run (its current definition is fetched). Provide this OR `definition`."},
-			"definition": {Type: core.ToolSchemaTypeObject, Description: "A raw automation definition (version/triggers/tasks) to dry-run. Provide this OR `id`."},
-			"inputs":     {Type: core.ToolSchemaTypeObject, Description: "Optional input parameters for the dry-run."},
-			"name":       {Type: core.ToolSchemaTypeString, Description: "Optional automation name, used in any notifications the dry-run produces."},
+			"id":               {Type: core.ToolSchemaTypeString, Description: "The ID of an existing automation to dry-run (its current definition is fetched). Provide this OR `definition`."},
+			"definition":       {Type: core.ToolSchemaTypeObject, Description: "A raw automation definition (version/triggers/tasks) to dry-run. Provide this OR `id`."},
+			"inputs":           {Type: core.ToolSchemaTypeObject, Description: "Optional input parameters for the dry-run."},
+			"name":             {Type: core.ToolSchemaTypeString, Description: "Optional automation name, used in any notifications the dry-run produces."},
+			workflowAccountArg: workflowAccountSchemaProperty(),
 		},
 	}
 }
 
 func (t WorkflowDryRunTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	accountId, err := workflowCallAccount(ctx, input)
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	resp, err := t.dryRun(ctx, input, accountId)
+	return ranOnWorkflowAccount(resp, ctx, accountId), err
+}
+
+func (t WorkflowDryRunTool) dryRun(ctx core.NbToolContext, input core.NBToolCallRequest, accountId string) (core.NBToolResponse, error) {
 	tenantId := ctx.Ctx.GetSecurityContext().GetTenantId()
 	userId := ctx.Ctx.GetSecurityContext().GetUserId()
 
@@ -1846,9 +1866,9 @@ func (t WorkflowDryRunTool) Call(ctx core.NbToolContext, input core.NBToolCallRe
 		if !ok || id == "" {
 			return core.NBToolResponse{}, errors.New("provide either `id` or `definition` to dry-run")
 		}
-		wfResp, err := DoRunbookRequest("GET", fmt.Sprintf("workflows/%s", id), nil, ctx.AccountId, tenantId, userId)
+		wfResp, err := DoRunbookRequest("GET", fmt.Sprintf("workflows/%s", id), nil, accountId, tenantId, userId)
 		if err != nil {
-			return core.NBToolResponse{}, fmt.Errorf("failed to fetch automation %s for dry-run: %w", id, err)
+			return core.NBToolResponse{}, fmt.Errorf("failed to fetch automation %s for dry-run: %w", id, withOtherAccountHint(err, input, ctx.AccountId))
 		}
 		var wf map[string]interface{}
 		if err := json.Unmarshal(wfResp, &wf); err != nil {
@@ -1871,7 +1891,7 @@ func (t WorkflowDryRunTool) Call(ctx core.NbToolContext, input core.NBToolCallRe
 	reqCtx, cancel := context.WithTimeout(context.Background(), dryRunTimeout)
 	defer cancel()
 
-	resp, err := DoRunbookRequestWithContext(reqCtx, "POST", "workflows/dry-run", body, ctx.AccountId, tenantId, userId)
+	resp, err := DoRunbookRequestWithContext(reqCtx, "POST", "workflows/dry-run", body, accountId, tenantId, userId)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(reqCtx.Err(), context.DeadlineExceeded) {
 			return core.NBToolResponse{

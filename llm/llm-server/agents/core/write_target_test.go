@@ -266,7 +266,7 @@ func TestAutomationRunOnAnotherAccountIsThatAccountsWrite(t *testing.T) {
 	require.Equal(t, "On AWS account **aws-prod**:\nRun it?", confirmationQuestionWithTarget("Run it?", action, toolcore.ToolRequestTypeCreate, target))
 	require.Equal(t, []string{"prod-id"}, writeAccountOf("dev-id", target, true))
 
-	for _, tool := range []toolcore.NBTool{tools.WorkflowExecutionRetriggerTool{}, tools.WorkflowExecutionCancelTool{}} {
+	for _, tool := range []toolcore.NBTool{tools.WorkflowExecutionRetriggerTool{}, tools.WorkflowExecutionCancelTool{}, tools.WorkflowDryRunTool{}} {
 		require.Equal(t, tool.Name()+"@prod-id", approvalKey(e, tool, `{"id":"wf-1","execution_id":"ex-1","account_id":"prod-id"}`))
 	}
 

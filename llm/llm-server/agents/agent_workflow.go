@@ -228,7 +228,7 @@ func (a WorkflowAgent) GetSystemPrompt(ctx *security.RequestContext, query core.
 			"Create or update an automation config. Args: key (string, required), value (string, required), type (string, default 'config'). NEVER call without user approval.",
 		},
 		tools.ToolWorkflowDryRun: {
-			"Dry-run an automation to verify it works or diagnose a failure: executes its tasks against the engine without persisting external side effects, returning per-task status and errors. Args: id (string) OR definition (object); inputs (optional). Requires user approval before running. After a build/edit, OFFER a dry-run; on failure, quote the failing task id + error and offer to fix it.",
+			"Dry-run an automation to verify it works or diagnose a failure: executes its tasks against the engine without persisting external side effects, returning per-task status and errors. Args: id (string) OR definition (object); inputs (optional); account_id (when the automation is in another account). Requires user approval before running. After a build/edit, OFFER a dry-run; on failure, quote the failing task id + error and offer to fix it.",
 		},
 		tools.ToolWorkflowListVersions: {
 			"List the published versions of an automation (number, name, which is live). Arg: id (string, required).",

@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"nudgebee/llm/tools/core"
@@ -58,6 +59,17 @@ func workflowCallAccount(ctx core.NbToolContext, input core.NBToolCallRequest) (
 			"use the account_id of a group under other_accounts in workflow_search or workflow_list", id)
 	}
 	return id, nil
+}
+
+// withOtherAccountHint adds, to an automation not found on the conversation's
+// account, that one listed under other_accounts is reached with its
+// account_id: a call without it looks only here.
+func withOtherAccountHint(err error, input core.NBToolCallRequest, origin string) error {
+	status, _, ok := RunbookErrorStatus(err)
+	if !ok || status != http.StatusNotFound || requestedWorkflowAccount(input.Arguments, origin) != "" {
+		return err
+	}
+	return fmt.Errorf("%w (not in this conversation's account; for an automation listed under other_accounts, pass its account_id)", err)
 }
 
 // workflowAccountTarget names an account for the approval card and the
@@ -121,10 +133,12 @@ func otherWorkflowAccounts(ctx core.NbToolContext, path string, project func(raw
 		ctx.Ctx.GetLogger().Warn("workflow: other accounts could not be listed", "path", path, "error", err)
 		return nil, 0, "Other accounts could not be searched; only this conversation's account is shown."
 	}
+	// total_count (a listing) is how many automations there are; a search's
+	// total_invocable counts every automation it may run, matched or not, so
+	// "showing N of" it would send the model looking for ones that did not match.
 	var parsed struct {
-		Workflows      []map[string]any `json:"workflows"`
-		TotalInvocable *int             `json:"total_invocable"`
-		TotalCount     *int             `json:"total_count"`
+		Workflows  []map[string]any `json:"workflows"`
+		TotalCount *int             `json:"total_count"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		ctx.Ctx.GetLogger().Warn("workflow: other accounts' listing could not be read", "path", path, "error", err)
@@ -158,10 +172,7 @@ func otherWorkflowAccounts(ctx core.NbToolContext, path string, project func(raw
 		}
 		groups = append(groups, workflowAccountGroup{AccountID: id, AccountName: workflowAccountName(id), Workflows: shaped.Workflows})
 	}
-	switch {
-	case parsed.TotalInvocable != nil:
-		total = *parsed.TotalInvocable
-	case parsed.TotalCount != nil:
+	if parsed.TotalCount != nil {
 		total = *parsed.TotalCount
 	}
 	return groups, total, ""
@@ -194,7 +205,7 @@ func withWorkflowAccounts(own []byte, origin string, groups []workflowAccountGro
 		}
 		notes = append(notes, otherAccountsNote)
 		if otherTotal > shown {
-			notes = append(notes, fmt.Sprintf("Other accounts: showing %d of %d; narrow with query (workflow_search) or name (workflow_list) to see the rest.", shown, otherTotal))
+			notes = append(notes, fmt.Sprintf("Other accounts: showing %d of %d; filter by name to see the rest.", shown, otherTotal))
 		}
 	}
 	if problem != "" {
