@@ -251,6 +251,20 @@ A declaration outside any account may carry a kind of the tenant's own (`Network
 
 ---
 
+## Node Roles — what a node acts as
+
+A node's type says what it is (`Workload`, `ComputeInstance`); its **role** says what it does: `database`, `cache`, `messagequeue`, `search`, `objectstorage`, `loadbalancer`, `proxy`, `apigateway`, `scheduler`, `monitoring`, `auth` ([core/node_roles.go](core/node_roles.go), closed list), plus an optional free-text `engine`. One role per node. Decision record: [docs/architecture-decisions.md](../../../docs/architecture-decisions.md) ("KG node roles").
+
+- **Two writers of one key.** The Kubernetes classifier (`sources/k8s/db_classifier.go`) sets `properties.role/engine` on Workloads from the runtime framework signal. A user sets a role through `kg_upsert_node_role` / `kg_delete_node_role` ([api/actions_kg_node_roles.go](../api/actions_kg_node_roles.go)) or when declaring a manual node (`ManualNodeCreate.Role/Engine`). **A user role wins**: the classifier's value is kept as `detected_role` / `detected_engine` and the node gets `role_source = "user"`; removing the user role restores the detected one.
+- **Storage: `kg_node_roles` (V1070), keyed by `(tenant_id, kg_node_id)`, no FK.** Node ids derive from the unique key, so one row applies to collected, VM and declared nodes and keeps applying across rebuilds, tombstone and recreate, and adoption. A rename, namespace move or VM re-IP mints a new node: the role must be set again. Rows are never swept; an orphan is inert.
+- **Every writer applies it.** `core.ApplyStoredUserRoles` runs in `SaveNodes` just before its transaction (builds, resource patches, manual-node writes) and in the legacy `traces` node writer. `TestEveryNodeWriterAppliesUserRoles` fails on any file that writes `knowledge_graph_node` properties without it. The readers tolerate a missing table (pods start before the post-upgrade migration).
+- **Readers use the keys they already had**: `KgNodeSlim.Role/Engine`, `ComputeLogoID` (icon from `engine`), the evidence card, the map subtitle. `role`/`engine` are mirrored into `query_attributes`, so the Attribute filter works on every type. "Is this a database?" goes through `core.EffectiveRole`, which also answers by type (an RDS `Database` is a database); `SearchNodesParams.Roles` is inclusive the same way, and is ANDed with `NodeTypes`.
+- **Who may set one.** Only `core.IsNodeRoleTarget` types (workloads, VMs, services and every declarable type; never Namespace, Pod, Subnet, images, users). Access follows the manual-node rule: the node's account, or tenant-wide access for a node outside any account. A role also goes to the node's active `SAME_AS` compute twins (a VM host and its EC2 instance); a twin the caller may not write is skipped and reported. The RPC patches the live row, leaves `updated_at` (last seen) alone, drops the filter-options cache, audits each node, and reports `build_in_progress` when a running build may overwrite it until the next one.
+- **Manual nodes.** `role` and `engine` stay ordinary properties: a custom kind may describe itself with a free `role` ("core-switch"), which `EffectiveRole` ignores. Only `role_source` / `detected_*` are refused at write time and dropped by `MaterializeManualNode`. A declaration's later role change goes through the role RPCs; Merge hands the role to the collected node.
+- **Not yet**: blast radius (`core/impact.go`) and the Node Type filter still key on `NodeType` alone.
+
+---
+
 ## Read Path — Query Methods on `Service`
 
 All on `*Service` in [core/service.go](core/service.go):

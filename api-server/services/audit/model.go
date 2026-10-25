@@ -106,6 +106,8 @@ const (
 	EventTypeKGNodeDeleteAll       EventType = "KG_NODE_DELETE_ALL"
 	EventTypeKGDeclarationsImport  EventType = "KG_DECLARATIONS_IMPORT"
 	EventTypeKGNodeMerge           EventType = "KG_NODE_MERGE"
+	EventTypeKGNodeRoleUpsert      EventType = "KG_NODE_ROLE_UPSERT"
+	EventTypeKGNodeRoleDelete      EventType = "KG_NODE_ROLE_DELETE"
 
 	EventTypeUserLogin       EventType = "USER_AUTH_LOGIN"
 	EventTypeUserLoginCreate EventType = "USER_AUTH_CREATE"

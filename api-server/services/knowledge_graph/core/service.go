@@ -1895,12 +1895,8 @@ func (s *Service) SaveNodes(nodes []*DbNode, syncVersion int64) error {
 		deduplicatedNodes = append(deduplicatedNodes, node)
 	}
 
-	// Prepare data for bulk insert
-	cols := nodeUpsertCols
-	values := make([][]any, len(deduplicatedNodes))
-
 	now := time.Now().UTC()
-	for i, node := range deduplicatedNodes {
+	for _, node := range deduplicatedNodes {
 		// Generate ID if not present. Must go through NodeIDFor: this used to
 		// hash its own "key:account:tenant" variant, which no NodeIDFor caller
 		// could ever reproduce, so an id-less node got an id that looked
@@ -1918,7 +1914,24 @@ func (s *Service) SaveNodes(nodes []*DbNode, syncVersion int64) error {
 			node.CreatedAt = node.CreatedAt.UTC()
 		}
 		node.UpdatedAt = now
+	}
 
+	// User-set node roles (kg_node_roles) are layered on here because this is
+	// the one write every path goes through: account builds, resource patches
+	// and manual-node writes. A node arrives with whatever its source built, so
+	// without this a rebuild would drop the role a user set. Read before the
+	// transaction: under read committed, reading inside it would not keep a role
+	// set meanwhile from being overwritten, and would only hold the connection
+	// open through the encoding below.
+	if err := ApplyStoredUserRoles(s.dbManager.Db, deduplicatedNodes); err != nil {
+		return fmt.Errorf("failed to apply node roles: %w", err)
+	}
+
+	// Prepare data for bulk insert
+	cols := nodeUpsertCols
+	values := make([][]any, len(deduplicatedNodes))
+
+	for i, node := range deduplicatedNodes {
 		// Convert properties, labels, query_attributes to JSON
 		// (skip encoding for nil/empty maps to reduce allocations)
 		propertiesJSON, err := marshalMapOrEmpty(node.Properties)
@@ -5387,6 +5400,17 @@ func (s *Service) SearchNodes(tenantID string, params SearchNodesParams) (*Searc
 		whereClause += fmt.Sprintf(" AND specific_type = ANY($%d::text[])", argIdx)
 		args = append(args, pq.Array(params.SpecificTypes))
 		argIdx++
+	}
+	if len(params.Roles) > 0 {
+		// A role is either carried (a tagged workload or VM) or implied by the
+		// type (an RDS Database), so "find all databases" is one query.
+		typeStrings := make([]string, 0)
+		for _, nt := range NodeTypesForRoles(params.Roles) {
+			typeStrings = append(typeStrings, string(nt))
+		}
+		whereClause += fmt.Sprintf(" AND (query_attributes->>'role' = ANY($%d::text[]) OR node_type = ANY($%d::text[]))", argIdx, argIdx+1)
+		args = append(args, pq.Array(params.Roles), pq.Array(typeStrings))
+		argIdx += 2
 	}
 	if params.Source != "" {
 		whereClause += fmt.Sprintf(" AND source = $%d", argIdx)

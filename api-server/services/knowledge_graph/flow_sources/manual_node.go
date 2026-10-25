@@ -109,6 +109,8 @@ type ManualNode struct {
 	Description      string                 `json:"description,omitempty"`
 	Properties       map[string]interface{} `json:"properties,omitempty"`
 	Labels           map[string]string      `json:"labels,omitempty"`
+	Role             string                 `json:"role,omitempty"`   // the node's user-set role (kg_node_roles), filled in by List and Get
+	Engine           string                 `json:"engine,omitempty"` // that role's engine; neither is a column of the declaration
 	KGNodeID         string                 `json:"kg_node_id"`
 	UniqueKey        string                 `json:"unique_key"`
 	Status           string                 `json:"status"`
@@ -305,6 +307,9 @@ func validateCustomKindProperties(props map[string]interface{}) error {
 		}
 		if core.IsManualReservedProperty(k) {
 			return fmt.Errorf("property %q cannot be set: it is part of the node's identity", k)
+		}
+		if core.IsNodeRoleBookkeepingProperty(k) {
+			return fmt.Errorf("property %q cannot be set: it records where the node's role came from; set the role instead", k)
 		}
 		if _, ok := customKindEndpointKeys[k]; ok {
 			return fmt.Errorf("property %q cannot be set on a custom kind: Nudgebee matches observed traffic on it", k)

@@ -849,6 +849,16 @@ func handleKnowledgeGraphAction(actionPayload *ActionRequest, c *gin.Context, tr
 		handleKgDeleteAllManualNodes(actionPayload, c, tracer, meter, logger)
 		return
 
+	case "kg_list_node_roles":
+		handleKgListNodeRoles(c)
+		return
+	case "kg_upsert_node_role":
+		handleKgWriteNodeRole(actionPayload, c, tracer, meter, logger, true)
+		return
+	case "kg_delete_node_role":
+		handleKgWriteNodeRole(actionPayload, c, tracer, meter, logger, false)
+		return
+
 	default:
 		common.MetricsApiRequestsFailedTotal(c.Request.Context(), "knowledge_graph", "unknown_action")
 		c.JSON(400, common.ErrorActionBadRequest("Unknown action: "+actionPayload.Action.Name))

@@ -58,6 +58,11 @@ type ManualNodeCreate struct {
 	Description    string                 `json:"description"`
 	Properties     map[string]interface{} `json:"properties"`
 	Labels         map[string]string      `json:"labels"`
+	// Role and Engine give the node a role at creation (core/node_roles.go):
+	// the role row is written before the node, so its first write already
+	// carries it. A later change goes through kg_upsert_node_role.
+	Role   string `json:"role"`
+	Engine string `json:"engine"`
 
 	TenantID         string `json:"-"`
 	DeclaredByUserID string `json:"-"`
@@ -188,8 +193,35 @@ func (r *ManualNodeRepository) List(ctx context.Context, tenantID string) ([]Man
 	if tenantID == "" {
 		return nil, ErrTenantIDRequired
 	}
-	return r.query(`SELECT `+manualNodeColumns+` FROM kg_manual_nodes
+	rows, err := r.query(`SELECT `+manualNodeColumns+` FROM kg_manual_nodes
 		WHERE tenant_id = $1 AND is_active = true ORDER BY id`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	r.decorateRoles(tenantID, rows)
+	return rows, nil
+}
+
+// decorateRoles fills each declaration's Role and Engine from its node's role
+// row. Best-effort: a declaration list without roles is better than none.
+func (r *ManualNodeRepository) decorateRoles(tenantID string, nodes []ManualNode) {
+	if len(nodes) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		ids = append(ids, n.KGNodeID)
+	}
+	roles, err := core.ListNodeRolesByIDs(r.dbManager.Db, tenantID, ids)
+	if err != nil {
+		r.logger.Warn("manual node: failed to load node roles", "tenant_id", tenantID, "error", err)
+		return
+	}
+	for i := range nodes {
+		if ro, ok := roles[nodes[i].KGNodeID]; ok {
+			nodes[i].Role, nodes[i].Engine = ro.Role, ro.Engine
+		}
+	}
 }
 
 // Get returns one live declaration, or sql.ErrNoRows.
@@ -205,6 +237,7 @@ func (r *ManualNodeRepository) Get(ctx context.Context, tenantID string, id int6
 	if len(rows) == 0 {
 		return nil, sql.ErrNoRows
 	}
+	r.decorateRoles(tenantID, rows)
 	return &rows[0], nil
 }
 
@@ -286,16 +319,70 @@ func (r *ManualNodeRepository) createPrepared(ctx context.Context, graph ManualN
 		return nil, translateManualNodeDuplicate(err)
 	}
 
+	// The role row goes in before the node so the node's one write below
+	// already carries it (SaveNodes layers roles on).
+	prior, err := r.saveCreatedRole(n)
+	if err != nil {
+		// Nothing was written to the role table, so it is left as it is.
+		r.withdrawDeclaration(n)
+		return nil, err
+	}
+
 	// All or nothing: a declaration whose node never reached the graph would
 	// look done in the UI while dependencies still can't resolve to it.
 	if err := r.writeNode(graph, n); err != nil {
-		if _, delErr := r.dbManager.Exec(`UPDATE kg_manual_nodes SET is_active = false WHERE id = $1`, n.ID); delErr != nil {
-			r.logger.Error("manual node: failed to withdraw declaration after graph write failed",
-				"id", n.ID, "error", delErr)
-		}
+		r.withdrawDeclaration(n)
+		r.undoCreatedRole(n, prior)
 		return nil, fmt.Errorf("write node to the graph: %w", err)
 	}
 	return r.Get(ctx, n.TenantID, n.ID)
+}
+
+// saveCreatedRole writes the role a declaration was created with, if any, and
+// returns the row it replaced: rows outlive a node, so one may already be
+// there from an earlier life of the same node.
+func (r *ManualNodeRepository) saveCreatedRole(n *ManualNode) (*core.NodeRole, error) {
+	if n.Role == "" {
+		return nil, nil
+	}
+	existing, err := core.ListNodeRolesByIDs(r.dbManager.Db, n.TenantID, []string{n.KGNodeID})
+	if err != nil {
+		return nil, err
+	}
+	var prior *core.NodeRole
+	if row, ok := existing[n.KGNodeID]; ok {
+		prior = &row
+	}
+	return prior, core.UpsertNodeRole(r.dbManager.Db, core.NodeRole{
+		TenantID: n.TenantID, KGNodeID: n.KGNodeID, UniqueKey: n.UniqueKey,
+		Role: n.Role, Engine: n.Engine, SetByUserID: n.DeclaredByUserID,
+	})
+}
+
+// withdrawDeclaration undoes a declaration whose node never reached the graph.
+func (r *ManualNodeRepository) withdrawDeclaration(n *ManualNode) {
+	if _, err := r.dbManager.Exec(`UPDATE kg_manual_nodes SET is_active = false WHERE id = $1`, n.ID); err != nil {
+		r.logger.Error("manual node: failed to withdraw declaration after graph write failed",
+			"id", n.ID, "error", err)
+	}
+}
+
+// undoCreatedRole puts back the role row a creation replaced, or removes the
+// one it added.
+func (r *ManualNodeRepository) undoCreatedRole(n *ManualNode, prior *core.NodeRole) {
+	if n.Role == "" {
+		return
+	}
+	var err error
+	if prior != nil {
+		err = core.UpsertNodeRole(r.dbManager.Db, *prior)
+	} else {
+		_, err = core.DeleteNodeRole(r.dbManager.Db, n.TenantID, n.KGNodeID)
+	}
+	if err != nil {
+		r.logger.Error("manual node: failed to undo node role after graph write failed",
+			"id", n.ID, "error", err)
+	}
 }
 
 // prepare validates a request and builds the node it declares.
@@ -355,7 +442,30 @@ func (r *ManualNodeRepository) prepare(req ManualNodeCreate) (*ManualNode, error
 	if !core.IsManualNodeType(core.NodeType(n.NodeType)) {
 		return nil, fmt.Errorf("node type %q cannot be declared", n.NodeType)
 	}
+	if err := prepareRole(n, req); err != nil {
+		return nil, err
+	}
 	return n, nil
+}
+
+// prepareRole validates the role a declaration is created with.
+func prepareRole(n *ManualNode, req ManualNodeCreate) error {
+	role := strings.TrimSpace(req.Role)
+	if role == "" {
+		if strings.TrimSpace(req.Engine) != "" {
+			return errors.New("an engine needs a role")
+		}
+		return nil
+	}
+	if !core.IsNodeRoleTarget(core.NodeType(n.NodeType)) {
+		return fmt.Errorf("a %s cannot carry a role", n.NodeType)
+	}
+	engine, err := core.ValidateNodeRole(role, req.Engine)
+	if err != nil {
+		return err
+	}
+	n.Role, n.Engine = role, engine
+	return nil
 }
 
 // prepareTenantScoped fills in the type of a declaration outside any account
@@ -642,6 +752,15 @@ func (r *ManualNodeRepository) Merge(ctx context.Context, tenantID string, id in
 	if _, err := tx.Exec(`UPDATE kg_manual_nodes SET is_active = false
 		WHERE tenant_id = $1 AND id = $2`, tenantID, id); err != nil {
 		return nil, 0, fmt.Errorf("withdraw declaration: %w", err)
+	}
+	// The role the user gave the declared node goes to the node it is merged
+	// into, unless that node has one of its own.
+	if err := core.MoveNodeRole(tx, tenantID, n.KGNodeID, n.DuplicateNodeID); err != nil {
+		return nil, 0, err
+	}
+	// ...and shows on it now, not from its next build.
+	if err := core.RefreshLiveNodeRole(tx, tenantID, n.DuplicateNodeID); err != nil {
+		return nil, 0, err
 	}
 	if _, err := tombstoneManualNodes(tx, tenantID, []string{n.KGNodeID}); err != nil {
 		return nil, 0, err

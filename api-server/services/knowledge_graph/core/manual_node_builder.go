@@ -303,6 +303,12 @@ func MaterializeManualNode(nodeType NodeType, specificType, uniqueKey string, ba
 		if IsManualReservedProperty(k) {
 			return nil, fmt.Errorf("property %q cannot be set on a declared node", k)
 		}
+		// The role overlay owns these keys. They are refused at write time;
+		// one stored before that rule is dropped here rather than failing the
+		// build, so it cannot pass itself off as a user-set role.
+		if IsNodeRoleBookkeepingProperty(k) {
+			continue
+		}
 		props[k] = v
 	}
 	if details.Description != "" {

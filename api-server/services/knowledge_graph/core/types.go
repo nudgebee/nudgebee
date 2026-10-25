@@ -1263,6 +1263,7 @@ type SearchNodesParams struct {
 	ResourceID    string            `json:"resource_id,omitempty"`
 	NodeTypes     []NodeType        `json:"node_types,omitempty"`
 	SpecificTypes []string          `json:"specific_types,omitempty"` // Filter by concrete cloud/native types (e.g. EC2Instance)
+	Roles         []string          `json:"roles,omitempty"`          // Acts as one of these roles: carried (a tagged workload) or by type (an RDS Database); ANDed with NodeTypes, so pass alone
 	Source        string            `json:"source,omitempty"`
 	Labels        map[string]string `json:"labels,omitempty"`
 	AccountIDs    []string          `json:"account_ids,omitempty"`
