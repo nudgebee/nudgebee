@@ -48,16 +48,17 @@ var Config appConfig
 // LLM_SERVER_SCHEDULER_LEADER_ELIGIBLE=true to be electable at all (see
 // IsSchedulerLeaderEligible), and LLM_SERVER_SERVICE_NAME=llm-server-<dev> to be
 // elected in a private pool. The second without the first is silent — the process
-// heartbeats and never wins. The first without the second is worse: it makes the
-// laptop leader of the shared fleet, and the dead-worker query is scoped to
-// worker_type, so every real pod looks dead to it and their conversations get
-// restarted on the laptop.
+// heartbeats and never wins. The first without the second used to make the
+// laptop leader of the shared fleet; IsSchedulerLeaderEligible now refuses it.
 var SERVICE_NAME = func() string {
 	if v := os.Getenv("LLM_SERVER_SERVICE_NAME"); v != "" {
 		return v
 	}
-	return "llm-server"
+	return DefaultServiceName
 }()
+
+// DefaultServiceName is the shared worker pool every cluster replica joins.
+const DefaultServiceName = "llm-server"
 
 // WorkspaceHTTPClientTimeout is the HTTP client timeout every tool uses when
 // calling into a workspace pod (workspace.NewWorkspaceManager). Defined here
@@ -2070,6 +2071,12 @@ func IsInCluster() bool {
 // separate: forcing eligibility on a laptop lets a developer exercise leader jobs
 // without also making the cluster treat that laptop's conversations as its own.
 func IsSchedulerLeaderEligible() bool {
+	// A local worker never leads the shared pool, whatever the override: it would
+	// stop every leader job in the cluster for as long as it heartbeats. Testing
+	// leader jobs on a laptop needs a private pool (LLM_SERVER_SERVICE_NAME).
+	if IsLocalWorkerName(Config.ServerName) && SERVICE_NAME == DefaultServiceName {
+		return false
+	}
 	switch strings.ToLower(strings.TrimSpace(Config.SchedulerLeaderEligible)) {
 	case "true":
 		return true
