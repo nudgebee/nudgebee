@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -61,9 +62,19 @@ func authHandlerMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		authHeader := c.Request.Header.Get(config.Config.ServiceApiServerTokenHeader)
+		expectedToken := config.Config.ServiceApiServerToken
+		if expectedToken == "" {
+			logger.Error("Unauthorized request: ServiceApiServerToken is empty (fail-closed)", "path", c.Request.URL.Path)
+			c.AbortWithStatus(http.StatusUnauthorized)
+			return
+		}
 
-		if authHeader == config.Config.ServiceApiServerToken {
+		authHeader := c.Request.Header.Get(config.Config.ServiceApiServerTokenHeader)
+		if authHeader == "" {
+			authHeader = c.Request.Header.Get("X-ACTION-TOKEN")
+		}
+
+		if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedToken)) == 1 {
 			c.Set(CTX_IS_PUBLIC, false)
 			c.Next()
 			return
@@ -73,7 +84,7 @@ func authHandlerMiddleware() gin.HandlerFunc {
 				maskedAuth = authHeader[:4] + "***"
 			}
 			logger.Error("Unauthorized request", "path", c.Request.URL.Path, "method", c.Request.Method, "authHeader", maskedAuth)
-			c.AbortWithStatus(401)
+			c.AbortWithStatus(http.StatusUnauthorized)
 			return
 		}
 	}
@@ -196,7 +207,6 @@ func main() {
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	pprof.Register(r)
 	r.Use(gin.Recovery())
 	// otelgin must run before sloggin so the server span is on the request
 	// context when the access log line is emitted with trace_id/span_id.
@@ -208,6 +218,10 @@ func main() {
 	r.Use(sloggin.NewWithConfig(logger, slogginConfig))
 	r.Use(traceResponseHeaderMiddleware())
 	r.Use(authHandlerMiddleware())
+
+	if os.Getenv("ENABLE_PPROF") == "true" {
+		pprof.Register(r)
+	}
 
 	var tracer = otel.Tracer(config.SERVICE_NAME)
 	var meter = otel.Meter(config.SERVICE_NAME)
