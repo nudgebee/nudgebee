@@ -996,21 +996,23 @@ func (r K8sResourceSearchTool) handleResourceSuggestions(request K8sResourceSear
 	if len(resources) == 0 {
 		clusterConnected = hasConnectedK8sAgent(nbRequestContext.AccountId)
 	}
+	var liveNote string
 	if len(resources) == 0 && clusterConnected {
 		// 2. Fallback: find actual resources via live kubectl strategies.
-		k8sResources := r.findActualResources(searchName, namespace, request.ResourceType, nbRequestContext)
+		k8sResources, fanNote := r.findActualResources(searchName, namespace, request.ResourceType, nbRequestContext)
 		// Filter out any resources whose names don't contain a meaningful term from the query.
 		// This guards against grep-pipe failures on the relay returning unrelated resources.
 		k8sResources = r.filterResourcesByRelevance(k8sResources, searchName)
 		if len(k8sResources) > 0 {
 			resources = k8sResources
 		}
+		liveNote = fanNote
 
 		// 3. Internalized discovery: if still nothing, execute fallback strategies automatically.
 		if len(resources) == 0 && searchName != "" {
 			strategies := r.generateResourceSearchStrategies(searchName, namespace)
 			// Try executing the strategies internally instead of suggesting them
-			for _, strategy := range strategies {
+			for i, strategy := range strategies {
 				var found []K8sResourceInfo
 				if strategy.LabelValue != "" {
 					found = r.searchPodsByLabelValue(strategy.LabelValue, namespace, nbRequestContext)
@@ -1027,8 +1029,10 @@ func (r K8sResourceSearchTool) handleResourceSuggestions(request K8sResourceSear
 						found = r.filterResourcesByType(found, request.ResourceType)
 					}
 
-					resources = append(resources, found...)
+					// Dedup before the cap so it, and the note, count distinct resources.
+					resources = r.removeDuplicateResources(append(resources, found...))
 					if len(resources) > 10 {
+						liveNote += strategyCutoffNote(len(resources), len(strategies)-i-1, len(strategies))
 						break // Don't over-collect
 					}
 				}
@@ -1040,7 +1044,7 @@ func (r K8sResourceSearchTool) handleResourceSuggestions(request K8sResourceSear
 	if len(resources) > 0 {
 		resources = r.removeDuplicateResources(resources)
 	}
-	message = resourceSearchResultMessage(len(resources), clusterConnected) + inventoryCutoffNote(inventoryShown, inventoryCounts)
+	message = resourceSearchResultMessage(len(resources), clusterConnected) + inventoryCutoffNote(inventoryShown, inventoryCounts) + liveNote
 
 	// Enrich resources with owner references (mostly for Pods)
 	resources = r.enrichWithOwners(resources, nbRequestContext)
@@ -1417,19 +1421,48 @@ func (r K8sResourceSearchTool) generateResourceSearchStrategies(resourceName, na
 	return strategies
 }
 
-// findActualResources executes kubectl commands to find matching resources
-func (r K8sResourceSearchTool) findActualResources(resourceName, namespace, requestedResourceType string, nbRequestContext core.NbToolContext) []K8sResourceInfo {
+// strategyCutoffNote tells the caller the fallback name patterns stopped
+// early, so more resources may match than the ones returned.
+func strategyCutoffNote(found, untried, total int) string {
+	if untried <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(" Stopped after %d live matches with %d of %d fallback name patterns not tried; more may match, narrow with namespace, resource_type or a more specific name.", found, untried, total)
+}
+
+// liveTimeoutNote tells the caller the live search stopped waiting before
+// every strategy answered, so a miss is not proof the resource is absent.
+// Empty when nothing was left pending.
+func liveTimeoutNote(timeout time.Duration, pending []string) string {
+	if len(pending) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" Live cluster search timed out after %s before these searches finished: %s. Results are partial, so a resource missing here may still exist; retry, or narrow with namespace or resource_type.", timeout, strings.Join(pending, ", "))
+}
+
+// crdCutoffNote tells the caller only some custom resource types were searched.
+func crdCutoffNote(searched, total int) string {
+	if total <= searched {
+		return ""
+	}
+	return fmt.Sprintf(" Custom resource search was capped at the first %d of %d types; pass resource_type to search another one.", searched, total)
+}
+
+// findActualResources executes kubectl commands to find matching resources.
+// The note, empty when the search was complete, says what was left out.
+func (r K8sResourceSearchTool) findActualResources(resourceName, namespace, requestedResourceType string, nbRequestContext core.NbToolContext) ([]K8sResourceInfo, string) {
 	var allResources []K8sResourceInfo
 
 	if requestedResourceType != "" {
 		resources := r.searchResourceType(resourceName, namespace, requestedResourceType, nbRequestContext)
 		allResources = append(allResources, resources...)
 		allResources = r.expandWorkloadResources(allResources, namespace, nbRequestContext)
-		return r.removeDuplicateResources(allResources)
+		return r.removeDuplicateResources(allResources), ""
 	}
 
 	type searchResult struct {
 		resources []K8sResourceInfo
+		note      string
 	}
 
 	// Channels to collect results from parallel execution
@@ -1477,7 +1510,8 @@ func (r K8sResourceSearchTool) findActualResources(resourceName, namespace, requ
 		// rollouts is skipped because Strategy 1 already searches it; found
 		// here too it would be reported under a second type name and not
 		// deduplicate.
-		for _, t := range r.getCustomResourceTypes(nbRequestContext) {
+		customTypes, customTotal := r.getCustomResourceTypes(nbRequestContext)
+		for _, t := range customTypes {
 			if t != "rollouts" && validateKubectlCommandAccess("kubectl get "+t) == nil {
 				crdTypes = append(crdTypes, t)
 			}
@@ -1486,7 +1520,7 @@ func (r K8sResourceSearchTool) findActualResources(resourceName, namespace, requ
 		if len(crdTypes) > 0 {
 			resources = r.searchResourceTypes(resourceName, namespace, crdTypes, nbRequestContext)
 		}
-		crdResChan <- searchResult{resources: resources}
+		crdResChan <- searchResult{resources: resources, note: crdCutoffNote(len(customTypes), customTotal)}
 	}()
 
 	// Strategy 4: Label searches
@@ -1509,21 +1543,38 @@ func (r K8sResourceSearchTool) findActualResources(resourceName, namespace, requ
 	}
 	timeout := time.After(timeoutDuration)
 
-	// We expect 4 results
+	// We expect 4 results; pending names the strategies still running, in
+	// the order the note lists them.
+	pending := []string{"namespaced kinds", "cluster-wide kinds", "custom resources", "pod labels"}
+	done := func(name string) {
+		for i, p := range pending {
+			if p == name {
+				pending = append(pending[:i], pending[i+1:]...)
+				return
+			}
+		}
+	}
+	var note string
 CollectResults:
-	for i := 0; i < 4; i++ {
+	for len(pending) > 0 {
 		select {
 		case res := <-commonResChan:
 			allResources = append(allResources, res.resources...)
+			done("namespaced kinds")
 		case res := <-clusterResChan:
 			allResources = append(allResources, res.resources...)
+			done("cluster-wide kinds")
 		case res := <-crdResChan:
 			allResources = append(allResources, res.resources...)
+			note += res.note
+			done("custom resources")
 		case res := <-labelResChan:
 			allResources = append(allResources, res.resources...)
+			done("pod labels")
 		case <-timeout:
-			nbRequestContext.Ctx.GetLogger().Warn("resource-search: timeout waiting for strategies to complete")
-			// Proceed with whatever we have found so far
+			nbRequestContext.Ctx.GetLogger().Warn("resource-search: timeout waiting for strategies to complete", "pending", pending)
+			// Proceed with whatever we have found so far, and say so
+			note += liveTimeoutNote(timeoutDuration, pending)
 			break CollectResults
 		}
 	}
@@ -1532,18 +1583,19 @@ CollectResults:
 	// This depends on the results of the above searches, so it must run after
 	allResources = r.expandWorkloadResources(allResources, namespace, nbRequestContext)
 
-	return r.removeDuplicateResources(allResources)
+	return r.removeDuplicateResources(allResources), note
 }
 
-// getCustomResourceTypes gets CRD resource types
-func (r K8sResourceSearchTool) getCustomResourceTypes(nbRequestContext core.NbToolContext) []string {
+// getCustomResourceTypes gets CRD resource types, at most 10, and how many
+// the cluster has in total.
+func (r K8sResourceSearchTool) getCustomResourceTypes(nbRequestContext core.NbToolContext) ([]string, int) {
 	var crdTypes []string
 
 	// Get CRDs first
 	cmd := "kubectl get customresourcedefinitions --no-headers"
 	response := r.executeKubectlCommand(cmd, nbRequestContext)
 	if response == "" {
-		return crdTypes
+		return crdTypes, 0
 	}
 
 	lines := strings.Split(response, "\n")
@@ -1566,11 +1618,12 @@ func (r K8sResourceSearchTool) getCustomResourceTypes(nbRequestContext core.NbTo
 	}
 
 	// Limit to avoid performance issues
+	total := len(crdTypes)
 	if len(crdTypes) > 10 {
 		crdTypes = crdTypes[:10]
 	}
 
-	return crdTypes
+	return crdTypes, total
 }
 
 // expandWorkloadResources finds related pods for deployments, statefulsets, daemonsets
