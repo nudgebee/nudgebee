@@ -115,6 +115,11 @@ describe('permissionCatalog', () => {
     // Every key in the tenant, and revoking any of them, is tenant-admin only (#38965).
     'users_list_tenant_tokens',
     'users_delete_tenant_token',
+    // bees_install / bees_uninstall: installing a Worker Bee creates its account
+    // and the role it acts with. Privilege administration, like role assignment
+    // above; the handler is tenant-admin only.
+    'bees_install',
+    'bees_uninstall',
     // Sign-in internals the app server calls as super admin. Their tables have
     // no tenant column, so a users:Read / tenants:Read grant read any tenant's
     // credential hashes, roles and tenants.
@@ -122,11 +127,7 @@ describe('permissionCatalog', () => {
     'users_get_by_provider_account',
     'users_get_super_admin_role',
     'tenant_by_user_v2',
-    // bees_install / bees_uninstall: installing a Worker Bee creates its account
-    // and the role it acts with. Privilege administration, like role assignment
-    // above; the handler is tenant-admin only.
-    'bees_install',
-    'bees_uninstall',
+    'users_get_details',
     // Creating or deleting a bee's principal, or the user behind it, is the same
     // privilege administration.
     'bees_create_principal',

@@ -1,5 +1,5 @@
 import { queryGraphQL, unwrapGraphQL } from '@lib/HttpService';
-import { getUserById, getUsers, getUserGroups, getUserGroup, getUserGroupUsers, createUserGroup } from '@lib/UserService';
+import { getUsers, getUserGroups, getUserGroup, getUserGroupUsers, createUserGroup } from '@lib/UserService';
 import cache from '@lib/cache';
 
 export const PREFERENCE_LAST_ACCOUNT_ID = 'last_account';
@@ -426,15 +426,6 @@ const apiUser = {
       console.log('getWidget1Query Error is', err);
       return err;
     }
-  },
-  getUser: async function (id) {
-    let response = await getUserById({ id: id });
-    if (response.data && response.data.users && response.data.users.length > 0) {
-      return {
-        data: response.data.users[0],
-      };
-    }
-    return {};
   },
   getAllStatuses: async function () {
     try {

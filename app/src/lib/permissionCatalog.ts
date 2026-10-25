@@ -373,6 +373,9 @@ const NON_GRANTABLE_ACTIONS = new Set<string>([
   'users_get_by_provider_account',
   'users_get_super_admin_role',
   'tenant_by_user_v2',
+  // a user's profile, roles and tenants by id, across tenants: same server-only
+  // sign-in path; the app reads resolver names from the resolution rows instead
+  'users_get_details',
   'bees_create_principal',
   'bees_delete_principal',
   'users_create_bee',

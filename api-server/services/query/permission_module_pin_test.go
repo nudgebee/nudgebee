@@ -24,7 +24,6 @@ var tenantlessGrantableTables = map[string]string{
 	"cloud_resource_details_v2": "global catalog of cloud resource types",
 	"feature_v2":                "global catalog of product features",
 	"knowledge_base_v2":         "global knowledge-base rules",
-	"user_details_v2":           "KNOWN GAP: any built-in role reads another tenant's user profile by id; follow-up",
 }
 
 func TestQueryTablesCarryTheirActionsModule(t *testing.T) {

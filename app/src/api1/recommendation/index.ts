@@ -1940,6 +1940,7 @@ const apiRecommendations = {
             id
             resolver_id
             resolver_type
+            resolver_display_name
             status
             status_message
             type
