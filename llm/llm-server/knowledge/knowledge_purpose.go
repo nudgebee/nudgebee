@@ -33,23 +33,37 @@ func KnowledgePurposeGuidance(purpose KnowledgeContentPurpose) string {
 }
 
 func KnowledgeDocumentPurpose(doc RAGSearchResult) KnowledgeContentPurpose {
+	purpose, _ := knowledgeDocumentPurpose(doc)
+	return purpose
+}
+
+// knowledgeDocumentPurpose decides how a hit is treated and also reports whether the title
+// rule alone made it a procedure, so the caller can say so once.
+func knowledgeDocumentPurpose(doc RAGSearchResult) (KnowledgeContentPurpose, bool) {
 	// A category a user put on this exact document decides its treatment. Only
 	// ResolveDocumentCategories writes this key, from the marks table, and only
 	// on integration documents: that is what makes a marked Confluence or
 	// ServiceNow page a procedure when a scraped one is not.
 	switch category, _ := doc.Metadata[DocumentNoteCategoryKey].(string); category {
 	case KBNoteCategorySOP:
-		return KnowledgePurposeProcedure
+		return KnowledgePurposeProcedure, false
 	case KBNoteCategoryFact:
-		return KnowledgePurposeReference
+		return KnowledgePurposeReference, false
 	}
 	if ManualKnowledgeID(doc) != "" || pdfKnowledgeID(doc) != "" {
 		category, _ := doc.Metadata["note_category"].(string)
-		return KnowledgePurpose("manual", category)
+		return KnowledgePurpose("manual", category), false
 	}
 	// Integration pages have no manual KB category, so the classifier's kind is their only automatic signal.
 	if kind, _ := doc.Metadata["kind"].(string); kind == "sop" {
-		return KnowledgePurposeProcedure
+		return KnowledgePurposeProcedure, false
 	}
-	return KnowledgePurposeReference
+	// Syncs do not classify integration pages (no account to pick an LLM), so a page the
+	// classifier has not reached, or called plain knowledge, would stay reference material
+	// even when its title says runbook. A page's own title is a reliable enough signal to
+	// treat it as a procedure; a user's FACT mark above still wins.
+	if titleMarksProcedure(doc) {
+		return KnowledgePurposeProcedure, true
+	}
+	return KnowledgePurposeReference, false
 }

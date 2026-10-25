@@ -341,3 +341,29 @@ def test_without_a_declared_count_the_documents_handed_in_are_counted(monkeypatc
         pass
 
     assert captured["expected_document_count"] == 3
+
+
+def test_servicenow_stamps_the_title_so_every_chunk_carries_it():
+    """The title is the first line of the text, so only the first chunk has it unless it is also metadata."""
+    from rag.core.documents import scraper
+
+    article = {
+        "sys_id": "abc123",
+        "number": "KB1",
+        "short_description": "Disk Alarm Runbook",
+        "text": "<p>body</p>",
+        "wiki": "",
+    }
+    document = scraper.process_servicenow_kb_article(article, "https://example.service-now.com")
+
+    assert document.metadata["title"] == "Disk Alarm Runbook"
+    assert document.page_content.startswith("Title: Disk Alarm Runbook")
+
+
+def test_servicenow_without_a_short_description_stamps_no_title():
+    from rag.core.documents import scraper
+
+    article = {"sys_id": "abc123", "number": "KB1", "short_description": "", "text": "<p>body</p>", "wiki": ""}
+    document = scraper.process_servicenow_kb_article(article, "https://example.service-now.com")
+
+    assert "title" not in document.metadata

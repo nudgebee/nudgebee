@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -85,7 +86,12 @@ func LoadKnowledgeCandidate(accountID, conversationID, messageID, id string) (Kn
 // SetKnowledgeDocumentHandle strips large bodies even when an older RAG server
 // ignores the excerpt request. Such results must be labelled excerpt-only.
 func SetKnowledgeDocumentHandle(candidate *KnowledgeCandidate, doc RAGSearchResult) {
-	candidate.Purpose = KnowledgeDocumentPurpose(doc)
+	var byTitle bool
+	candidate.Purpose, byTitle = knowledgeDocumentPurpose(doc)
+	if byTitle && firstTitleRulePromotion(doc) {
+		slog.Info("knowledge: page treated as a procedure because its title names it a runbook",
+			"title", hitPageTitle(doc), "collection", doc.Metadata["collection"], "retrieval_id", doc.Metadata["retrieval_id"])
+	}
 	candidate.Collection, _ = doc.Metadata["collection"].(string)
 	candidate.DocumentID, _ = doc.Metadata["retrieval_id"].(string)
 	candidate.Version, _ = doc.Metadata["content_sha256"].(string)

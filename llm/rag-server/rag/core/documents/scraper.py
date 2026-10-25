@@ -895,6 +895,10 @@ def process_servicenow_kb_article(article, base_url, snow_client=None, sources=N
             "keywords": keywords,
             "last_updated": sys_updated_on,
         }
+        if short_description:
+            # On every chunk of the page, not only the first: the title is the first line of the
+            # text, so a search hit on any later chunk would otherwise have none.
+            metadata["title"] = short_description
 
         if sources is not None:
             # The article body as ServiceNow returned it. What we index is

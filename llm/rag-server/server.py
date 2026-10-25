@@ -22,6 +22,7 @@ from rag.core.documents import (
     embedding_migration,
     kb_capability_backfill,
     kb_document_seed,
+    kb_title_fill,
     module_retag_migration,
     platform_capability_sync,
 )
@@ -86,6 +87,20 @@ def _start_kb_document_seed():
         logger.info("KB document label seed started in the background")
     except Exception as seed_exc:  # defensive: must never block startup
         logger.exception(f"Could not start KB document label seed (non-fatal): {seed_exc}")
+
+
+def _start_kb_title_fill():
+    """Put each ServiceNow page's title on every chunk of the page. No LLM calls; on by
+    default, RAG_KB_TITLE_FILL_ENABLED=false turns it off. llm-server's runbook title rule
+    needs the title on whichever chunk a search hits.
+    """
+    if not kb_title_fill.is_enabled():
+        return
+    try:
+        kb_title_fill.start_background()
+        logger.info("KB title fill started in the background")
+    except Exception as fill_exc:  # defensive: must never block startup
+        logger.exception(f"Could not start KB title fill (non-fatal): {fill_exc}")
 
 
 def post_startup_task():
@@ -170,6 +185,7 @@ def post_startup_task():
 
             _start_kb_capability_backfill()
             _start_kb_document_seed()
+            _start_kb_title_fill()
         except (
             ConnectionError,
             ResponseHandlingException,

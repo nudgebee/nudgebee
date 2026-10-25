@@ -1118,6 +1118,14 @@ type appConfig struct {
 	// Fail-open: any rerank miss keeps the order rag-server gave. A deliberate
 	// empty verdict is distinct from a miss and does suppress the results.
 	KBRerankEnabled bool `mapstructure:"llm_kb_rerank_enabled"`
+	// KBTitleSOPRuleEnabled lets a Confluence or ServiceNow page whose title names it a
+	// runbook count as a must-follow procedure when nobody has marked or classified it.
+	// It decides at read time and writes no label. Off switch for the rule.
+	KBTitleSOPRuleEnabled bool `mapstructure:"llm_kb_title_sop_rule_enabled"`
+	// KBTitleSOPWords and KBTitleSOPExclusions are comma-separated. A title matches when it
+	// contains one of the words as a whole word and none of the exclusion phrases.
+	KBTitleSOPWords      string `mapstructure:"llm_kb_title_sop_words"`
+	KBTitleSOPExclusions string `mapstructure:"llm_kb_title_sop_exclusions"`
 	// KBRerankMinScore is the cutoff on the LLM's own 0-1 score for the best
 	// candidate. Below it nothing is inserted and the search is treated as having
 	// found nothing, which on real traffic is the correct answer more often than
@@ -1770,6 +1778,9 @@ func init() {
 	viper.SetDefault("llm_memory_rerank_enabled", false)
 	viper.SetDefault("llm_memory_rerank_min_score", 0.8)
 	viper.SetDefault("llm_kb_rerank_enabled", false)
+	viper.SetDefault("llm_kb_title_sop_rule_enabled", true)
+	viper.SetDefault("llm_kb_title_sop_words", DefaultKBTitleSOPWords)
+	viper.SetDefault("llm_kb_title_sop_exclusions", DefaultKBTitleSOPExclusions)
 	viper.SetDefault("llm_kb_rerank_min_score", 0.0)
 	// Combined-score weights (similarity / relevancy / decay) and the post-rerank
 	// filter threshold. Threshold defaults to 0 (off) so an unchanged deployment
@@ -2132,3 +2143,15 @@ func EffectivePIIBackend() string {
 	}
 	return "http"
 }
+
+// Defaults for the runbook title rule (llm_kb_title_sop_words, llm_kb_title_sop_exclusions). A
+// title matches when it holds a word as a whole word and no exclusion phrase. The exclusions
+// are phrases, not single words, so that "Helm Template Rendering Runbook" and "Elasticsearch
+// Reindex Runbook" stay runbooks while "Runbook template" and "Runbook index" do not.
+const (
+	DefaultKBTitleSOPWords      = "runbook,run book,sop,playbook,standard operating procedure"
+	DefaultKBTitleSOPExclusions = "runbook template,runbook templates,sop template,sop templates,playbook template,playbook templates," +
+		"template runbook,template sop,template playbook,runbook index,runbooks index,sop index,playbook index,index of,table of contents," +
+		"how to write,what is a runbook,what is an sop,what is sop,what is a playbook,postmortem,post-mortem,escalation policy," +
+		"runbook home,runbook guidelines,runbook review process,sop review process,authoring standards"
+)
