@@ -8,6 +8,7 @@ import (
 	"nudgebee/runbook/services/cloud"
 	integrationsService "nudgebee/runbook/services/integrations"
 	"nudgebee/runbook/services/relay"
+	"os"
 	"strings"
 	"time"
 )
@@ -120,6 +121,21 @@ func (t *RunScriptTask) Execute(taskCtx types.TaskContext, params map[string]any
 
 	// Executor Selection
 	if executorType, ok := params["executor_type"].(string); ok {
+		validExecutors := map[string]bool{
+			"kubernetes":        true,
+			"agent":             true,
+			"aws_ssm":           true,
+			"azure_run_command": true,
+			"gcp_compute_ssh":   true,
+			"ssh":               true,
+		}
+		if os.Getenv("ALLOW_LOCAL_EXECUTOR") == "true" {
+			validExecutors["local"] = true
+		}
+		if !validExecutors[strings.ToLower(executorType)] {
+			return nil, fmt.Errorf("unsupported or disallowed executor_type: %s", executorType)
+		}
+
 		// Validation for specific executors
 		switch executorType {
 		case "aws_ssm", "gcp_compute_ssh":

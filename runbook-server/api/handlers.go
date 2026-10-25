@@ -604,13 +604,16 @@ func (s *Server) handleGenericWebhook(c *gin.Context) {
 		return
 	}
 
-	// Optional: Validate secret if provided in workflow config
-	if configuredSecret != "" {
-		// Secure comparison to prevent timing attacks
-		if subtle.ConstantTimeCompare([]byte(c.GetHeader("X-Webhook-Secret")), []byte(configuredSecret)) != 1 {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized webhook access"})
-			return
-		}
+	// Validate secret in workflow config (required to prevent unauthenticated trigger execution)
+	if configuredSecret == "" {
+		s.logger.Warn("webhook trigger rejected: webhook secret is required but not configured", "workflowID", workflowID)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "webhook secret is required for webhook triggers"})
+		return
+	}
+	// Secure comparison to prevent timing attacks
+	if subtle.ConstantTimeCompare([]byte(c.GetHeader("X-Webhook-Secret")), []byte(configuredSecret)) != 1 {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized webhook access"})
+		return
 	}
 
 	// Limit request body size

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"log/slog"
 	"net/http"
 	"os"
@@ -40,6 +41,32 @@ func (s *Server) SetTemplateSyncer(syncer *templatesource.Syncer) {
 	s.templateSyncer = syncer
 }
 
+func authHandlerMiddleware(logger *slog.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		path := c.Request.URL.Path
+		if strings.HasPrefix(path, "/health") || strings.HasPrefix(path, "/swagger") || path == "/openapi.json" || strings.HasPrefix(path, "/webhook") {
+			c.Next()
+			return
+		}
+		expectedToken := config.Config.ServiceApiServerToken
+		if expectedToken == "" {
+			logger.Error("runbook-server: ACTION_API_SERVER_TOKEN is empty; rejecting request", "path", path)
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "service authentication not configured"})
+			return
+		}
+		authHeader := c.Request.Header.Get(config.Config.ServiceApiServerTokenHeader)
+		if authHeader == "" {
+			authHeader = c.Request.Header.Get("X-ACTION-TOKEN")
+		}
+		if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedToken)) != 1 {
+			logger.Warn("runbook-server: unauthorized request", "path", path)
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+		c.Next()
+	}
+}
+
 func getLogLevel() slog.Level {
 	switch strings.ToLower(os.Getenv("LOG_LEVEL")) {
 	case "debug":
@@ -66,6 +93,7 @@ func NewServer(workflowService workflow.WorkflowService, configService configSvc
 	router.Use(gin.Recovery())
 	router.Use(sloggin.NewWithFilters(logger, sloggin.IgnorePath("/health")))
 	router.Use(otelgin.Middleware(config.SERVICE_NAME))
+	router.Use(authHandlerMiddleware(logger))
 	s := &Server{
 		router:          router,
 		workflowService: workflowService,
@@ -92,6 +120,7 @@ func NewServerWithObservability(workflowService workflow.WorkflowService, config
 	router.Use(gin.Recovery())
 	router.Use(sloggin.NewWithFilters(logger, sloggin.IgnorePath("/health")))
 	router.Use(otelgin.Middleware(config.SERVICE_NAME))
+	router.Use(authHandlerMiddleware(logger))
 	s := &Server{
 		router:          router,
 		workflowService: workflowService,
