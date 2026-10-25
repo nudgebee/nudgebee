@@ -73,6 +73,12 @@ type NBQueryConfig struct {
 	// Empty defers to the service-level default.
 	K8sOrchestratorMode string `json:"k8s_orchestrator_mode,omitempty"`
 
+	// InvestigationDepth is the depth a user picked for this chat conversation
+	// (quick / standard / deep). Sticky within a conversation via MergeFrom's
+	// fill-if-zero. Read only by the enterprise depth resolver
+	// (ee/investigationdepth); an OSS build stores it and ignores it.
+	InvestigationDepth string `json:"investigation_depth,omitempty"`
+
 	// Log provider override: outranks LLM_SERVER_LOG_PROVIDER_OVERRIDE and account
 	// routing ("k8s" = kubectl path). Case-sensitive — api-server spells ES "ES".
 	// Sticky within a conversation via MergeFrom's fill-if-zero, like LlmProvider.
@@ -185,7 +191,7 @@ func (q NBQueryConfig) IsEmpty() bool {
 	return q.EventId == "" && q.RecommendationId == "" && len(q.KnowledgeHints) == 0 && q.Namespace == "" &&
 		q.Workload == "" && q.GitRepo == "" && q.AccountId == "" &&
 		q.WorkflowId == "" && q.ExecutionId == "" && len(q.WorkflowDefinition) == 0 && len(q.Labels) == 0 &&
-		q.CurrentCluster == "" && q.CurrentClusterId == "" && q.K8sOrchestratorMode == "" &&
+		q.CurrentCluster == "" && q.CurrentClusterId == "" && q.K8sOrchestratorMode == "" && q.InvestigationDepth == "" &&
 		q.LlmProvider == "" && q.LlmModelName == "" && len(q.LlmTierModels) == 0 && q.LlmConfigSource == "" && !q.LlmConfigReset && len(q.ToolConfigs) == 0 && q.DelegatedTarget == nil &&
 		len(q.ClientTools) == 0 && q.Capabilities.IsEmpty() && len(q.ToolConfirmations) == 0 && len(q.ToolConfirmationRefs) == 0 &&
 		len(q.ToolConfigMetadata) == 0 && q.LogProviderOverride == "" && !q.SkipConversationHistory && !q.ReadOnlyRun && !q.StrictReadOnly && q.RemediationPlanTurn == "" && q.SystemNote == "" && q.InvestigationRunId == "" &&
@@ -331,6 +337,9 @@ func (q *NBQueryConfig) MergeFrom(src NBQueryConfig) {
 	}
 	if q.K8sOrchestratorMode == "" {
 		q.K8sOrchestratorMode = src.K8sOrchestratorMode
+	}
+	if q.InvestigationDepth == "" {
+		q.InvestigationDepth = src.InvestigationDepth
 	}
 	if q.LogProviderOverride == "" {
 		q.LogProviderOverride = src.LogProviderOverride

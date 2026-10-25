@@ -1938,11 +1938,11 @@ func (o *NBReActPlanner3) Plan(
 
 		}
 
-		if finish != nil && (!isSummaryToolUsed || config.Config.ClaimCritiqueFeedbackEnabled) && o.refinementAttempts >= o.maxRefinementAttempts {
+		// A zero budget (Quick depth) is handled after the critique gate below,
+		// so it is only counted where a critique would have run.
+		if finish != nil && o.maxRefinementAttempts > 0 && (!isSummaryToolUsed || config.Config.ClaimCritiqueFeedbackEnabled) && o.refinementAttempts >= o.maxRefinementAttempts {
 			logger.Warn("reactagent3: max refinement attempts reached, accepting current answer", "attempts", o.refinementAttempts)
-			if o.maxRefinementAttempts > 0 {
-				captureClaimBudgetStop(o.ctx, o.request, "react3", o.nbAgent.GetName(), input, finish.Data, o.Notebook, intermediateSteps)
-			}
+			captureClaimBudgetStop(o.ctx, o.request, "react3", o.nbAgent.GetName(), input, finish.Data, o.Notebook, intermediateSteps)
 			MetricsCritiqueDecision(o.nbAgent.GetName(), "force_accept", o.refinementAttempts)
 			return nil, finish, nil
 		}
@@ -1971,6 +1971,13 @@ func (o *NBReActPlanner3) Plan(
 
 			if !critiqueAllowed {
 				logger.Info("reactagent3: skipping critique", "enableCritique", o.enableCritique, "isTopLevel", topLevel, "isInvestigation", isInvestigation, "noToolRefusal", noToolRefusal)
+				return nil, finish, nil
+			}
+			// Quick depth: the critique would have run, so count it as skipped
+			// rather than dropping the run from the critique numbers.
+			if o.maxRefinementAttempts == 0 {
+				logger.Info("reactagent3: skipping critique", "reason", "depth", "maxRefinements", 0)
+				MetricsCritiqueDecision(o.nbAgent.GetName(), "skipped_depth", 0)
 				return nil, finish, nil
 			}
 
@@ -2784,7 +2791,7 @@ func NewReActAgent3(ctx *security.RequestContext, request NBAgentRequest, nbAgen
 		summaryToolName:                 summaryToolName,
 		retryConfig:                     retryConfig,
 		refinementAttempts:              0,
-		maxRefinementAttempts:           2,
+		maxRefinementAttempts:           depthRefinementBudget(ctx, 2),
 		maxConsecutiveNotebookOnlyTurns: 2,
 		tools:                           tools,
 		enableCritique:                  request.EnableCritique,

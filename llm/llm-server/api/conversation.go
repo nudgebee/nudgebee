@@ -271,6 +271,12 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 				response["config_source"] = pinnedSource
 				response["is_custom"] = true
 			}
+
+			// Per-conversation composer picks the client shows back on reopen;
+			// the server keeps applying them on later turns either way.
+			if prevConfig, ok := core.LatestMessageConfig(agentContext, request.ConversationId); ok && prevConfig.InvestigationDepth != "" {
+				response["extra_request_config"] = map[string]string{"investigation_depth": prevConfig.InvestigationDepth}
+			}
 		} else {
 			// No conversation, current = default
 			response["current"] = response["default"]

@@ -3,6 +3,7 @@ import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
 import ShieldOutlinedIcon from '@mui/icons-material/ShieldOutlined';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
+import SpeedOutlinedIcon from '@mui/icons-material/SpeedOutlined';
 import withBrandBlue from '@shared/icons/withBrandBlue';
 import { missingPermissionMessage } from '@lib/auth';
 import AgentsAdminTab from './AgentsAdminTab';
@@ -12,6 +13,7 @@ import GatewayAdminTab from './GatewayAdminTab';
 import SecurityAdminTab from './SecurityAdminTab';
 import BudgetsAndLimitsAdminTab from './BudgetsAndLimitsAdminTab';
 import MemoryPolicyAdminTab from './MemoryPolicyAdminTab';
+import InvestigationDepthAdminTab from './InvestigationDepthAdminTab';
 import RCAFormatAdminTab from './RCAFormatAdminTab';
 import MemoryLegacyAdminTab from './MemoryLegacyAdminTab';
 import AccountContextAdminTab from './AccountContextAdminTab';
@@ -23,6 +25,7 @@ const ProvidersIcon = withBrandBlue(SettingsOutlinedIcon);
 const GatewayIcon = withBrandBlue(HubOutlinedIcon);
 const SecurityIcon = withBrandBlue(ShieldOutlinedIcon);
 const MemoryPolicyIcon = withBrandBlue(LockOutlinedIcon);
+const InvestigationDepthIcon = withBrandBlue(SpeedOutlinedIcon);
 
 /**
  * AI & Tools sub-tabs (docs/ia-consolidation-plan.md, PR 3) — the single
@@ -120,6 +123,16 @@ export const AI_TOOLS_SUB_TABS = [
     Body: MemoryPolicyAdminTab,
     adminOnly: true,
     // EE-only body (PrivacyTab, app/src/ee/), stripped on OSS — callers drop the tab there, as for Egress Filter.
+    eeOnly: true,
+  },
+  {
+    id: 'investigation-depth',
+    fragment: 'investigation-depth',
+    text: 'Investigation Depth',
+    icon: InvestigationDepthIcon,
+    Body: InvestigationDepthAdminTab,
+    module: 'ai',
+    // EE-only body (app/src/ee/), stripped on OSS — callers drop the tab there, as for Egress Filter.
     eeOnly: true,
   },
   {

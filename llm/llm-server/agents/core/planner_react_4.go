@@ -218,7 +218,7 @@ func NewReActAgent4(ctx *security.RequestContext, request NBAgentRequest, nbAgen
 		notebookV2:            notebookV2,
 		stepCount:             0,
 		enableCritique:        request.EnableCritique,
-		maxRefinementAttempts: 2,
+		maxRefinementAttempts: depthRefinementBudget(ctx, 2),
 	}, nil
 }
 
@@ -672,6 +672,11 @@ func (o *NBReActPlanner4) Plan(
 		if !o.shouldCritique() || o.critiqueAttempts() >= o.maxRefinementAttempts {
 			if o.shouldCritique() && o.maxRefinementAttempts > 0 && o.critiqueAttempts() >= o.maxRefinementAttempts {
 				captureClaimBudgetStop(o.ctx, o.request, "react4", o.agentName(), plannerInput, finish.Data, o.Notebook, intermediateSteps)
+			}
+			// Quick depth: count the skipped critique instead of dropping the run
+			// from the critique numbers.
+			if o.shouldCritique() && o.maxRefinementAttempts == 0 {
+				MetricsCritiqueDecision(o.agentName(), "skipped_depth", 0)
 			}
 			// Log the gate inputs on the skip path, exactly as react_3 does
 			// ("reactagent3: skipping critique"). Without this the accept and

@@ -19,6 +19,7 @@ import CheckIcon from '@mui/icons-material/Check';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
 import MemoryOutlinedIcon from '@mui/icons-material/MemoryOutlined';
+import { renderSlot } from '@lib/slots';
 import { baseConfigSourceFor, configKeyForSource, wholeConfigSourceFor } from '@utils/llmConfigSource';
 
 // Define custom props interface
@@ -291,6 +292,10 @@ interface AutoSuggestTextareaProps {
   // Rendered first in the footer row, before the agent and model pickers
   // (the Ask page puts its account chip here).
   leadingControls?: React.ReactNode;
+  // Extra request config contributed by the ChatComposerToolbarExtra slot; the
+  // slot renders only when a change handler is given.
+  composerConfig?: Record<string, unknown>;
+  onComposerConfigChange?: (config: Record<string, unknown>) => void;
   // Models + image capability not fetched yet: show their controls disabled instead of hidden.
   modelsLoading?: boolean;
 }
@@ -561,37 +566,39 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
 
   return (
     <>
-      <Box
-        ref={anchorRef}
-        data-testid='model-picker-trigger'
-        onClick={openPopover}
-        sx={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 'var(--ds-space-1)',
-          cursor: disabled ? 'default' : 'pointer',
-          color: disabled ? 'var(--ds-gray-400)' : 'var(--ds-gray-600)',
-          borderRadius: 'var(--ds-radius-md)',
-          padding: 'var(--ds-space-1) var(--ds-space-2)',
-          whiteSpace: 'nowrap',
-          flexShrink: 0,
-          '&:hover': disabled ? {} : { backgroundColor: 'var(--ds-gray-100)' },
-        }}
-      >
-        <MemoryOutlinedIcon sx={{ fontSize: 'var(--ds-text-title)', color: 'inherit' }} />
-        <Typography
+      <Tooltip placement='top' title={open || disabled ? '' : 'Model this chat uses'}>
+        <Box
+          ref={anchorRef}
+          data-testid='model-picker-trigger'
+          onClick={openPopover}
           sx={{
-            fontSize: 'var(--ds-text-caption)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--ds-space-1)',
+            cursor: disabled ? 'default' : 'pointer',
+            color: disabled ? 'var(--ds-gray-400)' : 'var(--ds-gray-600)',
+            borderRadius: 'var(--ds-radius-md)',
+            padding: 'var(--ds-space-1) var(--ds-space-2)',
             whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            maxWidth: ds.space.mul(0, 40),
+            flexShrink: 0,
+            '&:hover': disabled ? {} : { backgroundColor: 'var(--ds-gray-100)' },
           }}
         >
-          {pickerButtonLabel(selectedModel, selectedTierModels, credentials, selectedConfig, configEntries)}
-        </Typography>
-        <SafeIcon src={MenuArrowDownIcon} alt='' style={{ height: ds.space.mul(0, 9), width: ds.space.mul(0, 9), opacity: '80%' }} />
-      </Box>
+          <MemoryOutlinedIcon sx={{ fontSize: 'var(--ds-text-title)', color: 'inherit' }} />
+          <Typography
+            sx={{
+              fontSize: 'var(--ds-text-caption)',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              maxWidth: ds.space.mul(0, 40),
+            }}
+          >
+            {pickerButtonLabel(selectedModel, selectedTierModels, credentials, selectedConfig, configEntries)}
+          </Typography>
+          <SafeIcon src={MenuArrowDownIcon} alt='' style={{ height: ds.space.mul(0, 9), width: ds.space.mul(0, 9), opacity: '80%' }} />
+        </Box>
+      </Tooltip>
       {open && (
         <Popper
           open={open}
@@ -987,6 +994,8 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
     externalAgentsLoading = false,
     submitOnModEnter = false,
     leadingControls,
+    composerConfig,
+    onComposerConfigChange,
     modelsLoading = false,
   },
   forwardedRef
@@ -1081,6 +1090,10 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
       addFiles(imageFiles);
     }
   };
+
+  const composerExtra = onComposerConfigChange
+    ? renderSlot('ChatComposerToolbarExtra', { config: composerConfig ?? {}, onChange: onComposerConfigChange, disabled })
+    : null;
 
   // Single send path used by every submit affordance so text + image clearing
   // and the outgoing payload stay consistent.
@@ -1481,6 +1494,7 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
               />
             </>
           )}
+          {composerExtra}
           <Box sx={{ width: '1px', height: ds.space[5], backgroundColor: 'var(--ds-brand-200)', mx: 'var(--ds-space-3)' }} />
           {isFollowUp && allowStop && text.trim() && (
             <Button size='md' onClick={() => buttonProperties.onClickStop?.()} icon={<StopIcon sx={{ color: 'white' }} />} aria-label='Stop' />
@@ -1691,6 +1705,7 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
             </Box>
           </Tooltip>
           <Box sx={{ flex: 1 }} />
+          {composerExtra}
           {/* Model Selector — popover variant for non-chat (popup) flow.
               Same component as the chat-screen path; renders the same two
               modes (Blanket / Per category) with mutual exclusivity. */}

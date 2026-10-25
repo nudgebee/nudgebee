@@ -605,6 +605,9 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}))
 			return
 		}
+		// The source as sent, before an empty one is filled from the stored
+		// conversation: a follow-up on an alert conversation is still a user turn.
+		callerSource := request.Source
 
 		if request.Query == "" && request.Resolution == "" {
 			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
@@ -1074,7 +1077,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		timer.mark("routing")
 		// Execute the agent
 		handleRequestExecution(c, agentContext, request.Async, request.UserId, "chains_chat", logger, func(ctx *security.RequestContext) (core.NBAgentResponse, error) {
-			return core.HandleConversationSessionRequest(ctx, agent, request.UserId, request.AccountId, request.SessionId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithConversationId(conversationId), core.ConversationSessionRequestWithMessageId(messageId), core.ConversationSessionRequestWithAgentId(agentId), core.ConversationSessionRequestWithConfig(request.Config), core.ConversationSessionRequestWithClientTools(request.ClientTools), core.ConversationSessionRequestWithCapabilities(request.Capabilities), core.ConversationSessionRequestWithIsNewConversation(isNewConversation), core.ConversationSessionRequestWithImages(request.Images), core.ConversationSessionRequestWithChannelContext(request.ChannelContext), core.ConversationSessionRequestWithChannelContextRefs(request.ChannelContextRefs), core.ConversationSessionRequestWithReplyRef(request.ReplyRef), core.ConversationSessionRequestWithRunProfile(newRunProfile))
+			return core.HandleConversationSessionRequest(ctx, agent, request.UserId, request.AccountId, request.SessionId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithCallerSource(callerSource), core.ConversationSessionRequestWithConversationId(conversationId), core.ConversationSessionRequestWithMessageId(messageId), core.ConversationSessionRequestWithAgentId(agentId), core.ConversationSessionRequestWithConfig(request.Config), core.ConversationSessionRequestWithClientTools(request.ClientTools), core.ConversationSessionRequestWithCapabilities(request.Capabilities), core.ConversationSessionRequestWithIsNewConversation(isNewConversation), core.ConversationSessionRequestWithImages(request.Images), core.ConversationSessionRequestWithChannelContext(request.ChannelContext), core.ConversationSessionRequestWithChannelContextRefs(request.ChannelContextRefs), core.ConversationSessionRequestWithReplyRef(request.ReplyRef), core.ConversationSessionRequestWithRunProfile(newRunProfile))
 		}, core.NBAgentResponse{
 			Response:       []string{"Your request has been received and will be processed asynchronously."},
 			Query:          request.Query,
@@ -1130,6 +1133,9 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}))
 			return
 		}
+		// The source as sent, before an empty one is filled from the stored
+		// conversation: a follow-up on an alert conversation is still a user turn.
+		callerSource := request.Source
 
 		if request.Query == "" {
 			c.JSON(400, BuildApiResponse(nil, []error{
@@ -1458,7 +1464,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}
 
 			err = workerQueue.Submit(submissionCtx, func() {
-				_, executeErr := core.HandleConversationSessionRequest(agentContext, agent, request.UserId, request.AccountId, request.SessionId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithConversationId(conversationId), core.ConversationSessionRequestWithMessageId(messageId), core.ConversationSessionRequestWithAgentId(agentId), core.ConversationSessionRequestWithConfig(request.Config), core.ConversationSessionRequestWithClientTools(request.ClientTools), core.ConversationSessionRequestWithCapabilities(request.Capabilities))
+				_, executeErr := core.HandleConversationSessionRequest(agentContext, agent, request.UserId, request.AccountId, request.SessionId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithCallerSource(callerSource), core.ConversationSessionRequestWithConversationId(conversationId), core.ConversationSessionRequestWithMessageId(messageId), core.ConversationSessionRequestWithAgentId(agentId), core.ConversationSessionRequestWithConfig(request.Config), core.ConversationSessionRequestWithClientTools(request.ClientTools), core.ConversationSessionRequestWithCapabilities(request.Capabilities))
 				if executeErr != nil {
 					logger.Error("api: error executing chain asynchronously", "error", executeErr)
 				} else {
@@ -1479,7 +1485,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 				Status:         core.ConversationStatusInProgress,
 			}, nil))
 		} else {
-			chainResponse, executeErr := core.HandleConversationSessionRequest(agentContext, agent, request.UserId, request.AccountId, request.SessionId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithConversationId(conversationId), core.ConversationSessionRequestWithMessageId(messageId), core.ConversationSessionRequestWithAgentId(agentId), core.ConversationSessionRequestWithConfig(request.Config), core.ConversationSessionRequestWithClientTools(request.ClientTools), core.ConversationSessionRequestWithCapabilities(request.Capabilities))
+			chainResponse, executeErr := core.HandleConversationSessionRequest(agentContext, agent, request.UserId, request.AccountId, request.SessionId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithCallerSource(callerSource), core.ConversationSessionRequestWithConversationId(conversationId), core.ConversationSessionRequestWithMessageId(messageId), core.ConversationSessionRequestWithAgentId(agentId), core.ConversationSessionRequestWithConfig(request.Config), core.ConversationSessionRequestWithClientTools(request.ClientTools), core.ConversationSessionRequestWithCapabilities(request.Capabilities))
 			if executeErr != nil {
 				logger.Error("api: error executing chain", "error", executeErr)
 				c.JSON(500, BuildApiResponse(nil, []error{

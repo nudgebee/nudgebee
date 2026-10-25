@@ -1432,6 +1432,17 @@ func ManageGroupUsers(ctx *security.RequestContext, request ManageGroupUsersRequ
 	}, nil
 }
 
+// eeAttributeValidators check EE-only tenant attributes on write; OSS never
+// names them. EE code adds them via RegisterEEAttributeValidator.
+var eeAttributeValidators []func(sc *security.SecurityContext, attr AttributeObject) error
+
+// RegisterEEAttributeValidator adds a check UpsertTenantAttributes runs on
+// every attribute written, after the tenants:Write check. It returns nil for
+// attributes it does not own.
+func RegisterEEAttributeValidator(validate func(sc *security.SecurityContext, attr AttributeObject) error) {
+	eeAttributeValidators = append(eeAttributeValidators, validate)
+}
+
 func UpsertTenantAttributes(ctx *security.RequestContext, request TenantAttributeUpsertRequest) ([]models.TenantAttributes, error) {
 	// Tenant config (non-privilege): tenant_admin OR a custom-role grant.
 	if !ctx.GetSecurityContext().CanManage("tenants", "Write") {
@@ -1443,6 +1454,13 @@ func UpsertTenantAttributes(ctx *security.RequestContext, request TenantAttribut
 		for _, attr := range request.Object {
 			if isPrivilegedTenantAttribute(attr.Name) {
 				return nil, common.ErrorUnauthorized("Setting '" + attr.Name + "' requires a tenant admin")
+			}
+		}
+	}
+	for _, attr := range request.Object {
+		for _, validate := range eeAttributeValidators {
+			if err := validate(ctx.GetSecurityContext(), attr); err != nil {
+				return nil, err
 			}
 		}
 	}

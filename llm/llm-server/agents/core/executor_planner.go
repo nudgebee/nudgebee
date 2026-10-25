@@ -5199,6 +5199,8 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 
 	ctx.GetLogger().Info("agentexecutor: making Run call to agent", "agent", agent.GetName())
 	maxIter := resolveMaxIterations(agent, request)
+	// The run's investigation depth sets the default budget (#41806).
+	maxIter = depthMaxIterations(ctx, agent, request, maxIter)
 	// The run's policy may cap the agent lower still.
 	if policyMax := policyFor(ctx).MaxTurns(ctx, agent); policyMax > 0 && policyMax < maxIter {
 		maxIter = policyMax

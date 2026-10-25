@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -406,6 +405,9 @@ type additionalConversationSessionRequestConfig struct {
 	replyRef              string
 	skipHistory           bool
 	title                 string
+	// callerSource is the source the caller sent, before any fallback to the
+	// conversation's stored source.
+	callerSource ConversationSource
 }
 
 type ConversationSessionRequestConfig interface {
@@ -485,6 +487,24 @@ func (h sessionRequestWithSource) apply(c *additionalConversationSessionRequestC
 }
 func ConversationSessionRequestWithSource(source ConversationSource) ConversationSessionRequestConfig {
 	return sessionRequestWithSource{
+		source: source,
+	}
+}
+
+type sessionRequestWithCallerSource struct {
+	source ConversationSource
+}
+
+func (h sessionRequestWithCallerSource) apply(c *additionalConversationSessionRequestConfig) {
+	c.callerSource = h.source
+}
+
+// ConversationSessionRequestWithCallerSource records the source the caller
+// actually sent, before the chat endpoint fills an empty one from the stored
+// conversation. A user's follow-up on an alert conversation sends none, so it
+// stays a user turn for investigation depth.
+func ConversationSessionRequestWithCallerSource(source ConversationSource) ConversationSessionRequestConfig {
+	return sessionRequestWithCallerSource{
 		source: source,
 	}
 }
@@ -867,6 +887,7 @@ func HandleConversationSessionRequest(ctx *security.RequestContext, agent NBAgen
 		ChannelContextRefs:    defaultConfig.channelContextRefs,
 		ReplyRef:              defaultConfig.replyRef,
 		Title:                 defaultConfig.title,
+		CallerSource:          defaultConfig.callerSource,
 	}
 
 	response, err := handleConversationRequest(ctx, agentRequest, agent, sessionId, defaultConfig.source)
@@ -1295,6 +1316,16 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 
 			if isFollowupResume {
 				request.ConversationId = conversation.ID.String()
+				// This path returns before the stored message config is merged
+				// below, so carry the chat's depth pick over here.
+				if request.QueryConfig.InvestigationDepth == "" {
+					if prevConfig, ok := LatestMessageConfig(ctx, request.ConversationId); ok {
+						request.QueryConfig.InvestigationDepth = prevConfig.InvestigationDepth
+					}
+				}
+				// The resumed agents run on this ctx, not the one stamped
+				// below, so the run keeps its depth across the pause.
+				ctx = WithInvestigationDepth(ctx, resolveInvestigationDepth(ctx, request, agent))
 				resp, rErr := HandleFollowupAndResumeV2(ctx, request)
 				// Resume returns early here, skipping the SessionId/ConversationId
 				// stamping the normal path does below; without it the response
@@ -1521,25 +1552,14 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		}
 
 		// get previous message && if there is any tool config, then add it to current message as propagation
-		if request.QueryConfig.ToolConfigs == nil {
-			previousConversations, err := GetConversationDao().ListConversationMessages("", "", conversation.ID.String(), false)
-			if err != nil {
-				ctx.GetLogger().Error("conversation: unable to lookup previous conversations", "error", err)
-			}
-			if len(previousConversations) > 0 {
-				for _, v := range slices.Backward(previousConversations) {
-					if v.Status == ConversationStatusQueued || v.MessageType != string(MessageTypeGeneration) {
-						continue
-					}
-					if v.MessageConfig != nil && *v.MessageConfig != "" {
-						prevConfig := toolcore.NBQueryConfig{}
-						err := common.UnmarshalJson([]byte(*v.MessageConfig), &prevConfig)
-						if err != nil {
-							ctx.GetLogger().Error("conversation: unable to unmarshal message config from previous message", "error", err, "data", *v.MessageConfig, "id", v.ID)
-						}
-						request.QueryConfig.MergeFrom(inheritableMessageConfig(prevConfig))
-						break
-					}
+		// A turn that sends its own tool configs doesn't inherit the previous
+		// config, but still keeps the chat's depth pick.
+		if request.QueryConfig.ToolConfigs == nil || request.QueryConfig.InvestigationDepth == "" {
+			if prevConfig, ok := LatestMessageConfig(ctx, conversation.ID.String()); ok {
+				if request.QueryConfig.ToolConfigs == nil {
+					request.QueryConfig.MergeFrom(prevConfig)
+				} else {
+					request.QueryConfig.InvestigationDepth = prevConfig.InvestigationDepth
 				}
 			}
 		}
@@ -1753,6 +1773,10 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	var commandSkills []knowledge.SkillCommand
 	request, commandSkills = evalSkillCommand(ctx, request)
 	saveSkillCommandReferences(ctx, request, conversation.ID.String(), commandSkills)
+
+	// Resolved after the message config merge, so a chat pick made on an
+	// earlier turn carries over; sub-agents inherit it through ctx.
+	ctx = WithInvestigationDepth(ctx, resolveInvestigationDepth(ctx, request, agent))
 
 	convSetupDur := time.Since(t0)
 	ctx.GetLogger().Info("conversation: executing agent", "agent", agent.GetName(), "setup_duration", convSetupDur.String())
@@ -2355,13 +2379,17 @@ func HandleConversationMessageRequest(ctx *security.RequestContext, accountId, c
 	response, err := HandleConversationSessionRequest(ctx, agent, conversation.UserID.String(), conversation.AccountID.String(), conversation.SessionID, conversationMessage.Message, ConversationSessionRequestWithMessageId(uuid.NullUUID{
 		UUID:  targetMessageId,
 		Valid: true,
-	}), ConversationSessionRequestWithSource(conversationSource), ConversationSessionRequestWithConversationId(uuid.NullUUID{
-		UUID:  conversation.ID,
-		Valid: true,
-	}), ConversationSessionRequestWithPreviousState(waitingState), ConversationSessionRequestWithAgentId(uuid.NullUUID{
-		UUID:  resumeAgentUUID,
-		Valid: resumeAgentValid,
-	}), ConversationSessionRequestWithIsResume(true))
+	}), ConversationSessionRequestWithSource(conversationSource),
+		// Resuming continues the run that paused (typically an automation
+		// awaiting approval), so it keeps that run's investigation depth rule.
+		ConversationSessionRequestWithCallerSource(conversationSource),
+		ConversationSessionRequestWithConversationId(uuid.NullUUID{
+			UUID:  conversation.ID,
+			Valid: true,
+		}), ConversationSessionRequestWithPreviousState(waitingState), ConversationSessionRequestWithAgentId(uuid.NullUUID{
+			UUID:  resumeAgentUUID,
+			Valid: resumeAgentValid,
+		}), ConversationSessionRequestWithIsResume(true))
 
 	if err != nil {
 		ctx.GetLogger().Error("conversation: unable to reprocess conversation message", "error", err, "message", conversationMessage.ID.String())
@@ -2387,6 +2415,26 @@ func dropCallerApprovalsInAlertChat(ctx *security.RequestContext, accountId, ses
 	}
 	ctx.GetLogger().Warn("conversation: approvals sent with the request dropped in an alert's conversation", "session_id", sessionId, "count", len(cfg.ToolConfirmations), "flag_error", err)
 	cfg.ToolConfirmations = nil
+}
+
+// LatestMessageConfig is the inheritable config of the conversation's latest
+// generation message that saved one: what a follow-up turn carries over (tool
+// configs, the chat's investigation depth pick, ...). ok is false when no
+// message saved a config or the lookup failed.
+func LatestMessageConfig(ctx *security.RequestContext, conversationID string) (toolcore.NBQueryConfig, bool) {
+	raw, err := GetConversationDao().GetLatestMessageConfig(conversationID)
+	if err != nil {
+		ctx.GetLogger().Error("conversation: unable to lookup previous message config", "error", err)
+		return toolcore.NBQueryConfig{}, false
+	}
+	if raw == "" {
+		return toolcore.NBQueryConfig{}, false
+	}
+	prevConfig := toolcore.NBQueryConfig{}
+	if err := common.UnmarshalJson([]byte(raw), &prevConfig); err != nil {
+		ctx.GetLogger().Error("conversation: unable to unmarshal message config from previous message", "error", err, "data", raw)
+	}
+	return inheritableMessageConfig(prevConfig), true
 }
 
 // inheritableMessageConfig is the part of the previous message's config a new

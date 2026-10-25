@@ -2641,6 +2641,16 @@ func canWriteAccountAttrs(sc *security.SecurityContext, accountId string) bool {
 		(sc.IsSuperAdmin() || sc.IsTenantAdmin() || sc.HasScopedRole(security.AUTH_ACCOUNT_ADMIN_ROLE, accountId))
 }
 
+// eeAttrValidators check EE-only account attributes on write; OSS never names
+// them. EE code adds them via RegisterEEAttrValidator.
+var eeAttrValidators []func(sc *security.SecurityContext, attr AccountAttr) error
+
+// RegisterEEAttrValidator adds a check UpsertAccountAttrs runs on every
+// attribute written. It returns nil for attributes it does not own.
+func RegisterEEAttrValidator(validate func(sc *security.SecurityContext, attr AccountAttr) error) {
+	eeAttrValidators = append(eeAttrValidators, validate)
+}
+
 // UpsertAccountAttrs inserts or updates cloud account attributes, scoped to tenant
 func UpsertAccountAttrs(context *security.RequestContext, request AccountAttrUpsertRequest) (AccountAttrUpsertResponse, error) {
 	err := common.ValidateStruct(request)
@@ -2663,6 +2673,11 @@ func UpsertAccountAttrs(context *security.RequestContext, request AccountAttrUps
 		}
 		if err := validateEventAnalysisAttribute(sc, attr); err != nil {
 			return AccountAttrUpsertResponse{}, err
+		}
+		for _, validate := range eeAttrValidators {
+			if err := validate(context.GetSecurityContext(), attr); err != nil {
+				return AccountAttrUpsertResponse{}, err
+			}
 		}
 	}
 

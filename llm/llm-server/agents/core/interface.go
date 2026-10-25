@@ -149,6 +149,10 @@ type NBAgentRequest struct {
 	TopLevelResume bool `json:"-" mapstructure:"-"`
 	// IsQueuedDispatch is internal: the queue claim owns this fresh message.
 	IsQueuedDispatch bool `json:"-" mapstructure:"-"`
+	// CallerSource is internal: the source the caller sent for this turn,
+	// before any fallback to the conversation's stored source, so a user's
+	// follow-up on an alert conversation can be told from the alert itself.
+	CallerSource ConversationSource `json:"-" mapstructure:"-"`
 	// RunProfile is internal: the profile of a governed run this request
 	// creates (from a validated run claim), written on the new conversation.
 	// Never decoded from a request body.

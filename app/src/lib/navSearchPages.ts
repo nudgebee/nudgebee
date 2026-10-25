@@ -210,6 +210,7 @@ export const navSearchPages: NavSearchPage[] = [
       ]),
   { group: 'Admin', label: 'Budgets & Limits', path: '/user-management#ai-tools/budgets-limits' },
   ...(isOSSDeploymentMode() ? [] : [{ group: 'Admin', label: 'Memory Policy', path: '/user-management#ai-tools/memory-policy' }]),
+  ...(isOSSDeploymentMode() ? [] : [{ group: 'Admin', label: 'Investigation Depth', path: '/user-management#ai-tools/investigation-depth' }]),
   { group: 'Admin', label: 'RCA Format', path: '/user-management#ai-tools/rca-format' },
   // Relocated from an avatar-menu modal (see docs/ia-consolidation-plan.md) —
   // now a plain top-level Admin tab, gated the same way (tenants:Read).

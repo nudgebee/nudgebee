@@ -727,6 +727,9 @@ const initialState = {
   // is also the never-picked state and inherits the conversation's stored
   // config. Rides along with the next submitted turn, then resets.
   configCleared: false,
+  // Extra per-turn request config contributed by composer extensions (the
+  // ChatComposerToolbarExtra slot), merged into every chat turn's config.
+  extraRequestConfig: {},
   // Server-advertised image capability (from ai_list_models). Defaults to
   // disabled so the attach UI stays hidden until the backend confirms support.
   queueSupport: { enabled: false, maxMessages: 5 },
@@ -787,6 +790,8 @@ function investigationReducer(state, action) {
       return action.payload
         ? { ...state, configCleared: true, selectedModel: null, selectedTierModels: null, selectedConfig: null }
         : { ...state, configCleared: false };
+    case 'SET_EXTRA_REQUEST_CONFIG':
+      return { ...state, extraRequestConfig: action.payload ?? {} };
     case 'SET_MODELS':
       return pruneSelectionsForModels(
         {
@@ -840,6 +845,7 @@ export const useLLMInvestigationControl = (accountId, eventId) => {
     selectedTierModels,
     selectedConfig,
     configCleared,
+    extraRequestConfig,
     imageSupport,
   } = state;
 
@@ -1135,6 +1141,7 @@ export const useLLMInvestigationControl = (accountId, eventId) => {
         // Carries the picker's "Clear all" to the server. Sending nothing would
         // leave the conversation's stored config in force.
         ...(configCleared && !selectedModel && !hasTierModels && !selectedConfig && { llm_config_reset: true }),
+        ...extraRequestConfig,
         // Scopes the turn to the event under investigation, so an automation the
         // model triggers gets tagged back to it (see tool_workflow_automation.go).
         ...(eventId && { event_id: eventId }),
@@ -1201,7 +1208,7 @@ export const useLLMInvestigationControl = (accountId, eventId) => {
         onSuccess(llmSessionId);
       }
     },
-    [accountId, conversationIdAtDb, eventId, selectedModel, selectedTierModels, selectedConfig, configCleared]
+    [accountId, conversationIdAtDb, eventId, selectedModel, selectedTierModels, selectedConfig, configCleared, extraRequestConfig]
   );
 
   const startInvestigation = useCallback(
@@ -1393,6 +1400,9 @@ export const useLLMInvestigationControl = (accountId, eventId) => {
                 : await apiAskNudgebee.getModelConfig(accountId, conversationResponses[0].id, signal);
               if (!isStale() && modelConfigRes?.data && !modelConfigRes?.errors?.length) {
                 const modelConfig = modelConfigRes.data;
+                // Composer picks stored with the conversation come back here,
+                // so the composer shows what the next turn will run with.
+                dispatch({ type: 'SET_EXTRA_REQUEST_CONFIG', payload: modelConfig.extra_request_config ?? {} });
                 const tierOverrides = modelConfig.tier_overrides;
                 if (tierOverrides && Object.keys(tierOverrides).length > 0) {
                   // Per-task mode. The server reports `current` as the default
@@ -1574,6 +1584,9 @@ export const useLLMInvestigationControl = (accountId, eventId) => {
       } else if (selectedConfig) {
         requestPayload.config = { llm_config_source: selectedConfig.configSource };
       }
+      if (Object.keys(extraRequestConfig).length > 0) {
+        requestPayload.config = { ...requestPayload.config, ...extraRequestConfig };
+      }
       if (images?.length) {
         requestPayload.images = images;
       }
@@ -1615,7 +1628,7 @@ export const useLLMInvestigationControl = (accountId, eventId) => {
       }
       return result.data;
     },
-    [accountId, conversationIdAtDb, selectedModel, selectedTierModels, selectedConfig]
+    [accountId, conversationIdAtDb, selectedModel, selectedTierModels, selectedConfig, extraRequestConfig]
   );
 
   return {
@@ -1653,6 +1666,8 @@ export const useLLMInvestigationControl = (accountId, eventId) => {
     selectedConfig,
     setSelectedConfig: (cfg) => dispatch({ type: 'SET_SELECTED_CONFIG', payload: cfg }),
     clearModelConfig: () => dispatch({ type: 'SET_CONFIG_CLEARED', payload: true }),
+    extraRequestConfig,
+    setExtraRequestConfig: (config) => dispatch({ type: 'SET_EXTRA_REQUEST_CONFIG', payload: config }),
     imageSupport,
     modelsLoaded: state.modelsLoaded,
   };

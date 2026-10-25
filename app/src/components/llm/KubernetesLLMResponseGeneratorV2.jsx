@@ -336,6 +336,8 @@ const KubernetesLLMResponseGenerator = ({
     selectedConfig,
     setSelectedConfig,
     clearModelConfig,
+    extraRequestConfig,
+    setExtraRequestConfig,
     imageSupport,
     modelsLoaded,
   } = useLLMInvestigationControl(accountId, eventId);
@@ -2166,6 +2168,9 @@ const KubernetesLLMResponseGenerator = ({
                           selectedConfig={selectedConfig}
                           onConfigSelect={setSelectedConfig}
                           onConfigClear={clearModelConfig}
+                          composerConfig={extraRequestConfig}
+                          // Event conversations run on the event's settings, not per-turn picks.
+                          onComposerConfigChange={eventId ? undefined : setExtraRequestConfig}
                           imageSupport={imageSupport}
                           modelsLoading={!modelsLoaded}
                           imageDraft={queueImageDraft}
@@ -2590,6 +2595,9 @@ const KubernetesLLMResponseGenerator = ({
                     selectedConfig={selectedConfig}
                     onConfigSelect={setSelectedConfig}
                     onConfigClear={clearModelConfig}
+                    composerConfig={extraRequestConfig}
+                    // Event conversations run on the event's settings, not per-turn picks.
+                    onComposerConfigChange={eventId ? undefined : setExtraRequestConfig}
                     imageSupport={imageSupport}
                     modelsLoading={!modelsLoaded}
                     imageDraft={queueImageDraft}

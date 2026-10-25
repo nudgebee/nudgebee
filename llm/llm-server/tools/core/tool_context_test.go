@@ -55,6 +55,26 @@ func TestNBQueryConfig_LogProviderOverride(t *testing.T) {
 	}
 }
 
+// The chat depth pick is sticky the same way: a follow-up turn inherits it
+// unless it picks again.
+func TestNBQueryConfig_InvestigationDepth(t *testing.T) {
+	if (NBQueryConfig{InvestigationDepth: "deep"}).IsEmpty() {
+		t.Fatal("IsEmpty: config with InvestigationDepth should not be empty")
+	}
+
+	dst := NBQueryConfig{}
+	dst.MergeFrom(NBQueryConfig{InvestigationDepth: "deep"})
+	if dst.InvestigationDepth != "deep" {
+		t.Fatalf("MergeFrom: expected depth copied, got %q", dst.InvestigationDepth)
+	}
+
+	dst2 := NBQueryConfig{InvestigationDepth: "quick"}
+	dst2.MergeFrom(NBQueryConfig{InvestigationDepth: "deep"})
+	if dst2.InvestigationDepth != "quick" {
+		t.Fatalf("MergeFrom: expected this turn's pick preserved, got %q", dst2.InvestigationDepth)
+	}
+}
+
 // Blanket (provider+model) and per-tier picks are mutually exclusive at the
 // conversation row — switching modes nulls the other side. MergeFrom has to
 // respect that, or a mode switch inherits the mode it just replaced.

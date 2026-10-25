@@ -1746,7 +1746,7 @@ func analyzeEventRCAUsingAgentsAndUpdateDb(ctx *security.RequestContext, request
 			rcaPrompt += "\n\nUse the following report format:\n" + agents.DefaultRCAFormat
 		}
 
-		resp, err := core.HandleConversationSessionRequest(core.WithReadOnlyRun(ctx), rcaAgent, eventRequest.UserId, eventRequest.AccountId, parentSessionId, rcaPrompt, core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithEnableCritique(true), core.ConversationSessionRequestWithQueryContext(dataBuilder.String()), core.ConversationSessionRequestWithoutConversationHistory())
+		resp, err := core.HandleConversationSessionRequest(core.WithReadOnlyRun(ctx), rcaAgent, eventRequest.UserId, eventRequest.AccountId, parentSessionId, rcaPrompt, core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithCallerSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithEnableCritique(true), core.ConversationSessionRequestWithQueryContext(dataBuilder.String()), core.ConversationSessionRequestWithoutConversationHistory())
 		if err != nil {
 			if errors.Is(err, core.ErrConversationInProgress) {
 				ctx.GetLogger().Info("analyzer: RCA analysis already in progress via conversation", "session_id", parentSessionId)
@@ -3212,7 +3212,7 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 			if directBrief {
 				summaryQuery = buildDirectEventBriefQuery(ctx, request, eventData.Id, parsedLabels)
 			}
-			summaryResp, err := core.HandleConversationSessionRequest(ctx, eventSummaryAgent, request.UserId, request.AccountId, parentConversationId, summaryQuery, core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithTitle(investigationConversationTitle(request.EventId)), core.ConversationSessionRequestWithEnableCritique(false), core.ConversationSessionRequestWithConfig(request.stageConfig(toolcore.NBQueryConfig{Labels: parsedLabels})), core.ConversationSessionRequestWithoutConversationHistory())
+			summaryResp, err := core.HandleConversationSessionRequest(ctx, eventSummaryAgent, request.UserId, request.AccountId, parentConversationId, summaryQuery, core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithCallerSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithTitle(investigationConversationTitle(request.EventId)), core.ConversationSessionRequestWithEnableCritique(false), core.ConversationSessionRequestWithConfig(request.stageConfig(toolcore.NBQueryConfig{Labels: parsedLabels})), core.ConversationSessionRequestWithoutConversationHistory())
 			if err != nil {
 				if conversationHeld(err, loopOn || flagErr != nil) {
 					ctx.GetLogger().Info("analyzer: summary already in progress via conversation", "session_id", parentConversationId)
@@ -3377,7 +3377,7 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 				"named_repo", namedRepo,
 				"prompt_offers_code_analyzer", strings.Contains(eventAnalsysisPrompt, "`code_analyzer` is available"),
 				"prompt_bytes", len(eventAnalsysisPrompt))
-			rootcauseAnalysis, err := core.HandleConversationSessionRequest(core.WithReadOnlyRun(ctx), rootcauseAgent, request.UserId, request.AccountId, parentConversationId, eventAnalsysisPrompt, core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithTitle(investigationConversationTitle(request.EventId)), core.ConversationSessionRequestWithConfig(request.stageConfig(toolcore.NBQueryConfig{Labels: parsedLabels, EventId: request.EventId, KnowledgeHints: eventKnowledgeHints(eventData), Namespace: workloadNamespace, Workload: workloadName, GitRepo: namedRepo})), core.ConversationSessionRequestWitAdditionalSystemPrompt(accountPrompt), core.ConversationSessionRequestWithEnableCritique(true), core.ConversationSessionRequestWithoutConversationHistory())
+			rootcauseAnalysis, err := core.HandleConversationSessionRequest(core.WithReadOnlyRun(ctx), rootcauseAgent, request.UserId, request.AccountId, parentConversationId, eventAnalsysisPrompt, core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithCallerSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithTitle(investigationConversationTitle(request.EventId)), core.ConversationSessionRequestWithConfig(request.stageConfig(toolcore.NBQueryConfig{Labels: parsedLabels, EventId: request.EventId, KnowledgeHints: eventKnowledgeHints(eventData), Namespace: workloadNamespace, Workload: workloadName, GitRepo: namedRepo})), core.ConversationSessionRequestWitAdditionalSystemPrompt(accountPrompt), core.ConversationSessionRequestWithEnableCritique(true), core.ConversationSessionRequestWithoutConversationHistory())
 
 			if err != nil {
 				if conversationHeld(err, loopOn || flagErr != nil) {
@@ -4348,7 +4348,7 @@ func runCodeFixStage(ctx *security.RequestContext, request EventAnalysisRequest,
 	if !hasResponse {
 		llmResponse, err = core.HandleConversationSessionRequest(
 			ctx, llm, request.UserId, request.AccountId, parentConversationId, string(llmParamsJSON),
-			core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation),
+			core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithCallerSource(core.ConversationSourceInvestigation),
 			core.ConversationSessionRequestWithTitle(investigationConversationTitle(request.EventId)),
 			core.ConversationSessionRequestWithConfig(request.stageConfig(eventConfig)),
 			core.ConversationSessionRequestWithEnableCritique(true),

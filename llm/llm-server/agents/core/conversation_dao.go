@@ -166,6 +166,9 @@ type IConversationDao interface {
 	SaveConversation(id, sessionID, tenantId, accountID, userId, context, title string, status ConversationStatus, source ConversationSource, llmProvider, llmModel string, llmTierOverrides *llmruntime.ConversationTierOverrides, llmConfigSource string, runProfile *RunProfile) (uuid.UUID, error)
 	UpdateConversationStatus(conversationId string, status ConversationStatus) error
 	ListConversationMessages(status ConversationStatus, workerName string, conversationId string, deadWorker bool) ([]ConversationMessage, error)
+	// GetLatestMessageConfig is the message_config of the conversation's latest
+	// generation message that saved one; "" when none did.
+	GetLatestMessageConfig(conversationId string) (string, error)
 	SaveConversationMessage(id, conversationId, accountID, userId string, role MessageRole, messageType MessageType, message, response, agentName string, parentAgentId uuid.UUID, messageConfig any, messageContext string, llmProvider, llmModel string, status ConversationStatus) (uuid.UUID, error)
 	GetConversationMessage(id, accountId, conversationId string) (ConversationMessage, error)
 	// GetToolCallChart returns the chart a tool call of this conversation saved
@@ -2361,6 +2364,21 @@ func (chat *ConversationDao) GetConversationMessage(id, accountId, conversationI
 		return ConversationMessage{}, fmt.Errorf("history: failed to scan message: %w", err)
 	}
 	return message, nil
+}
+
+func (chat *ConversationDao) GetLatestMessageConfig(conversationId string) (string, error) {
+	var messageConfig string
+	err := chat.dbManager.Db.Get(&messageConfig, `SELECT message_config FROM llm_conversation_messages
+		WHERE conversation_id = $1 AND message_type = $2 AND status IS DISTINCT FROM $3
+		  AND message_config IS NOT NULL AND message_config <> ''
+		ORDER BY created_at DESC LIMIT 1`, conversationId, MessageTypeGeneration, ConversationStatusQueued)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("history: failed to get latest message config: %w", err)
+	}
+	return messageConfig, nil
 }
 
 func (chat *ConversationDao) ListConversationMessages(status ConversationStatus, workerName string, conversationId string, deadWorker bool) ([]ConversationMessage, error) {

@@ -14,7 +14,10 @@ export type SlotName =
   | 'SignInBelowTitle'
   | 'Branding'
   // A badge beside an automation's name in the Automations list; props { workflowId }.
-  | 'AutomationRowBadge';
+  | 'AutomationRowBadge'
+  // Controls in the chat composer's toolbar that add to each turn's request
+  // config; props { config, onChange(config), disabled }.
+  | 'ChatComposerToolbarExtra';
 
 const slots = new Map<SlotName, ComponentType<any>>();
 
