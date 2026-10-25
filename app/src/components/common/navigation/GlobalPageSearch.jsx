@@ -36,7 +36,7 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { useData } from '@context/DataContext';
 import { navSections } from '@lib/authHooks';
-import { getSessionAccountIds, hasFeatureAccess, hasPermission, hasReadAccess, isTenantWideRole, isUiFeatureEnabled } from '@lib/auth';
+import { canViewGatewayUserAccess, getSessionAccountIds, hasFeatureAccess, hasReadAccess, isTenantWideRole, isUiFeatureEnabled } from '@lib/auth';
 import { trackProductEvent } from '@lib/productAnalytics';
 import { useTenantBranding } from '@hooks/useTenantBranding';
 import { isOSSDeploymentMode } from '@hooks/useBCortexEnabled';
@@ -1232,21 +1232,20 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
       data?.isSuperAdmin ||
       data?.permissions?.includes('customroles:Read'))
   );
-  // Same two gates optimise/index.jsx's own LLM Analyser/AI Gateway tabs use.
-  // They are different KINDS of gate: LLM_ANALYSER is a per-tenant feature flag
-  // (resolved asynchronously, hence the state above), while AI Gateway is still
-  // a per-deployment UI_ENABLE_LLM_GATEWAY env var read off the session by
-  // isUiFeatureEnabled. Both are then narrowed by
-  // hasReadAccess(selectedCluster?.value), mirroring the page's per-account check.
+  // Same gates the LLM Analyser tab (optimise/index.jsx) and the AI Gateway page
+  // (pages/ai-gateway/index.tsx) use. They are different KINDS of gate:
+  // LLM_ANALYSER is a per-tenant feature flag (resolved asynchronously, hence the
+  // state above), narrowed by hasReadAccess(selectedCluster?.value) as its page is;
+  // AI Gateway is a per-deployment UI_ENABLE_LLM_GATEWAY env var read off the
+  // session by isUiFeatureEnabled.
   const canAccessLlmAnalyser = llmAnalyserEnabled && hasReadAccess(selectedCluster?.value);
   // Cost Report is the one LLM Analyser sub-tab CostAnalyser.tsx itself only puts in
   // its tabOptions for a tenant-wide role (showCostReportTab) — every other sub-tab
   // is reachable by anyone who clears canAccessLlmAnalyser.
   const canAccessLlmAnalyserCostReport = canAccessLlmAnalyser && isTenantWideRole();
-  // The `llm:Read` disjunct mirrors the page too: the gateway usage API is
-  // tenant-scoped, so hasReadAccess (per-account) never sees that grant and the
-  // row went missing for grant holders. Keep in lockstep with optimise/index.jsx.
-  const canAccessAiGateway = isUiFeatureEnabled('llmGateway') && (hasReadAccess(selectedCluster?.value) || hasPermission('llm', 'Read'));
+  // AI Gateway is tenant-level: any signed-in tenant user reads their own usage, so
+  // only the deployment toggle gates it. Keep in lockstep with pages/ai-gateway.
+  const canAccessAiGateway = isUiFeatureEnabled('llmGateway');
   // The Bees rows lead to a section an extension registers (navSections); shown
   // when it is registered and its feature flag is on, as the side navigation does.
   const [canAccessBees, setCanAccessBees] = useState(false);
@@ -1312,7 +1311,7 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
       if (opt.label === 'LLM Analyser - Cost Report' && !canAccessLlmAnalyserCostReport) {
         return false;
       }
-      if (opt.label === 'AI Gateway' && !canAccessAiGateway) {
+      if (opt.group === 'AI Gateway' && (!canAccessAiGateway || (opt.label === 'AI Gateway - Users' && !canViewGatewayUserAccess()))) {
         return false;
       }
       if (opt.group === 'Bees' && !canAccessBees) {

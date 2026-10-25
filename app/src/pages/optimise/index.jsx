@@ -11,11 +11,10 @@ import {
   SecuritytoolsBlue,
   ToolIconBlue,
   LLMConsumptionIcon,
-  IntegrationsIcon,
   AutomateBlue,
   BetaIcon,
 } from '@assets';
-import { hasFeatureAccess, hasPermission, hasReadAccess, hasWriteAccess, withAuth } from '@lib/auth';
+import { hasFeatureAccess, hasReadAccess, hasWriteAccess, withAuth } from '@lib/auth';
 import { useData } from '@context/DataContext';
 import { useSecurityTabCounts } from '@hooks/useSecurityTabCounts';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
@@ -30,18 +29,6 @@ const ResolutionsView = dynamic(() => import('@components/optimise-new/Resolutio
 const SecurityView = dynamic(() => import('@components/optimise-new/SecurityView'), { ssr: false });
 const AutoOptimizeTabs = dynamic(() => import('@components/autopilot/tables/AutoOptimizeTabs'), { ssr: false });
 const CostAnalyser = dynamic(() => import('@components/llm/cost-analyser/CostAnalyser'), { ssr: false });
-const GatewayUsage = dynamic(() => import('@components/llm/gateway-usage/GatewayUsage'), { ssr: false });
-
-export async function getServerSideProps() {
-  return {
-    props: {
-      enableLlmGateway: process.env.UI_ENABLE_LLM_GATEWAY === 'true',
-      // Public base URL of the AI Gateway, surfaced to the Connect tab's setup
-      // snippets. Empty when unset — the Connect tab shows a "not configured" state.
-      llmGatewayUrl: process.env.LLM_GATEWAY_PUBLIC_URL || '',
-    },
-  };
-}
 
 // Filter state OptimizeNewPage syncs to the URL (updateUrl). The Cost and
 // Configuration tabs are the same component reading these params at mount, so
@@ -58,7 +45,7 @@ const TAB_SCOPED_FILTER_PARAMS = ['category', 'search', 'severity', 'account', '
 // design — this is the app-side compatibility shim.
 const LEGACY_FRAGMENT_ALIASES = { recommendations: 'cost', 'cost-analyser': 'llm-analyser' };
 
-const Optimise = ({ enableLlmGateway, llmGatewayUrl }) => {
+const Optimise = () => {
   const router = useRouter();
   const { selectedCluster } = useData();
   const [activeTab, setActiveTab] = useState(null);
@@ -162,34 +149,20 @@ const Optimise = ({ enableLlmGateway, llmGatewayUrl }) => {
             icon: LLMConsumptionIcon,
             iconSize: 18,
           },
-        // AI Gateway usage — sibling analytics surface to the LLM Analyser, but over
-        // all BYO-token traffic forwarded through the gateway (its own query API), not
-        // agent conversations. Independently flag-gated for staged rollout. No
-        // tabOptions, so its value need not equal its array index (see note above).
-        //
-        // Unlike the LLM Analyser above, this tab's actions (`llm_gateway_*`) are
-        // TENANT-scoped — they classify to the `llm` module and their handlers take
-        // no account id. So an `llm:Read` custom grant is a legitimate way to reach
-        // it, and hasReadAccess alone could never admit one: a grants-only holder
-        // carries no account ids in the session, so the tab vanished for precisely
-        // the users an admin had granted it to.
-        isMounted &&
-          enableLlmGateway &&
-          (hasReadAccess(selectedCluster?.value) || hasPermission('llm', 'Read')) && {
-            name: 'AI Gateway',
-            id: 'ai-gateway',
-            fragment: 'ai-gateway',
-            value: 7,
-            icon: IntegrationsIcon,
-            iconSize: 18,
-          },
       ].filter(Boolean),
-    [isMounted, llmAnalyserEnabled, enableLlmGateway, selectedCluster?.value, securityCounts]
+    [isMounted, llmAnalyserEnabled, selectedCluster?.value, securityCounts]
   );
 
   useEffect(() => {
     if (!router.isReady) return;
     let hash = router.asPath.split('#')[1];
+    // The AI Gateway tab is its own page now. Its old sub-tab ids are still valid
+    // there under any section; that page moves the hash to the tab's real one.
+    const [gatewayFragment, gatewaySubFragment] = (hash || '').split('/');
+    if (gatewayFragment === 'ai-gateway') {
+      router.replace(gatewaySubFragment ? `/ai-gateway#monitor/${gatewaySubFragment}` : '/ai-gateway').catch(() => {});
+      return;
+    }
     // Rewrite a legacy fragment (#recommendations, #cost-analyser) to its
     // current name before anything else reads it, so old notification and
     // bookmark links resolve to the right tab. Keeps ?id= and every other
@@ -324,7 +297,6 @@ const Optimise = ({ enableLlmGateway, llmGatewayUrl }) => {
             />
           )}
           {activeTab === 6 && <CostAnalyser />}
-          {activeTab === 7 && <GatewayUsage gatewayUrl={llmGatewayUrl} />}
         </ErrorBoundary>
       )}
     </>

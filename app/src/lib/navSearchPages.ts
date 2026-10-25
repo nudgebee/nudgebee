@@ -130,10 +130,8 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Optimize', label: 'Optimize Resolutions', path: '/optimise#resolutions' },
   { group: 'Optimize', label: 'Auto Optimize - Optimizations', path: '/optimise#auto-optimize/optimizations' },
   { group: 'Optimize', label: 'Auto Optimize - Approvals', path: '/optimise#auto-optimize/approvals' },
-  // Both gated in GlobalPageSearch.jsx by the same two gates the tabs themselves
-  // use: LLM Analyser on the per-tenant LLM_ANALYSER feature flag, AI Gateway on
-  // the deployment's UI_ENABLE_LLM_GATEWAY env var (read off the session — see
-  // optimise/index.jsx), each narrowed by hasReadAccess(selectedCluster?.value).
+  // Gated in GlobalPageSearch.jsx by the same gate the tab itself uses: the
+  // per-tenant LLM_ANALYSER feature flag, narrowed by hasReadAccess(selectedCluster?.value).
   { group: 'Optimize', label: 'LLM Analyser', path: '/optimise#llm-analyser' },
   { group: 'Optimize', label: 'LLM Analyser - Overview', path: '/optimise#llm-analyser/overview' },
   { group: 'Optimize', label: 'LLM Analyser - Conversations', path: '/optimise#llm-analyser/conversations' },
@@ -143,7 +141,19 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Optimize', label: 'LLM Analyser - Users', path: '/optimise#llm-analyser/users' },
   { group: 'Optimize', label: 'LLM Analyser - Cost Report', path: '/optimise#llm-analyser/cost-report' },
   { group: 'Optimize', label: 'LLM Analyser - Critiques', path: '/optimise#llm-analyser/critiques' },
-  { group: 'Optimize', label: 'AI Gateway', path: '/optimise#ai-gateway' },
+
+  // Its own page, one row per tab (sections = GROUPS in GatewayUsage.tsx). The whole
+  // group is gated in GlobalPageSearch.jsx by the page's own gate; Users also by
+  // canViewGatewayUserAccess, the same check that hides that tab.
+  { group: 'AI Gateway', label: 'AI Gateway - Connect', path: '/ai-gateway#connect' },
+  { group: 'AI Gateway', label: 'AI Gateway - Overview', path: '/ai-gateway#monitor' },
+  { group: 'AI Gateway', label: 'AI Gateway - Models', path: '/ai-gateway#monitor/models' },
+  { group: 'AI Gateway', label: 'AI Gateway - Users', path: '/ai-gateway#monitor/users' },
+  { group: 'AI Gateway', label: 'AI Gateway - Keys', path: '/ai-gateway#monitor/keys' },
+  { group: 'AI Gateway', label: 'AI Gateway - Requests', path: '/ai-gateway#activity' },
+  { group: 'AI Gateway', label: 'AI Gateway - Sessions', path: '/ai-gateway#activity/sessions' },
+  { group: 'AI Gateway', label: 'AI Gateway - Tools', path: '/ai-gateway#activity/tools' },
+  { group: 'AI Gateway', label: 'AI Gateway - Governance', path: '/ai-gateway#governance' },
 
   // Infra → VM. The account in scope comes from the header cluster dropdown, and
   // the page adopts the first self-hosted account when the current selection is

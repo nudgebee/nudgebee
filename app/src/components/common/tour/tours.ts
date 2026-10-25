@@ -12,7 +12,7 @@
  */
 import { fillBrandTokens, getAssistantName } from '@hooks/useTenantBranding';
 import { isOSSDeploymentMode } from '@hooks/useBCortexEnabled';
-import { isUiFeatureEnabled, hasFeatureAccessCached, getUserSession, isTenantAdmin } from '@lib/auth';
+import { hasFeatureAccessCached, getUserSession, isTenantAdmin } from '@lib/auth';
 import apiUser from '@api1/user';
 
 /**
@@ -1354,10 +1354,10 @@ const automationFromScratchTour: TourDef = {
  * Anchors:
  *   #anchor-tab-summary|recommendations|resolutions|auto-optimize
  *                          → AnchorComponent renders id=`anchor-tab-<opt.id>`
- *   #anchor-tab-llm-analyser|ai-gateway → same, but these two entries only exist
- *                          in filterOptions (pages/optimise/index.jsx) when their
- *                          UI_ENABLE_* toggle is on AND hasReadAccess passes, so
- *                          both steps are `optional` and silently skip otherwise
+ *   #anchor-tab-llm-analyser → same, but this entry only exists in filterOptions
+ *                          (pages/optimise/index.jsx) when its feature flag is on
+ *                          AND hasReadAccess passes, so the step is `optional`
+ *                          and silently skips otherwise
  *   #optimize-card-savings → the "Total Savings" ds/Card
  *   #optimize-card-all     → the "All Recommendations" card — the category
  *                            stat-cards double as tabs (the category chips and
@@ -1471,15 +1471,12 @@ const optimizeTour: TourDef = {
       side: 'bottom',
       align: 'start',
     },
-    // Both optional: the tab (and therefore the anchor) only renders when its
-    // own gate is on AND the user has read access to the selected
+    // Optional: the tab (and therefore the anchor) only renders when its
+    // feature flag is on AND the user has read access to the selected
     // account/cluster — see filterOptions in pages/optimise/index.jsx. `optional`
     // makes the engine skip the step instead of showing a detached popover when
     // either condition fails, which is exactly the access check we want here.
-    //
-    // The two gates are NOT the same kind: LLM Analyser is a per-tenant feature
-    // flag (read from the warmed cache, like llmAnalyserTour's requiresFeature),
-    // while AI Gateway is still a per-deployment UI_ENABLE_* toggle.
+    // The flag is per-tenant, read from the warmed cache like llmAnalyserTour's.
     {
       element: '#anchor-tab-llm-analyser',
       title: 'LLM Analyser',
@@ -1488,15 +1485,6 @@ const optimizeTour: TourDef = {
       align: 'start',
       optional: true,
       isAvailable: () => hasFeatureAccessCached('LLM_ANALYSER'),
-    },
-    {
-      element: '#anchor-tab-ai-gateway',
-      title: 'AI Gateway',
-      description: 'Route your own LLM traffic through {brand} and see every request, model, and user.',
-      side: 'bottom',
-      align: 'start',
-      optional: true,
-      isAvailable: () => isUiFeatureEnabled('llmGateway'),
     },
   ],
 };
@@ -1953,10 +1941,10 @@ const llmAnalyserTour: TourDef = {
 };
 
 /**
- * "Optimize: AI Gateway" deep-dive.
+ * "AI Gateway" deep-dive.
  *
  * Gated on `requiresUiFeature: 'llmGateway'` — a per-deployment toggle (the pod's
- * UI_ENABLE_LLM_GATEWAY env var, read in /optimise's getServerSideProps) that
+ * UI_ENABLE_LLM_GATEWAY env var, read in /ai-gateway's getServerSideProps) that
  * never appears in `featureflags_list`, so the tenant-flag machinery can't see
  * it. The session carries it instead (see `uiFeatures`), which is what
  * `isUiFeatureEnabled` reads. Unlike the LLM Analyser's tab (see
@@ -1965,66 +1953,41 @@ const llmAnalyserTour: TourDef = {
  * The Analyser covers {brand}'s own agent traffic; the Gateway covers your BYO-token
  * traffic forwarded through it, which is why they're separate guides.
  *
- * Anchors (all pre-existing):
- *   #anchor-tab-ai-gateway → the tab
- *   #tab-connect / #tab-overview / #tab-models / #tab-users / #tab-requests /
- *   #tab-sessions / #tab-tools / #tab-governance → inner Tabs
- *        (`tab-${opt.value}`; behavior='filter', so click — no URL change).
- *        This is GatewayUsage.tsx's own `tabOptions` order, i.e. the real UI
- *        order — the GUIDE'S step order deliberately differs (Overview before
- *        Connect; see below), so don't "fix" one to match the other.
- *   #gateway-connect / #gateway-connect-generate-token-btn → the Connect pane
+ * Anchors:
+ *   #anchor-tab-ai-gateway-<section> → the page's section tabs (pages/ai-gateway,
+ *        AnchorComponent's `anchor-tab-<opt.id>`). Clicking one is a hash
+ *        navigation; GatewayUsage opens that section's default tab.
+ *   #tab-models / #tab-users / #tab-requests / #tab-sessions / #tab-tools
+ *        → GatewayUsage's in-section tabs (`tab-${opt.value}`), rendered only for
+ *        the open section — so each section's steps follow its own section click.
  *   #gateway-kpi-row / #gateway-usage-over-time → Overview
+ *   #gateway-connect / #gateway-connect-generate-token-btn → the Connect pane
  *
- * Step order is Overview, then Connect — opposite of the tab bar's own left-
- * to-right order — because of how landing on each is actually driven:
- *
- *   Overview: GatewayUsage.tsx's default sub-tab is Overview (`DEFAULT_TAB`),
- *   and opening the top-level tab (step 1) always lands there, even if the
- *   user was already sitting on a different sub-tab: the click navigates to
- *   the bare `#ai-gateway` hash, and GatewayUsage's own hash-sync effect
- *   resolves a sub-tab-less hash to `DEFAULT_TAB` and overwrites whatever
- *   `tab` state it had. So step 1 alone is enough to reliably land on
- *   Overview — no extra click needed, which is exactly why it goes first.
- *
- *   Connect: reached from Overview by clicking `#tab-connect` directly — an
- *   ordinary in-tab click (CustomTabs' own onChange), not a re-click of the
- *   outer tab, so it doesn't touch the top-level hash and doesn't race the
- *   reset above. `optional: true` is enough for it.
- *
- * (Putting Connect first, as this guide originally did, meant every
- * subsequent "go to Overview" had to fight that same hash-reset race — a
- * same-tick second click loses to the async effect that fires after it.
- * Overview-first sidesteps the race entirely instead of winning it.)
+ * Step order is Monitor → Activity → Governance → Connect: the page lands on
+ * Monitor's Overview, so the tour starts where the user already is.
  *
  * `#gateway-kpi-row` is required, with a longer `waitMs`, for the same reason
  * `llmAnalyserTour`'s KPI row needs one: it's the first real content after
- * opening the tab, and GatewayUsage is a `dynamic()` import — a cold load can
+ * opening the page, and GatewayUsage is a `dynamic()` import — a cold load can
  * outrun the default wait.
  */
 const aiGatewayTour: TourDef = {
   id: 'ai-gateway',
-  title: 'Optimize: the AI Gateway',
-  module: 'Optimize',
+  title: 'The AI Gateway',
+  module: 'AI Gateway',
   description: 'Route your own LLM traffic through {brand} — and see every request, model, and user.',
-  route: '/optimise',
+  route: '/ai-gateway',
   requiresUiFeature: 'llmGateway',
   steps: [
     {
-      // Opening the tab always lands on Overview regardless of where the user
-      // was sitting before — see the docblock above — so the second click
-      // here is belt-and-suspenders, not load-bearing like it is in
-      // llmAnalyserTour's equivalent step: a no-op once already on Overview,
-      // and a safety net for the one tick before the hash-sync effect would
-      // otherwise land there on its own.
-      element: '#anchor-tab-ai-gateway',
+      element: '#anchor-tab-ai-gateway-monitor',
       title: 'The AI Gateway',
-      description: 'Point your own apps at {brand}’s gateway and it prices, logs, and attributes every LLM call they make. Let’s open it.',
+      description:
+        'Point your own apps at {brand}’s gateway and it prices, logs, and attributes every LLM call they make. Monitor is the usage view.',
       side: 'bottom',
       align: 'start',
       onBeforeNext: () => {
-        document.querySelector<HTMLElement>('#anchor-tab-ai-gateway')?.click();
-        document.querySelector<HTMLElement>('#tab-overview')?.click();
+        document.querySelector<HTMLElement>('#anchor-tab-ai-gateway-monitor')?.click();
       },
     },
     {
@@ -2034,7 +1997,7 @@ const aiGatewayTour: TourDef = {
       side: 'bottom',
       align: 'start',
       // Required, with room for a cold dynamic-import + first fetch: this is
-      // the first real content after opening the tab, same reasoning as
+      // the first real content after opening the page, same reasoning as
       // llmAnalyserTour's KPI row.
       waitMs: 20000,
     },
@@ -2044,37 +2007,6 @@ const aiGatewayTour: TourDef = {
       description: 'The trend, so a runaway job or a retry loop shows up as a spike rather than a surprise bill.',
       side: 'top',
       align: 'center',
-      optional: true,
-    },
-    {
-      // Switching FROM Overview TO Connect via this tab button is a plain
-      // in-tab click (CustomTabs' own onChange) — unlike the outer tab click
-      // above, it doesn't touch the URL's top-level fragment, so there's no
-      // hash-reset race to win here. Optional is enough.
-      element: '#tab-connect',
-      title: 'Connect',
-      description: 'This is where you point your own apps at the gateway. Let’s look.',
-      side: 'bottom',
-      align: 'start',
-      optional: true,
-      onBeforeNext: () => {
-        document.querySelector<HTMLElement>('#tab-connect')?.click();
-      },
-    },
-    {
-      element: '#gateway-connect',
-      title: 'Connect your app',
-      description: 'The base URL and a ready-made snippet for your language — point your SDK here instead of the provider and you’re done.',
-      side: 'top',
-      align: 'center',
-      optional: true,
-    },
-    {
-      element: '#gateway-connect-generate-token-btn',
-      title: 'Get a token',
-      description: 'Generate a gateway token to authenticate your traffic. Your own provider keys stay yours — the gateway forwards with them.',
-      side: 'bottom',
-      align: 'start',
       optional: true,
     },
     {
@@ -2092,6 +2024,16 @@ const aiGatewayTour: TourDef = {
       side: 'bottom',
       align: 'start',
       optional: true,
+    },
+    {
+      element: '#anchor-tab-ai-gateway-activity',
+      title: 'Activity',
+      description: 'The individual calls behind the numbers. Let’s open it.',
+      side: 'bottom',
+      align: 'start',
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('#anchor-tab-ai-gateway-activity')?.click();
+      },
     },
     {
       element: '#tab-requests',
@@ -2118,9 +2060,34 @@ const aiGatewayTour: TourDef = {
       optional: true,
     },
     {
-      element: '#tab-governance',
+      element: '#anchor-tab-ai-gateway-governance',
       title: 'Governance',
       description: 'Reliability and routing at a glance — error rates, tail latency, rule-routed vs. passthrough traffic, and DLP hits.',
+      side: 'bottom',
+      align: 'start',
+    },
+    {
+      element: '#anchor-tab-ai-gateway-connect',
+      title: 'Connect',
+      description: 'This is where you point your own apps at the gateway. Let’s look.',
+      side: 'bottom',
+      align: 'start',
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('#anchor-tab-ai-gateway-connect')?.click();
+      },
+    },
+    {
+      element: '#gateway-connect',
+      title: 'Connect your app',
+      description: 'The base URL and a ready-made snippet for your language — point your SDK here instead of the provider and you’re done.',
+      side: 'top',
+      align: 'center',
+      optional: true,
+    },
+    {
+      element: '#gateway-connect-generate-token-btn',
+      title: 'Get a token',
+      description: 'Generate a gateway token to authenticate your traffic. Your own provider keys stay yours — the gateway forwards with them.',
       side: 'bottom',
       align: 'start',
       optional: true,

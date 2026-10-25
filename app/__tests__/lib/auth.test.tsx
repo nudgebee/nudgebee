@@ -24,6 +24,7 @@ import {
   hasAnyCustomGrant,
   isCustomRolesEnabled,
   isGrantsOnlyUser,
+  canOpenGatewayConfig,
 } from '@lib/auth';
 
 // Render withAuth(...) once to push `session` into the module-global userData.
@@ -185,5 +186,26 @@ describe('per-account grants (session.boundGrants)', () => {
     applySession({ roles: ['account_admin'], accountIds: ['acct-b'], customRolesEnabled: true, permissions: [] });
     expect(canOnAccount('slo', 'Write', 'acct-b')).toBe(true);
     expect(canOnAccount('slo', 'Write', 'acct-a')).toBe(false);
+  });
+});
+
+describe("canOpenGatewayConfig — the AI Gateway page's Configure link", () => {
+  const GATEWAY_ON = { uiFeatures: { llmGateway: true } };
+
+  it('opens for the roles the adminOnly Admin › Gateway tab admits', () => {
+    applySession({ roles: ['tenant_admin'], ...GATEWAY_ON });
+    expect(canOpenGatewayConfig()).toBe(true);
+    applySession({ roles: ['tenant_admin_readonly'], ...GATEWAY_ON });
+    expect(canOpenGatewayConfig()).toBe(true);
+  });
+
+  it('stays closed for an llm:Read grant, which opens the page but not that tab', () => {
+    applySession({ roles: [], customRolesEnabled: true, permissions: ['llm:Read'], ...GATEWAY_ON });
+    expect(canOpenGatewayConfig()).toBe(false);
+  });
+
+  it('stays closed when the gateway is not deployed', () => {
+    applySession({ roles: ['tenant_admin'], uiFeatures: {} });
+    expect(canOpenGatewayConfig()).toBe(false);
   });
 });

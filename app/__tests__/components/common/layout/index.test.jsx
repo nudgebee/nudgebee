@@ -82,6 +82,7 @@ jest.mock('@lib/auth', () => ({
   // the disabled state override this and hasPermission.
   isGrantsOnlyUser: jest.fn(() => false),
   hasPermission: jest.fn(() => false),
+  canOpenGatewayConfig: jest.fn(() => false),
   hasGrantOnAccount: jest.fn(() => false),
   missingPermissionMessage: jest.fn((p) => `You need the "${p}" permission. Ask an admin to grant it.`),
 }));
@@ -302,7 +303,15 @@ jest.mock('@context/DataContext', () => ({
 
 // Mock colors
 const { isRenderedInIframe } = require('src/utils/common');
-const { hasReadAccess, isTenantAdmin, isUiFeatureEnabled, isGrantsOnlyUser, hasPermission, hasFeatureAccess } = require('@lib/auth');
+const {
+  hasReadAccess,
+  isTenantAdmin,
+  isUiFeatureEnabled,
+  isGrantsOnlyUser,
+  hasPermission,
+  hasFeatureAccess,
+  canOpenGatewayConfig,
+} = require('@lib/auth');
 const { useTenantBranding } = require('@hooks/useTenantBranding');
 const { snackbar: _snackbar } = require('@shared/snackbarService');
 
@@ -1000,21 +1009,77 @@ describe('sub-section hover flyout', () => {
     expect(mockPush).toHaveBeenCalledWith('/overview#overview');
   });
 
-  it('omits the flag-gated Optimize sections when the feature is off', async () => {
+  it('omits the flag-gated Optimize section when the feature is off', async () => {
     await renderAndHover('optimize-sidenavbutton');
     expect(document.getElementById('sidenav-flyout')).toBeInTheDocument();
     expect(screen.queryByText('LLM Analyser')).not.toBeInTheDocument();
-    expect(screen.queryByText('AI Gateway')).not.toBeInTheDocument();
   });
 
-  it('includes the flag-gated Optimize sections when the feature is on', async () => {
-    isUiFeatureEnabled.mockReturnValue(true);
-    // LLM Analyser is gated on this per-tenant flag too (see the comment above
-    // its menuItems entry) — isUiFeatureEnabled alone isn't enough for it.
+  it('includes the flag-gated Optimize section when the feature is on', async () => {
+    // LLM Analyser is gated on this per-tenant flag (see the comment above its
+    // menuItems entry).
     hasFeatureAccess.mockResolvedValue(true);
     await renderAndHover('optimize-sidenavbutton');
     expect(screen.getByText('LLM Analyser')).toBeInTheDocument();
-    expect(screen.getByText('AI Gateway')).toBeInTheDocument();
+  });
+
+  describe('AI Gateway section', () => {
+    const sections = ['connect', 'monitor', 'activity', 'governance'];
+    // clearAllMocks keeps implementations, so put back the file-wide defaults.
+    afterEach(() => {
+      isUiFeatureEnabled.mockReturnValue(false);
+      hasReadAccess.mockReturnValue(false);
+      isGrantsOnlyUser.mockReturnValue(false);
+      canOpenGatewayConfig.mockReturnValue(false);
+    });
+
+    it('is absent when the gateway is not deployed', async () => {
+      hasReadAccess.mockReturnValue(true);
+      await act(async () => {
+        render(
+          <PageLayoutWrapped>
+            <div>child</div>
+          </PageLayoutWrapped>
+        );
+      });
+      expect(document.getElementById('ai-gateway-sidenavbutton')).not.toBeInTheDocument();
+    });
+
+    it('is no longer part of the Optimize flyout', async () => {
+      isUiFeatureEnabled.mockReturnValue(true);
+      hasReadAccess.mockReturnValue(true);
+      await renderAndHover('optimize-sidenavbutton');
+      expect(document.getElementById('sidenav-optimise-ai-gateway')).not.toBeInTheDocument();
+    });
+
+    // Tenant-level: every tenant role reads its own gateway usage, so a user with no
+    // account access and no grant still gets the sections — but not Configure (Admin).
+    it('shows its sections, without Configure, to a user with no account access or grant', async () => {
+      isUiFeatureEnabled.mockReturnValue(true);
+      hasReadAccess.mockReturnValue(false);
+      await renderAndHover('ai-gateway-sidenavbutton');
+      for (const id of sections) {
+        expect(document.getElementById(`sidenav-ai-gateway-${id}`)).toBeInTheDocument();
+      }
+      expect(document.getElementById('sidenav-ai-gateway-configure')).not.toBeInTheDocument();
+    });
+
+    it('stays enabled for a grants-only user without llm:Read', async () => {
+      isUiFeatureEnabled.mockReturnValue(true);
+      isGrantsOnlyUser.mockReturnValue(true);
+      await renderAndHover('ai-gateway-sidenavbutton');
+      expect(document.getElementById('ai-gateway-sidenavbutton')).not.toHaveAttribute('aria-disabled', 'true');
+      expect(document.getElementById('sidenav-ai-gateway-monitor')).not.toHaveAttribute('aria-disabled', 'true');
+    });
+
+    it('adds Configure for a user who can open the gateway config', async () => {
+      isUiFeatureEnabled.mockReturnValue(true);
+      hasReadAccess.mockReturnValue(true);
+      canOpenGatewayConfig.mockReturnValue(true);
+      await renderAndHover('ai-gateway-sidenavbutton');
+      fireEvent.click(document.getElementById('sidenav-ai-gateway-configure'));
+      expect(mockPush).toHaveBeenCalledWith('/user-management#ai-tools/gateway');
+    });
   });
 
   it('navigates to the section a flyout row points at', async () => {

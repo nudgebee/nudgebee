@@ -94,6 +94,7 @@ export * as AutoPilotIcon1 from '@assets/application/auto-pilot-selected.svg';
 export * as AutoPilotIconBlack from '@assets/application/auto-pilot-new.svg';
 
 export { default as WhiteOptimizeIcon } from '@assets/header/whiteOptimizeIcon.icon.svg';
+export { default as WhiteGatewayIcon } from '@assets/header/whiteGatewayIcon.icon.svg';
 
 /***
  * @user

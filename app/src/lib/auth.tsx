@@ -361,6 +361,16 @@ export function canViewGatewayUserAccess(): boolean {
   return canManageGatewayUserAccess() || !!userData?.roles?.includes('tenant_admin_readonly');
 }
 
+// Can the user open Admin → AI & Tools → Gateway? That tab is adminOnly
+// (aiToolsConfig.js): no grant opens it, only the roles the Admin page treats as admin.
+export function canOpenGatewayConfig(): boolean {
+  if (!isUiFeatureEnabled('llmGateway')) {
+    return false;
+  }
+  const roles: string[] = userData?.roles ?? [];
+  return roles.includes('tenant_admin') || roles.includes('tenant_admin_readonly') || isSuperAdmin();
+}
+
 export function isTenantAdmin(): boolean {
   if (userData?.roles?.includes('tenant_admin')) {
     return true;
