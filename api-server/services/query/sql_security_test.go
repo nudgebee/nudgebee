@@ -301,3 +301,34 @@ func TestGenerateWhereClause_NilDialect(t *testing.T) {
 	assert.Contains(t, err.Error(), "dialect not found")
 	assert.Empty(t, sql)
 }
+
+func TestGenerateColumnExpression_DateUnitInjection(t *testing.T) {
+	tableDef := TableDefinition{
+		Type:   Normal,
+		Source: database.Metastore,
+		Name:   "events",
+		Columns: map[string]ColumnDefinition{
+			"created_at": {Type: "datetime"},
+		},
+	}
+
+	injectionPayload := "day', now()) AS created_at, (SELECT string_agg(username, ',') FROM users) AS leak, DATE_TRUNC('day"
+	col := QueryColumn{
+		Name: "created_at",
+		Expr: "date_unit",
+		Args: []string{injectionPayload},
+	}
+
+	result := generateColumnExpression(tableDef.Columns["created_at"], col, tableDef, "", nil)
+	assert.NotContains(t, result, "SELECT string_agg", "SQL injection payload must be neutralized")
+	assert.Equal(t, "DATE_TRUNC('day', created_at)", result, "Invalid date unit must fallback safely to 'day'")
+
+	// Valid date units should still work
+	validCol := QueryColumn{
+		Name: "created_at",
+		Expr: "date_unit",
+		Args: []string{"month"},
+	}
+	validResult := generateColumnExpression(tableDef.Columns["created_at"], validCol, tableDef, "", nil)
+	assert.Equal(t, "DATE_TRUNC('month', created_at)", validResult)
+}

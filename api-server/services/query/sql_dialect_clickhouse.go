@@ -22,7 +22,11 @@ func (d *clickhouseDialect) QuoteLiteral(s any) string {
 }
 
 func (d *clickhouseDialect) FuncDateTruncate(dateUnit string, columnName string) string {
-	return "DATE_TRUNC('" + dateUnit + "', " + columnName + ")"
+	cleanUnit := strings.ToLower(strings.TrimSpace(dateUnit))
+	if !IsValidDateUnit(cleanUnit) {
+		cleanUnit = "day"
+	}
+	return "DATE_TRUNC('" + cleanUnit + "', " + columnName + ")"
 }
 
 func (d *clickhouseDialect) FuncStringToDatetime(value string) string {

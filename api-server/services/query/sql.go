@@ -71,6 +71,27 @@ func getDialect(source database.DatabaseManagerType) sqlDialect {
 //   - refactor for better query generation using common interfaces
 //   - more functions/expression support
 
+var allowedDateUnits = map[string]bool{
+	"microseconds": true,
+	"milliseconds": true,
+	"second":       true,
+	"minute":       true,
+	"hour":         true,
+	"day":          true,
+	"week":         true,
+	"month":        true,
+	"quarter":      true,
+	"year":         true,
+	"decade":       true,
+	"century":      true,
+	"millennium":   true,
+}
+
+// IsValidDateUnit validates whether a unit string is an allowed date_trunc unit to prevent SQL injection.
+func IsValidDateUnit(unit string) bool {
+	return allowedDateUnits[strings.ToLower(strings.TrimSpace(unit))]
+}
+
 func generateColumnExpression(columnDef ColumnDefinition, column QueryColumn, tableDef TableDefinition, accountId string, ctx *security.RequestContext) string {
 	dialect := getDialect(tableDef.Source)
 	castType := lo.Ternary(tableDef.Source == database.AgentWarehouseBigQuery, "STRING", "TEXT")
@@ -80,7 +101,10 @@ func generateColumnExpression(columnDef ColumnDefinition, column QueryColumn, ta
 			switch column.Expr {
 			case "date_unit":
 				if len(column.Args) > 0 {
-					dateUnit = strings.ToLower(column.Args[0])
+					candidate := strings.ToLower(strings.TrimSpace(column.Args[0]))
+					if IsValidDateUnit(candidate) {
+						dateUnit = candidate
+					}
 				}
 				return dialect.FuncDateTruncate(dateUnit, lo.Ternary(columnDef.Def == "", column.Name, columnDef.Def))
 			default:
