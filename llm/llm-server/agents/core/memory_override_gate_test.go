@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 
 	"nudgebee/llm/security"
@@ -64,4 +65,25 @@ func TestGate_WriteOffLeavesReadingEnabled(t *testing.T) {
 	assert.True(t, q.MemoryReadAllowed())
 	assert.True(t, q.MemoryRerankAllowed())
 	assert.False(t, q.MemoryWriteAllowed())
+}
+
+// Where the saver keeps a conversation's memories, the extractor stops before
+// it reads anything or calls its model.
+func TestGate_ExtractLongTermMemorySkipsWhenSaverKeepsMemories(t *testing.T) {
+	origSaver, origActive, origDedup := SaverKeepsMemoriesFn, IsMemoryV2ActiveFn, LoadTypedStoreDedupContextFn
+	t.Cleanup(func() {
+		SaverKeepsMemoriesFn, IsMemoryV2ActiveFn, LoadTypedStoreDedupContextFn = origSaver, origActive, origDedup
+	})
+	IsMemoryV2ActiveFn = func(string) bool { return true }
+	LoadTypedStoreDedupContextFn = func(*security.RequestContext, NBAgentRequest) string { panic("past the gate") }
+	ctx := security.NewRequestContext(context.TODO(), security.NewRequestContextForSuperAdmin().GetSecurityContext(), slog.Default(), nil, nil)
+	req := NBAgentRequest{AccountId: "acct", OriginalQueryFromUser: true}
+
+	SaverKeepsMemoriesFn = func(string, NBAgentRequest) bool { return true }
+	assert.Zero(t, extractLongTermMemory(ctx, nil, req, "a response", "notebook", 3, false))
+
+	SaverKeepsMemoriesFn = func(string, NBAgentRequest) bool { return false }
+	assert.PanicsWithValue(t, "past the gate", func() {
+		extractLongTermMemory(ctx, nil, req, "a response", "notebook", 3, false)
+	}, "without the saver the extractor runs")
 }

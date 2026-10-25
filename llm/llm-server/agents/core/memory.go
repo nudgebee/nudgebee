@@ -46,6 +46,11 @@ var (
 	// tenant. OSS default: always false.
 	IsMemoryV2ActiveFn = func(tenantID string) bool { return false }
 
+	// SaverKeepsMemoriesFn reports whether the memory saver keeps this
+	// conversation's memories, so the extractor has nothing to do. OSS
+	// default: always false.
+	SaverKeepsMemoriesFn = func(tenantID string, request NBAgentRequest) bool { return false }
+
 	// RecordExtractedFactViaMemoryV2Fn writes a single extracted fact to
 	// the memory-v2 typed stores. OSS default: returns an error so the
 	// caller records stats.Errors and moves on.
@@ -368,6 +373,10 @@ func extractLongTermMemory(ctx *security.RequestContext, agent NBAgent, request 
 	// entirely. Extracted facts go to the new typed stores via the bridge; the
 	// legacy llm_conversation_memory table and its RAG index are not written.
 	tenantID := ctx.GetSecurityContext().GetTenantId()
+	if SaverKeepsMemoriesFn(tenantID, request) {
+		ctx.GetLogger().Info("agentexecutor: skipping long-term memory extraction, the saver keeps this conversation's memories")
+		return stats
+	}
 	memoryModuleActive := IsMemoryV2ActiveFn(tenantID)
 
 	// Layer-1 dedup: show the extractor the existing knowledge so it does not
