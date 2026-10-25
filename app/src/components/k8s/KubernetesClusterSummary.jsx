@@ -23,7 +23,7 @@ import TraceIcon from '@assets/home/traces-icon.icon.svg';
 import SecurityIcon from '@assets/home/security-icon.icon.svg';
 import LogsIcon from '@assets/home/logs-icon.icon.svg';
 import { useData } from '@context/DataContext';
-import { hasPermission, missingPermissionMessage, isGrantsOnlyUser } from '@lib/auth';
+import { hasPermission, hasGrantOnAccount, missingPermissionMessage, isGrantsOnlyUser } from '@lib/auth';
 import { v4 as uuidv4 } from 'uuid';
 import { colorsArray, moduleForFragment } from 'src/utils/common';
 import { GetInsightIcon } from '@shared/icons/GetInsightIcon';
@@ -981,7 +981,7 @@ const CostSummary = ({ clusterSummary = {}, accountId }) => {
           <Box display='grid' gridTemplateColumns={'repeat(2,1fr)'} mt='var(--ds-space-1)'>
             {uniqueLinks.map((link) => {
               const mod = moduleForFragment(link.fragment);
-              const disabled = gateQuickLinks && !hasPermission(mod, 'Read');
+              const disabled = gateQuickLinks && !hasPermission(mod, 'Read') && !hasGrantOnAccount(mod, 'Read', accountId);
               return (
                 <Box
                   display={'flex'}

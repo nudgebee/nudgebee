@@ -34,6 +34,57 @@ function actionKeysJson(): string {
   return JSON.stringify(keys, null, 2) + '\n';
 }
 
+// The actions actions.yaml flags `account_enforced`, with the backend whose
+// handler the flag vouches for. Each backend's TestAccountEnforcedActionsHaveA
+// BoundGrantCase reads this file and requires a bound-grant test case for every
+// action of its own; a flag on any other backend fails here, since no test there
+// would pin it. Regenerated with action_keys.json (same env var).
+const ENFORCED_COPIES = [
+  path.join(REPO, 'api-server/services/security/account_enforced_actions.json'),
+  path.join(REPO, 'runbook-server/services/security/account_enforced_actions.json'),
+];
+
+const SERVICE_OF_HANDLER: Array<[string, string]> = [
+  ['{{SERVICE_API_SERVER_URL}}', 'api-server'],
+  ['{{WORKFLOW_SERVER_URL}}', 'runbook-server'],
+];
+
+function enforcedService(name: string, handler: string): string {
+  const hit = SERVICE_OF_HANDLER.find(([prefix]) => handler.startsWith(prefix));
+  if (!hit) throw new Error(`${name} is account_enforced but its handler ${handler} has no bound-grant test table`);
+  return hit[1];
+}
+
+type FlaggedYaml = { actions?: Array<{ name?: string; definition?: { handler?: string; account_enforced?: boolean } }> };
+
+function accountEnforcedJson(): string {
+  const out: Record<string, string> = {};
+  for (const file of ['src/lib/actions.yaml', 'src/ee/actions.yaml']) {
+    const doc = yaml.load(fs.readFileSync(file, 'utf8')) as FlaggedYaml;
+    for (const a of doc.actions ?? []) {
+      if (a.name && a.definition?.account_enforced) out[a.name] = enforcedService(a.name, a.definition.handler ?? '');
+    }
+  }
+  const sorted = Object.fromEntries(Object.entries(out).sort(([a], [b]) => a.localeCompare(b)));
+  return JSON.stringify(sorted, null, 2) + '\n';
+}
+
+describe('account_enforced_actions.json', () => {
+  it('matches the account_enforced flags in every backend copy', () => {
+    const want = accountEnforcedJson();
+    for (const file of ENFORCED_COPIES) {
+      if (process.env.UPDATE_ACTION_KEYS) fs.writeFileSync(file, want);
+      expect(fs.readFileSync(file, 'utf8')).toEqual(want);
+    }
+  });
+
+  it('refuses a flag on a backend with no bound-grant test table', () => {
+    expect(() => enforcedService('llm_ask', '{{LLM_SERVER_URL}}/rpc/llm')).toThrow(/no bound-grant test table/);
+    expect(enforcedService('metrics_list', '{{SERVICE_API_SERVER_URL}}/rpc/metrics')).toBe('api-server');
+    expect(enforcedService('bees_list', '{{WORKFLOW_SERVER_URL}}/bees/list')).toBe('runbook-server');
+  });
+});
+
 describe('action_keys.json', () => {
   it('matches the gateway classification in every backend copy', () => {
     const want = actionKeysJson();

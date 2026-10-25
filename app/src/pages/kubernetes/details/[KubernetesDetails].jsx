@@ -9,6 +9,7 @@ import {
   hasReadAccess,
   isGrantsOnlyUser,
   hasPermission,
+  hasGrantOnAccount,
   missingPermissionMessage,
   fetchFeatureFlagsForTenant,
   hasFeatureAccessCached,
@@ -603,7 +604,7 @@ const KubernetesDetails = () => {
   const subTabModule = (tabValue, subTab) => SUBTAB_MODULE_OVERRIDES[`${tabValue}:${subTab.id}`] ?? TAB_REQUIRED_MODULE[tabValue];
   const canAccessSubTab = (tabValue, subTab) => {
     const requiredModule = subTabModule(tabValue, subTab);
-    return !requiredModule || !grantsOnlyUser || hasPermission(requiredModule, 'Read');
+    return !requiredModule || !grantsOnlyUser || hasPermission(requiredModule, 'Read') || hasGrantOnAccount(requiredModule, 'Read', kubeId);
   };
   // A top-level tab is reachable if the user can open at least one of its
   // (visible) sub-tabs; a tab with no sub-tabs (Summary) falls back to its own
@@ -614,7 +615,7 @@ const KubernetesDetails = () => {
     const visibleSubTabs = (option.tabOptions || []).filter((subTab) => !subTab.hidden);
     if (visibleSubTabs.length === 0) {
       const requiredModule = TAB_REQUIRED_MODULE[option.value];
-      return !requiredModule || hasPermission(requiredModule, 'Read');
+      return !requiredModule || hasPermission(requiredModule, 'Read') || hasGrantOnAccount(requiredModule, 'Read', kubeId);
     }
     return visibleSubTabs.some((subTab) => canAccessSubTab(option.value, subTab));
   };
@@ -641,9 +642,9 @@ const KubernetesDetails = () => {
       }
       return next;
     });
-    // The helpers above are pure functions of the session (grantsOnlyUser) + tabOptions.
+    // The helpers above are pure functions of the session (grantsOnlyUser) + tabOptions + the account.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tabOptions, grantsOnlyUser]);
+  }, [tabOptions, grantsOnlyUser, kubeId]);
 
   useEffect(() => {
     const init = async () => {

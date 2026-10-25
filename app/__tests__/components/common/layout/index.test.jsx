@@ -82,6 +82,7 @@ jest.mock('@lib/auth', () => ({
   // the disabled state override this and hasPermission.
   isGrantsOnlyUser: jest.fn(() => false),
   hasPermission: jest.fn(() => false),
+  hasGrantOnAccount: jest.fn(() => false),
   missingPermissionMessage: jest.fn((p) => `You need the "${p}" permission. Ask an admin to grant it.`),
 }));
 

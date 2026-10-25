@@ -11,7 +11,7 @@ import apiKubernetes1 from '@api1/kubernetes1';
 import k8sApi from '@api1/kubernetes';
 import { toast as snackbar } from '@ui/Toast';
 import { ds } from '@utils/colors';
-import { hasWriteAccess } from '@lib/auth';
+import { canOnAccount } from '@lib/auth';
 import { formatObjectivePercent } from 'src/utils/common';
 import {
   CPU_SLO_TYPES,
@@ -528,7 +528,7 @@ const SLOConfigDialog: React.FC<SLOConfigDialogProps> = ({ open, onClose, accoun
           </DsButton>
         </Grid>
         {/* Deleting a saved SLO is account-level, as in the SLO list; namespace admins can still edit it. */}
-        {(isSavedCpu(t.name) ? hasWriteAccess(accountId) : cpuThresholdText(t.name) !== '') && (
+        {(isSavedCpu(t.name) ? canOnAccount('slo', 'Write', accountId) : cpuThresholdText(t.name) !== '') && (
           <Grid item>
             <DsButton id={`slo-${t.name}-remove`} tone='ghost' size='sm' onClick={() => handleRemoveCpu(t.name)} disabled={loading}>
               Remove

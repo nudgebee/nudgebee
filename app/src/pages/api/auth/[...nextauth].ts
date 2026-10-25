@@ -89,6 +89,10 @@ export interface NudgebeeSession extends Session {
   // whole dynamic-RBAC layer is off and every UI gate must behave exactly as it
   // did before the feature existed. Read by isCustomRolesEnabled().
   customRolesEnabled?: boolean;
+  // Account-bound grants per account ({account id: ["<module>:<class>"]}), for
+  // users holding any `scoped:` key. Served per session fetch, never stored in
+  // the token. Read by hasGrantOnAccount().
+  boundGrants?: Record<string, string[]>;
   // License tier from services-server. Used by EE-bundle components to
   // self-gate at render time — needed when the EE bundle is present in
   // the monorepo build but the deployment is configured as a non-saas tier.
@@ -1351,6 +1355,37 @@ function getSessionUpdateSeconds() {
 // /api/auth/session poll doesn't turn into a per-minute RPC per tab.
 const PERMISSIONS_REFRESH_MS = 5 * 60 * 1000;
 
+// Account-bound grants per account for users holding any `scoped:` key, for the
+// UI's per-account gates (hasGrantOnAccount in @lib/auth). Served in the session
+// JSON, never stored in the token: a role bound to many accounts would otherwise
+// grow the cookie with every account. Cached per (user, tenant) for
+// PERMISSIONS_REFRESH_MS, the same staleness the token's own keys have. A failed
+// lookup serves an empty map, so per-account gates answer false, and is cached
+// for BOUND_GRANTS_FAILURE_TTL_MS so an outage doesn't add a failing call to
+// every session poll.
+const BOUND_GRANTS_FAILURE_TTL_MS = 30 * 1000;
+const BOUND_GRANTS_CACHE_MAX = 1000;
+const _boundGrantsCache = new Map<string, { expires: number; grants: Record<string, string[]> }>();
+
+async function boundGrantsFor(userId: string, tenantId: string): Promise<Record<string, string[]>> {
+  const key = `${userId}:${tenantId}`;
+  const now = Date.now();
+  const hit = _boundGrantsCache.get(key);
+  if (hit && now < hit.expires) return hit.grants;
+  const resolved = await resolveUserCustomPermissions(userId, tenantId);
+  const grants = resolved.enabled ? resolved.boundGrants : {};
+  if (_boundGrantsCache.size >= BOUND_GRANTS_CACHE_MAX) {
+    for (const [k, v] of _boundGrantsCache) {
+      if (now >= v.expires) _boundGrantsCache.delete(k);
+    }
+    // Still full: drop the oldest insertion so the map stays bounded.
+    if (_boundGrantsCache.size >= BOUND_GRANTS_CACHE_MAX) _boundGrantsCache.delete(_boundGrantsCache.keys().next().value!);
+  }
+  _boundGrantsCache.delete(key);
+  _boundGrantsCache.set(key, { expires: now + (resolved.enabled ? PERMISSIONS_REFRESH_MS : BOUND_GRANTS_FAILURE_TTL_MS), grants });
+  return grants;
+}
+
 export const authOptions: NextAuthOptions = {
   adapter: GQLAdapter(),
   session: {
@@ -1488,6 +1523,10 @@ export const authOptions: NextAuthOptions = {
           nudgeBeeSession.hasMultipleTenantAccess = !!token.hasMultipleTenantAccess;
           nudgeBeeSession.permissions = (token.permissions as string[]) ?? [];
           nudgeBeeSession.customRolesEnabled = !!token.customRolesEnabled;
+          nudgeBeeSession.boundGrants = {};
+          if (token.id && (token.tenant as any)?.id && nudgeBeeSession.permissions.some((p) => p.startsWith('scoped:'))) {
+            nudgeBeeSession.boundGrants = await boundGrantsFor(token.id as string, (token.tenant as any).id);
+          }
         }
         const licenseDetails = await getLicenseDetails();
         nudgeBeeSession.tier = licenseDetails.tier;

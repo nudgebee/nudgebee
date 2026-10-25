@@ -381,6 +381,34 @@ export function hasPermission(module: string, permissionClass: 'Read' | 'Write' 
   return userData?.permissions?.includes(`${module}:${permissionClass}`) ?? false;
 }
 
+// Modules whose UI surfaces a grant bound to an account fully reaches: each
+// action they call is a /rpc/query read or flagged `account_enforced` in
+// actions.yaml. A bound grant on any other module opens only its /rpc/query
+// reads, so its surfaces keep gating on tenant-wide grants until its custom
+// handlers are verified and flagged.
+const ACCOUNT_BOUND_MODULES = new Set(['slo', 'metrics']);
+
+// Dynamic-RBAC: does the current user hold (module, class) on accountId — a
+// tenant-wide grant, or one bound to that account (session.boundGrants)? Write
+// implies Read, as at the gateway. UI-gating helper only; the gateway and the
+// handler decide.
+export function hasGrantOnAccount(module: string, permissionClass: 'Read' | 'Write' | 'Execute', accountId?: string): boolean {
+  const holds = (keys: string[] | undefined) =>
+    !!keys?.includes(`${module}:${permissionClass}`) || (permissionClass === 'Read' && !!keys?.includes(`${module}:Write`));
+  if (!isCustomRolesEnabled()) return false;
+  if (holds(userData?.permissions)) return true;
+  if (!accountId || !ACCOUNT_BOUND_MODULES.has(module)) return false;
+  return holds(userData?.boundGrants?.[accountId]);
+}
+
+// May the current user do `permissionClass` on `module` for accountId: their
+// built-in role on the account (hasReadAccess / hasWriteAccess) or a custom grant
+// that applies to it (hasGrantOnAccount).
+export function canOnAccount(module: string, permissionClass: 'Read' | 'Write', accountId?: string, namespace?: string): boolean {
+  const builtIn = permissionClass === 'Read' ? hasReadAccess(accountId, namespace) : hasWriteAccess(accountId, namespace);
+  return builtIn || hasGrantOnAccount(module, permissionClass, accountId);
+}
+
 // Backend `tickets_create` (app/src/lib/actions.yaml) authorizes every *_readonly
 // role, not just write roles — so gate the Create Ticket affordance on read access
 // to the row's account, not write. A tickets:Write custom-role grant still covers

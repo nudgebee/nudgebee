@@ -1,6 +1,8 @@
 package api
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -125,6 +127,108 @@ var miscGrantCases = []miscGrantCase{
 			"query": map[string]any{"table": "events_v2"}},
 		readers: true,
 	},
+	{
+		action:  "cloud_list_notification_targets",
+		key:     "cloud:Read",
+		handler: func(a *ActionRequest, c *gin.Context) { handleCloudAction(a, c, nil, nil, slog.Default()) },
+		input:   map[string]any{"account_id": miscGrantAccount},
+		readers: true,
+	},
+	{
+		action:  "accounts_sync",
+		key:     "accounts:Execute",
+		handler: func(a *ActionRequest, c *gin.Context) { handleCloudAction(a, c, nil, nil, slog.Default()) },
+		input:   map[string]any{"account_id": miscGrantAccount},
+	},
+	{
+		action:  "cloud_sync_service",
+		key:     "cloud:Execute",
+		handler: func(a *ActionRequest, c *gin.Context) { handleCloudAction(a, c, nil, nil, slog.Default()) },
+		input:   map[string]any{"account_id": miscGrantAccount, "service_name": "AmazonEC2"},
+	},
+	{
+		action:  "cloud_apply_command",
+		key:     "cloud:Execute",
+		handler: func(a *ActionRequest, c *gin.Context) { handleCloudAction(a, c, nil, nil, slog.Default()) },
+		input: map[string]any{"account_id": miscGrantAccount, "service_name": "AmazonEC2", "region": "us-east-1",
+			"resource_id": "i-1", "command": "stop"},
+	},
+	{
+		action:  "cloud_execute_command",
+		key:     "cloud:Execute",
+		handler: func(a *ActionRequest, c *gin.Context) { handleCloudAction(a, c, nil, nil, slog.Default()) },
+		input:   map[string]any{"account_id": miscGrantAccount, "commands": []any{"aws ec2 describe-instances"}},
+	},
+	{
+		action:  "metrics_list",
+		key:     "metrics:Read",
+		handler: func(a *ActionRequest, c *gin.Context) { handleMetricsAction(a, c, nil, nil, slog.Default()) },
+		input:   map[string]any{"request": map[string]any{"account_id": miscGrantAccount}},
+		readers: true,
+	},
+	{
+		action:  "metrics_list_names",
+		key:     "metrics:Read",
+		handler: func(a *ActionRequest, c *gin.Context) { handleMetricsAction(a, c, nil, nil, slog.Default()) },
+		input:   map[string]any{"request": map[string]any{"account_id": miscGrantAccount}},
+		readers: true,
+	},
+	{
+		action:  "metrics_list_labels",
+		key:     "metrics:Read",
+		handler: func(a *ActionRequest, c *gin.Context) { handleMetricsAction(a, c, nil, nil, slog.Default()) },
+		input:   map[string]any{"request": map[string]any{"account_id": miscGrantAccount}},
+		readers: true,
+	},
+	{
+		action:  "metrics_list_label_values",
+		key:     "metrics:Read",
+		handler: func(a *ActionRequest, c *gin.Context) { handleMetricsAction(a, c, nil, nil, slog.Default()) },
+		input:   map[string]any{"request": map[string]any{"account_id": miscGrantAccount, "label": "pod"}},
+		readers: true,
+	},
+	{
+		action:  "metrics_aggregate_utilisation",
+		key:     "metrics:Read",
+		handler: func(a *ActionRequest, c *gin.Context) { handleMetricsAction(a, c, nil, nil, slog.Default()) },
+		input:   map[string]any{"request": map[string]any{"account_id": miscGrantAccount}},
+		readers: true,
+	},
+	{
+		action:  "metrics_check_vm_status",
+		key:     "metrics:Read",
+		handler: func(a *ActionRequest, c *gin.Context) { handleMetricsAction(a, c, nil, nil, slog.Default()) },
+		input:   map[string]any{"request": map[string]any{"account_id": miscGrantAccount}},
+		readers: true,
+	},
+	{
+		action:  "metrics_get_query",
+		key:     "metrics:Read",
+		handler: func(a *ActionRequest, c *gin.Context) { handleMetricsAction(a, c, nil, nil, slog.Default()) },
+		input:   map[string]any{"request": map[string]any{"account_id": miscGrantAccount}},
+		readers: true,
+	},
+	{
+		// Served through the relay route the gateway forwards it to; past the
+		// account check the forward fails (no relay server), with 502.
+		action:  "relay_forward_request",
+		key:     "k8s:Read",
+		handler: serveRelayRequest,
+		input:   map[string]any{"body": map[string]any{"account_id": miscGrantAccount, "action_name": "get_resource"}},
+		readers: true,
+	},
+}
+
+// serveRelayRequest posts the action's input to /v1/relay/request as the gateway
+// does, with the caller's identity headers.
+func serveRelayRequest(a *ActionRequest, c *gin.Context) {
+	router := gin.New()
+	handleRelayApis(router, nil, nil, slog.Default())
+	raw, _ := json.Marshal(map[string]any{"input": a.Input})
+	req := httptest.NewRequest(http.MethodPost, "/v1/relay/request", bytes.NewReader(raw))
+	req.Header = c.Request.Header.Clone()
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(c.Writer, req)
 }
 
 // miscGrantCallers are the security contexts each action is called with. The

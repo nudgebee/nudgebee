@@ -947,6 +947,7 @@ query ResolveCustomPermissions($userId: String!, $tenantId: String!) {
   customroles_list_user_permissions(user_id: $userId, tenant_id: $tenantId) {
     permissions
     enabled
+    bound_grants
   }
 }`;
 
@@ -956,10 +957,13 @@ export type ResolvedCustomPermissions = {
   // isn't part of this build (OSS), or the resolve failed — all of which must
   // leave the UI on its built-in-role behavior rather than gate anything.
   enabled: boolean;
+  // Account-bound grants per account ({account id: ["<module>:<class>"]}). The
+  // session serves these to the browser; they never go into the token.
+  boundGrants: Record<string, string[]>;
 };
 
 export async function resolveUserCustomPermissions(userId: string, tenantId: string): Promise<ResolvedCustomPermissions> {
-  const off: ResolvedCustomPermissions = { permissions: [], enabled: false };
+  const off: ResolvedCustomPermissions = { permissions: [], enabled: false, boundGrants: {} };
   if (!userId || !tenantId) return off;
   try {
     const response = await queryGraphQL(RESOLVE_CUSTOM_PERMISSIONS_QUERY, 'ResolveCustomPermissions', {
@@ -973,7 +977,7 @@ export async function resolveUserCustomPermissions(userId: string, tenantId: str
       throw new Error(response.data.errors?.[0]?.message || 'GraphQL error resolving custom permissions');
     }
     const result = response?.data?.data?.customroles_list_user_permissions;
-    return { permissions: result?.permissions || [], enabled: !!result?.enabled };
+    return { permissions: result?.permissions || [], enabled: !!result?.enabled, boundGrants: result?.bound_grants || {} };
   } catch (err) {
     console.log('unable to resolve custom permissions for user', userId, err);
     return off;

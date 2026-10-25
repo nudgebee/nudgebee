@@ -66,7 +66,7 @@ import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import { useData } from '@context/DataContext';
 import K8sAccountModal from '@components/integrations/modal/K8sAccountModal';
 import SafeIcon from '@shared/icons/SafeIcon';
-import { getUserSession, getCurrentTenant, hasPermission, missingPermissionMessage, isGrantsOnlyUser } from '@lib/auth';
+import { getUserSession, getCurrentTenant, hasPermission, hasGrantOnAccount, missingPermissionMessage, isGrantsOnlyUser } from '@lib/auth';
 import DSTooltip from '@ui/Tooltip';
 import { FiArrowRight } from 'react-icons/fi';
 import useCurrencySymbol from '@hooks/useCurrencySymbol';
@@ -1688,7 +1688,7 @@ const HomeWidgets = React.memo(({ selectedCluster, cluster }) => {
         >
           {links.map((link) => {
             const mod = moduleForFragment(link.fragment);
-            const disabled = gateQuickLinks && !hasPermission(mod, 'Read');
+            const disabled = gateQuickLinks && !hasPermission(mod, 'Read') && !hasGrantOnAccount(mod, 'Read', linkAccountId);
             const row = (
               <Box
                 display={'flex'}

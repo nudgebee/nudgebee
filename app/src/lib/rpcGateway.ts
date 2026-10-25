@@ -264,42 +264,23 @@ const SCOPED_PERMISSION_PREFIX = 'scoped:';
 // exact):
 //   - Tenant-global grants (`<module>:<Class>`) authorize the action on ANY route.
 //   - Account-scoped grants (`scoped:<module>:<Class>`) authorize ONLY when the
-//     action routes to the query engine (`/rpc/query`) — the one uniformly
-//     per-account-gateable path, where the query engine restricts the read to the
-//     granted accounts (ScopedAccountIdsForModule). Custom-handler actions have no
-//     per-account gate, so a scoped grant never admits them; the caller falls
-//     through to the built-in role check and is denied (fail-closed).
-// Actions whose upstream handler has been VERIFIED to re-check the caller's
-// account-scoped grant (HasScopedPermission / CanReadAccountData) against the
-// account carried in the request. A scoped key is admitted for these; every
-// other non-/rpc/query action fails closed, because the gateway cannot know
-// which account a custom handler will operate on.
+//     action routes to the query engine (`/rpc/query`), which restricts the read
+//     to the granted accounts (ScopedAccountIdsForModule), or when actions.yaml
+//     flags it `account_enforced: true`: its handler has been VERIFIED to check
+//     every account it reads or writes against the caller's grant
+//     (CanAccessAccount / CanReadAccountData / HasScopedPermission, runbook
+//     ResolveReadableAccounts). Every other custom-handler action fails closed,
+//     because the gateway cannot know which account it will operate on; the
+//     caller falls through to the built-in role check and is denied.
 //
-// This is the opt-in ledger for account-scoped enforcement: add an action here
-// ONLY in the same change that adds the check to its handler. Removing a check
-// without removing the entry silently widens a scoped role to tenant-wide.
-//
-//   relay_forward_request — services/api/relay.go's validateRelayAccountAccess
-//     re-checks the account in the request body against the caller's k8s grant
-//     (CanReadAccountData for reads, HasScopedPermission(k8s,Write) for writes),
-//     so an account-scoped k8s grant is safe to admit here.
-//   bees_list, bees_get_install, bees_list_runs, bees_list_approvals —
-//     runbook-server's beeReader keeps only the accounts where the caller holds
-//     workflows:Read (built-in or scoped grant) and limits every row to them.
-//   bees_execute_run — runbook-server starts the trigger through ExecuteWorkflow,
-//     which checks account_id from the request against the caller's workflows
-//     grant (HasAccountAccess Create, else HasScopedPermission workflows
-//     Execute/Write on that account), so an account-scoped workflows grant is safe.
-export const ACCOUNT_ENFORCED_ACTIONS = new Set<string>([
-  'relay_forward_request',
-  'bees_execute_run',
-  'bees_list',
-  'bees_get_install',
-  'bees_list_runs',
-  'bees_list_approvals',
-]);
+// The flag is the opt-in ledger for account-scoped enforcement: set it ONLY in
+// the change that verifies the handler, and give the action a case in the
+// backend's bound-grant table (TestAccountEnforcedActionsHaveABoundGrantCase pins
+// both). Removing a check without removing the flag silently widens a bound role
+// to tenant-wide.
+type GrantRoute = Pick<RpcRoute, 'permission' | 'handler'> & Partial<Pick<RpcRoute, 'accountEnforced'>>;
 
-export function actionHasCustomGrant(actionName: string, route: Pick<RpcRoute, 'permission' | 'handler'>, permissions: string[]): boolean {
+export function actionHasCustomGrant(route: GrantRoute, permissions: string[]): boolean {
   const perm = route.permission;
   if (!perm) return false;
   const writeVariant = perm.endsWith(':Read') ? perm.replace(/:Read$/, ':Write') : null;
@@ -307,10 +288,7 @@ export function actionHasCustomGrant(actionName: string, route: Pick<RpcRoute, '
   if (permissions.includes(perm) || (writeVariant !== null && permissions.includes(writeVariant))) {
     return true;
   }
-  // Account-scoped: the query engine enforces the account for every /rpc/query
-  // read (ScopedAccountIdsForModule); other actions qualify only by being on the
-  // verified-handler ledger above.
-  if (!route.handler.endsWith('/rpc/query') && !ACCOUNT_ENFORCED_ACTIONS.has(actionName)) return false;
+  if (!route.handler.endsWith('/rpc/query') && !route.accountEnforced) return false;
   return (
     permissions.includes(SCOPED_PERMISSION_PREFIX + perm) || (writeVariant !== null && permissions.includes(SCOPED_PERMISSION_PREFIX + writeVariant))
   );
@@ -322,9 +300,9 @@ export function actionHasCustomGrant(actionName: string, route: Pick<RpcRoute, '
 // Same matcher as custom grants (Write⇒Read), so a scope means exactly what the
 // same box means in the role editor. Unclassified actions fail closed, and
 // credential/role management is refused outright (isTokenScopeBlockedAction).
-export function actionAllowedByTokenScopes(actionName: string, route: Pick<RpcRoute, 'permission' | 'handler'>, tokenScopes: string[]): boolean {
+export function actionAllowedByTokenScopes(actionName: string, route: GrantRoute, tokenScopes: string[]): boolean {
   if (isTokenScopeBlockedAction(actionName)) return false;
-  return actionHasCustomGrant(actionName, route, tokenScopes);
+  return actionHasCustomGrant(route, tokenScopes);
 }
 
 export type ForwardOptions = {
@@ -405,7 +383,7 @@ export async function forwardAction(opts: ForwardOptions): Promise<ForwardResult
   const permissions = opts.sessionVariables.permissions || [];
   // A per-provider integration grant admits its write actions here; which
   // provider it covers is decided by the API server against the stored type.
-  const hasPermission = actionHasCustomGrant(opts.method, route, permissions) || actionHasProviderGrant(opts.method, permissions);
+  const hasPermission = actionHasCustomGrant(route, permissions) || actionHasProviderGrant(opts.method, permissions);
   // Tenant-agnostic actions (actions.yaml `tenant_agnostic: true`) authorize on
   // the authenticated user's identity alone, not on a role within the active
   // tenant, so both gates below are skipped for them. This is what keeps

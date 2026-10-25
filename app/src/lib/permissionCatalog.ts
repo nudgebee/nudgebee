@@ -462,7 +462,7 @@ const MODULE_SCOPE: Record<string, ModuleScope> = {
   // limits, data-privacy settings). Every handler forces the tenant from the
   // session-injected x-tenant-id and has no account dimension, so an
   // account-scoped binding for it would be inert (its handlers are neither
-  // /rpc/query nor on the gateway's ACCOUNT_ENFORCED_ACTIONS ledger, so the
+  // /rpc/query nor flagged `account_enforced` in actions.yaml, so the
   // scoped grant fails closed). Filing it under 'tenant' is what stops an admin
   // binding it to a group+account and believing it took effect.
   llm: 'tenant',

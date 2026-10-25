@@ -23,7 +23,7 @@ jest.mock('@api1/kubernetes1', () => ({
 }));
 jest.mock('@api1/kubernetes', () => ({ __esModule: true, default: {} }));
 const mockHasWriteAccess = jest.fn((..._args: any[]) => true);
-jest.mock('@lib/auth', () => ({ hasWriteAccess: (...args: any[]) => mockHasWriteAccess(...args) }));
+jest.mock('@lib/auth', () => ({ canOnAccount: (_module: string, _class: string, ...args: any[]) => mockHasWriteAccess(...args) }));
 jest.mock('@ui/Modal', () => ({
   Modal: ({ children, actionButtons, open }: any) =>
     open ? (

@@ -19,7 +19,7 @@ type mcpHealthCheckInput struct {
 }
 
 // canCheckMCPIntegration is the Check now gate (#40994). The action is classified
-// integrations:Execute and is not on the gateway's ACCOUNT_ENFORCED_ACTIONS, so
+// integrations:Execute and is not flagged account_enforced in actions.yaml, so
 // only tenant-wide callers reach it: tenant admins, full super admins and
 // tenant-global grant holders.
 func canCheckMCPIntegration(sc *security.SecurityContext) bool {

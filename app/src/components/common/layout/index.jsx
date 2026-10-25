@@ -22,6 +22,7 @@ import {
   isGrantsOnlyUser,
   isUiFeatureEnabled,
   hasPermission,
+  hasGrantOnAccount,
   missingPermissionMessage,
 } from '@lib/auth';
 import {
@@ -776,7 +777,7 @@ const PageLayout = ({ children }) => {
     // though the sub-item itself was enabled. The tooltip names the primary module.
     const gate = (entry) => {
       const modules = entry.modules ?? (entry.module ? [entry.module] : []);
-      return modules.length > 0 && !modules.some((m) => hasPermission(m, 'Read'))
+      return modules.length > 0 && !modules.some((m) => hasPermission(m, 'Read') || hasGrantOnAccount(m, 'Read', selectedCluster?.value))
         ? { ...entry, disabled: true, disabledTooltip: missingPermissionMessage(`${modules[0]}:Read`) }
         : entry;
     };

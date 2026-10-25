@@ -20,7 +20,7 @@ import KubernetesEventsTable from '@components/events/KubernetesEvents';
 import SLOConfigDialog from '@components/k8s/common/SLOConfigDialog';
 import { sloFingerprint } from '@lib/eventFingerprint';
 import { toast as snackbar } from '@ui/Toast';
-import { hasWriteAccess } from '@lib/auth';
+import { canOnAccount } from '@lib/auth';
 import SafeIcon from '@shared/icons/SafeIcon';
 import {
   FORECAST_EVENT_KEYS,
@@ -109,7 +109,7 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
   }, [allSLOData, selectedNamespace]);
 
   const handleDelete = (workloadName: string, workloadNamespace: string) => {
-    if (!hasWriteAccess(accountId)) {
+    if (!canOnAccount('slo', 'Write', accountId)) {
       snackbar.error('You do not have write access to delete SLO configs');
       return;
     }
@@ -117,7 +117,7 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
   };
 
   const handleEdit = (workloadName: string, workloadNamespace: string, config: any[]) => {
-    if (!hasWriteAccess(accountId, workloadNamespace)) {
+    if (!canOnAccount('slo', 'Write', accountId, workloadNamespace)) {
       snackbar.error('You do not have write access to update SLO configs');
       return;
     }
@@ -287,7 +287,7 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
               },
               {
                 // Namespace admins may update SLOs in their namespaces; delete stays account-level.
-                component: hasWriteAccess(accountId, m.workload_namespace) ? (
+                component: canOnAccount('slo', 'Write', accountId, m.workload_namespace) ? (
                   <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)' }}>
                     <Button
                       tone='secondary'
@@ -297,7 +297,7 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
                       onClick={() => handleEdit(m.workload_name, m.workload_namespace, m.config)}
                       icon={<SafeIcon src={EditIcon} alt='edit' width={20} height={20} />}
                     />
-                    {hasWriteAccess(accountId) && (
+                    {canOnAccount('slo', 'Write', accountId) && (
                       <Button
                         tone='secondary'
                         composition='icon-only'
@@ -338,7 +338,7 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
   };
 
   const handleOpenSLODialog = () => {
-    if (!hasWriteAccess(accountId)) {
+    if (!canOnAccount('slo', 'Write', accountId)) {
       snackbar.error('You do not have write access to create SLO configs');
       return;
     }
@@ -421,7 +421,7 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
           actions={
             <>
               <DownloadButton id='k8s-slo-configs-download' onClick={async () => ({ tableId: 'table-k8s-slo-configs' })} />
-              {hasWriteAccess(accountId) && (
+              {canOnAccount('slo', 'Write', accountId) && (
                 <Button onClick={handleOpenSLODialog} id='add-slo-config-btn'>
                   Add SLO
                 </Button>

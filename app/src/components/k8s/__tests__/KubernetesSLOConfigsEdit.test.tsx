@@ -31,7 +31,7 @@ jest.mock('@api1/kubernetes', () => ({
 }));
 
 const hasWriteAccess = jest.fn((_accountId?: string, _namespace?: string) => true);
-jest.mock('@lib/auth', () => ({ hasWriteAccess: (a?: string, n?: string) => hasWriteAccess(a, n) }));
+jest.mock('@lib/auth', () => ({ canOnAccount: (_module: string, _class: string, a?: string, n?: string) => hasWriteAccess(a, n) }));
 jest.mock('@ui/Toast', () => ({ toast: { success: jest.fn(), error: jest.fn() } }));
 jest.mock('@components/events/KubernetesEvents', () => () => null);
 jest.mock('../details/KubernetesTracesListing', () => () => null);

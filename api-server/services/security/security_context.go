@@ -295,6 +295,31 @@ func (sc *SecurityContext) GetScopedPermissionKeys() []string {
 	return keys
 }
 
+// GetScopedPermissionsByAccount returns the holder's account-scoped grant keys
+// per account ("<account id>" -> sorted "<module>:<class>" keys). Served to the
+// browser in the session JSON, never baked into the token, so the UI can enable a
+// surface on the accounts a bound grant covers and only on those. Advisory: the
+// gateway and the handlers still decide.
+func (sc *SecurityContext) GetScopedPermissionsByAccount() map[string][]string {
+	out := map[string][]string{}
+	if sc == nil {
+		return out
+	}
+	for accountId, perms := range sc.scopedCustomPermissions {
+		keys := []string{}
+		for k, ok := range perms {
+			if ok {
+				keys = append(keys, k)
+			}
+		}
+		if len(keys) > 0 {
+			slices.Sort(keys)
+			out[accountId] = keys
+		}
+	}
+	return out
+}
+
 // CanManage gates a non-privilege tenant-config operation: a full tenant admin,
 // a full super admin, or a matching dynamic-RBAC custom-role grant. NOTE: do NOT
 // use this for privilege-administration handlers (role / group / user-role

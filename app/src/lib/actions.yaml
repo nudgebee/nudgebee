@@ -3203,6 +3203,8 @@ actions:
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/cloud'
+      # Bound grants reach it: handleCloudListNotificationTargets: CanAccessAccount on account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -3216,6 +3218,8 @@ actions:
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/cloud'
+      # Bound grants reach it: handleTriggerCloudSync: CanAccessAccount on account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -3229,6 +3233,8 @@ actions:
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/cloud'
+      # Bound grants reach it: handleSyncCloudService: CanAccessAccount on account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -3242,6 +3248,8 @@ actions:
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/cloud'
+      # Bound grants reach it: handleCloudApplyCommand: CanAccessAccount on account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -3255,6 +3263,8 @@ actions:
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/cloud'
+      # Bound grants reach it: handleCloudExecuteCommand: CanAccessAccount on account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -4773,6 +4783,8 @@ actions:
     definition:
       kind: "synchronous"
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/metrics'
+      # Bound grants reach it: handleMetricsAction: CanReadAccountData on account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -4790,6 +4802,8 @@ actions:
     definition:
       kind: "synchronous"
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/metrics'
+      # Bound grants reach it: handleMetricsAction: CanReadAccountData on account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -4804,6 +4818,8 @@ actions:
     definition:
       kind: "synchronous"
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/metrics'
+      # Bound grants reach it: handleMetricsAction: CanReadAccountData on account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -4818,6 +4834,8 @@ actions:
     definition:
       kind: "synchronous"
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/metrics'
+      # Bound grants reach it: handleMetricsAction: CanReadAccountData on account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -4832,6 +4850,8 @@ actions:
     definition:
       kind: "synchronous"
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/metrics'
+      # Bound grants reach it: handleMetricsAction: CanReadAccountData on account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -4846,6 +4866,8 @@ actions:
     definition:
       kind: "synchronous"
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/metrics'
+      # Bound grants reach it: handleMetricsAction: CanReadAccountData on account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -4859,6 +4881,8 @@ actions:
     definition:
       kind: "synchronous"
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/metrics'
+      # Bound grants reach it: handleMetricsAction: CanReadAccountData on account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -5228,6 +5252,8 @@ actions:
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/v1/relay/request'
+      # Bound grants reach it: validateRelayAccountAccess: CanReadAccountData / HasScopedPermission(k8s, Write) on body.account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -5344,6 +5370,8 @@ actions:
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/slo'
+      # Bound grants reach it: handleForecastGenerate: CanAccessAccount on account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -5359,6 +5387,8 @@ actions:
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/slo'
+      # Bound grants reach it: slo.CreateOrUpdateSLOConfig: CanAccessAccount on cloud_account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -5373,6 +5403,8 @@ actions:
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/slo'
+      # Bound grants reach it: slo.GetSLOConfig: CanAccessAccount on cloud_account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -5391,6 +5423,8 @@ actions:
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/slo'
+      # Bound grants reach it: slo.DeleteSLOConfig: CanAccessAccount on cloud_account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -5404,6 +5438,8 @@ actions:
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/slo'
+      # Bound grants reach it: slo.CreateOrUpdateSLOConfig: CanAccessAccount on cloud_account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN

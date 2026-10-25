@@ -99,8 +99,8 @@ func loadMCPCheckTargetFromDB(integrationID string) (MCPCheckTarget, error) {
 // the server itself), one per linked account for a vm_agent integration. It
 // returns the integration's stored health afterwards.
 //
-// Every caller admitted in v1 is tenant-wide (integrations:Execute is not on
-// the gateway's ACCOUNT_ENFORCED_ACTIONS), so every linked account is checked.
+// Every caller admitted in v1 is tenant-wide (the action is not flagged
+// account_enforced in actions.yaml), so every linked account is checked.
 func CheckMCPIntegration(t MCPCheckTarget) (json.RawMessage, error) {
 	if !t.enabled {
 		return nil, ErrMCPIntegrationNotEnabled
