@@ -14,7 +14,6 @@ import (
 // orchestrator. It exposes a lean, Kubernetes-CLI-first tool set —
 // kubectl_execute for standalone reads and mutations, shell_execute for
 // bounded read-only composition and local computation,
-// standard_diagnostic_grep for categorised grep bundles on saved log files,
 // helm_execute for chart operations, plus the metrics
 // and traces sub-agents for historical telemetry. Cloud provider
 // wrappers (aws/gcp/azure/datadog), NL-wrapper sub-agents (logs / events
@@ -106,16 +105,14 @@ func (a *K8sNativeAgent) IsWatchCapable() bool { return false }
 // contract change reviewed here.
 func (a *K8sNativeAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
 	names := []string{
-		tools.ToolExecuteKubectlCommand,  // cluster access: logs, events, resources, describe, exec, mutations
-		tools.ToolExecuteHelmCommand,     // chart install / status / history
-		tools.ToolStandardDiagnosticGrep, // categorised crash-bundle grep on saved log files
-		MetricsAgentName,                 // historical + custom metrics via PromQL wrapper (Prometheus discovery is non-trivial)
-		TracesAgentName,                  // in-cluster trace queries
-		NudgebeeAgentName,                // Nudgebee product docs and authorized configuration state
+		tools.ToolExecuteKubectlCommand, // cluster access: logs, events, resources, describe, exec, mutations
+		tools.ToolExecuteHelmCommand,    // chart install / status / history
+		MetricsAgentName,                // historical + custom metrics via PromQL wrapper (Prometheus discovery is non-trivial)
+		TracesAgentName,                 // in-cluster trace queries
+		NudgebeeAgentName,               // Nudgebee product docs and authorized configuration state
 	}
 	// shell_execute handles bounded read-only Kubernetes composition and local
-	// processing. standard_diagnostic_grep also depends on the underlying shell
-	// primitive.
+	// processing.
 	names = append(names, toolcore.ToolExecuteShellCommand)
 	if config.Config.LlmServerThinkToolEnabled {
 		names = append(names, tools.ThinkToolName)

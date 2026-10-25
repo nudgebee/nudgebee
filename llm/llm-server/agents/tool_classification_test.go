@@ -22,7 +22,7 @@ var unclassifiedLeafTools = []string{
 	"ask_clarification", "crawl_execute", "evidenceinsightstool", "mermaid_validation",
 	"mongodb_current_op_get", "mongodb_replset_status_get", "mongodb_server_status_get",
 	"remediation_generate", "search_execute", "service_dependency_graph_execute",
-	"standard_diagnostic_grep", "think", "vm_list_execute",
+	"think", "vm_list_execute",
 }
 
 // Every registered leaf tool declares whether a call reads or writes, except

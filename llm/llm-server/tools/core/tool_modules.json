@@ -399,7 +399,6 @@
   "builtin_only": [
     "analyze_metric_series",
     "im_message_send",
-    "shell_execute",
-    "standard_diagnostic_grep"
+    "shell_execute"
   ]
 }

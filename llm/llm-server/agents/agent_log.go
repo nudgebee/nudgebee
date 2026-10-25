@@ -613,14 +613,7 @@ func (a *FetchLogsAgent) executeCanonicalQueryDirect(ctx *security.RequestContex
 	fileRef, flattened, fileRefs := saveLogsToWorkspace(ctx, workspaceAccount, request.ConversationId, provider.Provider, logs)
 	ctx.GetLogger().Info("fetch_logs_direct: step saveLogsToWorkspace done", "duration", time.Since(stepStart).String(), "file_ref", fileRef)
 
-	stepStart = time.Now()
-	bundleSignal, err := runAutoDiagnosticBundle(ctx, workspaceAccount, request, fileRef)
-
-	ctx.GetLogger().Info("fetch_logs_direct: step runAutoDiagnosticBundle done", "duration", time.Since(stepStart).String(), "has_error", err != nil, "bundle_signal_empty", bundleSignal == "")
-	if err != nil {
-		return core.NBAgentResponse{}, jsonQuery, err
-	}
-	return makeFetchResponse(a.GetName(), executedLogQuery(logs, jsonQuery), logs, flattened, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), jsonQuery, nil
+	return makeFetchResponse(a.GetName(), executedLogQuery(logs, jsonQuery), logs, flattened, fileRef, mergeRefs(toolRefs, fileRefs)), jsonQuery, nil
 }
 
 // buildFetchLogsDirectToolResponse shapes FetchLogsAgent.Execute's result

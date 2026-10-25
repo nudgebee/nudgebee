@@ -192,11 +192,7 @@ func (a *FetchLogsAgent) executeNativeQueryDirect(ctx *security.RequestContext, 
 		workspaceAccount = a.accountId
 	}
 	fileRef, flattened, fileRefs := saveLogsToWorkspace(ctx, workspaceAccount, request.ConversationId, provider.Provider, logs)
-	bundleSignal, err := runAutoDiagnosticBundle(ctx, workspaceAccount, request, fileRef)
-	if err != nil {
-		return core.NBAgentResponse{}, err
-	}
-	return makeFetchResponse(a.GetName(), executedLogQuery(logs, plan.Query), logs, flattened, fileRef, bundleSignal, fileRefs), nil
+	return makeFetchResponse(a.GetName(), executedLogQuery(logs, plan.Query), logs, flattened, fileRef, fileRefs), nil
 }
 
 func nativeQueryExecutionArgs(plan nativeLogQueryPlan, provider services_server.ObservabilityProvider, now time.Time) (time.Time, time.Time, int, string, error) {
@@ -243,10 +239,10 @@ func nativeQueryExecutionArgs(plan nativeLogQueryPlan, provider services_server.
 // executeCanonicalQueryDirect mirrors FetchLogsAgentV2.generateCanonicalLogQueryAndExecute
 // (agent_log_fetch_v2.go) exactly, except jsonQuery is already built instead
 // of being derived via generateCanonicalLogQuery — every downstream step
-// (index defaulting, execution, error/format handling, workspace save,
-// auto-diagnostics) is byte-identical to the shared path, so behavior after
+// (index defaulting, execution, error/format handling, workspace save)
+// is byte-identical to the shared path, so behavior after
 // query generation is unchanged. Calls only shared, already-exported-within-
 // package helpers (callTool, looksLikeFetchError, unwrapLokiInnerTimestamps,
-// saveLogsToWorkspace, runAutoDiagnosticBundle, makeFetchResponse,
+// saveLogsToWorkspace, makeFetchResponse,
 // executedLogQuery, mergeRefs, errorResponse, injectDefaultIndexIfMissing) —
 // none of their definitions change.

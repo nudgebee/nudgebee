@@ -196,7 +196,7 @@ func TestKubectlFallbackDisclosure_E2E(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEqual(t, toolcore.NBToolResponseStatusError, resp.Status, "Data=%s", resp.Data)
 
-	fetch := makeFetchResponse("fetch_logs", command, resp.Data, flattenLogsToTabSeparated(resp.Data), "", "", nil)
+	fetch := makeFetchResponse("fetch_logs", command, resp.Data, flattenLogsToTabSeparated(resp.Data), "", nil)
 	disclosed := withKubectlDisclosure(fetch, kubectlDisclosureNote(intent, 0, ""))
 	require.NotEmpty(t, disclosed.Response)
 

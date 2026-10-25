@@ -4,7 +4,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	"strings"
@@ -64,15 +63,10 @@ func TestLogAnalysisInstructions_ModeAndCalculationBoundaries(t *testing.T) {
 	require.Less(t, strings.Index(enumeration, "occurrences += $1"), strings.Index(enumeration, `head -20 "grouped-errors.txt"`))
 }
 
-func TestLogAnalysisInstructions_BundleIsSampledEvidence(t *testing.T) {
-	old := config.Config.LogsStandardGrepEnabled
-	config.Config.LogsStandardGrepEnabled = true
-	t.Cleanup(func() { config.Config.LogsStandardGrepEnabled = old })
+func TestLogAnalysisInstructions_EvidenceBeforeBounds(t *testing.T) {
 	body := strings.Join(investigationInstructions(), "\n")
-	require.Contains(t, body, "at most 20 example lines per diagnostic pattern")
 	require.NotContains(t, body, "go straight to the WHEN report")
 	require.NotContains(t, body, "Mandatory diagnostic sweep (NOT optional")
 	require.Contains(t, body, "only AFTER computing counts and time bounds")
-	require.Contains(t, body, "A sampled bundle alone does not satisfy")
 	require.Contains(t, body, "do not invent bounds")
 }

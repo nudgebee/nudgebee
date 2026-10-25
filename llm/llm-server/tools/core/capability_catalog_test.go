@@ -440,7 +440,7 @@ func TestClassifyCapability_UnconfirmedStayUnclassified(t *testing.T) {
 	for _, name := range []string{
 		"ticket_master_v2", "recommendation_apply", "workflow_config_save", "workflow_validate",
 		"workflow_publish", "workflow_make_version_live", "workflow_restore_version",
-		"standard_diagnostic_grep", "automation_builder", "search_tools", "websearch",
+		"automation_builder", "search_tools", "websearch",
 		"llm.classify", "llm.summary", "llm.event_investigate",
 	} {
 		scope, found := ClassifyCapability(name)

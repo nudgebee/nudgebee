@@ -61,7 +61,6 @@ func TestK8sNativeAgent_GetSupportedTools_Allowlist(t *testing.T) {
 	wantAll := []string{
 		tools.ToolExecuteKubectlCommand,
 		tools.ToolExecuteHelmCommand,
-		tools.ToolStandardDiagnosticGrep,
 		MetricsAgentName,
 		TracesAgentName,
 		toolcore.ToolExecuteShellCommand,
@@ -112,10 +111,7 @@ func TestK8sNativeAgent_GetSystemPrompt_NoDroppedSubAgentRefs(t *testing.T) {
 	}
 
 	// And these MUST be present — they are the K8s-native flow's core tools
-	// named at the orchestrator level. `standard_diagnostic_grep` intentionally
-	// is NOT asserted here — the prompt was rewritten to speak at the
-	// principle level (categorized error-pattern search) and let each tool's
-	// own description name the mechanic.
+	// named at the orchestrator level.
 	mustHave := []string{
 		"kubectl_execute",
 		"shell_execute",

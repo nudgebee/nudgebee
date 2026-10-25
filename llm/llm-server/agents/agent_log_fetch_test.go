@@ -689,7 +689,7 @@ func TestMakeFetchResponse_ReadCoverage(t *testing.T) {
 
 	t.Run("limit reached: stated in the envelope and in-band, not marked complete", func(t *testing.T) {
 		logs := logsWith(coverage)
-		env := decode(makeFetchResponse("fetch_logs", "q", logs, flattenLogsToTabSeparated(logs), "logs_loki_1.txt", "", nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", logs, flattenLogsToTabSeparated(logs), "logs_loki_1.txt", nil))
 		assert.Equal(t, wantNote, env["read_coverage"])
 		inline, _ := env["logs"].(string)
 		assert.True(t, strings.HasSuffix(inline, "[... "+wantNote+" ...]"), "the marker closes the inline logs: %q", inline)
@@ -700,7 +700,7 @@ func TestMakeFetchResponse_ReadCoverage(t *testing.T) {
 
 	t.Run("limit reached with a long preview: both markers", func(t *testing.T) {
 		long := `{"logs":[{"timestamp":"2026-01-15T05:30:48Z","message":"` + strings.Repeat("x", logInlinePreviewBytes*2) + `"}],"metadata":{"limit":1}` + strings.Replace(coverage, `"limit":2,"returned":2`, `"limit":1,"returned":1`, 1) + `}`
-		env := decode(makeFetchResponse("fetch_logs", "q", long, flattenLogsToTabSeparated(long), "logs_loki_2.txt", "", nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", long, flattenLogsToTabSeparated(long), "logs_loki_2.txt", nil))
 		inline, _ := env["logs"].(string)
 		assert.Contains(t, inline, "more bytes truncated")
 		assert.Contains(t, inline, "partial read: the read stopped at its limit of 1 lines")
@@ -709,7 +709,7 @@ func TestMakeFetchResponse_ReadCoverage(t *testing.T) {
 
 	t.Run("limit not reached: no coverage field, and the marker claims only what was fetched", func(t *testing.T) {
 		logs := logsWith("")
-		env := decode(makeFetchResponse("fetch_logs", "q", logs, flattenLogsToTabSeparated(logs), "logs_loki_3.txt", "", nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", logs, flattenLogsToTabSeparated(logs), "logs_loki_3.txt", nil))
 		_, has := env["read_coverage"]
 		assert.False(t, has)
 		inline, _ := env["logs"].(string)
@@ -793,7 +793,7 @@ func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
 	}
 
 	t.Run("file_ref present: logs previewed, not inlined in full", func(t *testing.T) {
-		env := decode(makeFetchResponse("fetch_logs", "q", bigLogs, flattenLogsToTabSeparated(bigLogs), "logs_loki_1.txt", "", nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", bigLogs, flattenLogsToTabSeparated(bigLogs), "logs_loki_1.txt", nil))
 		assert.Equal(t, "logs_loki_1.txt", str(env, "file_ref"))
 		assert.Less(t, len(str(env, "logs")), len(bigLogs),
 			"full logs must not be inlined when a file_ref exists")
@@ -804,7 +804,7 @@ func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
 	})
 
 	t.Run("no file_ref: full logs inlined", func(t *testing.T) {
-		env := decode(makeFetchResponse("fetch_logs", "q", bigLogs, "", "", "", nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", bigLogs, "", "", nil))
 		assert.Equal(t, "", str(env, "file_ref"))
 		assert.Equal(t, bigLogs, str(env, "logs"),
 			"with no file_ref the full logs must remain available inline")
@@ -813,7 +813,7 @@ func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
 
 	t.Run("file_ref present but logs already small: inlined unchanged and complete", func(t *testing.T) {
 		const small = "tiny log line"
-		env := decode(makeFetchResponse("fetch_logs", "q", small, flattenLogsToTabSeparated(small), "logs_loki_2.txt", "", nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", small, flattenLogsToTabSeparated(small), "logs_loki_2.txt", nil))
 		assert.True(t, strings.HasPrefix(str(env, "logs"), small),
 			"the log content itself must be inlined unchanged")
 		assert.Contains(t, str(env, "logs"), "complete —",
@@ -829,7 +829,7 @@ func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
 		// extra `head` turn. Both must now be byte-identical for a payload that
 		// fits inline.
 		raw := `{"logs":[{"timestamp":"2026-08-12T10:00:00Z","message":"{\"level\":\"ERROR\",\"msg\":\"boom\"}"}]}`
-		env := decode(makeFetchResponse("fetch_logs", "q", raw, flattenLogsToTabSeparated(raw), "logs_loki_4.txt", "", nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", raw, flattenLogsToTabSeparated(raw), "logs_loki_4.txt", nil))
 		assert.True(t, strings.HasPrefix(str(env, "logs"), flattenLogsToTabSeparated(raw)),
 			"the inline preview must be the same representation that was written to file_ref")
 		assert.NotContains(t, str(env, "logs"), `{"logs":[`,
@@ -841,16 +841,9 @@ func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
 
 	t.Run("passthrough format avoids claiming a structured schema", func(t *testing.T) {
 		const raw = "plain kubectl log line\nsecond line"
-		env := decode(makeFetchResponse("fetch_logs", "q", raw, flattenLogsToTabSeparated(raw), "logs_kubectl_1.txt", "", nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", raw, flattenLogsToTabSeparated(raw), "logs_kubectl_1.txt", nil))
 		assert.Equal(t, "passthrough", str(env, "logs_format"))
 		assert.Contains(t, str(env, "logs_format_hint"), "preview demonstrates that format")
-	})
-
-	t.Run("bundle_signal present: threaded through envelope verbatim", func(t *testing.T) {
-		const sig = "=== CRASH BUNDLE ===\n[error] 3 hits\n[oom] 1 hit"
-		env := decode(makeFetchResponse("fetch_logs", "q", "tiny", flattenLogsToTabSeparated("tiny"), "logs_loki_3.txt", sig, nil))
-		assert.Equal(t, sig, str(env, "bundle_signal"),
-			"bundle_signal must appear verbatim in the envelope so the LLM can read it without a follow-up tool call")
 	})
 
 	t.Run("loki envelope: inline preview is flattened tab-separated records, not raw escaped JSON", func(t *testing.T) {
@@ -858,7 +851,7 @@ func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
 			`{"labels":{"app":"x"},"timestamp":"2026-05-06T03:00:10Z","message":"{\"level\":\"ERROR\",\"error\":\"ConnectionError\"}"},` +
 			`{"labels":{"app":"x"},"timestamp":"2026-05-06T03:00:20Z","message":"{\"level\":\"INFO\",\"message\":\"Job ok\"}"}` +
 			`]}`
-		env := decode(makeFetchResponse("fetch_logs", "q", raw, flattenLogsToTabSeparated(raw), "logs_loki_4.txt", "", nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", raw, flattenLogsToTabSeparated(raw), "logs_loki_4.txt", nil))
 		assert.True(t, strings.HasPrefix(str(env, "logs"), flattenLogsToTabSeparated(raw)),
 			"inline preview must match the same one-entry-per-line form saved to file_ref")
 		assert.NotContains(t, env["logs"], `"logs":[`,
@@ -1390,170 +1383,6 @@ func TestFetchLogsAgent_Registered(t *testing.T) {
 	assert.Equal(t, FetchLogsAgentName, agent.GetName())
 }
 
-// TestClassifyLogMode pins the deterministic intent classifier fetch_logs
-// uses (via runAutoDiagnosticBundle) to decide whether to auto-fire the
-// diagnostic bundle. The classifier prefers OriginalQuery over Query so that
-// a parent planner's paraphrase ("Get logs for X") doesn't downgrade an
-// investigation ("Were there issues with X?") to routine.
-func TestClassifyLogMode(t *testing.T) {
-	cases := []struct {
-		name     string
-		query    string
-		original string
-		want     logMode
-	}{
-		// Routine
-		{"tail logs", "show me last logs for api-server", "", logModeRoutine},
-		{"recent logs", "get recent logs of llm-server in nudgebee namespace", "", logModeRoutine},
-		{"time range only", "logs between 10:00 and 11:00", "", logModeRoutine},
-
-		// Investigation
-		{"why is X broken", "why is api-service in app-108 failing", "", logModeInvestigation},
-		{"diagnose", "diagnose checkout-api connection refused errors", "", logModeInvestigation},
-		{"what caused", "what caused the outage in payment-api", "", logModeInvestigation},
-		{"were there issues", "were there issues with cron-scheduler in ns-73b", "", logModeInvestigation},
-		{"root cause", "find the root cause of the crash in worker-7", "", logModeInvestigation},
-
-		// Enumeration
-		{"list errors", "list all errors in payment-api last 1h", "", logModeEnumeration},
-		{"show errors", "show me the errors in my-app-51", "", logModeEnumeration},
-		{"distinct errors", "what distinct errors appear in checkout-api", "", logModeEnumeration},
-		{"summarise errors", "summarize errors in cron-scheduler", "", logModeEnumeration},
-
-		// OriginalQuery wins over per-step paraphrase — this is the case that
-		// regressed in production today: parent emitted "Get logs for pod X"
-		// and the LLM treated it as routine, skipping the investigation flow.
-		{
-			name:     "parent paraphrase loses intent without classifier",
-			query:    "Get logs for pod cron-scheduler-xtcwd in namespace-73b",
-			original: "Were there issues with the cron-scheduler pod in namespace-73b?",
-			want:     logModeInvestigation,
-		},
-		{
-			name:     "empty original falls back to query",
-			query:    "why is api-server failing",
-			original: "",
-			want:     logModeInvestigation,
-		},
-
-		// Enumeration's noun list must cover symptom words, not just the
-		// "error" family — otherwise a plain listing request that happens to
-		// describe pods as "failing"/"broken"/"crashed" (rather than saying
-		// "errors") falls through to the weak-symptom investigation tier and
-		// gets routed into the heavier mandatory-shell_execute workflow for
-		// what the user framed as "just list them".
-		{"list failing pods", "list the pods that are failing in namespace nudgebee", "", logModeEnumeration},
-		{"show broken services", "show me the broken services in prod", "", logModeEnumeration},
-		{"list crashed pods", "list crashed pods in nudgebee", "", logModeEnumeration},
-
-		// Stem/wildcard forms (fail\w*, crash\w*) and optional plurals catch
-		// variants a literal enumeration would miss: past tense ("failed", not
-		// just "failures"/"failing"), compound crash states that don't end at
-		// a word boundary after "crash" ("crashloopbackoff"), and singular
-		// nouns ("exception"/"issue", not just their plurals). Without these,
-		// "list the pods that failed" fell all the way through to ROUTINE —
-		// worse than the investigation-mode misroute this file's earlier
-		// cases fix, since ROUTINE doesn't even get the weak-symptom fallback.
-		{"list failed pods", "list the pods that failed in namespace nudgebee", "", logModeEnumeration},
-		{"list crashloopbackoff pods", "list crashloopbackoff pods in nudgebee", "", logModeEnumeration},
-		{"list exception singular", "list exception in api-server", "", logModeEnumeration},
-		{"show issue singular", "show issue with pod", "", logModeEnumeration},
-
-		// A strong causal ask must win even when an enumeration verb also
-		// appears in the same query — enumeration checking first (as it did
-		// before this fix) would discard the causal ask entirely.
-		{"causal ask co-occurring with enumeration verb", "show me the errors and explain why it broke", "", logModeInvestigation},
-		{"why are pods failing", "why are the pods failing in cron-scheduler", "", logModeInvestigation},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := classifyLogMode(tc.query, tc.original)
-			assert.Equalf(t, tc.want, got,
-				"classifyLogMode(%q, %q) = %s; want %s",
-				tc.query, tc.original, logModeName(got), logModeName(tc.want))
-		})
-	}
-}
-
-// TestAutoBundleGate_ModeAwareness locks the gating rule that runAuto
-// DiagnosticBundle uses to decide whether to fire. The rule is:
-//
-//   - Investigation intent ("were there issues", "why", "broken",
-//     "diagnose", …) → ALWAYS fire. The logs prompt actively tells the
-//     LLM to strip error keywords from the fetch question, so keying only
-//     on the fetch query text would miss the exact investigations the
-//     bundle was built for.
-//   - Enumeration intent ("list errors", "show me distinct errors") →
-//     ALWAYS fire. That IS the enumeration answer.
-//   - Routine intent → fire only when the wording explicitly names error
-//     content (get error logs, any failures, …). Plain "tail last 100
-//     lines" stays a one-shot fetch.
-//
-// This mirrors the same decision runAutoDiagnosticBundle makes inline; the
-// test asserts the composed behaviour so a regression to a keyword-only gate
-// would fail here.
-func TestAutoBundleGate_ModeAwareness(t *testing.T) {
-	cases := []struct {
-		name     string
-		query    string // per-step query the parent passed to fetch_logs
-		original string // OriginalQuery — the user's verbatim question
-		want     bool
-	}{
-		{"investigation via 'were there issues' fires (fetch query itself has no keyword)",
-			"all logs for pod task-scheduler-abc in ns", "Were there issues with the task-scheduler pod", true},
-		{"investigation via 'why is X broken' fires",
-			"all logs for pod x", "why is service-y broken", true},
-		{"enumeration via 'list errors' fires",
-			"all logs last 1h", "list errors in service-z", true},
-		{"routine plain tail does NOT fire",
-			"tail last 100 lines", "", false},
-		{"routine with error keyword fires (fallback)",
-			"get error logs for pod x", "", true},
-		{"routine with no error content stays cold",
-			"give me the last 5 mins of logs", "recent logs for cron-scheduler", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			mode := classifyLogMode(tc.query, tc.original)
-			q := strings.TrimSpace(tc.original)
-			if q == "" {
-				q = strings.TrimSpace(tc.query)
-			}
-			got := mode != logModeRoutine || autoBundleQueryRE.MatchString(q)
-			assert.Equal(t, tc.want, got,
-				"mode=%v q=%q — bundle gate mismatch", mode, q)
-		})
-	}
-}
-
-func TestAutoBundleQueryRE(t *testing.T) {
-	// Guards the trigger-word list that gates the auto-diagnostic-bundle
-	// inside fetch_logs. The list is deliberately narrow — a plain "tail
-	// last 100 lines" must NOT trigger the bundle, or we regress fetch's
-	// "one-shot, no extra work" semantic for routine viewing. Any
-	// addition/removal here should be conscious.
-	cases := []struct {
-		q    string
-		want bool
-	}{
-		{"get error logs for pod x", true},
-		{"any failures in namespace y", true},
-		{"show me warnings from last hour", true},
-		{"was there a crash on this pod", true},
-		{"any exceptions in api-server", true},
-		{"timeout occurred?", true},
-		{"OOMKilled events for job", true},
-		{"tail last 100 lines", false},
-		{"recent logs for cron-scheduler", false},
-		{"give me the last 5 mins of logs", false},
-		{"show pod restart count", false},
-	}
-	for _, tc := range cases {
-		assert.Equalf(t, tc.want, autoBundleQueryRE.MatchString(tc.q),
-			"autoBundleQueryRE.MatchString(%q)", tc.q)
-	}
-}
-
 // The file's shape is measured once at save time into the reference's
 // description; the envelope carries the same text so the logs agent can filter
 // the file without first reading its head.
@@ -1563,14 +1392,14 @@ func TestMakeFetchResponse_CarriesLogsShapeFromFileRef(t *testing.T) {
 		{Type: "link", Url: "https://example.com", Description: "not the file"},
 		{Type: "file", Url: "logs_loki_9.txt", Description: "Raw log data from loki: 1 lines"},
 	}
-	resp := makeFetchResponse("fetch_logs", "q", logs, flattenLogsToTabSeparated(logs), "logs_loki_9.txt", "", refs)
+	resp := makeFetchResponse("fetch_logs", "q", logs, flattenLogsToTabSeparated(logs), "logs_loki_9.txt", refs)
 	var env map[string]any
 	if err := json.Unmarshal([]byte(resp.Response[0]), &env); err != nil {
 		t.Fatalf("envelope is not JSON: %v", err)
 	}
 	assert.Equal(t, "Raw log data from loki: 1 lines", env["logs_shape"])
 
-	noFile := makeFetchResponse("fetch_logs", "q", logs, "", "", "", refs)
+	noFile := makeFetchResponse("fetch_logs", "q", logs, "", "", refs)
 	var env2 map[string]any
 	if err := json.Unmarshal([]byte(noFile.Response[0]), &env2); err != nil {
 		t.Fatalf("envelope is not JSON: %v", err)

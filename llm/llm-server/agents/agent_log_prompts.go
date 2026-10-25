@@ -1,16 +1,14 @@
 package agents
 
 import (
-	"nudgebee/llm/config"
 	"regexp"
 	"strings"
 )
 
 // This file holds the `logs` agent's own mode-classification and prompt
-// content. logModeV3 (and classifyLogModeV3, enumerationVerbsREV3) keep a V3
-// suffix solely to avoid colliding with agent_log_fetch.go's own, unrelated
-// classifier, which gates the separate fetch_logs tool's auto-diagnostic
-// bundle — not because of any versioning relationship between the two.
+// content. The V3 suffix on logModeV3 (and classifyLogModeV3,
+// enumerationVerbsREV3) is historical — it once avoided a collision with a
+// separate fetch_logs classifier — not a versioning relationship.
 
 // logModeV3 is the deterministic intent bucket the Go classifier emits, so
 // the `logs` agent's prompt carries a single authoritative MODE flag instead
@@ -93,8 +91,8 @@ func routineInstructions() []string {
 		"**Workflow (Routine):**",
 		step3,
 		labelAnchorRules(true),
-		"  4. **Read the fetch response — including the pre-computed bundle_signal.** The fetch_logs_direct envelope carries a `bundle_signal` field. When it's non-empty (the user asked for error content), it holds a category-tagged sweep (error / fatal / panic / OOM / timeout / connection-refused / TLS / HTTP-5xx) computed server-side against the saved file — use its output as the body of your answer without issuing your own grep. When it's empty, answer from the inline logs directly.",
-		"  5. **Use the envelope for simple listings.** For requested calculations or grouping absent from the envelope, process the saved file once with Python or shell. Otherwise rely on the fetch response (inline logs + `bundle_signal` when present) for your reply. The envelope already contains the categorised signal, so a follow-up shell_execute grep would only re-derive what you already have.",
+		"  4. **Read the fetch response.** Answer from the inline logs in the fetch_logs_direct envelope.",
+		"  5. **Use the envelope for simple listings.** For requested calculations, filtering or grouping absent from the envelope, process the saved file once with Python or shell. Otherwise rely on the inline logs for your reply.",
 		"  6. **No widening on empty result — this is a hard stop, not a suggestion.** If `fetch_logs_direct` returns no matching log lines for the user's window, you MUST NOT call `resource_search_execute`, `shell_execute`, or `fetch_logs_direct` again to broaden, re-check, or verify — not a different label, not a wider filter, not raw kubectl, not pod events, not sibling resources. State \"no logs found in <window>\" in your final answer and STOP: make NO further tool calls this turn. This mode is for routine viewing, not investigation — an empty result here is a valid, complete answer, not a signal to dig further.",
 	}
 }
@@ -107,12 +105,6 @@ func investigationInstructions() []string {
 		labelAnchorRules(false),
 		"     - Do NOT include words like \"errors\", \"exceptions\", \"failures\", \"5xx\" in the fetch_logs_direct question (those force a body filter at the database that excludes the surrounding context).",
 		"     - For very chatty services that hit the 5000 limit on a 24h window, narrow by container or stream — never by error keyword.",
-	}
-
-	if config.Config.LogsStandardGrepEnabled {
-		out = append(out,
-			"  4a. **Read `bundle_signal` first.** It contains at most 20 example lines per diagnostic pattern, not complete counts or computed time bounds. Reuse those examples as evidence. A clear error category alone does not establish the incident window or trigger: continue with step 4 for missing counts, parsed bounds, and trigger context. Skip only work already supplied with sufficient coverage by the fetch response or previous analysis; never infer complete coverage from a short bundle.",
-		)
 	}
 	out = append(out,
 		"  4. **Complete the diagnostic evidence.** Reuse evidence already available with sufficient coverage. If error bounds/counts or trigger context are missing and file_ref is non-empty, compute the missing evidence in exactly ONE shell_execute call using Python or a shell pipeline. Do not run a separate action for each pattern or repeat completed calculations.",
@@ -133,7 +125,7 @@ func investigationInstructions() []string {
 		"       - Do NOT substitute kubectl events, deployment status, or rollout history for a wider log fetch. Events ≠ logs. The critic rejects \"no issues\" answers based on event checks alone.",
 		"       - Do NOT call `think` to conclude \"no issues\" without completing Step E1 AND (if E1 empty) Step E2 AND (if E2 empty) Step E3.",
 		"       - Only after Sweep A + Step E1 + Step E2 + Step E3 all return empty may you state \"no errors found in last 7d\".",
-		"  Before answering, establish the error evidence and attempt the relevant trigger search, using either sufficiently complete existing results or step 4. If trigger evidence is missing, make the required follow-up attempt and report any unresolved cause. A sampled bundle alone does not satisfy these requirements.",
+		"  Before answering, establish the error evidence and attempt the relevant trigger search, using either sufficiently complete existing results or step 4. If trigger evidence is missing, make the required follow-up attempt and report any unresolved cause.",
 		"  **Report WHEN (MANDATORY).** When matching errors have usable timestamps, state their observed window using parsed earliest/latest timestamps from complete existing results or Sweep A, with coverage limits disclosed. If no matches or usable timestamps exist, say that no error window could be established; do not invent bounds. Report available bounds explicitly. Do NOT conflate live pod status with incident timing: a pod that is `Running` now can have had a bounded PAST incident — phrase it as \"errors occurred between <T1> and <T2>\", never \"currently failing\" when the error timestamps are in the past.",
 
 		"**Domain-aware grep patterns (use when the default Sweep B is empty, or when the question points at one of these areas — add them to the SAME single command as extra chained greps, never as extra shell_execute actions):**",
@@ -162,14 +154,8 @@ func enumerationInstructions() []string {
 		labelAnchorRules(false),
 		"     - Do NOT include error keywords (`errors`, `exceptions`, `failures`) in the question — that adds a body filter that excludes the surrounding context.",
 	}
-
-	if config.Config.LogsStandardGrepEnabled {
-		out = append(out,
-			"  3a. **Read `bundle_signal` first.** It contains a pre-computed category sweep against the saved file. Reuse it when it fully supplies the requested result. Category examples alone do not establish all distinct signatures or their counts: for those requests, compute the complete requested grouping in step 4, including categories already illustrated in the bundle. Avoid repeating a calculation already supplied with complete counts and coverage.",
-		)
-	}
 	out = append(out,
-		"  4. **Per-signature aggregation pipeline (MANDATORY unless the requested grouping and complete counts are already fully supplied by bundle_signal):**",
+		"  4. **Per-signature aggregation pipeline (MANDATORY):**",
 		"     ```",
 		"     grep -iE 'error|fail|warn|exception|fatal|timeout|refused|denied' <file_ref> \\",
 		"       | sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9:.]+Z?//g; s/[0-9a-f]{8}-[0-9a-f-]+//g; s/[0-9]+(ms|s|MB|KB|GB)//g; s/\\b[0-9]+\\b/N/g' \\",

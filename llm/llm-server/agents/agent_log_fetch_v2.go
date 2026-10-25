@@ -589,11 +589,7 @@ func (a *FetchLogsAgent) generateCanonicalLogQueryAndExecute(ctx *security.Reque
 		workspaceAccount = a.accountId
 	}
 	fileRef, flattened, fileRefs := saveLogsToWorkspace(ctx, workspaceAccount, request.ConversationId, provider.Provider, logs)
-	bundleSignal, err := runAutoDiagnosticBundle(ctx, workspaceAccount, request, fileRef)
-	if err != nil {
-		return core.NBAgentResponse{}, jsonQuery, err
-	}
-	return makeFetchResponse(a.GetName(), executedLogQuery(logs, jsonQuery), logs, flattened, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), jsonQuery, nil
+	return makeFetchResponse(a.GetName(), executedLogQuery(logs, jsonQuery), logs, flattened, fileRef, mergeRefs(toolRefs, fileRefs)), jsonQuery, nil
 }
 
 // executedLogQuery pulls the provider query the backend actually ran out of the

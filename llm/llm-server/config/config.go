@@ -1080,16 +1080,6 @@ type appConfig struct {
 	// LLM Trace - logs full prompt messages and LLM responses for debugging
 	LlmTraceEnabled bool `mapstructure:"llm_trace_enabled"`
 
-	// LogsStandardGrepEnabled gates the auto-bundle: fetch_logs/fetch_logs_direct run
-	// standard_diagnostic_grep's crash-pattern sweep server-side after an
-	// investigation/enumeration-intent (or explicitly error-worded) fetch, riding the
-	// result back as bundle_signal so the LLM can skip its own manual grep turns. When
-	// off, the logs agent falls back to LLM-emitted shell_execute greps as today.
-	// Validated against 30 days of production log content before e34714nabling by default
-	// (nb-35875): the crash bundle's fixed patterns matched 98.9% of real
-	// error/fatal/critical-severity log entries sampled.
-	LogsStandardGrepEnabled bool `mapstructure:"llm_logs_standard_grep_enabled"`
-
 	// Memory Module — layered memory architecture (Phase 1+)
 	MemoryModuleEnabled     bool   `mapstructure:"llm_memory_module_enabled"`
 	MemoryLayerSoulEnabled  bool   `mapstructure:"llm_memory_layer_soul_enabled"`
@@ -1768,9 +1758,6 @@ func init() {
 	// required its own opt-in.
 	viper.SetDefault("llm_memory_module_enabled", true)
 	viper.SetDefault("llm_memory_compose_enabled", true)
-	// Logs agent latency improvement (#34712) — see LogsStandardGrepEnabled's
-	// doc comment for the validation this default is based on.
-	viper.SetDefault("llm_logs_standard_grep_enabled", true)
 	// RAG projection defaults — flag OFF preserves pre-flag behaviour. The
 	// timeout is per Compose read (Slice 2); the overfetch multiplier is how
 	// many candidates the RAG query asks for relative to the target per-kind
