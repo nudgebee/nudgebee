@@ -21,7 +21,7 @@ import { ds } from '@utils/colors';
 import { useBrandingConfig } from '@hooks/useTenantBranding';
 import AssignmentIndOutlinedIcon from '@mui/icons-material/AssignmentIndOutlined';
 import HistoryIcon from '@mui/icons-material/History';
-import { AI_TOOLS_SUB_TABS } from '@components/llm/admin/aiToolsConfig';
+import { AI_TOOLS_SUB_TABS, subTabAccess } from '@components/llm/admin/aiToolsConfig';
 import { useBCortexEnabled, isOSSDeploymentMode } from '@hooks/useBCortexEnabled';
 import withBrandBlue from '@shared/icons/withBrandBlue';
 
@@ -274,12 +274,12 @@ export default function UserManagement() {
           return true;
         });
         const tabOptions = visibleTabOptions.map((sub, subIdx) => {
-          const lacksPermission = !isAdmin && !!sub.module && !perms.includes(`${sub.module}:Read`);
+          const access = subTabAccess(sub, { isAdmin, permissions: perms, hasBuiltInRole: roles.length > 0 });
           return {
             ...sub,
             value: subIdx,
-            disabled: sub.disabled ?? lacksPermission,
-            disabledTooltip: lacksPermission ? missingPermissionMessage(`${sub.module}:Read`) : undefined,
+            disabled: sub.disabled ?? access.disabled,
+            disabledTooltip: access.tooltip,
           };
         });
         return {

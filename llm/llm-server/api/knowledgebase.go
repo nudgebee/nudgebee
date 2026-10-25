@@ -915,8 +915,9 @@ func kbUpsertDocumentCategory(c *gin.Context, context *security.RequestContext, 
 }
 
 // kbUpdateVisibility moves a knowledge base between account and organisation
-// scope, or changes which accounts an organisation KB reaches. Tenant admins
-// only (checked by the service against the KB's organisation).
+// scope, or changes which accounts an organisation KB reaches. Tenant admins,
+// or a tenant-wide ai_kbs:Write grant (checked by the service against the KB's
+// organisation).
 func kbUpdateVisibility(c *gin.Context, context *security.RequestContext, payload map[string]any) {
 	var request kbUpdateVisibilityRequest
 	if err := common.DecodeMapToStruct(payload, &request); err != nil {
@@ -927,7 +928,9 @@ func kbUpdateVisibility(c *gin.Context, context *security.RequestContext, payloa
 		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: kb_id and a valid visibility are required")}))
 		return
 	}
-	if !orgKBWriter(context) {
+	// A tenant-wide ai_kbs:Write grant may also share a KB; the service pins it
+	// to the KB's tenant.
+	if !orgKBWriter(context) && !context.GetSecurityContext().HasTenantWideGrant(moduleAiKbs, "Write") {
 		c.JSON(403, BuildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
 		return
 	}

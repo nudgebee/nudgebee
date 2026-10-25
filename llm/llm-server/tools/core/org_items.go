@@ -36,6 +36,9 @@ type OrgItemKind struct {
 	InstallColText bool // llm_agents_installation.agent_id is TEXT
 	OverrideTable  string
 	OverrideCol    string
+	// Module is the custom-role module whose tenant-wide grant may change who
+	// the item reaches (CanShareOrgItem) and read its switches.
+	Module string
 }
 
 var (
@@ -43,11 +46,13 @@ var (
 		Label: "agent", Table: "llm_agents",
 		InstallTable: "llm_agents_installation", InstallCol: "agent_id", InstallColText: true,
 		OverrideTable: "llm_agent_account_overrides", OverrideCol: "agent_id",
+		Module: "ai_agents",
 	}
 	OrgToolKind = OrgItemKind{
 		Label: "tool", Table: "llm_tools",
 		InstallTable: "llm_tools_installation", InstallCol: "tool_id",
 		OverrideTable: "llm_tool_account_overrides", OverrideCol: "tool_id",
+		Module: "ai_tools",
 	}
 )
 
@@ -110,6 +115,28 @@ func CanManageOrgItems(sc *security.RequestContext, tenantId string) bool {
 		return false
 	}
 	return s.IsSuperAdmin() || s.GetTenantId() == tenantId
+}
+
+// CanShareOrgItem reports whether the caller may change who an organisation
+// item of kind k in tenantId reaches — its visibility, or the accounts of a
+// selected-accounts item: CanManageOrgItems, or a tenant-wide Write grant on the
+// kind's module in that tenant. Creating, editing and deleting organisation items
+// stay CanManageOrgItems.
+func CanShareOrgItem(ctx *security.RequestContext, k OrgItemKind, tenantId string) bool {
+	if CanManageOrgItems(ctx, tenantId) {
+		return true
+	}
+	s := ctx.GetSecurityContext()
+	return k.Module != "" && s.GetTenantId() == tenantId && s.HasTenantWideGrant(k.Module, "Write")
+}
+
+// CanReadOrgItemSwitches reports whether the caller may list the per-account
+// switches of an organisation item of kind k in tenantId: a built-in tenant
+// reader of that tenant, or a tenant-wide Read or Write grant on the kind's
+// module there.
+func CanReadOrgItemSwitches(ctx *security.RequestContext, k OrgItemKind, tenantId string) bool {
+	s := ctx.GetSecurityContext()
+	return k.Module != "" && s.GetTenantId() == tenantId && s.CanReadTenantModule(k.Module)
 }
 
 // OrgItemOwner is who owns one custom agent or tool.

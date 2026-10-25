@@ -339,9 +339,10 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		// within a tenant, and account admins already read cost dashboards built
 		// from these numbers. Account roles are included to match the grant in
 		// actions.yaml; without them those users reach this handler and get a 403
-		// on a tab they can see. Writing rates stays tenant_admin only.
+		// on a tab they can see. A tenant-wide ai_models Read or Write grant also
+		// reads them. Writing rates stays tenant_admin (or ai_models:Write) only.
 		if !sc.IsTenantAdmin() && !sc.IsTenantReadAdmin() && !sc.IsAccountAdmin() && !sc.IsAccountReadAdmin() &&
-			!sc.IsSuperAdmin() && !sc.IsSuperAdminReadonly() {
+			!sc.IsSuperAdmin() && !sc.IsSuperAdminReadonly() && !sc.HasTenantWideGrant(moduleAiModels, "Read", "Write") {
 			c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -399,9 +400,10 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			return
 		}
 		// A price change applies to every account in the tenant and rewrites
-		// what all of them are billed at, so it is a tenant-admin action —
-		// account-level write access is not enough.
-		if !agentContext.GetSecurityContext().IsTenantAdmin() {
+		// what all of them are billed at, so it is a tenant-admin action (or a
+		// tenant-wide ai_models:Write grant) — account-level write access, and
+		// an account-scoped grant, are not enough.
+		if !canChangeModelPricing(agentContext.GetSecurityContext()) {
 			c.JSON(403, BuildApiResponse(nil, []error{errors.New("model pricing can only be changed by a tenant admin")}))
 			return
 		}
@@ -431,7 +433,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		}
 		// Removing an override changes what every account in the tenant is
 		// billed at, exactly as setting one does, so it carries the same gate.
-		if !agentContext.GetSecurityContext().IsTenantAdmin() {
+		if !canChangeModelPricing(agentContext.GetSecurityContext()) {
 			c.JSON(403, BuildApiResponse(nil, []error{errors.New("model pricing can only be changed by a tenant admin")}))
 			return
 		}
@@ -928,4 +930,10 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 
 		c.JSON(200, BuildApiResponse(references, nil))
 	})
+}
+
+// canChangeModelPricing gates setting and removing tenant model-price
+// overrides: a tenant admin, or a tenant-wide ai_models:Write grant.
+func canChangeModelPricing(sc *security.SecurityContext) bool {
+	return sc.IsTenantAdmin() || sc.HasTenantWideGrant(moduleAiModels, "Write")
 }

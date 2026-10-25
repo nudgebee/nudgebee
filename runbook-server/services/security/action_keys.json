@@ -33,6 +33,7 @@
   "ai_delete_kb_mapping": "ai_kbs:Write",
   "ai_delete_kb_skill_source": "ai_kbs:Write",
   "ai_delete_llm_conversation_by_id": "ai_conversations:Write",
+  "ai_delete_memory": "ai_memory:Write",
   "ai_delete_model_pricing": "ai_models:Write",
   "ai_delete_saved_conversation": "ai_conversations:Write",
   "ai_delete_tool": "ai_tools:Write",

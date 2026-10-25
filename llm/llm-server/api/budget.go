@@ -90,8 +90,10 @@ func actionError(c *gin.Context, code int, msg string) {
 	c.JSON(code, gin.H{"message": msg})
 }
 
-// requireBudgetAdminTenant gates the three budget-config endpoints and returns
-// the tenant they must operate inside, or "" after writing the error response.
+// requireBudgetAdminTenant gates the budget-config writes (upsert, delete) and
+// returns the tenant they must operate inside, or "" after writing the error
+// response. Allowed: a tenant admin or super admin, or a tenant-wide
+// ai_budget:Write grant. Reads go through requireBudgetReaderTenant.
 //
 // The tenant scope binds EVERY caller, super admins included. A super-admin
 // session still carries the tenant it is viewing (x-tenant-id / session
@@ -102,10 +104,25 @@ func actionError(c *gin.Context, code int, msg string) {
 // the usage panel never reads — the config showed the new value while the
 // usage section kept the old one (#37020).
 func requireBudgetAdminTenant(c *gin.Context, sc *security.SecurityContext) string {
-	if !sc.IsSuperAdmin() && !sc.IsTenantAdmin() {
+	if !sc.IsSuperAdmin() && !sc.IsTenantAdmin() && !sc.HasTenantWideGrant(moduleAiBudget, "Write") {
 		actionError(c, 403, "api: admin access required")
 		return ""
 	}
+	return budgetTenant(c, sc)
+}
+
+// requireBudgetReaderTenant gates the budget-config reads: a built-in tenant
+// reader (tenant admin, read-only tenant admin, super admins) or a tenant-wide
+// ai_budget Read or Write grant. Same tenant pinning as requireBudgetAdminTenant.
+func requireBudgetReaderTenant(c *gin.Context, sc *security.SecurityContext) string {
+	if !sc.CanReadTenantModule(moduleAiBudget) {
+		actionError(c, 403, "api: admin access required")
+		return ""
+	}
+	return budgetTenant(c, sc)
+}
+
+func budgetTenant(c *gin.Context, sc *security.SecurityContext) string {
 	tenantId := sc.GetTenantId()
 	if tenantId == "" {
 		actionError(c, 400, "api: unable to identify tenant")
@@ -115,11 +132,20 @@ func requireBudgetAdminTenant(c *gin.Context, sc *security.SecurityContext) stri
 }
 
 // canAccessAccountBudget reports whether the caller may act on accountId's
-// budget config. HasAccountAccess alone is not enough: it returns true for ANY
-// account id once the caller is a super admin, so the tenant-membership check
-// is what keeps a super-admin session inside the tenant it is viewing.
+// budget config: read it (a built-in read role on the account or an ai_budget
+// Read/Write grant covering it), or change it (a built-in role allowing access,
+// or an ai_budget:Write grant covering it). HasAccountAccess alone is not
+// enough: it returns true for ANY account id once the caller is a super admin,
+// so the tenant-membership check is what keeps a super-admin session inside the
+// tenant it is viewing.
 func canAccessAccountBudget(sc *security.SecurityContext, tenantId, accountId string, access security.SecurityAccessType) bool {
-	return security.IsAccountInTenant(accountId, tenantId) && sc.HasAccountAccess(accountId, access)
+	if !security.IsAccountInTenant(accountId, tenantId) {
+		return false
+	}
+	if access == security.SecurityAccessTypeRead {
+		return sc.CanReadAccountData(accountId, moduleAiBudget)
+	}
+	return sc.HasAccountAccess(accountId, access) || sc.HasScopedPermission(accountId, moduleAiBudget, "Write")
 }
 
 // handleBudgetStatusApi registers all budget endpoints (all POST for RPC action compatibility)
@@ -174,7 +200,7 @@ func handleBudgetStatusApi(r *gin.Engine, tracer trace.Tracer, meter metric.Mete
 		// session is enough since the service skips the per-account
 		// branch and returns only tenant-scope data.
 		if request.AccountID != "" {
-			if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountID, security.SecurityAccessTypeRead) {
+			if !agentContext.GetSecurityContext().CanReadAccountData(request.AccountID, moduleAiBudget) {
 				actionError(c, 403, errorUserAccessMessage)
 				return
 			}
@@ -219,7 +245,7 @@ func handleBudgetStatusApi(r *gin.Engine, tracer trace.Tracer, meter metric.Mete
 		}
 
 		sc := agentContext.GetSecurityContext()
-		tenantId := requireBudgetAdminTenant(c, sc)
+		tenantId := requireBudgetReaderTenant(c, sc)
 		if tenantId == "" {
 			return
 		}
@@ -276,7 +302,7 @@ func handleBudgetStatusApi(r *gin.Engine, tracer trace.Tracer, meter metric.Mete
 		if listAllTenantAccounts {
 			filtered := make([]budget.BudgetConfig, 0, len(configs))
 			for _, cfg := range configs {
-				if sc.HasAccountAccess(cfg.EntityID, security.SecurityAccessTypeRead) {
+				if sc.CanReadAccountData(cfg.EntityID, moduleAiBudget) {
 					filtered = append(filtered, cfg)
 				}
 			}
@@ -507,7 +533,7 @@ func handleBudgetStatusApi(r *gin.Engine, tracer trace.Tracer, meter metric.Mete
 		}
 
 		sc := agentContext.GetSecurityContext()
-		if !sc.IsSuperAdmin() && !sc.IsTenantAdmin() {
+		if !sc.CanReadTenantModule(moduleAiBudget) {
 			actionError(c, 403, "api: admin access required")
 			return
 		}

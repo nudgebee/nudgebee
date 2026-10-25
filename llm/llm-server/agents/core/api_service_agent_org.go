@@ -16,7 +16,8 @@ import (
 
 // SetCustomAgentVisibility widens an account agent to the organisation (or
 // selected accounts), switches between those two, or moves an organisation
-// agent back to targetAccountId. Tenant admins only.
+// agent back to targetAccountId. Tenant admins, or a tenant-wide
+// ai_agents:Write grant (CanShareOrgItem).
 func SetCustomAgentVisibility(context *security.RequestContext, agentId, visibility string, accountIds []string, targetAccountId string) error {
 	dbms, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
@@ -29,7 +30,7 @@ func SetCustomAgentVisibility(context *security.RequestContext, agentId, visibil
 			return nil, err
 		}
 		owner = o
-		if !toolcore.CanManageOrgItems(context, owner.TenantId) {
+		if !toolcore.CanShareOrgItem(context, toolcore.OrgAgentKind, owner.TenantId) {
 			return nil, errors.New("auth: unauthorized")
 		}
 		if visibility != toolcore.VisibilityAccount && !owner.IsOrg() {
@@ -73,7 +74,7 @@ func SetCustomAgentAccountSwitch(context *security.RequestContext, agentId, acco
 		if err != nil {
 			return nil, err
 		}
-		if !toolcore.CanSwitchOrgItem(context, owner, accountId) {
+		if !toolcore.CanSwitchOrgItem(context, toolcore.OrgAgentKind, owner, accountId) {
 			return nil, errors.New("auth: unauthorized")
 		}
 		name = owner.Name
@@ -97,8 +98,7 @@ func ListCustomAgentAccountSwitches(context *security.RequestContext, agentId st
 	if err != nil {
 		return nil, err
 	}
-	sc := context.GetSecurityContext()
-	if !owner.IsOrg() || owner.TenantId != sc.GetTenantId() || !sc.HasTenantAccess(security.SecurityAccessTypeRead) {
+	if !owner.IsOrg() || !toolcore.CanReadOrgItemSwitches(context, toolcore.OrgAgentKind, owner.TenantId) {
 		return nil, errors.New("auth: unauthorized")
 	}
 	return toolcore.ListOrgItemAccountSwitches(dbms.Db, toolcore.OrgAgentKind, agentId)

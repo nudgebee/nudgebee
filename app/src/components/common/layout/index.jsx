@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { AI_TOOLS_MODULES } from '@components/llm/admin/aiToolsModules';
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { useTenantBranding, toAssistantLabel } from '@hooks/useTenantBranding';
 import Box from '@mui/material/Box';
@@ -728,7 +729,7 @@ const PageLayout = ({ children }) => {
             text: 'AI & Tools',
             path: '/user-management#ai-tools',
             id: 'sidenav-admin-ai-tools',
-            modules: ['ai', 'integrations', 'llm', 'egressfilter'],
+            modules: AI_TOOLS_MODULES,
             icon: AgentIcon,
           },
           {

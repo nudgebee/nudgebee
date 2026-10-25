@@ -16,7 +16,8 @@ import (
 
 // SetCustomToolVisibility widens an account tool to the organisation (or
 // selected accounts), switches between those two, or moves an organisation
-// tool back to targetAccountId. Tenant admins only.
+// tool back to targetAccountId. Tenant admins, or a tenant-wide ai_tools:Write
+// grant (CanShareOrgItem).
 func SetCustomToolVisibility(context *security.RequestContext, toolId, visibility string, accountIds []string, targetAccountId string) error {
 	dbms, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
@@ -29,7 +30,7 @@ func SetCustomToolVisibility(context *security.RequestContext, toolId, visibilit
 			return nil, err
 		}
 		owner = o
-		if !CanManageOrgItems(context, owner.TenantId) {
+		if !CanShareOrgItem(context, OrgToolKind, owner.TenantId) {
 			return nil, errors.New(errUnauthorized)
 		}
 		if visibility != VisibilityAccount && !owner.IsOrg() {
@@ -74,7 +75,7 @@ func SetCustomToolAccountSwitch(context *security.RequestContext, toolId, accoun
 		if err != nil {
 			return nil, err
 		}
-		if !CanSwitchOrgItem(context, owner, accountId) {
+		if !CanSwitchOrgItem(context, OrgToolKind, owner, accountId) {
 			return nil, errors.New(errUnauthorized)
 		}
 		return nil, SetOrgItemAccountSwitch(tx, OrgToolKind, owner, accountId, context.GetSecurityContext().GetUserId(), enabled)
@@ -87,9 +88,10 @@ func SetCustomToolAccountSwitch(context *security.RequestContext, toolId, accoun
 }
 
 // CanSwitchOrgItem reports whether the caller may change accountId's switch
-// for an organisation item.
-func CanSwitchOrgItem(context *security.RequestContext, owner OrgItemOwner, accountId string) bool {
-	if CanManageOrgItems(context, owner.TenantId) {
+// for an organisation item of kind k: whoever may share it (CanShareOrgItem),
+// or an admin of accountId for an organisation-wide item.
+func CanSwitchOrgItem(context *security.RequestContext, k OrgItemKind, owner OrgItemOwner, accountId string) bool {
+	if CanShareOrgItem(context, k, owner.TenantId) {
 		return true
 	}
 	sc := context.GetSecurityContext()
@@ -108,8 +110,7 @@ func ListCustomToolAccountSwitches(context *security.RequestContext, toolId stri
 	if err != nil {
 		return nil, err
 	}
-	sc := context.GetSecurityContext()
-	if !owner.IsOrg() || owner.TenantId != sc.GetTenantId() || !sc.HasTenantAccess(security.SecurityAccessTypeRead) {
+	if !owner.IsOrg() || !CanReadOrgItemSwitches(context, OrgToolKind, owner.TenantId) {
 		return nil, errors.New(errUnauthorized)
 	}
 	return ListOrgItemAccountSwitches(dbms.Db, OrgToolKind, toolId)

@@ -28,6 +28,32 @@ func (sc *SecurityContext) Can(accountId string, module string, class string) bo
 	return false
 }
 
+// HasTenantWideGrant reports whether the caller holds a tenant-wide custom-role
+// grant on module in any of classes. Account-scoped grants do not count: this is
+// the check for tenant-level settings and lists that are not tied to one account.
+func (sc *SecurityContext) HasTenantWideGrant(module string, classes ...string) bool {
+	if sc == nil {
+		return false
+	}
+	for _, class := range classes {
+		if sc.HasPermission(module, class) {
+			return true
+		}
+	}
+	return false
+}
+
+// CanReadTenantModule reports whether the caller may read module's tenant-level
+// settings or lists: a built-in tenant reader (HasTenantAccess read: tenant
+// admin, read-only tenant admin, super admins), or a tenant-wide Read or Write
+// grant on module (Write implies Read).
+func (sc *SecurityContext) CanReadTenantModule(module string) bool {
+	if sc == nil {
+		return false
+	}
+	return sc.HasTenantAccess(SecurityAccessTypeRead) || sc.HasTenantWideGrant(module, "Read", "Write")
+}
+
 // IntegrationModule is the custom-role module that governs integrations of
 // one stored type: "integrations.<type>", lower-cased.
 func IntegrationModule(integrationType string) string {

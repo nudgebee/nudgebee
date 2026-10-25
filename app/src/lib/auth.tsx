@@ -1,3 +1,4 @@
+import { AI_TOOLS_MODULES } from '@components/llm/admin/aiToolsModules';
 import { useSession } from 'next-auth/react';
 import { useCallback, useEffect, useRef } from 'react';
 import { queryGraphQL } from '@lib/HttpService';
@@ -415,10 +416,8 @@ export function missingPermissionMessage(permission: string): string {
 
 // Modules backing the sections of the Admin page (/user-management): Users,
 // Groups, Audits, Notifications, Integrations, Ownership, the EE Roles &
-// Permissions tab, Tenant Settings, and AI & Tools (Agents/Tools & MCP/
-// Functions/Budgets & Limits/Memory Policy/RCA Format share `ai`; Providers
-// reuses `integrations`; Gateway reuses `llm`; Egress Filter is
-// `egressfilter`). Kept in sync with baseFilters in
+// Permissions tab, Tenant Settings, and AI & Tools (each sub-tab's modules, from
+// components/llm/admin/aiToolsModules.js). Kept in sync with baseFilters in
 // app/src/pages/user-management/index.jsx.
 // Cross-tenant super admin (full, not the read-only flavor). Kept distinct from
 // isTenantWideRole() because destructive / write gates must not accept
@@ -478,9 +477,8 @@ const ADMIN_SURFACE_MODULES = [
   'customroles',
   'roles',
   'tenants',
-  'ai',
-  'llm',
-  'egressfilter',
+  // AI & Tools sub-tabs (components/llm/admin/aiToolsConfig.js)
+  ...AI_TOOLS_MODULES,
 ];
 
 // Should the Admin sidebar tab / route be reachable for the current user?

@@ -45,8 +45,9 @@ type toolUpdateRequest struct {
 func toolListTool(c *gin.Context, context *security.RequestContext, payload map[string]any) {
 	// Empty account_id means the caller is on a surface with no current
 	// account (the global b-Cortex sidebar). Fall back to a tenant-wide
-	// read; the service layer row-filters by HasAccountAccess so each
-	// caller only sees custom tools from accounts they can read. System
+	// read; the service layer shows a tenant-wide reader every account's custom
+	// tools and anyone else only those of accounts they can read
+	// (CanReadAccountData: a built-in role or an ai_tools grant). System
 	// tools are always returned. Custom-agents-as-tools are intentionally
 	// omitted from the tenant-wide view — they're already shown on the
 	// Agents tab and duplicating them here would be confusing.

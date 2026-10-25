@@ -1169,11 +1169,13 @@ func serializeRowToAgent(context *security.RequestContext, rows *sqlx.Rows) (Age
 }
 
 // ListCustomAgentsForTenant returns custom agents across every account the
-// caller can read in the tenant. Row-level filter mirrors HasAccountAccess:
-// super/tenant admins see every account; scoped account-admins see only
-// the accounts in their JWT-carried list; users with no account role get
-// an empty slice. Each row carries account_id + account_name so the
-// b-Cortex sidebar surface can render an Account column.
+// caller can read in the tenant. Tenant-wide readers (super/tenant admins,
+// read-only included, or a tenant-wide ai_agents Read/Write grant) see every
+// account's; anyone else sees the account agents of the accounts where
+// CanReadAccountData(account, "ai_agents") holds (a built-in account role or an
+// account-scoped grant), plus the organisation agents of the tenant as before.
+// Each row carries account_id + account_name so the b-Cortex sidebar surface
+// can render an Account column.
 func ListCustomAgentsForTenant(context *security.RequestContext, allowOnlyEnabled bool) []AgentDto {
 	secCtx := context.GetSecurityContext()
 	tenantID := secCtx.GetTenantId()
@@ -1205,10 +1207,7 @@ func ListCustomAgentsForTenant(context *security.RequestContext, allowOnlyEnable
 	                  AND lg.visibility = 'account'
 	                  AND ca.tenant = $2::uuid`
 
-	seesAllAccountsInTenant := secCtx.IsSuperAdmin() ||
-		secCtx.IsSuperAdminReadonly() ||
-		secCtx.IsTenantAdmin() ||
-		secCtx.IsTenantReadAdmin()
+	seesAllAccountsInTenant := secCtx.CanReadTenantModule("ai_agents")
 
 	var (
 		rows  *sqlx.Rows
@@ -1228,17 +1227,26 @@ func ListCustomAgentsForTenant(context *security.RequestContext, allowOnlyEnable
 		}
 		query = baseSelect + statusFilter + orgSelect + statusFilter
 	} else {
+		// GetAccountIds is every account of the tenant, whatever the caller's
+		// role: account agents are limited to the readable ones ($3), while the
+		// organisation agents keep their tenant-wide filter ($4).
 		accountIDs := secCtx.GetAccountIds()
 		if len(accountIDs) == 0 {
 			return []AgentDto{}
 		}
-		args = []any{AgentTypeCustom, tenantID, pq.Array(accountIDs)}
+		readable := make([]string, 0, len(accountIDs))
+		for _, accountID := range accountIDs {
+			if secCtx.CanReadAccountData(accountID, "ai_agents") {
+				readable = append(readable, accountID)
+			}
+		}
+		args = []any{AgentTypeCustom, tenantID, pq.Array(readable), pq.Array(accountIDs)}
 		if allowOnlyEnabled {
-			statusFilter = ` AND lg.status = $4`
+			statusFilter = ` AND lg.status = $5`
 			args = append(args, "enabled")
 		}
 		query = baseSelect + ` AND lgi.account_id = ANY($3::uuid[])` + statusFilter + orgSelect + statusFilter +
-			` AND (lg.visibility = 'organisation' OR EXISTS (SELECT 1 FROM llm_agent_account_overrides o WHERE o.agent_id = lg.id AND o.enabled AND o.account_id = ANY($3::uuid[])))`
+			` AND (lg.visibility = 'organisation' OR EXISTS (SELECT 1 FROM llm_agent_account_overrides o WHERE o.agent_id = lg.id AND o.enabled AND o.account_id = ANY($4::uuid[])))`
 	}
 
 	rows, err = dbms.Db.Queryx(query, args...)

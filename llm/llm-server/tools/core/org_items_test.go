@@ -220,11 +220,11 @@ func TestCanSwitchOrgItem(t *testing.T) {
 	selected := OrgItemOwner{Id: itemTestItem, TenantId: adminTestTenant, Visibility: VisibilitySelectedAccounts}
 	otherTenant := OrgItemOwner{Id: itemTestItem, TenantId: itemTestTenant, Visibility: VisibilityOrganisation}
 
-	assert.True(t, CanSwitchOrgItem(itemAccountAdmin(t), orgWide, adminTestAccount), "account admin switches an organisation-wide item for their account")
-	assert.False(t, CanSwitchOrgItem(itemAccountAdmin(t), orgWide, itemTestOther), "but not for another account")
-	assert.False(t, CanSwitchOrgItem(itemAccountAdmin(t), selected, adminTestAccount), "choosing selected accounts is for tenant admins")
-	assert.True(t, CanSwitchOrgItem(itemTenantAdmin(adminTestTenant), selected, adminTestAccount))
-	assert.False(t, CanSwitchOrgItem(itemTenantAdmin(adminTestTenant), otherTenant, adminTestAccount), "never across tenants")
+	assert.True(t, CanSwitchOrgItem(itemAccountAdmin(t), OrgToolKind, orgWide, adminTestAccount), "account admin switches an organisation-wide item for their account")
+	assert.False(t, CanSwitchOrgItem(itemAccountAdmin(t), OrgToolKind, orgWide, itemTestOther), "but not for another account")
+	assert.False(t, CanSwitchOrgItem(itemAccountAdmin(t), OrgToolKind, selected, adminTestAccount), "choosing selected accounts is for tenant admins")
+	assert.True(t, CanSwitchOrgItem(itemTenantAdmin(adminTestTenant), OrgToolKind, selected, adminTestAccount))
+	assert.False(t, CanSwitchOrgItem(itemTenantAdmin(adminTestTenant), OrgToolKind, otherTenant, adminTestAccount), "never across tenants")
 }
 
 func TestCheckNotUsedByOrgAgents(t *testing.T) {

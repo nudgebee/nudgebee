@@ -1714,6 +1714,19 @@ actions:
   # are still gated server-side by requireTenantAdmin — the actions.yaml
   # permissions list every role that can call any combination, not just
   # the most privileged.
+  - name: ai_delete_memory
+    comment: Delete one of the AI's stored long-term memories for the account
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/memory'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: k8s_namespace_admin
+      - role: account_admin
   - name: ai_memory_get
     definition:
       kind: "synchronous"

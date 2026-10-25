@@ -555,6 +555,12 @@ type Query {
   ): ListAIMemoryResponse
 }
 
+type Mutation {
+  ai_delete_memory(
+    request: DeleteMemoryRequest!
+  ): DeleteAIMemoryResponse
+}
+
 type Query {
   ai_list_models(
     request: AIListModelsRequest!
@@ -6144,6 +6150,16 @@ input ExportRecommendationRequest {
   workload_name: String
   status: [String]
   format: String!
+}
+
+input DeleteMemoryRequest {
+  account_id: String!
+  id: String!
+}
+
+type DeleteAIMemoryResponse {
+  data: Json
+  errors: [Error]
 }
 
 input ListAIMemoryRequest {

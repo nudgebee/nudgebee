@@ -47,8 +47,9 @@ func agentListAgent(c *gin.Context, context *security.RequestContext, payload ma
 
 	// Empty account_id means the caller is on a surface with no current
 	// account (the global b-Cortex sidebar). Fall back to a tenant-wide
-	// read; the service layer row-filters by HasAccountAccess so each
-	// caller only sees custom agents from accounts they can read. System
+	// read; the service layer shows a tenant-wide reader every account's custom
+	// agents and anyone else only those of accounts they can read
+	// (CanReadAccountData: a built-in role or an ai_agents grant). System
 	// agents (compiled-in catalog) are returned for everyone.
 	if payload["account_id"] == nil || payload["account_id"] == "" {
 		resp := core.ListAgentsForTenant(context, allowOnlyEnabled)

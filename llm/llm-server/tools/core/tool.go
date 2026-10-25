@@ -1176,9 +1176,13 @@ func serializeRowToTool(rows *sqlx.Rows) (ToolDto, error) {
 }
 
 // ListCustomToolsForTenant returns custom tools across every account the
-// caller can read in the tenant. Same row-level filter as the agents path
-// (HasAccountAccess ladder); each row carries account_id + account_name so
-// the b-Cortex tenant-wide view can render an Account column.
+// caller can read in the tenant. Same row-level filter as the agents path:
+// tenant-wide readers (super/tenant admins, read-only included, or a
+// tenant-wide ai_tools Read/Write grant) see every account's; anyone else sees
+// the account tools of the accounts where CanReadAccountData(account,
+// "ai_tools") holds, plus the organisation tools of the tenant as before. Each
+// row carries account_id + account_name so the b-Cortex tenant-wide view can
+// render an Account column.
 func ListCustomToolsForTenant(context *security.RequestContext) []ToolDto {
 	secCtx := context.GetSecurityContext()
 	tenantID := secCtx.GetTenantId()
@@ -1201,10 +1205,7 @@ func ListCustomToolsForTenant(context *security.RequestContext) []ToolDto {
 	                  AND lt.visibility = 'account'
 	                  AND ca.tenant = $2::uuid`
 
-	seesAllAccountsInTenant := secCtx.IsSuperAdmin() ||
-		secCtx.IsSuperAdminReadonly() ||
-		secCtx.IsTenantAdmin() ||
-		secCtx.IsTenantReadAdmin()
+	seesAllAccountsInTenant := secCtx.CanReadTenantModule("ai_tools")
 
 	var (
 		rows  *sqlx.Rows
@@ -1219,13 +1220,22 @@ func ListCustomToolsForTenant(context *security.RequestContext) []ToolDto {
 		query = baseSelect + " UNION ALL " + orgSelect
 		args = []any{ToolTypeCustom, tenantID}
 	} else {
+		// GetAccountIds is every account of the tenant, whatever the caller's
+		// role: account tools are limited to the readable ones ($3), while the
+		// organisation tools keep their tenant-wide filter ($4).
 		accountIDs := secCtx.GetAccountIds()
 		if len(accountIDs) == 0 {
 			return []ToolDto{}
 		}
+		readable := make([]string, 0, len(accountIDs))
+		for _, accountID := range accountIDs {
+			if secCtx.CanReadAccountData(accountID, "ai_tools") {
+				readable = append(readable, accountID)
+			}
+		}
 		query = baseSelect + ` AND lti.account_id = ANY($3::uuid[]) UNION ALL ` + orgSelect +
-			` AND (lt.visibility = 'organisation' OR EXISTS (SELECT 1 FROM llm_tool_account_overrides o WHERE o.tool_id = lt.id AND o.enabled AND o.account_id = ANY($3::uuid[])))`
-		args = []any{ToolTypeCustom, tenantID, pq.Array(accountIDs)}
+			` AND (lt.visibility = 'organisation' OR EXISTS (SELECT 1 FROM llm_tool_account_overrides o WHERE o.tool_id = lt.id AND o.enabled AND o.account_id = ANY($4::uuid[])))`
+		args = []any{ToolTypeCustom, tenantID, pq.Array(readable), pq.Array(accountIDs)}
 	}
 
 	rows, err = dbms.Db.Queryx(query, args...)

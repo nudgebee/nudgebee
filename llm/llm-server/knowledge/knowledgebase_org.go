@@ -74,6 +74,22 @@ func canManageOrgKBs(sc *security.RequestContext, tenantId string, access securi
 	return s.IsSuperAdmin() || s.GetTenantId() == tenantId
 }
 
+// kbModule is the custom-role module of knowledge bases.
+const kbModule = "ai_kbs"
+
+// canShareOrgKBs reports whether the caller may change who an organisation
+// knowledge base of tenantId reaches (its visibility, or the accounts of a
+// selected-accounts KB): a tenant admin (canManageOrgKBs update), or a
+// tenant-wide ai_kbs:Write grant in that tenant. Creating, editing and deleting
+// organisation KBs stay canManageOrgKBs.
+func canShareOrgKBs(sc *security.RequestContext, tenantId string) bool {
+	if canManageOrgKBs(sc, tenantId, security.SecurityAccessTypeUpdate) {
+		return true
+	}
+	s := sc.GetSecurityContext()
+	return s.GetTenantId() == tenantId && s.HasTenantWideGrant(kbModule, "Write")
+}
+
 // resolveKBForWrite reads who owns kbId and checks the caller may change it:
 // an account KB needs `access` on that account (and must be requested under
 // it); an organisation KB needs a tenant admin of its tenant, and accountId
@@ -223,7 +239,7 @@ func SetKnowledgebaseVisibility(sc *security.RequestContext, kbId, visibility st
 		}
 		return Knowledgebase{}, fmt.Errorf("kb: failed to read knowledgebase: %w", err)
 	}
-	if !canManageOrgKBs(sc, kb.TenantId, security.SecurityAccessTypeUpdate) {
+	if !canShareOrgKBs(sc, kb.TenantId) {
 		return Knowledgebase{}, errors.New(errKBOrgAdminOnly)
 	}
 	// A synced skill's reach is its source's: change the source instead.
@@ -354,6 +370,8 @@ type KBAccountOverride struct {
 // SetKBAccountOverride switches an organisation knowledge base on or off for
 // one account. An admin of that account may do it; for a selected_accounts KB
 // only a tenant admin may (switching on is how an account gets onto the list).
+// A tenant-wide ai_kbs:Write grant may do either, for any account of the
+// caller's tenant (the query below then ties the KB to that account's tenant).
 func SetKBAccountOverride(sc *security.RequestContext, accountId, kbId string, enabled bool) error {
 	if accountId == "" {
 		return errors.New(errKBAccountIDRequired)
@@ -361,7 +379,9 @@ func SetKBAccountOverride(sc *security.RequestContext, accountId, kbId string, e
 	if kbId == "" {
 		return errors.New(errKBIDRequired)
 	}
-	if !sc.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
+	s := sc.GetSecurityContext()
+	tenantWideWriter := s.HasTenantWideGrant(kbModule, "Write") && slices.Contains(s.GetAccountIds(), accountId)
+	if !s.HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) && !tenantWideWriter {
 		return errors.New(errKBUnauthorized)
 	}
 	dbms, err := common.GetDatabaseManager(common.Metastore)
@@ -382,7 +402,7 @@ func SetKBAccountOverride(sc *security.RequestContext, accountId, kbId string, e
 		}
 		return fmt.Errorf("kb: failed to read knowledgebase: %w", err)
 	}
-	if kb.Visibility == KBVisibilitySelectedAccounts && !canManageOrgKBs(sc, kb.TenantId, security.SecurityAccessTypeUpdate) {
+	if kb.Visibility == KBVisibilitySelectedAccounts && !canShareOrgKBs(sc, kb.TenantId) {
 		return errors.New(errKBOrgAdminOnly)
 	}
 	userId := sc.GetSecurityContext().GetUserId()
@@ -416,7 +436,7 @@ func SetKBAccountOverride(sc *security.RequestContext, accountId, kbId string, e
 }
 
 // ListKBAccountOverrides lists the per-account switches of an organisation
-// knowledge base. Tenant admins only.
+// knowledge base: tenant readers, or a tenant-wide ai_kbs Read or Write grant.
 func ListKBAccountOverrides(sc *security.RequestContext, kbId string) ([]KBAccountOverride, error) {
 	if kbId == "" {
 		return nil, errors.New(errKBIDRequired)
@@ -433,7 +453,8 @@ func ListKBAccountOverrides(sc *security.RequestContext, kbId string) ([]KBAccou
 		}
 		return nil, fmt.Errorf("kb: failed to read knowledgebase: %w", err)
 	}
-	if !canManageOrgKBs(sc, tenantId, security.SecurityAccessTypeRead) {
+	if !canManageOrgKBs(sc, tenantId, security.SecurityAccessTypeRead) &&
+		(sc.GetSecurityContext().GetTenantId() != tenantId || !sc.GetSecurityContext().HasTenantWideGrant(kbModule, "Read", "Write")) {
 		return nil, errors.New(errKBOrgAdminOnly)
 	}
 	out := []KBAccountOverride{}
