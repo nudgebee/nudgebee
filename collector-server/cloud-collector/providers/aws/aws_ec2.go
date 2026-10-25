@@ -569,7 +569,7 @@ func (a *amazonEc2) GetResources(ctx providers.CloudProviderContext, account pro
 	// Fetch all CloudWatch alarms for this region once, instead of per-instance.
 	// This avoids N separate STS AssumeRole + DescribeAlarms calls that can exhaust
 	// the request context timeout for accounts with many instances.
-	alarmsByResource := fetchAlarmsByResource(ctx, account, region)
+	alarmsByResource, alarmsErr := fetchAlarmsByResource(ctx, account, region)
 
 	instancesPaginator := ec2.NewDescribeInstancesPaginator(svc, &ec2.DescribeInstancesInput{})
 	for instancesPaginator.HasMorePages() {
@@ -641,7 +641,9 @@ func (a *amazonEc2) GetResources(ctx providers.CloudProviderContext, account pro
 				meta := structToMap(instance)
 				meta["InstanceTypeDetails"] = instanceTypeMap[instanceType]
 
-				meta["AlarmDetails"] = alarmsByResource[*instance.InstanceId]
+				if alarmsErr == nil {
+					meta["AlarmDetails"] = alarmsByResource[*instance.InstanceId]
+				}
 
 				resource := providers.Resource{
 					Id:          *instance.InstanceId,
@@ -1853,6 +1855,10 @@ func (a *amazonEc2) GetRecommendations(ctx providers.CloudProviderContext, accou
 
 					// Check if alarm is missing
 					isMissing, err := IsAlarmMissing(resource, template, resource.Id)
+					if errors.Is(err, ErrAlarmDetailsUnknown) {
+						recommendations = append(recommendations, providers.UnevaluatedRecommendation(template.Name, providers.RecommendationCategoryConfiguration, resource))
+						continue
+					}
 					if err != nil {
 						ctx.GetLogger().Warn("Error checking alarm", "error", err, "template", template.Name, "resourceId", resource.Id)
 						continue

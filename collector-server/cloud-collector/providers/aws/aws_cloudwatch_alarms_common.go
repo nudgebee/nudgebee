@@ -116,7 +116,7 @@ var cloudwatchNamespaceServiceMap = map[string]CloudwatchNamespace{
 	},
 	"AWS/ELB": {
 		Name:                  "AWS/ELB",
-		ResourceDimensionName: "LoadBalancer",
+		ResourceDimensionName: "LoadBalancerName",
 		ServiceName:           ServiceNameELB,
 		ResourceType:          "loadbalancer",
 	},
@@ -338,20 +338,43 @@ type AlarmsFilter struct {
 // them grouped by ResourceId. Each key is a resource identifier (e.g. EC2 InstanceId,
 // RDS DBInstanceIdentifier, S3 BucketName) and the value is the slice of alarm Raw maps
 // for that resource. This avoids repeated DescribeAlarms + STS AssumeRole calls per resource.
-func fetchAlarmsByResource(ctx providers.CloudProviderContext, account providers.Account, region string) map[string][]any {
+//
+// On error it returns no map. Callers then leave Meta["AlarmDetails"] unset, so the
+// region's resources read as unknown (ErrAlarmDetailsUnknown) rather than as having
+// no alarms, which would recommend every alarm for every one of them.
+func fetchAlarmsByResource(ctx providers.CloudProviderContext, account providers.Account, region string) (map[string][]any, error) {
 	alarms, err := getAwsCloudwatchAlarms(ctx, account, AlarmsFilter{
 		Region: region,
 	})
 	if err != nil {
-		ctx.GetLogger().Warn("failed to fetch alarms for region, alarm recommendations may be incomplete",
+		ctx.GetLogger().Warn("failed to fetch alarms for region, its alarm recommendations are not evaluated until the next sync",
 			"error", err, "region", region)
-		return make(map[string][]any)
+		return nil, err
 	}
 	byResource := make(map[string][]any)
 	for _, a := range alarms.Items {
 		byResource[a.ResourceId] = append(byResource[a.ResourceId], a.Raw)
 	}
-	return byResource
+	return byResource, nil
+}
+
+// regionAlarmAttacher returns a func that sets meta["AlarmDetails"] to the region's
+// alarms for one resource. The region's alarms are listed on first use, so a region
+// with none of the service's resources costs no DescribeAlarms call; if the listing
+// fails the key is left unset.
+func regionAlarmAttacher(ctx providers.CloudProviderContext, account providers.Account, region string) func(meta map[string]any, resourceId string) {
+	var byResource map[string][]any
+	var err error
+	fetched := false
+	return func(meta map[string]any, resourceId string) {
+		if !fetched {
+			byResource, err = fetchAlarmsByResource(ctx, account, region)
+			fetched = true
+		}
+		if err == nil && meta != nil {
+			meta["AlarmDetails"] = byResource[resourceId]
+		}
+	}
 }
 
 func getAwsCloudwatchAlarms(ctx providers.CloudProviderContext, account providers.Account, filter AlarmsFilter) (providers.ListEventResponse, error) {
@@ -604,21 +627,50 @@ func buildAlarmRawMap(alarm types.MetricAlarm) map[string]any {
 	}
 
 	if len(alarm.Dimensions) > 0 {
-		dims := make([]map[string]string, 0, len(alarm.Dimensions))
-		for _, d := range alarm.Dimensions {
-			dim := map[string]string{}
-			if d.Name != nil {
-				dim["name"] = *d.Name
+		raw["dimensions"] = rawAlarmDimensions(alarm.Dimensions)
+	}
+
+	// A metric math alarm has no metric of its own, only the ones its expression
+	// is built from. They are kept so an alarm-missing check can see which metrics
+	// the alarm watches (see alarmWatchesMetric).
+	if len(alarm.Metrics) > 0 {
+		metrics := make([]map[string]any, 0, len(alarm.Metrics))
+		for _, q := range alarm.Metrics {
+			query := map[string]any{"id": aws.ToString(q.Id)}
+			if q.Expression != nil {
+				query["expression"] = *q.Expression
 			}
-			if d.Value != nil {
-				dim["value"] = *d.Value
+			if q.MetricStat != nil && q.MetricStat.Metric != nil {
+				query["metricStat"] = map[string]any{
+					"metric": map[string]any{
+						"namespace":  aws.ToString(q.MetricStat.Metric.Namespace),
+						"metricName": aws.ToString(q.MetricStat.Metric.MetricName),
+						"dimensions": rawAlarmDimensions(q.MetricStat.Metric.Dimensions),
+					},
+					"stat": aws.ToString(q.MetricStat.Stat),
+				}
 			}
-			dims = append(dims, dim)
+			metrics = append(metrics, query)
 		}
-		raw["dimensions"] = dims
+		raw["metrics"] = metrics
 	}
 
 	return raw
+}
+
+func rawAlarmDimensions(dimensions []types.Dimension) []map[string]string {
+	dims := make([]map[string]string, 0, len(dimensions))
+	for _, d := range dimensions {
+		dim := map[string]string{}
+		if d.Name != nil {
+			dim["name"] = *d.Name
+		}
+		if d.Value != nil {
+			dim["value"] = *d.Value
+		}
+		dims = append(dims, dim)
+	}
+	return dims
 }
 
 // CloudWatchAlarmInfo holds the metric-level details of a CloudWatch alarm

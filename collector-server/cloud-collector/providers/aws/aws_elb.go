@@ -143,6 +143,7 @@ func (a *awsElb) GetResources(ctx providers.CloudProviderContext, account provid
 	cfg.Region = regionName
 	svc := elb.NewFromConfig(cfg)
 	resources := []providers.Resource{}
+	attachAlarms := regionAlarmAttacher(ctx, account, regionName)
 
 	paginator := elb.NewDescribeLoadBalancersPaginator(svc, &elb.DescribeLoadBalancersInput{})
 
@@ -162,7 +163,10 @@ func (a *awsElb) GetResources(ctx providers.CloudProviderContext, account provid
 				ctx.GetLogger().Warn("Skipping ELB due to missing LoadBalancerName", "loadBalancer", loadBalancer, "region", regionName)
 				continue
 			}
-			resources = append(resources, buildClassicElbResource(ctx, svc, loadBalancer, account, regionName))
+			resource := buildClassicElbResource(ctx, svc, loadBalancer, account, regionName)
+			// Classic load balancer alarms carry the LoadBalancerName dimension
+			attachAlarms(resource.Meta, resource.Name)
+			resources = append(resources, resource)
 		}
 	}
 
@@ -177,7 +181,11 @@ func (a *awsElb) GetResources(ctx providers.CloudProviderContext, account provid
 			return resources, err
 		}
 
-		resources = append(resources, buildElbV2Resources(ctx, elbv2Svc, loadBalancersOutputV2.LoadBalancers, regionName)...)
+		for _, resource := range buildElbV2Resources(ctx, elbv2Svc, loadBalancersOutputV2.LoadBalancers, regionName) {
+			// ALB/NLB alarms carry the LoadBalancer dimension, "app/<name>/<id>" from the ARN
+			attachAlarms(resource.Meta, extractLoadBalancerNameFromArn(resource.Arn))
+			resources = append(resources, resource)
+		}
 	}
 
 	return resources, nil
@@ -794,6 +802,10 @@ func (a *awsElb) processClassicLoadBalancerRecommendations(ctx providers.CloudPr
 		}
 
 		isMissing, err := IsAlarmMissing(resource, template, loadBalancerName)
+		if errors.Is(err, ErrAlarmDetailsUnknown) {
+			recommendations = append(recommendations, providers.UnevaluatedRecommendation(template.Name, providers.RecommendationCategoryConfiguration, resource))
+			continue
+		}
 		if err != nil {
 			ctx.GetLogger().Warn("Error checking if alarm is missing", "error", err, "template", template.Name, "resourceName", resource.Name)
 			continue
@@ -888,6 +900,10 @@ func (a *awsElb) processApplicationLoadBalancerAlarms(ctx providers.CloudProvide
 
 		// Check if alarm is missing
 		isMissing, err := IsAlarmMissing(resource, template, loadBalancerDimension)
+		if errors.Is(err, ErrAlarmDetailsUnknown) {
+			recommendations = append(recommendations, providers.UnevaluatedRecommendation(template.Name, providers.RecommendationCategoryConfiguration, resource))
+			continue
+		}
 		if err != nil {
 			ctx.GetLogger().Warn("Error checking if alarm is missing", "error", err, "template", template.Name)
 			continue
@@ -1021,6 +1037,10 @@ func (a *awsElb) processNetworkLoadBalancerAlarms(ctx providers.CloudProviderCon
 		}
 
 		isMissing, err := IsAlarmMissing(resource, template, loadBalancerDimension)
+		if errors.Is(err, ErrAlarmDetailsUnknown) {
+			recommendations = append(recommendations, providers.UnevaluatedRecommendation(template.Name, providers.RecommendationCategoryConfiguration, resource))
+			continue
+		}
 		if err != nil || !isMissing {
 			continue
 		}

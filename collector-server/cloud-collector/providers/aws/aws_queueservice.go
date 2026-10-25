@@ -22,7 +22,7 @@ type awsQueueService struct {
 }
 
 func (a *awsQueueService) ApplyRecommendation(ctx providers.CloudProviderContext, account providers.Account, recommendation providers.Recommendation) error {
-	return errors.ErrUnsupported
+	return applyAlarmMissingRecommendation(ctx, account, recommendation, "aws_sqs_")
 }
 
 func (a *awsQueueService) ApplyCommand(ctx providers.CloudProviderContext, account providers.Account, command providers.ApplyCommandRequest) (providers.ApplyCommandResponse, error) {
@@ -42,6 +42,7 @@ func (a *awsQueueService) GetResources(ctx providers.CloudProviderContext, accou
 	cfg.Region = regionName
 	svc := sqs.NewFromConfig(cfg)
 	resources := []providers.Resource{}
+	attachAlarms := regionAlarmAttacher(ctx, account, regionName)
 
 	paginator := sqs.NewListQueuesPaginator(svc, &sqs.ListQueuesInput{})
 	for paginator.HasMorePages() {
@@ -64,6 +65,7 @@ func (a *awsQueueService) GetResources(ctx providers.CloudProviderContext, accou
 				// Already logged. Let's skip if attributes fail.
 				continue
 			}
+			attachAlarms(resource.Meta, resource.Id)
 			resources = append(resources, resource)
 		}
 	}
@@ -249,6 +251,10 @@ func (a *awsQueueService) GetRecommendations(ctx providers.CloudProviderContext,
 		if len(meta) == 0 {
 			continue // Skip if no metadata available
 		}
+
+		recommendations = append(recommendations, alarmMissingRecommendations(ctx, "sqs", resource,
+			providers.AlarmDimension{Name: "QueueName", Value: resource.Id},
+			map[string]any{"queue_name": resource.Id, "queue_arn": resource.Arn, "queue_region": resource.Region})...)
 
 		// Check 1: Dead-Letter Queue (DLQ) Configuration
 		// The RedrivePolicy attribute contains DLQ settings as a JSON string.

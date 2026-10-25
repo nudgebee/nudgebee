@@ -22,7 +22,7 @@ type amazonSns struct {
 }
 
 func (a *amazonSns) ApplyRecommendation(ctx providers.CloudProviderContext, account providers.Account, recommendation providers.Recommendation) error {
-	return errors.ErrUnsupported
+	return applyAlarmMissingRecommendation(ctx, account, recommendation, "aws_sns_")
 }
 
 func (a *amazonSns) ApplyCommand(ctx providers.CloudProviderContext, account providers.Account, command providers.ApplyCommandRequest) (providers.ApplyCommandResponse, error) {
@@ -42,6 +42,7 @@ func (a *amazonSns) GetResources(ctx providers.CloudProviderContext, account pro
 	cfg.Region = regionName
 	svc := sns.NewFromConfig(cfg)
 	resources := []providers.Resource{}
+	attachAlarms := regionAlarmAttacher(ctx, account, regionName)
 
 	// List Topics with Pagination
 	paginator := sns.NewListTopicsPaginator(svc, &sns.ListTopicsInput{})
@@ -67,7 +68,9 @@ func (a *amazonSns) GetResources(ctx providers.CloudProviderContext, account pro
 			attrsOutput, attrsErr := svc.GetTopicAttributes(ctx.GetContext(), &sns.GetTopicAttributesInput{
 				TopicArn: topic.TopicArn,
 			})
-			resources = append(resources, buildSnsTopicResource(ctx, svc, topicArn, attrsOutput, attrsErr, account, regionName))
+			resource := buildSnsTopicResource(ctx, svc, topicArn, attrsOutput, attrsErr, account, regionName)
+			attachAlarms(resource.Meta, resource.Id)
+			resources = append(resources, resource)
 		}
 	}
 	return resources, nil
@@ -264,6 +267,10 @@ func (a *amazonSns) GetRecommendations(ctx providers.CloudProviderContext, accou
 			ctx.GetLogger().Info("Resource meta is nil or empty, skipping recommendations for this SNS topic", "topicArn", resource.Arn, "region", resource.Region)
 			continue
 		}
+
+		recommendations = append(recommendations, alarmMissingRecommendations(ctx, "sns", resource,
+			providers.AlarmDimension{Name: "TopicName", Value: resource.Id},
+			map[string]any{"topic_name": resource.Id, "topic_arn": resource.Arn, "topic_region": resource.Region})...)
 
 		// Check 1: Server-Side Encryption (SSE) Enabled
 		kmsKeyId := ""
