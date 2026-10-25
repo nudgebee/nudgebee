@@ -863,6 +863,9 @@ func HandleConversationSessionRequest(ctx *security.RequestContext, agent NBAgen
 	}
 
 	response, err := handleConversationRequest(ctx, agentRequest, agent, sessionId, defaultConfig.source)
+	if AfterConversationTurn != nil {
+		AfterConversationTurn(ctx, agentRequest)
+	}
 
 	if defaultConfig.source == ConversationSourceInstantNotification || defaultConfig.source == ConversationSourceInvestigation {
 		sendReplyToNotificationServer(ctx, agentRequest, response, err)

@@ -885,4 +885,7 @@ async def post_remediation_thread(payload: remediation_thread.Posts):
         raise HTTPException(status_code=502, detail="Posting failed")
     if status == "failed":
         raise HTTPException(status_code=502, detail="Slack took none of the posts")
+    if status == "busy":
+        # Another send for the same thread is being posted: not delivered, so llm-server sends it again.
+        return JSONResponse(status_code=409, content={"status": "busy"})
     return {"status": status}

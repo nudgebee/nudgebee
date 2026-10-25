@@ -2488,7 +2488,10 @@ func captureSlackSends(t *testing.T, statuses ...int) *capturedSends {
 		if len(c.status) > 0 {
 			status, c.status = c.status[0], c.status[1:]
 		}
-		c.done <- struct{}{}
+		select {
+		case c.done <- struct{}{}:
+		default: // nobody waits on more than the buffer holds
+		}
 		if status == 0 {
 			return 0, errors.New("connection refused")
 		}
@@ -2565,41 +2568,31 @@ func TestBuildRemediationSlackCardsWithoutPlan(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// Nothing is posted unless the loop is on for the event's account and the notification token is set.
-func TestPostPlanToThreadIsOffUnlessTheLoopIsOn(t *testing.T) {
-	c := captureSlackSends(t)
-	for name, tc := range map[string]struct {
-		loopAccount string
-		on          bool
-		event       string
-	}{
-		"loop off":       {"acct-1", false, "event-1"},
-		"another tenant": {"acct-2", true, "event-1"},
-		"no event":       {"acct-1", true, ""},
-		"empty account":  {"", true, "event-1"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			slackOn(t, tc.loopAccount, tc.on)
-			postPlanToThread(security.NewRequestContextForSuperAdmin(), "acct-1", tc.event)
-			time.Sleep(20 * time.Millisecond)
-			assert.Zero(t, c.count())
-		})
-	}
-	slackOn(t, "acct-1", true)
-	swap(t, &config.Config.NotificationServerToken, "")
-	assert.True(t, remediationSlackOn("acct-1"), "no token: sent without X-ACTION-TOKEN, like every other notifications-server call")
-}
-
-// A send is retried on a failure or a server error, not on a refusal; 202 (thread pending) is final.
+// A send is retried on a failure or a server error, not on a refusal; 202 (thread pending) is final. A busy thread
+// (409: another send for it is being posted) is retried, sooner and more often, and never taken as delivered.
 func TestSendToAlertThreadRetries(t *testing.T) {
+	swap(t, &slackBusyBackoff, time.Millisecond)
+	swap(t, &slackBusyMaxBackoff, time.Millisecond)
+	swap(t, &slackBusyFor, 5*time.Second)
+	busy := func(n int) []int {
+		out := make([]int, n)
+		for i := range out {
+			out[i] = 409
+		}
+		return out
+	}
 	for name, tc := range map[string]struct {
 		statuses []int
 		want     int
 	}{
-		"server error then ok": {[]int{503, 200}, 2},
-		"unreachable 3 times":  {[]int{0, 0, 0}, 3},
-		"refused":              {[]int{400}, 1},
-		"no thread yet is ok":  {[]int{202}, 1},
+		"server error then ok":  {[]int{503, 200}, 2},
+		"unreachable 3 times":   {[]int{0, 0, 0}, 3},
+		"refused":               {[]int{400}, 1},
+		"no thread yet is ok":   {[]int{202}, 1},
+		"busy then posted":      {[]int{409, 409, 200}, 3},
+		"busy is not a failure": {[]int{409, 503, 409, 503, 200}, 5},
+		// Review of PR 2: the run-finished sync (the newest state) outlasts a claim held past the old 8 tries.
+		"busy past 8 tries": {append(busy(12), 200), 13},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := captureSlackSends(t, tc.statuses...)
@@ -2609,51 +2602,24 @@ func TestSendToAlertThreadRetries(t *testing.T) {
 	}
 }
 
-// A plan goes to the alert's thread once per version; a step NudgeBee runs carries the token naming its plan
-// version and step, and one it does not says why.
-func TestPostPlanToThread(t *testing.T) {
-	f := newSlackFixture(t)
-	stubSlackPlan(t, "pv-1", true)
-	withMetastore(t, f.db)
-	slackOn(t, f.account, true)
-	c := captureSlackSends(t)
-	postPlanToThread(security.NewRequestContextForSuperAdmin(), f.account, f.event)
-	c.wait(t)
-	require.Equal(t, 1, c.count())
-	sent := c.calls[0]
-	assert.Equal(t, "plan:"+f.event+":pv-1", sent.Key)
-	require.NotEmpty(t, sent.TenantId)
-	assert.Contains(t, sent.Posts[0].Text, "### Proposed fix")
-	assert.Empty(t, sent.Posts[0].Token)
-	var tokens int
-	for i, post := range sent.Posts[1:] {
-		if post.Token != "" {
-			tokens++
-			assert.Equal(t, fmt.Sprintf("remediation:%s:%s:%s:pv-1:%d", sent.TenantId, f.account, f.event, i), post.Token)
-		} else {
-			assert.Contains(t, post.Text, "**Manual step:**")
-		}
+// A thread that stays busy is tried for slackBusyFor, backing off from slackBusyBackoff, doubling, up to
+// slackBusyMaxBackoff, and then given up.
+func TestSendToAlertThreadBusyDeadline(t *testing.T) {
+	swap(t, &slackBusyBackoff, 10*time.Millisecond)
+	swap(t, &slackBusyMaxBackoff, 40*time.Millisecond)
+	swap(t, &slackBusyFor, 200*time.Millisecond)
+	statuses := make([]int, 100)
+	for i := range statuses {
+		statuses[i] = 409
 	}
-	assert.Positive(t, tokens)
-}
-
-// A decision on the panel or in chat is noted in the thread, after the plan (posted once per version, so sent
-// again here in case a notifications-server outage lost it); a Slack click shows its own outcome.
-func TestNoteStepInThread(t *testing.T) {
-	f := newSlackFixture(t)
-	stubSlackPlan(t, "pv-1", true)
-	withMetastore(t, f.db)
-	slackOn(t, f.account, true)
-	c := captureSlackSends(t)
-	stored := storedPlan{Plan: RemediationPlan{Actions: []RemediationAction{{Action: "Raise limit"}, {Action: "Restart"}}}}
-	for _, source := range []string{slackSource, chatSource} {
-		noteStepInThread(security.NewRequestContextForSuperAdmin(), RemediationExecuteRequest{AccountId: f.account, EventId: f.event, Source: source}, stored, "1:apply", "ran, success")
-	}
-	c.wait(t)
-	time.Sleep(50 * time.Millisecond)
-	require.Equal(t, 2, c.count(), "the Slack click is not noted")
-	assert.Equal(t, "plan:"+f.event+":pv-1", c.calls[0].Key)
-	assert.Equal(t, "**Step 2 · Restart:** ran, success (from the alert's chat).", c.calls[1].Posts[0].Text)
+	c := captureSlackSends(t, statuses...)
+	start := time.Now()
+	sendToAlertThread(context.Background(), slog.Default(), threadPosts{EventId: "e1"})
+	took := time.Since(start)
+	assert.Less(t, took, 400*time.Millisecond, "given up at the deadline")
+	assert.GreaterOrEqual(t, took, 150*time.Millisecond, "not before it")
+	// Sleeps 10, 20, 40, 40, 40, ... ms: about 6 tries in 200 ms, far fewer than with no backoff.
+	assert.True(t, c.count() >= 4 && c.count() <= 9, "tries: %d", c.count())
 }
 
 // A settled follow-up check goes to the thread as the agent's report, or as why there was none; a superseded
@@ -2679,10 +2645,6 @@ func TestRunNoteWording(t *testing.T) {
 	assert.Equal(t, "success", runOutcomeText(events.RunStatusSuccess, runFacts{ExitCodeReported: true}))
 	assert.Contains(t, runOutcomeText(events.RunStatusSuccess, runFacts{}), "unverified")
 	assert.Equal(t, "failed, not run", runOutcomeText(events.RunStatusFailed, runFacts{NotSent: true}))
-	// The thread's note: an undo is not called a run, and a command that never went out is not said to have run.
-	assert.Equal(t, "rolled back, success", runNoteText(RemediationSlotRollback, events.RunStatusSuccess, runFacts{ExitCodeReported: true}))
-	assert.Equal(t, "ran, failed", runNoteText(RemediationSlotExecute, events.RunStatusFailed, runFacts{}))
-	assert.NotContains(t, runNoteText(RemediationSlotExecute, events.RunStatusFailed, runFacts{NotSent: true}), "ran")
 }
 
 // After an investigation the alert's plan is asked of Nubi's background planner, never the one-shot planner,
@@ -2741,13 +2703,15 @@ func TestPostToAlertThreadSendsJSONWithTheToken(t *testing.T) {
 	swap(t, &config.Config.NotificationServerUrl, server.URL)
 	swap(t, &config.Config.NotificationServerToken, "secret")
 
-	status, err := postToAlertThread(context.Background(), threadPosts{EventId: "e1", Key: "plan:e1:v", Posts: []threadPost{{Text: "x", Token: "remediation:t:a:e1:v:0"}}})
+	status, err := postToAlertThread(context.Background(), threadPosts{EventId: "e1", StateSeq: 7, Posts: []threadPost{{Text: "x", Key: "options:e1:v", Edit: true, Token: "remediation-plan:t:a:e1:v"}}})
 	require.NoError(t, err)
 	assert.Equal(t, 200, status)
 	assert.Equal(t, "/api/remediation/thread", got.path)
 	assert.Equal(t, "application/json", got.contentType)
 	assert.Equal(t, "secret", got.token)
-	assert.Equal(t, "remediation:t:a:e1:v:0", got.body.Posts[0].Token)
+	assert.Equal(t, "remediation-plan:t:a:e1:v", got.body.Posts[0].Token)
+	assert.Equal(t, int64(7), got.body.StateSeq)
+	assert.True(t, got.body.Posts[0].Edit)
 
 	// No token configured: still sent, without the header, like every other notifications-server call.
 	swap(t, &config.Config.NotificationServerToken, "")

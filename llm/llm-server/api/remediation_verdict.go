@@ -464,7 +464,9 @@ func recordHoldUntil(db *sqlx.DB, run followupRun, recheckAt string, logger *slo
 	body, _ := json.Marshal(map[string]any{"hold_until": until.UTC().Format(time.RFC3339), "hold_from": verdictNow().UTC().Format(time.RFC3339Nano)})
 	if _, err := events.SetFollowupVerdict(ctx, db, run.Id, string(body)); err != nil {
 		logger.Error("remediation_followups: hold time not recorded", "error", err)
+		return
 	}
+	syncAlertThread(security.NewRequestContextForSuperAdmin(), run.AccountId, run.EventId)
 }
 
 // markVerdictChecked records that code looked at this claim, and the verdict when there is one.
@@ -660,7 +662,10 @@ func compareRefires(db *sqlx.DB) {
 		if err := updateRefireLabel(r.AccountId, map[string]any{"account_id": r.AccountId, "event_id": r.EventId,
 			"kind": kind, "previous_run_id": r.PreviousRunId, "compared_plan": r.PlanVersion}); err != nil {
 			slog.Error("remediation_followups: re-fire not labelled", "error", err, "event_id", r.EventId)
+			continue
 		}
+		// The alert came back: its thread says so, and a Resolve on the earlier verdict goes.
+		syncAlertThread(security.NewRequestContextForSuperAdmin(), r.AccountId, r.EventId)
 	}
 }
 

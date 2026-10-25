@@ -1234,7 +1234,7 @@ func persistRemediationPlan(ctx *security.RequestContext, accountId, eventId str
 	if err := repo.UpsertEventAnalysis(ctx, eventId, string(data), plan.Summary, string(events.AnalysisStatusCompleted), info.Fingerprint, accountId, info.AggregationKey, events.AnalysisTypeRemediation); err != nil {
 		return "", err
 	}
-	postPlanToThread(ctx, accountId, eventId)
+	syncAlertThread(ctx, accountId, eventId)
 	return events.PlanVersion(string(data)), nil
 }
 

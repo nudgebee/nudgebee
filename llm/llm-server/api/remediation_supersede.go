@@ -82,6 +82,7 @@ func supersedeEarlierEpisodeApprovals(db *sqlx.DB) {
 		if closed {
 			slog.Info("remediation_followups: closed an earlier firing's approval", "conversation_id", r.ConversationId,
 				"account_id", r.AccountId, "asked_at", r.AskedAt, "episode_started_at", *start)
+			syncAlertThreadOfSession(security.NewRequestContextForSuperAdmin(), r.AccountId, events.SessionIdPrefixEvent+r.Alert)
 		}
 	}
 }

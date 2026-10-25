@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"runtime/debug"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -242,37 +242,63 @@ func linkAfterSteps(plan RemediationPlan, steps []slackCardStep) {
 	}
 }
 
-// The remediation loop in the alert's Slack thread (#40734): a plan header, then one message per step with Run and
-// Decline buttons carrying plan version + step. A click returns via processRemediationExecute as the person Identity
-// Sync links to the clicker; notifications-server swaps the buttons for the outcome. Panel and chat decisions and
-// the follow-up's report also land in the thread.
+// The transport to the alert's Slack thread (#40734): notifications-server's /api/remediation/thread. A send is
+// messages for one alert thread; each keyed message is posted once and, with Edit, edited in place by later sends
+// (remediation_thread_sync.go draws them from the alert's state). StateSeq orders sends: notifications-server
+// refuses one older than the state a message shows, and answers 409 (busy) while another send for the thread is
+// being posted, which is retried here, never taken as delivered.
 
-// threadPost is one message for the alert's thread; Token, when set, gives it Run and Decline.
+// threadButton is a button notifications-server renders: pick (Use this fix), pr (Raise a PR), manual (I made this
+// change), other (Other fixes…), resolve, or link.
+type threadButton struct {
+	Kind   string `json:"kind"`
+	Label  string `json:"label"`
+	Option int    `json:"option,omitempty"`
+	RunId  string `json:"run_id,omitempty"`
+	Style  string `json:"style,omitempty"`
+	Url    string `json:"url,omitempty"`
+}
+
+// threadPost is one message for the alert's thread. Key names it in the thread; Token goes in its metadata and
+// names what its buttons act on (remediation-plan:… or remediation-run:…); it proves nothing, every click is decided
+// by the server.
 type threadPost struct {
 	Text  string `json:"text"`
 	Token string `json:"token,omitempty"`
+	Key   string `json:"key,omitempty"`
+	Edit  bool   `json:"edit,omitempty"`
+	// OnlyIfPosted: edited when it was posted, never posted (the replaced plan's options).
+	OnlyIfPosted bool           `json:"only_if_posted,omitempty"`
+	Buttons      []threadButton `json:"buttons,omitempty"`
+	Status       string         `json:"status,omitempty"`
 }
 
-// threadPosts is one send: messages for one alert's thread, in order. Key, when set, names the send so
-// notifications-server posts it once (a plan's version); a send for an alert with no thread yet waits for it.
+// threadPosts is one send: messages for one alert's thread (Fingerprint's), in order. A send for an alert with no
+// thread yet waits for it.
 type threadPosts struct {
 	TenantId    string       `json:"tenant_id"`
 	AccountId   string       `json:"account_id"`
 	EventId     string       `json:"event_id"`
 	Fingerprint string       `json:"fingerprint"`
-	Key         string       `json:"key,omitempty"`
 	Posts       []threadPost `json:"posts"`
+	// StateSeq is the number of the alert state the send was drawn from (remediation_thread_state_seq), 0 for a
+	// one-off report.
+	StateSeq int64 `json:"state_seq,omitempty"`
+	// MainFingerprint is the episode's main alert when this thread is a duplicate's.
+	MainFingerprint string `json:"main_fingerprint,omitempty"`
 }
 
-// remediationTokenPrefix starts a step message's token: remediation:<tenant>:<account>:<event>:<plan version>:<step>.
-const remediationTokenPrefix = "remediation:"
-
-// Slack sends: how many times and how long between them, and the request's own deadline. Vars so tests
-// can shorten them.
+// Slack sends: how many times and how long between them, and the request's own deadline. A busy thread is tried
+// again, backing off from slackBusyBackoff up to slackBusyMaxBackoff, for slackBusyFor: longer than
+// notifications-server holds a thread's claim (60 s) plus a rate-limited post, so the newest state outlasts the
+// send ahead of it (which also draws a state refused while it held the claim). Vars so tests can shorten them.
 var (
-	slackSendAttempts = 3
-	slackSendBackoff  = 2 * time.Second
-	slackSendTimeout  = 15 * time.Second
+	slackSendAttempts   = 3
+	slackSendBackoff    = 2 * time.Second
+	slackSendTimeout    = 15 * time.Second
+	slackBusyFor        = 90 * time.Second
+	slackBusyBackoff    = 500 * time.Millisecond
+	slackBusyMaxBackoff = 8 * time.Second
 )
 
 // postToAlertThread sends posts to notifications-server. A var so tests can capture it.
@@ -293,162 +319,83 @@ var postToAlertThread = func(ctx context.Context, posts threadPosts) (int, error
 	return resp.StatusCode, nil
 }
 
-// postPlanToThread posts the alert's current plan into its thread in the background, once per plan version.
-func postPlanToThread(ctx *security.RequestContext, accountId, eventId string) {
-	inThreadBackground(ctx, accountId, eventId, func(view slackCards) []threadPosts {
-		return planThreadPosts(view, eventId)
-	})
-}
-
-// planThreadPosts is the view's current plan as one keyed send, which notifications-server posts once.
-func planThreadPosts(view slackCards, eventId string) []threadPosts {
-	for _, card := range view.Cards {
-		if card.Kind == "plan" {
-			return []threadPosts{{Key: "plan:" + eventId + ":" + card.PlanVersion, Posts: planPosts(view, card)}}
-		}
-	}
-	return nil
-}
-
-// noteStepInThread notes in the thread a decision made on the panel or in the alert's chat: Slack clicks
-// show their own outcome on the step's message.
-func noteStepInThread(ctx *security.RequestContext, request RemediationExecuteRequest, stored storedPlan, step, what string) {
-	if request.Source == slackSource {
-		return
-	}
-	surface, _ := decisionSurface(request.Source)
-	var index int
-	if _, err := fmt.Sscanf(step, "%d:", &index); err != nil || index < 0 || index >= len(stored.Plan.Actions) {
-		return
-	}
-	a := stored.Plan.Actions[index]
-	text := fmt.Sprintf("**Step %d · %s:** %s (from %s).", index+1, firstNonEmpty(a.Title, a.Action), what, surface)
-	// The plan goes first: a no-op once posted, and the plan's posts if a notifications-server outage lost them.
-	inThreadBackground(ctx, request.AccountId, request.EventId, func(view slackCards) []threadPosts {
-		return append(planThreadPosts(view, request.EventId), threadPosts{Posts: []threadPost{{Text: text}}})
-	})
-}
-
-// threadPostsInFlight counts the thread posts running in the background, so tests can wait for them to end
-// before they change what the posts call.
+// threadPostsInFlight counts the thread sends running in the background, so tests can wait for them to end
+// before they change what the sends call.
 var threadPostsInFlight sync.WaitGroup
 
-// inThreadBackground sends, in order, what build makes of the alert's plan view, in the background, when the
-// account's loop is posted to Slack.
-func inThreadBackground(ctx *security.RequestContext, accountId, eventId string, build func(view slackCards) []threadPosts) {
-	if !remediationSlackOn(accountId) || strings.TrimSpace(eventId) == "" {
-		return
+// sendToAlertThread sends posts, retrying a failure that may pass and a busy thread (409: another send for it is
+// being posted). A busy answer is never taken as delivered: the newer state would be lost.
+// sleepCtx waits d, or until ctx is done; it reports whether the wait ran to the end.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
 	}
-	detached := ctx.WithContext(context.WithoutCancel(ctx.GetContext()))
-	threadPostsInFlight.Add(1)
-	go func() {
-		defer threadPostsInFlight.Done()
-		logger := detached.GetLogger().With("account_id", accountId, "event_id", eventId)
-		defer func() {
-			if r := recover(); r != nil {
-				logger.Error("remediation_slack: panic", "panic", r, "stack", string(debug.Stack()))
-			}
-		}()
-		dbManager, err := common.GetDatabaseManager(common.Metastore)
-		if err != nil {
-			logger.Warn("remediation_slack: database unavailable", "error", err)
-			return
-		}
-		readCtx, cancel := context.WithTimeout(detached.GetContext(), decisionDBTimeout)
-		view, err := buildRemediationSlackCards(detached.WithContext(readCtx), dbManager.Db, accountId, eventId)
-		cancel()
-		if err != nil {
-			logger.Warn("remediation_slack: plan not read", "error", err)
-			return
-		}
-		for _, posts := range build(view) {
-			posts.TenantId, posts.AccountId, posts.EventId, posts.Fingerprint = view.TenantId, accountId, eventId, firstNonEmpty(view.Fingerprint, eventId)
-			sendToAlertThread(detached.GetContext(), logger, posts)
-		}
-	}()
 }
 
-// sendToAlertThread sends posts, retrying a failure that may pass.
 func sendToAlertThread(ctx context.Context, logger interface{ Warn(string, ...any) }, posts threadPosts) {
-	for attempt := 1; attempt <= slackSendAttempts; attempt++ {
+	failures, busy := 0, 0
+	var busySince time.Time
+	backoff := slackBusyBackoff
+	for {
 		sendCtx, cancel := context.WithTimeout(ctx, slackSendTimeout)
 		status, err := postToAlertThread(sendCtx, posts)
 		cancel()
-		if err == nil && status < 500 {
+		switch {
+		case err == nil && status == http.StatusConflict:
+			busy++
+			if busySince.IsZero() {
+				busySince = time.Now()
+			}
+			if time.Since(busySince)+backoff > slackBusyFor {
+				logger.Warn("remediation_slack: thread stayed busy", "attempts", busy, "state_seq", posts.StateSeq)
+				return
+			}
+			if !sleepCtx(ctx, backoff) {
+				return
+			}
+			backoff = min(2*backoff, slackBusyMaxBackoff)
+			continue
+		case err == nil && status < 500:
 			if status >= 300 {
 				logger.Warn("remediation_slack: posts refused", "status", status)
 			}
 			return
 		}
-		logger.Warn("remediation_slack: send failed", "attempt", attempt, "status", status, "error", err)
-		if attempt < slackSendAttempts {
-			time.Sleep(slackSendBackoff * time.Duration(attempt*attempt))
+		failures++
+		logger.Warn("remediation_slack: send failed", "attempt", failures, "status", status, "error", err)
+		if failures >= slackSendAttempts {
+			return
+		}
+		if !sleepCtx(ctx, slackSendBackoff*time.Duration(failures*failures)) {
+			return
 		}
 	}
 }
 
-// planPosts is a plan as thread messages, in markdown (notifications-server converts it as it does an
-// investigation's): a header with the cause, the fix and what to do next, then one message per step.
-func planPosts(view slackCards, card slackCard) []threadPost {
-	header := "### Proposed fix"
-	if card.RootCause != "" {
-		header += "\n**Root cause:** " + card.RootCause
-	}
-	if card.Summary != "" {
-		header += "\n**Fix:** " + card.Summary
-	}
-	next := "NudgeBee doesn't run these steps: a person makes each change."
-	for _, s := range card.Steps {
-		if s.Runnable {
-			next = "press Run on each step below, in order. Each one asks you to confirm before it runs."
-			break
-		}
-	}
-	posts := []threadPost{{Text: header + "\n**Next:** " + next}}
-	for _, s := range card.Steps {
-		text := fmt.Sprintf("**Step %d · %s**", s.Index+1, s.Title)
-		var facts []string
-		if s.Confidence > 0 {
-			facts = append(facts, fmt.Sprintf("%d%% likely to resolve", s.Confidence))
-		}
-		if s.AfterStep > 0 {
-			facts = append(facts, fmt.Sprintf("run after step %d", s.AfterStep))
-		}
-		if len(facts) > 0 {
-			text += "\n" + strings.Join(facts, " · ")
-		}
-		if s.Command != "" {
-			text += "\n```\n" + s.Command + "\n```"
-		}
-		if s.Rollback != "" {
-			text += "\n- **Undo:** `" + s.Rollback + "`"
-		}
-		if s.TradeOff != "" {
-			text += "\n- **Heads-up:** " + s.TradeOff
-		}
-		post := threadPost{Text: text}
-		if s.Runnable {
-			post.Token = fmt.Sprintf("%s%s:%s:%s:%s:%d", remediationTokenPrefix, view.TenantId, view.AccountId, view.EventId, card.PlanVersion, s.Index)
-		} else if s.SourceChange != "" {
-			post.Text += "\n- **" + s.SourceChange + ".** Make the change in source (or raise it as a pull request), then mark this step done."
-		} else {
-			post.Text += "\n- **Manual step:** NudgeBee doesn't run it: " + firstNonEmpty(s.DeliveryReason, "a person makes this change") + "."
-		}
-		posts = append(posts, post)
-	}
-	return posts
-}
-
-// postFollowupToThread posts a follow-up check in the alert's thread, once per turn: the agent's report, or why
-// there was none. A superseded check is not posted: the newer run's check is.
+// postFollowupToThread posts a follow-up check in the alert's threads (the episode's), once per turn: the agent's
+// report, or why there was none, then draws the threads again. A superseded check is not posted: the newer run's
+// check is. "Likely fixed" is not posted as a report: it is the verdict message, with Resolve, that the sync draws.
 func postFollowupToThread(run followupRun, end map[string]any, recheckAt string) {
-	text := followupPostText(run, end, recheckAt)
-	if text == "" {
+	ctx := security.NewRequestContextForSuperAdmin()
+	if outcome, _ := end["outcome"].(string); outcome == followupLikelyFixed {
+		syncAlertThread(ctx, run.AccountId, run.EventId)
 		return
 	}
-	inThreadBackground(security.NewRequestContextForSuperAdmin(), run.AccountId, run.EventId, func(slackCards) []threadPosts {
-		return []threadPosts{{Key: "followup:" + run.Id + ":" + run.MessageId, Posts: []threadPost{{Text: text}}}}
-	})
+	text := followupPostText(run, end, recheckAt)
+	if text == "" {
+		syncAlertThread(ctx, run.AccountId, run.EventId)
+		return
+	}
+	report := threadPost{Text: text, Key: "followup:" + run.Id + ":" + run.MessageId}
+	inAlertThreadsBackground(ctx, run.AccountId, run.EventId, func(view alertThreadView) []threadPost {
+		return []threadPost{report}
+	}, false)
+	syncAlertThread(ctx, run.AccountId, run.EventId)
 }
 
 // followupPostText is a settled follow-up check as a thread message, in markdown; "" for one not posted.

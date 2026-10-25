@@ -887,6 +887,34 @@ class Cache:
         except redis.RedisError as e:
             LOG.exception(f"Error releasing card action {key}: {e}")
 
+    # Deletes a claim only while it still holds the releasing owner's token: a holder whose claim expired and was
+    # taken by another must not release the other's.
+    _RELEASE_IF_OWNER = (
+        "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end"
+    )
+
+    def claim_owned(self, key, ttl_seconds):
+        """claim_card_action with an owner: the claim's token while this caller holds it, None while another
+        does. Fails open as claim_card_action does: with Redis unavailable the claim is granted with the token ""
+        (nothing to release)."""
+        if not self._ensure_connection():
+            return ""
+        token = uuid.uuid4().hex
+        try:
+            return token if self.redis_client.set(f"card_action:{key}", token, nx=True, ex=ttl_seconds) else None
+        except redis.RedisError as e:
+            LOG.exception(f"Error claiming {key}: {e}")
+            return ""
+
+    def release_owned(self, key, token):
+        """Drops a claim taken by claim_owned, only while it still holds token (compare and delete)."""
+        if not token or not self._ensure_connection():
+            return
+        try:
+            self.redis_client.eval(self._RELEASE_IF_OWNER, 1, f"card_action:{key}", token)
+        except redis.RedisError as e:
+            LOG.exception(f"Error releasing {key}: {e}")
+
     def claim_event_analysis_poller(self, event_id, ttl_seconds):
         """First claim for event_id wins (True); a second, still-live claim
         gets False -- guards against two overlapping clicks on the same event

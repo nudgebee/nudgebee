@@ -2,6 +2,7 @@ package core
 
 import (
 	"nudgebee/llm/config"
+	"nudgebee/llm/security"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -104,4 +105,28 @@ func TestChatCitationPageURL(t *testing.T) {
 
 	config.Config.BaseUrl = "nudgebee"
 	assert.Equal(t, "", chatCitationPageURL("acc", "C0123456789-1.2"))
+}
+
+// A plan step's approval (run_step, remediation loop) carries its type, key and the api package's details, so
+// notifications-server draws it as the step's approval card; every other follow-up is sent exactly as before.
+func TestWithRemediationApproval(t *testing.T) {
+	orig := RemediationApprovalDetails
+	t.Cleanup(func() { RemediationApprovalDetails = orig })
+	RemediationApprovalDetails = func(*security.RequestContext, NBAgentRequest, FollowupRequest) map[string]any {
+		return map[string]any{"recheck": true}
+	}
+	ctx := security.NewRequestContextForSuperAdmin()
+	for _, f := range []FollowupRequest{
+		{FollowupType: FollowupTypeToolConfirmation, ConfirmationKey: "kubectl_write"},
+		{FollowupType: FollowupTypeToolConfirmation},
+		{Question: "which cluster?"},
+	} {
+		data := map[string]any{"question": "q"}
+		withRemediationApproval(ctx, NBAgentRequest{}, f, data)
+		assert.Equal(t, map[string]any{"question": "q"}, data, "unchanged: %+v", f)
+	}
+	data := map[string]any{"question": "q"}
+	withRemediationApproval(ctx, NBAgentRequest{}, FollowupRequest{FollowupType: FollowupTypeToolConfirmation, ConfirmationKey: "run_step:pv:1:apply"}, data)
+	assert.Equal(t, map[string]any{"question": "q", "followupType": string(FollowupTypeToolConfirmation),
+		"confirmationKey": "run_step:pv:1:apply", "remediation": map[string]any{"recheck": true}}, data)
 }

@@ -112,6 +112,7 @@ def alert_service(monkeypatch, *, access=True, cached=None):
         _refuse_thread_sender=lambda channel, team, thread, message=None: calls.errors.append(
             (channel, team, thread, message)
         ),
+        _point_to_main_thread=lambda *a: False,
     )
     fake._alert_account_user = Events._alert_account_user.__get__(fake)
     handle = Events._handle_alert_thread.__get__(fake)

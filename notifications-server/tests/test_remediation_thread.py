@@ -73,6 +73,13 @@ class FakeCache:
     def release_card_action(self, key):
         FakeCache.claims.discard(key)
 
+    def claim_owned(self, key, ttl):
+        return f"token-{key}" if self.claim_card_action(key, ttl) else None
+
+    def release_owned(self, key, token):
+        if token == f"token-{key}":
+            FakeCache.claims.discard(key)
+
 
 @pytest.fixture(autouse=True)
 def cache(monkeypatch):
@@ -314,6 +321,8 @@ def test_answers(status, message, settled):
 
 
 def test_a_remediation_click_never_reaches_the_workflow_approval(monkeypatch):
+    """With the loop off a step message's Run and Decline are decided as before."""
+    monkeypatch.setattr(rt, "tenant_loop_on", lambda tenant: False)
     decided, edits, replies, tasks, closed = [], [], [], [], []
     monkeypatch.setattr(
         rt, "decide", lambda token, status, user: decided.append((token, status, user)) or rt.Outcome("Declined.", True)

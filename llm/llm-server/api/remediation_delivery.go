@@ -192,11 +192,7 @@ func recordStepDecision(ctx *security.RequestContext, request RemediationExecute
 	if err != nil || conflict != nil {
 		return decisionFailure(ctx.GetLogger(), conflict, err)
 	}
-	what := "marked done"
-	if status == events.RunStatusDeclined {
-		what = "declined"
-	}
-	noteStepInThread(ctx, request, stored, step, what)
+	syncAlertThread(ctx, request.AccountId, request.EventId)
 	return stepAnswer{Code: 200, Data: runResult{RemediationExecutionResult: tools.RemediationExecutionResult{Command: strings.TrimSpace(request.Command),
 		ExecutedAt: time.Now().UTC().Format(time.RFC3339), Success: status == events.RunStatusSuccess}, Status: status}}
 }

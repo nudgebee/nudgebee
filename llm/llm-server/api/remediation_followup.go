@@ -109,6 +109,7 @@ func runDueFollowups() error {
 	followupTicks.each(items, followupsPerTenantPerTick, followupStepDeadline)
 	compareRefires(db)
 	supersedeEarlierEpisodeApprovals(db)
+	syncResolvedThreads(db)
 	return nil
 }
 

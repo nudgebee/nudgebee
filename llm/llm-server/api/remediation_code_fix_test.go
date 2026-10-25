@@ -120,15 +120,12 @@ func TestSourceStepTextAgreesWithTheTab(t *testing.T) {
 	assert.Contains(t, decision, "then marked done")
 	assert.NotContains(t, decision, "a person makes this change")
 
-	view := slackCards{TenantId: "t", AccountId: "a", EventId: "e", Cards: []slackCard{{Kind: "plan", PlanVersion: "v1", RootCause: "x",
-		Steps: []slackCardStep{{Index: 0, Title: "Bound the cache", Kind: RemediationKindFix, SourceChange: sourceChangeText(deploy)}}}}}
-	posts := planPosts(view, view.Cards[0])
-	require.NotEmpty(t, posts)
-	last := posts[len(posts)-1].Text
+	// The Slack thread's fix options say the same, and offer no Run for it.
+	last := optionText(deploy, 0, -1)
 	assert.Contains(t, last, "Change in the deployment source in Deployment demo/leaky-app")
-	assert.Contains(t, last, "then mark this step done")
+	assert.Contains(t, last, "Make the change in source, then mark it made")
 	assert.NotContains(t, last, "a person makes this change")
-	assert.Empty(t, posts[len(posts)-1].Token, "no Run button for a source step")
+	assert.NotEqual(t, pickKindRun, pickMode(deploy), "no Use this fix for a source step")
 
 	// With no repo known, applying it from the chat says to make the change and mark it done (the leaky app's plan).
 	_, err := stepRequest(leakSourceFixOnly(), "a", "e", runStepRequest{PlanVersion: "v1", Step: 1, Action: "apply"})

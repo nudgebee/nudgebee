@@ -23,7 +23,7 @@ from notifications_server.models.models import ChannelAccountMapping, SentNotifi
 from notifications_server.services.cache import Cache
 from notifications_server.services import channel_analysis, delivery_records
 from notifications_server.services.channel_context import ChannelContextService
-from notifications_server.services.common import THREAD_CONTEXT_MARKER
+from notifications_server.services.common import THREAD_CONTEXT_MARKER, latest_slack_notification
 from notifications_server.services.messaging_installations import load_installation_by_team, ms_teams_aad_tenant_owner
 from notifications_server.services.ms_teams import card_actions
 from notifications_server.services.ms_teams import thinking as teams_thinking
@@ -450,6 +450,8 @@ class Events:
         """Send a message in an alert's thread to the alert's own conversation, event-<fingerprint>, on the
         alert's account, as the person who wrote it: the conversation the alert's web chat continues, where
         llm-server's remediation agent reads the alert's plan and acts on a step once the person confirms."""
+        if alert.get("loop_on") and self._point_to_main_thread(alert, channel_id, team_id, thread_ts):
+            return
         user_id = self._alert_account_user(alert, user_email)
         if not user_id:
             self._refuse_thread_sender(channel_id, team_id, thread_ts, NO_ALERT_ACCOUNT_ACCESS)
@@ -488,6 +490,37 @@ class Events:
             },
         )
         self._process_event(channel_id, text, team_id, thread_ts, "chat")
+
+    def _point_to_main_thread(self, alert, channel_id, team_id, thread_ts) -> bool:
+        """A message in a duplicate's thread (#40734): the episode's fixes and approvals live in its main alert's
+        thread, so it gets a one-line pointer there instead of a conversation of its own. False (the message goes on
+        as before) when this is no duplicate's thread or the main alert has no Slack thread."""
+        from notifications_server.services.remediation_thread import episode_main
+
+        try:
+            with Session(self.session.get_bind()) as session:
+                main = episode_main(session, alert["tenant_id"], alert["fingerprint"])
+                if not main:
+                    return False
+                row = latest_slack_notification(
+                    session, main, uuid.UUID(str(alert["tenant_id"])), uuid.UUID(str(alert["account_id"]))
+                )
+                main_channel = json.loads(row.slack_metadata or "{}").get("channel") if row else None
+                main_ts = row.slack_thread_id if row else None
+        except Exception as e:
+            LOG.warning("Looking up the main alert of thread %s failed: %s", thread_ts, e)
+            return False
+        if not (main_channel and main_ts):
+            return False
+        link = f"https://slack.com/archives/{main_channel}/p{str(main_ts).replace('.', '')}"
+        self.reply(
+            channel_id,
+            team_id,
+            thread_ts,
+            f"This alert is a duplicate: its fixes and approvals are in <{link}|the main alert's thread>."
+            " Ask there.",
+        )
+        return True
 
     def _alert_account_user(self, alert, user_email):
         """user_email's user id when they can access the alert's account, else None: an alert belongs to its
@@ -1086,7 +1119,20 @@ class Events:
             LOG.error("Failed to update followup: %s", e)
             self._reply_error(channel_id, team_id, thread_ts, "Hmm, I couldn't process that. Mind trying again?")
 
-    def _submit_followup(self, cached_entry, channel_id, team_id, thread_ts, slack_user_id, response_option):
+    def _submit_followup(
+        self,
+        cached_entry,
+        channel_id,
+        team_id,
+        thread_ts,
+        slack_user_id,
+        response_option,
+        reason=None,
+        replacement_message=None,
+    ):
+        """Answers the thread's pending follow-up with response_option. reason is the optional note of an answer to
+        a remediation approval card (sent as the request's reason); replacement_message replaces the question's
+        message instead of the default confirmation."""
         if not cached_entry:
             self.reply(channel_id, team_id, thread_ts, get_session_expired_message())
             return
@@ -1122,6 +1168,8 @@ class Events:
                 "message_id": cached_entry.get("message_id"),
             }
         )
+        if reason:
+            payload["reason"] = reason
         if is_event_followup:
             # Resume the analysis's own `event-<fingerprint>` conversation, not
             # this thread's chat session. No reply_ref / chat panel: the
@@ -1135,7 +1183,9 @@ class Events:
         followup_msg_ts = cached_entry.get("followup_msg_ts") if cached_entry else None
         followup_question = cached_entry.get("followup_question") if cached_entry else None
 
-        if followup_msg_ts and followup_question:
+        if replacement_message:
+            pass
+        elif followup_msg_ts and followup_question:
             replacement_message = get_followup_selection_confirmation(followup_question, response_option)
         else:
             replacement_message = get_followup_confirmation(response_option)
@@ -1914,6 +1964,35 @@ class Events:
             }
         ], (SLACK_STATIC_SELECT_MAX_OPTIONS if truncated else None)
 
+    @staticmethod
+    def _remediation_approval_card(follow_up, cached_entry):
+        """The buttons of a remediation step's approval asked in an alert's thread (#40734): Approve and Deny (Approve
+        anyway and Deny and re-check when the investigation is newer than the plan), each opening a note modal
+        (remediation_actions.py). None for any other follow-up, which keeps its own options."""
+        key = str(follow_up.get("confirmationKey") or "")
+        if not (cached_entry and cached_entry.get("alert_thread") and key.startswith("run_step:")):
+            return None
+        recheck = bool((follow_up.get("remediation") or {}).get("recheck"))
+        choices = (
+            [("yes", "Approve anyway", "primary"), ("norecheck", "Deny and re-check", "danger")]
+            if recheck
+            else [("yes", "Approve", "primary"), ("no", "Deny", "danger")]
+        )
+        elements = [
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": label},
+                "action_id": f"remediation_answer_{answer}",
+                "value": json.dumps({"k": "answer", "a": answer}),
+                "style": style,
+            }
+            for answer, label, style in choices
+        ]
+        hint = "_Approve or deny it here: each asks for an optional note._"
+        if recheck:
+            hint = "_The investigation was refreshed after these fixes. " + hint[1:]
+        return Transformer.to_slack(ContextBlock(text=hint)) + [{"type": "actions", "elements": elements}]
+
     def handle_followup_response(self, payload, cached_entry, channel_id: str, thread_ts: str, team_id: str):
         try:
             slack_progress.stop_progress_stream(self.common_service, cached_entry, channel_id, team_id, thread_ts)
@@ -1924,7 +2003,10 @@ class Events:
             message_id = follow_up.get("message_id", "")
 
             blocks = Transformer.to_slack(MarkdownBlock(text=followup_question))
-            if followup_options:
+            approval = self._remediation_approval_card(follow_up, cached_entry)
+            if approval is not None:
+                blocks += approval
+            elif followup_options:
                 elements, shown = self._build_followup_action_elements(followup_options, cached_entry)
                 if shown is not None:
                     blocks += Transformer.to_slack(
@@ -1944,7 +2026,9 @@ class Events:
                 # `event-<fingerprint>` conversation, not this thread's chat
                 # session — record which one so _submit_followup answers the
                 # right conversation and takes the event-analysis code path.
-                if (payload.conversation_id or "").startswith("event-"):
+                # Not for a message in an alert's thread (#40734): its answer goes back as a reply in this thread,
+                # with its reply_ref, which is how llm-server knows the answer came from Slack.
+                if (payload.conversation_id or "").startswith("event-") and not cached_entry.get("alert_thread"):
                     event_cache.update_event_entry(
                         thread_ts,
                         followup_session_id=payload.session_id or payload.conversation_id,

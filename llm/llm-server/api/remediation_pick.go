@@ -252,5 +252,7 @@ func applyRemediationPick(c *gin.Context, ctx *security.RequestContext, request 
 	request.SessionId = facts.Session
 	request.Config.EventId = facts.PlanEventId
 	ctx.GetLogger().Info("remediation: pick accepted", "event_id", facts.PlanEventId, "option", pick.Option, "kind", pick.Kind, "plan_version", facts.Plan.Version)
+	// The alert's threads stop offering a pick while the conversation works on this one.
+	syncAlertThread(ctx, request.AccountId, facts.PlanEventId)
 	return true
 }

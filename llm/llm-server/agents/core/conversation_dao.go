@@ -2067,6 +2067,9 @@ func (chat *ConversationDao) CloseWaitingConversation(ctx *security.RequestConte
 	if errors.Is(err, errConversationNotWaiting) {
 		return false, nil
 	}
+	if err == nil && AfterWaitingClosed != nil {
+		AfterWaitingClosed(ctx, accountId, conversationId)
+	}
 	return err == nil, err
 }
 

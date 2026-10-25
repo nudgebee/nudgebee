@@ -331,6 +331,11 @@ func handleAnalysisApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) 
 		processRemediationExecute(c, tracer, meter)
 	})
 
+	groupV2.POST("/remediation/thread/sync", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("remediation_thread_sync")
+		processRemediationThreadSync(c, tracer, meter)
+	})
+
 	groupV2.POST("/event/rca", func(c *gin.Context) {
 		common.MetricsApiRequestsTotal("event_analyzer")
 		var request EventRCAAnalysisRequest

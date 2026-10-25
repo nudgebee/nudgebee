@@ -55,6 +55,37 @@ func chatCitationPageURL(accountId string, sessionId string) string {
 	return base + "/ask-nudgebee?" + url.Values{"accountId": {accountId}, "session_id": {sessionId}}.Encode()
 }
 
+// Remediation loop hooks (#40734), filled by the api package, which draws an alert's Slack thread from its state; nil
+// leaves everything as before. AfterConversationTurn runs after every turn of a conversation ends (an approval raised
+// or answered is a turn ending); AfterWaitingClosed after NudgeBee closes a waiting prompt unanswered (lapsed or
+// superseded); RemediationApprovalDetails gives what a plan step's approval card shows besides its question (the
+// alert's investigation being newer than its plan), for an approval asked in an alert's Slack thread.
+var (
+	AfterConversationTurn      func(ctx *security.RequestContext, request NBAgentRequest)
+	AfterWaitingClosed         func(ctx *security.RequestContext, accountId, conversationId string)
+	RemediationApprovalDetails func(ctx *security.RequestContext, request NBAgentRequest, followup FollowupRequest) map[string]any
+)
+
+// runStepConfirmationPrefix starts the confirmation key of a remediation plan step's approval (run_step:<plan
+// version>:<step>:<action>), a tool only the remediation loop offers.
+const runStepConfirmationPrefix = "run_step:"
+
+// withRemediationApproval adds, for a plan step's approval only, what notifications-server needs to draw it as the
+// step's approval card: its type and key, and the details the api package gives. Every other follow-up is sent
+// exactly as before.
+func withRemediationApproval(ctx *security.RequestContext, request NBAgentRequest, followup FollowupRequest, data map[string]any) {
+	if !strings.HasPrefix(followup.ConfirmationKey, runStepConfirmationPrefix) {
+		return
+	}
+	data["followupType"] = string(followup.FollowupType)
+	data["confirmationKey"] = followup.ConfirmationKey
+	if RemediationApprovalDetails != nil {
+		if details := RemediationApprovalDetails(ctx, request, followup); len(details) > 0 {
+			data["remediation"] = details
+		}
+	}
+}
+
 func sendReplyToNotificationServer(ctx *security.RequestContext, agentRequest NBAgentRequest, response NBAgentResponse, err error) {
 	if response.AgentName == "router" {
 		return
@@ -109,6 +140,7 @@ func sendReplyToNotificationServer(ctx *security.RequestContext, agentRequest NB
 		if response.MessageId != "" {
 			followupData["message_id"] = response.MessageId
 		}
+		withRemediationApproval(ctx, agentRequest, response.FollowupRequest, followupData)
 		if q, ok := followupData["question"].(string); ok {
 			followupData["question"] = renderFollowupQuestion(q, sessionId, agentRequest.AccountId)
 		}

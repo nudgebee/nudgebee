@@ -278,18 +278,6 @@ func decisionFailure(logger *slog.Logger, conflict *events.DecisionConflict, err
 	return refuse(409, decisionConflictMessage(conflict))
 }
 
-// runNoteText is how the thread notes a run: what was done and how it ended.
-func runNoteText(slot, status string, f runFacts) string {
-	if f.NotSent {
-		return "not run, it never reached the cluster; it can be run again"
-	}
-	verb := "ran"
-	if slot == RemediationSlotRollback {
-		verb = "rolled back"
-	}
-	return verb + ", " + runOutcomeText(status, f)
-}
-
 // runRemediationStep runs one approved execute or rollback command once: its decision is recorded
 // before it is sent, and only the request that recorded it sends it.
 func runRemediationStep(ctx *security.RequestContext, request RemediationExecuteRequest, stored storedPlan, command, userId string) stepAnswer {
@@ -343,6 +331,8 @@ func runRemediationStep(ctx *security.RequestContext, request RemediationExecute
 
 	ctx = ctx.WithContext(detached)
 	logger := ctx.GetLogger().With("run_id", runId)
+	// The thread says it is running while it runs.
+	syncAlertThread(ctx, request.AccountId, request.EventId)
 	sendCtx, cancelSend := context.WithTimeout(detached, runSendTimeout)
 	sent := sendRemediationCommand(ctx.WithContext(sendCtx), request.AccountId, userId, substrate, nbTool, command)
 	cancelSend()
@@ -393,7 +383,7 @@ func runRemediationStep(ctx *security.RequestContext, request RemediationExecute
 	}
 	// The audit records what the command did, which a failed save does not change.
 	writeRemediationAudit(ctx, request.AccountId, command, sent.Tool, observed == events.RunStatusSuccess, audit.EventActionCreate, auditSource)
-	noteStepInThread(ctx, request, stored, step, runNoteText(slot, status, runFacts{ExitCodeReported: sent.ExitCodeReported, NotSent: notSent}))
+	syncAlertThread(ctx, request.AccountId, request.EventId)
 	result := runResult{RemediationExecutionResult: response, Status: status, RunId: runId}
 	if sent.ExitCodeReported {
 		result.ExitCode = &sent.ExitCode

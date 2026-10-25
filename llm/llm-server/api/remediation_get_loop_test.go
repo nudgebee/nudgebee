@@ -16,10 +16,15 @@ import (
 
 func stubLoopOn(t *testing.T, on bool) {
 	t.Helper()
+	// A thread sync the test started in the background (syncAlertThread) reads the flag: it ends first.
+	threadPostsInFlight.Wait()
 	orig, origRead := events.RemediationLoopOn, events.RemediationLoopRead
 	events.RemediationLoopOn = func(string) bool { return on }
 	events.RemediationLoopRead = func(string) (bool, error) { return on, nil }
-	t.Cleanup(func() { events.RemediationLoopOn, events.RemediationLoopRead = orig, origRead })
+	t.Cleanup(func() {
+		threadPostsInFlight.Wait()
+		events.RemediationLoopOn, events.RemediationLoopRead = orig, origRead
+	})
 }
 
 func TestRemediationGetBody_LoopOffKeepsTheResponseUnchanged(t *testing.T) {

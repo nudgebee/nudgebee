@@ -34,7 +34,7 @@ from notifications_server.services.actions import (
 )
 from notifications_server.services.channel_ingest import ChannelIngestService
 from notifications_server.services.common import CommonService
-from notifications_server.services import remediation_thread
+from notifications_server.services import remediation_actions, remediation_thread
 from notifications_server.services.events import Events, event_cache
 from notifications_server.services.messaging_installations import load_installation, load_installation_by_team
 from notifications_server.services.ms_teams.bot_installations import record_team_installations
@@ -164,6 +164,17 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
         return data
 
     def execute_action(self, data, background_tasks=None):
+        if remediation_actions.is_view_submission(data):
+            # A remediation modal's submit (#40734): it has no channel or message of its own.
+            return remediation_actions.handle_view_submission(self, data)
+        if remediation_actions.is_block_action(data):
+            # The remediation loop's thread buttons (#40734), before anything else is read: a modal must open within
+            # Slack's 3-second trigger_id, and these clicks act as the clicker's Identity Sync user, not their email.
+            try:
+                return remediation_actions.handle_block_action(self, data)
+            except Exception:
+                LOG.exception("Error processing a remediation click")
+                return None
         data = self.normalize_legacy_payload(data)
         channel_id = data["channel"]["id"]
         team_id = data["team"]["id"]
@@ -494,6 +505,13 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
         message_ts = message.get("ts")
         thread_ts = message.get("thread_ts") or message_ts
         app_id = self.common_service.app_id
+        parsed = remediation_thread.parse_token(token)
+        if parsed:
+            retired = remediation_thread.tenant_loop_on(parsed[0])
+            if retired:
+                # The loop draws the thread as fix options now: a step message's buttons are retired.
+                remediation_actions.retire_step_buttons(self, channel_id, team_id, slack_user_id, message)
+                return json.dumps({"status": "retired"})
 
         def settle():
             # After the response to Slack, so on its own session and services (the request's are closed).
