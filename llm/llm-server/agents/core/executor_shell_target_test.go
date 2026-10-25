@@ -15,7 +15,7 @@ func TestShellTargetUnresolved(t *testing.T) {
 		input string
 		want  bool
 	}{
-		{"kubectl naming its context", `{"command":"kubectl --context rackspace get deployments -A"}`, false},
+		{"kubectl naming its context", `{"command":"kubectl --context prod-east get deployments -A"}`, false},
 		{"kubectl naming no context", `{"command":"kubectl get deployments -A"}`, true},
 		{"aws naming its profile", `{"command":"aws sqs list-queues --profile aws-prod"}`, false},
 		{"context chosen by a shell variable", `{"command":"for c in a b; do kubectl --context $c get pods; done"}`, true},
