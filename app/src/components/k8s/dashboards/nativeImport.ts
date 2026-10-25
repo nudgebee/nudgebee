@@ -17,7 +17,7 @@ import { referencedVariables } from './templating';
  * result without caring which produced it.
  */
 
-const PANEL_TYPES = new Set<PanelType>(['timeseries', 'stat', 'gauge', 'table', 'bar', 'text']);
+const PANEL_TYPES = new Set<PanelType>(['timeseries', 'stat', 'gauge', 'table', 'bar', 'histogram', 'text']);
 const DATASOURCES = new Set<PanelDatasource>(['metrics', 'logs', 'traces', 'nudgebee', 'redis', 'rabbitmq', 'postgresql', 'kubectl']);
 /** Datasources answered by the query engine, which store a `query` object rather than an `expr`. */
 const ENTITY = new Set<PanelDatasource>(['nudgebee', 'traces']);

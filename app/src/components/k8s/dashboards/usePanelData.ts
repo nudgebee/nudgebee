@@ -692,7 +692,12 @@ function shapeMetrics(answer: MetricsAnswer, panel: Panel): { data: PanelData; w
   const prefer = breachingLinePreference(panel, (s) =>
     s.accountLabel ? idByLabel.get(s.accountLabel) : accounts.length === 1 ? accounts[0].value : undefined
   );
-  const { kept, perAccount } = capSeriesByAccount(raw, panel.type === 'table' ? MAX_TABLE_SERIES : MAX_CHART_SERIES, prefer);
+  // A histogram bins every value into buckets rather than drawing one mark per
+  // series, so the per-series chart cap — there because Chart.js cannot draw
+  // thousands of lines — does not apply: it reads all the series it was given,
+  // and capping would quietly bin a fraction of the data and warn about the rest.
+  const seriesLimit = panel.type === 'table' ? MAX_TABLE_SERIES : panel.type === 'histogram' ? Infinity : MAX_CHART_SERIES;
+  const { kept, perAccount } = capSeriesByAccount(raw, seriesLimit, prefer);
   const shownCount = perAccount.reduce((n, a) => n + a.kept, 0);
   const totalCount = perAccount.reduce((n, a) => n + a.total, 0);
   const notes: string[] = [];

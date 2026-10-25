@@ -94,6 +94,7 @@ const PANEL_TYPES: { label: string; value: PanelType }[] = [
   { label: 'Gauge', value: 'gauge' },
   { label: 'Table', value: 'table' },
   { label: 'Bar', value: 'bar' },
+  { label: 'Histogram', value: 'histogram' },
   { label: 'Text', value: 'text' },
 ];
 

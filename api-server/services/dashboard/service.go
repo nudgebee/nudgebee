@@ -38,7 +38,7 @@ var (
 		"resource_type": true, "all": true,
 	}
 	validPanelTypes = map[string]bool{
-		VizTimeseries: true, VizStat: true, VizGauge: true, VizTable: true, VizBar: true, VizText: true,
+		VizTimeseries: true, VizStat: true, VizGauge: true, VizTable: true, VizBar: true, VizHistogram: true, VizText: true,
 	}
 	validDatasources = map[string]bool{
 		DatasourceMetrics: true, DatasourceLogs: true,

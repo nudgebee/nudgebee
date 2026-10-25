@@ -357,6 +357,62 @@ export function lastValue(values: (number | null)[] | undefined): number | undef
   return undefined;
 }
 
+/** One bar of a histogram: the range `[lo, hi]` and how many samples fell in it. */
+export interface HistogramBin {
+  lo: number;
+  hi: number;
+  count: number;
+}
+
+/**
+ * Bins every value a query reported into equal-width buckets — the distribution
+ * of the metric over the panel's time range, not one number per series.
+ *
+ * Pools EVERY finite sample across EVERY series: a query returning one series over
+ * an hour bins its samples through time; one returning many series (per pod, say)
+ * bins all of theirs together — the answer is "how are these values spread", which
+ * is what a histogram asks. A gap (`null`) is skipped: it is the absence of a
+ * reading, not a zero that would pile onto the lowest bucket.
+ *
+ * `null` when nothing finite was reported, so the caller shows an empty state
+ * rather than an axis over no data. When every value is identical there is one
+ * bucket holding them all — a real answer, where equal-width bins would divide by
+ * a zero range. The bucket count never exceeds the number of samples, so a handful
+ * of readings don't scatter across thirty mostly-empty bars.
+ */
+export function histogramBins(series: PanelSeries[], bucketCount = 30): { bins: HistogramBin[]; total: number } | null {
+  const values: number[] = [];
+  for (const s of series) {
+    for (const v of s.values) {
+      if (v !== null && v !== undefined && Number.isFinite(v)) values.push(v);
+    }
+  }
+  if (values.length === 0) return null;
+
+  let min = Infinity;
+  let max = -Infinity;
+  for (const v of values) {
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  if (min === max) return { bins: [{ lo: min, hi: max, count: values.length }], total: values.length };
+
+  const count = Math.max(1, Math.min(bucketCount, values.length));
+  const width = (max - min) / count;
+  // Distinct-but-adjacent values can have a range that underflows to a zero width
+  // once divided into buckets; `(v - min) / 0` is NaN/Infinity and would index a
+  // bucket that isn't there. One bucket holds them, as the equal-values case does.
+  if (width <= 0) return { bins: [{ lo: min, hi: max, count: values.length }], total: values.length };
+  const bins: HistogramBin[] = Array.from({ length: count }, (_, i) => ({ lo: min + i * width, hi: min + (i + 1) * width, count: 0 }));
+  for (const v of values) {
+    // The top edge belongs to the last bucket — floor would otherwise send the
+    // maximum value to a (count)-th bucket that does not exist.
+    const idx = Math.min(count - 1, Math.floor((v - min) / width));
+    bins[idx].count += 1;
+  }
+  return { bins, total: values.length };
+}
+
 /**
  * Normalises a provider's timestamp to epoch SECONDS.
  *

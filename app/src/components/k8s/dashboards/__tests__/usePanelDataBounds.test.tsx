@@ -96,6 +96,18 @@ describe('usePanelData bounds the answer', () => {
     expect(result.current.error).toBeNull();
   });
 
+  it('bins every series for a histogram rather than capping to the busiest, with no warning', async () => {
+    metricsQuery.mockResolvedValue(answerWith(4798));
+    const { result } = render(metricsPanel('histogram'));
+    await waitFor(() => expect(result.current.data).not.toBeNull());
+
+    // A histogram pools values into buckets and draws no per-series mark, so the
+    // chart cap does not apply — it reads all the series, and nothing is "left out".
+    expect(result.current.data?.series).toHaveLength(4798);
+    expect(result.current.warning).toBeNull();
+    expect(result.current.error).toBeNull();
+  });
+
   it('draws everything when the answer is small, with no warning', async () => {
     metricsQuery.mockResolvedValue(answerWith(3));
     const { result } = render(metricsPanel('timeseries'));

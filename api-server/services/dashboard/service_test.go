@@ -48,6 +48,29 @@ func TestValidateDefinition_AcceptsValidPanels(t *testing.T) {
 	require.NoError(t, ValidateDefinition(def))
 }
 
+// A histogram is a chart, so it is accepted on the metrics datasource like the
+// other chart types.
+func TestValidateDefinition_AcceptsHistogramOnMetrics(t *testing.T) {
+	p := timeseriesPanel()
+	p.Type = VizHistogram
+	require.NoError(t, ValidateDefinition(Definition{Panels: []Panel{p}}))
+}
+
+// A datasource that renders a table cannot carry a histogram — the same table
+// rule that keeps every non-table chart off traces/logs/command datasources.
+func TestValidateDefinition_RejectsHistogramOnTableDatasource(t *testing.T) {
+	p := timeseriesPanel()
+	p.Type = VizHistogram
+	p.Datasource = DatasourceTraces
+	p.Targets = []PanelTarget{{RefId: "A", Query: map[string]any{
+		"table":   "traces_v2",
+		"columns": []any{map[string]any{"name": "trace_id"}},
+	}}}
+	err := ValidateDefinition(Definition{Panels: []Panel{p}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "renders a table")
+}
+
 // Two panels on two accounts in one dashboard is the reason accounts live on
 // the panel rather than the dashboard.
 func TestValidateDefinition_AcceptsPanelsOnDifferentAccounts(t *testing.T) {

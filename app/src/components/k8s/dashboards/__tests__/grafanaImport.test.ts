@@ -11,7 +11,7 @@ import nbClickhouse from '@components/dashboards/apps/nb_clickhouse.json';
 import otelNodejs from '@components/dashboards/apps/otel_nodejs.json';
 
 const SCOPE: PanelScope = { account_type: 'K8s', account_ids: [] };
-const VALID_TYPES = new Set(['timeseries', 'stat', 'gauge', 'table', 'bar', 'text']);
+const VALID_TYPES = new Set(['timeseries', 'stat', 'gauge', 'table', 'bar', 'histogram', 'text']);
 
 describe('parseGrafanaJson', () => {
   it('accepts a bare dashboard model and the API-wrapped form', () => {
@@ -122,6 +122,17 @@ describe('convertGrafanaDashboard', () => {
       SCOPE
     );
     expect(result.definition.panels.map((p) => p.type)).toEqual(['gauge', 'stat']);
+  });
+
+  it('imports a Grafana histogram as a histogram', () => {
+    const result = convertGrafanaDashboard(
+      {
+        title: 'latency',
+        panels: [{ id: 1, type: 'histogram', title: 'request duration', targets: [{ refId: 'A', expr: 'request_duration_seconds' }] }],
+      },
+      SCOPE
+    );
+    expect(result.definition.panels.map((p) => p.type)).toEqual(['histogram']);
   });
 
   it('warns about variables nothing on this page can fill', () => {

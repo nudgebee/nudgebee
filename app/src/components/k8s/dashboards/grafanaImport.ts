@@ -37,6 +37,7 @@ const PANEL_TYPE_MAP: Record<string, PanelType> = {
   table: 'table',
   'table-old': 'table',
   barchart: 'bar',
+  histogram: 'histogram',
   text: 'text',
 };
 

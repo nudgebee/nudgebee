@@ -54,6 +54,7 @@ const (
 	VizGauge      = "gauge"
 	VizTable      = "table"
 	VizBar        = "bar"
+	VizHistogram  = "histogram"
 	VizText       = "text"
 )
 

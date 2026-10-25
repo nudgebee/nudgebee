@@ -5,6 +5,7 @@ import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import LinkIcon from '@mui/icons-material/Link';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import Chart from '@ui/Chart';
+import { formatStat } from '@shared/charts/legendChips';
 import { Banner } from '@ui/Banner';
 import { Chip } from '@ui/Chip';
 import { Link } from '@ui/Link';
@@ -54,7 +55,7 @@ import { applyAccountFilter, describePanelScope, effectiveFilterAccount, panelQu
 import { panelQueryWindow } from './dashboardRange';
 import PanelColumnFilters, { PanelFilterMenu } from './PanelColumnFilters';
 import { appliedViewerFilters, loadViewerFilterValues, viewerFilterColumns, type ViewerFilter } from './panelViewerFilters';
-import { combineOf, consolidatedSeries, lastValue, metricLabel, statTotal } from './panelSeries';
+import { combineOf, consolidatedSeries, histogramBins, lastValue, metricLabel, statTotal } from './panelSeries';
 import { downloadNodeAsPng, EXPORT_HIDE_ATTR, PANEL_PENDING_ATTR } from './panelImage';
 import { withPanelParam } from './panelLink';
 import type { VariableValues } from './templating';
@@ -775,6 +776,51 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
           // stack's height is the consolidated view — no total series needed, and
           // one would double the stack.
           return <Chart.Bar data={data.series.map((s) => s.values)} labels={data.labels} chartLabel={data.series.map((s) => s.label)} />;
+        case 'histogram': {
+          // The distribution of every value the query reported over the range —
+          // one bar per equal-width bucket, counting the samples that fell in it.
+          // Reuses the bar renderer; the x-axis is value buckets, not time.
+          const hist = histogramBins(data.series);
+          if (!hist) {
+            return (
+              <Box sx={{ height: '100%' }}>
+                <PanelState tone='empty' title='Nothing to chart' description='A histogram needs numeric values — check the query.' />
+              </Box>
+            );
+          }
+          const binLabels = hist.bins.map((b) => formatStat(b.lo, panel.unit));
+          const counts = hist.bins.map((b) => b.count);
+          return (
+            <Chart.Bar
+              dataset={[{ label: 'Count', data: counts, backgroundColor: ds.blue[500], categoryPercentage: 1, barPercentage: 1, borderRadius: 2 }]}
+              labels={binLabels}
+              maxHeight={chartHeight}
+              options={{
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                  legend: { display: false },
+                  tooltip: {
+                    callbacks: {
+                      // The bar sits at its bucket's lower edge; name the whole range.
+                      title: (items: { dataIndex: number }[]) => {
+                        const b = hist.bins[items[0].dataIndex];
+                        return `${formatStat(b.lo, panel.unit)} – ${formatStat(b.hi, panel.unit)}`;
+                      },
+                      label: (item: { raw: number }) => `${item.raw} ${item.raw === 1 ? 'sample' : 'samples'}`,
+                    },
+                  },
+                },
+                scales: {
+                  // Buckets can be many; let the axis thin its own ticks rather than
+                  // stack thirty labels on top of each other.
+                  x: { ticks: { autoSkip: true, maxRotation: 0 } },
+                  y: { beginAtZero: true, ticks: { precision: 0 } },
+                },
+              }}
+            />
+          );
+        }
         case 'timeseries':
         default: {
           // Each account's own lines, then the series that adds them up — dashed

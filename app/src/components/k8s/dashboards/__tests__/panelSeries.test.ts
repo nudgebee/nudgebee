@@ -3,6 +3,7 @@ import {
   combineOf,
   CONSOLIDATED_LABEL,
   consolidatedSeries,
+  histogramBins,
   lastValue,
   metricLabel,
   seriesLabel,
@@ -10,6 +11,46 @@ import {
   statTotal,
   toRawSeries,
 } from '../panelSeries';
+
+describe('histogramBins', () => {
+  const S = (values: (number | null)[]) => ({ label: 'x', values });
+
+  it('returns null when nothing finite was reported', () => {
+    expect(histogramBins([])).toBeNull();
+    expect(histogramBins([S([null, null])])).toBeNull();
+  });
+
+  it('pools every finite sample across every series, skipping gaps', () => {
+    const result = histogramBins([S([0, 1, 2, 3, 4]), S([5, 6, 7, null, 8, 9])], 10)!;
+    expect(result.total).toBe(10);
+    expect(result.bins).toHaveLength(10);
+    expect(result.bins.every((b) => b.count === 1)).toBe(true);
+    expect(result.bins[0].lo).toBe(0);
+    expect(result.bins[9].hi).toBe(9);
+  });
+
+  it('puts the maximum in the last bucket, not a phantom one past the end', () => {
+    const result = histogramBins([S([0, 10])], 2)!;
+    expect(result.bins).toHaveLength(2);
+    expect(result.bins[0].count).toBe(1);
+    expect(result.bins[1].count).toBe(1);
+  });
+
+  it('collapses identical values into one bucket rather than dividing by a zero range', () => {
+    expect(histogramBins([S([5, 5, 5])])!.bins).toEqual([{ lo: 5, hi: 5, count: 3 }]);
+  });
+
+  it('never makes more buckets than samples', () => {
+    expect(histogramBins([S([1, 2, 3])], 30)!.bins).toHaveLength(3);
+  });
+
+  it('collapses to one bucket when the range is too small to split without dividing by zero', () => {
+    // Distinct but adjacent subnormals: the gap underflows to a zero bin width.
+    const result = histogramBins([S([Number.MIN_VALUE, Number.MIN_VALUE * 2])])!;
+    expect(result.bins).toHaveLength(1);
+    expect(result.bins[0].count).toBe(2);
+  });
+});
 
 describe('statCaption', () => {
   it('drops a caption that is only the query ref id', () => {
@@ -283,8 +324,8 @@ describe('toRawSeries', () => {
 
   it('flattens every query result into one labelled series list', () => {
     expect(toRawSeries(RESULTS, {})).toEqual([
-      { label: 'up{job="api"}', timestamps: [1, 2], values: [1, 0.5] },
-      { label: 'up{job="db"}', timestamps: [2], values: [1] },
+      { label: 'up{job="api"}', timestamps: [1, 2], values: [1, 0.5], metric: { __name__: 'up', job: 'api' } },
+      { label: 'up{job="db"}', timestamps: [2], values: [1], metric: { __name__: 'up', job: 'db' } },
     ]);
   });
 
