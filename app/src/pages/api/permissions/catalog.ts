@@ -10,7 +10,7 @@ import { providerGrantCatalogEntries } from '@lib/integrationProviderGrants';
 //                     actions.yaml (the grant surface a custom role can grant).
 //   - `systemRoles` — the built-in roles' grant sets, derived from each role's
 //                     actions.yaml `permissions:` entries (same source as the
-//                     V766 seed via systemRoleGrants.ts). Rendered READ-ONLY so
+//                     systemRoleGrants.ts derivation). Rendered READ-ONLY so
 //                     admins see what each built-in role grants in the same
 //                     vocabulary as custom roles.
 // Both are computed from actions.yaml (same classifyAction the gateway uses), so
