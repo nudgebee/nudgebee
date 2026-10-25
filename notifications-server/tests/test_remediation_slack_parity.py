@@ -216,6 +216,63 @@ def test_a_keyed_message_is_posted_once_then_edited_in_place(db, slack):
     assert len(slack.of("post")) == 1, "an edit, not a new post"
 
 
+def test_each_fix_option_is_a_section_with_its_button_beside_it(db, slack):
+    # The options message (#40734): the cause on top, one section per option with its title, kind and one line, its
+    # button as the section's accessory, then the footer and Other fixes….
+    thread(db)
+    post = rt.Post(
+        text="### Fix options · v2\n**Root cause:** the memory limit is too low",
+        key="options:e:pv-2",
+        edit=True,
+        token=PLAN_TOKEN,
+        status="Pick a fix",
+        sections=[
+            rt.Section(
+                text="**1 · Increase Kafka memory** · _buys time_\n`kubectl set resources deployment/kafka`"
+                " · Heads-up: Argo CD reverts it on the next sync",
+                button=rt.Button(kind="pick", label="Use this fix", option=1, style="primary"),
+            ),
+            rt.Section(
+                text="**2 · Raise the limit in the chart** · _change in the deployment source_\nset it to 2Gi",
+                button=rt.Button(kind="manual", label="Mark done", option=2),
+            ),
+        ],
+        buttons=[rt.Button(kind="other", label="Other fixes…")],
+    )
+    assert rt.deliver(state(1, post)) == "posted"
+    blocks = slack.of("post")[0]["blocks"]
+    assert [b["type"] for b in blocks] == ["section", "section", "section", "context", "actions"]
+    assert blocks[1]["text"]["text"].startswith("*1 · Increase Kafka memory* · _buys time_")
+    first, second = blocks[1]["accessory"], blocks[2]["accessory"]
+    assert first["text"]["text"] == "Use this fix" and first["style"] == "primary"
+    assert json.loads(first["value"]) == {"k": "pick", "o": 1}
+    assert json.loads(second["value"]) == {"k": "manual", "o": 2} and second["text"]["text"] == "Mark done"
+    [other] = blocks[4]["elements"]
+    ids = [first["action_id"], second["action_id"], other["action_id"]]
+    assert len(set(ids)) == 3 and all(i.startswith("remediation_") for i in ids), "unique ids a click routes by"
+    assert len(blocks) <= 50
+
+    # Not picking: the options stay, their buttons go; an edit in place.
+    quiet = post.model_copy(update={"sections": [rt.Section(text=x.text) for x in post.sections], "buttons": []})
+    assert rt.deliver(state(2, quiet)) == "posted"
+    [update] = slack.of("update")
+    assert [b["type"] for b in update["blocks"]] == ["section", "section", "section", "context"]
+    assert not any("accessory" in b for b in update["blocks"])
+
+
+def test_many_options_stay_within_slacks_block_limit():
+    post = rt.Post(
+        text="### Fix options",
+        status="Pick a fix",
+        sections=[
+            rt.Section(text=f"**{i} · x**", button=rt.Button(kind="pick", label="Use this fix", option=i))
+            for i in range(1, 80)
+        ],
+        buttons=[rt.Button(kind="other", label="Other fixes…")],
+    )
+    assert len(rt.blocks(post)) <= 50
+
+
 def test_an_older_state_is_refused(db, slack):
     thread(db)
     assert rt.deliver(state(5)) == "posted"
@@ -725,7 +782,8 @@ def test_an_answer_without_a_note_sends_no_reason(monkeypatch):
 
 def test_an_old_step_button_with_the_loop_on_is_retired_politely(db, monkeypatch):
     monkeypatch.setattr(rt, "decide", lambda *a: pytest.fail("decided"))
-    told, edits = [], []
+    told, edits, synced = [], [], []
+    monkeypatch.setattr(ra, "resync", lambda *a: synced.append(a))
     common = SimpleNamespace(
         app_id="A1",
         update_slack_message_with_blocks=lambda *a: edits.append(a),
@@ -745,6 +803,11 @@ def test_an_old_step_button_with_the_loop_on_is_retired_politely(db, monkeypatch
     assert json.loads(out) == {"status": "retired"}
     assert [b["type"] for b in edits[0][3]] == ["section", "context"], "the buttons go"
     assert "retired" in told[0] and "Use this fix" in told[0]
+    assert synced and synced[0][:3] == (
+        TENANT,
+        ACCOUNT,
+        EVENT,
+    ), "the thread is drawn again, so the fix options are there"
 
 
 def test_a_fresh_marker_older_than_the_claim_is_posted_again(db, slack):

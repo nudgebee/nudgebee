@@ -510,7 +510,9 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
             retired = remediation_thread.tenant_loop_on(parsed[0])
             if retired:
                 # The loop draws the thread as fix options now: a step message's buttons are retired.
-                remediation_actions.retire_step_buttons(self, channel_id, team_id, slack_user_id, message)
+                remediation_actions.retire_step_buttons(
+                    self, channel_id, team_id, slack_user_id, message, ids=parsed[:3], background_tasks=background_tasks
+                )
                 return json.dumps({"status": "retired"})
 
         def settle():
@@ -1065,30 +1067,58 @@ def _close_event_analysis_stream(service, token, context, stream_ts, outcome, ta
         LOG.debug("event analysis poller: failed to close progress panel for event %s: %s", context.event_id, e)
 
 
-def _post_final_writeup(service, context, detailed, investigation, summary):
+def _thread_investigation_key(context):
+    return f"thread-investigation:{context.channel_id}:{context.thread_ts}:{context.event_id}"
+
+
+def _mark_investigation_posted(service, context) -> bool:
+    """Record that this thread got the event's investigation; True when it had not before. Best effort: with no
+    cache it reports False only when a post is known."""
+    try:
+        return service.event_service.cache.claim_card_action(_thread_investigation_key(context), 7 * 24 * 3600)
+    except Exception:
+        LOG.debug("event analysis: thread investigation mark not stored for event %s", context.event_id)
+        return True
+
+
+def _post_final_writeup(service, context, detailed, investigation, summary, investigation_posted, sent=None):
     """Post the closing write-up without repeating the investigation.
 
     nudgebee/nudgebee#38925: detailed_response is no longer a rewrite of the
     investigation -- it now opens with that investigation verbatim and appends
-    the affected components, code findings and firing history. The
-    investigation was already posted to this thread, so posting the whole
-    write-up after it would print the same text twice in a row. Post only what
-    the write-up adds; when it adds nothing, still close with a one-line ping so
-    the user learns the analysis finished. Returns True iff settled.
+    the affected components, code findings and firing history. When this run
+    posted the investigation to this thread (investigation_posted), posting the
+    whole write-up after it would print the same text twice in a row: post only
+    what the write-up adds, and when it adds nothing, still close with a
+    one-line ping so the user learns the analysis finished. When it did not (an
+    analysis that had already finished, such as one reused for a repeat of the
+    alert), the whole write-up goes out: the investigation it opens with as its
+    own message first, as a running analysis posts it (one Slack section holds
+    3000 characters, so the two in one message would cut the write-up's own
+    sections), then the rest; sent (the poller's) records it, so a retry after a
+    failed second post does not post it again. Returns True iff settled.
     """
-    content, preamble = final_writeup(detailed, investigation, summary)
+    detailed_text, investigation_text = (detailed or "").strip(), (investigation or "").strip()
+    if not investigation_posted and investigation_text and detailed_text.startswith(investigation_text):
+        investigation_posted = _post_investigation_content(
+            service, context, investigation_text, dict(_EVENT_ANALYSIS_PROGRESS_SECTIONS)["investigation"]
+        )
+        if investigation_posted and sent is not None:
+            sent.add("investigation")
+    content, preamble = final_writeup(detailed, investigation, summary, investigation_posted)
     return _post_investigation_content(service, context, content, preamble, mention=True)
 
 
-def final_writeup(detailed, investigation, summary):
+def final_writeup(detailed, investigation, summary, investigation_posted):
     """(content, preamble) closing an analysis thread: what the write-up adds
-    to the investigation already posted, "That's everything" when it adds
-    nothing, or the summary when there's no write-up. Shared with Teams."""
+    to the investigation, when investigation_posted says it is in the thread
+    already ("That's everything" when it adds nothing); the whole write-up when
+    it is not; or the summary when there's no write-up. Shared with Teams."""
     detailed = (detailed or "").strip()
     investigation = (investigation or "").strip()
 
     added = detailed
-    if investigation and detailed.startswith(investigation):
+    if investigation_posted and investigation and detailed.startswith(investigation):
         added = detailed[len(investigation) :].strip()
 
     if added:
@@ -1238,6 +1268,8 @@ def _poll_event_analysis(engine, slack_app, teams_app, context, user_id, token, 
                     if field not in sent and task_statuses.get(field) == "COMPLETED":
                         if _post_investigation_content(service, context, result.get(field), preamble):
                             sent.add(field)
+                            if field == "investigation":
+                                _mark_investigation_posted(service, context)
                             LOG.info("event analysis poller: posted %s for event %s", field, context.event_id)
                             _advance_event_analysis_panel(service, token, context, stream_ts, field)
 
@@ -1253,6 +1285,8 @@ def _poll_event_analysis(engine, slack_app, teams_app, context, user_id, token, 
                         result.get("detailed_response"),
                         result.get("investigation"),
                         result.get("summary"),
+                        investigation_posted="investigation" in sent,
+                        sent=sent,
                     ):
                         _close_event_analysis_stream(service, token, context, stream_ts, outcome="completed")
                         _finalize_card_after_analysis(service, context, outcome="completed")
@@ -1371,16 +1405,19 @@ def _run_event_analysis_background(engine, slack_app, teams_app, context: EventA
 
             status = (result.get("status") or "").upper()
             if status == "COMPLETED":
-                # A repeat click after an earlier one already finished --
-                # summary/investigation were already posted then, so only the
-                # write-up goes out now. The panel never got past the
+                # Already finished: a repeat click, or an analysis reused for a
+                # repeat of the alert, whose investigation was never posted to
+                # this thread. Nothing of it was posted by this run, so the
+                # whole write-up goes out. The panel never got past the
                 # placeholder, so that's all that needs closing.
+                # A repeat click in a thread that already got the investigation posts only what the write-up adds.
                 _post_final_writeup(
                     service,
                     context,
                     result.get("detailed_response"),
                     result.get("investigation"),
                     result.get("summary"),
+                    investigation_posted=not _mark_investigation_posted(service, context),
                 )
                 _close_event_analysis_stream(
                     service, token, context, stream_ts, "completed", task_ids=[_EVENT_ANALYSIS_PLACEHOLDER_TASK_ID]

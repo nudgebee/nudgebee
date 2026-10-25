@@ -793,19 +793,27 @@ func lastPlanInputs(ctx *security.RequestContext, accountId, eventId string) Rem
 	return last
 }
 
-// proposalText tells the model what it proposed.
+// proposalText is propose_fix's result: what was stored, where the person sees it, and how to answer. The fix options
+// are shown to the person on their own (the Remediation tab, the alert's Slack thread), so an answer that restates
+// them only repeats them, in chat and in Slack beside the options message.
 func proposalText(plan RemediationPlan) string {
+	version := "a new version"
+	if plan.Version > 0 {
+		version = fmt.Sprintf("version %d", plan.Version)
+	}
+	options := fmt.Sprintf("%d fix options", len(plan.Actions))
+	if len(plan.Actions) == 1 {
+		options = "1 fix option"
+	}
 	var b strings.Builder
-	b.WriteString("Proposed a new plan. A person must confirm each command before it runs.\n" + plan.Summary)
-	for i, a := range plan.Actions {
-		fmt.Fprintf(&b, "\n%d. %s", i+1, firstNonEmpty(a.Action, a.Title))
-		if a.ExecuteCommand != "" {
-			b.WriteString(": " + a.ExecuteCommand)
-		}
-	}
 	if len(plan.Actions) == 0 {
-		b.WriteString("\nThe plan has no actions: the planner found nothing to run.")
+		fmt.Fprintf(&b, "Stored %s of the alert's fixes, with no fix options: nothing NudgeBee can carry out.", version)
+	} else {
+		fmt.Fprintf(&b, "Stored %s of the alert's fixes, with %s. A person must confirm each command before it runs.", version, options)
 	}
+	b.WriteString(" The person already sees the fix options, each with its own button, on the event's Remediation tab and in the alert's Slack thread, and the investigation is there too.")
+	fmt.Fprintf(&b, " Your final answer is one sentence that the fixes were updated (%s, %s) and can be picked there."+
+		" Do not restate, list or summarise the fixes, their commands, the root cause or the investigation, and use no headings or sections.", version, options)
 	return b.String()
 }
 

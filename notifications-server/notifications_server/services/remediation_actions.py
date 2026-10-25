@@ -69,7 +69,7 @@ RESOLVED = "Resolved. The event is closed in your name."
 ANSWER_GONE = "This approval was already answered or is no longer waiting, so nothing was recorded."
 RETIRED = (
     "These buttons were retired: with the remediation loop on, a step runs only after {brand} asks for approval."
-    " Use *Use this fix* in the fix options message, or pick it on the Remediation tab."
+    " The current fix options are posted in this thread: pick one there with *Use this fix*, or on the Remediation tab."
 )
 
 
@@ -585,12 +585,21 @@ def _submit_answer(service, private, user, note) -> None:
 # --- the per-step Run / Decline of before --------------------------------------------------------------------
 
 
-def retire_step_buttons(service, channel_id, team_id, slack_user_id, message) -> None:
+def retire_step_buttons(service, channel_id, team_id, slack_user_id, message, ids=None, background_tasks=None) -> None:
     """A Run or Decline on a step message posted before the loop drew the thread this way: refused politely, and
-    the message loses its buttons. The server refuses such a Run too (PR 1); this spares the click its long wait."""
+    the message loses its buttons. The server refuses such a Run too (PR 1); this spares the click its long wait.
+    ids (tenant, account, event): the thread is drawn again, so the fix options the reply points to are there; a
+    thread posted before the loop drew it has none until its state next changes."""
     text = RETIRED.format(brand=_brand())
     blocks = [b for b in message.get("blocks") or [] if b.get("type") != "actions"]
     if blocks:
         blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": "_These buttons were retired._"}]})
         service.common_service.update_slack_message_with_blocks(channel_id, team_id, message.get("ts"), blocks)
     _tell(service, channel_id, team_id, slack_user_id, message.get("thread_ts") or message.get("ts"), text)
+    if ids:
+        tenant_id, account_id, event_id = ids
+        user_id = _linked(service, tenant_id, slack_user_id)
+        if background_tasks is not None:
+            background_tasks.add_task(resync, tenant_id, account_id, event_id, user_id)
+        else:
+            resync(tenant_id, account_id, event_id, user_id)

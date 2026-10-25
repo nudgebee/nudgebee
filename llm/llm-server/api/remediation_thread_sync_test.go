@@ -65,6 +65,17 @@ func kinds(buttons []threadButton) []string {
 	return out
 }
 
+// allKinds is the kinds of a message's buttons: those beside its sections, then those below.
+func allKinds(post threadPost) []string {
+	out := []string{}
+	for _, s := range post.Sections {
+		if s.Button != nil {
+			out = append(out, s.Button.Kind)
+		}
+	}
+	return append(out, kinds(post.Buttons)...)
+}
+
 // Picking: one message with every option, a button each by how it is carried out, and Other fixes…; it names the plan
 // for the clicks, and is edited in place.
 func TestThreadOptionsWhilePicking(t *testing.T) {
@@ -77,14 +88,51 @@ func TestThreadOptionsWhilePicking(t *testing.T) {
 	assert.Equal(t, "options:e:pv-2", options.Key)
 	assert.True(t, options.Edit)
 	assert.Equal(t, "remediation-plan:t:a:e:pv-2", options.Token)
-	assert.Contains(t, options.Text, "### Fix options · v2\n**Root cause:** bad image tag\n**Fix:** roll back")
-	assert.Contains(t, options.Text, "**Option 1 · Roll back the image**\n90% likely to resolve\n```\nkubectl rollout undo deployment/web -n shop\n```")
-	assert.Contains(t, options.Text, "**Option 2 · Pin the tag**")
-	assert.Contains(t, options.Text, "NudgeBee can raise it as a pull request")
-	assert.Equal(t, []string{"pick", "pr", "manual", "other"}, kinds(options.Buttons))
-	assert.Equal(t, []int{1, 2, 3, 0}, []int{options.Buttons[0].Option, options.Buttons[1].Option, options.Buttons[2].Option, options.Buttons[3].Option})
+	assert.Equal(t, "### Fix options · v2\n**Root cause:** bad image tag", options.Text, "the cause in one line; the options are sections")
+	require.Len(t, options.Sections, 3, "one section per option")
+	assert.Equal(t, "**1 · Roll back the image** · _fix_\n`kubectl rollout undo deployment/web -n shop`", options.Sections[0].Text)
+	assert.Equal(t, "**2 · Pin the tag** · _code_\npin the tag in chart/values.yaml (example/web)", options.Sections[1].Text)
+	assert.Equal(t, "**3 · Raise the quota** · _infrastructure change_\nraise it in the project quota", options.Sections[2].Text)
+	assert.Equal(t, threadButton{Kind: "pick", Label: "Use this fix", Option: 1, Style: "primary"}, *options.Sections[0].Button)
+	assert.Equal(t, threadButton{Kind: "pr", Label: "Raise a PR", Option: 2}, *options.Sections[1].Button)
+	assert.Equal(t, threadButton{Kind: "manual", Label: "Mark done", Option: 3}, *options.Sections[2].Button)
+	assert.Equal(t, []string{"other"}, kinds(options.Buttons), "Other fixes… stays below the options")
 	assert.Contains(t, options.Status, "Pick a fix")
 	assert.NotContains(t, options.Text, "remediation:", "no per-step Run token any more")
+}
+
+// An option names what it is and what it gives up in one short line: a mitigation buys time, its trade-off said; a
+// long command or cause is cut, never shown behind Slack's "Show more"; a deployment-source change says so.
+func TestThreadOptionLines(t *testing.T) {
+	view := threadView()
+	view.Plan.RootCause = "The kafka container's memory limit is too low.\nIt is set to 512Mi while the broker needs 1.2Gi."
+	view.Plan.Actions = []RemediationAction{
+		{Title: "Increase Kafka container memory", Kind: RemediationKindMitigation, Delivery: DeliveryRun,
+			ExecuteCommand: "kubectl set resources deployment/kafka -n demo --limits=memory=2Gi " + strings.Repeat("--x=y ", 60),
+			TradeOff:       "Argo CD reverts it on the next sync"},
+		{Title: "Raise the limit in the chart", Kind: RemediationKindFix,
+			RequiredChange: &RequiredChange{Where: "deployment_source", Target: "charts/kafka/values.yaml", Change: "set resources.limits.memory to 2Gi"}},
+	}
+	options := optionsOf(t, view)
+	assert.Equal(t, "### Fix options · v2\n**Root cause:** The kafka container's memory limit is too low.", options.Text)
+	require.Len(t, options.Sections, 2)
+	first := options.Sections[0].Text
+	assert.True(t, strings.HasPrefix(first, "**1 · Increase Kafka container memory** · _buys time_\n`kubectl set resources deployment/kafka"), first)
+	assert.True(t, strings.HasSuffix(first, " · Heads-up: Argo CD reverts it on the next sync"), first)
+	assert.Less(t, len(first), 500, "one short line")
+	assert.Equal(t, "**2 · Raise the limit in the chart** · _change in the deployment source_\nset resources.limits.memory to 2Gi in charts/kafka/values.yaml", options.Sections[1].Text)
+	assert.Equal(t, "Mark done", options.Sections[1].Button.Label)
+}
+
+// Not picking: the options show without buttons beside them.
+func TestThreadOptionsWithoutPicking(t *testing.T) {
+	view := threadView()
+	view.Loop.ConversationBusy = true
+	options := optionsOf(t, view)
+	require.Len(t, options.Sections, 3)
+	for _, s := range options.Sections {
+		assert.Nil(t, s.Button)
+	}
 }
 
 // Every state the tab knows is a footer line, and buttons show only while picking.
@@ -148,7 +196,7 @@ func TestThreadOptionsFooterPerState(t *testing.T) {
 			for _, s := range c.status {
 				assert.Contains(t, options.Status, s)
 			}
-			assert.Equal(t, c.buttons, kinds(options.Buttons))
+			assert.Equal(t, c.buttons, allKinds(options))
 		})
 	}
 }

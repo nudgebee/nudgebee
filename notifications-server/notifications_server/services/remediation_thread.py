@@ -82,8 +82,10 @@ REPOST_ERRORS = {"message_not_found", "cant_update_message", "edit_window_closed
 # Message tokens: the fix options of one plan version, and one run's verdict.
 PLAN_TOKEN_PREFIX = "remediation-plan:"
 RUN_TOKEN_PREFIX = "remediation-run:"
-# Slack allows 25 elements in an actions block.
+# Slack allows 25 elements in an actions block, and 50 blocks in a message: the text, the sections, the footer and the
+# buttons below.
 MAX_BUTTONS = 25
+MAX_SECTIONS = 46
 
 
 class Button(BaseModel):
@@ -98,6 +100,14 @@ class Button(BaseModel):
     url: Optional[str] = None
 
 
+class Section(BaseModel):
+    """A part of a message drawn after its text, as its own Slack section, with its button beside it (one fix
+    option)."""
+
+    text: str
+    button: Optional[Button] = None
+
+
 class Post(BaseModel):
     text: str
     token: Optional[str] = None
@@ -109,6 +119,8 @@ class Post(BaseModel):
     # The message's buttons (a keyed message's; legacy step messages use token alone) and its status footer.
     buttons: Optional[List[Button]] = None
     status: Optional[str] = None
+    # Parts drawn after the text, each with the button beside it (the fix options).
+    sections: Optional[List[Section]] = None
 
 
 class Posts(BaseModel):
@@ -212,10 +224,19 @@ def _button(button: Button, index: int) -> dict:
 
 
 def blocks(post: Post) -> list:
-    """A post as Slack blocks: its text, its status footer, and its buttons. A legacy step message (a
-    ``remediation:`` token and no buttons) gets main's approval buttons (Run, Decline); the token is in the message
-    metadata, as main's approval messages keep it."""
+    """A post as Slack blocks: its text, its sections (each with its button beside it), its status footer, and its
+    buttons. A legacy step message (a ``remediation:`` token and no buttons) gets main's approval buttons (Run,
+    Decline); the token is in the message metadata, as main's approval messages keep it."""
     out = [{"type": "section", "text": {"type": "mrkdwn", "text": _cap(slack_text(post))}}]
+    sections = (post.sections or [])[:MAX_SECTIONS]
+    for i, section in enumerate(sections):
+        block = {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": _cap(Transformer.markdown_to_slack_markdown(section.text))},
+        }
+        if section.button:
+            block["accessory"] = _button(section.button, i)
+        out.append(block)
     if post.status:
         out.append(
             {
@@ -228,7 +249,7 @@ def blocks(post: Post) -> list:
             out.append(
                 {
                     "type": "actions",
-                    "elements": [_button(b, i) for i, b in enumerate(post.buttons[:MAX_BUTTONS])],
+                    "elements": [_button(b, len(sections) + i) for i, b in enumerate(post.buttons[:MAX_BUTTONS])],
                 }
             )
         return out

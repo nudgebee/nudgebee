@@ -485,8 +485,17 @@ func optionTitle(a RemediationAction) string {
 	return strings.TrimSpace(firstNonEmpty(a.Title, a.Action))
 }
 
-// optionsPost is the fix-options message: the cause, the fix, each option, the status footer and, while a person can
-// pick, the buttons.
+// Bounds on the fix-options message: Slack shows a long section's text behind "Show more", so the cause and each
+// option's line stay short; at most optionsShown options, within Slack's 50 blocks a message.
+const (
+	optionsCauseChars = 280
+	optionLineChars   = 220
+	optionsShown      = 40
+)
+
+// optionsPost is the fix-options message: the cause in one line, one section per option (its number, title, kind and
+// one line; while a person can pick, its button beside it), the status footer and, when a person decides what to try
+// next, Other fixes….
 func optionsPost(view alertThreadView) threadPost {
 	plan := view.Plan
 	state := threadStateOf(view)
@@ -494,19 +503,8 @@ func optionsPost(view alertThreadView) threadPost {
 	if plan.Version > 0 {
 		text += fmt.Sprintf(" · v%d", plan.Version)
 	}
-	if c := strings.TrimSpace(plan.RootCause); c != "" {
+	if c := oneLine(plan.RootCause, optionsCauseChars); c != "" {
 		text += "\n**Root cause:** " + c
-	}
-	if s := strings.TrimSpace(plan.Summary); s != "" {
-		text += "\n**Fix:** " + s
-	}
-	after := planRunsAfter(plan)
-	for i, a := range plan.Actions {
-		runsAfter := -1
-		if i < len(after) {
-			runsAfter = after[i]
-		}
-		text += "\n\n" + optionText(a, i, runsAfter)
 	}
 	if len(plan.Actions) == 0 {
 		text += "\n\n_No option NudgeBee can carry out: a person decides the change._"
@@ -515,59 +513,99 @@ func optionsPost(view alertThreadView) threadPost {
 		Token:  fmt.Sprintf("%s%s:%s:%s:%s", threadPlanTokenPrefix, view.TenantId, view.AccountId, view.PlanEventId, view.PlanVersion),
 		Status: optionsStatus(view, state)}
 	// Buttons only where the tab offers them; every click is checked again on the server.
-	post.Buttons = []threadButton{}
-	if state.picking(view) {
-		for i, a := range plan.Actions {
-			switch pickMode(a) {
-			case pickKindRun:
-				post.Buttons = append(post.Buttons, threadButton{Kind: "pick", Label: fmt.Sprintf("Use fix %d", i+1), Option: i + 1, Style: "primary"})
-			case pickKindPR:
-				post.Buttons = append(post.Buttons, threadButton{Kind: "pr", Label: fmt.Sprintf("Raise a PR for %d", i+1), Option: i + 1})
-			default:
-				post.Buttons = append(post.Buttons, threadButton{Kind: "manual", Label: fmt.Sprintf("I made change %d", i+1), Option: i + 1})
-			}
+	picking := state.picking(view)
+	after := planRunsAfter(plan)
+	for i, a := range plan.Actions {
+		if i == optionsShown {
+			post.Sections = append(post.Sections, threadSection{Text: fmt.Sprintf("_%d more options are on the Remediation tab._", len(plan.Actions)-i)})
+			break
 		}
+		runsAfter := -1
+		if i < len(after) {
+			runsAfter = after[i]
+		}
+		section := threadSection{Text: optionText(a, i, runsAfter)}
+		if picking {
+			button := optionButton(a, i)
+			section.Button = &button
+		}
+		post.Sections = append(post.Sections, section)
 	}
-	if state.picking(view) || (state.Chosen != nil && phaseOver(state.Phase) && !state.Resolved && !state.Preparing &&
+	post.Buttons = []threadButton{}
+	if picking || (state.Chosen != nil && phaseOver(state.Phase) && !state.Resolved && !state.Preparing &&
 		len(state.Web) == 0 && len(state.Slack) == 0 && !state.Busy) {
 		post.Buttons = append(post.Buttons, threadButton{Kind: "other", Label: "Other fixes…"})
 	}
 	return post
 }
 
-// optionText is one option of the plan, numbered from 1.
-func optionText(a RemediationAction, index, after int) string {
-	text := fmt.Sprintf("**Option %d · %s**", index+1, optionTitle(a))
-	var facts []string
-	if a.Confidence > 0 {
-		facts = append(facts, fmt.Sprintf("%d%% likely to resolve", int(a.Confidence)))
-	}
-	if after >= 0 {
-		facts = append(facts, fmt.Sprintf("after option %d", after+1))
-	}
-	if len(facts) > 0 {
-		text += "\n" + strings.Join(facts, " · ")
-	}
-	if c := strings.TrimSpace(a.ExecuteCommand); c != "" {
-		text += "\n```\n" + c + "\n```"
-	}
-	if r := strings.TrimSpace(a.RollbackCommand); r != "" {
-		text += "\n- **Undo:** `" + r + "`"
-	}
-	if t := strings.TrimSpace(a.TradeOff); t != "" {
-		text += "\n- **Heads-up:** " + t
-	}
+// optionButton is the button beside an option, by how it is carried out: Use this fix (NudgeBee runs it), Raise a PR
+// (a code change in a known repo), Mark done (a change a person makes).
+func optionButton(a RemediationAction, index int) threadButton {
 	switch pickMode(a) {
+	case pickKindRun:
+		return threadButton{Kind: "pick", Label: "Use this fix", Option: index + 1, Style: "primary"}
 	case pickKindPR:
-		text += "\n- **" + firstNonEmpty(sourceChangeText(a), "A code change") + ".** NudgeBee can raise it as a pull request."
-	case "manual":
-		if sc := sourceChangeText(a); sc != "" {
-			text += "\n- **" + sc + ".** Make the change in source, then mark it made."
-		} else {
-			text += "\n- **A person makes this change:** " + firstNonEmpty(a.DeliveryReason, "NudgeBee doesn't run it") + "."
+		return threadButton{Kind: "pr", Label: "Raise a PR", Option: index + 1}
+	}
+	return threadButton{Kind: "manual", Label: "Mark done", Option: index + 1}
+}
+
+// optionKind is what an option is, in the words of the tab: it buys time (a mitigation), a change in the deployment
+// source, a code change, another change in source, or a fix.
+func optionKind(a RemediationAction) string {
+	if strings.EqualFold(strings.TrimSpace(a.Kind), RemediationKindMitigation) {
+		return "buys time"
+	}
+	if rc := a.RequiredChange; strings.TrimSpace(a.ExecuteCommand) == "" && rc != nil && strings.TrimSpace(rc.Change) != "" {
+		switch where := strings.ToLower(strings.TrimSpace(rc.Where)); where {
+		case "code":
+			return "code"
+		case "deployment_source":
+			return "change in the deployment source"
+		default:
+			if label := sourceWhereLabels[where]; label != "" {
+				return strings.ToLower(label)
+			}
 		}
 	}
-	return text
+	return "fix"
+}
+
+// optionText is one option of the plan, numbered from 1: "N · title" with its kind (and the option it runs after),
+// then one short line on what it changes, with its trade-off when the plan names one.
+func optionText(a RemediationAction, index, after int) string {
+	text := fmt.Sprintf("**%d · %s** · _%s_", index+1, oneLine(optionTitle(a), 150), optionKind(a))
+	if after >= 0 {
+		text += fmt.Sprintf(" · after option %d", after+1)
+	}
+	var line string
+	switch rc := a.RequiredChange; {
+	case strings.TrimSpace(a.ExecuteCommand) != "":
+		line = "`" + oneLine(a.ExecuteCommand, optionLineChars-2) + "`"
+	case rc != nil && strings.TrimSpace(rc.Change) != "":
+		line = strings.TrimSpace(rc.Change)
+		if t := strings.TrimSpace(rc.Target); t != "" {
+			line += " in " + t
+		}
+		if repo := strings.TrimSpace(rc.Repo); repo != "" {
+			line += " (" + repo + ")"
+		}
+		line = oneLine(line, optionLineChars)
+	case a.AlertRuleChange != nil:
+		line = "Changes the alert rule."
+	default:
+		line = oneLine("A person makes this change: "+firstNonEmpty(a.DeliveryReason, "NudgeBee doesn't run it"), optionLineChars)
+	}
+	if t := oneLine(a.TradeOff, 160); t != "" {
+		line += " · Heads-up: " + t
+	}
+	return text + "\n" + line
+}
+
+// oneLine is text's first line, at most n bytes.
+func oneLine(text string, n int) string {
+	return truncate(strings.TrimSpace(strings.SplitN(strings.TrimSpace(text), "\n", 2)[0]), n)
 }
 
 // surfaceWords is where an approval was given, as the footer says it.
@@ -642,7 +680,7 @@ func optionsStatus(view alertThreadView, s threadState) string {
 	case s.Busy:
 		add("**Nubi is working in this alert's conversation.** The buttons come back when it is done.")
 	case s.picking(view):
-		add("Pick a fix: *Use fix N* asks for approval in this thread before anything runs.")
+		add("Pick a fix: *Use this fix* asks for approval in this thread before anything runs.")
 	}
 	if s.CameBack != nil {
 		add(fmt.Sprintf("**The alert came back** at %s, %d min after the fix.", clock(s.CameBack.FiredAt), s.CameBack.MinutesAfter))

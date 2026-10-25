@@ -907,10 +907,22 @@ def test_the_analysis_posts_each_section_once_then_marks_the_card():
     assert stamps == ["Analyzed by Nubi. See the thread."]
 
 
-def test_asking_again_after_it_finished_posts_only_the_write_up():
+def test_an_analysis_finished_before_the_ask_posts_the_whole_write_up():
+    # A reused analysis (a repeat of the alert) or a repeat ask: this job posted no investigation to the thread,
+    # so the write-up goes out whole, not just what it adds after the investigation.
     posted, stamps = _analyze([_result("COMPLETED", summary="s", investigation="i", detailed_response="i\n\nmore")])
-    assert posted == ["Here's the full write-up:\n\nmore"]
+    assert posted == ["Here's the full write-up:\n\ni\n\nmore"]
     assert stamps == ["Analyzed by Nubi. See the thread."]
+
+
+def test_the_write_up_after_an_investigation_this_job_posted_adds_only_the_rest():
+    posted, _ = _analyze(
+        [
+            _result(investigation="i"),
+            _result("COMPLETED", investigation="i", detailed_response="i\n\nmore"),
+        ]
+    )
+    assert posted == ["Here's what I'm finding on the likely root cause:\n\ni", "Here's the full write-up:\n\nmore"]
 
 
 def test_a_failed_post_is_retried_before_the_card_is_marked():

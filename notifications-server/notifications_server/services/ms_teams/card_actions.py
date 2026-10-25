@@ -886,16 +886,23 @@ async def _take_result(result, progress, post, stamp) -> bool:
     statuses = result.get("task_statuses") or {}
     status = (result.get("status") or "").upper()
     if progress["first"] and status == "COMPLETED":
-        # Finished earlier: its sections are already in the thread.
+        # Finished earlier (a repeat ask, or an analysis reused for a repeat of
+        # the alert): its sections are not posted one by one; the write-up
+        # below goes out whole, since this job posted no investigation.
         sent.update(field for field, _ in ANALYSIS_SECTIONS)
     progress["first"] = False
+    posted = progress.setdefault("posted", set())
     for field, preamble in ANALYSIS_SECTIONS:
         if field not in sent and statuses.get(field) == "COMPLETED":
             if await post(result.get(field), preamble):
                 sent.add(field)
+                posted.add(field)
     if statuses.get("detailed_response") == "COMPLETED":
         content, preamble = final_writeup(
-            result.get("detailed_response"), result.get("investigation"), result.get("summary")
+            result.get("detailed_response"),
+            result.get("investigation"),
+            result.get("summary"),
+            investigation_posted="investigation" in posted,
         )
         if await post(content, preamble):
             await stamp("Analyzed by Nubi. See the thread.")
@@ -910,8 +917,9 @@ async def _take_result(result, progress, post, stamp) -> bool:
 async def _analyze(job) -> None:
     """Poll the event analysis, post each section to the card's thread as it
     completes, then mark the card. regenerate is False, so this only reads
-    llm-server's state; a repeat after it finished re-posts just the write-up,
-    as on Slack."""
+    llm-server's state; an analysis that had finished before the job (a repeat
+    ask, or one reused for a repeat of the alert) posts the whole write-up, as
+    on Slack."""
     from notifications_server import slack_app, teams_app
     from notifications_server.services.common import CommonService
     from notifications_server.services.events import Events
@@ -933,7 +941,7 @@ async def _analyze(job) -> None:
             await _show(activity, card)
 
     try:
-        progress = {"sent": set(), "first": True}
+        progress = {"sent": set(), "posted": set(), "first": True}
         failures, calls = 0, 0
         token = job["token"]
         while time.monotonic() < job["deadline"]:

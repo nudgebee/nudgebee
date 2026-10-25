@@ -387,7 +387,7 @@ def _run_background(
     return calls, common_service
 
 
-def _run_background_with_panel(monkeypatch, *, analysis_result, poller_claims=None):
+def _run_background_with_panel(monkeypatch, *, analysis_result, poller_claims=None, thread_marks=None):
     """Like _run_background, but with a real streaming-panel client so the
     open-before-kickoff / reveal-or-close orchestration in
     _run_event_analysis_background itself can be asserted on directly.
@@ -412,9 +412,18 @@ def _run_background_with_panel(monkeypatch, *, analysis_result, poller_claims=No
         slack_app=SimpleNamespace(client=slack_client),
         app_id="A0BMNEUDJMA",
     )
+    marks = thread_marks if thread_marks is not None else set()
+
+    def claim(key, ttl):
+        if key in marks:
+            return False
+        marks.add(key)
+        return True
+
     cache = SimpleNamespace(
         cache_event_entry=lambda **k: None,
         claim_event_analysis_poller=lambda event_id, ttl: bool(poller_claims),
+        claim_card_action=claim,
     )
     event_service = SimpleNamespace(cache=cache)
     fake_service = SimpleNamespace(common_service=common_service, event_service=event_service, close=lambda: None)
@@ -1246,6 +1255,74 @@ class TestEventAnalysisPoller:
         )
 
         assert "Full write-up: OOMKilled due to a memory limit regression." in calls["posted"][2]
+
+    def test_a_finished_analysis_on_click_posts_the_whole_write_up(self, monkeypatch):
+        # A reused analysis (a repeat of the alert joining its chain) is
+        # already COMPLETED on the click: its investigation was never posted
+        # to this thread, so the whole write-up goes out, not only the
+        # sections it adds after the investigation.
+        investigation = "### Causality Chain\n- Root Cause: OOMKilled."
+        calls = _run_background_with_panel(
+            monkeypatch,
+            analysis_result={
+                "status": "COMPLETED",
+                "investigation": investigation,
+                "detailed_response": investigation + "\n\n### Historical Pattern\n- 859 occurrences",
+            },
+        )
+
+        # The investigation as its own message (as a running analysis posts it), then the rest: one message would
+        # cut the write-up's own sections at Slack's 3000 characters a section.
+        assert len(calls["posted"]) == 2
+        assert "Root Cause: OOMKilled." in calls["posted"][0] and "Historical Pattern" not in calls["posted"][0]
+        assert "Historical Pattern" in calls["posted"][1] and "Root Cause: OOMKilled." not in calls["posted"][1]
+        assert "<@" in calls["posted"][1], "the closing message pings"
+
+    def test_a_repeat_click_in_the_same_thread_does_not_post_the_investigation_again(self, monkeypatch):
+        investigation = "### Causality Chain\n- Root Cause: OOMKilled."
+        result = {
+            "status": "COMPLETED",
+            "investigation": investigation,
+            "detailed_response": investigation + "\n\n### Historical Pattern\n- 859 occurrences",
+        }
+        marks = set()
+        first = _run_background_with_panel(monkeypatch, analysis_result=result, thread_marks=marks)
+        assert len(first["posted"]) == 2
+        again = _run_background_with_panel(monkeypatch, analysis_result=result, thread_marks=marks)
+        assert len(again["posted"]) == 1, "only what the write-up adds"
+        assert "Historical Pattern" in again["posted"][0] and "Root Cause: OOMKilled." not in again["posted"][0]
+
+    def test_a_long_reused_write_up_keeps_its_closing_sections(self, monkeypatch):
+        investigation = "### Causality Chain\n" + "- evidence line\n" * 300
+        calls = _run_background_with_panel(
+            monkeypatch,
+            analysis_result={
+                "status": "COMPLETED",
+                "investigation": investigation,
+                "detailed_response": investigation + "\n\n### Historical Pattern\n- 859 occurrences",
+            },
+        )
+        assert "Historical Pattern" in calls["posted"][-1]
+
+    def test_poller_posts_the_whole_write_up_when_its_investigation_was_not_posted(self, monkeypatch):
+        # The investigation stage reports COMPLETED with no text (nothing was
+        # posted for it), so the write-up is not trimmed against it.
+        investigation = "### Causality Chain\n- Root Cause: OOMKilled."
+        calls = _run_poller(
+            monkeypatch,
+            [
+                {
+                    "status": "COMPLETED",
+                    "task_statuses": {"detailed_response": "COMPLETED"},
+                    "investigation": investigation,
+                    "detailed_response": investigation + "\n\n### Affected Components\n- pod/api-7f",
+                }
+            ],
+        )
+
+        assert len(calls["posted"]) == 2
+        assert "Root Cause: OOMKilled." in calls["posted"][0]
+        assert "Affected Components" in calls["posted"][1]
 
     def test_post_investigation_content_returns_false_on_slack_failure(self):
         context = _poller_context()

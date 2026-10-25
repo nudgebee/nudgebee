@@ -540,7 +540,8 @@ func TestPlanningTurnWritesThePlan(t *testing.T) {
 	f.turn = func(tc toolcore.NbToolContext) {
 		out, err := proposeFix(tc, "the limit is 512Mi and the pod peaks at 700Mi", testPlanJSON)
 		require.NoError(t, err)
-		assert.Contains(t, out, "Proposed a new plan")
+		assert.Contains(t, out, "Stored a new version of the alert's fixes, with 1 fix option")
+		assert.Contains(t, out, "Your final answer is one sentence that the fixes were updated")
 		_, second = proposeFix(tc, "again", testPlanJSON)
 	}
 	f.idle = false

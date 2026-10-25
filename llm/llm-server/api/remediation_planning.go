@@ -73,6 +73,9 @@ type planRequestInput struct {
 	By      string // the person who asked; "" for NudgeBee
 	Reasons []string
 	Note    string
+	// OutOfDate: the caller found the event's plan no longer applies (planRelevance), so an automatic request is
+	// not refused for the plan it has (queueChainPlannings).
+	OutOfDate bool
 }
 
 // planningEvent is the event as a planning request reads it.
@@ -190,7 +193,7 @@ func requestBackgroundPlan(ctx *security.RequestContext, accountId, eventId stri
 		return events.PlanningRequest{}, notOwnPlanReason, nil
 	}
 	stored, hasPlan := loadSavedPlan(ctx, accountId, eventId)
-	if in.Kind == planTurnAuto && hasPlan && !stored.Stale {
+	if in.Kind == planTurnAuto && hasPlan && !stored.Stale && !in.OutOfDate {
 		return events.PlanningRequest{}, "the alert already has fixes prepared from this investigation", nil
 	}
 	if in.Kind == planTurnRecheck && !hasPlan {
@@ -276,6 +279,8 @@ func runDuePlannings() error {
 	if err != nil {
 		return fmt.Errorf("remediation_planning: %w", err)
 	}
+	// Recurring alerts run no investigation of their own, so nothing else asks for their plan.
+	queueChainPlannings(dbManager.Db)
 	ctx, cancel := context.WithTimeout(context.Background(), decisionDBTimeout)
 	defer cancel()
 	open, err := events.OpenPlannings(ctx, dbManager.Db, 100)

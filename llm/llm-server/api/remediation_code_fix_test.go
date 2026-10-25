@@ -122,10 +122,11 @@ func TestSourceStepTextAgreesWithTheTab(t *testing.T) {
 
 	// The Slack thread's fix options say the same, and offer no Run for it.
 	last := optionText(deploy, 0, -1)
-	assert.Contains(t, last, "Change in the deployment source in Deployment demo/leaky-app")
-	assert.Contains(t, last, "Make the change in source, then mark it made")
-	assert.NotContains(t, last, "a person makes this change")
+	assert.Contains(t, last, "_change in the deployment source_")
+	assert.Contains(t, last, "bound the cache to 10000 entries with LRU eviction in Deployment demo/leaky-app")
+	assert.NotContains(t, last, "A person makes this change")
 	assert.NotEqual(t, pickKindRun, pickMode(deploy), "no Use this fix for a source step")
+	assert.Equal(t, "Mark done", optionButton(deploy, 0).Label)
 
 	// With no repo known, applying it from the chat says to make the change and mark it done (the leaky app's plan).
 	_, err := stepRequest(leakSourceFixOnly(), "a", "e", runStepRequest{PlanVersion: "v1", Step: 1, Action: "apply"})

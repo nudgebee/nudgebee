@@ -271,6 +271,14 @@ type threadPost struct {
 	OnlyIfPosted bool           `json:"only_if_posted,omitempty"`
 	Buttons      []threadButton `json:"buttons,omitempty"`
 	Status       string         `json:"status,omitempty"`
+	// Sections are parts drawn after Text, each its own Slack section with its button beside it (the fix options).
+	Sections []threadSection `json:"sections,omitempty"`
+}
+
+// threadSection is one part of a message: markdown text and, optionally, the button beside it.
+type threadSection struct {
+	Text   string        `json:"text"`
+	Button *threadButton `json:"button,omitempty"`
 }
 
 // threadPosts is one send: messages for one alert's thread (Fingerprint's), in order. A send for an alert with no
