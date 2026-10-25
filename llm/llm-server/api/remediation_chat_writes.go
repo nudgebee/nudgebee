@@ -223,6 +223,8 @@ type chatStepApproval struct {
 	// ApprovalKey is <confirmation key>:<follow-up message id> (C1).
 	ApprovalKey string
 	ApprovedBy  string
+	// Answer is the note and surface recorded with the approval (remediation_approval_note.go).
+	Answer approvalAnswer
 }
 
 // chatStepApprovalOf is the approval a run_step call runs under when the loop is on, or nil: the call
@@ -235,6 +237,7 @@ func chatStepApprovalOf(ctx toolcore.NbToolContext, userId string) *chatStepAppr
 	return &chatStepApproval{
 		ApprovalKey: chatWriteApprovalKey(approval.ConfirmationKey, approval.Ref.MessageId),
 		ApprovedBy:  firstNonEmpty(strings.TrimSpace(approval.Ref.ApprovedBy), userId),
+		Answer:      approvalAnswerOf(requestGoContext(ctx.Ctx), ctx.AccountId, approval.Ref.MessageId),
 	}
 }
 
@@ -377,6 +380,9 @@ func recordApprovedChatWrite(ctx *security.RequestContext, w agentcore.ApprovedW
 		"command":     write.Command,
 		"approved_by": approver,
 		"slot":        RemediationSlotExecute,
+	}
+	if w.Rule == nil {
+		withApprovalAnswer(data, approvalAnswerOf(detached.GetContext(), w.AccountId, w.Ref.MessageId))
 	}
 	userId := approver
 	if w.Rule != nil {

@@ -138,6 +138,9 @@ type deniedApproval struct {
 	// Reason is set when NudgeBee closed the approval unanswered instead of a person denying it: "lapsed" (nobody
 	// answered in time) or "superseded" (the alert cleared and fired again after it was asked). Nothing ran.
 	Reason string `json:"reason,omitempty"`
+	// Note is the optional note the person gave with the denial; AnsweredFrom where they answered it (web or slack).
+	Note         string `json:"note,omitempty"`
+	AnsweredFrom string `json:"answered_from,omitempty"`
 	// AskedAt is when the approval was asked; AskedBy the person whose turn asked it, AskedByName their name.
 	AskedAt     time.Time `json:"asked_at"`
 	AskedBy     string    `json:"asked_by,omitempty"`

@@ -19,8 +19,12 @@ const (
 )
 
 func expectRun(mock sqlmock.Sqlmock, eventID, verdict, causeKey string) {
+	expectRunFired(mock, eventID, verdict, causeKey, false)
+}
+
+func expectRunFired(mock sqlmock.Sqlmock, eventID, verdict, causeKey string, firedAgain bool) {
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM event_resolution er JOIN events e ON e.id = er.event_id`)).WithArgs(resolveRunID, "acc").
-		WillReturnRows(sqlmock.NewRows([]string{"event_id", "verdict", "cause_key"}).AddRow(eventID, verdict, causeKey))
+		WillReturnRows(sqlmock.NewRows([]string{"event_id", "verdict", "cause_key", "fired_again"}).AddRow(eventID, verdict, causeKey, firedAgain))
 }
 
 // labelWith captures the nb_resolved_by label written.
@@ -70,6 +74,12 @@ func TestConfirmRemediationResolveRefuses(t *testing.T) {
 	expectTarget(mock, "ev", NBStatusOpen, "")
 	_, err = ConfirmRemediationResolve(context.Background(), db, "acc", "ev", resolveRunID, resolveUserID)
 	assert.ErrorIs(t, err, ErrNoVerdictToConfirm, "a run of an event this one does not follow")
+	require.NoError(t, mock.ExpectationsWereMet())
+
+	// The alert came back after the check: "Likely fixed" no longer stands, on any surface.
+	expectRunFired(mock, "ev", VerdictFixed, "null", true)
+	_, err = ConfirmRemediationResolve(context.Background(), db, "acc", "ev", resolveRunID, resolveUserID)
+	assert.ErrorIs(t, err, ErrFiredAgainAfterVerdict)
 	require.NoError(t, mock.ExpectationsWereMet())
 
 	_, err = ConfirmRemediationResolve(context.Background(), db, "acc", "ev", resolveRunID, "")

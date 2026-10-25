@@ -539,6 +539,7 @@ func stepDecision(request RemediationExecuteRequest, userId string, stored store
 	}
 	if a := request.ChatApproval; a != nil && a.ApprovalKey != "" {
 		data["approved_by"] = firstNonEmpty(a.ApprovedBy, userId)
+		withApprovalAnswer(data, a.Answer)
 		if tool := commandTool(firstNonEmpty(command, request.Command)); tool != "" {
 			data["tool"] = tool
 		}

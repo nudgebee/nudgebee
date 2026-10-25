@@ -154,12 +154,33 @@ const (
 // ErrNoVerdictToConfirm: the run has no likely-fixed verdict for this event, so there is nothing to confirm.
 var ErrNoVerdictToConfirm = errors.New("remediation resolve: this run has no likely-fixed verdict for the event")
 
+// ErrFiredAgainAfterVerdict: the alert fired again after the run's check ended, so its "Likely fixed" no longer stands.
+// The Remediation tab hides Resolve then ("came back"); the server refuses it too, for every surface (Slack included).
+var ErrFiredAgainAfterVerdict = errors.New("remediation resolve: the alert fired again after this fix was checked, so it is not confirmed as fixed; look at the alert again before resolving")
+
 // confirmableRun is a run row as a person's resolve reads it.
 type confirmableRun struct {
 	EventID  string `db:"event_id"`
 	Verdict  string `db:"verdict"`
 	CauseKey string `db:"cause_key"`
+	// FiredAgain: a firing of the run's alert (its fingerprint, the run's event, or a duplicate of it) started after the
+	// run's check ended (data.followup.verdict_at, else done_at) — the rule llm-server's remediation read uses for
+	// loop.refire_after_run (loadPlanFacts). Event times are naive UTC, so the RFC 3339 check time is read in UTC
+	// whatever the session's time zone.
+	FiredAgain bool `db:"fired_again"`
 }
+
+// confirmableRunSQL reads a run for a person's resolve ($1 run, $2 account).
+const confirmableRunSQL = `SELECT er.event_id::text AS event_id,
+		       COALESCE(er.data->'followup'->>'verdict', '') AS verdict,
+		       COALESCE(er.data->'followup'->'cause_key', 'null'::jsonb)::text AS cause_key,
+		       EXISTS (SELECT 1 FROM events n
+		         WHERE n.cloud_account_id = e.cloud_account_id
+		           AND (n.id = e.id OR (COALESCE(e.fingerprint, '') <> '' AND n.fingerprint = e.fingerprint)
+		             OR (n.labels IS NOT NULL AND n.labels <> '{}'::jsonb AND n.labels @> jsonb_build_object('nb_duplicate_of', e.id::text)))
+		           AND COALESCE(n.starts_at, n.created_at) > COALESCE(NULLIF(er.data->'followup'->>'verdict_at', ''), NULLIF(er.data->'followup'->>'done_at', ''))::timestamptz AT TIME ZONE 'UTC') AS fired_again
+		  FROM event_resolution er JOIN events e ON e.id = er.event_id
+		 WHERE er.id = $1::uuid AND e.cloud_account_id = $2::uuid AND er.type = 'CommandExecution'`
 
 // ConfirmRemediationResolve resolves an event whose run llm-server judged likely fixed (or cleared before the
 // change), because a person confirmed it. The label is the verdict's, read from the run row, not from the caller:
@@ -173,11 +194,7 @@ func ConfirmRemediationResolve(ctx context.Context, db *sqlx.DB, accountID, even
 		return nil, ErrNoVerdictToConfirm
 	}
 	var run confirmableRun
-	err := db.GetContext(ctx, &run, `SELECT er.event_id::text AS event_id,
-		       COALESCE(er.data->'followup'->>'verdict', '') AS verdict,
-		       COALESCE(er.data->'followup'->'cause_key', 'null'::jsonb)::text AS cause_key
-		  FROM event_resolution er JOIN events e ON e.id = er.event_id
-		 WHERE er.id = $1::uuid AND e.cloud_account_id = $2::uuid AND er.type = 'CommandExecution'`, runID, accountID)
+	err := db.GetContext(ctx, &run, confirmableRunSQL, runID, accountID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNoVerdictToConfirm
 	}
@@ -186,6 +203,9 @@ func ConfirmRemediationResolve(ctx context.Context, db *sqlx.DB, accountID, even
 	}
 	if run.Verdict != VerdictFixed && run.Verdict != VerdictClearedBeforeChange {
 		return nil, ErrNoVerdictToConfirm
+	}
+	if run.FiredAgain {
+		return nil, ErrFiredAgainAfterVerdict
 	}
 	if run.EventID != eventID {
 		target, err := readRemediationTarget(ctx, db, accountID, eventID)

@@ -291,7 +291,7 @@ func fillPlanLoop(loop *remediationLoopState, in remediationGetInput, facts plan
 	if facts.Planning != nil && facts.Planning.State == events.PlanningParked {
 		loop.ParkedRecheck = true
 	}
-	if hasPlan && facts.Event != nil && facts.Event.PlanAt != nil && facts.Event.InvestigatedAt != nil && facts.Event.InvestigatedAt.After(*facts.Event.PlanAt) {
+	if hasPlan && investigatedAfterPlan(facts.Event) {
 		loop.InvestigationAfterPlan = &investigationAfterPlan{At: *facts.Event.InvestigatedAt}
 	}
 	switch {

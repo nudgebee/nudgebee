@@ -98,8 +98,14 @@ type ConversationApiRequest struct {
 	// normally.
 	Resolution string `json:"resolution,omitempty"`
 	// Reason is an optional user-supplied note recorded with a "dismiss"
-	// Resolution. Ignored otherwise.
+	// Resolution. With the remediation loop on it is also the optional note a
+	// person gives with an answer to an approval of a plan step in an alert's
+	// conversation (remediation_approval_note.go). Ignored otherwise.
 	Reason string `json:"reason,omitempty"`
+	// RemediationPick, when set, makes this message a pick of one of the
+	// alert's fix options, checked and worded by the server
+	// (remediation_pick.go).
+	RemediationPick *remediationPickRequest `json:"remediation_pick,omitempty"`
 }
 
 type ConversationTerminateApiRequest struct {
@@ -803,6 +809,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		if refuseReadOnlyAlertApproval(c, agentContext, request) {
 			return
 		}
+		// A pick of one of the alert's fixes is checked and worded by the server (remediation_pick.go).
+		if !applyRemediationPick(c, agentContext, &request) {
+			return
+		}
 
 		// Resolve a pending follow-up without answering it (dismiss/terminate).
 		// Handled before budget checks — cancelling doesn't consume LLM budget.
@@ -826,6 +836,12 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		budgetExceeded := checkChatBudgetAndRespond(c, agentContext.GetSecurityContext().GetTenantId(), request.AccountId, request.SessionId, request.AgentId, agentContext.GetSecurityContext().GetUserId(), existingConversation, module, logger)
 		timer.mark("budget")
 		if budgetExceeded {
+			return
+		}
+
+		// The note and surface of an answer to an approval in an alert's conversation (remediation_approval_note.go).
+		if code, message := recordApprovalAnswer(agentContext, request); code != 0 {
+			c.JSON(code, BuildApiResponse(nil, []error{common.Error{Message: message}}))
 			return
 		}
 

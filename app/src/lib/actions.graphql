@@ -6232,6 +6232,14 @@ input AITriggerInvestigationRequest {
   capabilities: AIConfigCapabilitiesInput
   client_tools: [AIConfigClientToolInput]
   images: [AIImageAttachmentInput]
+  remediation_pick: AIRemediationPickInput
+}
+
+input AIRemediationPickInput {
+  event_id: String
+  plan_version: String!
+  option: Int!
+  kind: String!
 }
 
 input AIImageAttachmentInput {

@@ -85,30 +85,41 @@ const textSx = { fontSize: 'var(--ds-text-small)' };
 const hintSx = { fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)' };
 const headSx = { fontWeight: 'var(--ds-font-weight-semibold)', fontSize: 'var(--ds-text-small)' };
 
+// APPROVAL_NOTE_MAX is the longest note the server keeps with an answer (llm-server maxApprovalNote).
+export const APPROVAL_NOTE_MAX = 500;
+
 // answerApproval answers the assistant's pending approval the way web chat does: the follow-up response on the
-// approval's message in the conversation holding it, "yes" to approve, "no" to deny. Without that conversation nothing
-// is sent: the person answers in chat.
-export async function answerApproval({ accountId, approval, approve }) {
+// approval's message in the conversation holding it, "yes" to approve, "no" to deny, with the person's optional note
+// (kept on the run record, or on the denial). Without that conversation nothing is sent: the person answers in chat.
+export async function answerApproval({ accountId, approval, approve, note = '' }) {
   const conversationId = trimmed(approval?.conversation_id);
   if (!conversationId) throw new Error('Answer it in chat.');
-  return apiAskNudgebee.aiFollowupResponse({
+  const reason = trimmed(note).slice(0, APPROVAL_NOTE_MAX);
+  const res = await apiAskNudgebee.aiFollowupResponse({
     account_id: accountId,
     conversation_id: conversationId,
     message_id: approval.message_id,
     agent_id: approval.agent_id,
     query: approve ? 'yes' : 'no',
+    ...(reason ? { reason } : {}),
   });
+  const errors = res?.data?.errors;
+  if (Array.isArray(errors) && errors.length) throw new Error(errors[0]?.message || 'Could not send the answer.');
+  return res;
 }
 
 // sendToConversation posts a message into the alert's conversation as the signed-in person, the same call the chat's
-// own composer makes, scoped to the event. Throws with the server's reason when the message was not taken.
-export async function sendToConversation({ accountId, sessionId, eventId, text }) {
+// own composer makes, scoped to the event. A pick ({option, kind, planVersion}) is sent as a structured pick: the
+// server checks it (write access, the fixes still current, nothing under way) and writes the message's words. Throws
+// with the server's reason when the message was not taken.
+export async function sendToConversation({ accountId, sessionId, eventId, text, pick }) {
   if (!sessionId) throw new Error('This event has no conversation to send to.');
   const res = await apiAskNudgebee.aiGenerateInvestigate({
     account_id: accountId,
     query: text,
     session_id: sessionId,
     ...(eventId ? { config: { event_id: eventId } } : {}),
+    ...(pick ? { remediation_pick: { event_id: eventId || '', plan_version: pick.planVersion || '', option: pick.option, kind: pick.kind } } : {}),
   });
   const result = res?.data?.data?.ai_execute_investigation;
   const errors = res?.data?.errors?.length ? res.data.errors : result?.errors;
@@ -415,11 +426,14 @@ function ApprovalCard({ approval, canAct, onAnswer, refreshedAt, assistantLabel 
   const [sending, setSending] = useState('');
   const [error, setError] = useState('');
   const [sent, setSent] = useState('');
+  // An optional note with the answer, kept on the run record (or the denial) and shown on the timeline.
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [note, setNote] = useState('');
   const answer = async (approve) => {
     setSending(approve ? 'approve' : 'deny');
     setError('');
     try {
-      await onAnswer(approval, approve);
+      await onAnswer(approval, approve, note.trim());
       setSent(
         approve
           ? 'Approved. It runs once and the result is recorded below.'
@@ -446,29 +460,53 @@ function ApprovalCard({ approval, canAct, onAnswer, refreshedAt, assistantLabel 
           {sent}
         </Box>
       ) : (
-        <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)' }}>
-          <Button
-            tone='primary'
-            size='xs'
-            onClick={() => answer(true)}
-            loading={sending === 'approve'}
-            disabled={!canAct || !!sending}
-            tooltip={!canAct ? 'Requires write access' : undefined}
-            data-testid='remediation-loop-approve'
-          >
-            {refreshedAt ? 'Approve anyway' : 'Approve'}
-          </Button>
-          <Button
-            tone='secondary'
-            size='xs'
-            onClick={() => answer(false)}
-            loading={sending === 'deny'}
-            disabled={!canAct || !!sending}
-            data-testid='remediation-loop-deny'
-          >
-            {refreshedAt ? 'Deny and re-check the fix' : 'Deny'}
-          </Button>
-        </Box>
+        <>
+          {noteOpen ? (
+            <Input
+              type='textarea'
+              minRows={2}
+              value={note}
+              onChange={(v) => setNote(String(v ?? '').slice(0, APPROVAL_NOTE_MAX))}
+              placeholder='Optional: why you approve or deny it (kept with the decision)'
+              id={`remediation-loop-approval-note-${approval.message_id}`}
+              data-testid='remediation-loop-approval-note'
+            />
+          ) : null}
+          <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)', alignItems: 'center' }}>
+            <Button
+              tone='primary'
+              size='xs'
+              onClick={() => answer(true)}
+              loading={sending === 'approve'}
+              disabled={!canAct || !!sending}
+              tooltip={!canAct ? 'Requires write access' : undefined}
+              data-testid='remediation-loop-approve'
+            >
+              {refreshedAt ? 'Approve anyway' : 'Approve'}
+            </Button>
+            <Button
+              tone='secondary'
+              size='xs'
+              onClick={() => answer(false)}
+              loading={sending === 'deny'}
+              disabled={!canAct || !!sending}
+              data-testid='remediation-loop-deny'
+            >
+              {refreshedAt ? 'Deny and re-check the fix' : 'Deny'}
+            </Button>
+            {!noteOpen ? (
+              <Button
+                tone='ghost'
+                size='xs'
+                onClick={() => setNoteOpen(true)}
+                disabled={!canAct || !!sending}
+                data-testid='remediation-loop-approval-add-note'
+              >
+                Add a note
+              </Button>
+            ) : null}
+          </Box>
+        </>
       )}
       {error ? <Box sx={{ ...textSx, color: 'var(--ds-red-600)' }}>{error}</Box> : null}
       <Box sx={hintSx}>
@@ -1044,7 +1082,9 @@ const RemediationLoopPanel = ({
     setPickError({ option: 0, message: '', notRun: false });
     setPicked({ option: n, planVersion: trimmed(remediation?.plan_version), sending: true, pr });
     try {
-      await sendToConversation({ accountId, sessionId, eventId: targetEventId, text });
+      // The text is what the chat shows until the server's own words replace it; the server checks and words the pick.
+      const pick = { option: n, kind: pr ? 'pr' : 'run', planVersion: trimmed(remediation?.plan_version) };
+      await sendToConversation({ accountId, sessionId, eventId: targetEventId, text, pick });
       setPicked({ option: n, planVersion: trimmed(remediation?.plan_version), sending: false, at: Date.now(), sawBusy: false, pr });
       onReload?.();
       return true;
@@ -1174,7 +1214,7 @@ const RemediationLoopPanel = ({
     // Re-evaluated on every read of the remediation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [remediation, resolutions, busy, approved, newRunSinceApprove]);
-  const answer = async (approval, approve) => {
+  const answer = async (approval, approve, note = '') => {
     setApproveError('');
     if (approve) {
       setApproved({
@@ -1186,19 +1226,15 @@ const RemediationLoopPanel = ({
       });
     }
     try {
-      await answerApproval({ accountId, approval, approve });
+      await answerApproval({ accountId, approval, approve, note });
       if (!approve) {
         // Denied: nothing runs, the approval is answered, and the options can be picked again.
         setAnsweredIds((ids) => [...ids, approval.message_id]);
         setPicked(null);
         setPickError({ option: 0, message: '', notRun: false });
-        if (refreshedAfterPlan) {
-          // A parked re-check starts on the planner's next tick once this is answered. With none parked (the automatic
-          // request had already ended without a plan), nothing would re-check it: ask for the re-check here, as the
-          // Re-check button does.
-          if (loop.parked_recheck === true) setRecheckAsked({ at: Date.now(), sawPreparing: false });
-          else askQuietly('recheck');
-        }
+        // With the investigation newer than the fixes, the server asks the assistant to re-check them on this denial
+        // (taking over a re-check parked behind it); the tab waits for it.
+        if (refreshedAfterPlan) setRecheckAsked({ at: Date.now(), sawPreparing: false });
       }
       onReload?.();
     } catch (e) {

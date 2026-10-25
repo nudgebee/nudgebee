@@ -327,6 +327,14 @@ const isAttempt = (row) =>
 const byCreated = (a, b) => (timeOf(a.created_at) || 0) - (timeOf(b.created_at) || 0);
 const attemptRuns = (rows) => (rows || []).filter(isAttempt).sort(byCreated);
 
+// answerText is how an approval was answered, after the person's name: where (" in Slack"; the tab and chat say
+// nothing) and the note they gave (: “…”), both as the server recorded them.
+export function answerText(from, note) {
+  const where = trimmed(from) === 'slack' ? ' in Slack' : '';
+  const said = trimmed(note);
+  return `${where}${said ? `: “${said}”` : ''}`;
+}
+
 // runApprover is who approved (or made) a run.
 export const runApprover = (row) => {
   const data = readData(row);
@@ -780,7 +788,14 @@ export function timelineOf({ res, rows, labels, loop, nbStatus, pending = {}, as
     const steps = [];
     const who = runApprover(r);
     if (who)
-      steps.push({ key: 'approved', icon: 'approved', text: `${data.manual === true ? 'Made by' : 'Approved by'} ${who}`, at: r.created_at || '' });
+      steps.push({
+        key: 'approved',
+        icon: 'approved',
+        text: `${data.manual === true ? 'Made by' : 'Approved by'} ${who}${
+          data.manual === true ? '' : answerText(data.approved_from, data.approval_note)
+        }`,
+        at: r.created_at || '',
+      });
     const full = runCommand(r);
     const summary = commandSummary(full);
     const exit = data.exit_code_reported === true && typeof data.exit_code === 'number' ? data.exit_code : null;
@@ -952,7 +967,10 @@ export function timelineOf({ res, rows, labels, loop, nbStatus, pending = {}, as
           {
             key: 'denied',
             icon: 'asked',
-            text: `${Number.isInteger(option) && option > 0 ? `Option ${option} denied` : 'Denied'}${by ? ` by ${by}` : ''} · nothing ran`,
+            text: `${Number.isInteger(option) && option > 0 ? `Option ${option} denied` : 'Denied'}${by ? ` by ${by}` : ''}${answerText(
+              d.answered_from,
+              d.note
+            )} · nothing ran`,
             command: trimmed(d.command),
             at: d.denied_at,
           },

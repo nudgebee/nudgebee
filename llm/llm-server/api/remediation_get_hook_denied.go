@@ -107,6 +107,9 @@ type deniedConfirmation struct {
 	// AskedBy is the person whose turn asked it; ClosedReason why NudgeBee closed it unanswered, or "".
 	AskedBy      string `db:"asked_by"`
 	ClosedReason string `db:"closed_reason"`
+	// Note and AnsweredFrom were recorded with the answer (remediation_approval_note.go).
+	Note         string `db:"answer_note"`
+	AnsweredFrom string `db:"answered_from"`
 }
 
 // deniedConfirmations reads the conversation's run_step confirmations answered no or deny within
@@ -132,6 +135,7 @@ func deniedConfirmationsIn(ctx *security.RequestContext, db *sqlx.DB, accountId,
 	var rows []deniedConfirmation
 	err := db.SelectContext(readCtx, &rows, incidentWindow+`SELECT m.id::text AS message_id, COALESCE(m.response, '') AS response, m.updated_at AS denied_at,
 		       m.created_at AS asked_at, COALESCE(m.message_config, '') AS config, COALESCE(m.metadata->>'closed_reason', '') AS closed_reason,
+		       COALESCE(m.metadata->>'answer_note', '') AS answer_note, COALESCE(m.metadata->>'answered_from', '') AS answered_from,
 		       COALESCE((SELECT t.message_config FROM llm_conversation_agent a JOIN llm_conversation_messages t ON t.id = a.message_id
 		                  WHERE a.account_id = c.account_id AND a.followup_message_id = m.id
 		                  ORDER BY a.created_at DESC LIMIT 1), '') AS turn_config,
@@ -188,6 +192,9 @@ func deniedApprovalsOf(accountId, planEventId string, rows []deniedConfirmation)
 			Reason:      r.ClosedReason,
 			AskedAt:     r.AskedAt.UTC(),
 			AskedBy:     strings.TrimSpace(r.AskedBy),
+		}
+		if r.ClosedReason == "" {
+			d.Note, d.AnsweredFrom = strings.TrimSpace(r.Note), strings.TrimSpace(r.AnsweredFrom)
 		}
 		if (slot == "apply" || slot == "rollback") && command != "" && option > 0 {
 			d.StepKey = events.ApprovalKey(accountId, planEventId, planVersion, fmt.Sprintf("%d:%s", option-1, slot), command)

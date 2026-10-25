@@ -170,6 +170,32 @@ describe('A. Where it stands', () => {
     );
   });
 
+  it('approval with a note: "Add a note" opens it, and the answer carries it', async () => {
+    apiAskNudgebee.aiFollowupResponse.mockResolvedValue({});
+    renderPanel({ ...v6, loop: { ...ready, pending_approvals: [webApproval] } });
+    expect(screen.queryByTestId('remediation-loop-approval-note')).toBeNull();
+    fireEvent.click(screen.getByTestId('remediation-loop-approval-add-note'));
+    fireEvent.change(screen.getByTestId('remediation-loop-approval-note'), { target: { value: '  after the 14:00 freeze  ' } });
+    fireEvent.click(screen.getByTestId('remediation-loop-deny'));
+    await waitFor(() =>
+      expect(apiAskNudgebee.aiFollowupResponse).toHaveBeenCalledWith({
+        account_id: 'acc-1',
+        conversation_id: 'conv-1',
+        message_id: 'msg-1',
+        agent_id: 'agent-1',
+        query: 'no',
+        reason: 'after the 14:00 freeze',
+      })
+    );
+  });
+
+  it('an answer the server refuses (e.g. the note could not be kept) shows its reason', async () => {
+    apiAskNudgebee.aiFollowupResponse.mockResolvedValue({ data: { errors: [{ message: 'your note could not be recorded' }] } });
+    renderPanel({ ...v6, loop: { ...ready, pending_approvals: [webApproval] } });
+    fireEvent.click(screen.getByTestId('remediation-loop-approve'));
+    expect(await screen.findByText(/your note could not be recorded/)).toBeInTheDocument();
+  });
+
   it('approval from Slack: no buttons, links the thread when known', () => {
     renderPanel({
       ...v6,
@@ -407,6 +433,7 @@ describe('B. Plan card', () => {
       query: 'Go with option 2: Live patch the Deployment.',
       session_id: 'event-fp1',
       config: { event_id: 'ev-1' },
+      remediation_pick: { event_id: 'ev-1', plan_version: 'pv1', option: 2, kind: 'run' },
     });
     expect(props.onOpenChat).not.toHaveBeenCalled();
   });
@@ -812,6 +839,33 @@ describe('Round 11: the alert came back after a fix', () => {
 describe('Round 13: deny, and the old panel never comes back', () => {
   const T = (hhmm) => `2026-10-23T${hhmm}:00Z`;
   const v3 = { ...v6, version: 3, plan_version: 'pv3', generated_at: T('13:20') };
+
+  it('a note given with an answer shows on the timeline, with Slack named when it was answered there', () => {
+    renderPanel(
+      {
+        ...v3,
+        loop: {
+          ...ready,
+          denied_approvals: [
+            {
+              message_id: 'm9',
+              command: 'kubectl scale deployment/web --replicas=0 -n demo',
+              option: 1,
+              plan_version: 'pv3',
+              denied_at: T('13:24'),
+              denied_by_name: 'Jane Doe',
+              note: 'not before the 14:00 freeze',
+              answered_from: 'slack',
+            },
+          ],
+        },
+      },
+      { resolutions: [{ ...run, created_at: T('12:48'), data: { ...run.data, plan_version: 'pv1' } }] }
+    );
+    expect(screen.getByTestId('remediation-loop-step-denied')).toHaveTextContent(
+      'Option 1 denied by Jane Doe in Slack: “not before the 14:00 freeze” · nothing ran'
+    );
+  });
 
   it('a denied approval is an attempt on the timeline: "Option 1 denied by <name> · nothing ran"', () => {
     renderPanel(
@@ -1683,19 +1737,19 @@ describe('Round 17: a PR attempt follows pr_lifecycle_state', () => {
   });
 });
 
-describe('Deny and re-check plan: the re-check runs whether or not one was parked', () => {
+describe('Deny and re-check plan: the server asks for the re-check, the tab only waits for it', () => {
   const Z = (hhmm) => `2026-10-23T${hhmm}:00Z`;
   const plan = { ...v6, version: 7, plan_version: 'pv7', generated_at: Z('10:00') };
   const refreshed = { at: Z('10:30') };
   const waitingLoop = (over) => ({ ...ready, pending_approvals: [webApproval], investigation_after_plan: refreshed, ...over });
 
-  it('nothing parked: after the deny the tab asks for the re-check itself', async () => {
+  it('nothing parked: the deny alone (the server queues the re-check on it), and the tab waits for it', async () => {
     apiAskNudgebee.aiFollowupResponse.mockResolvedValue({});
-    apiKubernetes.askRemediationPlan.mockResolvedValue({});
     renderPanel({ ...plan, loop: waitingLoop({}) });
     fireEvent.click(screen.getByTestId('remediation-loop-deny'));
-    await waitFor(() => expect(apiKubernetes.askRemediationPlan).toHaveBeenCalledWith({ accountId: 'acc-1', eventId: 'ev-1', mode: 'recheck' }));
-    expect(apiAskNudgebee.aiFollowupResponse).toHaveBeenCalledWith(expect.objectContaining({ query: 'no' }));
+    await waitFor(() => expect(apiAskNudgebee.aiFollowupResponse).toHaveBeenCalledWith(expect.objectContaining({ query: 'no' })));
+    await act(async () => {});
+    expect(apiKubernetes.askRemediationPlan).not.toHaveBeenCalled();
   });
 
   it('a re-check parked behind the approval: the deny alone, no request from the tab', async () => {

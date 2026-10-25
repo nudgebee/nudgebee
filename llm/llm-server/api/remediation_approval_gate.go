@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -42,6 +43,12 @@ type waitingApproval struct {
 	SessionId      string
 	// Confirmation: the follow-up is a tool confirmation (an approval of a write).
 	Confirmation bool
+	// FollowupMessageId is the follow-up message the agent waits on; Waiting whether that message still waits for
+	// its answer; ConfirmationKey the key its answer is recorded under (run_step:<plan version>:<step>:<action> for a
+	// plan step).
+	FollowupMessageId string
+	Waiting           bool
+	ConfirmationKey   string
 }
 
 // approvalOfAgent reads the follow-up agentId of accountId waits on: its conversation, that conversation's session
@@ -57,12 +64,17 @@ var approvalOfAgent = func(ctx context.Context, accountId, agentId string) (wait
 	readCtx, cancel := context.WithTimeout(ctx, decisionDBTimeout)
 	defer cancel()
 	var row struct {
-		ConversationId string `db:"conversation_id"`
-		SessionId      string `db:"session_id"`
-		Confirmation   bool   `db:"confirmation"`
+		ConversationId    string `db:"conversation_id"`
+		SessionId         string `db:"session_id"`
+		Confirmation      bool   `db:"confirmation"`
+		FollowupMessageId string `db:"followup_message_id"`
+		Waiting           bool   `db:"waiting"`
+		Config            string `db:"config"`
 	}
 	err = dbManager.Db.GetContext(readCtx, &row, `SELECT a.conversation_id::text AS conversation_id, COALESCE(c.session_id, '') AS session_id,
-		       COALESCE(m.message_config, '') LIKE '%"followupType":"tool_confirmation"%' AS confirmation
+		       COALESCE(m.message_config, '') LIKE '%"followupType":"tool_confirmation"%' AS confirmation,
+		       COALESCE(m.id::text, '') AS followup_message_id, COALESCE(m.status::text, '') = 'WAITING' AS waiting,
+		       COALESCE(m.message_config, '') AS config
 		  FROM llm_conversation_agent a
 		  JOIN llm_conversations c ON c.id = a.conversation_id
 		  LEFT JOIN llm_conversation_messages m ON m.id = a.followup_message_id AND m.message_type = 'followup'
@@ -73,7 +85,12 @@ var approvalOfAgent = func(ctx context.Context, accountId, agentId string) (wait
 	if err != nil {
 		return waitingApproval{}, fmt.Errorf("approvalOfAgent: %w", err)
 	}
-	return waitingApproval{Found: true, ConversationId: row.ConversationId, SessionId: row.SessionId, Confirmation: row.Confirmation}, nil
+	var config struct {
+		ConfirmationKey string `json:"confirmationKey"`
+	}
+	_ = json.Unmarshal([]byte(row.Config), &config)
+	return waitingApproval{Found: true, ConversationId: row.ConversationId, SessionId: row.SessionId, Confirmation: row.Confirmation,
+		FollowupMessageId: row.FollowupMessageId, Waiting: row.Waiting, ConfirmationKey: config.ConfirmationKey}, nil
 }
 
 // refuseReadOnlyAlertApproval answers 403 and reports true when request answers a tool confirmation in an alert's

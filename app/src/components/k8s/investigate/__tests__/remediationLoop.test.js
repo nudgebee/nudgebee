@@ -16,6 +16,8 @@ import {
   winningRun,
   isPlanStepRun,
   confirmedByName,
+  answerText,
+  timelineOf,
 } from '../remediationLoop';
 
 // Fixtures shaped exactly like the contracts: the C7 read (plan fields top level + loop), C1 run rows, C3 pull
@@ -252,5 +254,39 @@ describe('isPlanStepRun and confirmedByName', () => {
     expect(confirmedByName({ nb_resolved_by: JSON.stringify({ run_id: 'r', confirmed_by_name: 'Asha' }) })).toBe('Asha');
     expect(confirmedByName({ nb_resolved_by: JSON.stringify({ run_id: 'r' }) })).toBe('');
     expect(confirmedByName({})).toBe('');
+  });
+});
+
+describe('answerText', () => {
+  it('names Slack and quotes the note; the tab and chat add nothing', () => {
+    expect(answerText('slack', ' after the freeze ')).toBe(' in Slack: “after the freeze”');
+    expect(answerText('web', 'ok')).toBe(': “ok”');
+    expect(answerText('slack', '')).toBe(' in Slack');
+    expect(answerText(undefined, undefined)).toBe('');
+  });
+});
+
+describe('timelineOf: an approved run says what was recorded with its approval', () => {
+  const res = { plan_version: 'pv1', actions: [{ action: 'Restart the API', execute_command: 'kubectl rollout restart deploy/api -n shop' }] };
+  const row = (data) => ({
+    id: 'r1',
+    type: 'CommandExecution',
+    resolver_type: 'User',
+    resolver_display_name: 'Asha',
+    status: 'Success',
+    created_at: '2026-10-24T10:00:00Z',
+    data: { command: 'kubectl rollout restart deploy/api -n shop', option: 1, plan_version: 'pv1', step: '0:apply', ...data },
+  });
+  const approvedText = (data) =>
+    timelineOf({ res, rows: [row(data)], loop: {} })
+      .flatMap((it) => it.steps || [])
+      .find((st) => st.key === 'approved')?.text;
+  it('the note, and Slack when it was approved there', () => {
+    expect(approvedText({ approval_note: 'safe now', approved_from: 'slack' })).toBe('Approved by Asha in Slack: “safe now”');
+    expect(approvedText({ approval_note: 'safe now', approved_from: 'web' })).toBe('Approved by Asha: “safe now”');
+    expect(approvedText({})).toBe('Approved by Asha');
+  });
+  it('a change a person made carries no approval note', () => {
+    expect(approvedText({ manual: true, approval_note: 'x' })).toBe('Made by Asha');
   });
 });

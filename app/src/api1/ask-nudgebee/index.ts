@@ -596,6 +596,9 @@ const api = {
     if (data.images?.length) {
       query.images = data.images;
     }
+    if (data.remediation_pick) {
+      query.remediation_pick = data.remediation_pick;
+    }
     query.async = true;
     const response = await queryGraphQL(
       AI_TRIGGER_INVESTIGATE_RESPONSE.replace('__REQUEST__', gqlStringify(query)),

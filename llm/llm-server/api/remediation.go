@@ -1379,6 +1379,9 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 // the plan version the person saw; userId is that person.
 func decideStep(ctx *security.RequestContext, request RemediationExecuteRequest, userId string) stepAnswer {
 	slot := strings.ToLower(strings.TrimSpace(request.Slot))
+	if code, refusal := loopRunRefusal(request); refusal != "" {
+		return refuse(code, refusal)
+	}
 	stored, hasPlan := loadSavedPlan(ctx, request.AccountId, request.EventId)
 	if request.Step != nil && strings.TrimSpace(request.Command) == "" && hasPlan {
 		// A Slack step message names its step: its command and action are the stored plan's own, read after
@@ -1423,6 +1426,34 @@ func decideStep(ctx *security.RequestContext, request RemediationExecuteRequest,
 	}
 	return runRemediationStep(ctx, request, stored, command, userId)
 }
+
+// loopRunNeedsApproval is the refusal of a Run or undo pressed outside Nubi's approval with the remediation loop on.
+const loopRunNeedsApproval = "remediation: with the remediation loop on, a step runs only after Nubi asks for approval and a person approves it. Pick the fix on the Remediation tab, or ask in the alert's chat."
+
+// loopRunRefusal says why a decision that runs a command (Run, undo) is refused, or "". With the remediation loop on
+// every write on the alert goes through Nubi's run_step approval (#40734): only run_step's own decision (source chat,
+// set in code by runStepFromChat; a request body can only name "" or "slack") may run a step. The panel's Run and a
+// Slack step message's Run are refused before anything is read or recorded. Decline, "I ran this", verify and the
+// outcome check run nothing on the account and are unaffected. With the loop off nothing changes.
+//
+// The flag is read without falling back to off: if it cannot be read, a Run is refused (503) rather than let through
+// without an approval.
+func loopRunRefusal(request RemediationExecuteRequest) (int, string) {
+	if !isRunSlot(request.Slot) || request.Source == chatSource {
+		return 0, ""
+	}
+	on, err := events.RemediationLoopRead(request.AccountId)
+	if err != nil {
+		return 503, loopRunFlagUnread
+	}
+	if !on {
+		return 0, ""
+	}
+	return 409, loopRunNeedsApproval
+}
+
+// loopRunFlagUnread is the refusal of a Run when the remediation loop flag could not be read.
+const loopRunFlagUnread = "remediation: could not check this account's settings, so nothing ran; try again"
 
 // commandRunRejection says why a command of the plan is not sent as written, or "".
 func commandRunRejection(ctx *security.RequestContext, command string) string {

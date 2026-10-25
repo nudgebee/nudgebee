@@ -40,7 +40,7 @@ func handleEventsApplyRemediationResolve(h *ActionRequest, c *gin.Context, ctx *
 		return
 	}
 	resp, err := triage.ConfirmRemediationResolve(ctx.GetContext(), dbms.Db, accountID, eventID, strings.TrimSpace(runID), sc.GetUserId())
-	if errors.Is(err, triage.ErrNoVerdictToConfirm) {
+	if errors.Is(err, triage.ErrNoVerdictToConfirm) || errors.Is(err, triage.ErrFiredAgainAfterVerdict) {
 		c.JSON(http.StatusConflict, common.ErrorActionBadRequest(err.Error()))
 		return
 	}

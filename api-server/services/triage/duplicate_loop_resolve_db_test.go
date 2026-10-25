@@ -110,3 +110,42 @@ func TestReadRemediationTargetReportsAFiringMain_DB(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, got.Firing)
 }
+
+// A person's resolve is refused once the alert fired again after the run's check ended (the tab's "came back"), and
+// goes on while every firing started before it: the rule llm-server's remediation read uses.
+func TestConfirmRemediationResolveRefusedAfterAReFire_DB(t *testing.T) {
+	db := muteTestDB(t)
+	ctx := context.Background()
+	_, err := db.Exec(`
+		CREATE TABLE events (id uuid PRIMARY KEY, cloud_account_id uuid, nb_status text, status text, labels jsonb,
+			fingerprint text, starts_at timestamp, created_at timestamp DEFAULT now());
+		CREATE TABLE event_resolution (id uuid PRIMARY KEY, event_id uuid, type text, data jsonb)`)
+	require.NoError(t, err)
+	account, ev, run := uuid.New().String(), uuid.New().String(), uuid.New().String()
+	verdictAt := time.Now().UTC().Add(-10 * time.Minute)
+	_, err = db.Exec(`INSERT INTO events (id, cloud_account_id, nb_status, status, labels, fingerprint, starts_at)
+		VALUES ($1, $2, 'OPEN', 'RESOLVED', '{}', 'fp-refire', $3)`, ev, account, verdictAt.Add(-time.Hour))
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO event_resolution (id, event_id, type, data) VALUES ($1, $2, 'CommandExecution',
+		jsonb_build_object('followup', jsonb_build_object('verdict', 'fixed', 'verdict_at', $3::text)))`, run, ev, verdictAt.Format(time.RFC3339Nano))
+	require.NoError(t, err)
+	fired := func() bool {
+		var r confirmableRun
+		require.NoError(t, db.GetContext(ctx, &r, confirmableRunSQL, run, account))
+		return r.FiredAgain
+	}
+	assert.False(t, fired(), "only the run's own firing, which started before the check")
+
+	// A firing of another alert, and one of this alert that started before the check, do not count.
+	_, err = db.Exec(`INSERT INTO events (id, cloud_account_id, labels, fingerprint, starts_at) VALUES
+		($1, $3, '{}', 'fp-other', $4), ($2, $3, '{}', 'fp-refire', $5)`,
+		uuid.New().String(), uuid.New().String(), account, verdictAt.Add(time.Minute), verdictAt.Add(-time.Minute))
+	require.NoError(t, err)
+	assert.False(t, fired())
+
+	// A duplicate of the run's event that started after the check counts.
+	_, err = db.Exec(`INSERT INTO events (id, cloud_account_id, labels, fingerprint, starts_at)
+		VALUES ($1, $2, jsonb_build_object('nb_duplicate_of', $3::text), 'fp-dup', $4)`, uuid.New().String(), account, ev, verdictAt.Add(time.Minute))
+	require.NoError(t, err)
+	assert.True(t, fired())
+}

@@ -123,6 +123,17 @@ export interface InvestigateRequest {
   config?: ModelConfig;
   source?: string;
   images?: string[];
+  // A pick of one of an alert's fix options (remediation loop): the server checks it and writes the message.
+  remediation_pick?: RemediationPick;
+}
+
+// RemediationPick is a structured pick of a fix option: the event whose fixes were shown, their plan_version, the
+// option (from 1) and how it is carried out (run: the assistant runs it after an approval; pr: a pull request).
+export interface RemediationPick {
+  event_id: string;
+  plan_version: string;
+  option: number;
+  kind: 'run' | 'pr';
 }
 
 export interface FollowupRequest {
@@ -136,7 +147,8 @@ export interface FollowupRequest {
   // soft-skips the question and ends the conversation with a structured marker. A hard
   // terminate already exists as a separate action (see useLLMInvestigationControl's stop).
   resolution?: 'dismiss';
-  // Optional user-supplied note recorded with a 'dismiss' resolution. Ignored otherwise.
+  // Optional user-supplied note recorded with a 'dismiss' resolution, or (remediation loop) with an answer to an
+  // approval of a change on an alert. Ignored otherwise.
   reason?: string;
 }
 
