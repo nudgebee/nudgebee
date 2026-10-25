@@ -817,7 +817,10 @@ const ItemRow = ({
                   data-testid={`setup-add-${item.id}`}
                   onClick={() => (direct ? onSelect(item.providers[0].route) : onTogglePicker(item.id))}
                 >
-                  {connected ? 'Add more' : 'Add'}
+                  {/* "Add" only when the click really does add something directly — with
+                      more than one provider it opens a picker instead, so the label has to
+                      say that, not promise an add it can't do in one click (#41900). */}
+                  {direct ? (connected ? 'Add more' : 'Add') : 'Choose a provider'}
                 </Button>
               </Box>
             )}
@@ -944,7 +947,8 @@ const ItemRow = ({
               data-testid={`setup-add-${item.id}`}
               onClick={() => (direct ? onSelect(item.providers[0].route) : onTogglePicker(item.id))}
             >
-              {connected ? 'Add more' : 'Add'}
+              {/* See the other "Add" button's comment above — same rule (#41900). */}
+              {direct ? (connected ? 'Add more' : 'Add') : 'Choose a provider'}
             </Button>
           </Box>
         )}
@@ -1517,6 +1521,18 @@ const SetupCenter = () => {
     refreshGate();
   }, [refreshReadinessInputs, refreshGate]);
 
+  // Some connections have no in-app moment to hook a refresh onto at all —
+  // an Alertmanager webhook's first test alert, or a cloud account's first
+  // cost sync, both happen entirely outside this tab, on whatever schedule
+  // the other system fires on. Nothing short of polling can catch those the
+  // instant they happen; refetching whenever the user comes back to this tab
+  // is the cheap version of the same idea `openDefaultChannelSetup` already
+  // uses for its own one popup, generalised to the whole page (#41892).
+  React.useEffect(() => {
+    window.addEventListener('focus', refreshReadinessInputs);
+    return () => window.removeEventListener('focus', refreshReadinessInputs);
+  }, [refreshReadinessInputs]);
+
   // Accounts a knowledge base can actually be created under — real (non-demo)
   // rows only. Reuses the account list this page already fetched for
   // readiness rather than triggering a second listAccounts request.
@@ -1636,6 +1652,17 @@ const SetupCenter = () => {
       setK8sAgentInstallAccount(account);
     }
   }, []);
+
+  // The dialog polls agent health on its own, entirely separate from this
+  // page's own readiness fetch — closing it after it reports "connected"
+  // used to leave the account chip showing stale `partial` state until a
+  // full reload (#41892). Always refresh on close, not only once connected:
+  // the dialog has no success signal to key off either way, same reasoning
+  // as `openIntegration`'s chat OAuth popup handling above.
+  const closeK8sAgentInstall = React.useCallback(() => {
+    setK8sAgentInstallAccount(null);
+    refreshReadinessInputs();
+  }, [refreshReadinessInputs]);
 
   const closeIntegrationModal = React.useCallback(
     (saved?: boolean) => {
@@ -2178,7 +2205,7 @@ const SetupCenter = () => {
       {accountModal === 'GCP' && <AddGcpAccountModal open onClose={closeAccountModal} onAccountCreated={refreshReadiness} />}
       {accountModal === 'AZURE' && <AddAzureAccountModal open onClose={closeAccountModal} onAccountCreated={refreshReadiness} />}
       {accountModal === 'SELFHOSTED' && <AddSelfHostedAccountModal open onClose={closeSelfHostedAccountModal} />}
-      <K8sAgentInstallDialog open={!!k8sAgentInstallAccount} onClose={() => setK8sAgentInstallAccount(null)} account={k8sAgentInstallAccount} />
+      <K8sAgentInstallDialog open={!!k8sAgentInstallAccount} onClose={closeK8sAgentInstall} account={k8sAgentInstallAccount} />
 
       {/* Only shown when Add on Skills has more than one account to choose
           from — a single eligible account skips straight to the create form. */}

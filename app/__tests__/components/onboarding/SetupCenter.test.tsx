@@ -157,6 +157,12 @@ jest.mock('@ui/Modal', () => ({
     open ? (
       <div data-testid='ds-modal-stub'>
         <div data-testid='ds-modal-stub-title'>{title}</div>
+        {/* The real Modal always renders this close X regardless of footer
+            config — the only way to close a dialog with no confirm footer
+            of its own, like K8sAgentInstallDialog's content step. */}
+        <button type='button' aria-label='Close' onClick={() => (handleClose ?? onClose)?.()}>
+          ×
+        </button>
         {children}
         {actionButtons}
         {!actionButtons && confirmText !== undefined && (
@@ -724,6 +730,22 @@ describe('SetupCenter', () => {
     await waitFor(() => expect(mockGetAllAccount).toHaveBeenCalledTimes(2));
   });
 
+  // #41892: an Alertmanager webhook's first test alert, or a cloud account's
+  // first cost sync, both happen entirely outside this tab — nothing in-app
+  // to hook a refresh onto. Refetching on refocus is the cheap substitute for
+  // polling, same idea as the Slack/Teams popup refresh above, generalised to
+  // the whole page rather than one action.
+  it('refreshes readiness when the tab regains focus, catching a connection that happened elsewhere', async () => {
+    mockGetAllAccount.mockResolvedValue(payload([k8s]));
+    render(<SetupCenter />);
+
+    await screen.findByTestId('setup-item-account');
+    expect(mockGetAllAccount).toHaveBeenCalledTimes(1);
+
+    window.dispatchEvent(new Event('focus'));
+    await waitFor(() => expect(mockGetAllAccount).toHaveBeenCalledTimes(2));
+  });
+
   it("opens the dedicated Discord modal, not the generic form, from Ticketing's Add", async () => {
     mockGetAllAccount.mockResolvedValue(payload([k8s]));
     render(<SetupCenter />);
@@ -993,7 +1015,7 @@ describe('SetupCenter', () => {
     expect(await screen.findByTestId('setup-picker-metrics')).toBeInTheDocument();
   });
 
-  it('collapses the picker by default once more than one provider is already connected, reachable again via Add more', async () => {
+  it('collapses the picker by default once more than one provider is already connected, reachable again via its own button', async () => {
     mockGetAllAccount.mockResolvedValue(
       payload(
         [k8s],
@@ -1012,7 +1034,11 @@ describe('SetupCenter', () => {
     expect(within(metricsItem).getByText('Prometheus')).toBeInTheDocument();
     expect(screen.queryByTestId('setup-picker-metrics')).not.toBeInTheDocument();
 
-    fireEvent.click(within(metricsItem).getByTestId('setup-add-metrics'));
+    // More than one provider here, so the button opens a picker rather than
+    // adding anything directly — "Add more" would overpromise (#41900).
+    const addButton = within(metricsItem).getByTestId('setup-add-metrics');
+    expect(addButton).toHaveTextContent('Choose a provider');
+    fireEvent.click(addButton);
     expect(await screen.findByTestId('setup-picker-metrics')).toBeInTheDocument();
   });
 
@@ -1071,7 +1097,11 @@ describe('SetupCenter', () => {
     render(<SetupCenter />);
 
     fireEvent.click(await screen.findByText('AI'));
-    fireEvent.click(await screen.findByTestId('setup-add-llm'));
+    const addButton = await screen.findByTestId('setup-add-llm');
+    // One provider, no picker to open — the button really does add directly,
+    // so "Add" is accurate here, unlike the multi-provider case (#41900).
+    expect(addButton).toHaveTextContent('Add');
+    fireEvent.click(addButton);
     expect(await screen.findByTestId('llm-modal')).toBeInTheDocument();
     expect(mockPush).not.toHaveBeenCalled();
   });
@@ -1285,6 +1315,25 @@ describe('per-account chips on the Accounts item', () => {
     await waitFor(() => expect(mockGenerateAgentToken).toHaveBeenCalledWith(k8s.id, 'k8s'));
     expect(await screen.findByTestId('k8s-agent-install-checking')).toBeInTheDocument();
     expect(screen.queryByTestId('k8s-agent-install-waiting')).not.toBeInTheDocument();
+  });
+
+  // #41892: the dialog polls agent health entirely on its own — closing it
+  // after it reports connected used to leave the chip stuck on stale
+  // `partial` state until a full page reload.
+  it('refreshes readiness when the K8s install dialog closes, so the chip does not need a page reload (#41892)', async () => {
+    mockGetAllAccount.mockResolvedValue(payload([k8s]));
+    mockListK8sAccAgentHealth.mockResolvedValue(agentHealth([k8s.id], 'PENDING'));
+    render(<SetupCenter />);
+
+    const accountItem = await screen.findByTestId('setup-item-account');
+    fireEvent.click(chipFor(accountItem, 'prod'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Regenerate key' }));
+    await screen.findByText(/new-key:new-secret/);
+    expect(mockGetAllAccount).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByTestId('ds-modal-stub')).not.toBeInTheDocument();
+    await waitFor(() => expect(mockGetAllAccount).toHaveBeenCalledTimes(2));
   });
 
   it('asks for confirmation before regenerating the K8s install key, and regenerates nothing on Cancel', async () => {
