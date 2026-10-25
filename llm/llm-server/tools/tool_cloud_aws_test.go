@@ -320,15 +320,15 @@ func TestAwsAlertRegionIgnoresWhatIsNotARegion(t *testing.T) {
 // Seen on production (#42168): Nubi tried i-036cf0f273a916799 in three
 // accounts in turn; the inventory knew it was in a fourth.
 func TestAwsInstanceNotFoundSaysWhereItIs(t *testing.T) {
-	prevLookup, prevRegions := awsInstanceLocations, awsAccountRegions
-	t.Cleanup(func() { awsInstanceLocations, awsAccountRegions = prevLookup, prevRegions })
+	prevLookup, prevRegions := awsInstanceLocations, awsInstanceRegions
+	t.Cleanup(func() { awsInstanceLocations, awsInstanceRegions = prevLookup, prevRegions })
 	awsInstanceLocations = func(_ *security.RequestContext, ids []string) ([]awsInstanceLocation, error) {
 		return []awsInstanceLocation{
 			{ID: "i-036cf0f273a916799", Region: "us-east-1", AccountID: "security-id", AccountName: "aa-prod-security"},
 			{ID: "i-0aaaaaaaaaaaaaaaa", Region: "eu-west-1", AccountID: "hidden-id", AccountName: "hidden"},
 		}, nil
 	}
-	awsAccountRegions = func(account string) ([]string, error) {
+	awsInstanceRegions = func(account string) ([]string, error) {
 		assert.Equal(t, "prod-id", account, "regions of the account the command ran on")
 		return []string{"us-east-1", "us-west-2"}, nil
 	}
@@ -342,7 +342,7 @@ func TestAwsInstanceNotFoundSaysWhereItIs(t *testing.T) {
 	note = instanceNotFoundNote(ctx, ran, "An error occurred (InvalidInstanceID.NotFound) when calling the DescribeInstances operation: The instance IDs 'i-0aaaaaaaaaaaaaaaa, i-0bbbbbbbbbbbbbbbb' do not exist")
 	assert.NotContains(t, note, "hidden", "an account the caller cannot read is not named")
 	assert.Contains(t, note, "NudgeBee's inventory has no i-0aaaaaaaaaaaaaaaa, i-0bbbbbbbbbbbbbbbb in an account you can read.")
-	assert.Contains(t, note, "Account aa-prod-app has resources only in us-east-1, us-west-2")
+	assert.Contains(t, note, "Account aa-prod-app has EC2 instances only in us-east-1, us-west-2")
 
 	assert.Empty(t, instanceNotFoundNote(ctx, ran, "An error occurred (AccessDenied) when calling the DescribeInstances operation"), "other errors get no note")
 	assert.Empty(t, instanceNotFoundNote(ctx, ran, `{"Reservations": [{"Instances": [{"InstanceId": "i-036cf0f273a916799"}]}]}`), "a successful read gets no note")

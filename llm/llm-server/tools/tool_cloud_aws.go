@@ -859,9 +859,10 @@ var awsInstanceLocations = func(ctx *security.RequestContext, ids []string) ([]a
 	return found, nil
 }
 
-// awsAccountRegions is the regions an account has resources in. A variable so
-// tests can stub it.
-var awsAccountRegions = func(account string) ([]string, error) {
+// awsInstanceRegions is the regions an account has EC2 instances in. Other
+// inventory (security groups, sampling rules) exists in every region, so it
+// would not narrow the search. A variable so tests can stub it.
+var awsInstanceRegions = func(account string) ([]string, error) {
 	if _, err := uuid.Parse(account); err != nil {
 		return nil, nil // no NudgeBee account to list regions for
 	}
@@ -871,7 +872,8 @@ var awsAccountRegions = func(account string) ([]string, error) {
 	}
 	var regions []string
 	err = dbms.Db.Select(&regions, `SELECT DISTINCT region FROM cloud_resourses
-		WHERE account = $1 AND is_active AND region IS NOT NULL AND region <> '' AND LOWER(region) <> 'global'
+		WHERE account = $1 AND is_active AND type = 'compute-instance'
+		  AND region IS NOT NULL AND region <> '' AND LOWER(region) <> 'global'
 		ORDER BY region`, account)
 	if err != nil {
 		return nil, fmt.Errorf("aws account regions: %w", err)
@@ -915,8 +917,8 @@ func instanceNotFoundNote(ctx core.NbToolContext, target core.ToolConfig, output
 	}
 	if len(unknown) > 0 {
 		line := fmt.Sprintf("NudgeBee's inventory has no %s in an account you can read.", strings.Join(unknown, ", "))
-		if regions, err := awsAccountRegions(TargetAccountID(target)); err == nil && len(regions) > 0 {
-			line += fmt.Sprintf(" Account %s has resources only in %s: check only those regions (one call each), and if it is in none, report that it does not exist.", target.Name, strings.Join(regions, ", "))
+		if regions, err := awsInstanceRegions(TargetAccountID(target)); err == nil && len(regions) > 0 {
+			line += fmt.Sprintf(" Account %s has EC2 instances only in %s: check only those regions (one call each), and if it is in none, report that it does not exist.", target.Name, strings.Join(regions, ", "))
 		}
 		lines = append(lines, line)
 	}
