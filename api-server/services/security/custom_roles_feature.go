@@ -1,67 +1,44 @@
 package security
 
 import (
+	"errors"
 	"log/slog"
 	"nudgebee/services/internal/database"
 	"os"
 	"strings"
+
+	"github.com/lib/pq"
 )
 
-// FeatureCustomRoles is the per-tenant feature that switches the whole
-// dynamic-RBAC custom-role mechanism on. Registered in the existing
-// public.feature catalog (see the custom_roles_feature_flag migration) and
-// enabled per tenant with a public.feature_flag row:
-//
-//	INSERT INTO public.feature_flag (feature_id, tenant_id, status)
-//	VALUES ('CUSTOM_ROLES', '<tenant-uuid>', 'enabled');
-const FeatureCustomRoles = "CUSTOM_ROLES"
-
-// EnvDisableCustomRoles is a deployment-level kill switch that beats the
-// per-tenant flag. Set CUSTOM_ROLES_DISABLED=true on the pod to force every
-// tenant back to built-in-role behavior without touching the database — the
-// escape hatch for when the flag rows themselves are the problem.
+// EnvDisableCustomRoles is a deployment-level kill switch. Set
+// CUSTOM_ROLES_DISABLED=true on the pod to force every tenant back to
+// built-in-role behavior — the escape hatch for when grant resolution itself is
+// the problem. Custom roles are otherwise part of the product for every tenant;
+// there is no per-tenant switch.
 const EnvDisableCustomRoles = "CUSTOM_ROLES_DISABLED"
 
-// CustomRolesEnabled reports whether dynamic-RBAC custom roles are active for
-// tenantId.
+// CustomRolesEnabled reports whether dynamic-RBAC custom roles apply to
+// tenantId: always, unless the deployment sets CUSTOM_ROLES_DISABLED=true. An
+// empty tenant id (server-internal synthetic contexts) has no custom roles.
 //
-// This is THE on/off seam for the feature. Every custom-grant gate in the
-// product funnels through the two grant maps this switch populates
-// (HasPermission / HasScopedPermission), so when it returns false:
+// Every custom-grant gate in the product funnels through the two grant maps the
+// resolver populates (HasPermission / HasScopedPermission), so when it returns
+// false:
 //
 //	CanManage(module, class)            == IsTenantAdmin() || IsSuperAdmin()
 //	CanReadAccountData(account, module) == HasAccountAccess(account, read)
 //	ScopedAccountIdsForModule(module)   == nil  (query engine denies as before)
 //	GetCustomPermissions()              == []   (empty session -> inert gateway)
 //
-// i.e. authorization is bit-for-bit the built-in-role behavior.
-//
-// Opt-in and fail-safe: only an explicit `status='enabled'` feature_flag row
-// turns it on. No row, `status='disabled'`, an unreachable metastore, or a
-// database that has not run the custom-role migrations yet all resolve to
-// false, so a deploy whose migration Job has not completed degrades to built-in
-// roles instead of failing every request.
+// i.e. authorization is bit-for-bit the built-in-role behavior. With it true
+// and no custom role assigned, authorization is the same: grants only add
+// access. A database without the custom-role tables resolves no grants (see
+// resolveCustomGrants) rather than failing every request.
 func CustomRolesEnabled(tenantId string) bool {
 	if strings.EqualFold(os.Getenv(EnvDisableCustomRoles), "true") {
 		return false
 	}
-	if tenantId == "" {
-		return false
-	}
-	dbms, err := database.GetDatabaseManager(database.Metastore)
-	if err != nil {
-		slog.Error("custom roles: unable to get database manager", "error", err)
-		return false
-	}
-	var status string
-	err = dbms.Db.Get(&status,
-		"SELECT status FROM feature_flag WHERE feature_id = $1 AND tenant_id = $2::uuid AND account_id IS NULL",
-		FeatureCustomRoles, tenantId)
-	if err != nil {
-		// No row (the common case) — the feature stays off for this tenant.
-		return false
-	}
-	return status == "enabled"
+	return tenantId != ""
 }
 
 // resolveCustomGrants loads the dynamic-RBAC grants a user holds, directly and
@@ -78,7 +55,7 @@ func CustomRolesEnabled(tenantId string) bool {
 // injecting a system role's full grant set.
 //
 // Called only when CustomRolesEnabled(tenantId) is true, so the custom_role_*
-// tables are never read for a tenant with the feature off. Additive — the caller
+// tables are never read with the kill switch set. Additive — the caller
 // never lets these grants affect data scoping.
 func resolveCustomGrants(dbms *database.DatabaseManager, tenantId string, userId string) (map[string]bool, map[string]map[string]bool, error) {
 	customPermissions := map[string]bool{}
@@ -98,6 +75,13 @@ func resolveCustomGrants(dbms *database.DatabaseManager, tenantId string, userId
 			))
 		)`, tenantId, userId)
 	if err != nil {
+		if isUndefinedTable(err) {
+			// The custom-role tables are not there yet: on an upgrade the migration
+			// Job runs after the new pods start (post-install/post-upgrade hook).
+			// Resolve no grants, i.e. built-in roles, instead of failing every request.
+			slog.Warn("custom roles: custom-role tables missing; using built-in roles only", "tenant_id", tenantId)
+			return customPermissions, scopedCustomPermissions, nil
+		}
 		return nil, nil, err
 	}
 	defer func() {
@@ -129,4 +113,11 @@ func resolveCustomGrants(dbms *database.DatabaseManager, tenantId string, userId
 		return nil, nil, err
 	}
 	return customPermissions, scopedCustomPermissions, nil
+}
+
+// isUndefinedTable reports whether err is a Postgres undefined_table (SQLSTATE
+// 42P01).
+func isUndefinedTable(err error) bool {
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) && pqErr.Code == "42P01"
 }

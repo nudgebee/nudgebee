@@ -13,7 +13,7 @@ import '@testing-library/jest-dom';
 jest.mock('@lib/auth', () => ({
   canManage: () => true,
   // This suite exercises the custom-role picker and its per-section save, so it
-  // runs with the CUSTOM_ROLES feature ON (with it off the modal skips the
+  // runs with custom roles enabled (with them disabled the modal skips the
   // custom-role fetch entirely — see the feature-switch tests in lib/auth).
   isCustomRolesEnabled: () => true,
 }));

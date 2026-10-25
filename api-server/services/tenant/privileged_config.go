@@ -38,12 +38,8 @@ var privilegedTenantAttributes = map[string]bool{
 //	RBAC_K8S      — gates K8s RBAC enforcement (tenant/authz.go, and the
 //	                namespace filters in query/metadata.go). Disabling it removes
 //	                per-namespace access control tenant-wide.
-//	CUSTOM_ROLES  — the on/off switch for dynamic RBAC itself
-//	                (security.CustomRolesEnabled). A grant holder able to toggle
-//	                this could disable the mechanism that is checking them.
 var privilegedFeatureFlags = map[string]bool{
 	FEATURE_RBACK_K8S_ACCESS: true,
-	"CUSTOM_ROLES":           true,
 }
 
 // isPrivilegedTenantAttribute reports whether writing `name` requires a real

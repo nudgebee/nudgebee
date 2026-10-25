@@ -740,7 +740,7 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
   // Load custom roles once per open (edit only). Keyed on groupData.id so
   // switching RBAC tabs doesn't refetch and discard the picker's selection.
   // Non-tenant-admins get an empty list → the picker stays hidden, and the fetch
-  // is skipped entirely while the tenant's CUSTOM_ROLES feature is off.
+  // is skipped entirely while custom roles are disabled.
   useEffect(() => {
     if (open && isEdit && groupData?.id) {
       if (!isCustomRolesEnabled()) {

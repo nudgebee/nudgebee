@@ -45,7 +45,7 @@ test.describe("Admin → Roles: assignment", () => {
   });
 
   // Every test below drives the Roles tab, which only exists when the tenant
-  // has CUSTOM_ROLES enabled.
+  // has custom roles enabled (no CUSTOM_ROLES_DISABLED kill switch).
   test.beforeEach(async ({ page }) => {
     await skipUnlessCustomRoles(page, test);
   });

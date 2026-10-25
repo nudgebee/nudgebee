@@ -1221,7 +1221,7 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
   // (canAccessAdmin alone isn't enough — that only checks nav-level admin access).
   const canAccessBilling = data?.tier === 'saas';
   // Same gate the Roles tab's own registration uses (RolePermissions.jsx's
-  // shouldShow): the CUSTOM_ROLES feature must be on, and the user must hold a
+  // shouldShow): custom roles must be enabled, and the user must hold a
   // tenant-wide role or the delegated customroles:Read grant. canAccessAdmin
   // alone isn't enough — it only checks nav-level admin access, so an Audits-only
   // reviewer would otherwise get a row leading to a tab that isn't there.

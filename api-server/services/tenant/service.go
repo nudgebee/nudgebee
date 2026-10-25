@@ -1632,9 +1632,8 @@ func UpsertFeatureFlags(ctx *security.RequestContext, request FeatureFlagUpsertR
 		return FeatureFlagUpsertResponse{}, common.ErrorUnauthorized("Not Allowed")
 	}
 	// A few flags govern authorization rather than product behavior — notably
-	// RBAC_K8S and CUSTOM_ROLES, the latter being the switch for the grant
-	// mechanism doing the checking here (see privileged_config.go). Those stay
-	// tenant-admin-only however broad the caller's tenants grant is.
+	// RBAC_K8S (see privileged_config.go). Those stay tenant-admin-only however
+	// broad the caller's tenants grant is.
 	if !ctx.GetSecurityContext().IsTenantAdmin() && !ctx.GetSecurityContext().IsSuperAdmin() {
 		for _, f := range request.Features {
 			if isPrivilegedFeatureFlag(f.FeatureId) {
@@ -1748,15 +1747,6 @@ func UpsertFeatureFlags(ctx *security.RequestContext, request FeatureFlagUpsertR
 	}
 
 	common.ReplicaBroadcast(ctx.GetContext(), common.ChangeFeatureFlag, tenantId)
-	for _, f := range request.Features {
-		// CUSTOM_ROLES is read while BUILDING a security context, and contexts are
-		// cached for 30 minutes — so without this drop, turning dynamic RBAC off (or
-		// on) would keep leaking the old answer for up to half an hour. Dropping the
-		// tenant's contexts makes the switch take effect on the next request.
-		if f.FeatureId == security.FeatureCustomRoles {
-			_ = security.InvalidateCacheForTenant(tenantId)
-		}
-	}
 
 	return FeatureFlagUpsertResponse{
 		Status:  "success",

@@ -938,8 +938,8 @@ export async function getAccountByTenant(tenantId: string) {
 }
 
 // Resolve a user's effective dynamic-RBAC custom-role grants ("<module>:<class>"
-// keys) for a tenant, plus whether the CUSTOM_ROLES feature is enabled for that
-// tenant at all. Used at session build to bake both into the JWT so the
+// keys) for a tenant, plus whether custom roles are enabled at all (false only
+// with the CUSTOM_ROLES_DISABLED kill switch). Used at session build to bake both into the JWT so the
 // rpcGateway gate and the UI gating can work without a per-request DB hit. Runs
 // server-side (synthetic admin context) during NextAuth callbacks.
 const RESOLVE_CUSTOM_PERMISSIONS_QUERY = `
@@ -953,7 +953,7 @@ query ResolveCustomPermissions($userId: String!, $tenantId: String!) {
 
 export type ResolvedCustomPermissions = {
   permissions: string[];
-  // false whenever the feature is off for the tenant, the customroles_* action
+  // false whenever custom roles are disabled on the deployment, the customroles_* action
   // isn't part of this build (OSS), or the resolve failed — all of which must
   // leave the UI on its built-in-role behavior rather than gate anything.
   enabled: boolean;

@@ -1,7 +1,11 @@
 package security
 
 import (
+	"errors"
+	"nudgebee/services/internal/database"
 	"testing"
+
+	"github.com/lib/pq"
 )
 
 // The deployment-level kill switch must be answerable without a database — it is
@@ -61,5 +65,44 @@ func TestGatesReduceToBuiltInRolesWithoutGrants(t *testing.T) {
 	}
 	if len(accountRead.GetCustomPermissions()) != 0 || len(accountRead.GetScopedPermissionKeys()) != 0 {
 		t.Fatal("no grant keys may be baked into the session with no resolved grants")
+	}
+}
+
+// Custom roles apply to every tenant: no per-tenant flag is read, so the
+// answer needs no database at all; only the kill switch turns them off.
+func TestCustomRolesEnabled_OnForEveryTenant(t *testing.T) {
+	t.Setenv(EnvDisableCustomRoles, "")
+	database.RegisterDatabaseManagerHook(database.Metastore, func() (*database.DatabaseManager, error) {
+		t.Fatal("CustomRolesEnabled must not read the database")
+		return nil, errors.New("unreachable")
+	})
+	t.Cleanup(func() { database.RegisterDatabaseManagerHook(database.Metastore, nil) })
+	if !CustomRolesEnabled("11111111-1111-1111-1111-111111111111") {
+		t.Fatal("expected custom roles on for a tenant")
+	}
+}
+
+// With custom roles on for every tenant, a database whose custom-role tables are not
+// there yet (an upgrade whose migration Job has not run) resolves no grants
+// instead of failing every security context.
+func TestResolveCustomGrants_MissingTablesMeanNoGrants(t *testing.T) {
+	db, mock, err := mockPg()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	mock.ExpectQuery("select crp.module").WillReturnError(&pq.Error{Code: "42P01", Message: `relation "custom_role_permissions" does not exist`})
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	perms, scoped, err := resolveCustomGrants(dbms, "t1", "u1")
+	if err != nil || len(perms) != 0 || len(scoped) != 0 {
+		t.Fatalf("got perms=%v scoped=%v err=%v, want no grants and no error", perms, scoped, err)
+	}
+
+	mock.ExpectQuery("select crp.module").WillReturnError(errors.New("connection refused"))
+	if _, _, err := resolveCustomGrants(dbms, "t1", "u1"); err == nil {
+		t.Fatal("any other error must still fail the resolve")
 	}
 }

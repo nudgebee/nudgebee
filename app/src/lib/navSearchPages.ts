@@ -185,7 +185,7 @@ export const navSearchPages: NavSearchPage[] = [
   // baseFilters entry — folded into Access & Users as a sub-tab rather than
   // staying a top-level fragment. Gated in search by GlobalPageSearch.jsx's
   // own canAccessRoles check, mirroring that registration's shouldShow — the
-  // tab is absent for a tenant without the CUSTOM_ROLES feature, so a search
+  // tab is absent while custom roles are disabled, so a search
   // row leading to it would dead-end.
   { group: 'Admin', label: 'Roles', path: '/user-management#access-users/roles' },
   { group: 'Admin', label: 'Audit Log', path: '/user-management#access-users/audit-log' },
