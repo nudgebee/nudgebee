@@ -29,6 +29,39 @@ func runsSkillCode(accountId, conversationId, toolName, input string) bool {
 			knowledge.ConversationHasSkillScripts(accountId, conversationId))
 }
 
+// strictCheckTools narrows the tools a planner offers in the alert's follow-up
+// check (StrictReadOnly) to the ones authorizeToolRequest dispatches there: the
+// agent's own tools for the request, and the knowledge tools. Default (shell,
+// watch), account-configured and client tools would otherwise be offered only to
+// be rejected. The notebook is added after this by the planner.
+func strictCheckTools(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest, tools []toolcore.NBTool) []toolcore.NBTool {
+	if !request.QueryConfig.StrictReadOnly {
+		return tools
+	}
+	own := SupportedToolsForRequest(ctx, agent, request)
+	caps := request.Capabilities.Merge(request.QueryConfig.Capabilities) // as the knowledge branch below checks
+	kept := make([]toolcore.NBTool, 0, len(tools))
+	for _, t := range tools {
+		if t == nil {
+			continue
+		}
+		name := t.Name()
+		if strings.EqualFold(name, "search_skills") || strings.EqualFold(name, "load_skills") {
+			if len(FilterTools([]toolcore.NBTool{t}, caps)) > 0 {
+				kept = append(kept, t)
+			}
+			continue
+		}
+		for _, o := range own {
+			if matchesToolName(o, []string{name}) {
+				kept = append(kept, t)
+				break
+			}
+		}
+	}
+	return kept
+}
+
 func IsAgentToolAuthorizedToProcessRequest(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest, action NBAgentPlannerToolAction) (*NBAgentPlannerFinishAction, *toolcore.ToolRequestType, error) {
 	return authorizeToolRequest(ctx, agent, request, action, nil)
 }

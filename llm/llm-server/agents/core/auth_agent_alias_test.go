@@ -418,3 +418,57 @@ func TestStrictReadOnlyTurnDispatchesTheNotebookTool(t *testing.T) {
 	_, _, err := IsAgentToolAuthorizedToProcessRequest(ctx, agent, strict, NBAgentPlannerToolAction{Tool: "write_notebook"})
 	require.ErrorContains(t, err, "not one of remediation's tools in this check")
 }
+
+// The follow-up check offered shell_execute and watch tools, then rejected every call to them ("not one of
+// remediation's tools in this check"). In strict mode the planner now offers only what dispatch accepts.
+func TestStrictCheckToolsOffersOnlyDispatchableTools(t *testing.T) {
+	agent := mockAgentWithTools{mockPlainAgent: mockPlainAgent{name: "remediation"}, tools: []toolcore.NBTool{mockTool{name: "kubectl_execute"}}}
+	ctx := security.NewRequestContextForSuperAdmin()
+	offered := []toolcore.NBTool{
+		mockTool{name: "kubectl_execute"}, mockTool{name: toolcore.ToolExecuteShellCommand}, mockTool{name: "watch_list"},
+		mockTool{name: "load_skills"}, mockTool{name: "client_tool"}, mockTool{name: "configured_tool"},
+	}
+	names := func(ts []toolcore.NBTool) []string {
+		out := make([]string, 0, len(ts))
+		for _, tl := range ts {
+			out = append(out, tl.Name())
+		}
+		return out
+	}
+
+	strict := NBAgentRequest{AccountId: "test-account", QueryConfig: toolcore.NBQueryConfig{ReadOnlyRun: true, StrictReadOnly: true}}
+	kept := strictCheckTools(ctx, agent, strict, offered)
+	require.Equal(t, []string{"kubectl_execute", "load_skills"}, names(kept))
+	_, _, err := IsAgentToolAuthorizedToProcessRequest(ctx, agent, strict, NBAgentPlannerToolAction{Tool: "kubectl_execute"})
+	require.NoError(t, err)
+
+	require.Len(t, strictCheckTools(ctx, agent, NBAgentRequest{AccountId: "test-account"}, offered), len(offered))
+}
+
+// requestAwareMockAgent narrows its tools per request, like remediation does for its strict turns.
+type requestAwareMockAgent struct {
+	mockAgentWithTools
+	forRequest []toolcore.NBTool
+}
+
+func (a requestAwareMockAgent) GetSupportedToolsForRequest(_ *security.RequestContext, _ NBAgentRequest) []toolcore.NBTool {
+	return a.forRequest
+}
+
+// ReAct4 built its tools from GetSupportedTools, so remediation's planning turn offered aws_execute that the
+// request-aware list (and dispatch) leave out; the model called it and every call failed. ReAct4 now starts
+// from the same request-aware list as ReAct3 and the auth check.
+func TestResolveReact4ToolsUsesTheRequestAwareToolList(t *testing.T) {
+	agent := requestAwareMockAgent{
+		mockAgentWithTools: mockAgentWithTools{mockPlainAgent: mockPlainAgent{name: "remediation"},
+			tools: []toolcore.NBTool{mockTool{name: "get_remediation_plan"}, mockTool{name: "aws_execute"}}},
+		forRequest: []toolcore.NBTool{mockTool{name: "get_remediation_plan"}},
+	}
+	tools, _ := resolveReact4Tools(security.NewRequestContextForSuperAdmin(), NBAgentRequest{}, agent, "")
+	var names []string
+	for _, tl := range tools {
+		names = append(names, tl.Name())
+	}
+	require.Contains(t, names, "get_remediation_plan")
+	require.NotContains(t, names, "aws_execute")
+}

@@ -2575,6 +2575,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 	// injected when the menu lives in the human message (KB pre-step path)
 	// rather than the system prompt (legacy path).
 	tools = FilterAndInjectDefaultTools(request.AccountId, agent, agentPrompt+request.SkillListsMenu, tools, request.Capabilities, request.KnowledgePolicy)
+	tools = strictCheckTools(ctx, agent, request, tools)
 
 	// Agent prompt as system message so it falls within the cacheable prefix
 	// for Global/Account cache scopes. Dynamic parts (history, context, input, scratchpad) stay as human message.

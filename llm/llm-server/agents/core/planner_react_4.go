@@ -236,7 +236,11 @@ func resolveReact4Tools(ctx *security.RequestContext, request NBAgentRequest, nb
 	// array (e.g. custom_agent's per-instance tool cache). The append operations
 	// below would otherwise mutate that shared backing array. reActCreatePrompt3
 	// copies for the same reason.
-	supported := nbAgent.GetSupportedTools(ctx)
+	// Request-aware, as ReAct3 and the dispatch-time auth check resolve it: an
+	// agent's mode can narrow its tools (remediation's strict check drops its cloud
+	// CLI), and offering the unnarrowed set had the model call tools dispatch then
+	// rejected (aws_execute in remediation's planning turn).
+	supported := SupportedToolsForRequest(ctx, nbAgent, request)
 	tools := make([]toolcore.NBTool, len(supported))
 	copy(tools, supported)
 
@@ -267,6 +271,7 @@ func resolveReact4Tools(ctx *security.RequestContext, request NBAgentRequest, nb
 
 	// Capability-based filtering (parity with reActCreatePrompt3's final FilterTools).
 	tools = FilterTools(tools, request.Capabilities)
+	tools = strictCheckTools(ctx, nbAgent, request, tools)
 
 	// The update_notebook control tool is added AFTER FilterTools so capability
 	// filtering never removes it. In ReAct3 the notebook was an inline XML tag;
