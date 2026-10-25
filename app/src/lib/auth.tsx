@@ -215,12 +215,13 @@ export function isTenantWideRole(): boolean {
 // ---------------------------------------------------------------------------
 // Dynamic RBAC (custom roles) — the front-end half of the on/off switch.
 //
-// isCustomRolesEnabled() mirrors the backend security.CustomRolesEnabled():
-// true for every tenant unless the deployment sets CUSTOM_ROLES_DISABLED,
-// resolved once at session build (see resolveUserCustomPermissions). Every UI
-// gate this feature introduced hangs off it, so with custom roles disabled the
-// app renders exactly as it did before dynamic RBAC existed — no disabled nav
-// icons, no gated tabs, no Roles tab.
+// isCustomRolesEnabled() is the session's `customRolesEnabled`, from the
+// backend's customroles_list_user_permissions and resolved once at session build
+// (see resolveUserCustomPermissions): true for every tenant in a build that
+// includes custom roles, false in OSS or when the lookup failed. Every UI gate
+// this feature introduced hangs off it, so when it is false the app renders
+// exactly as it did before dynamic RBAC existed — no disabled nav icons, no
+// gated tabs, no Roles tab.
 //
 // It is deliberately NOT inferred from `permissions.length`: "feature on, user
 // holds no grants" and "feature off" are different states, and only the first

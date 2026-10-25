@@ -97,7 +97,7 @@ test.describe("Admin → Roles: enforcement", () => {
     test.skip(!hasSubject, "set RBAC_TEST_USERNAME / RBAC_TEST_PASSWORD to run enforcement tests");
 
     // These mint and assign real custom roles, which the customroles_* service
-    // refuses outright while custom roles are disabled (CUSTOM_ROLES_DISABLED).
+    // refuses outright in a build without custom roles.
     test.beforeEach(async ({ page }) => {
       await skipUnlessCustomRoles(page, test);
     });

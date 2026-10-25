@@ -8,30 +8,8 @@ import (
 	"github.com/lib/pq"
 )
 
-// The deployment-level kill switch must be answerable without a database — it is
-// the escape hatch used when the metastore (or the flag rows themselves) are the
-// problem, so it has to short-circuit before any query is attempted.
-func TestCustomRolesEnabled_EnvKillSwitch(t *testing.T) {
-	for _, value := range []string{"true", "TRUE", "True"} {
-		t.Setenv(EnvDisableCustomRoles, value)
-		if CustomRolesEnabled("11111111-1111-1111-1111-111111111111") {
-			t.Fatalf("expected custom roles disabled with %s=%q", EnvDisableCustomRoles, value)
-		}
-	}
-}
-
-// An empty tenant id can never carry a per-tenant flag, so it resolves to off
-// without touching the database (NewSecurityContextForSuperAdmin-style synthetic
-// contexts have no tenant).
-func TestCustomRolesEnabled_NoTenant(t *testing.T) {
-	t.Setenv(EnvDisableCustomRoles, "")
-	if CustomRolesEnabled("") {
-		t.Fatal("expected custom roles disabled for an empty tenant id")
-	}
-}
-
-// With no grants resolved (the state every tenant is in while the feature is
-// off), the gate helpers must reduce to exactly their built-in-role behavior.
+// With no grants resolved (a tenant that assigns no custom role), the gate
+// helpers must reduce to exactly their built-in-role behavior.
 // This is the property the whole plug-and-play design rests on.
 func TestGatesReduceToBuiltInRolesWithoutGrants(t *testing.T) {
 	const acct = "22222222-2222-2222-2222-222222222222"
@@ -68,21 +46,7 @@ func TestGatesReduceToBuiltInRolesWithoutGrants(t *testing.T) {
 	}
 }
 
-// Custom roles apply to every tenant: no per-tenant flag is read, so the
-// answer needs no database at all; only the kill switch turns them off.
-func TestCustomRolesEnabled_OnForEveryTenant(t *testing.T) {
-	t.Setenv(EnvDisableCustomRoles, "")
-	database.RegisterDatabaseManagerHook(database.Metastore, func() (*database.DatabaseManager, error) {
-		t.Fatal("CustomRolesEnabled must not read the database")
-		return nil, errors.New("unreachable")
-	})
-	t.Cleanup(func() { database.RegisterDatabaseManagerHook(database.Metastore, nil) })
-	if !CustomRolesEnabled("11111111-1111-1111-1111-111111111111") {
-		t.Fatal("expected custom roles on for a tenant")
-	}
-}
-
-// With custom roles on for every tenant, a database whose custom-role tables are not
+// Custom roles resolve for every tenant, so a database whose custom-role tables are not
 // there yet (an upgrade whose migration Job has not run) resolves no grants
 // instead of failing every security context.
 func TestResolveCustomGrants_MissingTablesMeanNoGrants(t *testing.T) {

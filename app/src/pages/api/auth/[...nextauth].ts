@@ -85,8 +85,8 @@ export interface NudgebeeSession extends Session {
   isSuperAdminReadonly?: boolean;
   // Dynamic-RBAC custom-role grants ("<module>:<class>"). Read by hasPermission().
   permissions?: string[];
-  // Whether custom roles are enabled (false only with the CUSTOM_ROLES_DISABLED
-  // kill switch). False means the whole dynamic-RBAC layer is off and every UI gate must behave exactly as it
+  // Whether custom roles are available (false only in a build without them, or
+  // when the lookup failed). False means the whole dynamic-RBAC layer is off and every UI gate must behave exactly as it
   // did before the feature existed. Read by isCustomRolesEnabled().
   customRolesEnabled?: boolean;
   // Account-bound grants per account ({account id: ["<module>:<class>"]}), for
@@ -1456,9 +1456,9 @@ export const authOptions: NextAuthOptions = {
           // tenant and bake them into the token so the gateway gate can check
           // them without a per-request DB hit. token.tenant is set by the
           // jwtUpdateTokenFor* helpers above. `customRolesEnabled` carries the
-          // custom-roles on/off state (off only with the CUSTOM_ROLES_DISABLED kill
-          // switch) so the UI can tell "disabled" (keep the built-in-role behavior
-          // untouched) from "no grants held".
+          // whether custom roles are available (not in OSS builds, or when the
+          // lookup failed) so the UI can tell "unavailable" (keep the built-in-role
+          // behavior untouched) from "no grants held".
           const resolved = await resolveUserCustomPermissions(userId, (token.tenant as any)?.id);
           token.permissions = resolved.permissions;
           token.customRolesEnabled = resolved.enabled;

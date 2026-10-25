@@ -19,6 +19,7 @@ export type CatalogEntry = {
   classes: PermissionClass[];
   actions: Partial<Record<PermissionClass, Array<{ name: string; description: string }>>>;
   notes?: Partial<Record<PermissionClass, string>>;
+  independentClasses?: boolean;
 };
 export type SystemRoleView = {
   systemKey: string;
@@ -89,7 +90,7 @@ export function graphQLErrorMessage(body: any): string | undefined {
 /**
  * Is the dynamic-RBAC layer switched on for this tenant?
  *
- * The whole Roles surface is off when the deployment sets CUSTOM_ROLES_DISABLED. With it set
+ * The whole Roles surface is off in a build without custom roles (OSS). There
  * the tab is never registered (`shouldShow` returns false in RolePermissions.jsx),
  * the `customroles_*` service refuses every management call, and the resolver
  * ignores grants outright — so every locator in this suite resolves to nothing
@@ -114,7 +115,7 @@ export async function customRolesEnabled(page: Page): Promise<boolean> {
 export async function skipUnlessCustomRoles(page: Page, test: { skip: (condition: boolean, reason: string) => void }): Promise<void> {
   test.skip(
     !(await customRolesEnabled(page)),
-    "Custom roles are disabled on this deployment (CUSTOM_ROLES_DISABLED) — the Roles tab is not registered, so there is nothing to exercise"
+    "Custom roles are not in this build — the Roles tab is not registered, so there is nothing to exercise"
   );
 }
 

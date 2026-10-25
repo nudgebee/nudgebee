@@ -49,7 +49,7 @@ test.describe("Admin → Roles: custom role editor", () => {
   });
 
   // Every test below drives the Roles tab, which only exists when the tenant
-  // has custom roles enabled (no CUSTOM_ROLES_DISABLED kill switch).
+  // has custom roles (every tenant does, in a build that includes them).
   test.beforeEach(async ({ page }) => {
     await skipUnlessCustomRoles(page, test);
   });
@@ -426,13 +426,15 @@ test.describe("Admin → Roles: custom role editor", () => {
     expect((await listRoles(page)).some((r) => r.name === name), "cancel must not write the role").toBe(false);
   });
 
-  test("Roles - tick Execute on a module with Read unticked, save, verify Execute stands alone and does not pull in Read", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
+  test("Roles - tick Read then Execute, untick Read, verify Execute clears and disables again, and Read and Execute save together", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
     const roles = new RolesLocators(page);
     const { catalog: cat } = await fetchCatalog(page);
-    const entry = cat.find((e) => e.scope === "tenant" && e.classes.includes("Execute") && e.classes.includes("Read"));
-    expect(entry, "need a tenant module offering both Read and Execute").toBeTruthy();
+    // An Execute class that actions back needs Read, as Write does. A run-time
+    // grant (no Execute action) and integration use grants stay standalone.
+    const entry = cat.find((e) => e.scope === "tenant" && e.classes.includes("Read") && (e.actions?.Execute?.length ?? 0) > 0 && !e.independentClasses);
+    expect(entry, "need a tenant module whose Execute class has actions").toBeTruthy();
     const mod = entry!.module;
-    const name = roleName("execute-only");
+    const name = roleName("read-execute");
 
     await roles.open();
     await roles.newRoleBtn.click();
@@ -442,17 +444,21 @@ test.describe("Admin → Roles: custom role editor", () => {
     const read = roles.permCheckbox(mod, "Read");
     const execute = roles.permCheckbox(mod, "Execute");
 
-    // Only Write is gated on Read. Execute is a standalone class, so it must be
-    // reachable and savable with Read left unticked.
+    await expect(execute).toBeDisabled();
+    await read.check({ force: true });
     await expect(execute).toBeEnabled();
     await execute.check({ force: true });
-    await expect(read).not.toBeChecked();
+    await read.uncheck({ force: true });
+    await expect(execute).not.toBeChecked();
+    await expect(execute).toBeDisabled();
 
+    await read.check({ force: true });
+    await execute.check({ force: true });
     await roles.saveRoleBtn.click();
     await expect(roles.roleNameInput).toBeHidden({ timeout: 30000 });
 
     const saved = (await listRoles(page)).find((r) => r.name === name);
-    expect((saved?.permissions ?? []).map((p) => `${p.module}:${p.class}`)).toEqual([`${mod}:Execute`]);
+    expect((saved?.permissions ?? []).map((p) => `${p.module}:${p.class}`).sort()).toEqual([`${mod}:Execute`, `${mod}:Read`]);
     await deleteRole(page, saved!.id);
   });
 });

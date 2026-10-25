@@ -4,42 +4,9 @@ import (
 	"errors"
 	"log/slog"
 	"nudgebee/services/internal/database"
-	"os"
-	"strings"
 
 	"github.com/lib/pq"
 )
-
-// EnvDisableCustomRoles is a deployment-level kill switch. Set
-// CUSTOM_ROLES_DISABLED=true on the pod to force every tenant back to
-// built-in-role behavior — the escape hatch for when grant resolution itself is
-// the problem. Custom roles are otherwise part of the product for every tenant;
-// there is no per-tenant switch.
-const EnvDisableCustomRoles = "CUSTOM_ROLES_DISABLED"
-
-// CustomRolesEnabled reports whether dynamic-RBAC custom roles apply to
-// tenantId: always, unless the deployment sets CUSTOM_ROLES_DISABLED=true. An
-// empty tenant id (server-internal synthetic contexts) has no custom roles.
-//
-// Every custom-grant gate in the product funnels through the two grant maps the
-// resolver populates (HasPermission / HasScopedPermission), so when it returns
-// false:
-//
-//	CanManage(module, class)            == IsTenantAdmin() || IsSuperAdmin()
-//	CanReadAccountData(account, module) == HasAccountAccess(account, read)
-//	ScopedAccountIdsForModule(module)   == nil  (query engine denies as before)
-//	GetCustomPermissions()              == []   (empty session -> inert gateway)
-//
-// i.e. authorization is bit-for-bit the built-in-role behavior. With it true
-// and no custom role assigned, authorization is the same: grants only add
-// access. A database without the custom-role tables resolves no grants (see
-// resolveCustomGrants) rather than failing every request.
-func CustomRolesEnabled(tenantId string) bool {
-	if strings.EqualFold(os.Getenv(EnvDisableCustomRoles), "true") {
-		return false
-	}
-	return tenantId != ""
-}
 
 // resolveCustomGrants loads the dynamic-RBAC grants a user holds, directly and
 // via the groups they belong to, and splits them into tenant-global grants and
@@ -54,8 +21,9 @@ func CustomRolesEnabled(tenantId string) bool {
 // enforcement handles those, and the filter prevents a stray assignment from
 // injecting a system role's full grant set.
 //
-// Called only when CustomRolesEnabled(tenantId) is true, so the custom_role_*
-// tables are never read with the kill switch set. Additive — the caller
+// Custom roles are part of the product for every tenant: there is no switch, so
+// this runs for every tenant's security context. Grants only add access, so a
+// tenant with no custom role assigned authorizes exactly as with built-in roles. Additive — the caller
 // never lets these grants affect data scoping.
 func resolveCustomGrants(dbms *database.DatabaseManager, tenantId string, userId string) (map[string]bool, map[string]map[string]bool, error) {
 	customPermissions := map[string]bool{}
