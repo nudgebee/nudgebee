@@ -1,10 +1,12 @@
 package api
 
 import (
+	"compress/gzip"
 	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -131,16 +133,8 @@ func TestScmProxyReadOnlyGate(t *testing.T) {
 		{"REST comment", http.MethodPost, "/api/v3/repos/o/r/issues/1/comments", `{"body":"x"}`, false},
 		{"REST delete", http.MethodDelete, "/api/v3/repos/o/r", "", false},
 		{"GraphQL query", http.MethodPost, "/api/graphql", `{"query":"query PullRequestList { repository(owner:\"o\", name:\"r\") { id } }"}`, true},
-		{"GraphQL shorthand query", http.MethodPost, "/api/graphql", `{"query":"{ viewer { login } }"}`, true},
-		{"GraphQL mutation", http.MethodPost, "/api/graphql", `{"query":"mutation { addComment(input:{}) { clientMutationId } }"}`, false},
-		{"mutation after a comment", http.MethodPost, "/api/graphql", `{"query":"# query\nmutation M { deleteRef(input:{}) { clientMutationId } }"}`, false},
-		{"fragment first, then mutation", http.MethodPost, "/api/graphql", `{"query":"fragment f on Repository { id }\nmutation M { deleteRef(input:{}) { clientMutationId } }"}`, false},
-		{"query and mutation, mutation named", http.MethodPost, "/api/graphql", `{"query":"query Q { viewer { login } } mutation M { deleteRef(input:{}) { clientMutationId } }","operationName":"M"}`, false},
-		{"query and mutation, none named", http.MethodPost, "/api/graphql", `{"query":"query Q { viewer { login } } mutation M { deleteRef(input:{}) { clientMutationId } }"}`, false},
-		{"query and mutation, query named", http.MethodPost, "/api/graphql", `{"query":"query Q { viewer { login } } mutation M { deleteRef(input:{}) { clientMutationId } }","operationName":"Q"}`, false},
-		{"unknown operation name", http.MethodPost, "/api/graphql", `{"query":"query Q { viewer { login } }","operationName":"X"}`, false},
-		{"not JSON", http.MethodPost, "/api/graphql", `mutation { x }`, false},
-		{"subscription", http.MethodPost, "/api/graphql", `{"query":"subscription { x }"}`, false},
+		// GraphQL is not inspected for now: the command's approval decides.
+		{"GraphQL mutation", http.MethodPost, "/api/graphql", `{"query":"mutation { addComment(input:{}) { clientMutationId } }"}`, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -214,7 +208,7 @@ func TestGithubUpstreamPrefixes(t *testing.T) {
 		"signed log storage redirects are followed directly, without the token")
 }
 
-// Only the GraphQL endpoint itself gets the query-only exemption: a REST
+// Only the GraphQL endpoint itself is passed through: a REST
 // write whose last segment happens to be "graphql" is still a write.
 func TestScmProxyGraphQLExemptionIsTheEndpointOnly(t *testing.T) {
 	token := scmToken(t, &workspace.ScmClaims{Gitlab: glAcme})
@@ -339,4 +333,68 @@ func TestScmProxyRoutesEachCallToItsProvider(t *testing.T) {
 		"gitlab /api/v4/projects auth= priv=real-gl:acme-gl",
 		"gitlab /api/graphql auth= priv=real-gl:acme-gl",
 	}, got)
+}
+
+// githubJSONUpstream serves body (with {upstream} replaced by its own URL) as
+// GitHub does: JSON, gzipped when the request asks for it.
+func githubJSONUpstream(t *testing.T, contentType, body string) (*scmProxy, string) {
+	t.Helper()
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		out := strings.ReplaceAll(body, "{upstream}", "http://"+r.Host)
+		w.Header().Set("Content-Type", contentType)
+		if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			w.Header().Set("Content-Encoding", "gzip")
+			gz := gzip.NewWriter(w)
+			_, _ = gz.Write([]byte(out))
+			_ = gz.Close()
+			return
+		}
+		_, _ = w.Write([]byte(out))
+	}))
+	t.Cleanup(up.Close)
+	p := &scmProxy{transport: http.DefaultTransport, resolve: func(*security.RequestContext, string, string, *workspace.ScmBinding) (*scmUpstream, error) {
+		return &scmUpstream{provider: "GitHub", authHeader: "Authorization", authValue: "token real", prefixes: [][2]string{{"/api/v3", up.URL}}}, nil
+	}}
+	return p, up.URL
+}
+
+func TestScmProxyRewritesApiURLFieldsInJSONBodies(t *testing.T) {
+	p, upstreamURL := githubJSONUpstream(t, "application/json; charset=utf-8",
+		`{"jobs_url":"{upstream}/repos/o/r/actions/runs/1/jobs","url" : "{upstream}/repos/o/r/actions/runs/1","root_url":"{upstream}","other_url":"{upstream}0/x","html_url":"https://github.com/o/r/actions/runs/1","body":"see {upstream}/repos/o/r/issues/1 and \"url\": \"{upstream}/x\""}`)
+	token := scmToken(t, &workspace.ScmClaims{Github: ghAcme})
+
+	// gh asks for gzip; the proxy still sees, and rewrites, the JSON.
+	req := httptest.NewRequest(http.MethodGet, "https://llm-server:8443/api/v3/repos/o/r/actions/runs/1", nil)
+	req.Host = "llm-server:8443"
+	req.Header.Set("Authorization", "token "+token)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+	p.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	body := rec.Body.String()
+	assert.Contains(t, body, `"jobs_url":"https://llm-server:8443/api/v3/repos/o/r/actions/runs/1/jobs"`, "gh's next call stays on the proxy")
+	assert.Contains(t, body, `"url" : "https://llm-server:8443/api/v3/repos/o/r/actions/runs/1"`)
+	assert.Contains(t, body, `"root_url":"https://llm-server:8443/api/v3"`)
+	assert.Contains(t, body, `"other_url":"`+upstreamURL+`0/x"`, "a longer host that starts with the upstream's is another host")
+	assert.Contains(t, body, `"html_url":"https://github.com/o/r/actions/runs/1"`, "web links are not API URLs")
+	assert.Contains(t, body, `"body":"see `+upstreamURL+`/repos/o/r/issues/1 and \"url\": \"`+upstreamURL+`/x\""`, "text that mentions an API URL stays as written")
+	assert.Equal(t, strconv.Itoa(len(body)), rec.Header().Get("Content-Length"))
+	assert.Empty(t, rec.Header().Get("Content-Encoding"))
+}
+
+func TestScmProxyLeavesOtherBodiesAlone(t *testing.T) {
+	token := scmToken(t, &workspace.ScmClaims{Github: ghAcme})
+
+	raw := `{"url":"{upstream}/x"}`
+	p, upstreamURL := githubJSONUpstream(t, "application/vnd.github.raw+json; charset=utf-8", raw)
+	rec := serveScm(p, http.MethodGet, "/api/v3/repos/o/r/contents/f.json", "token "+token, "")
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, strings.ReplaceAll(raw, "{upstream}", upstreamURL), rec.Body.String(), "file contents are never changed")
+
+	big := `{"pad":"` + strings.Repeat("x", scmProxyMaxRewriteBody) + `","url":"{upstream}/x"}`
+	p, upstreamURL = githubJSONUpstream(t, "application/json", big)
+	rec = serveScm(p, http.MethodGet, "/api/v3/big", "token "+token, "")
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, strings.ReplaceAll(big, "{upstream}", upstreamURL), rec.Body.String(), "an oversized body passes through whole")
 }

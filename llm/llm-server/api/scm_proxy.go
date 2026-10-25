@@ -8,19 +8,20 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/vektah/gqlparser/v2/ast"
-	"github.com/vektah/gqlparser/v2/parser"
 
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
@@ -34,12 +35,26 @@ import (
 // Enterprise / self-hosted GitLab server and authenticate with the command's
 // execution token, which names the integration. The proxy checks the token,
 // replaces it with the integration's real token and forwards the call. A call
-// that was not approved to change anything may only read.
+// that was not approved to change anything may only read over REST; GraphQL
+// is passed through for now, and the command's approval decides.
 
 const (
-	scmProxyMaxGraphQLBody = 1 << 20
+	// scmProxyMaxRewriteBody caps the JSON response the proxy reads to point
+	// its API URLs back at the proxy; a larger one passes through unchanged.
+	scmProxyMaxRewriteBody = 8 << 20
 	scmAppTokenTTL         = 50 * time.Minute
+	// scmProxyMaxGraphQLBody caps the GraphQL request the proxy reads to drop
+	// the classic-projects field; a larger one passes through unchanged.
+	scmProxyMaxGraphQLBody = 1 << 20
 )
+
+// ghClassicProjectsField is the classic-projects field gh 2.72 adds to pr and
+// issue view/edit queries when it believes it talks to GitHub Enterprise, as
+// it does through this proxy. github.com retired classic projects and fails
+// the whole query on it ("Projects (classic) is being deprecated"), so the
+// proxy drops this exact text for github.com. GraphQL treats the comma left
+// behind as whitespace.
+const ghClassicProjectsField = "projectCards(first:100){nodes{project{name}column{name}},totalCount}"
 
 // scmUpstream is where one integration's calls go, with the credential the
 // proxy adds. prefixes maps a proxy path prefix to the upstream URL prefix;
@@ -49,6 +64,8 @@ type scmUpstream struct {
 	prefixes   [][2]string // {proxy prefix, upstream prefix}
 	authHeader string
 	authValue  string
+	// githubCom is true for github.com, which has no classic projects.
+	githubCom bool
 }
 
 type scmProxy struct {
@@ -124,8 +141,15 @@ func (p *scmProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target.RawQuery = r.URL.RawQuery
+	graphQL := r.URL.EscapedPath() == "/api/graphql"
+	if graphQL && up.githubCom && r.Method == http.MethodPost {
+		if err := dropGhClassicProjects(r); err != nil {
+			scmProxyError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	if !claims.Scm.Write {
-		readOnly, reason := scmReadOnlyRequest(r, r.URL.EscapedPath() == "/api/graphql")
+		readOnly, reason := scmReadOnlyRequest(r, graphQL)
 		if !readOnly {
 			logger.Info("scm proxy: refused a change in a read-only call", "reason", reason)
 			scmProxyError(w, http.StatusForbidden, "This command was not approved to change anything in "+up.provider+" ("+reason+"). Ask for approval to make the change, or use a read-only command.")
@@ -143,6 +167,9 @@ func (p *scmProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			pr.Out.Header.Del("PRIVATE-TOKEN")
 			pr.Out.Header.Del("JOB-TOKEN")
 			pr.Out.Header.Del("Cookie")
+			// The transport then asks for gzip itself and hands
+			// ModifyResponse a decompressed body it can rewrite.
+			pr.Out.Header.Del("Accept-Encoding")
 			pr.Out.Header.Set(up.authHeader, up.authValue)
 		},
 		ModifyResponse: func(resp *http.Response) error {
@@ -158,7 +185,7 @@ func (p *scmProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				resp.Header[http.CanonicalHeaderKey(h)] = rewritten
 			}
 			logger.Info("scm proxy: call", "status", resp.StatusCode)
-			return nil
+			return up.rewriteBody(resp, proxyHost)
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			logger.Warn("scm proxy: upstream call failed", "error", err)
@@ -221,6 +248,96 @@ func (u *scmUpstream) rewriteURLs(value, proxyHost string) string {
 	return value
 }
 
+// rewriteBody points upstream API URLs in a JSON response's URL fields back
+// at the proxy, as rewriteURLs does for headers: gh follows URLs it reads
+// from a response (a workflow run's jobs_url, for one), and a call that went
+// to the upstream directly would carry no token. A body over
+// scmProxyMaxRewriteBody passes through unchanged.
+func (u *scmUpstream) rewriteBody(resp *http.Response, proxyHost string) error {
+	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if !scmJSONMediaTypes[mediaType] || resp.Header.Get("Content-Encoding") != "" ||
+		(resp.Request != nil && resp.Request.Method == http.MethodHead) || resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotModified {
+		return nil
+	}
+	head, err := io.ReadAll(io.LimitReader(resp.Body, scmProxyMaxRewriteBody+1))
+	if err != nil {
+		return fmt.Errorf("scm proxy: read response: %w", err)
+	}
+	if len(head) > scmProxyMaxRewriteBody {
+		resp.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(head), resp.Body), resp.Body}
+		return nil
+	}
+	_ = resp.Body.Close()
+	body := u.rewriteURLFields(string(head), proxyHost)
+	resp.Body = io.NopCloser(strings.NewReader(body))
+	resp.ContentLength = int64(len(body))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	return nil
+}
+
+// scmJSONMediaTypes are the API responses whose URL fields are rewritten.
+// File contents come back as application/vnd.github.raw+json, which is the
+// file itself, not API JSON, so it is not listed.
+var scmJSONMediaTypes = map[string]bool{"application/json": true, "application/vnd.github+json": true}
+
+// scmURLField matches the start of a JSON "url" or "..._url" string value.
+// Only these are rewritten: text that merely mentions an API URL (a PR or
+// comment body) stays as written, and web URLs (html_url) are not API URLs.
+var scmURLField = regexp.MustCompile(`"(?:[A-Za-z0-9]+_)*url"\s*:\s*"`)
+
+// rewriteURLFields rewrites the upstream API prefix at the start of every
+// URL field's value, longest prefix first, when a path, query, fragment or the
+// value's end follows it.
+func (u *scmUpstream) rewriteURLFields(body, proxyHost string) string {
+	pairs := slices.Clone(u.prefixes)
+	slices.SortFunc(pairs, func(a, b [2]string) int { return len(b[1]) - len(a[1]) })
+	var out strings.Builder
+	rest := body
+	for {
+		loc := scmURLField.FindStringIndex(rest)
+		if loc == nil {
+			out.WriteString(rest)
+			return out.String()
+		}
+		out.WriteString(rest[:loc[1]])
+		rest = rest[loc[1]:]
+		for _, pair := range pairs {
+			// The prefix must end the URL's base: api.github.com-other.example
+			// is another host.
+			after := strings.TrimPrefix(rest, pair[1])
+			if len(after) < len(rest) && (after == "" || strings.ContainsRune(`/?#"`, rune(after[0]))) {
+				out.WriteString("https://" + proxyHost + pair[0])
+				rest = after
+				break
+			}
+		}
+	}
+}
+
+// dropGhClassicProjects removes ghClassicProjectsField from a GraphQL
+// request body. A body over scmProxyMaxGraphQLBody passes through unchanged.
+func dropGhClassicProjects(r *http.Request) error {
+	head, err := io.ReadAll(io.LimitReader(r.Body, scmProxyMaxGraphQLBody+1))
+	if err != nil {
+		return fmt.Errorf("unreadable GraphQL request")
+	}
+	if len(head) > scmProxyMaxGraphQLBody {
+		r.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(head), r.Body), r.Body}
+		return nil
+	}
+	_ = r.Body.Close()
+	body := bytes.ReplaceAll(head, []byte(ghClassicProjectsField), nil)
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.ContentLength = int64(len(body))
+	return nil
+}
+
 // authorizeScmRequest checks the execution token gh or glab sent and returns
 // the caller's context. The token must be bound to an integration.
 func authorizeScmRequest(r *http.Request) (*security.RequestContext, *workspace.WorkspaceTokenClaims, error) {
@@ -273,54 +390,18 @@ func scmRequestToken(r *http.Request) string {
 }
 
 // scmReadOnlyRequest reports whether a call only reads: GET/HEAD/OPTIONS, or
-// a POST to the GraphQL endpoint itself (graphQL) whose operations are all
-// queries. reason says why not.
+// a POST to the GraphQL endpoint itself (graphQL). GraphQL is not inspected
+// for now: a mutation is left to the command's approval, as before the proxy.
+// reason says why not.
 func scmReadOnlyRequest(r *http.Request, graphQL bool) (bool, string) {
 	switch r.Method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
 		return true, ""
 	}
-	if r.Method != http.MethodPost || !graphQL {
-		return false, r.Method + " request"
+	if r.Method == http.MethodPost && graphQL {
+		return true, ""
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, scmProxyMaxGraphQLBody+1))
-	_ = r.Body.Close()
-	if err != nil || len(body) > scmProxyMaxGraphQLBody {
-		return false, "unreadable GraphQL request"
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.ContentLength = int64(len(body))
-	if !graphQLQueryOnly(body) {
-		return false, "GraphQL mutation"
-	}
-	return true, ""
-}
-
-// graphQLQueryOnly reports whether a GraphQL request body holds only queries.
-// A document with any mutation or subscription counts as a change even when
-// operationName picks a query, so a parser difference upstream cannot run
-// it. Anything unparsable counts as a change.
-func graphQLQueryOnly(body []byte) bool {
-	var req struct {
-		Query         string `json:"query"`
-		OperationName string `json:"operationName"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil || strings.TrimSpace(req.Query) == "" {
-		return false
-	}
-	doc, err := parser.ParseQuery(&ast.Source{Input: req.Query})
-	if err != nil || len(doc.Operations) == 0 {
-		return false
-	}
-	for _, op := range doc.Operations {
-		if op.Operation != ast.Query {
-			return false
-		}
-	}
-	if req.OperationName != "" && doc.Operations.ForName(req.OperationName) == nil {
-		return false
-	}
-	return true
+	return false, r.Method + " request"
 }
 
 func scmProxyError(w http.ResponseWriter, status int, message string) {
@@ -362,6 +443,7 @@ func githubUpstream(ctx context.Context, cfg toolcore.ToolConfig) (*scmUpstream,
 	up := &scmUpstream{provider: "GitHub", authHeader: "Authorization", authValue: "token " + token}
 	root := strings.TrimSuffix(strings.TrimSpace(apiUrl), "/")
 	if root == "" || strings.Contains(root, "api.github.com") || strings.TrimPrefix(strings.TrimPrefix(root, "https://"), "http://") == "github.com" {
+		up.githubCom = true
 		up.prefixes = [][2]string{
 			{"/api/v3", "https://api.github.com"},
 			{"/api/graphql", "https://api.github.com/graphql"},

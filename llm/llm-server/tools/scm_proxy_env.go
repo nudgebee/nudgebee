@@ -17,8 +17,9 @@ func scmProxyEnabled() bool {
 
 // scmProxyEnv marks a command's env so the workspace binds its execution token
 // to these integrations (either may be nil) and points gh/glab at the SCM
-// proxy. The proxy lets the command change something only when the approval
-// gate classified the call as a write and it passed the gate.
+// proxy. Over REST, the proxy lets the command change something only when the
+// approval gate classified the call as a write and it passed the gate; GraphQL
+// is passed through for now.
 func scmProxyEnv(nbRequestContext core.NbToolContext, github, gitlab *core.ToolConfig) map[string]string {
 	env := map[string]string{
 		workspace.ENV_NB_SCM_WRITE: strconv.FormatBool(isApprovedWrite(nbRequestContext.RequestType)),
