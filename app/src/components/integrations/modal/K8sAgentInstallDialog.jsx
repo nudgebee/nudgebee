@@ -79,6 +79,12 @@ const K8sAgentInstallDialog = ({ open, onClose, account }) => {
   const [authKey, setAuthKey] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
+  // Set when `generateAgentToken` comes back without usable credentials —
+  // distinct from `isLoading`, which only says the request is no longer in
+  // flight. Without this, a failed generation left `authKey` empty forever,
+  // which the checking-phase banner below couldn't tell apart from "about to
+  // poll" and showed as if a check were still running.
+  const [keyGenerationFailed, setKeyGenerationFailed] = useState(false);
   // 'checking' → 'waiting' → 'connected'. No 'shared' phase like the VM
   // dialog's — a K8s account's agent is keyed to this one account already,
   // not shared across a fleet, so there is no prior-agent ambiguity to flag.
@@ -91,6 +97,7 @@ const K8sAgentInstallDialog = ({ open, onClose, account }) => {
       setAuthKey('');
       setAgentPhase('checking');
       setConfirmed(false);
+      setKeyGenerationFailed(false);
       return undefined;
     }
     if (!confirmed) {
@@ -98,6 +105,7 @@ const K8sAgentInstallDialog = ({ open, onClose, account }) => {
     }
     let cancelled = false;
     setIsLoading(true);
+    setKeyGenerationFailed(false);
     apiAccount
       .generateAgentToken(accountId, 'k8s')
       .then((res) => {
@@ -106,11 +114,14 @@ const K8sAgentInstallDialog = ({ open, onClose, account }) => {
         if (data?.access_key && data?.access_secret) {
           setAuthKey(`${data.access_key}:${data.access_secret}`);
         } else {
+          setKeyGenerationFailed(true);
           snackbar.error('Failed to generate a new install command');
         }
       })
       .catch(() => {
-        if (!cancelled) snackbar.error('Failed to generate a new install command');
+        if (cancelled) return;
+        setKeyGenerationFailed(true);
+        snackbar.error('Failed to generate a new install command');
       })
       .finally(() => {
         if (!cancelled) setIsLoading(false);
@@ -244,7 +255,7 @@ const K8sAgentInstallDialog = ({ open, onClose, account }) => {
             </Link>
           </Typography>
         </Box>
-        {accountId && agentPhase === 'checking' && !isLoading && (
+        {accountId && agentPhase === 'checking' && !isLoading && !keyGenerationFailed && (
           <Box data-testid='k8s-agent-install-checking'>
             <ProgressLinear surface='section' tone='info' aria-label='Checking for an existing connection' />
             <Box sx={{ mt: ds.space[2] }}>

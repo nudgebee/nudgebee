@@ -1712,30 +1712,13 @@ const SetupCenter = () => {
   // ("Map Channel", or Google Chat's "Set default") — the channel lists and
   // team pickers live there, not in a form Setup can open. New tab for the
   // same reason as the Google Chat hand-off below; readiness refreshes when
-  // this tab regains focus, so the step clears without a reload. Each
-  // registry route is already that page's `?cloudProvider=` value.
-  // One pending listener at most, and none left behind after unmount — a
-  // second click before refocusing must not queue a second refetch.
-  const refocusRefreshRef = React.useRef<(() => void) | null>(null);
-  React.useEffect(
-    () => () => {
-      if (refocusRefreshRef.current) window.removeEventListener('focus', refocusRefreshRef.current);
-    },
-    []
-  );
-  const openDefaultChannelSetup = React.useCallback(
-    (route: string) => {
-      window.open(`/accounts/account-form?cloudProvider=${route.toLowerCase()}`, '_blank', 'noopener');
-      if (refocusRefreshRef.current) return;
-      const onFocus = () => {
-        refocusRefreshRef.current = null;
-        refreshReadinessInputs();
-      };
-      refocusRefreshRef.current = onFocus;
-      window.addEventListener('focus', onFocus, { once: true });
-    },
-    [refreshReadinessInputs]
-  );
+  // this tab regains focus (the page-wide focus listener above, #41892), so
+  // the step clears without a reload and without this needing its own
+  // one-shot listener — it used to carry one before that existed, which
+  // double-fetched on return once both were registered.
+  const openDefaultChannelSetup = React.useCallback((route: string) => {
+    window.open(`/accounts/account-form?cloudProvider=${route.toLowerCase()}`, '_blank', 'noopener');
+  }, []);
 
   const togglePanel = React.useCallback((id: string) => setExpandedPanel((prev) => (prev === id ? '' : id)), []);
   const toggleWhy = React.useCallback((id: string) => setOpenWhy((prev) => ({ ...prev, [id]: !prev[id] })), []);

@@ -1317,6 +1317,23 @@ describe('per-account chips on the Accounts item', () => {
     expect(screen.queryByTestId('k8s-agent-install-waiting')).not.toBeInTheDocument();
   });
 
+  // Found in review: a failed key generation left `authKey` empty forever,
+  // which the checking banner above couldn't tell apart from "about to
+  // poll" — it stayed up claiming a check was running when none ever would.
+  it('does not show the checking indicator when regenerating the key itself fails', async () => {
+    mockGetAllAccount.mockResolvedValue(payload([k8s]));
+    mockListK8sAccAgentHealth.mockResolvedValue(agentHealth([k8s.id], 'PENDING'));
+    mockGenerateAgentToken.mockRejectedValueOnce(new Error('network error'));
+    render(<SetupCenter />);
+
+    const accountItem = await screen.findByTestId('setup-item-account');
+    fireEvent.click(chipFor(accountItem, 'prod'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Regenerate key' }));
+
+    await waitFor(() => expect(mockGenerateAgentToken).toHaveBeenCalledWith(k8s.id, 'k8s'));
+    await waitFor(() => expect(screen.queryByTestId('k8s-agent-install-checking')).not.toBeInTheDocument());
+  });
+
   // #41892: the dialog polls agent health entirely on its own — closing it
   // after it reports connected used to leave the chip stuck on stale
   // `partial` state until a full page reload.
