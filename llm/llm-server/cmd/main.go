@@ -204,7 +204,6 @@ func main() {
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	pprof.Register(r)
 	r.Use(gin.Recovery())
 	// otelgin must run before sloggin so the server span is on the request
 	// context when the access log line is emitted with trace_id/span_id.
@@ -216,6 +215,10 @@ func main() {
 	r.Use(sloggin.NewWithConfig(logger, slogginConfig))
 	r.Use(traceResponseHeaderMiddleware())
 	r.Use(authHandlerMiddleware())
+
+	if os.Getenv("ENABLE_PPROF") == "true" {
+		pprof.Register(r)
+	}
 
 	var tracer = otel.Tracer(config.SERVICE_NAME)
 	var meter = otel.Meter(config.SERVICE_NAME)

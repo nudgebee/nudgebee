@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"nudgebee/tickets-server/routes"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/Cyprinus12138/otelgin"
@@ -63,6 +65,32 @@ func (h traceContextHandler) WithGroup(name string) slog.Handler {
 	return traceContextHandler{h.Handler.WithGroup(name)}
 }
 
+func authHandlerMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		path := c.Request.URL.Path
+		if strings.HasPrefix(path, "/health") || strings.HasPrefix(path, "/swagger") || path == "/openapi.json" {
+			c.Next()
+			return
+		}
+		expectedToken := common.Config.ServiceApiServerToken
+		if expectedToken == "" {
+			logger.Error("ticket-server: ServiceApiServerToken is empty (fail-closed)", "path", path)
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "service authentication not configured"})
+			return
+		}
+		authHeader := c.Request.Header.Get(common.Config.ServiceApiServerTokenHeader)
+		if authHeader == "" {
+			authHeader = c.Request.Header.Get("X-ACTION-TOKEN")
+		}
+		if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedToken)) != 1 {
+			logger.Warn("ticket-server: unauthorized request", "path", path)
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+		c.Next()
+	}
+}
+
 func main() {
 	slog.SetDefault(logger)
 	tp, mp, err := initOtel()
@@ -87,7 +115,6 @@ func main() {
 	}()
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
-	pprof.Register(router)
 	router.Use(gin.Recovery())
 	// Extract the inbound W3C traceparent into the request context (server span)
 	// and echo it back on the response, so ticket-server continues the caller's
@@ -100,6 +127,11 @@ func main() {
 	slogginConfig.Filters = []sloggin.Filter{sloggin.IgnorePath("/health")}
 	router.Use(sloggin.NewWithConfig(logger, slogginConfig))
 	router.Use(traceResponseHeaderMiddleware())
+	router.Use(authHandlerMiddleware())
+
+	if os.Getenv("ENABLE_PPROF") == "true" {
+		pprof.Register(router)
+	}
 
 	routes.InitializeRoutes(router)
 

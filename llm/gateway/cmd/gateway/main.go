@@ -120,11 +120,14 @@ func main() {
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	pprof.Register(r)
 	r.Use(gin.Recovery())
 	r.Use(sloggin.NewWithFilters(logger, sloggin.IgnorePath("/health")))
 	r.Use(otelgin.Middleware(config.SERVICE_NAME))
 	r.Use(traceResponseHeaderMiddleware())
+
+	if os.Getenv("ENABLE_PPROF") == "true" {
+		pprof.Register(r)
+	}
 
 	tracer := otel.Tracer(config.SERVICE_NAME)
 	_ = tracer // reserved for handler wiring (metering spans)
