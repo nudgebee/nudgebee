@@ -135,7 +135,7 @@ are bundled Go deps (grpc, pgx, stdlib) only a newer Temporal release fixes.
 | WS | Scope | Fixable | Approach | Risk |
 |---|---|---|---|---|
 | **WS1** | First-party services | ~61 | Land #587/#588/#589; rag-server dep bump (safe transitive now, hold pypdf/transformers majors); `.trivyignore` vendored floor → flip services gate to **enforce** | low |
-| **WS2** | Agents | ~89 | Re-point `code-analysis-agent` deploy off `:latest` to the hardened edge tag; `nudgebee-agent` bump + release in the agent repo (with node-agent #291) | low–med · cross-repo |
+| **WS2** | Agents | ~89 | Re-point `code-analysis-agent` deploy off `:latest` to the hardened edge tag (✅ main/compose track `edge`, `release.yaml` pins `:<version>`); `nudgebee-agent` bump + release in the agent repo (with node-agent #291) — still open | low–med · cross-repo |
 | **WS3** | Infra mirrors | ~805 | Add OSS publish workflows building current bitnami (debian-12/13) within the same app major; **test stateful DBs in `nudgebee-oss-qa` before prod** | **med–high** (stateful) |
 | **WS4** | Temporal + Qdrant | ~1,193 | Bump Temporal chart `0.72.0`→latest (newer server/ui/admin-tools) and Qdrant `v1.16.0`→latest; test in qa; residual report-only | med (compat) |
 | **WS5** | Gate + guardrail | — | Add all deployed images to `security-scan.yaml` as a **report-only** second matrix group; first-party group flips to **enforce**; third-party/mirror group stays report-only with a documented upstream floor | low |
@@ -164,5 +164,6 @@ measured every run.
 | 2026-07-11 | 2 | **Live scan of running `nudgebee-oss` namespace** (26 images) → deployed third-party surface is ~2,000 fixable / ~100 CRIT, ~35× the first-party services. Phase 2 opened. | fleet 2,148 fixable |
 | 2026-09-03 | 3 | Atlas v1.3.0 in migrations (#711); Go toolchain 1.26.5→1.26.6 and OS_PKG_EPOCH 2026-W36 across first-party Go images & mirrors (#712) | fleet ~40 fixable |
 | 2026-09-03 | 4 | Bump `golang.org/x/mod` v0.40.0, `x/text` v0.41.0, `x/net` v0.58.0, `x/crypto` v0.56.0 across Go services; PowerShell LTS 7.4.19 in runbook-server | fleet ~20 fixable |
+| 2026-10-25 | 8 | WS2: `code-analysis-agent` off `:latest` — compose/chart main track `edge`, `release.yaml` re-pins published charts to `:<version>` | unchanged |
 
 _Update this table after every merged iteration PR. Re-run the scan workflow (or `trivy image --ignore-unfixed --severity CRITICAL,HIGH,MEDIUM <image>`) to get the new numbers._

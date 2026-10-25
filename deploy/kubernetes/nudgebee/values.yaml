@@ -574,7 +574,13 @@ llm-server:
   enabled: true
   fullnameOverride: llm-server
   env:
-    LLM_SERVER_AGENT_CODEAGENT_IMAGE: 'ghcr.io/nudgebee/code-analysis-agent:latest'
+    # The workspace runtime pulls this image itself (llm-server starts it via
+    # the container runtime), so Helm never composes it from an `image:` block
+    # and the per-subchart bump in release.yaml cannot see it. Track the
+    # hardened `edge` build on main instead of the mutable `latest` tag;
+    # release.yaml re-pins this to the released version so a published chart
+    # is reproducible. Phase 2 / WS2: docs/security/image-hardening.md.
+    LLM_SERVER_AGENT_CODEAGENT_IMAGE: 'ghcr.io/nudgebee/code-analysis-agent:edge'
     LLM_SERVER_AGENT_CODEAGENT_IMAGE_PULL_SECRET: ''
 rag-server:
   enabled: true
