@@ -1598,18 +1598,48 @@ func hasUnquotedShellSyntax(command string) bool {
 
 func (m KubectlExecuteTool) InferToolRequestType(ctx *security.RequestContext, toolName, input string) (core.ToolRequestType, error) {
 	command := extractCommandFromToolInput(input)
-	requestType := InferKubectlVerbType(command)
+	requestType := inferKubectlApprovalType(command)
 	// Only this tool's approval check classifies chains; InferKubectlVerbType
 	// itself stays single-command, because the workspace proxy uses it to
 	// decide the access a command needs.
 	if requestType == "" {
-		requestType = classifyOwnCLIChain(ctx, command, InferKubectlVerbType, "kubectl")
+		requestType = classifyOwnCLIChain(ctx, command, inferKubectlApprovalType, "kubectl")
 	}
 	if requestType != "" {
 		return requestType, nil
 	}
 	ctx.GetLogger().Warn("kubectl: verb not recognized by heuristic, falling through to LLM classification", "input", input)
 	return "", nil
+}
+
+// inferKubectlApprovalType is InferKubectlVerbType for the approval check,
+// which also reads every kubectl config command: none can change anything.
+// Call refuses them, and the workspace proxy serves the kubeconfig as virtual
+// and read-only, so approving one only consents to a command that fails
+// (#41201). Not in InferKubectlVerbType: the proxy uses that to decide the
+// access a command needs.
+func inferKubectlApprovalType(command string) core.ToolRequestType {
+	if requestType := InferKubectlVerbType(command); requestType != "" {
+		return requestType
+	}
+	if isKubectlConfigCommand(command) {
+		return core.ToolRequestTypeRead
+	}
+	return ""
+}
+
+// isKubectlConfigCommand reports one `kubectl config ...` command and nothing
+// else: no chain, pipe, redirection or substitution.
+func isKubectlConfigCommand(command string) bool {
+	if hasUnquotedShellSyntax(command) {
+		return false
+	}
+	parts, err := shlex.Split(strings.TrimSpace(command))
+	if err != nil || len(parts) < 2 || parts[0] != "kubectl" {
+		return false
+	}
+	verb, _, ok := kubectlVerbAndArgs(parts[1:])
+	return ok && verb == "config"
 }
 
 func (m KubectlExecuteTool) ConfigSchema(ctx *security.RequestContext) core.ToolConfigSchema {

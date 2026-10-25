@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
 	"testing"
@@ -233,6 +234,26 @@ func TestInferKubectlVerbType(t *testing.T) {
 			assert.Equal(t, tt.want, InferKubectlVerbType(extractCommandFromToolInput(tt.input)))
 		})
 	}
+}
+
+// #41201: every kubectl config command is refused when it runs, so the
+// approval check reads it; a write chained after one still needs approval.
+func TestKubectlExecuteInferToolRequestType_ConfigIsRead(t *testing.T) {
+	ctx := security.NewRequestContextForSuperAdmin()
+	for input, want := range map[string]core.ToolRequestType{
+		"kubectl config use-context prod":                                 core.ToolRequestTypeRead,
+		"kubectl config set-context --current --namespace=shop":           core.ToolRequestTypeRead,
+		"kubectl --request-timeout 5s config use-context prod":            core.ToolRequestTypeRead,
+		"kubectl config use-context prod && kubectl get pods -n shop":     core.ToolRequestTypeRead,
+		"kubectl config use-context prod && kubectl delete pod x -n shop": core.ToolRequestTypeDelete,
+		"kubectl get configmap config -n shop":                            core.ToolRequestTypeRead,
+		"kubectl rollout restart deployment config -n shop":               "",
+	} {
+		got, err := KubectlExecuteTool{}.InferToolRequestType(ctx, "kubectl_execute", input)
+		require.NoError(t, err, input)
+		assert.Equal(t, want, got, input)
+	}
+	assert.Empty(t, InferKubectlVerbType("kubectl config use-context prod"), "the proxy's access check is unchanged")
 }
 
 func TestKubectlUIReference(t *testing.T) {
