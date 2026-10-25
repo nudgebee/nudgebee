@@ -758,7 +758,7 @@ func (s *WorkflowDao) ListAIToolCandidates(ctx context.Context, tenantID string,
 	}
 
 	query := `
-		SELECT w.id::text, w.name, w.account_id::text, w.status, w.ai_invocable, w.ai_auto_approve,
+		SELECT w.id::text, w.name, COALESCE(w.description, ''), w.account_id::text, w.status, w.ai_invocable, w.ai_auto_approve,
 			cu.id::text, cu.display_name, cu.username, lv.definition
 		FROM workflows w
 		LEFT JOIN users cu ON w.created_by = cu.id
@@ -785,7 +785,7 @@ func (s *WorkflowDao) ListAIToolCandidates(ctx context.Context, tenantID string,
 			userID, displayName, username sql.NullString
 			liveBytes                     []byte
 		)
-		if err := rows.Scan(&c.ID, &c.Name, &c.AccountID, &c.Status, &c.AIInvocable, &c.AIAutoApprove,
+		if err := rows.Scan(&c.ID, &c.Name, &c.Description, &c.AccountID, &c.Status, &c.AIInvocable, &c.AIAutoApprove,
 			&userID, &displayName, &username, &liveBytes); err != nil {
 			return nil, fmt.Errorf("failed to scan AI tool candidate: %w", err)
 		}

@@ -59,6 +59,21 @@ func (s *Server) getRequestDetails(c *gin.Context) (*security.RequestContext, st
 
 }
 
+// scopeOtherReadableAccounts (?scope=readable) asks a listing for the caller's
+// other readable accounts instead of the one in X-Account-ID.
+const scopeOtherReadableAccounts = "readable"
+
+// withoutAccount is ids without accountID.
+func withoutAccount(ids []string, accountID string) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id != accountID {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 // mayReachAccount is the account gate in front of the workflow endpoints: a
 // built-in role with read access to the account, or a custom-role workflows
 // grant covering it (tenant-wide grants only reach accounts in the caller's
@@ -244,9 +259,24 @@ func (s *Server) listWorkflows(c *gin.Context) {
 		search.Limit = limit
 	}
 
-	// The REST route stays single-account — getRequestDetails already rejects a
-	// blank account id, so this is always a one-element scope.
-	workflows, err := s.workflowService.ListWorkflows(sc, []string{accountID}, search)
+	// The REST route is single-account — getRequestDetails already rejects a
+	// blank account id — unless the caller asks for the other accounts it can
+	// read (scope=readable): the AI assistant lists those apart from the
+	// conversation's own, so each is labelled with where it runs.
+	accountIDs := []string{accountID}
+	if c.Query("scope") == scopeOtherReadableAccounts {
+		readable, err := workflow.ResolveReadableAccounts(sc, nil)
+		if err != nil {
+			handleServiceError(c, err, "failed to retrieve workflows")
+			return
+		}
+		accountIDs = withoutAccount(readable, accountID)
+		if len(accountIDs) == 0 {
+			c.JSON(http.StatusOK, model.ListWorkflowResponse{Workflows: []model.Workflow{}})
+			return
+		}
+	}
+	workflows, err := s.workflowService.ListWorkflows(sc, accountIDs, search)
 	if err != nil {
 		s.logger.Error("failed to list workflows", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to retrieve workflows"})
@@ -451,8 +481,13 @@ func (s *Server) getWorkflowExecution(c *gin.Context) {
 func (s *Server) searchAIInvocableWorkflows(c *gin.Context) {
 	// llm-server enumerates an account's AI-invocable automations with no user
 	// (tool listing, not an action on anyone's behalf). Read-only; triggering one
-	// still needs the real user.
-	c.Set(ctxAllowSystemCaller, true)
+	// still needs the real user. Searching the caller's other accounts does not
+	// allow it: with no user there is no one whose accounts to search, and the
+	// system user would read every account in the tenant.
+	otherAccounts := c.Query("scope") == scopeOtherReadableAccounts
+	if !otherAccounts {
+		c.Set(ctxAllowSystemCaller, true)
+	}
 	sc, accountID, processRequest := s.getRequestDetails(c)
 	if !processRequest {
 		return
@@ -465,7 +500,11 @@ func (s *Server) searchAIInvocableWorkflows(c *gin.Context) {
 		}
 	}
 
-	result, err := s.workflowService.SearchAIInvocableWorkflows(sc, accountID, c.Query("query"), limit)
+	search := s.workflowService.SearchAIInvocableWorkflows
+	if otherAccounts {
+		search = s.workflowService.SearchAIInvocableWorkflowsInOtherAccounts
+	}
+	result, err := search(sc, accountID, c.Query("query"), limit)
 	if err != nil {
 		var commonErr common.Error
 		if errors.As(err, &commonErr) {

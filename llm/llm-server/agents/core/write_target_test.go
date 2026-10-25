@@ -244,3 +244,33 @@ func TestOwnClusterNamedOrNotIsOneApproval(t *testing.T) {
 	require.Equal(t, unnamed, key(`{"command":"kubectl create configmap x --context k8s-dev"}`))
 	require.Equal(t, "kubectl_execute@k8s-prod@prod-id", key(`{"command":"kubectl create configmap x","cluster":"k8s-prod"}`), "another cluster keeps its own approval")
 }
+
+// An automation runs on the account it belongs to: a run on another account
+// is approved for that account, its card names it, and write access is
+// checked there — also when the account cannot be described.
+func TestAutomationRunOnAnotherAccountIsThatAccountsWrite(t *testing.T) {
+	tools.StubAccountTargets(t, map[string]*toolcore.ExecutionTarget{
+		"prod-id": {Provider: "aws", Name: "aws-prod", AccountID: "prod-id"},
+	})
+	e := &plannerExecutor{
+		ctx:          security.NewRequestContextForTenantAccountAdmin("tenant", "user", []string{"dev-id", "prod-id"}),
+		agentRequest: NBAgentRequest{AccountId: "dev-id", UserId: "user"},
+	}
+	trigger := tools.WorkflowTriggerTool{}
+
+	require.Equal(t, "workflow_trigger@prod-id", approvalKey(e, trigger, `{"id":"wf-1","account_id":"prod-id"}`))
+	require.Equal(t, "workflow_trigger", approvalKey(e, trigger, `{"id":"wf-1"}`), "the conversation's own account keeps its key")
+
+	action := NBAgentPlannerToolAction{Tool: trigger.Name(), ToolInput: `{"id":"wf-1","account_id":"prod-id"}`}
+	target := e.writeTargetOf(trigger, action)
+	require.Equal(t, "On AWS account **aws-prod**:\nRun it?", confirmationQuestionWithTarget("Run it?", action, toolcore.ToolRequestTypeCreate, target))
+	require.Equal(t, []string{"prod-id"}, writeAccountOf("dev-id", target, true))
+
+	for _, tool := range []toolcore.NBTool{tools.WorkflowExecutionRetriggerTool{}, tools.WorkflowExecutionCancelTool{}} {
+		require.Equal(t, tool.Name()+"@prod-id", approvalKey(e, tool, `{"id":"wf-1","execution_id":"ex-1","account_id":"prod-id"}`))
+	}
+
+	unknown := e.writeTargetOf(trigger, NBAgentPlannerToolAction{Tool: trigger.Name(), ToolInput: `{"id":"wf-1","account_id":"gone-id"}`})
+	require.NotNil(t, unknown, "an account that cannot be described is still where the run lands")
+	require.Equal(t, []string{"gone-id"}, writeAccountOf("dev-id", unknown, true))
+}

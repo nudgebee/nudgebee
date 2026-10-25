@@ -180,6 +180,8 @@ func (a WorkflowAgent) GetSystemPrompt(ctx *security.RequestContext, query core.
 			"Find an automation by what it DOES, from a description of the problem.",
 			"Reach for this first when the user describes a symptom rather than naming an automation —",
 			"the team may already have a runbook for it. Args: query (string), limit (int).",
+			"Results of this conversation's account come under this_account; other accounts the user can access come under",
+			"other_accounts, each with its account_id and account_name. Say which account an automation is in when you offer it.",
 			"Only automations you are actually allowed to run are returned, so anything it gives back is safe to offer.",
 			"If it returns nothing, say so — do NOT fall back to workflow_list and offer whatever turns up.",
 		},
@@ -193,10 +195,10 @@ func (a WorkflowAgent) GetSystemPrompt(ctx *security.RequestContext, query core.
 			"can be run by you, and the server will refuse the rest.",
 		},
 		tools.ToolWorkflowGet: {
-			"Get full details of an automation. Arg: id (string, required).",
+			"Get full details of an automation. Args: id (string, required), account_id (string, for an automation under other_accounts).",
 		},
 		tools.ToolWorkflowTrigger: {
-			"Trigger an automation. Args: id (string, required), inputs (map).",
+			"Trigger an automation. Args: id (string, required), inputs (map), account_id (string, for an automation under other_accounts).",
 		},
 		tools.ToolWorkflowTaskList: {
 			"List available tasks to help understand what can be done.",
@@ -205,13 +207,13 @@ func (a WorkflowAgent) GetSystemPrompt(ctx *security.RequestContext, query core.
 			"Update an existing automation definition. Args: id (string, required), definition (object, required).",
 		},
 		tools.ToolWorkflowExecutions: {
-			"List executions of an automation. Args: id (string, required), limit (optional), status (optional).",
+			"List executions of an automation. Args: id (string, required), limit (optional), status (optional), account_id (when the automation is in another account).",
 		},
 		tools.ToolWorkflowExecutionGet: {
-			"Get details of a specific execution including individual task statuses, errors, and outputs. Args: id (string, required), execution_id (string, required). IMPORTANT: Always use this after workflow_executions to get task-level details.",
+			"Get details of a specific execution including individual task statuses, errors, and outputs. Args: id (string, required), execution_id (string, required), account_id (string, when the automation is in another account). IMPORTANT: Always use this after workflow_executions to get task-level details.",
 		},
 		tools.ToolWorkflowExecutionRetrigger: {
-			"Re-trigger a failed execution. Args: id (string, required), execution_id (string, required), inputs (optional).",
+			"Re-trigger a failed execution. Args: id (string, required), execution_id (string, required), inputs (optional), account_id (when the automation is in another account).",
 		},
 		tools.ToolWorkflowState: {
 			"Get persistent state of an automation. Arg: id (string, required).",
@@ -259,7 +261,7 @@ func (a WorkflowAgent) GetSystemPrompt(ctx *security.RequestContext, query core.
 			"Permanently delete an automation and all its versions. Arg: id (string, required). Destructive — confirm explicitly with the user first.",
 		},
 		tools.ToolWorkflowExecutionCancel: {
-			"Cancel a running execution. Args: id (string, required), execution_id (string, required). Requires user approval.",
+			"Cancel a running execution. Args: id (string, required), execution_id (string, required), account_id (when the automation is in another account). Requires user approval.",
 		},
 		tools.ToolWorkflowTaskExecute: {
 			"Execute a single task type in isolation for testing. Args: task_type (string, required), params (object). Requires user approval (runs real task logic).",

@@ -55,6 +55,10 @@ func init() {
 		"propose_fix",          // NudgeBee's own plan for the conversation's alert; nothing in the account changes
 		"schedule_recheck",     // when NudgeBee looks at the conversation's alert again; nothing in the account changes
 		"get_remediation_plan", // NudgeBee's own plan for the conversation's alert, read only
+		// workflow_search / workflow_list also list the user's other accounts,
+		// and workflow_get / workflow_trigger / workflow_execution_get act on
+		// one by account_id (tool_workflow_accounts.go), never by `target`; a
+		// child handed another cluster is still refused them.
 		"watch_list", "watch_status", "workflow_config_delete", "workflow_config_get",
 		"workflow_config_list", "workflow_config_save", "workflow_create", "workflow_delete",
 		"workflow_delete_version", "workflow_dry_run", "workflow_examples", "workflow_execution_cancel",

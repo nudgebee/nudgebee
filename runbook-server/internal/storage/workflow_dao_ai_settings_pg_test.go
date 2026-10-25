@@ -40,6 +40,7 @@ func aiSettingsTestDB(t *testing.T) *sqlx.DB {
 			tenant_id uuid NOT NULL,
 			account_id uuid NOT NULL,
 			name text NOT NULL,
+			description text,
 			status text NOT NULL,
 			definition jsonb NOT NULL DEFAULT '{}'::jsonb,
 			ai_invocable boolean NOT NULL DEFAULT false,

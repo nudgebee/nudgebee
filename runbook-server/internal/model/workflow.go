@@ -847,6 +847,9 @@ type ListWorkflowResponse struct {
 // distraction in a chat turn.
 type AIWorkflowCandidate struct {
 	ID string `json:"id"`
+	// AccountID is the account the automation belongs to and runs on. A search
+	// across the caller's other accounts returns automations from several.
+	AccountID string `json:"account_id,omitempty"`
 	// Name is the human name, useful both for matching and for naming the
 	// automation back to the user before running it.
 	Name string `json:"name"`
@@ -866,6 +869,7 @@ type AIWorkflowCandidate struct {
 // actually run — the live version snapshot, not the draft.
 type AIInvocableWorkflow struct {
 	ID          string
+	AccountID   string
 	Name        string
 	Description string
 	// AutoApprove mirrors Workflow.AIAutoApprove. It travels with the candidate
@@ -883,6 +887,7 @@ type AIInvocableWorkflow struct {
 type AIToolCandidate struct {
 	ID            string
 	Name          string
+	Description   string
 	AccountID     string
 	Status        WorkflowStatus
 	AIInvocable   bool

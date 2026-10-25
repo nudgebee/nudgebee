@@ -497,6 +497,15 @@ type PerCallTargetTool interface {
 	RequestedTarget(toolInput string) (string, error)
 }
 
+// AccountArgTool is implemented by write tools whose call may name another
+// account (by id) to act on, rather than a cluster or cloud connection: an
+// automation runs on the account it belongs to. The executor checks write
+// access on that account and scopes the approval to it. "" means the
+// conversation's own account.
+type AccountArgTool interface {
+	RequestedAccountID(toolInput string) string
+}
+
 // ToolConfirmationExempt is an optional interface for write tools that may skip
 // the user-confirmation card for a particular invocation. It never affects
 // authorization: the tool is still classified as a write, so the RBAC check in

@@ -56,6 +56,22 @@ func (e *plannerExecutor) writeTargetOf(tool toolcore.NBTool, action NBAgentPlan
 		return fromConfig(tool.Name(), selected)
 	}
 
+	// Tools that name an account by id (automations run on theirs). One that
+	// is not the conversation's own is always the write's destination, even
+	// when it cannot be described: answering "origin" would approve and
+	// authorize the write on an account it does not land on.
+	if scoped, ok := tool.(toolcore.AccountArgTool); ok {
+		account := scoped.RequestedAccountID(action.ToolInput)
+		if account == "" || account == origin {
+			return nil
+		}
+		target := toolcore.ExecutionTarget{Name: account, AccountID: account}
+		if described := tools.AccountTarget(account); described != nil {
+			target = *described
+		}
+		return &writeTarget{Target: target}
+	}
+
 	// Tools that follow a target (databases, VMs, …): the call's `target`,
 	// else the one handed to this agent.
 	if decl, _ := toolcore.AccountScopeOf(tool.Name()); decl.Scope != toolcore.AccountScopeFollowsTarget {
