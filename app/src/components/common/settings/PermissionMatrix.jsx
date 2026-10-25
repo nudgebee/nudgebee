@@ -134,12 +134,23 @@ GrantNote.propTypes = {
 
 const DEFAULT_COLUMNS = CLASSES.map((cls) => ({ cls, label: cls }));
 
-// Write requires Read — Write is disabled until Read is granted for the module.
-// A module with no Read class has nothing to wait for, and a module whose
-// classes are separate rights (integration grants: manage vs use) does not
-// couple them; a prerequisite such a row needs is ticked by the editor instead.
+// Write and Execute require Read — each is disabled until Read is granted for
+// the module, and the editors tick Read with it and drop it with Read. A module
+// with no Read class has nothing to wait for, and a module whose classes are
+// separate rights (integration grants: manage vs use) does not couple them; a
+// prerequisite such a row needs is ticked by the editor instead. Execute is
+// coupled only when RPC actions back it: a run-time grant (k8s:Execute, checked
+// when an automation step runs) is meant to be held without Read.
+export const requiresRead = (entry, cls) =>
+  !!entry &&
+  !entry.independentClasses &&
+  entry.classes.includes('Read') &&
+  (cls === 'Write' || (cls === 'Execute' && (entry.actions?.Execute?.length ?? 0) > 0));
+
+// A box already ticked stays enabled, so a role saved before this rule (Execute
+// without Read) can still have the grant removed.
 const isCellDisabled = (entry, cls, selected) =>
-  cls === 'Write' && !entry.independentClasses && entry.classes.includes('Read') && !selected.has(permKey(entry.module, 'Read'));
+  requiresRead(entry, cls) && !selected.has(permKey(entry.module, 'Read')) && !selected.has(permKey(entry.module, cls));
 
 // `columns` orders and names the class columns ([{ cls, label, tip? }]); a scope
 // can say "Manage" where the grant is a Write, and `tip` explains the column in

@@ -11,7 +11,7 @@ import dayjs from 'dayjs';
 import { getTokenScopeCatalog } from '@api1/roles';
 import { GATEWAY_METRIC_UNIT } from '@api1/gateway-config';
 import { carriesGatewayTraffic, carriesPlatformTraffic, KIND_LABELS } from './keyKinds';
-import { permKey, PermissionMatrix, ScopeTabs } from './PermissionMatrix';
+import { permKey, PermissionMatrix, ScopeTabs, requiresRead } from './PermissionMatrix';
 import { EMPTY_RESTRICTIONS, GATEWAY_ACCESS_OPTIONS, GatewayRestrictionPicker, hasRestrictions, toGatewayPolicy } from './GatewayRestrictions';
 
 const EXPIRY_OPTIONS = [
@@ -116,14 +116,19 @@ const ScopePicker = ({ selected, onChange }) => {
 
   const toggle = (module, cls) => {
     const key = permKey(module, cls);
+    const entry = catalog?.find((e) => e.module === module);
     const next = new Set(selected);
     if (next.has(key)) {
       next.delete(key);
-      // Write requires Read — removing Read cascades to Write for the same module.
-      if (cls === 'Read') next.delete(permKey(module, 'Write'));
+      // Write and Execute require Read — removing Read cascades to them for the same module.
+      if (cls === 'Read') {
+        for (const c of ['Write', 'Execute']) {
+          if (requiresRead(entry, c)) next.delete(permKey(module, c));
+        }
+      }
     } else {
       next.add(key);
-      if (cls === 'Write') next.add(permKey(module, 'Read'));
+      if (requiresRead(entry, cls)) next.add(permKey(module, 'Read'));
     }
     onChange(next);
   };
