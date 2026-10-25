@@ -16,21 +16,20 @@ function isScopedKey(auth: AuthContext | null): boolean {
   return !!auth && Array.isArray(auth.jwt.tokenScopes);
 }
 
-// Identity for integration OAuth routes: session cookie or encrypted bearer, plus the resilient cookie read.
+// Identity for integration OAuth routes: session cookie or encrypted bearer.
+// Does NOT fall back to raw unverified cookies if authenticateRequest fails or revokes the session.
 export async function resolveRequestJwt(req: NextApiRequest): Promise<JWT | null> {
   const auth = await authenticateRequest(req);
   if (isScopedKey(auth)) return null;
   if (auth?.jwt) return auth.jwt;
-  return getSessionTokenResilient(req);
+  return null;
 }
 
 // Like resolveRequestJwt but returns the full AuthContext ({ token, jwt }) for callers
-// that also need the bearer (e.g. GitHub callback's clientAuthorization). The resilient
-// fallback yields an empty token, which those callers treat as "no bearer to forward".
+// that also need the bearer (e.g. GitHub callback's clientAuthorization).
 export async function resolveRequestAuth(req: NextApiRequest): Promise<AuthContext | null> {
   const auth = await authenticateRequest(req);
   if (isScopedKey(auth)) return null;
   if (auth?.jwt) return auth;
-  const jwt = await getSessionTokenResilient(req);
-  return jwt ? { token: '', jwt } : null;
+  return null;
 }

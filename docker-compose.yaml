@@ -74,7 +74,7 @@ services:
     networks: [nudgebee]
     restart: unless-stopped
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
     environment:
@@ -91,8 +91,8 @@ services:
     networks: [nudgebee]
     restart: unless-stopped
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     environment:
@@ -107,16 +107,16 @@ services:
     volumes:
       - ./deploy/otel/local-config.yaml:/etc/otel/config.yaml:ro
     ports:
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP
-      - "8889:8889"   # Prometheus re-export, for diffing against the old /metrics
+      - "127.0.0.1:4317:4317"   # OTLP gRPC
+      - "127.0.0.1:4318:4318"   # OTLP HTTP
+      - "127.0.0.1:8889:8889"   # Prometheus re-export, for diffing against the old /metrics
 
   redis:
     image: ghcr.io/nudgebee/redis:7-alpine
     networks: [nudgebee]
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
 
@@ -125,8 +125,8 @@ services:
     networks: [nudgebee]
     restart: unless-stopped
     ports:
-      - "6333:6333"
-      - "6334:6334"
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
     volumes:
       - qdrant_data:/qdrant/storage
 
@@ -135,7 +135,7 @@ services:
     networks: [nudgebee]
     restart: unless-stopped
     ports:
-      - "7233:7233"
+      - "127.0.0.1:7233:7233"
     depends_on:
       postgres:
         condition: service_healthy
@@ -213,7 +213,7 @@ services:
         aliases:
           - services-server
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       <<: *app-common
       APP_DATABASE_URL: *db-url
@@ -236,7 +236,7 @@ services:
     restart: unless-stopped
     networks: [nudgebee]
     ports:
-      - "8001:8000"
+      - "127.0.0.1:8001:8000"
     environment:
       <<: *app-common
       APP_DATABASE_URL: *db-url
@@ -257,7 +257,7 @@ services:
     restart: unless-stopped
     networks: [nudgebee]
     ports:
-      - "8002:8000"
+      - "127.0.0.1:8002:8000"
     environment:
       <<: *app-common
       CLOUD_COLLECTOR_SERVER_DB_URL: *db-url
@@ -277,7 +277,7 @@ services:
     restart: unless-stopped
     networks: [nudgebee, workspace]
     ports:
-      - "8004:8080"
+      - "127.0.0.1:8004:8080"
     environment:
       <<: *app-common
       COLLECTOR_DB_URL: *db-url
@@ -298,7 +298,7 @@ services:
     restart: unless-stopped
     networks: [nudgebee, workspace]
     ports:
-      - "8005:8000"
+      - "127.0.0.1:8005:8000"
     volumes:
       # Required for dynamic Docker-backed workspaces. Treat this as
       # host-equivalent Docker authority.
@@ -335,7 +335,7 @@ services:
     restart: unless-stopped
     networks: [nudgebee]
     ports:
-      - "8007:8000"
+      - "127.0.0.1:8007:8000"
     environment:
       <<: *app-common
       # runbook/workflow tables live in the shared nudgebee DB
@@ -419,8 +419,8 @@ services:
     restart: unless-stopped
     networks: [nudgebee]
     ports:
-      - "9999:9999"
-      - "8081:8081"
+      - "127.0.0.1:9999:9999"
+      - "127.0.0.1:8081:8081"
     environment:
       <<: *app-common
       ML_INFERENCE_DATABASE_URL: *db-url
@@ -436,7 +436,7 @@ services:
     restart: unless-stopped
     networks: [nudgebee]
     ports:
-      - "8090:8080"
+      - "127.0.0.1:8090:8080"
     environment:
       <<: *app-common
       NOTIFICATION_DB_URL: *db-url
@@ -469,7 +469,7 @@ services:
       BASE_URL: http://127.0.0.1:3000
       NEXTAUTH_URL: http://localhost:3000
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-dev-nextauth-secret-changeme-32-characters}
-      NEXTAUTH_DUMMY_CREDS_ENABLED: ${NEXTAUTH_DUMMY_CREDS_ENABLED:-true}
+      NEXTAUTH_DUMMY_CREDS_ENABLED: ${NEXTAUTH_DUMMY_CREDS_ENABLED:-false}
       NEXTAUTH_DUMMY_CREDS_PASSWORD: ${NEXTAUTH_DUMMY_CREDS_PASSWORD:-Test!24#5}
 
   # ---------- Edge / Ingress (Nginx Reverse Proxy) ----------

@@ -91,7 +91,22 @@ function getLicenseOnlyHtml(): string {
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  const userRequest = req.body;
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  const expectedSecret = process.env.MARKETPLACE_SHARED_SECRET;
+  if (expectedSecret) {
+    const authHeader = req.headers['x-marketplace-secret'] || req.headers['authorization'];
+    if (authHeader !== expectedSecret && authHeader !== `Bearer ${expectedSecret}`) {
+      return res.status(401).json({ error: 'Unauthorized marketplace request' });
+    }
+  }
+
+  const userRequest = req.body ?? {};
+  if (!userRequest.email || !EMAIL_REGEX.test(userRequest.email)) {
+    return res.setHeader('Content-Type', 'text/html').status(400).send(getErrorHtml());
+  }
 
   if (userRequest.offeringtype === 'onprem') {
     return res.setHeader('Content-Type', 'text/html').status(200).send(getOnPremHtml());

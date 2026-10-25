@@ -483,7 +483,7 @@ const providers = [];
 if (process.env.GOOGLE_CLIENT_ID) {
   providers.push(
     GoogleProvider({
-      allowDangerousEmailAccountLinking: true,
+      allowDangerousEmailAccountLinking: false,
       clientId: process.env.GOOGLE_CLIENT_ID ?? '',
       clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? '',
       authorization: {
@@ -500,7 +500,7 @@ if (process.env.GOOGLE_CLIENT_ID) {
 if (process.env.OKTA_CLIENT_ID) {
   providers.push(
     OktaProvider({
-      allowDangerousEmailAccountLinking: true,
+      allowDangerousEmailAccountLinking: false,
       clientId: process.env.OKTA_CLIENT_ID,
       clientSecret: process.env.OKTA_CLIENT_SECRET ?? '',
       issuer: process.env.OKTA_ISSUER,
@@ -511,7 +511,7 @@ if (process.env.OKTA_CLIENT_ID) {
 if (process.env.ONELOGIN_CLIENT_ID) {
   providers.push(
     OneLoginProvider({
-      allowDangerousEmailAccountLinking: true,
+      allowDangerousEmailAccountLinking: false,
       clientId: process.env.ONELOGIN_CLIENT_ID,
       clientSecret: process.env.ONELOGIN_CLIENT_SECRET,
       issuer: process.env.ONELOGIN_ISSUER,
@@ -522,7 +522,7 @@ if (process.env.ONELOGIN_CLIENT_ID) {
 if (process.env.AZURE_AD_CLIENT_ID) {
   providers.push(
     AzureADProvider({
-      allowDangerousEmailAccountLinking: true,
+      allowDangerousEmailAccountLinking: false,
       clientId: process.env.AZURE_AD_CLIENT_ID,
       clientSecret: process.env.AZURE_AD_CLIENT_SECRET ?? '',
       tenantId: process.env.AZURE_AD_TENANT_ID ?? '',
@@ -533,7 +533,7 @@ if (process.env.AZURE_AD_CLIENT_ID) {
 if (process.env.AZURE_AD_B2C_CLIENT_ID) {
   providers.push(
     AzureADB2CProvider({
-      allowDangerousEmailAccountLinking: true,
+      allowDangerousEmailAccountLinking: false,
       tenantId: process.env.AZURE_AD_B2C_TENANT_NAME,
       clientId: process.env.AZURE_AD_B2C_CLIENT_ID,
       clientSecret: process.env.AZURE_AD_B2C_CLIENT_SECRET ?? '',
@@ -546,7 +546,7 @@ if (process.env.AZURE_AD_B2C_CLIENT_ID) {
 if (process.env.AUTH0_CLIENT_ID) {
   providers.push(
     Auth0Provider({
-      allowDangerousEmailAccountLinking: true,
+      allowDangerousEmailAccountLinking: false,
       clientId: process.env.AUTH0_CLIENT_ID,
       clientSecret: process.env.AUTH0_CLIENT_SECRET ?? '',
       issuer: process.env.AUTH0_ISSUER,
@@ -838,17 +838,18 @@ if (process.env.NEXTAUTH_DUMMY_CREDS_ENABLED == 'true') {
         if (license.error) {
           throw Error('Unable to verify the admin address: services-server is unreachable. Try again shortly.');
         }
-        const adminEmail = dummyCredsAdminEmail(license.email);
-        if (adminEmail && normalizedUsername !== adminEmail) {
+        const adminEmail = dummyCredsAdminEmail(license.email) || process.env.NEXTAUTH_DUMMY_CREDS_EMAIL || process.env.ADMIN_EMAIL;
+        if (!adminEmail) {
+          throw Error('Dummy credentials provider requires ADMIN_EMAIL or NEXTAUTH_DUMMY_CREDS_EMAIL to be configured.');
+        }
+        if (normalizedUsername !== adminEmail.trim().toLowerCase()) {
           console.warn('[Security] dummy-creds login refused for', normalizedUsername, '— only the configured admin address may use this provider.');
           throw Error('NO_TENANT_ACCESS');
         }
         console.warn(
           '[Security] dummy-creds login succeeded for',
           normalizedUsername,
-          adminEmail
-            ? '— this provider is pinned to the admin address and bypasses OAuth / LDAP / SSO.'
-            : '— this provider accepts ANY email with the configured password and bypasses OAuth / LDAP / SSO. Set admin.email (ADMIN_EMAIL) to pin it, or disable NEXTAUTH_DUMMY_CREDS_ENABLED if this is a production deployment.'
+          '— this provider is pinned to the admin address and bypasses OAuth / LDAP / SSO.'
         );
         return await getOrCreateBootstrapAdminUser(normalizedUsername);
       },
