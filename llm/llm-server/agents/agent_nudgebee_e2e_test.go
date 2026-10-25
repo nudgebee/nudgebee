@@ -294,6 +294,28 @@ func TestNudgebeeDebugAgent_Execute(t *testing.T) {
 				ExpectedFinalAnswerFragments: []string{},
 				ExpectedLLMClaims:            []string{"The answer says an application group is limited to a single cluster."},
 			},
+			{
+				SessionId:                    "ut-nudgebee-docs-88",
+				AccountId:                    os.Getenv("TEST_ACCOUNT"),
+				UserId:                       os.Getenv("TEST_USER"),
+				Query:                        "If I turn on Memory across conversations in NudgeBee, where do I edit the account context?",
+				ExpectedToolCalls:            []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 3}},
+				MaxToolCalls:                 3,
+				RequireExternalReference:     true,
+				ExpectedFinalAnswerFragments: []string{"b-cortex"},
+				ExpectedLLMClaims:            []string{"The answer says account context is edited under b-Cortex Knowledge, not under Admin AI & Tools, when memory is on."},
+			},
+			{
+				SessionId:                    "ut-nudgebee-docs-89",
+				AccountId:                    os.Getenv("TEST_ACCOUNT"),
+				UserId:                       os.Getenv("TEST_USER"),
+				Query:                        "Which chat tools can I talk to NuBi from?",
+				ExpectedToolCalls:            []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 3}},
+				MaxToolCalls:                 3,
+				RequireExternalReference:     true,
+				ExpectedFinalAnswerFragments: []string{"slack", "teams"},
+				ExpectedLLMClaims:            []string{"The answer says you can chat with NuBi from Slack and Microsoft Teams."},
+			},
 		}
 	for _, tc := range testCases {
 		t.Run(tc.SessionId, func(t *testing.T) {
