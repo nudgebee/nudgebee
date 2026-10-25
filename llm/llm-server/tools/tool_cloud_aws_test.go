@@ -2,12 +2,11 @@ package tools
 
 import (
 	"errors"
-	"strings"
-	"testing"
-
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
+	"strings"
+	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -266,4 +265,85 @@ func TestAwsCall_MetricSaveFailureKeepsNormalOutput(t *testing.T) {
 	assert.Equal(t, 1, ws.saves)
 	assert.Empty(t, resp.References)
 	assert.Equal(t, "[account: aws-prod]\n"+cloudWatchMetricJSON, resp.Data)
+}
+
+// Seen on production (#42168): an alert on a us-west-2 server was looked up
+// with the CLI's default region, and AWS answered "instance does not exist".
+// The alert's region now reaches a read on the alert's account.
+func TestAwsReadUsesTheAlertsRegion(t *testing.T) {
+	own := awsCfg("aa-prod-app", "prod-id", "111111111111")
+	other := awsCfg("aa-dmz-app", "dmz-id", "222222222222")
+	alert := core.NbToolContext{AccountId: "prod-id", QueryConfig: core.NBQueryConfig{Labels: map[string]any{"region": "us-west-2"}}}
+
+	command, note := withEventRegion(alert, own, "aws ec2 describe-instances --instance-ids i-01c2485e1f37cf620")
+	assert.Equal(t, "aws --region us-west-2 ec2 describe-instances --instance-ids i-01c2485e1f37cf620", command)
+	assert.Equal(t, "region: us-west-2 (the alert's region)", note)
+
+	command, note = withEventRegion(alert, own, "aws ec2 describe-instances --region us-east-1")
+	assert.Equal(t, "aws ec2 describe-instances --region us-east-1", command, "a region the call names is kept")
+	assert.Equal(t, "region: us-east-1; the alert is in us-west-2", note, "and the step says it differs from the alert's")
+
+	command, note = withEventRegion(alert, own, "aws ec2 describe-instances --region=us-west-2")
+	assert.Equal(t, "aws ec2 describe-instances --region=us-west-2", command)
+	assert.Empty(t, note, "the alert's own region needs no note")
+
+	command, note = withEventRegion(alert, other, "aws ec2 describe-instances")
+	assert.Equal(t, "aws ec2 describe-instances", command, "another account's call is not given the alert's region")
+	assert.Empty(t, note)
+
+	command, note = withEventRegion(alert, own, "aws ec2 stop-instances --instance-ids i-01c2485e1f37cf620")
+	assert.Equal(t, "aws ec2 stop-instances --instance-ids i-01c2485e1f37cf620", command, "a write runs as approved")
+	assert.Empty(t, note)
+}
+
+// A webhook event names its AWS account by number; the alert's region follows
+// that account, not the conversation's.
+func TestAwsAlertRegionFollowsTheEventsAccountNumber(t *testing.T) {
+	ctx := core.NbToolContext{AccountId: "k8s-id", QueryConfig: core.NBQueryConfig{Labels: map[string]any{
+		"nb_cloud_account_id": "111111111111", "nb_cloud_region": "eu-west-1", "region": "us-east-1",
+	}}}
+	assert.Equal(t, "eu-west-1", eventAwsRegion(ctx, awsCfg("aa-prod-app", "prod-id", "111111111111")), "nb_cloud_region wins")
+	assert.Empty(t, eventAwsRegion(ctx, awsCfg("aa-dmz-app", "dmz-id", "222222222222")))
+}
+
+func TestAwsAlertRegionIgnoresWhatIsNotARegion(t *testing.T) {
+	own := awsCfg("aa-prod-app", "prod-id", "111111111111")
+	for _, value := range []any{"", "us-east-1; rm -rf /", "global", 42, "US-EAST-1"} {
+		ctx := core.NbToolContext{AccountId: "prod-id", QueryConfig: core.NBQueryConfig{Labels: map[string]any{"region": value}}}
+		assert.Empty(t, eventAwsRegion(ctx, own), "%v", value)
+	}
+	assert.Empty(t, eventAwsRegion(core.NbToolContext{AccountId: "prod-id"}, own), "no labels")
+	ctx := core.NbToolContext{AccountId: "prod-id", QueryConfig: core.NBQueryConfig{Labels: map[string]any{"region": "us-gov-west-1"}}}
+	assert.Equal(t, "us-gov-west-1", eventAwsRegion(ctx, own))
+}
+
+// Seen on production (#42168): Nubi tried i-036cf0f273a916799 in three
+// accounts in turn; the inventory knew it was in a fourth.
+func TestAwsInstanceNotFoundSaysWhereItIs(t *testing.T) {
+	prevLookup, prevRegions := awsInstanceLocations, awsAccountRegions
+	t.Cleanup(func() { awsInstanceLocations, awsAccountRegions = prevLookup, prevRegions })
+	awsInstanceLocations = func(_ *security.RequestContext, ids []string) ([]awsInstanceLocation, error) {
+		return []awsInstanceLocation{
+			{ID: "i-036cf0f273a916799", Region: "us-east-1", AccountID: "security-id", AccountName: "aa-prod-security"},
+			{ID: "i-0aaaaaaaaaaaaaaaa", Region: "eu-west-1", AccountID: "hidden-id", AccountName: "hidden"},
+		}, nil
+	}
+	awsAccountRegions = func(account string) ([]string, error) {
+		assert.Equal(t, "prod-id", account, "regions of the account the command ran on")
+		return []string{"us-east-1", "us-west-2"}, nil
+	}
+	ctx := core.NbToolContext{Ctx: security.NewRequestContextForTenantAccountAdmin("tenant", "user", []string{"prod-id", "security-id"}), AccountId: "prod-id"}
+	ran := awsCfg("aa-prod-app", "prod-id", "111111111111")
+
+	note := instanceNotFoundNote(ctx, ran, "An error occurred (InvalidInstanceID.NotFound) when calling the DescribeInstances operation: The instance ID 'i-036cf0f273a916799' does not exist")
+	assert.Contains(t, note, "i-036cf0f273a916799 is in account aa-prod-security, region us-east-1: run again with account=aa-prod-security and --region us-east-1.")
+	assert.NotContains(t, note, "inventory has no")
+
+	note = instanceNotFoundNote(ctx, ran, "An error occurred (InvalidInstanceID.NotFound) when calling the DescribeInstances operation: The instance IDs 'i-0aaaaaaaaaaaaaaaa, i-0bbbbbbbbbbbbbbbb' do not exist")
+	assert.NotContains(t, note, "hidden", "an account the caller cannot read is not named")
+	assert.Contains(t, note, "NudgeBee's inventory has no i-0aaaaaaaaaaaaaaaa, i-0bbbbbbbbbbbbbbbb in an account you can read.")
+	assert.Contains(t, note, "Account aa-prod-app has resources only in us-east-1, us-west-2")
+
+	assert.Empty(t, instanceNotFoundNote(ctx, ran, "An error occurred (AccessDenied) when calling the DescribeInstances operation"), "other errors get no note")
+	assert.Empty(t, instanceNotFoundNote(ctx, ran, `{"Reservations": [{"Instances": [{"InstanceId": "i-036cf0f273a916799"}]}]}`), "a successful read gets no note")
 }

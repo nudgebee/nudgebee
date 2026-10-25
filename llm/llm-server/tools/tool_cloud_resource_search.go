@@ -33,6 +33,7 @@ type CloudResourceSearchResponse struct {
 
 type CloudResourceInfo struct {
 	Name        string `json:"name" db:"name"`
+	ResourceID  string `json:"resource_id,omitempty" db:"resource_id"`
 	Type        string `json:"type" db:"type"`
 	Service     string `json:"service" db:"service"`
 	Region      string `json:"region" db:"region"`
@@ -59,7 +60,7 @@ func (r CloudResourceSearchTool) Description() string {
 * **Service-specific Search:** Search for resources within a specific service (e.g., S3, EC2, CloudSQL).
 
 **Input:** JSON with the following fields:
-* resource_name (optional): Name or partial name of the resource.
+* resource_name (optional): Name or partial name of the resource, or its full id (e.g. an EC2 instance id).
 * service (optional): Cloud service name (e.g., 'EC2', 'S3', 'Lambda').
 * resource_type (optional): Type of resource (e.g., 'instance', 'bucket').
 * region (optional): Region to search in.
@@ -75,7 +76,7 @@ func (r CloudResourceSearchTool) InputSchema() core.ToolSchema {
 		Properties: map[string]core.ToolSchemaProperty{
 			"resource_name": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Name or partial name of the resource",
+				Description: "Name or partial name of the resource, or its full id (e.g. an EC2 instance id)",
 			},
 			"service": {
 				Type:        core.ToolSchemaTypeString,
@@ -161,7 +162,7 @@ func (r CloudResourceSearchTool) Call(nbRequestContext core.NbToolContext, input
 	var args []interface{}
 	if tenantId != "" {
 		query = `
-			SELECT cr.name, cr.type, cr.service_name as service, cr.region, cr.account as account_id, ca.account_name
+			SELECT cr.name, cr.resourse_id AS resource_id, cr.type, cr.service_name as service, cr.region, cr.account as account_id, ca.account_name
 			FROM cloud_resourses cr
 			JOIN cloud_accounts ca ON cr.account = ca.id
 			WHERE ca.tenant = $1 AND cr.is_active = true AND ca.status = 'active'
@@ -169,7 +170,7 @@ func (r CloudResourceSearchTool) Call(nbRequestContext core.NbToolContext, input
 		args = append(args, tenantId)
 	} else {
 		query = `
-			SELECT cr.name, cr.type, cr.service_name as service, cr.region, cr.account as account_id, ca.account_name
+			SELECT cr.name, cr.resourse_id AS resource_id, cr.type, cr.service_name as service, cr.region, cr.account as account_id, ca.account_name
 			FROM cloud_resourses cr
 			LEFT JOIN cloud_accounts ca ON cr.account = ca.id
 			WHERE cr.account = $1 AND cr.is_active = true
@@ -179,9 +180,11 @@ func (r CloudResourceSearchTool) Call(nbRequestContext core.NbToolContext, input
 	argIdx := 2
 
 	if request.ResourceName != "" {
-		query += fmt.Sprintf(" AND cr.name ILIKE $%d", argIdx)
-		args = append(args, "%"+request.ResourceName+"%")
-		argIdx++
+		// A full resource id (i-0abc…, a bucket name) finds its resource
+		// exactly; a substring match on ids would add noise to name searches.
+		query += fmt.Sprintf(" AND (cr.name ILIKE $%d OR cr.resourse_id = $%d)", argIdx, argIdx+1)
+		args = append(args, "%"+request.ResourceName+"%", request.ResourceName)
+		argIdx += 2
 	}
 	if request.Service != "" {
 		query += fmt.Sprintf(" AND cr.service_name ILIKE $%d", argIdx)
@@ -296,7 +299,7 @@ const cloudResourceSearchLimit = 50
 func cloudResourceSearchPage(filtered string) string {
 	return fmt.Sprintf(`
 		WITH m AS (%s)
-		SELECT name, type, service, region, account_id, COALESCE(account_name, '') AS account_name,
+		SELECT name, resource_id, type, service, region, account_id, COALESCE(account_name, '') AS account_name,
 		       COUNT(*) OVER () AS total,
 		       COALESCE((SELECT json_object_agg(acct, n)::text FROM (
 		            SELECT COALESCE(account_name, account_id::text, 'unknown') AS acct, COUNT(*) AS n FROM m GROUP BY 1) a), '{}') AS account_counts
