@@ -377,7 +377,7 @@ func getSystemToolDto(context *security.RequestContext, accountId string, toolNa
 }
 
 func ListTools(context *security.RequestContext, accountId string) []ToolDto {
-	if !context.GetSecurityContext().HasAccountAccess(accountId, "read") {
+	if !context.GetSecurityContext().CanReadAccountData(accountId, "ai_tools") {
 		slog.Error("tools: unauthorized access to list tools", "account_id", accountId)
 		return []ToolDto{}
 	}
@@ -610,7 +610,7 @@ func CreateCustomTool(context *security.RequestContext, accountId string, tool T
 			return ToolDto{}, err
 		}
 	} else {
-		if !context.GetSecurityContext().HasAccountAccess(accountId, "write") {
+		if !context.GetSecurityContext().Can(accountId, "ai_tools", "Write") {
 			slog.Error("tools: failed to get account access")
 			return ToolDto{}, errors.New(errUnauthorized)
 		}
@@ -802,7 +802,7 @@ func DeleteCustomTool(context *security.RequestContext, accountId, name string) 
 		}
 	} else {
 		// validate if user has access
-		if !context.GetSecurityContext().HasAccountAccess(accountId, "write") {
+		if !context.GetSecurityContext().Can(accountId, "ai_tools", "Write") {
 			slog.Error("tools: failed to get account access", "error", err)
 			return errors.New(errUnauthorized)
 		}
@@ -974,7 +974,7 @@ func UpdateCustomTool(context *security.RequestContext, accountId, name string, 
 			if accountId == "" {
 				return nil, errors.New(errAccountIDRequired)
 			}
-			if !context.GetSecurityContext().HasAccountAccess(accountId, "update") {
+			if !context.GetSecurityContext().Can(accountId, "ai_tools", "Write") {
 				slog.Error("tool: failed to get account access")
 				return nil, errors.New(errUnauthorized)
 			}

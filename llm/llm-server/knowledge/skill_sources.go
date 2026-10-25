@@ -117,6 +117,18 @@ func NormalizeGitHubRepo(repo string) (string, error) {
 	return m[1] + "/" + m[2], nil
 }
 
+// canReadSkillSources reports whether the caller may list the skill sources of
+// tenantId: canManageOrgKBs, or a tenant-wide ai_kbs Read or Write grant in that
+// tenant. Creating, changing, syncing and deleting a source writes organisation
+// KBs, which stays tenant-admin only like every other organisation item.
+func canReadSkillSources(sc *security.RequestContext, tenantId string) bool {
+	if canManageOrgKBs(sc, tenantId, security.SecurityAccessTypeRead) {
+		return true
+	}
+	s := sc.GetSecurityContext()
+	return tenantId != "" && s.GetTenantId() == tenantId && s.HasTenantWideGrant(kbModule, "Read", "Write")
+}
+
 // CreateSkillSource adds a source for the caller's organisation and starts its
 // first sync in the background.
 func CreateSkillSource(sc *security.RequestContext, src SkillSource) (SkillSource, error) {
@@ -192,7 +204,7 @@ func CreateSkillSource(sc *security.RequestContext, src SkillSource) (SkillSourc
 // ListSkillSources returns the caller's organisation's sources.
 func ListSkillSources(sc *security.RequestContext) ([]SkillSource, error) {
 	tenantId := sc.GetSecurityContext().GetTenantId()
-	if !canManageOrgKBs(sc, tenantId, security.SecurityAccessTypeRead) {
+	if !canReadSkillSources(sc, tenantId) {
 		return nil, errors.New(errKBOrgAdminOnly)
 	}
 	dbms, err := common.GetDatabaseManager(common.Metastore)

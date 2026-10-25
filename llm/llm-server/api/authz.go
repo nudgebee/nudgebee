@@ -29,7 +29,9 @@ const (
 	moduleAiModels        = "ai_models"
 	moduleAiRca           = "ai_rca"
 	moduleAiTools         = "ai_tools"
+	moduleEvents          = "events"
 	moduleIntegrations    = "integrations"
+	moduleToolApproval    = "toolapproval"
 )
 
 // granted reports whether the caller holds a custom-role grant for

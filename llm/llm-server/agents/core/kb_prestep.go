@@ -120,7 +120,7 @@ func fetchAgentKBs(ctx *security.RequestContext, accountId string, ownNames []st
 			return
 		}
 		fetchedAgents[name] = true
-		fetched, err := knowledge.ListAgentKBs(ctx, accountId, name)
+		fetched, err := knowledge.ListAgentKBs(ctx, accountId, name, "")
 		if err != nil {
 			ctx.GetLogger().Warn("agentexecutor: unable to fetch agent KBs", "error", err, "agent", name)
 			return

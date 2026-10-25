@@ -146,7 +146,7 @@ func ProbeKBRetrieval(ctx *security.RequestContext, accountId, agentId, kbId, qu
 		scopedCollection = collection
 		kbs = []knowledge.Knowledgebase{*scoped}
 	case agentId != "":
-		kbs, err = knowledge.ListAgentKBs(ctx, accountId, agentId)
+		kbs, err = knowledge.ListAgentKBs(ctx, accountId, agentId, "ai_kbs")
 	default:
 		kbs, err = listAccountKBsFn(ctx, accountId)
 	}

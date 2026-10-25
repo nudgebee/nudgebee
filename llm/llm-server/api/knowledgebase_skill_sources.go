@@ -58,7 +58,7 @@ func kbCreateSkillSource(c *gin.Context, context *security.RequestContext, paylo
 }
 
 func kbListSkillSources(c *gin.Context, context *security.RequestContext, _ map[string]any) {
-	if !context.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead) {
+	if !context.GetSecurityContext().CanReadTenantModule(moduleAiKbs) {
 		c.JSON(403, BuildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
 		return
 	}

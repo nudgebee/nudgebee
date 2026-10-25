@@ -303,7 +303,7 @@ func CreateCustomAgent(context *security.RequestContext, accountId string, agent
 			return AgentDto{}, errors.New("auth: unauthorized")
 		}
 	} else {
-		if !context.GetSecurityContext().HasAccountAccess(accountId, "write") {
+		if !context.GetSecurityContext().Can(accountId, "ai_agents", "Write") {
 			getLogger(context).Error("agent: failed to get account access")
 			return AgentDto{}, errors.New("auth: unauthorized")
 		}
@@ -746,7 +746,7 @@ func UpdateCustomAgent(context *security.RequestContext, accountId string, agent
 			if accountId == "" {
 				return nil, errors.New("accountId is required")
 			}
-			if !context.GetSecurityContext().HasAccountAccess(accountId, "write") {
+			if !context.GetSecurityContext().Can(accountId, "ai_agents", "Write") {
 				return nil, handleAgentError(context, errors.New("auth: unauthorized"), "agent: failed to get account access")
 			}
 			// The access check is on the request's account; the agent itself is
@@ -977,7 +977,7 @@ func DeleteCustomAgent(context *security.RequestContext, accountId string, name 
 		}
 	} else {
 		// validate if user has access
-		if !context.GetSecurityContext().HasAccountAccess(accountId, "write") {
+		if !context.GetSecurityContext().Can(accountId, "ai_agents", "Write") {
 			getLogger(context).Error("agent: failed to get account access", "error", err)
 			return errors.New("auth: unauthorized")
 		}
@@ -1601,7 +1601,7 @@ func AgentAdditionalInstructionsAndToolsAndConfigs(context *security.RequestCont
 }
 
 func CreateAgentExtension(context *security.RequestContext, accountId string, agent AgentExtension, createdBy string) (AgentExtension, error) {
-	if !context.GetSecurityContext().HasAccountAccess(accountId, "write") {
+	if !context.GetSecurityContext().Can(accountId, "ai_agents", "Write") {
 		return AgentExtension{}, errors.New("auth: unauthorized")
 	}
 

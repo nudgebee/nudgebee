@@ -19,7 +19,7 @@ func TestListAgentKBsPreservesIntegrationCollection(t *testing.T) {
 	t.Cleanup(func() { _ = common.CacheDelete(CacheNamespaceLlmKbMapping, key) })
 	mock.ExpectQuery(`(?s)SELECT kb.id,.*kb.integration_id.*FROM llm_knowledgebases kb.*INNER JOIN llm_kb_agent_mappings`).WithArgs(account, agent).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "kb_type", "integration_id", "status", "enabled"}).AddRow("mapped-kb", "Incident SOP", KBTypeIntegration, "integration-source", "active", true))
-	kbs, err := ListAgentKBs(security.NewRequestContextForSuperAdmin(), account, agent)
+	kbs, err := ListAgentKBs(security.NewRequestContextForSuperAdmin(), account, agent, "ai_agents")
 	require.NoError(t, err)
 	require.Len(t, kbs, 1)
 	require.Equal(t, "integration-source_knowledge_base", KnowledgebaseCollectionName(kbs[0]))

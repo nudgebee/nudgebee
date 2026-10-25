@@ -52,7 +52,7 @@ func HandleAiCostAccountReportApi(ctx *security.RequestContext, request AiCostAc
 	if err != nil {
 		return AiCostAccountReport{}, fmt.Errorf("HandleAiCostAccountReportApi: invalid reference_date: %w", err)
 	}
-	accountIDs, err := resolveAccessibleAccounts(ctx, request.AccountIds)
+	accountIDs, err := resolveAccessibleAccounts(ctx, request.AccountIds, "ai_misc")
 	if err != nil {
 		return AiCostAccountReport{}, err
 	}

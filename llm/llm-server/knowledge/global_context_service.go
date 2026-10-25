@@ -247,7 +247,7 @@ func CreateGlobalContext(sc *security.RequestContext, gc GlobalContext) (GlobalC
 	}
 
 	// Check if user has account-level create access
-	if !sc.GetSecurityContext().HasAccountAccess(gc.AccountId, security.SecurityAccessTypeCreate) {
+	if !sc.GetSecurityContext().Can(gc.AccountId, "ai_guardrails", "Write") {
 		slog.Error("gc: user does not have account access", "account_id", gc.AccountId)
 		return GlobalContext{}, errors.New(errGCUnauthorized)
 	}
@@ -369,7 +369,7 @@ func GetGlobalContext(sc *security.RequestContext, accountId, gcId string) (Glob
 	}
 
 	// Check if user has account-level read access
-	if !sc.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !sc.GetSecurityContext().CanReadAccountData(accountId, "ai_guardrails") {
 		return GlobalContext{}, errors.New(errGCUnauthorized)
 	}
 
@@ -409,11 +409,11 @@ func GetGlobalContext(sc *security.RequestContext, accountId, gcId string) (Glob
 // from the global sidebar (no account in scope) — matches the KB
 // tenant-wide read pattern.
 //
-// Row-level filtering mirrors HasAccountAccess: super-admins and
-// tenant-admins see every row; scoped account-admins see only contexts
-// whose account_id is in their JWT-carried account list; users with no
-// account-scoped role see nothing. Tenant is taken from the security
-// context, never user-supplied.
+// Tenant-wide readers (super/tenant admins, read-only included, or a
+// tenant-wide ai_guardrails Read/Write grant) see every row; anyone else sees
+// the contexts of the accounts where CanReadAccountData(account,
+// "ai_guardrails") holds; users with neither see nothing. Tenant is taken from
+// the security context, never user-supplied.
 func ListGlobalContextsForTenant(sc *security.RequestContext) ([]GlobalContext, error) {
 	secCtx := sc.GetSecurityContext()
 	tenantID := secCtx.GetTenantId()
@@ -421,10 +421,7 @@ func ListGlobalContextsForTenant(sc *security.RequestContext) ([]GlobalContext, 
 		return nil, errors.New(errGCTenantIDRequired)
 	}
 
-	seesAllAccountsInTenant := secCtx.IsSuperAdmin() ||
-		secCtx.IsSuperAdminReadonly() ||
-		secCtx.IsTenantAdmin() ||
-		secCtx.IsTenantReadAdmin()
+	seesAllAccountsInTenant := secCtx.CanReadTenantModule("ai_guardrails")
 
 	dbms, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
@@ -455,7 +452,7 @@ func ListGlobalContextsForTenant(sc *security.RequestContext) ([]GlobalContext, 
 		query = baseSelect + ` WHERE gc.tenant_id = $1 ORDER BY gc.created_at DESC`
 		args = []any{tenantID}
 	} else {
-		accountIDs := secCtx.GetAccountIds()
+		accountIDs := readableAccountIDs(secCtx, "ai_guardrails")
 		if len(accountIDs) == 0 {
 			return []GlobalContext{}, nil
 		}
@@ -481,7 +478,7 @@ func ListGlobalContexts(sc *security.RequestContext, accountId string) ([]Global
 	}
 
 	// Check if user has account-level read access
-	if !sc.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !sc.GetSecurityContext().CanReadAccountData(accountId, "ai_guardrails") {
 		return nil, errors.New(errGCUnauthorized)
 	}
 
@@ -529,7 +526,7 @@ func UpdateGlobalContext(sc *security.RequestContext, accountId, gcId string, up
 	}
 
 	// Check if user has account-level update access
-	if !sc.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
+	if !sc.GetSecurityContext().Can(accountId, "ai_guardrails", "Write") {
 		return errors.New(errGCUnauthorized)
 	}
 
@@ -665,7 +662,7 @@ func DeleteGlobalContext(sc *security.RequestContext, accountId, gcId string) er
 	}
 
 	// Check if user has account-level delete access
-	if !sc.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeDelete) {
+	if !sc.GetSecurityContext().Can(accountId, "ai_guardrails", "Write") {
 		return errors.New(errGCUnauthorized)
 	}
 

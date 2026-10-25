@@ -463,8 +463,10 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		}
 		sc := agentContext.GetSecurityContext()
 		// Read-only — seeing the configured hour is not privileged within a
-		// tenant, matching the read gate on ai_list_model_pricing.
-		if !sc.IsTenantAdmin() && !sc.IsTenantReadAdmin() && !sc.IsSuperAdmin() && !sc.IsSuperAdminReadonly() {
+		// tenant, matching the read gate on ai_list_model_pricing; a tenant-wide
+		// ai_misc Read or Write grant reads it too.
+		if !sc.IsTenantAdmin() && !sc.IsTenantReadAdmin() && !sc.IsSuperAdmin() && !sc.IsSuperAdminReadonly() &&
+			!sc.HasTenantWideGrant(moduleAiMisc, "Read", "Write") {
 			c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
@@ -494,9 +496,9 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		// changing when it arrives is a tenant-admin action, same gate as
 		// model pricing — plus super admins, since the read handler below
 		// already grants them visibility and the frontend gear is shown to
-		// both roles.
+		// both roles. A tenant-wide ai_misc:Write grant may change it too.
 		sc := agentContext.GetSecurityContext()
-		if !sc.IsTenantAdmin() && !sc.IsSuperAdmin() {
+		if !sc.IsTenantAdmin() && !sc.IsSuperAdmin() && !sc.HasTenantWideGrant(moduleAiMisc, "Write") {
 			c.JSON(403, BuildApiResponse(nil, []error{errors.New("cost report schedule can only be changed by a tenant admin")}))
 			return
 		}
@@ -518,8 +520,8 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 
 	// ai_list_tenant_models lists the models a config saved with no accounts may
 	// use as an existing-model fallback: the tenant's tenant-wide integrations and
-	// its tenant default. Tenant admins only, the same users who can save such a
-	// config.
+	// its tenant default. Tenant admins, the same users who can save such a
+	// config, and a tenant-wide ai_models Read or Write grant.
 	groupV2.POST("/ai_list_tenant_models", func(c *gin.Context) {
 		common.MetricsApiRequestsTotal("ai_list_tenant_models")
 		var actionRequest ActionRequest
@@ -533,7 +535,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			return
 		}
 		sc := agentContext.GetSecurityContext()
-		if !sc.IsTenantAdmin() && !sc.IsSuperAdmin() {
+		if !sc.IsTenantAdmin() && !sc.IsSuperAdmin() && !sc.HasTenantWideGrant(moduleAiModels, "Read", "Write") {
 			c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}

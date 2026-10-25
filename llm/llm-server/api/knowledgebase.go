@@ -522,7 +522,7 @@ func kbListAgentKBs(c *gin.Context, context *security.RequestContext, payload ma
 		return
 	}
 
-	resp, err := knowledge.ListAgentKBs(context, request.AccountId, request.AgentId)
+	resp, err := knowledge.ListAgentKBs(context, request.AccountId, request.AgentId, moduleAiAgents)
 	if err != nil {
 		slog.Error("kb: failed to list agent KBs", "error", err, "agent_id", request.AgentId)
 		c.JSON(500, BuildApiResponse(nil, []error{
@@ -725,7 +725,7 @@ func kbListKBAgents(c *gin.Context, context *security.RequestContext, payload ma
 
 	// Check if user has access to account
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
-		!granted(context.GetSecurityContext(), request.AccountId, moduleAiKbs, "Read", "Write") {
+		!granted(context.GetSecurityContext(), request.AccountId, moduleAiAgents, "Read", "Write") {
 		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{Message: errorKBUserAccessMessage},
 		}))
@@ -1036,7 +1036,7 @@ func kbTestRetrieval(c *gin.Context, context *security.RequestContext, payload m
 	}
 
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
-		!granted(context.GetSecurityContext(), request.AccountId, moduleAiAgents, "Read", "Write") {
+		!granted(context.GetSecurityContext(), request.AccountId, moduleAiKbs, "Read", "Write") {
 		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{Message: errorKBUserAccessMessage},
 		}))

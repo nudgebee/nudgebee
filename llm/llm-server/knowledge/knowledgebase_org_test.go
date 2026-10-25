@@ -82,7 +82,7 @@ func TestResolveKBForWrite(t *testing.T) {
 			dbms, err := common.GetDatabaseManager(common.Metastore)
 			require.NoError(t, err)
 
-			owner, err := resolveKBForWrite(c.sc(t), dbms, c.accountId, "kb-1", security.SecurityAccessTypeUpdate)
+			owner, err := resolveKBForWrite(c.sc(t), dbms, c.accountId, "kb-1", security.SecurityAccessTypeUpdate, "Write")
 
 			if c.wantErr != "" {
 				require.EqualError(t, err, c.wantErr)
@@ -227,7 +227,7 @@ func TestMappedReadsKeepOnlyTheAccountsOwnAndVisibleOrganisationKBs(t *testing.T
 		WithArgs(orgTestAccount, "agent-1", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 
-	_, err := ListAgentKBs(accountAdmin(t), orgTestAccount, "agent-1")
+	_, err := ListAgentKBs(accountAdmin(t), orgTestAccount, "agent-1", "ai_agents")
 	require.NoError(t, err)
 	require.NoError(t, mock.ExpectationsWereMet())
 }

@@ -896,7 +896,7 @@ func HandleUsageMetricsApi(ctx *security.RequestContext, request UsageMetricsReq
 		return UsageMetricsResponse{}, fmt.Errorf("HandleUsageMetricsApi: invalid granularity %q", request.Granularity)
 	}
 
-	accountIDs, err := resolveAccessibleAccounts(ctx, request.AccountIds)
+	accountIDs, err := resolveAccessibleAccounts(ctx, request.AccountIds, "ai_misc")
 	if err != nil {
 		return UsageMetricsResponse{}, err
 	}
@@ -921,15 +921,16 @@ func HandleUsageMetricsApi(ctx *security.RequestContext, request UsageMetricsReq
 }
 
 // resolveAccessibleAccounts intersects the requested account_ids with what the
-// caller may read; an empty request falls back to all readable accounts. Shared
-// by every cost-analyser handler.
-func resolveAccessibleAccounts(ctx *security.RequestContext, requested []string) ([]string, error) {
+// caller may read in module (the custom-role module of the action: a built-in
+// role, or a module grant); an empty request falls back to all readable
+// accounts. Shared by every cost-analyser handler.
+func resolveAccessibleAccounts(ctx *security.RequestContext, requested []string, module string) ([]string, error) {
 	sec := ctx.GetSecurityContext()
 	if len(requested) == 0 {
-		// A tenant-global ai_conversations grant reads across the tenant;
+		// A tenant-global grant on module reads across the tenant;
 		// ListAccountIds() is the built-in account scope and is empty for a pure
 		// custom-role holder, which would silently produce an empty dashboard.
-		if sec.HasPermission("ai_conversations", "Read") || sec.HasPermission("ai_conversations", "Write") {
+		if sec.HasPermission(module, "Read") || sec.HasPermission(module, "Write") {
 			return sec.GetAccountIds(), nil
 		}
 		return sec.ListAccountIds(), nil
@@ -939,7 +940,7 @@ func resolveAccessibleAccounts(ctx *security.RequestContext, requested []string)
 		if id == "" {
 			continue
 		}
-		if !sec.CanReadAccountData(id, "ai_conversations") {
+		if !sec.CanReadAccountData(id, module) {
 			return nil, fmt.Errorf("resolveAccessibleAccounts: forbidden account_id %s", id)
 		}
 		allowed = append(allowed, id)
@@ -1110,7 +1111,7 @@ func HandleUsageFiltersApi(ctx *security.RequestContext, request UsageFiltersReq
 		return UsageFilters{}, fmt.Errorf("HandleUsageFiltersApi: invalid end_date: %w", err)
 	}
 
-	accountIDs, err := resolveAccessibleAccounts(ctx, request.AccountIds)
+	accountIDs, err := resolveAccessibleAccounts(ctx, request.AccountIds, "ai_misc")
 	if err != nil {
 		return UsageFilters{}, err
 	}
@@ -1122,7 +1123,7 @@ func HandleUsageFiltersApi(ctx *security.RequestContext, request UsageFiltersReq
 	readableAccountIDs, selectedAccountIDs := accountIDs, []string{}
 	if len(request.AccountIds) > 0 {
 		selectedAccountIDs = accountIDs
-		if readableAccountIDs, err = resolveAccessibleAccounts(ctx, nil); err != nil {
+		if readableAccountIDs, err = resolveAccessibleAccounts(ctx, nil, "ai_misc"); err != nil {
 			return UsageFilters{}, err
 		}
 	}
@@ -1471,7 +1472,7 @@ func HandleListConversationCostsApi(ctx *security.RequestContext, request ListCo
 		return ConversationCostList{}, fmt.Errorf("HandleListConversationCostsApi: invalid end_date: %w", err)
 	}
 
-	accountIDs, err := resolveAccessibleAccounts(ctx, request.AccountIds)
+	accountIDs, err := resolveAccessibleAccounts(ctx, request.AccountIds, "ai_conversations")
 	if err != nil {
 		return ConversationCostList{}, err
 	}

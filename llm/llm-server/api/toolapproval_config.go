@@ -152,21 +152,27 @@ type toolApprovalAccountOptions struct {
 	Error                 string                     `json:"error,omitempty"`
 }
 
+// requireToolApprovalTenantAdmin gates changes to the tenant's approval rules:
+// a tenant admin, a super admin, or a tenant-wide toolapproval:Write grant.
 func requireToolApprovalTenantAdmin(c *gin.Context, ctx *security.RequestContext) bool {
-	if ctx == nil || ctx.GetSecurityContext() == nil || (!ctx.GetSecurityContext().IsTenantAdmin() && !ctx.GetSecurityContext().IsSuperAdmin()) {
+	if ctx == nil || ctx.GetSecurityContext() == nil || (!ctx.GetSecurityContext().IsTenantAdmin() && !ctx.GetSecurityContext().IsSuperAdmin() &&
+		!ctx.GetSecurityContext().HasTenantWideGrant(moduleToolApproval, "Write")) {
 		c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New("tool approval: tenant administrator access is required")}))
 		return false
 	}
 	return true
 }
 
+// requireToolApprovalTenantReader gates reading them: a built-in tenant reader,
+// or a tenant-wide toolapproval Read or Write grant.
 func requireToolApprovalTenantReader(c *gin.Context, ctx *security.RequestContext) bool {
 	if ctx == nil || ctx.GetSecurityContext() == nil {
 		c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New("tool approval: tenant administrator access is required")}))
 		return false
 	}
 	securityContext := ctx.GetSecurityContext()
-	if !securityContext.IsTenantAdmin() && !securityContext.IsTenantReadAdmin() && !securityContext.IsSuperAdmin() && !securityContext.IsSuperAdminReadonly() {
+	if !securityContext.IsTenantAdmin() && !securityContext.IsTenantReadAdmin() && !securityContext.IsSuperAdmin() && !securityContext.IsSuperAdminReadonly() &&
+		!securityContext.HasTenantWideGrant(moduleToolApproval, "Read", "Write") {
 		c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New("tool approval: tenant administrator access is required")}))
 		return false
 	}

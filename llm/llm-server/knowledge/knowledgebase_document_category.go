@@ -226,7 +226,7 @@ func SetKBDocumentCategory(sc *security.RequestContext, accountId, kbId, documen
 	if !ValidKBNoteCategory(category) {
 		return errors.New(errKBDocumentCategoryInvalid)
 	}
-	if !sc.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
+	if !sc.GetSecurityContext().Can(accountId, kbModule, "Write") {
 		return errors.New(errKBUnauthorized)
 	}
 	dbms, err := knowledgeDatabase(common.Metastore)

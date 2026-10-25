@@ -91,10 +91,11 @@ func canShareOrgKBs(sc *security.RequestContext, tenantId string) bool {
 }
 
 // resolveKBForWrite reads who owns kbId and checks the caller may change it:
-// an account KB needs `access` on that account (and must be requested under
-// it); an organisation KB needs a tenant admin of its tenant, and accountId
-// may be empty.
-func resolveKBForWrite(sc *security.RequestContext, dbms *common.DatabaseManager, accountId, kbId string, access security.SecurityAccessType) (kbOwner, error) {
+// an account KB needs `access` on that account, or the ai_kbs `grantClass`
+// grant there (Write to change, Execute to sync), and must be requested under
+// it; an organisation KB needs a tenant admin of its tenant, and accountId may
+// be empty.
+func resolveKBForWrite(sc *security.RequestContext, dbms *common.DatabaseManager, accountId, kbId string, access security.SecurityAccessType, grantClass string) (kbOwner, error) {
 	if kbId == "" {
 		return kbOwner{}, errors.New(errKBIDRequired)
 	}
@@ -119,7 +120,7 @@ func resolveKBForWrite(sc *security.RequestContext, dbms *common.DatabaseManager
 	if accountId == "" {
 		return kbOwner{}, errors.New(errKBAccountIDRequired)
 	}
-	if !sc.GetSecurityContext().HasAccountAccess(accountId, access) {
+	if !sc.GetSecurityContext().HasAccountAccess(accountId, access) && !sc.GetSecurityContext().Can(accountId, kbModule, grantClass) {
 		return kbOwner{}, errors.New(errKBUnauthorized)
 	}
 	if row.AccountId != accountId {

@@ -513,6 +513,11 @@ func CreateAgentRag(sc *security.RequestContext, accountId, agent, data string, 
 		return AgentRag{}, errors.New("rag: data is too large")
 	}
 
+	// validate if user has access, before anything is sent to rag-server
+	if !sc.GetSecurityContext().Can(accountId, kbModule, "Write") {
+		return AgentRag{}, errors.New(ragUnauthorized)
+	}
+
 	payloadType := ""
 
 	payload := ragServerCreateRequest{
@@ -592,12 +597,6 @@ func CreateAgentRag(sc *security.RequestContext, accountId, agent, data string, 
 	if err != nil {
 		slog.Error(ragFailedToGetDatabaseManager, "error", err)
 		return AgentRag{}, err
-	}
-
-	// validate if user has access
-	if !sc.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) {
-		slog.Error("agent: failed to get account access", "error", err)
-		return AgentRag{}, errors.New(ragUnauthorized)
 	}
 
 	// default values

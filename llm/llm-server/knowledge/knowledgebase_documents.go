@@ -92,7 +92,7 @@ func kbDocumentsCollection(sc *security.RequestContext, accountId, kbId string) 
 	if accountId == "" || kbId == "" {
 		return "", "", errors.New(errKBAccountIDRequired)
 	}
-	if !sc.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !sc.GetSecurityContext().CanReadAccountData(accountId, kbModule) {
 		return "", "", errors.New(errKBUnauthorized)
 	}
 	dbms, err := knowledgeDatabase(common.Metastore)

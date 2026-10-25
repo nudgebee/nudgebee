@@ -290,7 +290,7 @@ func HandleListToolUsageApi(ctx *security.RequestContext, request ListToolUsageR
 		return ToolUsageList{}, fmt.Errorf("HandleListToolUsageApi: invalid end_date: %w", err)
 	}
 
-	accountIDs, err := resolveAccessibleAccounts(ctx, request.AccountIds)
+	accountIDs, err := resolveAccessibleAccounts(ctx, request.AccountIds, "ai_tools")
 	if err != nil {
 		return ToolUsageList{}, err
 	}
@@ -472,7 +472,7 @@ func HandleListToolCallsApi(ctx *security.RequestContext, request ListToolCallsR
 		return ToolCallList{}, fmt.Errorf("HandleListToolCallsApi: invalid end_date: %w", err)
 	}
 
-	accountIDs, err := resolveAccessibleAccounts(ctx, request.AccountIds)
+	accountIDs, err := resolveAccessibleAccounts(ctx, request.AccountIds, "ai_tools")
 	if err != nil {
 		return ToolCallList{}, err
 	}

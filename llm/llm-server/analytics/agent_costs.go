@@ -349,7 +349,7 @@ func HandleListAgentCostsApi(ctx *security.RequestContext, request ListAgentCall
 		}
 	}
 
-	accountIDs, err := resolveAccessibleAccounts(ctx, request.AccountIds)
+	accountIDs, err := resolveAccessibleAccounts(ctx, request.AccountIds, "ai_agents")
 	if err != nil {
 		return AgentCallList{}, err
 	}

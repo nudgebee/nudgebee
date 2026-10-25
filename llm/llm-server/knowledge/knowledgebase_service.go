@@ -358,7 +358,7 @@ func CreateKnowledgebase(sc *security.RequestContext, accountId string, kb Knowl
 		return Knowledgebase{}, errors.New(errKBAccountIDRequired)
 	}
 	// Check access
-	if !sc.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) {
+	if !sc.GetSecurityContext().Can(accountId, kbModule, "Write") {
 		slog.Error("kb: failed to get account access")
 		return Knowledgebase{}, errors.New(errKBUnauthorized)
 	}
@@ -601,7 +601,7 @@ func GetKnowledgebaseScoped(sc *security.RequestContext, accountId, kbId string,
 	}
 
 	// Check access
-	if !sc.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !sc.GetSecurityContext().CanReadAccountData(accountId, kbModule) {
 		return Knowledgebase{}, errors.New(errKBUnauthorized)
 	}
 
@@ -684,11 +684,12 @@ func GetOrganisationKnowledgebase(sc *security.RequestContext, kbId string) (Kno
 // sidebar — that surface has no account context, so the page falls back to
 // a tenant-wide read.
 //
-// Row-level filtering mirrors HasAccountAccess: super-admins and
-// tenant-admins see every row; scoped account-admins see only KBs whose
-// account_id is in their JWT-carried account list; users with no
-// account-scoped role see nothing. Tenant is taken from the security
-// context, never user-supplied, so there's no cross-tenant query path.
+// Tenant-wide readers (super/tenant admins, read-only included, or a
+// tenant-wide ai_kbs Read/Write grant) see every row; anyone else sees the KBs
+// of the accounts where CanReadAccountData(account, "ai_kbs") holds (a built-in
+// account role or an account-scoped grant); users with neither see nothing.
+// Tenant is taken from the security context, never user-supplied, so there's
+// no cross-tenant query path.
 // notLegacyIntegrationRow leaves out per-account integration rows: an
 // integration's knowledge base is its organisation row (#40605), and a
 // per-account row only reappears, archived, when an older llm-server re-creates
@@ -702,10 +703,7 @@ func ListKnowledgebasesForTenant(sc *security.RequestContext) ([]Knowledgebase, 
 		return nil, errors.New("kb: tenant_id missing from security context")
 	}
 
-	seesAllAccountsInTenant := secCtx.IsSuperAdmin() ||
-		secCtx.IsSuperAdminReadonly() ||
-		secCtx.IsTenantAdmin() ||
-		secCtx.IsTenantReadAdmin()
+	seesAllAccountsInTenant := secCtx.CanReadTenantModule("ai_kbs")
 
 	dbms, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
@@ -744,7 +742,9 @@ func ListKnowledgebasesForTenant(sc *security.RequestContext) ([]Knowledgebase, 
 		query = baseSelect + ` WHERE kb.tenant_id = $1 AND ` + notLegacyIntegrationRow + ` ORDER BY kb.created_at DESC`
 		args = []any{tenantID}
 	} else {
-		accountIDs := secCtx.GetAccountIds()
+		// GetAccountIds is every account of the tenant, whatever the caller's
+		// role: keep the ones the caller may read.
+		accountIDs := readableAccountIDs(secCtx, "ai_kbs")
 		if len(accountIDs) == 0 {
 			// User has no account-level access in this tenant; return empty
 			// rather than running an unfiltered scan.
@@ -761,6 +761,19 @@ func ListKnowledgebasesForTenant(sc *security.RequestContext) ([]Knowledgebase, 
 	return kbs, nil
 }
 
+// readableAccountIDs returns the accounts of the caller's tenant whose module
+// data the caller may read (CanReadAccountData: a built-in account role, or a
+// tenant-wide or account-scoped Read/Write grant on module).
+func readableAccountIDs(secCtx *security.SecurityContext, module string) []string {
+	readable := make([]string, 0, len(secCtx.GetAccountIds()))
+	for _, accountID := range secCtx.GetAccountIds() {
+		if secCtx.CanReadAccountData(accountID, module) {
+			readable = append(readable, accountID)
+		}
+	}
+	return readable
+}
+
 // ListKnowledgebases retrieves all knowledge bases for an account (without data field)
 func ListKnowledgebases(sc *security.RequestContext, accountId string) ([]Knowledgebase, error) {
 	if accountId == "" {
@@ -768,7 +781,7 @@ func ListKnowledgebases(sc *security.RequestContext, accountId string) ([]Knowle
 	}
 
 	// Check access
-	if !sc.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !sc.GetSecurityContext().CanReadAccountData(accountId, kbModule) {
 		return nil, errors.New(errKBUnauthorized)
 	}
 
@@ -825,7 +838,7 @@ func UpdateKnowledgebase(sc *security.RequestContext, accountId, kbId string, up
 
 	// An account KB is changed under its account; an organisation KB by a
 	// tenant admin of its tenant (accountId may then be empty).
-	owner, err := resolveKBForWrite(sc, dbms, accountId, kbId, security.SecurityAccessTypeUpdate)
+	owner, err := resolveKBForWrite(sc, dbms, accountId, kbId, security.SecurityAccessTypeUpdate, "Write")
 	if err != nil {
 		return err
 	}
@@ -1045,7 +1058,7 @@ func SetKnowledgebaseEnabled(sc *security.RequestContext, accountId, kbId string
 
 	// Turning an organisation KB off is the tenant admin's switch for every
 	// account; an account switches it off for itself with SetKBAccountOverride.
-	owner, err := resolveKBForWrite(sc, dbms, accountId, kbId, security.SecurityAccessTypeUpdate)
+	owner, err := resolveKBForWrite(sc, dbms, accountId, kbId, security.SecurityAccessTypeUpdate, "Write")
 	if err != nil {
 		return err
 	}
@@ -1158,7 +1171,7 @@ func deleteKnowledgebase(sc *security.RequestContext, accountId, kbId string, al
 		return err
 	}
 
-	owner, err := resolveKBForWrite(sc, dbms, accountId, kbId, security.SecurityAccessTypeDelete)
+	owner, err := resolveKBForWrite(sc, dbms, accountId, kbId, security.SecurityAccessTypeDelete, "Write")
 	if err != nil {
 		return err
 	}
@@ -1401,7 +1414,7 @@ func GetKBLoadHistory(sc *security.RequestContext, accountId, kbId string) ([]KB
 	if accountId == "" || kbId == "" {
 		return nil, errors.New(errKBAccountIDRequired)
 	}
-	if !sc.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !sc.GetSecurityContext().CanReadAccountData(accountId, kbModule) {
 		return nil, errors.New(errKBUnauthorized)
 	}
 
@@ -1464,7 +1477,7 @@ func RetriggerKnowledgebase(sc *security.RequestContext, accountId, kbId string)
 		return fmt.Errorf("kb: failed to get database manager: %w", err)
 	}
 
-	owner, err := resolveKBForWrite(sc, dbms, accountId, kbId, security.SecurityAccessTypeUpdate)
+	owner, err := resolveKBForWrite(sc, dbms, accountId, kbId, security.SecurityAccessTypeUpdate, "Execute")
 	if err != nil {
 		return err
 	}
@@ -1925,8 +1938,11 @@ func deleteRAGCollection(collectionName string) error {
 	return nil
 }
 
-// ListAgentKBs returns all knowledge bases mapped to a specific agent
-func ListAgentKBs(sc *security.RequestContext, accountId, agentId string) ([]Knowledgebase, error) {
+// ListAgentKBs returns all knowledge bases mapped to a specific agent. The
+// caller needs read on the account: a built-in role, or a Read or Write grant
+// on module there (ai_agents for the agent's list, ai_kbs for a retrieval
+// probe). An empty module admits built-in readers only, as on the run path.
+func ListAgentKBs(sc *security.RequestContext, accountId, agentId, module string) ([]Knowledgebase, error) {
 	if accountId == "" {
 		return nil, errors.New("account ID is required")
 	}
@@ -1936,7 +1952,8 @@ func ListAgentKBs(sc *security.RequestContext, accountId, agentId string) ([]Kno
 	}
 
 	// Validate user has read access to account
-	if !sc.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !sc.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) &&
+		(module == "" || !sc.GetSecurityContext().CanReadAccountData(accountId, module)) {
 		slog.Error("kb: user does not have read access to account", "account_id", accountId)
 		return nil, errors.New("you don't have permission to access this resource")
 	}
@@ -2321,7 +2338,7 @@ func MapKBToAgent(sc *security.RequestContext, accountId, kbId, agentId string, 
 	}
 
 	// Validate user has create/update access to account
-	if !sc.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) {
+	if !sc.GetSecurityContext().Can(accountId, kbModule, "Write") {
 		slog.Error("kb: user does not have create access to account", "account_id", accountId)
 		return nil, errors.New("you don't have permission to access this resource")
 	}
@@ -2440,7 +2457,7 @@ func UnmapKBFromAgent(sc *security.RequestContext, accountId, kbId, agentId stri
 	}
 
 	// Validate user has create/update access to account
-	if !sc.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) {
+	if !sc.GetSecurityContext().Can(accountId, kbModule, "Write") {
 		slog.Error("kb: user does not have create access to account", "account_id", accountId)
 		return errors.New("you don't have permission to access this resource")
 	}
@@ -2520,7 +2537,7 @@ func ListAgentsWithKBCounts(sc *security.RequestContext, accountId string) ([]Ag
 	}
 
 	// Validate user has read access to account
-	if !sc.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !sc.GetSecurityContext().CanReadAccountData(accountId, "ai_agents") {
 		slog.Error("kb: user does not have read access to account", "account_id", accountId)
 		return nil, errors.New("you don't have permission to access this resource")
 	}
@@ -2610,7 +2627,7 @@ func ListKBAgents(sc *security.RequestContext, accountId, kbId string) ([]string
 	}
 
 	// Validate user has read access to account
-	if !sc.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !sc.GetSecurityContext().CanReadAccountData(accountId, "ai_agents") {
 		slog.Error("kb: user does not have read access to account", "account_id", accountId)
 		return nil, errors.New("you don't have permission to access this resource")
 	}

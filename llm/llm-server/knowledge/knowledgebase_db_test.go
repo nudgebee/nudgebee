@@ -287,7 +287,7 @@ func TestKBListAndAgentMappings_DB(t *testing.T) {
 	// The agent page lists explicit mappings only ("*" is how it shows the
 	// all-agents ones); skill loading adds the wildcard to the agent's name.
 	agentKBs := func(account, agent string) []string {
-		kbs, err := ListAgentKBs(sc, account, agent)
+		kbs, err := ListAgentKBs(sc, account, agent, "ai_agents")
 		require.NoError(t, err)
 		var ids []string
 		for _, kb := range kbs {

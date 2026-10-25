@@ -73,7 +73,7 @@ func HandleConversationTimeAggregatesApi(ctx *security.RequestContext, request C
 	}
 
 	// Shared with the other cost/usage dashboard handlers.
-	accountIDs, err := resolveAccessibleAccounts(ctx, request.AccountIds)
+	accountIDs, err := resolveAccessibleAccounts(ctx, request.AccountIds, "ai_conversations")
 	if err != nil {
 		return ConversationTimeAggregatesResponse{}, fmt.Errorf("HandleConversationTimeAggregatesApi: %w", err)
 	}
