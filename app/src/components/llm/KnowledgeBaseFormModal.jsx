@@ -19,7 +19,7 @@ import MentionContentInput from '@components/llm/MentionContentInput';
 import KnowledgeContextTags from '@components/llm/KnowledgeContextTags';
 import { KB_FORMAT_PDF, KB_FORMAT_TEXT, MAX_UPLOAD_BYTES, arrayBufferToBase64, isPdfFile, isTextFile } from '@components/llm/kbUploadFormat';
 
-const MAX_CONTENT_LENGTH = 5000;
+const MAX_CONTENT_LENGTH = 40000;
 
 // Note type — manual knowledge treatment; does not affect agent routing or retrieval.
 const NOTE_CATEGORY_OPTIONS = [
