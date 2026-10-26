@@ -132,7 +132,7 @@ collect:
 	}
 	ctx.GetLogger().Info("analyzer: alert metric history saved", "event_id", event.Id, "file", file)
 	return fmt.Sprintf("## Alert Metric History\nThe metric this alert compares (`%s`; it fires when %s %s), up to %s, is saved as `%s` in %d views, one series each: %s. "+
-		"Use it with analyze_metric_series to say whether the metric is getting worse and when it reaches the next level: the normal-level view for its usual level and slow climbs, the now view for how it is moving at the alert.",
+		"Use it with analyze_metric_series to say how the metric moved before the alert: the normal-level view for its usual level and slow climbs, the now view for how it is moving at the alert.",
 		core.TruncateHead(series, 300), op, strconv.FormatFloat(level, 'g', -1, 64), common.FormatPresentationTime(&end), file, len(views), alertHistoryViewNames(views))
 }
 

@@ -3301,8 +3301,19 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 	existingInvestigation, _ := eventAnalysisRepo.GetEventAnalysis(ctx, request.EventId, eventFingerprint, eventAggregationKey, request.AccountId, events.AnalysisTypeInvestigation)
 	if existingInvestigation != nil && existingInvestigation.Status == string(events.AnalysisStatusCompleted) && !request.Regenerate &&
 		!eventAnalysisRepo.IsAnalysisStale(existingInvestigation.UpdatedAt) {
-		response.Summary = existingInvestigation.Summary
-		investigationText = existingInvestigation.Summary
+		// A reused report may predate this firing, or the outlook line; the line
+		// is recomputed then, and a re-poll keeps it (see outlookLineCurrent).
+		refreshed := existingInvestigation.Summary
+		if !outlookLineCurrent(refreshed, eventData.StartsAt) {
+			refreshed = withOutlookLine(refreshed, eventOutlookLine(ctx, eventAnalysisRepo, request.AccountId, eventData, time.Now()))
+		}
+		if refreshed != existingInvestigation.Summary {
+			if err := eventAnalysisRepo.UpdateAnalysisSummary(ctx, existingInvestigation.ID, existingInvestigation.Summary, refreshed); err != nil {
+				ctx.GetLogger().Warn("analyzer: outlook line not refreshed", "error", err, "event_id", request.EventId)
+			}
+		}
+		response.Summary = refreshed
+		investigationText = refreshed
 		// The stripped investigation text no longer carries the block; the plan
 		// was stashed as JSON in the investigation row's analysis column so a
 		// log-only regenerate re-gates without re-running the agent.
@@ -3444,6 +3455,7 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 			// measured on real investigations.
 			check := recordConfirmingCheck(ctx, dbManager, investigationResponse, investigationMessageId, request.EventId, request.AccountId, workloadNamespace, workloadName, eventData.Title)
 			cleaned := stripConfirmingCheckBlock(stripChangePlanBlock(investigationResponse))
+			cleaned = withOutlookLine(cleaned, eventOutlookLine(ctx, eventAnalysisRepo, request.AccountId, eventData, time.Now()))
 			response.Summary = cleaned
 			investigationText = cleaned
 			err = eventAnalysisRepo.UpsertEventAnalysis(ctx, request.EventId, marshalInvestigationAnalysis(changePlan, check), cleaned, string(events.AnalysisStatusCompleted), eventData.Fingerprint, request.AccountId, eventData.AggregationKey, events.AnalysisTypeInvestigation)

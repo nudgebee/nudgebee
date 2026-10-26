@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -918,6 +919,41 @@ func (r *EventAnalysisRepository) GetDuplicateChainSpan(ctx *security.RequestCon
 		l = &last.Time
 	}
 	return f, l, nil
+}
+
+// maxFiringTimes caps the firings ListWorkloadFiringTimes returns; a flapping
+// alert fires thousands of times, and only its latest firings set its pattern.
+const maxFiringTimes = 500
+
+// ListWorkloadFiringTimes returns when this alert fired on this workload of the
+// account between since and until, oldest first, keeping the latest
+// maxFiringTimes. The workload is the owner (a pod's Deployment or StatefulSet)
+// or, without one, the subject: a fingerprint would count a Deployment's
+// restarted pod as a new alert, and hid about one repeat problem in seven.
+func (r *EventAnalysisRepository) ListWorkloadFiringTimes(ctx *security.RequestContext, accountId, aggregationKey, namespace, workload string, since, until time.Time) ([]time.Time, error) {
+	var times []time.Time
+	err := r.dbManager.Db.Select(&times, `select starts_at from events
+		where cloud_account_id = $1 and aggregation_key = $2
+		  and coalesce(subject_namespace, '') = $3
+		  and coalesce(nullif(subject_owner, ''), subject_name, '') = $4
+		  and starts_at > $5 and starts_at <= $6
+		order by starts_at desc limit $7`, accountId, aggregationKey, namespace, workload, since, until, maxFiringTimes)
+	if err != nil {
+		return nil, fmt.Errorf("ListWorkloadFiringTimes: %w", err)
+	}
+	slices.Reverse(times)
+	return times, nil
+}
+
+// UpdateAnalysisSummary replaces the stored text of one completed analysis row,
+// only while it still holds previous (a regenerate that wrote since wins), and
+// without touching updated_at, which decides how long the row is reused.
+func (r *EventAnalysisRepository) UpdateAnalysisSummary(ctx *security.RequestContext, analysisId, previous, summary string) error {
+	if _, err := r.dbManager.Db.Exec(`UPDATE event_log_analysis SET summary = $3 WHERE id = $1 AND summary = $2 AND status = $4`,
+		analysisId, previous, summary, AnalysisStatusCompleted); err != nil {
+		return fmt.Errorf("UpdateAnalysisSummary: %w", err)
+	}
+	return nil
 }
 
 // GetEventRuleActionDefinitions fetches action definitions for a given alert rule.
