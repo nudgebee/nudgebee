@@ -38,7 +38,16 @@ func init() {
 
 // IsRestrictedIP checks if an IP belongs to private, loopback, or metadata ranges.
 func IsRestrictedIP(ip net.IP) bool {
-	if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsPrivate() {
+	if ip == nil {
+		return true
+	}
+	// Normalize IPv4-mapped IPv6 addresses (::ffff:127.0.0.1) to their 4-byte
+	// form. The stdlib predicates and IPNet.Contains unwrap these today, but
+	// normalizing here keeps the check correct independently of that detail.
+	if ip4 := ip.To4(); ip4 != nil {
+		ip = ip4
+	}
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsPrivate() {
 		return true
 	}
 	for _, rNet := range restrictedNets {
