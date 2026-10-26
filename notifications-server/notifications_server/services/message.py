@@ -944,6 +944,15 @@ class GroupedMessageHandler:
             )
 
             if key not in self._group_tasks:
+                # Time the timer from the stored due time, not a fresh full
+                # window: after a restart the first new push would otherwise
+                # push an already-due batch back by up to an hour, and the
+                # sweep skips any key that has a local timer.
+                due_at = await run_in_cache_thread(redis_client.get, due_key)
+                try:
+                    delay_seconds = max(int(due_at) - int(time.time()), 0)
+                except (TypeError, ValueError):
+                    pass  # due_key gone (expired between SET and GET): keep the full window
                 LOG.info("Scheduling flush for %s in %d seconds", key, delay_seconds)
                 task = asyncio.create_task(self._delayed_flush(key, delay_seconds))
                 self._group_tasks[key] = {"task": task, "scheduled_at": utc_now()}

@@ -405,6 +405,9 @@ class _Redis:
     def rpush(self, key, *values):
         self.lists.setdefault(key, []).extend(values)
 
+    def lpush(self, key, *values):
+        self.lists[key] = list(reversed(values)) + self.lists.get(key, [])
+
     def llen(self, key):
         return len(self.lists.get(key, []))
 
@@ -675,6 +678,56 @@ def test_sweep_flushes_a_due_key_with_no_in_memory_timer(monkeypatch):
 
     assert service.sent
     assert f"{ANOMALY_KEY}:due" not in redis_fake.strings
+
+
+def _enqueue_and_capture_delay(redis_fake, monkeypatch):
+    monkeypatch.setattr(message_module.settings.notifications, "grouped_flush_delay_seconds", 3600)
+    service = _service({}, monkeypatch)
+    service._group_tasks = {}
+    service._flush_locks = defaultdict(asyncio.Lock)
+    handler = GroupedMessageHandler(SimpleNamespace(redis_client=redis_fake), service)
+    delays = []
+
+    async def record_delay(_key, delay_seconds):
+        delays.append(delay_seconds)
+
+    handler._delayed_flush = record_delay
+
+    async def enqueue_then_let_timer_start():
+        await handler.enqueue(_anomaly(PROD, "late"))
+        await asyncio.sleep(0)
+
+    asyncio.run(enqueue_then_let_timer_start())
+    return delays
+
+
+def test_first_push_after_a_restart_keeps_the_stored_due_time(monkeypatch):
+    """A restart drops the in-memory timer but not the Redis due time. The
+    first push afterwards must time its timer to that due time, not open a
+    fresh hour — the sweep skips keys with a local timer, so a full window
+    here delays an already-due batch by up to an hour."""
+    redis_fake = _Redis([_anomaly(PROD, "cpu")])
+    redis_fake.strings[f"{ANOMALY_KEY}:due"] = str(int(time.time()) + 120)
+
+    delays = _enqueue_and_capture_delay(redis_fake, monkeypatch)
+
+    assert len(delays) == 1 and 0 < delays[0] <= 120
+
+
+def test_first_push_after_a_restart_flushes_an_overdue_batch_now(monkeypatch):
+    redis_fake = _Redis([_anomaly(PROD, "cpu")])
+    redis_fake.strings[f"{ANOMALY_KEY}:due"] = str(int(time.time()) - 300)
+
+    assert _enqueue_and_capture_delay(redis_fake, monkeypatch) == [0]
+
+
+def test_first_push_to_an_empty_group_waits_the_full_window(monkeypatch):
+    redis_fake = _Redis([])
+    redis_fake.lists.clear()
+
+    delays = _enqueue_and_capture_delay(redis_fake, monkeypatch)
+
+    assert len(delays) == 1 and 3598 <= delays[0] <= 3600
 
 
 def test_sweep_resumes_a_claim_left_over_from_a_crashed_flush(monkeypatch):
