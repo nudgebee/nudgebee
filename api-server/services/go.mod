@@ -38,6 +38,7 @@ require (
 	github.com/mitchellh/mapstructure v1.5.0
 	github.com/noirbizarre/gonja v0.0.0-20200629003239-4d051fd0be61
 	github.com/nudgebee/logparser v0.0.0-20251218094028-bf4256a63b22
+	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 	github.com/prometheus/prometheus v0.315.0
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/robfig/cron/v3 v3.0.1
