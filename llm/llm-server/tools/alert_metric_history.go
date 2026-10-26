@@ -149,7 +149,7 @@ func alertSeries(all []any, alertLabels map[string]string, op string) any {
 				continue
 			}
 			shared++
-			if !labelAgrees(fmt.Sprint(v), want) {
+			if !labelAgrees(k, fmt.Sprint(v), want) {
 				agrees = false
 				break
 			}
@@ -169,12 +169,28 @@ func alertSeries(all []any, alertLabels map[string]string, op string) any {
 	return picked
 }
 
-// labelAgrees is true when a series label value is the alert's value, or a pod
-// of the workload the alert names: alert sources often report the workload
-// ("checkout") where the series carries the pod ("checkout-7c9d8f-x2l4p").
-func labelAgrees(series, alert string) bool {
-	return series == alert || strings.HasPrefix(series, alert+"-")
+// labelAgrees is true when a series label value is the alert's value, or, for a
+// pod label, a pod of the workload the alert names: alert sources often report
+// the workload ("checkout") where the series carries the pod
+// ("checkout-7c9d8f-x2l4p"). Every other label must match exactly, as the
+// narrowed query requires (see narrowToAlert): namespace "prod" is not "prod-eu".
+func labelAgrees(key, series, alert string) bool {
+	if series == alert {
+		return true
+	}
+	if key != "pod" && key != "pod_name" {
+		return false
+	}
+	ok, err := regexp.MatchString(`^`+regexp.QuoteMeta(alert)+podSuffix+`$`, series)
+	return err == nil && ok
 }
+
+// podSuffix is what Kubernetes appends to a workload's name to name its pods: an
+// ordinal (StatefulSet), or a 5-character id after at most one hash or number
+// (Deployment, DaemonSet, Job, CronJob). Generated ids use an alphabet without
+// vowels, so "checkout" does not claim "checkout-worker-x2l4p" or the pods of
+// "checkout-v2" ("checkout-v2-7c9d8f-x2l4p"), as a bare "checkout-" prefix did.
+const podSuffix = `(-[0-9]+|(-[0-9]+|-[bcdfghjklmnpqrstvwxz2456789]{1,10})?-[bcdfghjklmnpqrstvwxz2456789]{5})`
 
 // lastPoint returns the timestamp and value of a series' last numeric point.
 func lastPoint(series map[string]any) (ts, value float64, ok bool) {
@@ -302,7 +318,7 @@ func narrowToAlert(series string, alertLabels map[string]string) (string, bool) 
 		}
 		var m *labels.Matcher
 		if k == "pod" {
-			m, err = labels.NewMatcher(labels.MatchRegexp, k, regexp.QuoteMeta(v)+"(-.*)?")
+			m, err = labels.NewMatcher(labels.MatchRegexp, k, regexp.QuoteMeta(v)+podSuffix+"?")
 		} else {
 			m, err = labels.NewMatcher(labels.MatchEqual, k, v)
 		}

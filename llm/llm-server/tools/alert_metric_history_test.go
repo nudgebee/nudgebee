@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -89,25 +90,27 @@ func TestFetchAlertMetricHistory(t *testing.T) {
 			return core.ObservabilityMetricsQuerySeries{Metric: map[string]string{"namespace": "demo", "pod": name}, Timestamps: []int64{1, 2}, Values: []float64{0.1, last}}
 		}
 		payload = []core.ObservabilityMetricsQuerySeries{
-			pod("checkout-7c9d8f-a1", 0.31),
-			pod("checkout-7c9d8f-b2", 0.84),
-			pod("checkoutv2-55d-c3", 0.99), // another workload: "checkoutv2" is not a pod of "checkout"
+			pod("checkout-7c9d8f5b4-x2lkp", 0.31),
+			pod("checkout-7c9d8f5b4-q9zrt", 0.84),
+			pod("checkoutv2-55d8c4-c7wbm", 0.99),     // another workload: "checkoutv2" is not a pod of "checkout"
+			pod("checkout-v2-6b8f9d7c5-k2hvn", 0.98), // nor is "checkout-v2"
+			pod("checkout-worker-m4tzq", 0.97),       // nor "checkout-worker"
 		}
 		body, ok, err := FetchAlertMetricHistory(security.RequestContext{}, "acct", "mem", ">", map[string]string{"namespace": "demo", "pod": "checkout"}, end.Add(-time.Hour), end, time.Minute)
 		require.NoError(t, err)
 		require.True(t, ok)
-		assert.Equal(t, "checkout-7c9d8f-b2", body.(map[string]any)["metric"].(map[string]any)["pod"], "not the other workload checkoutv2, whose last value is higher")
+		assert.Equal(t, "checkout-7c9d8f5b4-q9zrt", body.(map[string]any)["metric"].(map[string]any)["pod"], "not another workload, whose last value is higher")
 	})
 
 	t.Run("a pod replaced before the alert is not the alerting one, however high it ended", func(t *testing.T) {
 		payload = []core.ObservabilityMetricsQuerySeries{
-			{Metric: map[string]string{"namespace": "demo", "pod": "checkout-777f-old"}, Timestamps: []int64{1, 2}, Values: []float64{0.9, 0.94}},
-			{Metric: map[string]string{"namespace": "demo", "pod": "checkout-5cfd-new"}, Timestamps: []int64{3, 4, 5}, Values: []float64{0.3, 0.4, 0.52}},
+			{Metric: map[string]string{"namespace": "demo", "pod": "checkout-777fbd9c8-w5ndl"}, Timestamps: []int64{1, 2}, Values: []float64{0.9, 0.94}},
+			{Metric: map[string]string{"namespace": "demo", "pod": "checkout-5cfd8b7d9-p8lxs"}, Timestamps: []int64{3, 4, 5}, Values: []float64{0.3, 0.4, 0.52}},
 		}
 		body, ok, err := FetchAlertMetricHistory(security.RequestContext{}, "acct", "cpu", ">", map[string]string{"namespace": "demo", "pod": "checkout"}, end.Add(-time.Hour), end, time.Minute)
 		require.NoError(t, err)
 		require.True(t, ok)
-		assert.Equal(t, "checkout-5cfd-new", body.(map[string]any)["metric"].(map[string]any)["pod"])
+		assert.Equal(t, "checkout-5cfd8b7d9-p8lxs", body.(map[string]any)["metric"].(map[string]any)["pod"])
 	})
 
 	t.Run("no candidate: nothing is saved", func(t *testing.T) {
@@ -196,6 +199,9 @@ func TestAnalyzeMetricSeries_AlertHistoryLeadsWithNow(t *testing.T) {
 	assert.NotContains(t, fmt.Sprint(resp.Data), "chart_", "the model is not told about the charts")
 }
 
+// podCheckout is the matcher narrowToAlert adds for an alert on the workload "checkout".
+var podCheckout = `pod=~"checkout` + podSuffix + `?"`
+
 func TestNarrowToAlert(t *testing.T) {
 	alert := map[string]string{"namespace": "demo", "pod": "checkout", "rpc_method": "PlaceOrder", "summary": "High latency", "severity": "warning"}
 	tests := []struct {
@@ -204,13 +210,13 @@ func TestNarrowToAlert(t *testing.T) {
 		want, wantNot []string
 	}{
 		{"grouped rule: labels it groups by", `histogram_quantile(0.95, sum by (le, namespace, pod, rpc_method) (rate(rpc_duration_bucket[2m])))`, true,
-			[]string{`namespace="demo"`, `pod=~"checkout(-.*)?"`, `rpc_method="PlaceOrder"`}, []string{"summary", "severity"}},
+			[]string{`namespace="demo"`, podCheckout, `rpc_method="PlaceOrder"`}, []string{"summary", "severity"}},
 		{"ratio of two grouped sums: both selectors", `sum by (namespace, pod) (container_memory_working_set_bytes) / sum by (namespace, pod) (kube_pod_container_resource_limits)`, true,
-			[]string{`container_memory_working_set_bytes{namespace="demo",pod=~"checkout(-.*)?"}`, `kube_pod_container_resource_limits{namespace="demo",pod=~"checkout(-.*)?"}`}, nil},
+			[]string{`container_memory_working_set_bytes{namespace="demo",` + podCheckout + `}`, `kube_pod_container_resource_limits{namespace="demo",` + podCheckout + `}`}, nil},
 		{"a matcher the rule already sets is left as it is", `sum by (namespace, pod) (x{namespace=~"demo|prod"})`, true,
-			[]string{`namespace=~"demo|prod"`, `pod=~"checkout(-.*)?"`}, []string{`namespace="demo"`}},
+			[]string{`namespace=~"demo|prod"`, podCheckout}, []string{`namespace="demo"`}},
 		{"bare selector: identity labels only", `rate(errors_total[5m])`, true,
-			[]string{`namespace="demo"`, `pod=~"checkout(-.*)?"`}, []string{"summary", "rpc_method", "severity"}},
+			[]string{`namespace="demo"`, podCheckout}, []string{"summary", "rpc_method", "severity"}},
 		{"labels summed away are never added", `sum by (cluster) (rate(errors_total[5m]))`, false, nil, []string{"pod", "namespace"}},
 		{"without keeps the rest", `sum without (pod) (rate(errors_total[5m]))`, true,
 			[]string{`namespace="demo"`}, []string{"pod="}},
@@ -248,6 +254,33 @@ func TestFetchAlertMetricHistory_NarrowsThenFallsBack(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, ok)
 	require.Len(t, queries, 2)
-	assert.Contains(t, queries[0], `pod=~"checkout(-.*)?"`, "the alert's series is asked for first")
+	assert.Contains(t, queries[0], podCheckout, "the alert's series is asked for first")
 	assert.Equal(t, `sum by (pod) (rate(x[5m]))`, queries[1], "then the whole rule when that finds nothing")
+}
+
+func TestLabelAgrees_PodsOfTheWorkloadOnly(t *testing.T) {
+	matcher := regexp.MustCompile(`^(?:checkout` + podSuffix + `?)$`)
+	for series, want := range map[string]bool{
+		"checkout":                    true,
+		"checkout-7c9d8f5b4-x2lkp":    true, // Deployment
+		"checkout-x2lkp":              true, // DaemonSet, Job
+		"checkout-0":                  true, // StatefulSet
+		"checkout-29340120-x2lkp":     true, // CronJob
+		"checkout-v2-6b8f9d7c5-k2hvn": false,
+		"checkout-worker-m4tzq":       false,
+		"checkout-worker":             false,
+		"checkoutv2-55d8c4-c7wbm":     false,
+	} {
+		assert.Equal(t, want, labelAgrees("pod", series, "checkout"), series)
+		// Prometheus anchors a regex matcher, so the narrowed query selects the same pods.
+		assert.Equal(t, want, matcher.MatchString(series), "matcher: %s", series)
+	}
+}
+
+// Only a pod label stands for its workload; any other label must match exactly.
+func TestLabelAgrees_OtherLabelsExactly(t *testing.T) {
+	assert.True(t, labelAgrees("container", "checkout", "checkout"))
+	assert.False(t, labelAgrees("container", "checkout-x2lkp", "checkout"))
+	assert.False(t, labelAgrees("namespace", "prod-eu", "prod"))
+	assert.True(t, labelAgrees("pod_name", "checkout-7c9d8f5b4-x2lkp", "checkout"))
 }
