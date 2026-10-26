@@ -29,6 +29,7 @@ import { toast as snackbar } from '@ui/Toast';
 import { Form } from '@shared/forms/Form';
 import apiKnowledgeGraph from '@api1/knowledge-graph';
 import { humanizeType } from './ManualNodesTable';
+import { useNodeRoles } from './nodeRoles';
 import { ds } from 'src/utils/colors';
 
 // The schema's place for "outside any connected account" has no account id.
@@ -89,6 +90,10 @@ const RESERVED_FREE_PROPERTIES = new Set([
   'nb_account_id',
   'manual_declared',
   'manual_node_id',
+  // Where a node's role came from (core.IsNodeRoleBookkeepingProperty): set the role instead.
+  'role_source',
+  'detected_role',
+  'detected_engine',
   'dns_name',
   'dns_aliases',
   'endpoint_address',
@@ -99,6 +104,13 @@ const RESERVED_FREE_PROPERTIES = new Set([
   'cache_node_endpoints',
 ]);
 const MAX_FREE_PROPERTIES = 50;
+
+// Schema fields the "Acts as" row edits instead.
+const ROLE_FIELD_NAMES = new Set(['role', 'engine']);
+
+// The engine the "Acts as" row starts with for an edited declaration: its
+// role's engine, else the engine the declaration itself names.
+const seededRoleEngine = (row) => row?.engine || (typeof row?.properties?.engine === 'string' ? row.properties.engine : '');
 
 // Free properties are edited as key/value text rows. A value that is not text
 // (a number, a list, a map) shows as JSON and is sent back as it was unless
@@ -175,6 +187,11 @@ const EditManualNodeDialog = ({ open, row, initial, schema, onClose, onSaved, on
   const [loadingNetworks, setLoadingNetworks] = useState(false);
   const [existingNodeId, setExistingNodeId] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  // What the node acts as (kg_node_roles): sent with a new declaration, and set
+  // through the role actions when an existing one is edited.
+  const [role, setRole] = useState('');
+  const [roleEngine, setRoleEngine] = useState('');
+  const { roles } = useNodeRoles();
 
   // Seed the form whenever it opens: the row being edited, a prefill from an
   // unmatched dependency endpoint, or blank.
@@ -192,8 +209,12 @@ const EditManualNodeDialog = ({ open, row, initial, schema, onClose, onSaved, on
       setProperties(Object.fromEntries(Object.entries(row.properties || {}).map(([k, v]) => [k, toEditable(v)])));
       setFreeProperties(toFreeRows(row.properties));
       setLabels(Object.entries(row.labels || {}).map(([k, v]) => ({ k, v })));
+      setRole(row.role || '');
+      setRoleEngine(seededRoleEngine(row));
       return;
     }
+    setRole('');
+    setRoleEngine('');
     setPlace(OUTSIDE_ACCOUNTS);
     setSpecificType(initial?.node_type || '');
     setKeys({ ...EMPTY_KEYS, name: initial?.name || '', namespace: initial?.namespace || '', region: initial?.region || '' });
@@ -344,20 +365,54 @@ const EditManualNodeDialog = ({ open, row, initial, schema, onClose, onSaved, on
 
   const shapeOf = (name) => kind?.properties?.find((p) => p.name === name)?.shape;
 
-  const cleanedProperties = () =>
-    isCustomKind
-      ? Object.fromEntries(freeProperties.filter((r) => r.k.trim()).map((r) => [r.k.trim(), fromFreeValue(r)]))
-      : Object.fromEntries(
-          Object.entries(properties)
-            .map(([k, v]) => [k, fromEditable(v, shapeOf(k))])
-            .filter(([, v]) => v !== undefined && v !== null)
-        );
+  const setProperty = (name) => (next) => setProperties((prev) => ({ ...prev, [name]: next }));
+  // The "Acts as" row edits the role and its engine; a type whose schema has
+  // its own role or engine field shows that through the row, not twice.
+  const fieldProperties = (kind?.properties ?? []).filter((p) => p.shape !== 'map' && !ROLE_FIELD_NAMES.has(p.name));
+  const mapProperties = (kind?.properties ?? []).filter((p) => p.shape === 'map');
+  const kindHasEngine = !isCustomKind && (kind?.properties ?? []).some((p) => p.name === 'engine');
+
+  const cleanedProperties = () => {
+    if (isCustomKind) {
+      return Object.fromEntries(freeProperties.filter((r) => r.k.trim()).map((r) => [r.k.trim(), fromFreeValue(r)]));
+    }
+    const cleaned = Object.fromEntries(
+      Object.entries(properties)
+        .map(([k, v]) => [k, fromEditable(v, shapeOf(k))])
+        .filter(([, v]) => v !== undefined && v !== null)
+    );
+    // The row's engine is also the declared engine when the type has one.
+    if (kindHasEngine) {
+      if (roleEngine.trim()) {
+        cleaned.engine = roleEngine.trim();
+      } else {
+        delete cleaned.engine;
+      }
+    }
+    return cleaned;
+  };
 
   const cleanedLabels = () => Object.fromEntries(labels.filter((l) => l.k.trim()).map((l) => [l.k.trim(), l.v.trim()]));
 
-  const setProperty = (name) => (next) => setProperties((prev) => ({ ...prev, [name]: next }));
-  const fieldProperties = (kind?.properties ?? []).filter((p) => p.shape !== 'map');
-  const mapProperties = (kind?.properties ?? []).filter((p) => p.shape === 'map');
+  // Sets or removes the edited node's role when it changed. Throws with the
+  // server's message when the role action refuses.
+  const syncEditedRole = async () => {
+    const engine = roleEngine.trim();
+    // Compared with what the form was seeded with: a role row may have no
+    // engine while the declaration's own engine property fills the field.
+    const was = { role: row.role || '', engine: seededRoleEngine(row) };
+    if (role === was.role && (!role || engine === was.engine)) {
+      return {}; // unchanged: the saved row already carries it
+    }
+    const res = role
+      ? await apiKnowledgeGraph.setNodeRole({ node_id: row.kg_node_id, role, engine })
+      : await apiKnowledgeGraph.removeNodeRole({ node_id: row.kg_node_id });
+    const errors = res?.data?.errors;
+    if (errors?.length) {
+      throw new Error(errors[0]?.message ?? 'Unknown error');
+    }
+    return role ? { role, engine: engine || undefined } : { role: undefined, engine: undefined };
+  };
 
   const handleSubmit = async () => {
     setSubmitting(true);
@@ -373,8 +428,15 @@ const EditManualNodeDialog = ({ open, row, initial, schema, onClose, onSaved, on
           snackbar.error(`Save failed: ${errors[0]?.message ?? 'Unknown error'}`);
           return;
         }
-        snackbar.success('Node updated.');
-        onSaved(res?.data?.data?.kg_update_manual_node?.data);
+        const updated = res?.data?.data?.kg_update_manual_node?.data;
+        try {
+          const nextRole = await syncEditedRole();
+          snackbar.success('Node updated.');
+          onSaved(updated ? { ...updated, ...nextRole } : updated);
+        } catch (roleErr) {
+          snackbar.error(`Node updated, but its role could not be changed: ${roleErr.message}`);
+          onSaved(updated);
+        }
         return;
       }
 
@@ -384,6 +446,12 @@ const EditManualNodeDialog = ({ open, row, initial, schema, onClose, onSaved, on
         properties: cleanedProperties(),
         labels: cleanedLabels(),
       };
+      if (role) {
+        request.role = role;
+        if (roleEngine.trim()) {
+          request.engine = roleEngine.trim();
+        }
+      }
       if (isOutside) {
         request.node_type = kind.node_type;
         if (isCustomKind) {
@@ -547,6 +615,28 @@ const EditManualNodeDialog = ({ open, row, initial, schema, onClose, onSaved, on
                 <Form.Field label='Description'>
                   <Input size='sm' value={description} onChange={setDescription} placeholder='What it is and who owns it' />
                 </Form.Field>
+                <Form.Row ratio={[1, 1]}>
+                  <Form.Field label='Acts as' helperText='What the node does. The graph, its filters and the assistant use it.'>
+                    <Select
+                      size='sm'
+                      options={[{ value: '', label: 'Nothing in particular' }, ...roles.map((r) => ({ value: r.value, label: r.label }))]}
+                      value={role}
+                      onChange={(next) => setRole(next || '')}
+                      placeholder='Nothing in particular'
+                      id='manual-node-role'
+                    />
+                  </Form.Field>
+                  <Form.Field label='Engine' helperText='Optional: postgres, redis, kafka, … It sets the icon shown on the node.'>
+                    <Input
+                      size='sm'
+                      value={roleEngine}
+                      onChange={setRoleEngine}
+                      placeholder='postgres'
+                      disabled={!role && !kindHasEngine}
+                      data-testid='manual-node-role-engine'
+                    />
+                  </Form.Field>
+                </Form.Row>
                 {isCustomKind && (
                   <>
                     <KeyValueEditor title='Properties' addLabel='Add property' rows={freeProperties} onChange={setFreeProperties} />

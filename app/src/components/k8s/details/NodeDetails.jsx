@@ -10,6 +10,18 @@ import Tabs from '@shared/navigation/Tabs';
 import CopyButton from '@shared/buttons/CopyButton';
 import Datetime from '@shared/format/Datetime';
 import { humanizeType } from '@components/knowledge-graph/ManualNodesTable';
+import NodeRoleDialog from '@components/knowledge-graph/NodeRoleDialog';
+import {
+  NODE_ROLE_BOOKKEEPING_KEYS,
+  canCarryRole,
+  detectedRoleText,
+  nodeRoleLabel,
+  nodeRoleState,
+  useNodeRoles,
+} from '@components/knowledge-graph/nodeRoles';
+import { Button } from '@ui/Button';
+import { Chip as DsChip } from '@ui/Chip';
+import { getCurrentTenant, hasWriteAccess, isTenantAdmin } from '@lib/auth';
 import { getSpecificTime, getYesterday } from '@lib/datetime';
 
 // Lazy-load the heavy tab bodies so opening a node popup doesn't pull the events /
@@ -151,8 +163,87 @@ PathNodeTooltipContent.propTypes = {
   }),
 };
 
-const DetailsBody = ({ node }) => {
-  const labels = node?.properties ?? node?.labels ?? node?.Labels ?? node;
+// Whether the signed-in user may change this node's role: a node outside any
+// account (its account is the tenant) takes tenant-wide access, any other the
+// account's. The server checks the same rule.
+const canEditNodeRole = (node) => {
+  const accountId = node?.cloud_account_id;
+  if (!accountId) {
+    return false;
+  }
+  return accountId === getCurrentTenant().id ? isTenantAdmin() : hasWriteAccess(accountId);
+};
+
+// The role the node acts as, where it came from, and the way to change it.
+// Shown when the node has a role, or when the user may give it one.
+const RoleRow = ({ node, onRoleChange }) => {
+  const { targetNodeTypes } = useNodeRoles();
+  const [open, setOpen] = useState(false);
+  const state = nodeRoleState(node?.properties);
+  const editable = Boolean(onRoleChange) && Boolean(node?.id) && canCarryRole(targetNodeTypes, node?.node_type) && canEditNodeRole(node);
+  if (!state.role && !editable) {
+    return null;
+  }
+  return (
+    <Box
+      sx={{
+        padding: 'var(--ds-space-4)',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 'var(--ds-space-2)',
+        borderBottom: '1px solid var(--ds-gray-200)',
+      }}
+      data-testid='kg-node-role'
+    >
+      <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', minWidth: '90px', flexShrink: 0 }}>Role:</Typography>
+      <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 'var(--ds-space-2)', flex: 1 }}>
+        {state.role ? (
+          <>
+            <DsChip variant='tag' size='sm' tone='info'>
+              {nodeRoleLabel(state.role)}
+            </DsChip>
+            {state.engine && <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)' }}>engine: {state.engine}</Typography>}
+            <DsChip variant='tag' size='sm' tone='subtle'>
+              {state.userSet ? 'User-assigned' : 'Detected'}
+            </DsChip>
+            {state.userSet && state.detectedRole && state.detectedRole !== state.role && (
+              <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)' }}>
+                detected: {detectedRoleText(state.detectedRole)}
+              </Typography>
+            )}
+          </>
+        ) : (
+          <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)' }}>None</Typography>
+        )}
+      </Box>
+      {editable && (
+        <Button tone='secondary' size='sm' onClick={() => setOpen(true)} data-testid='kg-node-role-edit'>
+          {state.userSet ? 'Edit role' : 'Set role'}
+        </Button>
+      )}
+      {editable && (
+        <NodeRoleDialog open={open} node={node} onClose={() => setOpen(false)} onSaved={(result) => result?.node && onRoleChange(result)} />
+      )}
+    </Box>
+  );
+};
+
+RoleRow.propTypes = {
+  node: PropTypes.shape({
+    id: PropTypes.string,
+    node_type: PropTypes.string,
+    cloud_account_id: PropTypes.string,
+    properties: PropTypes.object,
+  }),
+  onRoleChange: PropTypes.func,
+};
+
+// The node's properties as the details table shows them: the role overlay's
+// bookkeeping keys are read through the Role row instead.
+const shownProperties = (properties) => Object.fromEntries(Object.entries(properties).filter(([k]) => !NODE_ROLE_BOOKKEEPING_KEYS.includes(k)));
+
+const DetailsBody = ({ node, onRoleChange }) => {
+  const labels = node?.properties ? shownProperties(node.properties) : node?.labels ?? node?.Labels ?? node;
   const { headers = [], convertedJson2 = [] } = getTableData4([labels] || [{}]);
   const pathToNode = node?.pathToNode || [];
   const uniqueKey = node?.unique_key || node?.uniqueKey;
@@ -189,6 +280,7 @@ const DetailsBody = ({ node }) => {
           <CopyButton text={uniqueKey} size='sm' />
         </Box>
       )}
+      <RoleRow node={node} onRoleChange={onRoleChange} />
       {lastSeen && (
         <Box
           sx={{
@@ -273,9 +365,10 @@ DetailsBody.propTypes = {
     unique_key: PropTypes.string,
     uniqueKey: PropTypes.string,
   }),
+  onRoleChange: PropTypes.func,
 };
 
-const NodeDetails = ({ node }) => {
+const NodeDetails = ({ node, onRoleChange }) => {
   const [tab, setTab] = useState(TAB_DETAILS);
   const { accountId, utilizationQuery, eventsDefaultQuery, workloadScope } = getNodeScope(node);
 
@@ -294,7 +387,7 @@ const NodeDetails = ({ node }) => {
 
   // Cloud/infra nodes (no scoped views) keep the original single-view layout.
   if (tabOptions.length === 1) {
-    return <DetailsBody node={node} />;
+    return <DetailsBody node={node} onRoleChange={onRoleChange} />;
   }
 
   return (
@@ -312,7 +405,7 @@ const NodeDetails = ({ node }) => {
         <Tabs options={{ tabOptions }} value={tab} onChange={(next) => setTab(next)} behavior='filter' variant='secondary' ariaLabel='Node details' />
       </Box>
       <Box sx={{ flex: 1, overflow: 'auto' }}>
-        {tab === TAB_DETAILS && <DetailsBody node={node} />}
+        {tab === TAB_DETAILS && <DetailsBody node={node} onRoleChange={onRoleChange} />}
         {tab === TAB_UTILIZATION && utilizationQuery && (
           <Box sx={{ padding: 'var(--ds-space-4)' }}>
             <KubernetesUtilizationCharts3 accountId={accountId} query={utilizationQuery} />
@@ -389,6 +482,10 @@ NodeDetails.propTypes = {
     unique_key: PropTypes.string,
     uniqueKey: PropTypes.string,
   }),
+  // Called after the role is set or removed with { node, applied, skipped,
+  // build_in_progress }: the refreshed node and the linked instances that took
+  // the same change. Without it the role is shown read-only.
+  onRoleChange: PropTypes.func,
 };
 
 export default NodeDetails;

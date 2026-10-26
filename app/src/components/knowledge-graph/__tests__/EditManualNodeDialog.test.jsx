@@ -9,9 +9,19 @@ import apiKnowledgeGraph from '@api1/knowledge-graph';
 
 jest.mock('@api1/knowledge-graph', () => ({
   __esModule: true,
-  default: { createManualNode: jest.fn(), updateManualNode: jest.fn(), getFilterOptions: jest.fn() },
+  default: {
+    createManualNode: jest.fn(),
+    updateManualNode: jest.fn(),
+    getFilterOptions: jest.fn(),
+    listNodeRoles: jest.fn(),
+    setNodeRole: jest.fn(),
+    removeNodeRole: jest.fn(),
+  },
 }));
 jest.mock('@ui/Toast', () => ({ toast: { success: jest.fn(), error: jest.fn() } }));
+// Text pulls in the markdown viewer, whose ES-module dependency this test
+// environment cannot load; the table only needs the value shown.
+jest.mock('@shared/format/Text', () => ({ __esModule: true, default: ({ value }) => <span>{value}</span> }));
 
 const nameField = { name: 'name', label: 'Name', required: true };
 const SCHEMA = [
@@ -339,4 +349,111 @@ it('edits a custom-kind declaration in the key/value editor, keeping values it d
       node: { description: '', properties: { site: 'blr-2', ports: 48, vlans: ['10', '20'] }, labels: {} },
     })
   );
+});
+
+// ---- What the node acts as ----------------------------------------------------
+
+const pickRole = async (label) => {
+  fireEvent.click(document.querySelector('#manual-node-role'));
+  fireEvent.click(await screen.findByText(label));
+};
+
+it('declares a node with the role it acts as and that role’s engine', async () => {
+  apiKnowledgeGraph.createManualNode.mockResolvedValue({ data: { data: { kg_create_manual_node: { data: { id: 4 } } } } });
+  renderDialog({ schema: withOutside(), initial: { node_type: 'NetworkSwitch', name: 'sw-core-03' } });
+
+  await pickRole('Load balancer');
+  fireEvent.change(screen.getByTestId('manual-node-role-engine'), { target: { value: ' haproxy ' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Declare' }));
+
+  await waitFor(() => expect(apiKnowledgeGraph.createManualNode).toHaveBeenCalled());
+  expect(apiKnowledgeGraph.createManualNode.mock.calls[0][0]).toMatchObject({ name: 'sw-core-03', role: 'loadbalancer', engine: 'haproxy' });
+});
+
+it('uses one engine field for a type that declares its own engine', async () => {
+  apiKnowledgeGraph.createManualNode.mockResolvedValue({ data: { data: { kg_create_manual_node: { data: { id: 5 } } } } });
+  renderDialog({ initial: { node_type: 'Database', name: 'billing-db' } });
+
+  fireEvent.click(screen.getByText('More details'));
+  // The schema's engine field is not shown a second time…
+  expect(screen.queryByText('engine')).not.toBeInTheDocument();
+  // …and with no role picked the row's engine is the declared engine alone.
+  fireEvent.change(screen.getByTestId('manual-node-role-engine'), { target: { value: 'postgres' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Declare' }));
+
+  await waitFor(() => expect(apiKnowledgeGraph.createManualNode).toHaveBeenCalled());
+  const request = apiKnowledgeGraph.createManualNode.mock.calls[0][0];
+  expect(request.properties).toEqual({ engine: 'postgres' });
+  expect(request).not.toHaveProperty('role');
+  expect(request).not.toHaveProperty('engine');
+});
+
+it('changes an existing declaration’s role through the role action after saving it', async () => {
+  apiKnowledgeGraph.updateManualNode.mockResolvedValue({ data: { data: { kg_update_manual_node: { data: { id: 12, role: 'cache' } } } } });
+  apiKnowledgeGraph.setNodeRole.mockResolvedValue({ data: { data: { kg_upsert_node_role: { data: { node: { id: 'kg-12' } } } } } });
+  const onSaved = jest.fn();
+  const row = {
+    id: 12,
+    kg_node_id: 'kg-12',
+    tenant_id: 't1',
+    node_type: 'CloudResource',
+    specific_type: 'NetworkSwitch',
+    name: 'sw-core-04',
+    properties: {},
+    labels: {},
+    status: 'active',
+    role: 'cache',
+  };
+  renderDialog({ schema: withOutside(), row, onSaved });
+
+  await pickRole('Proxy');
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+  await waitFor(() => expect(apiKnowledgeGraph.setNodeRole).toHaveBeenCalledWith({ node_id: 'kg-12', role: 'proxy', engine: '' }));
+  expect(onSaved).toHaveBeenCalledWith({ id: 12, role: 'proxy', engine: undefined });
+});
+
+it('removes the role when an edit sets it back to nothing in particular', async () => {
+  apiKnowledgeGraph.updateManualNode.mockResolvedValue({ data: { data: { kg_update_manual_node: { data: { id: 13, role: 'cache' } } } } });
+  apiKnowledgeGraph.removeNodeRole.mockResolvedValue({ data: { data: { kg_delete_node_role: { data: { node: { id: 'kg-13' } } } } } });
+  const row = {
+    id: 13,
+    kg_node_id: 'kg-13',
+    node_type: 'CloudResource',
+    specific_type: 'NetworkSwitch',
+    name: 'sw-5',
+    properties: {},
+    labels: {},
+    status: 'active',
+    role: 'cache',
+  };
+  renderDialog({ schema: withOutside(), row });
+
+  await pickRole('Nothing in particular');
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+  await waitFor(() => expect(apiKnowledgeGraph.removeNodeRole).toHaveBeenCalledWith({ node_id: 'kg-13' }));
+  expect(apiKnowledgeGraph.setNodeRole).not.toHaveBeenCalled();
+});
+
+it('does not rewrite the role when an edit leaves it alone', async () => {
+  apiKnowledgeGraph.updateManualNode.mockResolvedValue({ data: { data: { kg_update_manual_node: { data: { id: 14 } } } } });
+  // The role row has no engine; the declaration's own engine property fills the field.
+  const row = {
+    id: 14,
+    kg_node_id: 'kg-14',
+    node_type: 'Database',
+    specific_type: 'Database',
+    name: 'billing-db',
+    properties: { engine: 'postgres' },
+    labels: {},
+    status: 'active',
+    role: 'database',
+  };
+  renderDialog({ row });
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+  await waitFor(() => expect(apiKnowledgeGraph.updateManualNode).toHaveBeenCalled());
+  expect(apiKnowledgeGraph.setNodeRole).not.toHaveBeenCalled();
+  expect(apiKnowledgeGraph.removeNodeRole).not.toHaveBeenCalled();
 });

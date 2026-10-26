@@ -65,6 +65,7 @@ import {
 import { getAutoFitCenter } from './kgViewport';
 import { getFocusCenter } from './kgFocusView';
 import { humanizeType } from './ManualNodesTable';
+import { nodeRoleLabel } from './nodeRoleLabels';
 import { getCurrentTenant, isTenantAdmin } from '@lib/auth';
 import PropTypes from 'prop-types';
 
@@ -289,14 +290,6 @@ const LOD_ZOOM_THRESHOLD = 0.35;
 // auto-fit lands somewhere legible even if it means panning to see the rest.
 const FIT_VIEW_MIN_ZOOM = 0.4;
 
-// Datastore-facet labels for in-cluster workloads classified as databases/caches/queues.
-// Keyed by the node's `role` (see backend db_classifier.go).
-const ROLE_BADGE_LABELS = {
-  database: 'Database',
-  cache: 'Cache',
-  messagequeue: 'Queue',
-};
-
 // --- 2. CUSTOM NODE COMPONENT (Adaptive LOD via useStore) ---
 // Selector returns boolean — node only re-renders when crossing the zoom threshold, not on every zoom tick
 const zoomSelector = (state) => state.transform[2] < LOD_ZOOM_THRESHOLD;
@@ -326,7 +319,7 @@ const AdaptiveServiceNode = memo(
           </div>
           <div className='node-content'>
             <div className='node-title'>{data.name}</div>
-            <span className='node-sub'>{[data.subtitle, data.login, ROLE_BADGE_LABELS[data.role], data.location].filter(Boolean).join(' · ')}</span>
+            <span className='node-sub'>{[data.subtitle, data.login, nodeRoleLabel(data.role), data.location].filter(Boolean).join(' · ')}</span>
             {contextLine && (
               <span className='node-sub' title={contextLine}>
                 {contextLine}
@@ -372,7 +365,9 @@ const AdaptiveServiceNode = memo(
     prev.data.accountName === next.data.accountName &&
     prev.data.namespace === next.data.namespace &&
     prev.data.login === next.data.login &&
-    prev.data.location === next.data.location
+    prev.data.location === next.data.location &&
+    prev.data.role === next.data.role &&
+    prev.data.subType === next.data.subType
 );
 AdaptiveServiceNode.displayName = 'AdaptiveServiceNode';
 AdaptiveServiceNode.propTypes = {
@@ -1153,6 +1148,37 @@ const ServiceMapContent = ({ cardElevation, height }) => {
       }
     }
   }, []);
+
+  // A role was set or removed from the node details: show the refreshed node
+  // there, and update its card and those of the linked instances that took the
+  // same change. The drawn cards are patched in place: replacing the graph
+  // data would re-lay it out and clear search, focus and highlights.
+  const handleRoleChange = useCallback(
+    (result) => {
+      const updated = result?.node;
+      if (!updated?.id) return;
+      setSelectedNodeDetails((prev) => ({ ...updated, pathToNode: prev?.pathToNode }));
+      const patchCard = (node) =>
+        setNodes((nds) =>
+          nds.map((n) =>
+            n.id === node.id ? { ...n, data: { ...n.data, role: node.properties?.role, subType: node.logo_id ?? n.data?.subType } } : n
+          )
+        );
+      patchCard(updated);
+      // A linked instance's role after the change (its own detected role on a
+      // removal) is only known to the server, so its card is read back.
+      (result.applied || []).forEach((id) => {
+        apiKubernetes1
+          .knowledgeGraphGetNode(id)
+          .then((res) => {
+            const twin = res?.data?.data?.kg_get_node?.data;
+            if (twin?.id && isMountedRef.current) patchCard(twin);
+          })
+          .catch((err) => console.error('Failed to refresh a linked node:', err));
+      });
+    },
+    [setNodes]
+  );
 
   const nodeLookup = useMemo(() => {
     const map = {};
@@ -2481,7 +2507,7 @@ const ServiceMapContent = ({ cardElevation, height }) => {
             <CircularProgress size={40} />
           </Box>
         ) : (
-          <NodeDetails node={selectedNodeDetails} />
+          <NodeDetails node={selectedNodeDetails} onRoleChange={handleRoleChange} />
         )}
       </Modal>
 

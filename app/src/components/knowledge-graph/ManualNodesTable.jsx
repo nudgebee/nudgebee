@@ -13,6 +13,7 @@ import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import Tooltip from '@ui/Tooltip';
 import { DeleteIconRed, EditIcon, pmCheckCircle as MergeIcon } from '@assets';
 import { ds } from 'src/utils/colors';
+import { nodeRoleLabel } from './nodeRoleLabels';
 
 // What each status tells the operator. An adopted node is the collector's
 // now — nothing left to do; a possible duplicate wants a Merge.
@@ -124,7 +125,10 @@ const ManualNodesTable = ({ rows, accountNames, onEditClick, onMergeClick, onDel
             <Tooltip title={row.unique_key}>
               <Text value={row.name} sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium }} />
             </Tooltip>
-            <Text value={humanizeType(row.specific_type)} sx={{ fontSize: ds.text.caption, color: ds.gray[500] }} />
+            <Text
+              value={[humanizeType(row.specific_type), nodeRoleLabel(row.role)].filter(Boolean).join(' · ')}
+              sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}
+            />
           </Box>
         ),
       },

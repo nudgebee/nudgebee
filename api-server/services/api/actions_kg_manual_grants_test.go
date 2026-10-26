@@ -66,6 +66,9 @@ func TestManualWritesHonourTheActionsGrant(t *testing.T) {
 		{"kg_resolve_manual_dependency", "kg:Execute", security.SecurityAccessTypeUpdate},
 		{"kg_reresolve_manual_dependency", "kg:Execute", security.SecurityAccessTypeUpdate},
 		{"kg_reresolve_manual_dependencies", "kg:Execute", security.SecurityAccessTypeUpdate},
+		// Node roles authorize the node's account the same way (handleKgWriteNodeRole).
+		{"kg_upsert_node_role", "kg:Write", security.SecurityAccessTypeUpdate},
+		{"kg_delete_node_role", "kg:Write", security.SecurityAccessTypeUpdate},
 	}
 	otherClass := map[string]string{"kg:Write": "kg:Execute", "kg:Execute": "kg:Write"}
 

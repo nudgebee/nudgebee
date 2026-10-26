@@ -4558,6 +4558,47 @@ actions:
     permissions:
       - role: tenant_admin
     comment: panic-button rollback. Withdraws every manual node declaration for the tenant and retires every node still owned by one, with its edges. tenant_admin only.
+  - name: kg_list_node_roles
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/knowledge-graph'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: k8s_namespace_admin
+      - role: k8s_namespace_admin_readonly
+      - role: tenant_admin_readonly
+      - role: tenant_usage
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin
+    comment: the roles a Knowledge Graph node can act as (database, cache, ...) and the node types that can carry one. Static vocabulary, no tenant data.
+  - name: kg_upsert_node_role
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/knowledge-graph'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+    comment: set the role a Knowledge Graph node acts as, overriding the detected one. Also applies to the node's linked cloud instances (SAME_AS) the caller may write. Needs write access to the node's account, or tenant-wide access for a node outside any account.
+  - name: kg_delete_node_role
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/knowledge-graph'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+    comment: remove the role a user gave a Knowledge Graph node (and its linked instances); the detected role, if any, shows again.
   - name: insights_aggregate
     comment: Aggregate insights into counts and summaries
     definition:

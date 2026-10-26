@@ -5763,6 +5763,7 @@ input kg_search_nodes_input {
   namespace: String
   cluster: String
   node_types: [String]
+  roles: [String]
   source: String
   labels: jsonb
   account_ids: [String]

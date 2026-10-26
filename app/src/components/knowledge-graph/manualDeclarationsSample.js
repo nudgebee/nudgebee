@@ -34,6 +34,10 @@ export const buildSampleDeclarations = (schema) => {
     description: 'Outside any connected account: an on-prem database',
     labels: { team: 'finance' },
     properties: { engine: 'postgres' },
+    // What the node acts as: database, cache, messagequeue, search, objectstorage,
+    // loadbalancer, proxy, apigateway, scheduler, monitoring or auth.
+    role: 'database',
+    engine: 'postgres',
   });
 
   // A kind of the tenant's own, under a built-in category, with free properties.

@@ -138,6 +138,9 @@ export interface ManualNode {
   declared_by_user_id?: string;
   created_at: string;
   updated_at: string;
+  // The node's user-set role (kg_node_roles); changed through setNodeRole.
+  role?: string;
+  engine?: string;
 }
 
 export interface ManualNodeCreateRequest {
@@ -151,6 +154,30 @@ export interface ManualNodeCreateRequest {
   description?: string;
   properties?: Record<string, ManualNodePropertyValue>;
   labels?: Record<string, string>;
+  // The role the node acts as from its first write (kg_node_roles).
+  role?: string;
+  engine?: string;
+}
+
+// What a node can act as (kg_list_node_roles).
+export interface NodeRoleDef {
+  value: string;
+  label: string;
+}
+
+export interface NodeRoleVocabulary {
+  roles: NodeRoleDef[];
+  target_node_types: string[];
+}
+
+// The answer to setting or removing a role: the node as kg_get_node returns
+// it, the linked cloud instances that took the same change and those the
+// caller may not change, and whether a running build may overwrite it.
+export interface NodeRoleResult {
+  node: Record<string, unknown> & { id: string; properties?: Record<string, unknown>; logo_id?: string };
+  applied: string[];
+  skipped: string[];
+  build_in_progress: boolean;
 }
 
 export interface ManualNodeDetailsPatch {
@@ -430,6 +457,27 @@ mutation KgDeleteAllManualNodes {
   }
 }`;
 
+const KG_LIST_NODE_ROLES = `
+query KgListNodeRoles {
+  kg_list_node_roles(request: __WHERE__) {
+    data
+  }
+}`;
+
+const KG_UPSERT_NODE_ROLE = `
+mutation KgUpsertNodeRole {
+  kg_upsert_node_role(request: __WHERE__) {
+    data
+  }
+}`;
+
+const KG_DELETE_NODE_ROLE = `
+mutation KgDeleteNodeRole {
+  kg_delete_node_role(request: __WHERE__) {
+    data
+  }
+}`;
+
 // -- API object ------------------------------------------------------------
 
 const apiKnowledgeGraph = {
@@ -615,6 +663,21 @@ const apiKnowledgeGraph = {
 
   deleteAllManualNodes: async function () {
     return await queryGraphQL(KG_DELETE_ALL_MANUAL_NODES.replace('__WHERE__', gqlStringify({})), 'KgDeleteAllManualNodes', {});
+  },
+
+  // ---- Node roles ----------------------------------------------------------
+
+  listNodeRoles: async function (): Promise<NodeRoleVocabulary | undefined> {
+    const res = await queryGraphQL(KG_LIST_NODE_ROLES.replace('__WHERE__', gqlStringify({})), 'KgListNodeRoles', {});
+    return res?.data?.data?.kg_list_node_roles?.data;
+  },
+
+  setNodeRole: async function (data: { node_id: string; role: string; engine?: string }) {
+    return await queryGraphQL(KG_UPSERT_NODE_ROLE.replace('__WHERE__', gqlStringify(data)), 'KgUpsertNodeRole', {});
+  },
+
+  removeNodeRole: async function (data: { node_id: string }) {
+    return await queryGraphQL(KG_DELETE_NODE_ROLE.replace('__WHERE__', gqlStringify(data)), 'KgDeleteNodeRole', {});
   },
 };
 
