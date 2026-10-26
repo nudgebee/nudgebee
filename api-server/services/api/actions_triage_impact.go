@@ -398,7 +398,7 @@ func handleEventGetImpact(h *ActionRequest, c *gin.Context, ctx *security.Reques
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		ctx.GetLogger().Error("Failed to get database manager", "error", err)
-		c.JSON(400, common.ErrorActionBadRequest("database connection failed"))
+		c.JSON(500, common.ErrorActionInternal("database connection failed"))
 		return
 	}
 
@@ -465,7 +465,7 @@ func handleEventGetImpact(h *ActionRequest, c *gin.Context, ctx *security.Reques
 	impact, err := kg.GetImpactedServices(tenantID, nodeID, nil, 0)
 	if err != nil || impact == nil {
 		ctx.GetLogger().Error("Failed to compute blast radius", "error", err, "event_id", eventID, "node_id", nodeID)
-		c.JSON(400, common.ErrorActionBadRequest("failed to compute blast radius"))
+		c.JSON(500, common.ErrorActionInternal("failed to compute blast radius"))
 		return
 	}
 

@@ -644,7 +644,8 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		// Verify the account belongs to the caller's tenant
 		tenantAccounts, accErr := security.GetAccountIdsByTenantId(ctx.GetSecurityContext().GetTenantId())
 		if accErr != nil {
-			c.JSON(500, common.ErrorActionBadRequest("failed to validate account ownership"))
+			ctx.GetLogger().Error("integrations: failed to list tenant accounts", "error", accErr)
+			c.JSON(500, common.ErrorActionInternal("failed to validate account ownership"))
 			return
 		}
 		accountOwned := false

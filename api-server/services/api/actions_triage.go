@@ -194,7 +194,7 @@ func handleEventGetTriage(h *ActionRequest, c *gin.Context, ctx *security.Reques
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		ctx.GetLogger().Error("Failed to get database manager", "error", err)
-		c.JSON(400, common.ErrorActionBadRequest("database connection failed"))
+		c.JSON(500, common.ErrorActionInternal("database connection failed"))
 		return
 	}
 
@@ -268,7 +268,7 @@ func handleEventGetDuplicates(h *ActionRequest, c *gin.Context, ctx *security.Re
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		ctx.GetLogger().Error("Failed to get database manager", "error", err)
-		c.JSON(400, common.ErrorActionBadRequest("database connection failed"))
+		c.JSON(500, common.ErrorActionInternal("database connection failed"))
 		return
 	}
 
@@ -278,7 +278,7 @@ func handleEventGetDuplicates(h *ActionRequest, c *gin.Context, ctx *security.Re
 	duplicates, err := triage.GetDuplicateChain(ctx.GetContext(), dbms.Db, eventID, tenantID)
 	if err != nil {
 		ctx.GetLogger().Error("Failed to get duplicate chain", "error", err, "event_id", eventID)
-		c.JSON(400, common.ErrorActionBadRequest("failed to retrieve duplicates"))
+		c.JSON(500, common.ErrorActionInternal("failed to retrieve duplicates"))
 		return
 	}
 
@@ -308,7 +308,7 @@ func handleEventGetTimeline(h *ActionRequest, c *gin.Context, ctx *security.Requ
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		ctx.GetLogger().Error("Failed to get database manager", "error", err)
-		c.JSON(400, common.ErrorActionBadRequest("database connection failed"))
+		c.JSON(500, common.ErrorActionInternal("database connection failed"))
 		return
 	}
 
@@ -338,7 +338,7 @@ func handleEventBackfillTriage(h *ActionRequest, c *gin.Context, ctx *security.R
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		ctx.GetLogger().Error("Failed to get database manager", "error", err)
-		c.JSON(400, common.ErrorActionBadRequest("database connection failed"))
+		c.JSON(500, common.ErrorActionInternal("database connection failed"))
 		return
 	}
 
@@ -429,7 +429,7 @@ func handleEventDeduplicateCorrelations(h *ActionRequest, c *gin.Context, ctx *s
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		ctx.GetLogger().Error("Failed to get database manager", "error", err)
-		c.JSON(400, common.ErrorActionBadRequest("database connection failed"))
+		c.JSON(500, common.ErrorActionInternal("database connection failed"))
 		return
 	}
 
