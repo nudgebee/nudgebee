@@ -58,8 +58,7 @@ Known limits, accepted rather than engineered around:
     stays outstanding and is attempted again on every run, within the budget.
 
 Resumable and idempotent. Gated behind RAG_KB_CAPABILITY_BACKFILL_ENABLED,
-default ON. Unlike the retag/embedding migrations this spends real money at
-real production KB volume, so set it to "false" to opt an environment out.
+default ON; set it to "false" to opt out.
 """
 
 import contextlib
@@ -183,9 +182,7 @@ def _exclusive_run() -> Iterator[Optional[Callable[[], bool]]]:
 
 
 def is_enabled() -> bool:
-    """Default on; set RAG_KB_CAPABILITY_BACKFILL_ENABLED=false to opt out. Unlike
-    module_retag/embedding_migration this makes real LLM calls at real production
-    KB volume, so an operator can disable it per environment."""
+    """Default on; RAG_KB_CAPABILITY_BACKFILL_ENABLED=false opts out."""
     return os.environ.get("RAG_KB_CAPABILITY_BACKFILL_ENABLED", "true").strip().lower() == "true"
 
 
