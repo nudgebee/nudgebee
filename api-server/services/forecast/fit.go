@@ -61,6 +61,12 @@ const minFitHours = 24
 // six buckets keeps one noisy hour from deciding whether the threshold is breached.
 const currentWindowHours = 6
 
+// maxDataAge is how old the newest bucket may be before the series no longer describes
+// the workload. Throttling has no bucket for an hour the workload ran no CFS periods,
+// so a night's idling must not end a forecast; a workload scaled to zero must, or its
+// last day of data stays "breached" until it leaves the 3-day window.
+const maxDataAge = 24 * time.Hour
+
 // headroom is the share of a suggested limit the projected usage may fill.
 const headroom = 0.8
 
@@ -96,6 +102,11 @@ func Fit(in FitInput) Result {
 	if len(values) == 0 {
 		res.Status = StatusInsufficientHistory
 		res.Reason = "no data for this workload in the last 3 days"
+		return res
+	}
+	if in.Now.Sub(values[len(values)-1].T) > maxDataAge {
+		res.Status = StatusInsufficientHistory
+		res.Reason = "no data for this workload in the last 24 hours"
 		return res
 	}
 	res.CurrentPct = round(meanOfLast(values, currentWindowHours), 2)

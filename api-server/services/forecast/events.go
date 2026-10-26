@@ -21,19 +21,25 @@ import (
 const Source = "forecast"
 
 // Close reasons, stamped into the closed event's labels. The re-fire cooldown skips
-// closes that say nothing about the workload's health: the user removing the SLO, or
-// a forecast moving between urgency levels.
+// closes that say nothing about the workload's health: the user removing the SLO, a
+// forecast moving between urgency levels, or a forecast that could not be evaluated.
 const (
 	CloseClean       = "clean"
 	CloseBreached    = "breached"
 	CloseLevelChange = "level_change"
 	CloseUnwatched   = "unwatched"
+	CloseUnverified  = "unverified"
 )
 
 // sloCadence is how often the SLO run evaluates a CPU SLO. A clean evaluation closes
 // an event only once its last projecting run is more than one cadence old, which
 // means two consecutive clean runs.
 const sloCadence = time.Hour
+
+// unverifiedAfter is how long an open event may go without a run that confirms it
+// while every run fails. A failed run says nothing about the workload, so one or two
+// leave the event alone; a day of them means the alert no longer describes anything.
+const unverifiedAfter = 24 * time.Hour
 
 // AggregationKey is the event type of a projected breach of condition.
 func AggregationKey(c Condition) string {
@@ -84,6 +90,7 @@ var (
 	openFiring       = openFiringEvent
 	inCooldown       = recentlyClosed
 	closeFiring      = closeFiringEvents
+	closeUnverified  = closeUnverifiedEvents
 	staleContainers  = staleContainerFingerprints
 	upsertEvent      = func(e event.Event) error { _, err := event.InsertEvent(e, "", event.ScheduledDetection()); return err }
 	publishResolve   = publishResolved
@@ -92,7 +99,8 @@ var (
 )
 
 // Sync applies one evaluation to the workload's forecast events. A failed evaluation
-// says nothing about the workload, so it changes nothing.
+// says nothing about the workload, so it changes nothing, except to close an event no
+// run has confirmed for unverifiedAfter.
 func Sync(t Target, res Result, series Series) error {
 	// Repair first, whatever this run concludes: an alert of a container the SLO no
 	// longer watches (the container was changed and its close failed) has no other
@@ -104,7 +112,11 @@ func Sync(t Target, res Result, series Series) error {
 	}
 	switch res.Status {
 	case StatusError:
-		return nil
+		var errs []error
+		for _, level := range []Level{LevelMedium, LevelHigh, LevelBreached} {
+			errs = append(errs, closeUnverified(t, fingerprint(t, res, level)))
+		}
+		return errors.Join(errs...)
 	case StatusBreached:
 		// The prediction came true: the warnings give way to the breach alert, which
 		// carries the same trend evidence.
@@ -119,6 +131,10 @@ func Sync(t Target, res Result, series Series) error {
 			return err
 		}
 		return raise(t, res, series)
+	case StatusInsufficientHistory:
+		// Too little recent data (a limit change, a workload idle or scaled to zero)
+		// says nothing about health, so the close starts no re-fire cooldown.
+		return closeAll(t, res, CloseUnverified, true)
 	default:
 		return closeAll(t, res, CloseClean, true)
 	}
@@ -159,9 +175,10 @@ func staleContainerFingerprints(t Target, res Result) ([]string, error) {
 	err = dbms.Db.Select(&fps, `SELECT DISTINCT fingerprint FROM events
 		WHERE cloud_account_id = $1 AND tenant = $2 AND finding_type IN ($3, $4) AND aggregation_key IN ($3, $4)
 		  AND source = $5 AND status = 'FIRING' AND subject_namespace = $6 AND subject_owner = $7
+		  AND subject_owner_kind = $10
 		  AND labels->>'condition' = $8 AND labels->>'container' IS DISTINCT FROM $9`,
 		t.AccountId, t.TenantId, AggregationKey(res.Condition), BreachedAggregationKey(res.Condition),
-		Source, res.Namespace, res.Workload, string(res.Condition), res.Container)
+		Source, res.Namespace, res.Workload, string(res.Condition), res.Container, res.Kind)
 	return fps, err
 }
 
@@ -561,8 +578,8 @@ func recentlyClosed(t Target, fp string, since time.Time) (bool, error) {
 	err = dbms.Db.Get(&cooling, `SELECT EXISTS (SELECT 1 FROM events
 		WHERE tenant = $1 AND cloud_account_id = $2 AND fingerprint = $3 AND source = $4
 		  AND status = 'RESOLVED' AND ends_at > $5
-		  AND COALESCE(labels->>'close_reason', '') NOT IN ($6, $7))`,
-		t.TenantId, t.AccountId, fp, Source, since, CloseUnwatched, CloseLevelChange)
+		  AND COALESCE(labels->>'close_reason', '') NOT IN ($6, $7, $8))`,
+		t.TenantId, t.AccountId, fp, Source, since, CloseUnwatched, CloseLevelChange, CloseUnverified)
 	return cooling, err
 }
 
@@ -570,14 +587,27 @@ func recentlyClosed(t Target, fp string, since time.Time) (bool, error) {
 // event whose last projecting run is over one cadence old, so a single clean run
 // between two projecting ones does not close and reopen it.
 func closeFiringEvents(t Target, fp, reason string, stable bool) error {
-	dbms, err := database.GetDatabaseManager(database.Metastore)
-	if err != nil {
-		return err
-	}
 	now := nowFn()
 	notAfter := now
 	if stable {
 		notAfter = now.Add(-sloCadence * 3 / 2)
+	}
+	return closeFiringBefore(t, fp, reason, now, notAfter)
+}
+
+// closeUnverifiedEvents resolves the open event of fp once no run has confirmed it for
+// unverifiedAfter.
+func closeUnverifiedEvents(t Target, fp string) error {
+	now := nowFn()
+	return closeFiringBefore(t, fp, CloseUnverified, now, now.Add(-unverifiedAfter))
+}
+
+// closeFiringBefore resolves the open event of fp if it was last updated at or before
+// notAfter.
+func closeFiringBefore(t Target, fp, reason string, now, notAfter time.Time) error {
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return err
 	}
 	// ends_at and updated_at are `timestamp` without a zone; binding UTC values from Go
 	// keeps them consistent with every other write (see closeAnomalyEventIfOpen).

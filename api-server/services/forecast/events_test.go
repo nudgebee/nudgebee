@@ -34,7 +34,7 @@ var syncNow = time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
 func fakeStore(t *testing.T) *store {
 	t.Helper()
 	s := &store{open: map[string]string{}, cooling: map[string]bool{}}
-	orig := [...]any{openFiring, inCooldown, closeFiring, upsertEvent, nowFn, limitedContainer, staleContainers}
+	orig := [...]any{openFiring, inCooldown, closeFiring, upsertEvent, nowFn, limitedContainer, staleContainers, closeUnverified}
 	origCooldown := config.Config.NBForecastRefireCooldownHours
 	t.Cleanup(func() {
 		openFiring = orig[0].(func(Target, string) (string, time.Time, error))
@@ -44,6 +44,7 @@ func fakeStore(t *testing.T) *store {
 		nowFn = orig[4].(func() time.Time)
 		limitedContainer = orig[5].(func(Target, Result) string)
 		staleContainers = orig[6].(func(Target, Result) ([]string, error))
+		closeUnverified = orig[7].(func(Target, string) error)
 		config.Config.NBForecastRefireCooldownHours = origCooldown
 	})
 	config.Config.NBForecastRefireCooldownHours = 24
@@ -58,6 +59,10 @@ func fakeStore(t *testing.T) *store {
 	inCooldown = func(_ Target, fp string, _ time.Time) (bool, error) { return s.cooling[fp], nil }
 	closeFiring = func(_ Target, fp, reason string, stable bool) error {
 		s.closes = append(s.closes, closeCall{fp, reason, stable})
+		return nil
+	}
+	closeUnverified = func(_ Target, fp string) error {
+		s.closes = append(s.closes, closeCall{fp, CloseUnverified, true})
 		return nil
 	}
 	upsertEvent = func(e event.Event) error { s.upserted = append(s.upserted, e); return nil }
@@ -130,7 +135,11 @@ func TestSync_NonProjectingStatusesCloseStably(t *testing.T) {
 		require.Len(t, s.closes, 3, st)
 		for _, c := range s.closes {
 			assert.True(t, c.stable, "%s closes only after two clean runs", st)
-			assert.Equal(t, CloseClean, c.reason)
+			want := CloseClean
+			if st == StatusInsufficientHistory {
+				want = CloseUnverified
+			}
+			assert.Equal(t, want, c.reason, st)
 		}
 	}
 }
@@ -191,11 +200,19 @@ func TestTableEvidence_HasAUsageColumn(t *testing.T) {
 	assert.Equal(t, []string{"2026-10-09", "10%", "300m", "", "observed"}, data["rows"].([][]string)[0])
 }
 
-func TestSync_ErrorChangesNothing(t *testing.T) {
+// A failed run raises nothing and closes only what no run has confirmed for a day, as
+// unverified, so the alert can fire again as soon as the metrics come back.
+func TestSync_ErrorClosesOnlyUnverified(t *testing.T) {
 	s := fakeStore(t)
-	require.NoError(t, Sync(target, Result{Status: StatusError}, nil))
-	assert.Empty(t, s.closes)
+	res := projected(LevelHigh, 10)
+	res.Status = StatusError
+	require.NoError(t, Sync(target, res, nil))
 	assert.Empty(t, s.upserted)
+	assert.Equal(t, []closeCall{
+		{fingerprint(target, res, LevelMedium), CloseUnverified, true},
+		{fingerprint(target, res, LevelHigh), CloseUnverified, true},
+		{fingerprint(target, res, LevelBreached), CloseUnverified, true},
+	}, s.closes)
 }
 
 func TestCloseAll_IsUnwatched(t *testing.T) {

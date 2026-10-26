@@ -36,3 +36,15 @@ func TestLabelValue(t *testing.T) {
 	require.NoError(t, arr.UnmarshalJSON([]byte(`[1,2]`)))
 	assert.Equal(t, "", labelValue(&arr, "container"))
 }
+
+// A forecast event's kind is lower-cased; the resize and replica actions get the
+// Kubernetes kind name every other caller sends.
+func TestWorkloadKindName(t *testing.T) {
+	for in, want := range map[string]string{
+		"deployment": "Deployment", "statefulset": "StatefulSet", "daemonset": "DaemonSet",
+		"Deployment": "Deployment", "Rollout": "Rollout", "": "",
+	} {
+		assert.Equal(t, want, workloadKindName(&in), in)
+	}
+	assert.Equal(t, "", workloadKindName(nil))
+}

@@ -127,6 +127,19 @@ func TestFit_Breached(t *testing.T) {
 	assert.Equal(t, 30.0, res.CurrentPct)
 }
 
+// A workload whose data stopped (scaled to zero) is no longer breached on its last
+// day of data; one that idled overnight, leaving throttling hours empty, still is.
+func TestFit_StaleSeriesEndsTheForecast(t *testing.T) {
+	in := input(constant(48, 30), constant(72, 0.5))
+	in.Now = t0.Add(72 * time.Hour)
+	res := Fit(in)
+	assert.Equal(t, StatusInsufficientHistory, res.Status)
+	assert.Equal(t, "no data for this workload in the last 24 hours", res.Reason)
+
+	in.Now = t0.Add(60 * time.Hour)
+	assert.Equal(t, StatusBreached, Fit(in).Status)
+}
+
 func TestFit_BreachKeepsTheClimbThatLedToIt(t *testing.T) {
 	// 1 pp an hour from 10%, as the nbdemo-orders test ramp does, read at hour 70.
 	in := input(series(70, 0, func(h float64) float64 { return 10 + h }), constant(70, 0.2))

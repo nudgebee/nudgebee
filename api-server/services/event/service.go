@@ -735,7 +735,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 							"action_params": map[string]any{
 								"name":       r.SubjectOwner,
 								"namespace":  r.SubjectNamespace,
-								"kind":       r.SubjectOwnerKind,
+								"kind":       workloadKindName(r.SubjectOwnerKind),
 								"containers": []map[string]any{{"cpu_limit": size, "container_name": containerName}},
 							},
 						}),
@@ -759,7 +759,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 							"action_params": map[string]any{
 								"name":          r.SubjectOwner,
 								"namespace":     r.SubjectNamespace,
-								"kind":          r.SubjectOwnerKind,
+								"kind":          workloadKindName(r.SubjectOwnerKind),
 								"replica_count": increaseReplicas,
 							},
 						}),
@@ -859,7 +859,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 							"action_params": map[string]any{
 								"name":       r.SubjectOwner,
 								"namespace":  r.SubjectNamespace,
-								"kind":       r.SubjectOwnerKind,
+								"kind":       workloadKindName(r.SubjectOwnerKind),
 								"containers": []map[string]any{{"memory_limit": size, "container_name": containerName}},
 							},
 						}),
@@ -883,7 +883,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 							"action_params": map[string]any{
 								"name":          r.SubjectOwner,
 								"namespace":     r.SubjectNamespace,
-								"kind":          r.SubjectOwnerKind,
+								"kind":          workloadKindName(r.SubjectOwnerKind),
 								"replica_count": increaseReplicas,
 							},
 						}),
@@ -5451,6 +5451,22 @@ func isMemoryLimitResolvable(aggregationKey string) bool {
 		return true
 	}
 	return false
+}
+
+// workloadKindName is the Kubernetes kind name a workload action expects. Forecast
+// events store the kind lower-cased (it is part of their fingerprint); every other
+// caller of these actions sends "Deployment", "StatefulSet" or "DaemonSet".
+func workloadKindName(kind *string) string {
+	switch k := common.StrVal(kind); strings.ToLower(k) {
+	case "deployment":
+		return "Deployment"
+	case "statefulset":
+		return "StatefulSet"
+	case "daemonset":
+		return "DaemonSet"
+	default:
+		return k
+	}
 }
 
 // labelValue reads one string label from an event's labels JSON.
