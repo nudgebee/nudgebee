@@ -296,16 +296,25 @@ func TestMarkClosedOnItsOwn(t *testing.T) {
 
 func TestPlanningRequestText(t *testing.T) {
 	text := planningRequestText(events.PlanningRequest{EventId: "e1", Kind: planTurnReplan, BaseVersion: "pv-1",
-		Reasons: []string{"too risky", "wrong target"}, Note: "do not restart the database"}, nil)
+		Reasons: []string{"too risky", "wrong target"}, Note: "do not restart the database"}, nil, false)
 	assert.Contains(t, text, "plan_version pv-1")
 	assert.Contains(t, text, "Their reasons: too risky; wrong target.")
 	assert.Contains(t, text, "<<<\ndo not restart the database\n>>>")
 	assert.Contains(t, text, "In findings, say what you changed")
 
-	assert.Contains(t, planningRequestText(events.PlanningRequest{EventId: "e1", Kind: planTurnRecheck, BaseVersion: "pv-1"}, nil), "Re-check the remediation plan")
-	auto := planningRequestText(events.PlanningRequest{EventId: "e1", Kind: planTurnAuto}, at("2026-10-22 09:15"))
+	assert.Contains(t, planningRequestText(events.PlanningRequest{EventId: "e1", Kind: planTurnRecheck, BaseVersion: "pv-1"}, nil, false), "Re-check the remediation plan")
+	auto := planningRequestText(events.PlanningRequest{EventId: "e1", Kind: planTurnAuto}, at("2026-10-22 09:15"), false)
 	assert.Contains(t, auto, "Write the remediation plan for event e1")
 	assert.Contains(t, auto, "closed on its own at 2026-10-22 09:15 UTC")
+	assert.NotContains(t, auto, planningFiringText)
+
+	// A firing alert is told up front what propose_fix otherwise sends back once: offer a mitigation that buys time.
+	firing := planningRequestText(events.PlanningRequest{EventId: "e1", Kind: planTurnAuto}, nil, true)
+	assert.Contains(t, firing, "The alert is still firing. Besides the durable fix, offer a command that buys time now")
+	assert.Contains(t, firing, "Its first call may come back with that live state instead of storing the plan")
+	assert.NotContains(t, planningRequestText(events.PlanningRequest{EventId: "e1", Kind: planTurnAuto}, nil, false), planningFiringText)
+	// A closed alert says closed; the firing text cannot contradict it.
+	assert.NotContains(t, planningRequestText(events.PlanningRequest{EventId: "e1", Kind: planTurnAuto}, at("2026-10-22 09:15"), true), planningFiringText)
 }
 
 func TestSentenceOf(t *testing.T) {

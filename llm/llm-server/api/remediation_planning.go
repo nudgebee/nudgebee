@@ -800,7 +800,12 @@ func planningQuery(ctx *security.RequestContext, row events.PlanningRequest) (qu
 	if source, at, ok := investigationSource(ctx, row.AccountId, evidenceEvent); ok {
 		evidenceEvent, evidenceAt = source, at
 	}
-	return planningRequestText(row, incidentClosedAt(inc)) + "\n\n" + evidenceHeading(inc, row.EventId, evidenceEvent, evidenceAt) + "\n" + evidence, ""
+	firing := false
+	if inc != nil {
+		state, _ := alertStateOf(*inc)
+		firing = state == "firing"
+	}
+	return planningRequestText(row, incidentClosedAt(inc), firing) + "\n\n" + evidenceHeading(inc, row.EventId, evidenceEvent, evidenceAt) + "\n" + evidence, ""
 }
 
 // investigationSource is the event the investigation read for eventId was run for (an investigation is reused
@@ -852,14 +857,19 @@ func firedAtText(at *time.Time) string {
 }
 
 // planningStoreText says how the plan is stored: a plan described only in the answer is not, and propose_fix does
-// its own live read of what each command changes, so a live read that failed earlier does not stop it.
-const planningStoreText = "Store the plan by calling propose_fix: a plan described only in your answer is not stored, and the alert keeps its current plan. propose_fix reads the live state of what each command changes itself, so call it even when your own live reads failed. If you cannot write a plan, say why and do not describe one as written."
+// its own live read of what each command changes, so a live read that failed earlier does not stop it. That read can
+// send the first call back with what it found (targetStateRefusal): turns that stopped there stored no plan.
+const planningStoreText = "Store the plan by calling propose_fix: a plan described only in your answer is not stored, and the alert keeps its current plan. propose_fix reads the live state of what each command changes itself, so call it even when your own live reads failed. Its first call may come back with that live state instead of storing the plan: check each command against it and call propose_fix again, with the plan unchanged when it fits. If you cannot write a plan, say why and do not describe one as written."
+
+// planningFiringText says, up front, what firingPlanRefusal otherwise sends back on the first call: most automatic
+// plans for a firing alert were refused once for offering only changes in source.
+const planningFiringText = "The alert is still firing. Besides the durable fix, offer a command that buys time now when one exists: kind \"mitigation\", with what it does not fix in trade_off. A plan whose every step is a change in source, or that has only hardening and no actions, is sent back once while the alert fires."
 
 // planningRetryText opens a request's later attempt: the earlier one ended without a stored plan.
 const planningRetryText = "An earlier attempt at this request ended without a stored plan (no propose_fix call stored one). Call propose_fix this time, or say why no plan fits."
 
 // planningRequestText is the part of the turn's message that says what to write.
-func planningRequestText(row events.PlanningRequest, closedAt *time.Time) string {
+func planningRequestText(row events.PlanningRequest, closedAt *time.Time, firing bool) string {
 	var b strings.Builder
 	switch row.Kind {
 	case planTurnRecheck:
@@ -878,6 +888,8 @@ func planningRequestText(row events.PlanningRequest, closedAt *time.Time) string
 	}
 	if closedAt != nil {
 		fmt.Fprintf(&b, "\nThe alert closed on its own at %s UTC, before this plan: propose only steps that keep it from coming back.", closedAt.UTC().Format("2006-01-02 15:04"))
+	} else if firing {
+		b.WriteString("\n" + planningFiringText)
 	}
 	b.WriteString("\n" + planningStoreText)
 	if row.Attempts > 0 {
