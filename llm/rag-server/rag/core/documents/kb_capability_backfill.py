@@ -183,9 +183,9 @@ def _exclusive_run() -> Iterator[Optional[Callable[[], bool]]]:
 
 
 def is_enabled() -> bool:
-    """Opt-in, default off. Unlike module_retag/embedding_migration this makes
-    real LLM calls at real production KB volume — an operator greenlights it
-    per environment rather than inheriting it from a code default."""
+    """Default on; set RAG_KB_CAPABILITY_BACKFILL_ENABLED=false to opt out. Unlike
+    module_retag/embedding_migration this makes real LLM calls at real production
+    KB volume, so an operator can disable it per environment."""
     return os.environ.get("RAG_KB_CAPABILITY_BACKFILL_ENABLED", "true").strip().lower() == "true"
 
 
