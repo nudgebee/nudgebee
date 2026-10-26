@@ -128,6 +128,19 @@ describe('branding before /api/public/app_config resolves', () => {
     expect(branding.getBrandingAsset('k8sBee')).toBe('/branding/default/k8s-bee.svg');
   });
 
+  // The house kit names the home-panel mascots explicitly, so its URLs win over
+  // the defaults in BRANDING_ASSETS. It has drifted twice — first to deleted
+  // PNGs, then back to the retired bee SVGs — so pin it to the current Nubi art.
+  it('ships the current Nubi art for every home-panel mascot in the house kit', async () => {
+    const branding = loadBranding(require('../../public/branding/default/theme.json'));
+    await releaseConfig();
+
+    const srcOf = (asset) => (typeof asset === 'string' ? asset : asset.src);
+    expect(srcOf(branding.getBrandingAsset('troubleshootBee'))).toBe('/branding/default/nubi-investigating.svg');
+    expect(srcOf(branding.getBrandingAsset('optimizeBee'))).toBe('/branding/default/nubi-searching.svg');
+    expect(srcOf(branding.getBrandingAsset('securityBee'))).toBe('/branding/default/nubi-debugging.svg');
+  });
+
   it('reports loading with an empty title, then the brand title', async () => {
     const branding = loadBranding({ title: 'Acme' });
     const { result, rerender } = renderHook(() => branding.useBrandingConfig());
