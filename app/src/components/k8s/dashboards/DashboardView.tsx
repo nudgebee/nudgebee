@@ -817,7 +817,7 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
           </Tooltip>
           {/* Loads every panel first, including the ones below the fold, so the
               image is the whole dashboard rather than the part scrolled past. */}
-          <Tooltip title='Export the whole dashboard as a PNG'>
+          <Tooltip title='Export the whole dashboard as a PNG' placement='left' disableFlip>
             <Button
               tone='secondary'
               composition='icon-only'
