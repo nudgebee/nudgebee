@@ -156,7 +156,7 @@ export async function checkPanel(panel: Panel, accountId: string, now: number = 
   if (Object.keys(queries).length === 0) return { status: 'error', reason: 'The panel has no query.' };
 
   const start = now - CHECK_WINDOW_MS;
-  const instant = panel.type === 'stat' || panel.type === 'gauge' || panel.type === 'table';
+  const instant = panel.type === 'stat' || panel.type === 'gauge' || panel.type === 'table' || panel.type === 'pie';
   try {
     const response: any = await observability.metricsQuery({
       account_id: accountId,

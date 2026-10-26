@@ -5,6 +5,7 @@ import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import LinkIcon from '@mui/icons-material/Link';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import Chart from '@ui/Chart';
+import { SERIES_PALETTE } from '@shared/charts/chartPlugins';
 import { formatStat } from '@shared/charts/legendChips';
 import { Banner } from '@ui/Banner';
 import { Chip } from '@ui/Chip';
@@ -770,6 +771,112 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
             ];
           });
           return <CustomTable headers={headers} tableData={rows} />;
+        }
+        case 'pie': {
+          // One slice per series — its latest value, labelled as the table case does.
+          // Deliberately NOT consolidatedSeries: a pie's whole is the sum of its
+          // slices, so an "All accounts" total would count every account twice.
+          const byAccount = data.series.some((s) => s.accountLabel);
+          const slices = data.series
+            .map((s) => ({ label: byAccount ? metricLabel(s) : s.label, value: lastValue(s.values) }))
+            .filter((sl): sl is { label: string; value: number } => typeof sl.value === 'number' && sl.value > 0);
+          // A slice cannot be negative, so non-positive values are dropped — said
+          // out loud below, the way the cap warning names the series it left out.
+          const omitted = data.series.length - slices.length;
+          if (slices.length === 0) {
+            return (
+              <Box sx={{ height: '100%' }}>
+                <PanelState tone='empty' title='Nothing to chart' description='A pie needs positive values — check the query.' />
+              </Box>
+            );
+          }
+          // Pie + legend fill the panel: side by side on a wide panel (a square pie
+          // left, a scrolling list of name + value right), stacked on a narrow one —
+          // switched by a CONTAINER query so it follows the panel's own width, not
+          // the viewport's. The pie fills its square cell (DoughnutChart size='fill')
+          // so it grows with the panel instead of a fixed box in wasted space.
+          return (
+            <Box sx={{ height: '100%', containerType: 'inline-size', overflow: 'hidden' }}>
+              <Box
+                sx={{
+                  height: '100%',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: ds.space[2],
+                  p: ds.space[2],
+                  overflow: 'hidden',
+                  '@container (min-width: 320px)': { flexDirection: 'row', justifyContent: 'center' },
+                }}
+              >
+                <Box
+                  sx={{
+                    flexShrink: 0,
+                    alignSelf: 'center',
+                    aspectRatio: '1 / 1',
+                    // Cap the pie at a fixed square so it never balloons on a wide/tall
+                    // panel; it still shrinks on a small one. Stacked: width-bound.
+                    width: 'min(100%, 200px)',
+                    // Row: height-bound instead, so the pie stays constant regardless
+                    // of how wide the panel gets and the legend takes the rest.
+                    '@container (min-width: 320px)': { width: 'auto', height: 'min(100%, 200px)' },
+                  }}
+                >
+                  <Chart.Doughnut
+                    values={slices.map((sl) => sl.value)}
+                    labels={slices.map((sl) => sl.label)}
+                    colors={SERIES_PALETTE}
+                    cutout='0%'
+                    size='fill'
+                    displayLegend={false}
+                    id={`pie-${panel.id}`}
+                    formatValue={(raw: number) => formatStat(raw, panel.unit)}
+                  />
+                </Box>
+                <Box
+                  sx={{
+                    width: '100%',
+                    flex: 1,
+                    minHeight: 0,
+                    overflowY: 'auto',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: ds.space[1],
+                    '@container (min-width: 320px)': { width: 'auto', maxHeight: '100%', pl: ds.space[2] },
+                  }}
+                >
+                  {slices.map((sl, i) => (
+                    <Box key={`${sl.label}-${i}`} sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1], minWidth: 0 }}>
+                      <Box
+                        sx={{
+                          width: ds.space[2],
+                          height: ds.space[2],
+                          borderRadius: ds.radius.sm,
+                          background: SERIES_PALETTE[i % SERIES_PALETTE.length],
+                          flexShrink: 0,
+                        }}
+                      />
+                      <Typography
+                        variant='caption'
+                        sx={{ color: ds.gray[600], whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}
+                      >
+                        {sl.label}
+                      </Typography>
+                      <Typography variant='caption' sx={{ color: ds.gray[500], ml: 'auto', pl: ds.space[2], flexShrink: 0 }}>
+                        {formatStat(sl.value, panel.unit)}
+                      </Typography>
+                    </Box>
+                  ))}
+                  {omitted > 0 && (
+                    <Typography variant='caption' sx={{ color: ds.gray[500] }}>
+                      {`${omitted} non-positive ${omitted === 1 ? 'value' : 'values'} omitted`}
+                    </Typography>
+                  )}
+                </Box>
+              </Box>
+            </Box>
+          );
         }
         case 'bar':
           // Stacked, so on a multi-account panel each account is a segment and the

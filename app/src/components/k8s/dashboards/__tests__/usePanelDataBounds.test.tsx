@@ -91,7 +91,8 @@ describe('usePanelData bounds the answer', () => {
 
     expect(result.current.data?.series).toHaveLength(MAX_CHART_SERIES);
     // The busiest survive: values are 0..4797, so the top of the range.
-    expect(result.current.data?.series[0].label).toBe(`{pod="pod-${4798 - MAX_CHART_SERIES}"}`);
+    // One label collapses to its value — `pod-4778`, not `{pod="pod-4778"}`.
+    expect(result.current.data?.series[0].label).toBe(`pod-${4798 - MAX_CHART_SERIES}`);
     expect(result.current.warning).toContain(`${MAX_CHART_SERIES} busiest of 4798`);
     expect(result.current.error).toBeNull();
   });
@@ -196,7 +197,7 @@ describe('usePanelData keeps the lines a chart’s thresholds need', () => {
   it('re-ranks the fetched lines when a step changes, without refetching', async () => {
     const count = MAX_CHART_SERIES + 5;
     // pod-0 is the quietest line, so a peak ranking drops it first.
-    const QUIET = '{pod="pod-0"}';
+    const QUIET = 'pod-0';
     metricsQuery.mockResolvedValue(answerWith(count));
     const plain = metricsPanel('timeseries');
     const { result, rerender } = renderHook(

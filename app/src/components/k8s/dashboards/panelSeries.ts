@@ -61,6 +61,13 @@ export function seriesLabel(metric: Record<string, string> | undefined | null, l
   const name = metric?.__name__ || '';
   const entries = Object.entries(metric || {}).filter(([k]) => k !== '__name__');
   if (entries.length === 0) return name || queryKey || 'series';
+  // A series split by one label — `sum by (namespace)`, the shape behind a pie or a
+  // by-namespace line chart — reads as that label's value alone: `arc-systems`, not
+  // `{namespace="arc-systems"}`. The key is already plain from the query, and the
+  // braces only cost legend width. A metric name or a second label keeps the full
+  // `name{a="x", b="y"}` form, where the keys are what tell the series apart. A
+  // legend_format still wins over both (handled above).
+  if (!name && entries.length === 1 && entries[0][1]) return entries[0][1];
   const inner = entries.map(([k, v]) => `${k}="${v}"`).join(', ');
   return `${name}{${inner}}`;
 }

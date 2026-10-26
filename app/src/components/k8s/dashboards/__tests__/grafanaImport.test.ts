@@ -11,7 +11,7 @@ import nbClickhouse from '@components/dashboards/apps/nb_clickhouse.json';
 import otelNodejs from '@components/dashboards/apps/otel_nodejs.json';
 
 const SCOPE: PanelScope = { account_type: 'K8s', account_ids: [] };
-const VALID_TYPES = new Set(['timeseries', 'stat', 'gauge', 'table', 'bar', 'histogram', 'text']);
+const VALID_TYPES = new Set(['timeseries', 'stat', 'gauge', 'table', 'bar', 'pie', 'histogram', 'text']);
 
 describe('parseGrafanaJson', () => {
   it('accepts a bare dashboard model and the API-wrapped form', () => {
@@ -133,6 +133,20 @@ describe('convertGrafanaDashboard', () => {
       SCOPE
     );
     expect(result.definition.panels.map((p) => p.type)).toEqual(['histogram']);
+  });
+
+  it('imports a Grafana pie chart (modern and legacy plugin) as a pie instead of skipping it', () => {
+    const result = convertGrafanaDashboard(
+      {
+        title: 'pies',
+        panels: [
+          { id: 1, type: 'piechart', title: 'by namespace', targets: [{ refId: 'A', expr: 'sum by (namespace) (up)' }] },
+          { id: 2, type: 'grafana-piechart-panel', title: 'legacy pie', targets: [{ refId: 'A', expr: 'up' }] },
+        ],
+      },
+      SCOPE
+    );
+    expect(result.definition.panels.map((p) => p.type)).toEqual(['pie', 'pie']);
   });
 
   it('warns about variables nothing on this page can fill', () => {

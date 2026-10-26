@@ -299,6 +299,18 @@ describe('seriesLabel', () => {
     expect(seriesLabel({ __name__: 'up' }, undefined, 'A')).toBe('up');
   });
 
+  it('collapses a single aggregated label to its value', () => {
+    // `sum by (namespace)` strips __name__ and leaves one label; the value alone is
+    // what a legend or pie slice should read, not `{namespace="arc-systems"}`.
+    expect(seriesLabel({ namespace: 'arc-systems' }, undefined, 'A')).toBe('arc-systems');
+    expect(seriesLabel({ phase: 'Running' }, undefined, 'A')).toBe('Running');
+    // A metric name present, or a second label, keeps the full disambiguating form.
+    expect(seriesLabel({ __name__: 'kube_pod_info', namespace: 'argocd' }, undefined, 'A')).toBe('kube_pod_info{namespace="argocd"}');
+    expect(seriesLabel({ namespace: 'argocd', pod: 'api-7f' }, undefined, 'A')).toBe('{namespace="argocd", pod="api-7f"}');
+    // An empty value is not a name — keep the labelled form so the legend isn't blank.
+    expect(seriesLabel({ namespace: '' }, undefined, 'A')).toBe('{namespace=""}');
+  });
+
   it('renders a legend_format against the series labels', () => {
     expect(seriesLabel({ pod: 'api-7f', node: 'ip-10-0-0-1' }, '{{pod}} on {{node}}', 'A')).toBe('api-7f on ip-10-0-0-1');
     expect(seriesLabel({ pod: 'api-7f' }, '{{ pod }}', 'A')).toBe('api-7f');

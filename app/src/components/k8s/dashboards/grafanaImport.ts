@@ -38,6 +38,8 @@ const PANEL_TYPE_MAP: Record<string, PanelType> = {
   'table-old': 'table',
   barchart: 'bar',
   histogram: 'histogram',
+  piechart: 'pie',
+  'grafana-piechart-panel': 'pie',
   text: 'text',
 };
 

@@ -85,6 +85,12 @@ describe('convertNativeDashboard', () => {
     expect(result.definition.panels.map((p) => p.type)).toEqual(['gauge']);
   });
 
+  it('round-trips a pie panel rather than skipping it on re-import', () => {
+    const pie = { ...PANEL, id: 7, type: 'pie' };
+    const result = convertNativeDashboard({ title: 'Shares', definition: { panels: [pie] } }, SCOPE);
+    expect(result.definition.panels.map((p) => p.type)).toEqual(['pie']);
+  });
+
   it('keeps an entity panel’s query object', () => {
     // nudgebee / traces panels store a query document, not an expression — a
     // targets filter written for expressions alone would drop them all.

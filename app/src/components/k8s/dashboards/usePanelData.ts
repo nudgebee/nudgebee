@@ -532,7 +532,7 @@ export function usePanelData({
     // A stat, gauge or table shows one value per series, so a single instant
     // sample is the whole answer. A table used to run the range query and keep
     // the last point — a 24h increase recomputed at every step, then thrown away.
-    const singleValue = panel.type === 'stat' || panel.type === 'gauge' || panel.type === 'table';
+    const singleValue = panel.type === 'stat' || panel.type === 'gauge' || panel.type === 'table' || panel.type === 'pie';
     // Sized to the panel, not left to the provider: the agent's default is 60s
     // whatever the range, which made Last 7 days 10k points per series.
     const step = panelStep(startTime, endTime);

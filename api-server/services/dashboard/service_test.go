@@ -71,6 +71,22 @@ func TestValidateDefinition_RejectsHistogramOnTableDatasource(t *testing.T) {
 	assert.Contains(t, err.Error(), "renders a table")
 }
 
+func TestValidateDefinition_AcceptsPieOnMetrics(t *testing.T) {
+	pie := timeseriesPanel()
+	pie.Type = VizPie
+	require.NoError(t, ValidateDefinition(Definition{Panels: []Panel{pie}}))
+}
+
+// A pie draws one slice per series, and only metrics produces series — every
+// other datasource is forced to a table, so a pie there is rejected, the same
+// rule the other chart types hit.
+func TestValidateDefinition_RejectsPieOnTableDatasource(t *testing.T) {
+	pie := timeseriesPanel()
+	pie.Type = VizPie
+	pie.Datasource = DatasourceTraces
+	require.ErrorContains(t, ValidateDefinition(Definition{Panels: []Panel{pie}}), "renders a table")
+}
+
 // Two panels on two accounts in one dashboard is the reason accounts live on
 // the panel rather than the dashboard.
 func TestValidateDefinition_AcceptsPanelsOnDifferentAccounts(t *testing.T) {

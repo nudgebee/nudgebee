@@ -10,7 +10,7 @@
  * accounts only.
  */
 export type PanelDatasource = 'metrics' | 'logs' | 'traces' | 'nudgebee' | 'redis' | 'rabbitmq' | 'postgresql' | 'kubectl';
-export type PanelType = 'timeseries' | 'stat' | 'gauge' | 'table' | 'bar' | 'histogram' | 'text';
+export type PanelType = 'timeseries' | 'stat' | 'gauge' | 'table' | 'bar' | 'pie' | 'histogram' | 'text';
 
 export const COMMAND_DATASOURCES: PanelDatasource[] = ['redis', 'rabbitmq', 'postgresql', 'kubectl'];
 
