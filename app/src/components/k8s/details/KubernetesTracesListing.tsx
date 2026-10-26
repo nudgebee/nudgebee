@@ -19,7 +19,7 @@ import {
 } from 'src/utils/common';
 import DateTime from '@shared/format/Datetime';
 import { Box, Typography } from '@mui/material';
-import apiTrace from '@api1/kubernetes/trace';
+import apiTrace, { toFilterList } from '@api1/kubernetes/trace';
 import observability from '@api1/observability';
 import k8sApi from '@api1/kubernetes';
 import SafeIcon from '@shared/icons/SafeIcon';
@@ -209,44 +209,32 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
   const selectedK8sAccount = (router.query?.KubernetesDetails as string) || (router.query?.accountId as string) || accountId;
   const { selectedCluster } = useData();
 
-  const getInitialWorkload = () => {
+  const getInitialWorkload = (): string[] => {
     if (workloadName) {
       return [workloadName];
     }
-    if (router?.query?.workloadName) {
-      return [router.query.workloadName];
-    }
-    return [];
+    return toFilterList(router?.query?.workloadName);
   };
 
-  const getInitialDestinationWorkload = () => {
+  const getInitialDestinationWorkload = (): string[] => {
     if (destinationWorkload) {
       return [destinationWorkload];
     }
-    if (router?.query?.destinationWorkload) {
-      return [router.query.destinationWorkload];
-    }
-    return [];
+    return toFilterList(router?.query?.destinationWorkload);
   };
 
-  const getInitialNamespace = () => {
+  const getInitialNamespace = (): string[] => {
     if (namespace) {
       return [namespace];
     }
-    if (router?.query?.namespaceName) {
-      return [router.query.namespaceName];
-    }
-    return [];
+    return toFilterList(router?.query?.namespaceName);
   };
 
-  const getInitialDestinationNamespace = () => {
+  const getInitialDestinationNamespace = (): string[] => {
     if (destinationNamespace) {
       return [destinationNamespace];
     }
-    if (router?.query?.destinationNamespace) {
-      return [router.query.destinationNamespace];
-    }
-    return [];
+    return toFilterList(router?.query?.destinationNamespace);
   };
 
   const getInitialDuration = () => {
@@ -296,13 +284,16 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
   const [namespaces, setNamespaces] = useState<string[]>([]);
   const [allWorkloads, _setAllWorkloads] = useState<string[]>([]);
   const [workloads, setWorkloads] = useState<string[]>([]);
-  const [selectedNamespace, setSelectedNamespace] = useState<any>(getInitialNamespace());
-  const [selectedWorkload, setSelectedWorkload] = useState<any>(getInitialWorkload());
+  // `string | string[]`, not `any`: the multi-select dropdowns set a list and the
+  // single-select `Service` picker sets a bare string. Typed as `any`, that mismatch
+  // reached the API layer unchecked and `_in` was sent a scalar (#41493).
+  const [selectedNamespace, setSelectedNamespace] = useState<string | string[]>(getInitialNamespace());
+  const [selectedWorkload, setSelectedWorkload] = useState<string | string[]>(getInitialWorkload());
   const [destinationNamespaces, setDestinationNamespaces] = useState<string[]>([]);
   const [destinationAllWorkloads, _setDestinationAllWorkloads] = useState<string[]>([]);
   const [destinationWorkloads, setDestinationWorkloads] = useState<string[]>([]);
-  const [destinationSelectedNamespace, setDestinationSelectedNamespace] = useState<any>(getInitialDestinationNamespace());
-  const [destinationSelectedWorkload, setDestinationSelectedWorkload] = useState<any>(getInitialDestinationWorkload());
+  const [destinationSelectedNamespace, setDestinationSelectedNamespace] = useState<string | string[]>(getInitialDestinationNamespace());
+  const [destinationSelectedWorkload, setDestinationSelectedWorkload] = useState<string | string[]>(getInitialDestinationWorkload());
   const [httpStatusCodes, setHttpStatusCodes] = useState<string[]>([]);
   const [selectedHttpStatus, setSelectedHttpStatus] = useState<string | string[]>(httpStatus);
   const [httpSpans, setHttpSpans] = useState<string[]>([]);
