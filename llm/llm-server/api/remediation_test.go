@@ -2622,13 +2622,24 @@ func TestSendToAlertThreadBusyDeadline(t *testing.T) {
 	assert.True(t, c.count() >= 4 && c.count() <= 9, "tries: %d", c.count())
 }
 
+// Every check of one run edits the same thread message, the first check's and the soak re-check's alike.
+func TestFollowupReportIsOneMessagePerRun(t *testing.T) {
+	first := followupReport(followupRun{Id: "r1", MessageId: "m1"}, "check 1")
+	again := followupReport(followupRun{Id: "r1", MessageId: "m2"}, "check 2")
+	assert.Equal(t, first.Key, again.Key)
+	assert.Equal(t, "followup:r1", again.Key)
+	assert.True(t, again.Edit, "posted the first time, edited after")
+	assert.NotEqual(t, first.Key, followupReport(followupRun{Id: "r2", MessageId: "m3"}, "x").Key)
+}
+
 // A settled follow-up check goes to the thread as the agent's report, or as why there was none; a superseded
 // one does not, the newer run's check does.
 func TestFollowupPostText(t *testing.T) {
 	swap(t, &config.Config.RemediationFollowupMaxRuns, 3)
+	swap(t, &followupNow, func() time.Time { return time.Date(2026, 10, 25, 16, 4, 0, 0, time.UTC) })
 	run := followupRun{Data: []byte(`{"step":"1:apply"}`)}
 	report := "**Status:** fixed.\n**Next:** nothing to run."
-	assert.Equal(t, "### Follow-up check, after step 2\n"+report, followupPostText(run, map[string]any{"outcome": followupReported, "summary": report}, ""))
+	assert.Equal(t, "### Follow-up check, after step 2 · 16:04 UTC\n"+report, followupPostText(run, map[string]any{"outcome": followupReported, "summary": report}, ""))
 	assert.Contains(t, followupPostText(run, map[string]any{"outcome": followupReported, "summary": report}, "2026-10-21T10:16:22.5+00:00"),
 		"**Re-check:** NudgeBee looks again at 10:16 UTC.")
 	assert.Contains(t, followupPostText(followupRun{Data: []byte(`{"step":"0:rollback"}`)}, map[string]any{"outcome": followupReported, "summary": report}, ""),

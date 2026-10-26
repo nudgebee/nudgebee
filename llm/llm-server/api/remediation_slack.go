@@ -399,11 +399,17 @@ func postFollowupToThread(run followupRun, end map[string]any, recheckAt string)
 		syncAlertThread(ctx, run.AccountId, run.EventId)
 		return
 	}
-	report := threadPost{Text: text, Key: "followup:" + run.Id + ":" + run.MessageId}
+	report := followupReport(run, text)
 	inAlertThreadsBackground(ctx, run.AccountId, run.EventId, func(view alertThreadView) []threadPost {
 		return []threadPost{report}
 	}, false)
 	syncAlertThread(ctx, run.AccountId, run.EventId)
+}
+
+// followupReport is a check's report as a thread post: one message per run, edited by each check of it (the soak
+// re-check posted a second report under the same title).
+func followupReport(run followupRun, text string) threadPost {
+	return threadPost{Text: text, Key: "followup:" + run.Id, Edit: true}
 }
 
 // followupPostText is a settled follow-up check as a thread message, in markdown; "" for one not posted.
@@ -446,5 +452,8 @@ func followupPostText(run followupRun, end map[string]any, recheckAt string) str
 			after = fmt.Sprintf("after undoing step %d", index+1)
 		}
 	}
-	return "### Follow-up check, " + after + "\n" + body
+	return "### Follow-up check, " + after + " · " + followupNow().UTC().Format("15:04") + " UTC\n" + body
 }
+
+// followupNow is when a check's report is written; a var so tests can fix it.
+var followupNow = time.Now

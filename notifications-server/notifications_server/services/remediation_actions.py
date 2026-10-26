@@ -404,7 +404,7 @@ def _open_modal(service, click: Click, view: dict) -> None:
         _tell(service, click.channel, click.team, click.user, click.thread_ts, CANT_READ)
 
 
-def _note_block(label="Add a note (optional)", hint=None) -> dict:
+def _note_block(label="Add a note", hint=None) -> dict:
     block = {
         "type": "input",
         "block_id": "note",

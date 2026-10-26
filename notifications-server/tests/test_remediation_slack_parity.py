@@ -904,6 +904,40 @@ def test_an_alert_thread_followup_is_not_taken_for_an_event_analysis_one(monkeyp
     assert any(u.get("event_analysis_followup") for u in updates) is marked
 
 
+def test_the_approval_question_bolds_in_slacks_own_mrkdwn(monkeypatch):
+    """The card showed "**cluster name**" with its asterisks, since the question went out as
+    llm-server markdown."""
+    from notifications_server.services import events as events_module
+
+    updates = []
+    monkeypatch.setattr(events_module.event_cache, "update_event_entry", lambda ts, **kw: updates.append(kw))
+    monkeypatch.setattr(events_module.slack_progress, "stop_progress_stream", lambda *a: None)
+    service = Events.__new__(Events)
+    service.common_service = _FollowupCommon()
+    question = "Approve this change on Kubernetes cluster **k8s-test** (apply)?"
+    payload = SimpleNamespace(
+        conversation_id="event-" + FP,
+        session_id="event-" + FP,
+        response=json.dumps(
+            {"question": question, "confirmationKey": "run_step:pv:1:apply", "agent_id": "a", "message_id": "m"}
+        ),
+    )
+    Events.handle_followup_response(service, payload, {"alert_thread": True}, CHANNEL, THREAD, TEAM)
+    [blocks] = service.common_service.posted
+    assert blocks[0]["text"]["text"] == "Approve this change on Kubernetes cluster *k8s-test* (apply)?"
+    # The answered card quotes the question from the cache.
+    assert [u["followup_question"] for u in updates if "followup_question" in u] == [blocks[0]["text"]["text"]]
+
+
+def test_the_approval_modal_labels_its_note_once():
+    """Slack adds "(optional)" to an optional input's label itself."""
+    click = SimpleNamespace(
+        channel=CHANNEL, thread_ts=THREAD, message_ts="9.4", team=TEAM, app_id="A1", token="t", main_fingerprint=FP
+    )
+    [note] = ra.answer_view(click, "yes")["blocks"]
+    assert note["optional"] is True and note["label"]["text"] == "Add a note"
+
+
 def test_an_answer_in_an_alert_thread_keeps_its_reply_ref(monkeypatch):
     sent = []
     fake = SimpleNamespace(

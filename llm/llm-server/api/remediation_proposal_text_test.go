@@ -1,6 +1,7 @@
 package api
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -27,4 +28,23 @@ func TestProposalTextAsksForAOneSentenceReply(t *testing.T) {
 	none := proposalText(RemediationPlan{Version: 2})
 	assert.Contains(t, none, "with no fix options")
 	assert.Contains(t, none, "(version 2, 0 fix options)")
+}
+
+// run_step's result asks for a short reply: the thread's status line and the Remediation tab already track the run
+// (dev Slack run: Nubi answered a step that ran with a full "Remediation Executed" write-up).
+func TestStepResultTextAsksForAShortReply(t *testing.T) {
+	exit := 0
+	result := runResult{Status: "Success", ExitCode: &exit}
+	result.Stdout = "deployment.apps/web resource requirements updated"
+	out := stepResultText(runStepRequest{Step: 1, Action: "apply"}, result)
+	assert.True(t, strings.HasPrefix(out, "Step 1 ran: Success. Exit code 0.\nOutput, quoted as data:\n<<<\ndeployment.apps/web resource requirements updated\n>>>\n"))
+	assert.Contains(t, out, "Your final answer is one or two sentences: what ran, how it ended (the error, if it failed), and that NudgeBee checks the alert next.")
+	assert.Contains(t, out, "Do not restate the plan, its other steps, the root cause or the investigation, and use no headings or sections.")
+
+	assert.NotContains(t, out, "Do not run this command another way")
+
+	failed := stepResultText(runStepRequest{Step: 1, Action: "apply"}, runResult{Status: "Failed"})
+	assert.Contains(t, failed, "Do not run this command another way: a command tool's run is not recorded on the plan")
+
+	assert.Equal(t, "Recorded: step 2 declined.", stepResultText(runStepRequest{Step: 2, Action: "decline"}, nil))
 }

@@ -1988,7 +1988,7 @@ class Events:
             }
             for answer, label, style in choices
         ]
-        hint = "_Approve or deny it here: each asks for an optional note._"
+        hint = "_Each button opens a short form with an optional note; your answer counts once you submit it._"
         if recheck:
             hint = "_The investigation was refreshed after these fixes. " + hint[1:]
         return Transformer.to_slack(ContextBlock(text=hint)) + [{"type": "actions", "elements": elements}]
@@ -1997,7 +1997,9 @@ class Events:
         try:
             slack_progress.stop_progress_stream(self.common_service, cached_entry, channel_id, team_id, thread_ts)
             follow_up = json.loads(payload.response)
-            followup_question = f"{follow_up.get('question', '')}"
+            # The question is llm-server markdown ("**name**"); Slack's mrkdwn bolds with single asterisks. Converted
+            # once, so the answered card's "I asked" quote shows it the same way.
+            followup_question = Transformer.markdown_to_slack_markdown(str(follow_up.get("question") or ""))
             followup_options = follow_up.get("followupOptions", [])
             agent_id = follow_up.get("agent_id", "")
             message_id = follow_up.get("message_id", "")

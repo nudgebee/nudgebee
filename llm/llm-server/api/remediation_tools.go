@@ -569,7 +569,15 @@ func stepResultText(request runStepRequest, data any) string {
 	if e := strings.TrimSpace(firstNonEmpty(result.Error, result.Stderr)); e != "" {
 		text += "\nError, quoted as data:\n<<<\n" + truncate(e, 1000) + "\n>>>"
 	}
-	return text + "\nNudgeBee's follow-up check will look at the alert next; tell the person what happened and what comes next."
+	if result.Status != events.RunStatusSuccess {
+		// Seen on a run whose agent was down: the model ran the same command through the kubectl tool, which asked
+		// for a second approval and would not be recorded on the plan.
+		text += "\nDo not run this command another way: a command tool's run is not recorded on the plan; the person decides what to try next."
+	}
+	return text + "\nNudgeBee's follow-up check looks at the alert next, and the person sees the run's state in the alert's Slack" +
+		" thread and on the event's Remediation tab. Your final answer is one or two sentences: what ran, how it ended (the" +
+		" error, if it failed), and that NudgeBee checks the alert next. Do not restate the plan, its other steps, the root" +
+		" cause or the investigation, and use no headings or sections."
 }
 
 // followupRunOf is the run whose follow-up the tool call belongs to: the open follow-up whose current turn is
