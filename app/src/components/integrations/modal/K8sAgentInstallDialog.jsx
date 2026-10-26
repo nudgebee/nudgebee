@@ -98,6 +98,7 @@ const K8sAgentInstallDialog = ({ open, onClose, account }) => {
       setAgentPhase('checking');
       setConfirmed(false);
       setKeyGenerationFailed(false);
+      setIsLoading(false);
       return undefined;
     }
     if (!confirmed) {
