@@ -47,7 +47,17 @@ func TestPickRefusal(t *testing.T) {
 	}{
 		{"run option", ok, "event-fp-main", nil, 0, ""},
 		{"no session named", ok, "", nil, 0, ""},
-		{"code fix as a PR", remediationPickRequest{PlanVersion: "v-hash", Option: 2, Kind: pickKindPR}, "", nil, 0, ""},
+		{"code fix as a PR, its repository the workload's", remediationPickRequest{PlanVersion: "v-hash", Option: 2, Kind: pickKindPR}, "", func(f *pickFacts) {
+			f.Repos = []optionRepo{{Option: 2, Repo: "https://github.com/acme/api", Known: repoKnownWorkload}}
+		}, 0, ""},
+		{"a connected repository is confirmed by the person", remediationPickRequest{PlanVersion: "v-hash", Option: 2, Kind: pickKindPR}, "", func(f *pickFacts) {
+			f.Repos = []optionRepo{{Option: 2, Repo: "https://github.com/acme/api", Known: repoKnownIntegration}}
+		}, http.StatusConflict, "pick the repository"},
+		{"a repository the person picked", remediationPickRequest{PlanVersion: "v-hash", Option: 2, Kind: pickKindPR, Repo: "acme/api"}, "", func(f *pickFacts) {
+			f.PickedRepo = "https://github.com/acme/api"
+		}, 0, ""},
+		{"a picked repository that is not connected", remediationPickRequest{PlanVersion: "v-hash", Option: 2, Kind: pickKindPR, Repo: "acme/elsewhere"}, "", nil,
+			http.StatusBadRequest, "not one of this account's connected repositories"},
 		{"no plan", ok, "", func(f *pickFacts) { f.HasPlan = false }, http.StatusConflict, "no fixes"},
 		{"fixes replaced since seen", remediationPickRequest{PlanVersion: "old", Option: 1, Kind: pickKindRun}, "", nil, http.StatusConflict, "replaced"},
 		{"no plan version", remediationPickRequest{Option: 1, Kind: pickKindRun}, "", nil, http.StatusConflict, "replaced"},
@@ -77,11 +87,11 @@ func TestPickRefusal(t *testing.T) {
 // Every surface sends the same words for a pick: the tab's own (remediationLoop.js goWith / prRequestText).
 func TestPickQueryText(t *testing.T) {
 	plan := pickPlan().Plan
-	assert.Equal(t, "Go with option 1: Raise the memory limit.", pickQueryText(remediationPickRequest{Option: 1, Kind: pickKindRun}, plan))
+	assert.Equal(t, "Go with option 1: Raise the memory limit.", pickQueryText(remediationPickRequest{Option: 1, Kind: pickKindRun}, plan, ""))
 	assert.Equal(t, "Raise a PR for option 2 of plan v3: Bound the cache in cache.go (repo acme/api). Root cause: The API pod runs out of memory. "+prReplyAsk,
-		pickQueryText(remediationPickRequest{Option: 2, Kind: pickKindPR}, plan))
+		pickQueryText(remediationPickRequest{Option: 2, Kind: pickKindPR}, plan, "acme/api"))
 	plan.Version, plan.RootCause = 0, ""
-	assert.Equal(t, "Raise a PR for option 2: Bound the cache in cache.go (repo acme/api). "+prReplyAsk, pickQueryText(remediationPickRequest{Option: 2, Kind: pickKindPR}, plan))
+	assert.Equal(t, "Raise a PR for option 2: Bound the cache in cache.go (repo acme/api). "+prReplyAsk, pickQueryText(remediationPickRequest{Option: 2, Kind: pickKindPR}, plan, "acme/api"))
 }
 
 func TestFirstSentence(t *testing.T) {

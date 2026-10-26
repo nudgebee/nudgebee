@@ -34,8 +34,11 @@ type remediationPickRequest struct {
 	PlanVersion string `json:"plan_version"`
 	// Option is the option picked, from 1.
 	Option int `json:"option"`
-	// Kind is how it is carried out: run (Nubi runs it after an approval) or pr (a code fix raised as a pull request).
+	// Kind is how it is carried out: run (Nubi runs it after an approval) or pr (a change raised as a pull request).
 	Kind string `json:"kind"`
+	// Repo is the repository a person picked for a pr: one of the account's connected repositories. Needed when the
+	// option's repository is not known for the workload (optionRepos); ignored when it is.
+	Repo string `json:"repo,omitempty"`
 }
 
 // Pick kinds.
@@ -55,6 +58,10 @@ type pickFacts struct {
 	RunInFlight bool
 	// WaitingSince is when the newest approval still waiting in the alert's conversation was asked; nil for none.
 	WaitingSince *time.Time
+	// Repos says how each option that changes a repository is raised; PickedRepo is the connected repository the
+	// person's pick names ("" for none, or one that is not connected).
+	Repos      []optionRepo
+	PickedRepo string
 }
 
 // readPickFacts reads the facts for a pick of eventId's fixes on accountId. found is false when the event is not one
@@ -76,6 +83,9 @@ var readPickFacts = func(ctx *security.RequestContext, accountId, eventId string
 	alert := firstNonEmpty(planInfo.Fingerprint, planEvent)
 	facts.PlanEventId, facts.Session = planEvent, events.SessionIdPrefixEvent+alert
 	facts.Plan, facts.HasPlan = loadSavedPlan(ctx, accountId, planEvent)
+	if facts.HasPlan {
+		facts.Repos, _ = planOptionRepos(ctx, accountId, planEvent, facts.Plan.Plan)
+	}
 	readCtx, cancel := context.WithTimeout(requestGoContext(ctx), decisionDBTimeout)
 	defer cancel()
 	if facts.RunInFlight, err = events.AlertRunInFlight(readCtx, dbManager.Db, accountId, alert); err != nil {
@@ -113,7 +123,13 @@ func pickRefusal(pick remediationPickRequest, sessionId string, facts pickFacts)
 		}
 	case pickKindPR:
 		if pickMode(action) != pickKindPR {
-			return http.StatusConflict, fmt.Sprintf("remediation: option %d is not a code fix with a repository, so no pull request can be raised for it", pick.Option)
+			return http.StatusConflict, fmt.Sprintf("remediation: option %d is not a change in a repository, so no pull request can be raised for it", pick.Option)
+		}
+		if prRepoOf(pick, facts) == "" {
+			if strings.TrimSpace(pick.Repo) != "" {
+				return http.StatusBadRequest, "remediation: that repository is not one of this account's connected repositories"
+			}
+			return http.StatusConflict, fmt.Sprintf("remediation: pick the repository to raise option %d's pull request in", pick.Option)
 		}
 	default:
 		return http.StatusBadRequest, "remediation: a pick is run or pr"
@@ -128,17 +144,33 @@ func pickRefusal(pick remediationPickRequest, sessionId string, facts pickFacts)
 	return 0, ""
 }
 
-// pickMode is how an option is carried out, as the tab shows it (remediationLoop.js optionMode): pr for a code change
-// with a repository, manual for any other change a person makes, run otherwise.
+// prWheres are the kinds of change made in a repository, raised as a pull request.
+var prWheres = map[string]bool{"code": true, "deployment_source": true, "infrastructure": true, "dependency": true}
+
+// pickMode is how an option is carried out, as the tab shows it (remediationLoop.js optionMode): pr for a change in a
+// repository (its repository known, confirmed or picked: optionRepos), manual for any other change a person makes,
+// run otherwise.
 func pickMode(a RemediationAction) string {
 	rc := a.RequiredChange
 	if rc == nil || strings.TrimSpace(rc.Change) == "" {
 		return pickKindRun
 	}
-	if strings.EqualFold(strings.TrimSpace(rc.Where), "code") && strings.TrimSpace(rc.Repo) != "" {
+	if repoChange(a) {
 		return pickKindPR
 	}
 	return "manual"
+}
+
+// prRepoOf is the repository a pr pick is raised in: the option's when the workload is known to come from it, else
+// the connected repository the person picked; "" when neither.
+func prRepoOf(pick remediationPickRequest, facts pickFacts) string {
+	if r := optionRepoOf(facts.Repos, pick.Option); r.Known == repoKnownWorkload {
+		return r.Repo
+	}
+	if strings.TrimSpace(pick.Repo) != "" {
+		return facts.PickedRepo
+	}
+	return ""
 }
 
 // prReplyAsk ends a Raise a PR pick: seen on dev, the reply opened with the whole diff and the PR's link was its last
@@ -146,7 +178,7 @@ func pickMode(a RemediationAction) string {
 const prReplyAsk = "Reply with the pull request's link first and one line on what it changes; the diff is in the PR."
 
 // pickQueryText is the message a pick sends into the alert's conversation: the same words on every surface.
-func pickQueryText(pick remediationPickRequest, plan RemediationPlan) string {
+func pickQueryText(pick remediationPickRequest, plan RemediationPlan, repo string) string {
 	a := plan.Actions[pick.Option-1]
 	if pick.Kind == pickKindPR {
 		rc := a.RequiredChange
@@ -158,7 +190,7 @@ func pickQueryText(pick remediationPickRequest, plan RemediationPlan) string {
 		if t := strings.TrimSpace(rc.Target); t != "" {
 			text += " in " + t
 		}
-		text += " (repo " + strings.TrimSpace(rc.Repo) + ")."
+		text += " (repo " + strings.TrimSpace(repo) + ")."
 		if cause := firstSentence(plan.RootCause); cause != "" {
 			text += " Root cause: " + cause
 		}
@@ -238,6 +270,9 @@ func applyRemediationPick(c *gin.Context, ctx *security.RequestContext, request 
 	if !found {
 		return fail(http.StatusNotFound, "remediation: event not found")
 	}
+	if pick.Kind == pickKindPR && strings.TrimSpace(pick.Repo) != "" {
+		facts.PickedRepo = integrationRepo(ctx, request.AccountId, pick.Repo)
+	}
 	if code, message := pickRefusal(*pick, strings.TrimSpace(request.SessionId), facts); code != 0 {
 		return fail(code, message)
 	}
@@ -252,7 +287,7 @@ func applyRemediationPick(c *gin.Context, ctx *security.RequestContext, request 
 			return fail(http.StatusBadRequest, "remediation: a pick goes to the alert's own conversation")
 		}
 	}
-	request.Query = pickQueryText(*pick, facts.Plan.Plan)
+	request.Query = pickQueryText(*pick, facts.Plan.Plan, prRepoOf(*pick, facts))
 	request.SessionId = facts.Session
 	request.Config.EventId = facts.PlanEventId
 	ctx.GetLogger().Info("remediation: pick accepted", "event_id", facts.PlanEventId, "option", pick.Option, "kind", pick.Kind, "plan_version", facts.Plan.Version)

@@ -65,6 +65,11 @@ type remediationLoopState struct {
 	FiringsTotal int          `json:"firings_total"`
 	// RefireAfterRun is set when the alert fired after the newest run's check ended (its follow-up, or its verdict).
 	RefireAfterRun *refireAfterRun `json:"refire_after_run,omitempty"`
+	// OptionRepos says how each option that changes a repository is raised (Raise a PR in one click, or after the
+	// person confirms or picks the repository); WorkloadResourceId is the workload's inventory row, where the tab saves
+	// a code repository the person picks (as the Workloads page's Git dialog does).
+	OptionRepos        []optionRepo `json:"option_repos,omitempty"`
+	WorkloadResourceId string       `json:"workload_resource_id,omitempty"`
 }
 
 // loopFiringsShown bounds loop.firings; loopFirstEpisodeShown is how many of the first episode's oldest firings it
@@ -196,6 +201,15 @@ func remediationGetBody(ctx *security.RequestContext, accountId, eventId string,
 		denials, read := deniedApprovals(ctx, in)
 		denied <- deniedRead{denials, read}
 	}()
+	type reposRead struct {
+		repos    []optionRepo
+		resource string
+	}
+	repos := make(chan reposRead, 1)
+	go func() {
+		optionRepos, resource := planOptionRepos(ctx, accountId, planEventId, plan)
+		repos <- reposRead{optionRepos, resource}
+	}()
 	loop.PrimaryEventId = primaryEventOf(ctx, in)
 	if loop.PrimaryEventId != "" && loop.PrimaryEventId != eventId {
 		loop.PrimaryFingerprint = eventFingerprintOf(ctx, accountId, loop.PrimaryEventId)
@@ -205,6 +219,8 @@ func remediationGetBody(ctx *security.RequestContext, accountId, eventId string,
 	loop.PendingApprovals, loop.PendingApprovalsUnread = p.approvals, !p.read
 	d := <-denied
 	loop.DeniedApprovals, loop.DeniedApprovalsUnread = d.denials, !d.read
+	r := <-repos
+	loop.OptionRepos, loop.WorkloadResourceId = r.repos, r.resource
 	return remediationGetResponse{RemediationPlan: plan, Loop: loop}
 }
 

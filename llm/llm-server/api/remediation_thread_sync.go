@@ -526,7 +526,11 @@ func optionsPost(view alertThreadView) threadPost {
 		}
 		section := threadSection{Text: optionText(a, i, runsAfter)}
 		if picking {
-			button := optionButton(a, i)
+			var repos []optionRepo
+			if view.Loop != nil {
+				repos = view.Loop.OptionRepos
+			}
+			button := optionButton(a, i, repos, view.PlanEventId)
 			section.Button = &button
 		}
 		post.Sections = append(post.Sections, section)
@@ -540,13 +544,19 @@ func optionsPost(view alertThreadView) threadPost {
 }
 
 // optionButton is the button beside an option, by how it is carried out: Use this fix (NudgeBee runs it), Raise a PR
-// (a code change in a known repo), Mark done (a change a person makes).
-func optionButton(a RemediationAction, index int) threadButton {
+// (a change in a repository the workload is known to come from), Choose the repo (a change in a repository the
+// person confirms or picks on the tab, which lists the connected ones), Mark done (a change a person makes).
+func optionButton(a RemediationAction, index int, repos []optionRepo, eventId string) threadButton {
 	switch pickMode(a) {
 	case pickKindRun:
 		return threadButton{Kind: "pick", Label: "Use this fix", Option: index + 1, Style: "primary"}
 	case pickKindPR:
-		return threadButton{Kind: "pr", Label: "Raise a PR", Option: index + 1}
+		if optionRepoOf(repos, index+1).Known == repoKnownWorkload {
+			return threadButton{Kind: "pr", Label: "Raise a PR", Option: index + 1}
+		}
+		if url := eventPageUrl(eventId); url != "" {
+			return threadButton{Kind: "link", Label: "Choose the repo in NudgeBee", Option: index + 1, Url: url}
+		}
 	}
 	return threadButton{Kind: "manual", Label: "Mark done", Option: index + 1}
 }

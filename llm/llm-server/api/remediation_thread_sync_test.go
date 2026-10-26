@@ -36,7 +36,8 @@ func threadPlan() RemediationPlan {
 
 func threadView() alertThreadView {
 	return alertThreadView{TenantId: "t", AccountId: "a", PlanEventId: "e", MainFingerprint: "fp-main", Threads: []string{"fp-main"},
-		Seq: 5, HasPlan: true, PlanVersion: "pv-2", Plan: threadPlan(), Loop: &remediationLoopState{PlanStatus: PlanStatusReady},
+		Seq: 5, HasPlan: true, PlanVersion: "pv-2", Plan: threadPlan(), Loop: &remediationLoopState{PlanStatus: PlanStatusReady,
+			OptionRepos: []optionRepo{{Option: 2, Repo: "https://github.com/example/web", Known: repoKnownWorkload}}},
 		Names: map[string]string{"u-1": "Asha", "u-2": "Ravi"}}
 }
 
@@ -95,8 +96,14 @@ func TestThreadOptionsWhilePicking(t *testing.T) {
 	assert.Equal(t, "**3 · Raise the quota** · _infrastructure change_\nraise it in the project quota", options.Sections[2].Text)
 	assert.Equal(t, threadButton{Kind: "pick", Label: "Use this fix", Option: 1, Style: "primary"}, *options.Sections[0].Button)
 	assert.Equal(t, threadButton{Kind: "pr", Label: "Raise a PR", Option: 2}, *options.Sections[1].Button)
-	assert.Equal(t, threadButton{Kind: "manual", Label: "Mark done", Option: 3}, *options.Sections[2].Button)
+	assert.Equal(t, threadButton{Kind: "manual", Label: "Mark done", Option: 3}, *options.Sections[2].Button,
+		"an infrastructure change with no repository named is made outside one")
 	assert.Equal(t, []string{"other"}, kinds(options.Buttons), "Other fixes… stays below the options")
+	// The same code fix with its repository not known for the workload: the person chooses it on the tab.
+	view.Loop.OptionRepos = nil
+	choose := *optionsOf(t, view).Sections[1].Button
+	assert.Equal(t, "link", choose.Kind)
+	assert.Equal(t, "Choose the repo in NudgeBee", choose.Label)
 	assert.Contains(t, options.Status, "Pick a fix")
 	assert.NotContains(t, options.Text, "remediation:", "no per-step Run token any more")
 }
@@ -105,6 +112,7 @@ func TestThreadOptionsWhilePicking(t *testing.T) {
 // long command or cause is cut, never shown behind Slack's "Show more"; a deployment-source change says so.
 func TestThreadOptionLines(t *testing.T) {
 	view := threadView()
+	view.Loop.OptionRepos = nil // the chart's repository is not known for the workload
 	view.Plan.RootCause = "The kafka container's memory limit is too low.\nIt is set to 512Mi while the broker needs 1.2Gi."
 	view.Plan.Actions = []RemediationAction{
 		{Title: "Increase Kafka container memory", Kind: RemediationKindMitigation, Delivery: DeliveryRun,
@@ -121,7 +129,7 @@ func TestThreadOptionLines(t *testing.T) {
 	assert.True(t, strings.HasSuffix(first, " · Heads-up: Argo CD reverts it on the next sync"), first)
 	assert.Less(t, len(first), 500, "one short line")
 	assert.Equal(t, "**2 · Raise the limit in the chart** · _change in the deployment source_\nset resources.limits.memory to 2Gi in charts/kafka/values.yaml", options.Sections[1].Text)
-	assert.Equal(t, "Mark done", options.Sections[1].Button.Label)
+	assert.Equal(t, "Choose the repo in NudgeBee", options.Sections[1].Button.Label, "a chart change with no repository known: chosen on the tab")
 }
 
 // Not picking: the options show without buttons beside them.

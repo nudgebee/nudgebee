@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 )
 
@@ -126,7 +127,17 @@ func TestSourceStepTextAgreesWithTheTab(t *testing.T) {
 	assert.Contains(t, last, "bound the cache to 10000 entries with LRU eviction in Deployment demo/leaky-app")
 	assert.NotContains(t, last, "A person makes this change")
 	assert.NotEqual(t, pickKindRun, pickMode(deploy), "no Use this fix for a source step")
-	assert.Equal(t, "Mark done", optionButton(deploy, 0).Label)
+	// A change in the deployment source is raised as a PR; with no repository known for the workload, Slack sends the
+	// person to the tab to choose one (Mark done only without the app's address).
+	assert.Equal(t, pickKindPR, pickMode(deploy))
+	swap(t, &config.Config.BaseUrl, "")
+	assert.Equal(t, "Mark done", optionButton(deploy, 0, nil, "e1").Label)
+	config.Config.BaseUrl = "https://app.example.com"
+	choose := optionButton(deploy, 0, nil, "e1")
+	assert.Equal(t, threadButton{Kind: "link", Label: "Choose the repo in NudgeBee", Option: 1, Url: "https://app.example.com/investigate?id=e1"}, choose)
+	assert.Equal(t, choose, optionButton(deploy, 0, []optionRepo{{Option: 1, Repo: "acme/infra", Known: repoKnownIntegration}}, "e1"), "a connected guess is confirmed on the tab")
+	assert.Equal(t, threadButton{Kind: "pr", Label: "Raise a PR", Option: 1},
+		optionButton(deploy, 0, []optionRepo{{Option: 1, Repo: "https://github.com/acme/infra", Known: repoKnownWorkload}}, "e1"))
 
 	// With no repo known, applying it from the chat says to make the change and mark it done (the leaky app's plan).
 	_, err := stepRequest(leakSourceFixOnly(), "a", "e", runStepRequest{PlanVersion: "v1", Step: 1, Action: "apply"})

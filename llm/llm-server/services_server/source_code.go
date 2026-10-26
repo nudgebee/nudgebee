@@ -207,7 +207,7 @@ func GetSourceCodeAnnotationsBatch(ctx *security.RequestContext, dbManager *comm
 	}
 
 	query := `
-		SELECT namespace || '/' || name as key, meta::text
+		SELECT namespace || '/' || name as key, meta::text, COALESCE(cloud_resource_id::text, '') AS resource_id
 		FROM k8s_workloads
 		WHERE cloud_account_id = ?
 		AND (namespace || '/' || name) IN (?)`
@@ -221,13 +221,22 @@ func GetSourceCodeAnnotationsBatch(ctx *security.RequestContext, dbManager *comm
 
 	ctx.GetLogger().Debug("executing batch SQL query", "query", query, "arg_count", len(args))
 	type wlRow struct {
-		Key  string `db:"key"`
-		Meta string `db:"meta"`
+		Key        string `db:"key"`
+		Meta       string `db:"meta"`
+		ResourceId string `db:"resource_id"`
 	}
 	var wlRows []wlRow
 	if err := dbManager.Db.Select(&wlRows, query, args...); err != nil {
 		ctx.GetLogger().Error("failed to execute batch query", "error", err)
 		return nil, fmt.Errorf("failed to execute batch query: %w", err)
+	}
+	resourceIds := make([]string, 0, len(wlRows))
+	for _, row := range wlRows {
+		resourceIds = append(resourceIds, row.ResourceId)
+	}
+	saved, err := savedCodeAttributes(dbManager, resourceIds)
+	if err != nil {
+		ctx.GetLogger().Warn("unable to read saved code repositories of workloads", "error", err)
 	}
 	results := make(map[WorkloadKey]map[string]string)
 	for _, row := range wlRows {
@@ -255,9 +264,67 @@ func GetSourceCodeAnnotationsBatch(ctx *security.RequestContext, dbManager *comm
 				}
 			}
 		}
-		results[wk] = annotations
+		results[wk] = withSavedAttributes(annotations, saved[row.ResourceId])
 	}
 	return results, nil
+}
+
+// savedCodeAttributes are the code-repository values people saved on workload resources (the Workloads page's Git
+// dialog writes them as cloud_resource_attributes rows, named like the annotations), keyed by resource id. An empty
+// value is unset.
+func savedCodeAttributes(dbManager *common.DatabaseManager, resourceIds []string) (map[string]map[string]string, error) {
+	// Bound as uuids: an id that is not one is skipped rather than failing the whole read.
+	ids := make([]uuid.UUID, 0, len(resourceIds))
+	for _, id := range resourceIds {
+		if parsed, err := uuid.Parse(id); err == nil {
+			ids = append(ids, parsed)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	names := make([]string, 0, len(eventCodeAnnotationKeys))
+	for name := range eventCodeAnnotationKeys {
+		names = append(names, name)
+	}
+	query, args, err := sqlx.In(`
+		SELECT resource_id::text AS resource_id, name, value
+		FROM cloud_resource_attributes
+		WHERE resource_id IN (?) AND name IN (?) AND COALESCE(value, '') <> ''`, ids, names)
+	if err != nil {
+		return nil, err
+	}
+	var rows []struct {
+		ResourceId string `db:"resource_id"`
+		Name       string `db:"name"`
+		Value      string `db:"value"`
+	}
+	if err := dbManager.Db.Select(&rows, dbManager.Db.Rebind(query), args...); err != nil {
+		return nil, fmt.Errorf("savedCodeAttributes: %w", err)
+	}
+	out := map[string]map[string]string{}
+	for _, r := range rows {
+		if out[r.ResourceId] == nil {
+			out[r.ResourceId] = map[string]string{}
+		}
+		out[r.ResourceId][r.Name] = strings.TrimSpace(r.Value)
+	}
+	return out, nil
+}
+
+// withSavedAttributes fills the keys the cluster's annotations leave unset from the values people saved: an
+// annotation wins, as in api-server's pull request path and the Git dialog, which show the annotation when there is
+// one.
+func withSavedAttributes(annotations, saved map[string]string) map[string]string {
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	for name, value := range saved {
+		if strings.TrimSpace(annotations[name]) == "" && value != "" {
+			annotations[name] = value
+		}
+	}
+	return annotations
 }
 
 // GetSourceCodeReposBatch retrieves source code repo info for multiple workloads efficiently.
@@ -342,7 +409,7 @@ func GetSourceCodeAnnotations(ctx *security.RequestContext, dbManager *common.Da
 		// Event-based queries
 		if options.Namespace != "" && options.WorkloadName != "" {
 			query = `
-				SELECT meta::text 
+				SELECT meta::text AS meta, COALESCE(kw.cloud_resource_id::text, '') AS resource_id
 				FROM k8s_workloads kw 
 				WHERE kw."name" = $2 
 				  AND kw."namespace" = $3 
@@ -352,12 +419,12 @@ func GetSourceCodeAnnotations(ctx *security.RequestContext, dbManager *common.Da
 		} else if options.CloudResourceId != "" {
 
 			query = `
-				SELECT meta::text 
+				SELECT meta::text AS meta, COALESCE(kw.cloud_resource_id::text, '') AS resource_id
 				FROM k8s_workloads kw 
 				JOIN events e ON e.cloud_resource_id = kw.cloud_resource_id 
 				WHERE e.id = $1 AND e.cloud_account_id = $2
 				UNION
-				SELECT cr.meta::text 
+				SELECT cr.meta::text AS meta, COALESCE(ksw.cloud_resource_id::text, '') AS resource_id
 				FROM events e 
 				JOIN k8s_pods ksp ON e.cloud_resource_id = ksp.cloud_resource_id
 				JOIN k8s_workloads ksw ON ksp.workload_name = ksw."name" AND ksp."namespace" = ksw."namespace"
@@ -374,13 +441,13 @@ func GetSourceCodeAnnotations(ctx *security.RequestContext, dbManager *common.Da
 
 		if options.Namespace != "" {
 			query = `
-			SELECT DISTINCT meta::text 
+			SELECT DISTINCT meta::text AS meta, COALESCE(ksw.cloud_resource_id::text, '') AS resource_id
 			FROM k8s_workloads ksw
 			WHERE ksw."name" = $2 AND ksw.cloud_account_id = $1 AND ksw."namespace" = $3`
 			args = []any{accountId, options.WorkloadName, options.Namespace}
 		} else {
 			query = `
-			SELECT DISTINCT meta::text 
+			SELECT DISTINCT meta::text AS meta, COALESCE(ksw.cloud_resource_id::text, '') AS resource_id
 			FROM k8s_workloads ksw
 			WHERE ksw."name" = $2 AND ksw.cloud_account_id = $1`
 			args = []any{accountId, options.WorkloadName}
@@ -393,23 +460,33 @@ func GetSourceCodeAnnotations(ctx *security.RequestContext, dbManager *common.Da
 	}
 
 	ctx.GetLogger().Debug("executing SQL query", "query", query, "arg_count", len(args))
-	var metaStrings []string
-	if err := dbManager.Db.Select(&metaStrings, query, args...); err != nil {
+	var metaRows []struct {
+		Meta       string `db:"meta"`
+		ResourceId string `db:"resource_id"`
+	}
+	if err := dbManager.Db.Select(&metaRows, query, args...); err != nil {
 		ctx.GetLogger().Error("failed to execute query", "error", err)
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
-	rowFound := len(metaStrings) > 0
+	rowFound := len(metaRows) > 0
 	var meta map[string]any
-	for _, metaString := range metaStrings {
-		if metaString == "" {
+	resourceId := ""
+	for _, row := range metaRows {
+		if row.Meta == "" {
 			ctx.GetLogger().Debug("empty meta string in row")
 			continue
 		}
-		if err := common.UnmarshalJson([]byte(metaString), &meta); err != nil {
-			ctx.GetLogger().Warn("unable to unmarshal meta json", "error", err, "meta_string_length", len(metaString))
+		if err := common.UnmarshalJson([]byte(row.Meta), &meta); err != nil {
+			ctx.GetLogger().Warn("unable to unmarshal meta json", "error", err, "meta_string_length", len(row.Meta))
 			continue
 		}
+		resourceId = row.ResourceId
 		break
+	}
+	// A repository a person saved on the workload fills what its annotations leave unset.
+	saved, err := savedCodeAttributes(dbManager, []string{resourceId})
+	if err != nil {
+		ctx.GetLogger().Warn("unable to read saved code repositories of the workload", "error", err)
 	}
 
 	if !rowFound {
@@ -422,25 +499,25 @@ func GetSourceCodeAnnotations(ctx *security.RequestContext, dbManager *common.Da
 		configAny, ok := meta["config"]
 		if !ok {
 			ctx.GetLogger().Info("config key not found in meta")
-			return annotations, nil
+			return withSavedAttributes(annotations, saved[resourceId]), nil
 		}
 
 		config, ok := configAny.(map[string]any)
 		if !ok {
 			ctx.GetLogger().Info("config is not a map[string]any", "type", fmt.Sprintf("%T", configAny))
-			return annotations, nil
+			return withSavedAttributes(annotations, saved[resourceId]), nil
 		}
 
 		annotationsAny, ok := config["annotations"]
 		if !ok {
 			ctx.GetLogger().Info("annotations key not found in config")
-			return annotations, nil
+			return withSavedAttributes(annotations, saved[resourceId]), nil
 		}
 
 		annotation, ok := annotationsAny.(map[string]any)
 		if !ok {
 			ctx.GetLogger().Info("annotations is not a map[string]any", "type", fmt.Sprintf("%T", annotationsAny))
-			return annotations, nil
+			return withSavedAttributes(annotations, saved[resourceId]), nil
 		}
 
 		for key, value := range annotation {
@@ -453,7 +530,7 @@ func GetSourceCodeAnnotations(ctx *security.RequestContext, dbManager *common.Da
 		ctx.GetLogger().Info("meta is empty or doesn't contain config key", "meta_length", len(meta))
 	}
 
-	return annotations, nil
+	return withSavedAttributes(annotations, saved[resourceId]), nil
 }
 
 // extractArgoCDAppName extracts the application name from ArgoCD tracking ID

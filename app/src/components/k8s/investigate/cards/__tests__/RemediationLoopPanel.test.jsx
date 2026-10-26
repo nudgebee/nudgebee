@@ -1,14 +1,21 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import apiKubernetes from '@api1/kubernetes';
+import apiTickets from '@api1/tickets';
 import RemediationLoopPanel, { answerApproval } from '../RemediationLoopPanel';
 import RemediationResolutionCard from '../../RemediationResolutionCard';
 import { PR_REPLY_ASK, clockOnly, loopNeedsPoll } from '../../remediationLoop';
 
 jest.mock('@api1/kubernetes', () => ({
   __esModule: true,
-  default: { askRemediationPlan: jest.fn(), executeRemediationCommand: jest.fn(), confirmRemediationResolve: jest.fn() },
+  default: {
+    askRemediationPlan: jest.fn(),
+    executeRemediationCommand: jest.fn(),
+    confirmRemediationResolve: jest.fn(),
+    upsertResourceAttributes: jest.fn(),
+  },
 }));
+jest.mock('@api1/tickets', () => ({ __esModule: true, default: { listGitIntegrations: jest.fn() } }));
 jest.mock('@api1/ask-nudgebee', () => ({ __esModule: true, default: { aiFollowupResponse: jest.fn(), aiGenerateInvestigate: jest.fn() } }));
 jest.mock('@lib/auth', () => ({ hasWriteAccess: () => true }));
 
@@ -1520,7 +1527,13 @@ describe('Round 17: code fixes, PRs and changes a person makes', () => {
     generated_at: Z('10:00'),
     root_cause: 'The fetch worker buffers command output without a limit. It ran out of memory.',
     actions: [codeFix],
-    loop: { ...ready, firings: [{ event_id: 'e1', starts_at: Z('09:00'), ends_at: Z('09:30'), status: 'RESOLVED', nb_status: 'OPEN' }] },
+    loop: {
+      ...ready,
+      firings: [{ event_id: 'e1', starts_at: Z('09:00'), ends_at: Z('09:30'), status: 'RESOLVED', nb_status: 'OPEN' }],
+      // The workload is known to come from this repository: Raise a PR in one click.
+      option_repos: [{ option: 1, repo: 'https://github.com/example-org/worker', known: 'workload' }],
+      workload_resource_id: 'res-worker',
+    },
   };
   const sourcePlan = {
     version: 1,
@@ -1650,14 +1663,14 @@ describe('Round 17: code fixes, PRs and changes a person makes', () => {
     expect(screen.getByTestId('remediation-loop-step-pr')).toHaveTextContent('PR raised · #571 ↗ · open');
   });
 
-  it('a change outside code, or with no repo: make it yourself, then mark it done; the mitigation still buys time', async () => {
+  it('a change made outside a repository: make it yourself, then mark it done; the mitigation still buys time', async () => {
     apiKubernetes.executeRemediationCommand.mockResolvedValue({ status: 'Success' });
-    renderPanel(sourcePlan);
+    const [source, mitigation] = sourcePlan.actions;
+    renderPanel({ ...sourcePlan, actions: [{ ...source, required_change: { ...source.required_change, where: 'process' } }, mitigation] });
     expect(headline()).toHaveTextContent('Fix options · from the investigation at');
-    const first = screen.getByTestId('remediation-loop-option-1');
-    expect(first).toHaveTextContent('Change in the deployment source');
     expect(screen.getByTestId('remediation-loop-option-manual-1')).toHaveTextContent('Make this change yourself, then mark it done.');
     expect(screen.queryByTestId('remediation-loop-raise-pr-1')).toBeNull();
+    expect(screen.queryByTestId('remediation-loop-pick-repo-1')).toBeNull();
     expect(screen.queryByTestId('remediation-loop-ask-option-1')).toBeNull();
     const second = screen.getByTestId('remediation-loop-option-2');
     expect(second).toHaveTextContent('Buys time');
@@ -1677,11 +1690,121 @@ describe('Round 17: code fixes, PRs and changes a person makes', () => {
     );
   });
 
-  it('a code fix with no repo is a change to make, with no PR button', () => {
-    renderPanel({ ...codePlan, actions: [{ ...codeFix, required_change: { ...codeFix.required_change, repo: '' } }] });
+  it('a deployment-source change with no repository known: Raise a PR… asks for the repository first', () => {
+    renderPanel(sourcePlan);
+    expect(screen.getByTestId('remediation-loop-option-1')).toHaveTextContent('Change in the deployment source');
+    expect(screen.getByTestId('remediation-loop-pick-repo-1')).toHaveTextContent('Raise a PR…');
+    expect(screen.getByTestId('remediation-loop-option-pick-repo-1')).toHaveTextContent('Nubi raises a PR once you pick the repository.');
     expect(screen.queryByTestId('remediation-loop-raise-pr-1')).toBeNull();
-    expect(screen.getByTestId('remediation-loop-mark-done-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('remediation-loop-mark-done-1')).toBeNull();
+  });
+
+  it('a code fix whose repository the workload is not known to come from: Raise a PR…, not one click', () => {
+    renderPanel({
+      ...codePlan,
+      loop: { ...codePlan.loop, option_repos: [{ option: 1, repo: 'https://github.com/example-org/worker', known: 'integration' }] },
+    });
+    expect(screen.queryByTestId('remediation-loop-raise-pr-1')).toBeNull();
+    expect(screen.getByTestId('remediation-loop-pick-repo-1')).toHaveTextContent('Raise a PR…');
     expect(headline()).toHaveTextContent('Cause is in code — fix needs a change');
+  });
+
+  it('picking a repository: the connected guess is selected, a code repository is saved on the workload, and the pick names it', async () => {
+    apiAskNudgebee.aiGenerateInvestigate.mockResolvedValue(sentOk);
+    apiKubernetes.upsertResourceAttributes.mockResolvedValue({});
+    apiTickets.listGitIntegrations.mockResolvedValue([
+      {
+        name: 'org',
+        type: 'github',
+        url: 'https://github.com',
+        label: 'GitHub: org',
+        key: 'github:org',
+        projects: [
+          { key: 'example-org/worker', name: 'worker' },
+          { key: 'example-org/web', name: 'web' },
+        ],
+      },
+    ]);
+    const unknown = {
+      ...codePlan,
+      loop: { ...codePlan.loop, option_repos: [{ option: 1, repo: 'https://github.com/example-org/worker', known: 'integration' }] },
+    };
+    renderPanel(unknown);
+    fireEvent.click(screen.getByTestId('remediation-loop-pick-repo-1'));
+    await screen.findByTestId('remediation-loop-repo-picker');
+    await waitFor(() => expect(screen.getByTestId('remediation-loop-repo-raise')).not.toBeDisabled());
+    expect(screen.getByTestId('remediation-loop-repo-picker')).toHaveTextContent('saved as this workload’s code repository');
+    fireEvent.click(screen.getByTestId('remediation-loop-repo-raise'));
+    await waitFor(() =>
+      expect(apiKubernetes.upsertResourceAttributes).toHaveBeenCalledWith('res-worker', 'acc-1', [
+        { name: 'workloads.nudgebee.com/git.repo', value: 'https://github.com/example-org/worker' },
+      ])
+    );
+    await waitFor(() =>
+      expect(apiAskNudgebee.aiGenerateInvestigate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          remediation_pick: expect.objectContaining({ option: 1, kind: 'pr', repo: 'https://github.com/example-org/worker' }),
+          query: expect.stringContaining('(repo https://github.com/example-org/worker)'),
+        })
+      )
+    );
+  });
+
+  it('a refused pick saves no repository on the workload', async () => {
+    apiAskNudgebee.aiGenerateInvestigate.mockResolvedValue({
+      data: { errors: [{ message: 'remediation: these fixes were replaced since you saw them.' }] },
+    });
+    apiKubernetes.upsertResourceAttributes.mockClear();
+    apiTickets.listGitIntegrations.mockResolvedValue([
+      {
+        name: 'org',
+        type: 'github',
+        url: 'https://github.com',
+        label: 'GitHub: org',
+        key: 'github:org',
+        projects: [{ key: 'example-org/worker', name: 'worker' }],
+      },
+    ]);
+    renderPanel({
+      ...codePlan,
+      loop: { ...codePlan.loop, option_repos: [{ option: 1, repo: 'https://github.com/example-org/worker', known: 'integration' }] },
+    });
+    fireEvent.click(screen.getByTestId('remediation-loop-pick-repo-1'));
+    await screen.findByTestId('remediation-loop-repo-picker');
+    await waitFor(() => expect(screen.getByTestId('remediation-loop-repo-raise')).not.toBeDisabled());
+    fireEvent.click(screen.getByTestId('remediation-loop-repo-raise'));
+    await waitFor(() => expect(apiAskNudgebee.aiGenerateInvestigate).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByTestId('remediation-loop-repo-picker')).toBeNull());
+    expect(apiKubernetes.upsertResourceAttributes).not.toHaveBeenCalled();
+  });
+
+  it('a deployment-source repository is not saved on the workload', async () => {
+    apiAskNudgebee.aiGenerateInvestigate.mockResolvedValue(sentOk);
+    apiKubernetes.upsertResourceAttributes.mockClear();
+    apiTickets.listGitIntegrations.mockResolvedValue([
+      {
+        name: 'org',
+        type: 'github',
+        url: 'https://github.com',
+        label: 'GitHub: org',
+        key: 'github:org',
+        projects: [{ key: 'example-org/infra', name: 'infra' }],
+      },
+    ]);
+    renderPanel({ ...sourcePlan, loop: { ...sourcePlan.loop, workload_resource_id: 'res-app' } });
+    fireEvent.click(screen.getByTestId('remediation-loop-pick-repo-1'));
+    await screen.findByTestId('remediation-loop-repo-picker');
+    expect(screen.getByTestId('remediation-loop-repo-raise')).toBeDisabled();
+    expect(screen.getByTestId('remediation-loop-repo-picker')).not.toHaveTextContent('saved as this workload');
+  });
+
+  it('no connected repository: the picker says to connect one', async () => {
+    apiTickets.listGitIntegrations.mockResolvedValue([]);
+    renderPanel(sourcePlan);
+    fireEvent.click(screen.getByTestId('remediation-loop-pick-repo-1'));
+    expect(await screen.findByTestId('remediation-loop-repo-none')).toHaveTextContent(
+      'Connect GitHub or GitLab under Integrations, or close this and try again'
+    );
   });
 
   it('No plan yet says why and what fired, shows the firings, and no duplicate banner without primary_event_id', () => {

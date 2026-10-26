@@ -20,6 +20,9 @@ import {
   timelineOf,
   prRequestText,
   PR_REPLY_ASK,
+  optionMode,
+  optionRepoOf,
+  repoChangeOf,
 } from '../remediationLoop';
 
 // Fixtures shaped exactly like the contracts: the C7 read (plan fields top level + loop), C1 run rows, C3 pull
@@ -109,6 +112,32 @@ describe('Raise a PR request', () => {
     expect(prRequestText({ index: 1, res: { version: 2 }, action })).toBe(
       `Raise a PR for option 1 of plan v2: c in t (repo example-org/web). ${PR_REPLY_ASK}`
     );
+  });
+});
+
+describe('how an option is carried out (llm-server pickMode and optionRepos)', () => {
+  const change = (where, repo = '') => ({ action: 'x', required_change: { where, target: 't', change: 'c', repo } });
+  it('a change always made in a repository is a PR; one made elsewhere only when the plan names a repository', () => {
+    expect(repoChangeOf(change('code'))).toBe(true);
+    expect(repoChangeOf(change('deployment_source'))).toBe(true);
+    expect(repoChangeOf(change('infrastructure'))).toBe(false);
+    expect(repoChangeOf(change('infrastructure', 'org/infra'))).toBe(true);
+    expect(repoChangeOf(change('dependency', 'org/lib'))).toBe(true);
+    expect(repoChangeOf(change('process', 'org/infra'))).toBe(false);
+  });
+  it('one click only for the workload’s own repository', () => {
+    const loop = {
+      option_repos: [
+        { option: 1, repo: 'https://github.com/org/web', known: 'workload' },
+        { option: 2, repo: 'org/infra', known: 'integration' },
+      ],
+    };
+    expect(optionMode(change('code', 'org/web'), optionRepoOf(loop, 1))).toBe('pr');
+    expect(optionMode(change('deployment_source', 'org/infra'), optionRepoOf(loop, 2))).toBe('pr_pick');
+    expect(optionMode(change('code'), optionRepoOf(loop, 3))).toBe('pr_pick');
+    expect(optionMode(change('process'), optionRepoOf(loop, 3))).toBe('manual');
+    expect(optionMode({ action: 'x', execute_command: 'kubectl get pods' })).toBe('run');
+    expect(optionRepoOf({}, 1)).toEqual({ repo: '', known: '' });
   });
 });
 

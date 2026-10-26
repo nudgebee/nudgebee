@@ -9,6 +9,8 @@ import { Input } from '@ui/Input';
 import { Label } from '@ui/Label';
 import { Link } from '@ui/Link';
 import { DropdownMenu } from '@ui/DropdownMenu';
+import { Modal } from '@ui/Modal';
+import { Select } from '@ui/Select';
 import {
   CancelOutlined,
   CheckCircleOutlined,
@@ -29,6 +31,8 @@ import CopyButton from '@shared/buttons/CopyButton';
 import { hasWriteAccess } from '@lib/auth';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import apiKubernetes from '@api1/kubernetes';
+import apiTickets from '@api1/tickets';
+import { ANNOTATIONS } from '@lib/annotationKeys';
 import { toAssistantLabel } from '@hooks/useTenantBranding';
 import { formatClockCompact } from '@shared/format/Datetime';
 import { truncateText } from '@utils/common';
@@ -62,6 +66,7 @@ import {
   CHANGE_LABEL,
   changeOnly,
   optionMode,
+  optionRepoOf,
   prOf,
   prRequestText,
   requiredChangeOf,
@@ -119,7 +124,17 @@ export async function sendToConversation({ accountId, sessionId, eventId, text, 
     query: text,
     session_id: sessionId,
     ...(eventId ? { config: { event_id: eventId } } : {}),
-    ...(pick ? { remediation_pick: { event_id: eventId || '', plan_version: pick.planVersion || '', option: pick.option, kind: pick.kind } } : {}),
+    ...(pick
+      ? {
+          remediation_pick: {
+            event_id: eventId || '',
+            plan_version: pick.planVersion || '',
+            option: pick.option,
+            kind: pick.kind,
+            ...(pick.repo ? { repo: pick.repo } : {}),
+          },
+        }
+      : {}),
   });
   const result = res?.data?.data?.ai_execute_investigation;
   const errors = res?.data?.errors?.length ? res.data.errors : result?.errors;
@@ -143,12 +158,90 @@ function CommandBlock({ command }) {
 
 CommandBlock.propTypes = { command: PropTypes.string.isRequired };
 
+// repoPath is a repository's host-less path in lower case ("org/repo"), from a URL, a git remote or a bare path.
+const repoPath = (value) =>
+  trimmed(value)
+    .toLowerCase()
+    .replace(/^git@([^:]+):/, '$1/')
+    .replace(/^[a-z]+:\/\//, '')
+    .replace(/\.git$/, '')
+    .replace(/\/+$/, '');
+const sameRepo = (a, b) => {
+  const [x, y] = [repoPath(a), repoPath(b)];
+  return Boolean(x && y) && (x === y || x.endsWith(`/${y}`) || y.endsWith(`/${x}`));
+};
+
+// RepoPicker asks which of the account's connected repositories (its GitHub and GitLab integrations) a pull request
+// goes to, with the plan's own guess selected when it is one of them. saves: a code repository is then saved on the
+// workload.
+function RepoPicker({ guess, saves, onPick, onClose }) {
+  const [integrations, setIntegrations] = useState(null);
+  const [chosen, setChosen] = useState('');
+  useEffect(() => {
+    apiTickets
+      .listGitIntegrations()
+      .then(setIntegrations)
+      .catch(() => setIntegrations([]));
+  }, []);
+  const options = (integrations || []).flatMap((i) =>
+    (i.projects || []).map((p) => ({ label: `${i.label} / ${p.name || p.key}`, url: `${i.url}/${p.key}` }))
+  );
+  const url = chosen || options.find((o) => sameRepo(o.url, guess))?.url || '';
+  return (
+    <Modal
+      open
+      handleClose={onClose}
+      title='Raise the PR in which repository?'
+      width='sm'
+      actionButtons={
+        <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--ds-space-3)', p: 'var(--ds-space-3) var(--ds-space-5)' }}>
+          <Button tone='secondary' size='md' onClick={onClose} data-testid='remediation-loop-repo-cancel'>
+            Cancel
+          </Button>
+          <Button tone='primary' size='md' disabled={!url} onClick={() => onPick(url)} data-testid='remediation-loop-repo-raise'>
+            Raise a PR
+          </Button>
+        </Box>
+      }
+    >
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }} data-testid='remediation-loop-repo-picker'>
+        {integrations === null ? (
+          <CircularProgress size={18} />
+        ) : options.length ? (
+          <Select
+            label='Connected repositories'
+            placeholder='Select a repository'
+            value={options.find((o) => o.url === url)?.label || null}
+            options={options.map((o) => o.label)}
+            onChange={(label) => setChosen(options.find((o) => o.label === label)?.url || '')}
+          />
+        ) : (
+          // The list reads empty both with no integration and when it could not be read (listTicketConfigsForCreate).
+          <Box data-testid='remediation-loop-repo-none'>
+            No connected repository was found. Connect GitHub or GitLab under Integrations, or close this and try again.
+          </Box>
+        )}
+        {saves && options.length ? <Box sx={hintSx}>It is saved as this workload’s code repository, so later fixes know it.</Box> : null}
+      </Box>
+    </Modal>
+  );
+}
+
+RepoPicker.propTypes = {
+  guess: PropTypes.string,
+  saves: PropTypes.bool,
+  onPick: PropTypes.func.isRequired,
+  onClose: PropTypes.func.isRequired,
+};
+
 function OptionRow({
   index,
   action,
+  repo,
   disabled,
   onAsk,
   onRaisePr,
+  onPickRepo,
   onMarkDone,
   marking,
   askLabel,
@@ -161,7 +254,7 @@ function OptionRow({
   const [details, setDetails] = useState(false);
   // A change no command applies: a code fix (raised as a PR from the alert's chat when it names a repository), or a
   // change a person makes and then marks done. It is never offered as "Use this fix" with a command.
-  const mode = optionMode(action);
+  const mode = optionMode(action, repo);
   const change = requiredChangeOf(action);
   const kind = change
     ? { text: CHANGE_LABEL[change.where] || 'Change to make', tone: 'success' }
@@ -182,6 +275,18 @@ function OptionRow({
         data-testid={`remediation-loop-raise-pr-${index}`}
       >
         {sending ? `Asking ${assistantLabel}…` : 'Raise a PR'}
+      </Button>
+    );
+  } else if (showAsk && mode === 'pr_pick') {
+    askButton = (
+      <Button
+        tone='secondary'
+        size='xs'
+        disabled={disabled || sending}
+        onClick={() => onPickRepo?.(index, action)}
+        data-testid={`remediation-loop-pick-repo-${index}`}
+      >
+        {sending ? `Asking ${assistantLabel}…` : 'Raise a PR…'}
       </Button>
     );
   } else if (showAsk && mode === 'manual') {
@@ -252,6 +357,11 @@ function OptionRow({
               Make this change yourself, then mark it done.
             </Box>
           ) : null}
+          {mode === 'pr_pick' ? (
+            <Box sx={hintSx} data-testid={`remediation-loop-option-pick-repo-${index}`}>
+              {`${assistantLabel} raises a PR once you pick the repository.`}
+            </Box>
+          ) : null}
         </Box>
       ) : null}
       {/* What runs, on one line that scrolls rather than breaking mid-word. */}
@@ -295,8 +405,12 @@ OptionRow.propTypes = {
   action: PropTypes.object.isRequired,
   disabled: PropTypes.bool,
   onAsk: PropTypes.func.isRequired,
-  // A code fix with a repository: sends the PR request into the alert's chat.
+  // How the option's repository is known ({repo, known}: optionRepoOf).
+  repo: PropTypes.shape({ repo: PropTypes.string, known: PropTypes.string }),
+  // A change in the repository the workload comes from: sends the PR request into the alert's chat.
   onRaisePr: PropTypes.func,
+  // A change in a repository the person confirms or picks first: opens the repository picker.
+  onPickRepo: PropTypes.func,
   // A change the person makes: records it as done (the plan step's manual decision).
   onMarkDone: PropTypes.func,
   marking: PropTypes.bool,
@@ -1081,13 +1195,13 @@ const RemediationLoopPanel = ({
 
   // The request goes straight into the alert's conversation; the drawer is not opened. The page keeps reading the
   // remediation, and the approval the assistant raises appears in the card at the top.
-  const sendPick = async (n, text, { pr = false } = {}) => {
+  const sendPick = async (n, text, { pr = false, repo = '' } = {}) => {
     if (picked?.sending) return false;
     setPickError({ option: 0, message: '', notRun: false });
     setPicked({ option: n, planVersion: trimmed(remediation?.plan_version), sending: true, pr });
     try {
       // The text is what the chat shows until the server's own words replace it; the server checks and words the pick.
-      const pick = { option: n, kind: pr ? 'pr' : 'run', planVersion: trimmed(remediation?.plan_version) };
+      const pick = { option: n, kind: pr ? 'pr' : 'run', planVersion: trimmed(remediation?.plan_version), repo };
       await sendToConversation({ accountId, sessionId, eventId: targetEventId, text, pick });
       setPicked({ option: n, planVersion: trimmed(remediation?.plan_version), sending: false, at: Date.now(), sawBusy: false, pr });
       onReload?.();
@@ -1100,10 +1214,28 @@ const RemediationLoopPanel = ({
   };
   const goWith = (n, action) => sendPick(n, `Go with option ${n}: ${trimmed(action?.action)}.`);
   // A code fix with a repository: the alert's chat raises the PR (the assistant's own code-change flow).
-  const raisePr = async (n, action) => {
+  const raisePr = async (n, action, repo = '') => {
     const at = new Date().toISOString();
-    if (await sendPick(n, prRequestText({ index: n, res: remediation, action }), { pr: true })) {
+    if (await sendPick(n, prRequestText({ index: n, res: remediation, action, repo }), { pr: true, repo })) {
       setPrPick({ option: n, planVersion: trimmed(remediation?.plan_version), at, title: optionTitle(action) });
+      return true;
+    }
+    return false;
+  };
+  // A change in a repository the workload is not known to come from: the person picks a connected repository; a code
+  // repository is saved on the workload as the Workloads page's Git dialog saves it, so the next fix knows it.
+  const [repoPicker, setRepoPicker] = useState(null);
+  const pickRepoAndRaise = async (n, action, repoUrl) => {
+    setRepoPicker(null);
+    // Saved only once the server took the pick: a refused one (fixes replaced, a step running) saves nothing.
+    if (!(await raisePr(n, action, repoUrl))) return;
+    const resourceId = trimmed(loop.workload_resource_id);
+    if (requiredChangeOf(action)?.where === 'code' && resourceId && canAct) {
+      try {
+        await apiKubernetes.upsertResourceAttributes(resourceId, accountId, [{ name: ANNOTATIONS.WORKLOAD_GIT_REPO, value: repoUrl }]);
+      } catch {
+        // Not remembered: the PR is raised in the picked repository all the same.
+      }
     }
   };
   // A change the person made (or a merged PR that is deployed): recorded as the plan step done by a person.
@@ -1837,7 +1969,9 @@ const RemediationLoopPanel = ({
                 assistantLabel={assistantLabel}
                 onAsk={goWith}
                 askLabel={refreshIdle ? 'Use this fix anyway' : undefined}
+                repo={optionRepoOf(loop, i + 1)}
                 onRaisePr={raisePr}
+                onPickRepo={(n, action) => setRepoPicker({ option: n, action })}
                 onMarkDone={canAct ? markDone : undefined}
                 marking={marking === i + 1}
               />
@@ -1846,6 +1980,14 @@ const RemediationLoopPanel = ({
         </Box>
       ) : null}
       {hardening.length ? <OptionalHardening items={hardening} /> : null}
+      {repoPicker ? (
+        <RepoPicker
+          guess={optionRepoOf(loop, repoPicker.option).repo || requiredChangeOf(repoPicker.action)?.repo || ''}
+          saves={requiredChangeOf(repoPicker.action)?.where === 'code' && Boolean(trimmed(loop.workload_resource_id)) && canAct}
+          onPick={(url) => pickRepoAndRaise(repoPicker.option, repoPicker.action, url)}
+          onClose={() => setRepoPicker(null)}
+        />
+      ) : null}
     </Box>
   );
   const planSection =

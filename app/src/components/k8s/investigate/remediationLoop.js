@@ -238,12 +238,31 @@ export function requiredChangeOf(action) {
   };
 }
 
-// optionMode is how an option is carried out from the tab: 'pr' (a code change with a repository: Raise a PR),
-// 'manual' (a change a person makes, then marks done), or 'run' (the assistant runs it after an approval).
-export function optionMode(action) {
+// A change always made in a repository (code, a deployment source) is raised as a pull request; an infrastructure or
+// dependency change may be made elsewhere (a cloud quota, another team's service), so only when the plan names a
+// repository. The same rule as llm-server's repoChange.
+const IN_REPO_WHERES = ['code', 'deployment_source'];
+const PR_WHERES = [...IN_REPO_WHERES, 'infrastructure', 'dependency'];
+
+export function repoChangeOf(action) {
   const rc = requiredChangeOf(action);
-  if (!rc) return 'run';
-  return rc.where === 'code' && rc.repo ? 'pr' : 'manual';
+  return Boolean(rc) && (IN_REPO_WHERES.includes(rc.where) || (PR_WHERES.includes(rc.where) && Boolean(rc.repo)));
+}
+
+// optionRepoOf is how option n's repository is known (loop.option_repos, llm-server optionRepos): {repo, known} with
+// known 'workload' (the workload comes from it), 'integration' (a connected repository) or '' (none known).
+export function optionRepoOf(loop, n) {
+  const found = (Array.isArray(loop?.option_repos) ? loop.option_repos : []).find((r) => Number(r?.option) === n);
+  return { repo: trimmed(found?.repo), known: trimmed(found?.known) };
+}
+
+// optionMode is how an option is carried out from the tab: 'pr' (a change in the repository the workload comes from:
+// Raise a PR), 'pr_pick' (a change in a repository the person confirms or picks first: Raise a PR…), 'manual' (a
+// change a person makes, then marks done), or 'run' (the assistant runs it after an approval).
+export function optionMode(action, repo) {
+  if (!requiredChangeOf(action)) return 'run';
+  if (!repoChangeOf(action)) return 'manual';
+  return repo?.known === 'workload' ? 'pr' : 'pr_pick';
 }
 
 // changeOnly: the plan has options and none of them is run by a command (each is a code or other required change).
@@ -253,11 +272,12 @@ export const changeOnly = (options) => options.length > 0 && options.every((a) =
 export const PR_REPLY_ASK = "Reply with the pull request's link first and one line on what it changes; the diff is in the PR.";
 
 // prRequestText is the message sent into the alert's chat to raise a PR for option n.
-export function prRequestText({ index, res, action }) {
+export function prRequestText({ index, res, action, repo }) {
   const rc = requiredChangeOf(action) || {};
   const version = Number.isInteger(res?.version) && res.version > 0 ? ` of plan v${res.version}` : '';
   const cause = firstLine(res?.root_cause);
-  return `Raise a PR for option ${index}${version}: ${rc.change}${rc.target ? ` in ${rc.target}` : ''}${rc.repo ? ` (repo ${rc.repo})` : ''}.${
+  const where = trimmed(repo) || rc.repo;
+  return `Raise a PR for option ${index}${version}: ${rc.change}${rc.target ? ` in ${rc.target}` : ''}${where ? ` (repo ${where})` : ''}.${
     cause ? ` Root cause: ${cause}` : ''
   } ${PR_REPLY_ASK}`;
 }
