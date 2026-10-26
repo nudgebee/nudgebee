@@ -477,15 +477,31 @@ func isPayloadEmpty(insights common.GqlResponse) bool {
 
 func calculateTotalPotentialSavings(data map[string]interface{}) float64 {
 	totalSavings := big.NewFloat(0)
-	rows := data["rows"].([]query.QueryRow)
-	for _, row := range rows {
-		if sumEstimatedSavings, ok := row["sum_estimated_savings"].(float64); ok {
+	for _, row := range toStringMapSlice(rowsOf(data)) {
+		if sumEstimatedSavings, ok := toFloat64(row["sum_estimated_savings"]); ok {
 			totalSavings = new(big.Float).Add(totalSavings, big.NewFloat(sumEstimatedSavings))
 		}
 	}
 
 	totalSavingsFloat, _ := totalSavings.Float64()
 	return totalSavingsFloat
+}
+
+func toFloat64(v interface{}) (float64, bool) {
+	switch val := v.(type) {
+	case float64:
+		return val, true
+	case float32:
+		return float64(val), true
+	case int:
+		return float64(val), true
+	case int64:
+		return float64(val), true
+	case int32:
+		return float64(val), true
+	default:
+		return 0, false
+	}
 }
 
 func SendDailyAgentStatusEmail(context *security.RequestContext, query TenantReportRequest) error {
