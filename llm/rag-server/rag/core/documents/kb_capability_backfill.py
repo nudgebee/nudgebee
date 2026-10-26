@@ -58,9 +58,8 @@ Known limits, accepted rather than engineered around:
     stays outstanding and is attempted again on every run, within the budget.
 
 Resumable and idempotent. Gated behind RAG_KB_CAPABILITY_BACKFILL_ENABLED,
-default OFF — unlike the retag/embedding migrations this spends real money at
-real production KB volume, so an operator opts in per environment rather than
-inheriting it silently.
+default ON. Unlike the retag/embedding migrations this spends real money at
+real production KB volume, so set it to "false" to opt an environment out.
 """
 
 import contextlib
@@ -187,7 +186,7 @@ def is_enabled() -> bool:
     """Opt-in, default off. Unlike module_retag/embedding_migration this makes
     real LLM calls at real production KB volume — an operator greenlights it
     per environment rather than inheriting it from a code default."""
-    return os.environ.get("RAG_KB_CAPABILITY_BACKFILL_ENABLED", "false").strip().lower() == "true"
+    return os.environ.get("RAG_KB_CAPABILITY_BACKFILL_ENABLED", "true").strip().lower() == "true"
 
 
 def _max_documents_per_run() -> int:

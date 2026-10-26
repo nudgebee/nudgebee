@@ -1135,9 +1135,9 @@ def test_a_collection_that_was_never_created_is_not_an_error(monkeypatch, classi
 
 @pytest.mark.parametrize(
     "value,expected",
-    [(None, False), ("false", False), ("true", True), ("True", True), (" true ", True), ("garbage", False)],
+    [(None, True), ("false", False), ("true", True), ("True", True), (" true ", True), ("garbage", False)],
 )
-def test_is_enabled_defaults_off(monkeypatch, value, expected):
+def test_is_enabled_defaults_on(monkeypatch, value, expected):
     if value is None:
         monkeypatch.delenv("RAG_KB_CAPABILITY_BACKFILL_ENABLED", raising=False)
     else:
