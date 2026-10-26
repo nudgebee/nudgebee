@@ -817,10 +817,11 @@ const ItemRow = ({
                   data-testid={`setup-add-${item.id}`}
                   onClick={() => (direct ? onSelect(item.providers[0].route) : onTogglePicker(item.id))}
                 >
-                  {/* "Add" only when the click really does add something directly — with
-                      more than one provider it opens a picker instead, so the label has to
-                      say that, not promise an add it can't do in one click (#41900). */}
-                  {direct ? (connected ? 'Add more' : 'Add') : 'Choose a provider'}
+                  {/* "Add" promises a one-click add, which is true right up until the
+                      picker is actually open — at that point the provider tiles are
+                      already the way to add one, and this button's only job left is to
+                      collapse them back (#41900). */}
+                  {!direct && showPicker ? 'Hide options' : connected ? 'Add more' : 'Add'}
                 </Button>
               </Box>
             )}
@@ -948,7 +949,7 @@ const ItemRow = ({
               onClick={() => (direct ? onSelect(item.providers[0].route) : onTogglePicker(item.id))}
             >
               {/* See the other "Add" button's comment above — same rule (#41900). */}
-              {direct ? (connected ? 'Add more' : 'Add') : 'Choose a provider'}
+              {!direct && showPicker ? 'Hide options' : connected ? 'Add more' : 'Add'}
             </Button>
           </Box>
         )}

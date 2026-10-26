@@ -1034,12 +1034,32 @@ describe('SetupCenter', () => {
     expect(within(metricsItem).getByText('Prometheus')).toBeInTheDocument();
     expect(screen.queryByTestId('setup-picker-metrics')).not.toBeInTheDocument();
 
-    // More than one provider here, so the button opens a picker rather than
-    // adding anything directly — "Add more" would overpromise (#41900).
+    // Picker collapsed: "Add more" is still an honest promise — clicking it
+    // reveals the picker, which is itself how you'd add one.
     const addButton = within(metricsItem).getByTestId('setup-add-metrics');
-    expect(addButton).toHaveTextContent('Choose a provider');
+    expect(addButton).toHaveTextContent('Add more');
     fireEvent.click(addButton);
     expect(await screen.findByTestId('setup-picker-metrics')).toBeInTheDocument();
+
+    // Picker open: the tiles are already the way to add one, so the same
+    // button's only job left is collapsing them back — "Add more" would be
+    // a stale promise at this point (#41900).
+    expect(addButton).toHaveTextContent('Hide options');
+  });
+
+  it('says "Hide options" from the start when the picker is already open by default, not "Add"', async () => {
+    // Zero connected providers defaults the picker open (no click needed) —
+    // the button sits right next to already-visible tiles from first render,
+    // so "Add" would be wrong even before any click happens.
+    mockGetAllAccount.mockResolvedValue(payload([k8s]));
+    render(<SetupCenter />);
+
+    fireEvent.click(await screen.findByText('Telemetry'));
+    const metricsItem = await screen.findByTestId('setup-item-metrics');
+    expect(await screen.findByTestId('setup-picker-metrics')).toBeInTheDocument();
+
+    const addButton = within(metricsItem).getByTestId('setup-add-metrics');
+    expect(addButton).toHaveTextContent('Hide options');
   });
 
   it('caps tiles at 6 for a provider list of exactly 7, moving the rest to the dropdown', async () => {
