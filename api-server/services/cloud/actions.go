@@ -66,6 +66,48 @@ func lookupResourcesFromDB(tenantId, accountId, serviceName, region string, reso
 	if tenantId == "" || accountId == "" || serviceName == "" {
 		return nil, nil
 	}
+
+	args := []any{tenantId, accountId, serviceName}
+	whereClauses := []string{
+		"tenant = $1",
+		"account = $2",
+		"lower(service_name) = lower($3)",
+	}
+	if region != "" {
+		args = append(args, region)
+		whereClauses = append(whereClauses, fmt.Sprintf("region = $%d", len(args)))
+	}
+	if len(resourceIds) > 0 {
+		args = append(args, pq.Array(resourceIds))
+		whereClauses = append(whereClauses, fmt.Sprintf("(resourse_id = ANY($%d) OR external_resource_id = ANY($%d) OR arn = ANY($%d))", len(args), len(args), len(args)))
+	}
+	return selectResourcesFromDB(whereClauses, args)
+}
+
+// lookupEventResources returns the row the event is linked to when it has one, else the rows
+// matching the alert's identifiers. Several rows can share a resource's id (a load balancer's
+// cost-report record is keyed by the alarm's app/<name>/<id> dimension while the load balancer
+// itself is keyed by its ARN; an instance also has Systems Manager and cost-report records), so
+// the identifier match can describe the wrong record. The link was chosen with the resource's
+// service and key, and is what the event's resource card already shows. A link to a row of
+// another service is ignored: events linked before that choice existed can point at a Systems
+// Manager or Inspector record of the resource.
+func lookupEventResources(ctx playbooks.PlaybookActionContext, accountId, serviceName, region string, resourceIds []string) ([]Resource, error) {
+	if linkedId := ctx.GetEvent().CloudResourceId; linkedId != "" && ctx.GetTenantId() != "" && serviceName != "" {
+		items, err := selectResourcesFromDB(
+			[]string{"tenant = $1", "id = $2", "lower(service_name) = lower($3)"},
+			[]any{ctx.GetTenantId(), linkedId, serviceName})
+		if err != nil {
+			return nil, err
+		}
+		if len(items) > 0 {
+			return items, nil
+		}
+	}
+	return lookupResourcesFromDB(ctx.GetTenantId(), accountId, serviceName, region, resourceIds)
+}
+
+func selectResourcesFromDB(whereClauses []string, args []any) ([]Resource, error) {
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return nil, err
@@ -82,21 +124,6 @@ func lookupResourcesFromDB(tenantId, accountId, serviceName, region string, reso
 		Tags        []byte         `db:"tags"`
 		Meta        []byte         `db:"meta"`
 		CreatedAt   sql.NullTime   `db:"created_at"`
-	}
-
-	args := []any{tenantId, accountId, serviceName}
-	whereClauses := []string{
-		"tenant = $1",
-		"account = $2",
-		"lower(service_name) = lower($3)",
-	}
-	if region != "" {
-		args = append(args, region)
-		whereClauses = append(whereClauses, fmt.Sprintf("region = $%d", len(args)))
-	}
-	if len(resourceIds) > 0 {
-		args = append(args, pq.Array(resourceIds))
-		whereClauses = append(whereClauses, fmt.Sprintf("(resourse_id = ANY($%d) OR external_resource_id = ANY($%d) OR arn = ANY($%d))", len(args), len(args), len(args)))
 	}
 
 	query := fmt.Sprintf(`SELECT resourse_id, name, type, arn, service_name, status, region, tags, meta, created_at
@@ -354,7 +381,7 @@ func (a *cloudResourceAction) AutoExecute(ctx playbooks.PlaybookActionContext) (
 		accountId := ctx.GetAccountId()
 		if accountId != "" {
 			rawParams["account_id"] = accountId
-			items, err := lookupResourcesFromDB(ctx.GetTenantId(), accountId, serviceName, region, []string{targetResource})
+			items, err := lookupEventResources(ctx, accountId, serviceName, region, []string{targetResource})
 			if err != nil {
 				ctx.GetLogger().Warn("cloudResourceAction: db lookup failed, skipping auto-discovery", "error", err)
 				return nil, nil
@@ -384,7 +411,7 @@ func (a *cloudResourceAction) AutoExecute(ctx playbooks.PlaybookActionContext) (
 			return nil, err
 		}
 		rawParams["account_id"] = accountId
-		items, err := lookupResourcesFromDB(ctx.GetTenantId(), accountId, labels["gcp_service_name"], labels["gcp_region"], []string{labels["gcp_event_instance"]})
+		items, err := lookupEventResources(ctx, accountId, labels["gcp_service_name"], labels["gcp_region"], []string{labels["gcp_event_instance"]})
 		if err != nil {
 			ctx.GetLogger().Warn("cloudResourceAction: db lookup failed, skipping auto-discovery", "error", err)
 			return nil, nil
@@ -420,7 +447,7 @@ func (a *cloudResourceAction) AutoExecute(ctx playbooks.PlaybookActionContext) (
 		return nil, err
 	}
 	rawParams["account_id"] = accountId
-	items, err := lookupResourcesFromDB(ctx.GetTenantId(), accountId, labels["aws_service_name"], labels["aws_region"], lo.Uniq(resource_ids))
+	items, err := lookupEventResources(ctx, accountId, labels["aws_service_name"], labels["aws_region"], lo.Uniq(resource_ids))
 	if err != nil {
 		ctx.GetLogger().Warn("cloudResourceAction: db lookup failed, skipping auto-discovery", "error", err)
 		return nil, nil

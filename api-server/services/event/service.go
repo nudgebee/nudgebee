@@ -3643,6 +3643,7 @@ func runPlaybookEnrichment(sc *security.RequestContext, webhookEvent *Event, eve
 			SubjectNode:             webhookEvent.SubjectNode,
 			AggregationKey:          webhookEvent.AggregationKey,
 			ExistingEvidenceActions: existingEvidenceActions,
+			CloudResourceId:         webhookEvent.CloudResourceId,
 		})
 		if err != nil {
 			sc.GetLogger().Error("event: unable to process playbook for event", "error", err, "aggregation_key", webhookEvent.AggregationKey, "account_id", webhookEvent.AccountId, "event_id", webhookEvent.Fingerprint)
@@ -3981,6 +3982,7 @@ func RefreshInvestigation(sc *security.RequestContext, eventId string) error {
 		SubjectNamespace: subjectNamespace,
 		SubjectNode:      subjectNode,
 		AggregationKey:   *event.AggregationKey,
+		CloudResourceId:  common.StrVal(event.CloudResourceId),
 	})
 	if err != nil {
 		sc.GetLogger().Error("event: unable to process playbook for event", "error", err, "aggregation_key", *event.AggregationKey, "account_id", accountId, "event_id", event.Id)
