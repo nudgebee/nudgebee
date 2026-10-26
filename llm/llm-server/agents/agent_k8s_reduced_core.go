@@ -72,6 +72,11 @@ func trimmedK8sCoreToolNames() []string {
 		// by keyword directly, without an extra delegate_agent+search_tools hop.
 		// Same invariant PR #34819 established across every orchestrator.
 		tools.SearchSkillsToolName,
+		// im_message_send is preloaded rather than reached on-demand: a tool
+		// search_tools surfaces is not declared to the model, so asked to post to a
+		// Slack or Teams channel the planner tried delegate_agent (which refuses it)
+		// or said it couldn't, instead of calling it.
+		tools.ToolIMMessageSend,
 	}
 	if config.Config.RemediationAgentEnabled {
 		names = append(names, RemediationAgentName)

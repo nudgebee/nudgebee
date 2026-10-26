@@ -51,6 +51,7 @@ func (a VMOrchestratorAgent) GetSupportedTools(ctx *security.RequestContext) []t
 		tools.SearchSkillsToolName:       true,
 		NudgebeeAgentName:                true,
 		AgentCodeAnalyzer:                true,
+		tools.ToolIMMessageSend:          true,
 	}
 	var out []toolcore.NBTool
 	for _, tool := range toolcore.GetEnabledNBTools(ctx, a.accountID) {

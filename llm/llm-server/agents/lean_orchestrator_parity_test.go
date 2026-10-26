@@ -83,6 +83,8 @@ func TestLeanOrchestratorParity_ReducedCoreShape(t *testing.T) {
 		// planner browsed repos one file per shell call instead.
 		AgentCodeAnalyzer,
 		toolcore.ToolExecuteShellCommand,
+		// Preloaded, not on-demand: found only through search_tools, it was not called.
+		tools.ToolIMMessageSend,
 	}
 
 	// And every lean core must NOT preload these specialists — reaching them
@@ -141,8 +143,10 @@ func TestLeanOrchestratorParity_ReducedCoreShape(t *testing.T) {
 			// 18 since analyze_metric_series joined it (#41760): every alert
 			// investigation is asked to compute "getting worse" with it, so a
 			// search_tools hop would cost an iteration on each metric alert.
-			assert.LessOrEqual(t, len(tt.names), 18,
-				"%s reduced core has %d tools; lean should stay ≤18 preloaded — otherwise the reach-on-demand pattern isn't being preserved",
+			// 19 since im_message_send joined it: the planner does not call a write
+			// tool it only found through search_tools.
+			assert.LessOrEqual(t, len(tt.names), 19,
+				"%s reduced core has %d tools; lean should stay ≤19 preloaded — otherwise the reach-on-demand pattern isn't being preserved",
 				tt.name, len(tt.names))
 		})
 	}

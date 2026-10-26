@@ -63,6 +63,8 @@ func cloudLeanCoreToolNames(cliToolName string) []string {
 		// by keyword directly, without an extra delegate_agent+search_tools hop.
 		// Same invariant PR #34819 established across every orchestrator.
 		tools.SearchSkillsToolName,
+		// Preloaded for the same reason as on k8s (trimmedK8sCoreToolNames).
+		tools.ToolIMMessageSend,
 	}
 	// Resource discovery goes through the direct DB tool, NOT the resource_search agent:
 	// cloud_resource_search_execute resolves from the unified cloud_resourses inventory in one
