@@ -530,6 +530,19 @@ type ProviderCapabilities struct {
 	// mirroring DefaultProviderResponse.DefaultIndex. Only populated by the
 	// list_provider_capabilities path; empty for providers without an index concept.
 	DefaultIndex string `json:"default_index,omitempty"`
+	// ByTraceNaturalOrderOnly says this provider's "By Traces" listing can only be
+	// returned in its index's natural order (newest first), so a client must not offer
+	// or send any other order for that view — it is refused, not silently reordered.
+	// Traces only; omitted (false) for every other provider and provider type, which a
+	// client reads as "order it however you like".
+	//
+	// This is NOT a quality signal, and it expires. It is false elsewhere only because
+	// every other reader reduces a page of spans to traces and sorts those (see
+	// trace_by_trace_order.go): that accepts any order by never ranking traces at all.
+	// Fix that paging so those readers rank traces and they become natural-order-only
+	// too, making this field true everywhere — at which point delete it rather than keep
+	// a constant in the contract.
+	ByTraceNaturalOrderOnly bool `json:"by_trace_natural_order_only,omitempty"`
 }
 
 // AvailableProvider is one active observability provider that can serve the

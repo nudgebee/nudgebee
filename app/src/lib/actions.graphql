@@ -9237,6 +9237,10 @@ type ProviderCapabilities {
   # this provider cannot resolve. Logs only. See #39573.
   canonical_fields: [String]
   default_index: String
+  # True when the provider's "By Traces" listing can only be returned newest first, so a
+  # client must not offer or send another order for that view — it is refused, not
+  # reordered. Traces only; absent means "order it however you like". See #41495.
+  by_trace_natural_order_only: Boolean
 }
 
 type OperatorDescriptor {

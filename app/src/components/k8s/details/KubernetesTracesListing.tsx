@@ -318,6 +318,9 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
   const [inputTraceId, setInputTraceId] = useState<string>('');
   const { openWithContext: openNubiChat } = useNubiGlobalChat();
   const [traceProvider, setTraceProvider] = useState('');
+  // by_trace_natural_order_only from the provider's capabilities: the "By Traces" listing
+  // can only be returned newest first, so no other order may be offered or sent there.
+  const [byTraceNaturalOrderOnly, setByTraceNaturalOrderOnly] = useState(false);
   const [services, setServices] = useState<string[]>([]);
   // The store's services plus any the caller supplied, deduplicated and sorted.
   const serviceChoices = useMemo(
@@ -338,12 +341,37 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
   }, [passedEsIndex]);
   // 'spans' (default) = one row per span; 'traces' = one row per trace (root span).
   const [traceView, setTraceView] = useState<TraceViewMode>('spans');
+  // A provider whose By Traces page is ranked by each trace's newest span can only list it
+  // newest first, and refuses any other order with a 400 the table used to show as an empty
+  // list (#41495). There the Duration sort is neither offered nor sent; the chosen sort is
+  // kept and still applies in By Spans.
+  //
+  // The constraint is read from the provider's capabilities rather than matched on a
+  // provider name, so the backend that enforces it is the one that declares it. Taken from
+  // the get_default_provider response this screen already awaits — not from
+  // useData().providerCapabilities as the sibling Trace Group tab does — because that
+  // context loads independently: a late answer there only delays gating a whole tab, while
+  // here it would let the first request go out with an order the provider refuses.
+  // Defaults to false, so an api-server that does not send the field yet behaves as before.
+  const byTraceNewestFirstOnly = traceView === 'traces' && byTraceNaturalOrderOnly;
+  const effectiveSort = useMemo<SortOrderObject>(
+    () => (byTraceNewestFirstOnly ? { name: 'Timestamp', order: 'desc' } : sortObject),
+    [byTraceNewestFirstOnly, sortObject]
+  );
+  const listingHeader = useMemo(
+    () =>
+      byTraceNewestFirstOnly
+        ? LISTING_HEADER.map((h) => (typeof h === 'object' && h.name === 'Duration' ? { ...h, sortEnabled: false } : h))
+        : LISTING_HEADER,
+    [byTraceNewestFirstOnly, LISTING_HEADER]
+  );
 
   useEffect(() => {
     if (traceData.length > 0) {
       return;
     }
     setTraceProvider('');
+    setByTraceNaturalOrderOnly(false);
     setLoading(true);
     handleClearAll();
     const init = async () => {
@@ -369,6 +397,9 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
       }
       const obs = res?.data?.data?.observability_get_default_provider;
       const provider = obs?.provider || '';
+      // Set with the provider, from the same response, so the two can never disagree
+      // about which provider's ordering rule is in force.
+      setByTraceNaturalOrderOnly(obs?.capabilities?.by_trace_natural_order_only === true);
       // ES: seed the index picker with the per-account resolved default and load the
       // cluster's trace index options — unless a parent pinned the index (drilldown),
       // in which case that index wins and there's no picker to populate.
@@ -600,7 +631,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
     setData([]);
     setTotalCount(0);
     let sortCol = 'timestamp';
-    if (sortObject.name == 'Duration') {
+    if (effectiveSort.name == 'Duration') {
       sortCol = 'duration_ns';
     }
     apiTrace
@@ -620,7 +651,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
         resource: resource.replace(/\\/g, '\\\\').replace(/'/g, "\\'"),
         duration: getInitialDuration(),
         sortCol: sortCol,
-        sortOrder: sortObject.order,
+        sortOrder: effectiveSort.order,
         header: header.replace(/\\/g, '\\\\').replace(/'/g, "\\'"),
         selectedStatusCode: selectedStatusCode,
         traceSource: selectedTracesSource,
@@ -775,7 +806,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
     selectedHttpStatus,
     selectedHttpSpan,
     selectedK8sAccount,
-    sortObject,
+    effectiveSort,
     destinationSelectedNamespace,
     destinationSelectedWorkload,
     selectedStatusCode,
@@ -1620,14 +1651,14 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
         <ListingLayout.Body>
           <CustomTable
             id='k8s-trace-listing'
-            headers={traceProvider === 'gcp' ? GCP_LISTING_HEADER : LISTING_HEADER}
+            headers={traceProvider === 'gcp' ? GCP_LISTING_HEADER : listingHeader}
             rowsPerPage={traceData.length > 0 ? traceData.length : recordsPerPage}
             tableData={data}
             onPageChange={handlePageChange}
             totalRows={traceData.length > 0 ? traceData.length : totalCount}
             loading={loading}
             onSortChange={handleSortChange}
-            sort={traceData.length > 0 ? {} : sortObject}
+            sort={traceData.length > 0 ? {} : effectiveSort}
             pageNumber={currentPage + 1}
             errorMessage={errorMsg}
             showExpandable={true}

@@ -738,6 +738,7 @@ const apiAccount = {
             supports_alert_rules
             alert_rules_reason
             canonical_fields
+            by_trace_natural_order_only
             supported_operator_descriptors {
               token
               chip_label

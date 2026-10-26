@@ -2695,6 +2695,9 @@ func getProviderCapabilities(ctx *security.RequestContext, accountId, provider, 
 			// honouring it. Logs and metrics still read the static value — their own drift
 			// is a separate sweep.
 			caps.SupportsRawQuery = rawTraceQueryUnsupportedReason(source) == ""
+			// Derived from the reader that enforces it, so the rule a client is told and
+			// the rule a By Traces request is judged by are the same sentence (#41495).
+			caps.ByTraceNaturalOrderOnly = byTraceNaturalOrderOnlyReason(source) != ""
 			// Full canonical→provider merge (static ∪ tenant ∪ account ∪ dynamic).
 			// Skip the merge when accountId is empty: with no account the lookup
 			// can only return the static defaults, so there's nothing to merge.
