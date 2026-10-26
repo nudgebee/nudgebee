@@ -801,7 +801,10 @@ const TenantSettings = () => {
     items.forEach((f, i) => {
       const content = recommendedContent[f.value];
       const label = (f.display_name || f.value || '').toLowerCase();
-      const extra = [f.value, f.description, content?.description, f.category_label].filter(Boolean).join(' ').toLowerCase();
+      // Search only the description actually shown in the row (buildFeatureRow uses the same fallback) --
+      // matching the other one too would filter rows in on text nobody can see.
+      const displayedDescription = content?.description || f.description;
+      const extra = [f.value, displayedDescription, f.category_label].filter(Boolean).join(' ').toLowerCase();
       const full = extra ? `${label} ${extra}` : label;
       const rank = rankFeatureSearchMatch(label, full, query, queryTokens);
       if (rank !== null) {
