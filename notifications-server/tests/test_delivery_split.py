@@ -1009,6 +1009,19 @@ def test_a_batch_rule_finding_flushes_to_its_own_rules_channel(monkeypatch):
     assert [event["title"] for event in service.sent[0][2]["events"]] == ["cpu high"]
 
 
+def test_an_anomaly_a_batch_rule_matches_goes_out_in_its_digest(monkeypatch):
+    """The anomaly digest is already hourly, so a batch rule matching an
+    anomaly must route it to that rule's channel — holding it for batch
+    delivery dropped it, since nothing moves it into the batch digest."""
+    service = _service({PROD: [_batch_deliver(OPS)]}, monkeypatch)
+
+    result, _redis_fake = _flush(service, [_anomaly(PROD, "memory")])
+
+    assert result == {"status": "ok"}
+    assert service.sent and service.sent[0][1] == OPS
+    assert [event["title"] for event in service.sent[0][2]["events"]] == ["memory"]
+
+
 def test_a_batch_flush_hands_the_template_its_account_names(monkeypatch):
     service = _service({PROD: [_batch_deliver(OPS)]}, monkeypatch)
     looked_up = []

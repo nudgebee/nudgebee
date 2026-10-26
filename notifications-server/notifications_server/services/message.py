@@ -1238,15 +1238,18 @@ class GroupedMessageHandler:
 
                     # Each alert is matched on its own, so every channel gets only
                     # the alerts routed to it; anomalies match as troubleshooting findings.
-                    # A batch item's own rule still matches here — honour_batch=False
-                    # keeps it from being held for batch delivery a second time.
+                    # Every grouped digest is already an hourly message, so a matching
+                    # batch rule is satisfied by it: honour_batch=False routes the item
+                    # to that rule's channels instead of holding it for batch delivery,
+                    # which nothing here would pick up again — an anomaly or SLO alert a
+                    # batch rule matched used to be dropped from its digest.
                     routes = await self.message_service.route_units(
                         session,
                         tenant_id,
                         units,
                         installed_platforms,
                         dispatch=dispatch,
-                        honour_batch=(orig_type != "batch"),
+                        honour_batch=False,
                     )
                     if not routes:
                         LOG.debug("Nothing to send for %s: every alert was stopped by the rules", key)
