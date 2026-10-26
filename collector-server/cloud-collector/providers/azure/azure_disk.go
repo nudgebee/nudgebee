@@ -391,8 +391,10 @@ func (s *diskService) GetRecommendations(ctx providers.CloudProviderContext, acc
 			}
 		}
 
-		// Check for disk SKU upgrades and optimization opportunities
-		if properties != nil {
+		// Check for disk SKU upgrades and optimization opportunities. An
+		// unattached disk is recommended for deletion instead, so it is not
+		// also offered an upgrade.
+		if properties != nil && properties["diskState"] != string(armcompute.DiskStateUnattached) {
 			if diskSKU, ok := resource.Meta["sku"].(map[string]interface{}); ok {
 				if skuName, ok := diskSKU["name"].(string); ok {
 					var diskSizeGB float64

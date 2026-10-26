@@ -394,30 +394,7 @@ func getRecommendationsInternal(ctx *security.RequestContext, accountId string, 
 		ctx.GetLogger().Error("unable to get dbms", "error", err)
 		return providers.ListRecommendationsResponse{}, providers.Account{}, err
 	}
-	query := `select resourse_created_on, created_at, resourse_id, name, type, status, region, arn, tags::text, meta::text, service_name
-	from cloud_resourses
-	where account = $1`
-	args := []interface{}{accountId}
-	// The GCP "Recommender" pseudo-service owns no cloud_resourses rows of its
-	// own — it needs the account's full resource set to derive which
-	// regions/zones to query (see resolveRecommenderLocations in
-	// providers/gcloud) and to resolve each recommendation's target resource
-	// (buildRecommenderResourceIndex). Gate this on the GCP provider: the
-	// account-level StoreRecommendationsAll runs the "recommender"
-	// native-service sync for every provider, and dropping the filter for
-	// AWS/Azure would hand their dispatchers the full active fleet — Azure's
-	// ListRecommendations would then fall through to re-crawl every registered
-	// service. Every other case keeps the service_name and active-status
-	// filters, preserving the pre-change behavior exactly.
-	if !strings.EqualFold(filter.ServiceName, "recommender") || !strings.EqualFold(provider, "gcp") {
-		query += ` and lower(status) = 'active' and lower(service_name) = $2`
-		args = append(args, strings.ToLower(filter.ServiceName))
-	} else {
-		// Idle-resource recommendations point at exactly the rows the
-		// active-only filter drops — an unattached disk or stopped VM is
-		// stored Inactive — so the recommender keeps every non-deleted row.
-		query += ` and lower(status) != 'deleted'`
-	}
+	query, args := recommendationResourcesQuery(accountId, provider, filter.ServiceName)
 	rows, err := databaseManager.Query(query, args...)
 	if err != nil {
 		ctx.GetLogger().Error("unable to fetch existing resources", "error", err)
@@ -487,6 +464,42 @@ func getRecommendationsInternal(ctx *security.RequestContext, accountId string, 
 	recommendations, err := cloudProvider.ListRecommendations(ctx, account, filter, existingResources)
 	return recommendations, account, err
 
+}
+
+const azureDiskServiceName = "Microsoft.Compute/disks"
+
+// recommendationResourcesQuery selects the stored resources a service's
+// recommendation rules are evaluated against.
+func recommendationResourcesQuery(accountId, provider, serviceName string) (string, []any) {
+	query := `select resourse_created_on, created_at, resourse_id, name, type, status, region, arn, tags::text, meta::text, service_name
+	from cloud_resourses
+	where account = $1`
+	args := []any{accountId}
+	// The GCP "Recommender" pseudo-service owns no cloud_resourses rows of its
+	// own — it needs the account's full resource set to derive which
+	// regions/zones to query (see resolveRecommenderLocations in
+	// providers/gcloud) and to resolve each recommendation's target resource
+	// (buildRecommenderResourceIndex). Gate this on the GCP provider: the
+	// account-level StoreRecommendationsAll runs the "recommender"
+	// native-service sync for every provider, and dropping the filter for
+	// AWS/Azure would hand their dispatchers the full active fleet — Azure's
+	// ListRecommendations would then fall through to re-crawl every registered
+	// service.
+	if strings.EqualFold(serviceName, "recommender") && strings.EqualFold(provider, "gcp") {
+		// Idle-resource recommendations point at exactly the rows the
+		// active-only filter drops — an unattached disk or stopped VM is
+		// stored Inactive — so the recommender keeps every non-deleted row.
+		return query + ` and lower(status) != 'deleted'`, args
+	}
+	args = append(args, strings.ToLower(serviceName))
+	// An unattached Azure disk is stored Inactive, and the disk rules that
+	// recommend deleting it need to see it. Every other service keeps the
+	// active-only filter, since its rules were never checked against stopped
+	// or disabled resources.
+	if strings.EqualFold(provider, "azure") && strings.EqualFold(serviceName, azureDiskServiceName) {
+		return query + ` and lower(status) != 'deleted' and lower(service_name) = $2`, args
+	}
+	return query + ` and lower(status) = 'active' and lower(service_name) = $2`, args
 }
 
 // resourceCreatedAt is the time rules measure a resource's age from: when it
