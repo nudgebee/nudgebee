@@ -24,6 +24,19 @@ const knowledgeReadBytes = 8192
 // The existing JSON save API buffers each body. Bound concurrent materialization.
 var knowledgeSaveSlots = make(chan struct{}, 2)
 
+// headBuffer keeps the first limit bytes written to it and discards the rest.
+type headBuffer struct {
+	strings.Builder
+	limit int
+}
+
+func (b *headBuffer) Write(p []byte) (int, error) {
+	if room := b.limit - b.Len(); room > 0 {
+		b.Builder.Write(p[:min(len(p), room)])
+	}
+	return len(p), nil
+}
+
 func knowledgeFailure(err error) (core.NBToolResponse, error) {
 	return core.NBToolResponse{Status: core.NBToolResponseStatusError, Type: core.NBToolResponseTypeText, Data: fmt.Sprintf("Knowledge read failed: %s. No complete document was loaded.", common.TruncateHead(err.Error(), 1024))}, nil
 }
@@ -141,11 +154,13 @@ func (m LoadSkillsTool) callWorkspaceKnowledge(ctx core.NbToolContext, input cor
 		reader = io.NopCloser(strings.NewReader(c.Content))
 	}
 	defer func() { _ = reader.Close() }()
-	text, err := readKnowledgeLinesFromByte(reader, c.FileSHA256, keyword, start, startByte, c.Purpose)
+	// The panel shows the page itself, not this call's numbered read window.
+	page := &headBuffer{limit: core.MaxKnowledgeReferenceBytes}
+	text, err := readKnowledgeLinesFromByte(io.TeeReader(reader, page), c.FileSHA256, keyword, start, startByte, c.Purpose)
 	if err != nil {
 		return knowledgeFailure(err)
 	}
-	refs := []core.NBToolResponseReference{{Text: c.Title, Url: c.ReferenceID, Type: "knowledge_base", Description: core.KnowledgePurposeGuidance(c.Purpose), Snippet: text}}
+	refs := []core.NBToolResponseReference{{Text: c.Title, Url: c.ReferenceID, Type: "knowledge_base", Description: core.KnowledgePurposeGuidance(c.Purpose), Snippet: strings.ToValidUTF8(page.String(), "")}}
 	result := fmt.Sprintf("%s\nTitle: %s\nHandle: %s\nSize: %d bytes. Use load_skills with this handle and keyword or start_line for selective reads.\n%s", core.KnowledgePurposeGuidance(c.Purpose), c.Title, c.ID, c.Bytes, text)
 	if c.Path != "" {
 		refs = append(refs, core.NBToolResponseReference{Text: c.Title, Url: c.Path, Type: "file", Query: c.ID, Description: core.KnowledgePurposeGuidance(c.Purpose) + " Read through load_skills using " + c.ID})

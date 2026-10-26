@@ -163,6 +163,8 @@ func TestKnowledgeWorkspaceToolRoundTrip(t *testing.T) {
 	require.Equal(t, core.NBToolResponseStatusSuccess, first.Status)
 	require.Contains(t, fmt.Sprint(first.Data), "FINAL-CANARY")
 	require.Len(t, first.References, 2)
+	// The reference carries the page from its start, not the keyword's numbered read window.
+	require.Equal(t, body[:min(len(body), core.MaxKnowledgeReferenceBytes)], first.References[0].Snippet)
 	cached, ok := core.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, c.ID)
 	require.True(t, ok)
 	require.Empty(t, cached.Content)

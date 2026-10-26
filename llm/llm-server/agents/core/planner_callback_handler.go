@@ -293,7 +293,12 @@ func skillReferenceMetadata(kind, tool string, ref toolcore.NBToolResponseRefere
 		"description": ref.Description,
 	}
 	if snippet := strings.TrimSpace(ref.Snippet); snippet != "" {
-		metadata["content"] = TruncateHead(snippet, kbRefSnippetMaxChars)
+		limit := kbRefSnippetMaxChars
+		if kind == AgentReferenceKindKBDocument {
+			// Synced pages have no stored KB body, so this is all the panel can show.
+			limit = toolcore.MaxKnowledgeReferenceBytes
+		}
+		metadata["content"] = TruncateHead(snippet, limit)
 	}
 	return metadata
 }
