@@ -78,10 +78,10 @@ func TestPickRefusal(t *testing.T) {
 func TestPickQueryText(t *testing.T) {
 	plan := pickPlan().Plan
 	assert.Equal(t, "Go with option 1: Raise the memory limit.", pickQueryText(remediationPickRequest{Option: 1, Kind: pickKindRun}, plan))
-	assert.Equal(t, "Raise a PR for option 2 of plan v3: Bound the cache in cache.go (repo acme/api). Root cause: The API pod runs out of memory.",
+	assert.Equal(t, "Raise a PR for option 2 of plan v3: Bound the cache in cache.go (repo acme/api). Root cause: The API pod runs out of memory. "+prReplyAsk,
 		pickQueryText(remediationPickRequest{Option: 2, Kind: pickKindPR}, plan))
 	plan.Version, plan.RootCause = 0, ""
-	assert.Equal(t, "Raise a PR for option 2: Bound the cache in cache.go (repo acme/api).", pickQueryText(remediationPickRequest{Option: 2, Kind: pickKindPR}, plan))
+	assert.Equal(t, "Raise a PR for option 2: Bound the cache in cache.go (repo acme/api). "+prReplyAsk, pickQueryText(remediationPickRequest{Option: 2, Kind: pickKindPR}, plan))
 }
 
 func TestFirstSentence(t *testing.T) {

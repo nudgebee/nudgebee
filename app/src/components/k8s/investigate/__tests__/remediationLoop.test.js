@@ -18,6 +18,8 @@ import {
   confirmedByName,
   answerText,
   timelineOf,
+  prRequestText,
+  PR_REPLY_ASK,
 } from '../remediationLoop';
 
 // Fixtures shaped exactly like the contracts: the C7 read (plan fields top level + loop), C1 run rows, C3 pull
@@ -98,6 +100,15 @@ describe('C1 run records', () => {
       data: { plan_version: 'pv1', option: 1 },
     };
     expect(chosenOption(plan, [pr], 'OPEN')).toMatchObject({ option: 1 });
+  });
+});
+
+describe('Raise a PR request', () => {
+  it('asks for the PR link first, in the same words as the server', () => {
+    const action = { action: 'x', required_change: { where: 'code', target: 't', change: 'c', repo: 'example-org/web' } };
+    expect(prRequestText({ index: 1, res: { version: 2 }, action })).toBe(
+      `Raise a PR for option 1 of plan v2: c in t (repo example-org/web). ${PR_REPLY_ASK}`
+    );
   });
 });
 

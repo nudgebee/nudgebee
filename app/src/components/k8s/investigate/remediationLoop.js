@@ -249,6 +249,9 @@ export function optionMode(action) {
 // changeOnly: the plan has options and none of them is run by a command (each is a code or other required change).
 export const changeOnly = (options) => options.length > 0 && options.every((a) => optionMode(a) !== 'run');
 
+// PR_REPLY_ASK ends a Raise a PR request, as llm-server's prReplyAsk: the reply led with the whole diff.
+export const PR_REPLY_ASK = "Reply with the pull request's link first and one line on what it changes; the diff is in the PR.";
+
 // prRequestText is the message sent into the alert's chat to raise a PR for option n.
 export function prRequestText({ index, res, action }) {
   const rc = requiredChangeOf(action) || {};
@@ -256,7 +259,7 @@ export function prRequestText({ index, res, action }) {
   const cause = firstLine(res?.root_cause);
   return `Raise a PR for option ${index}${version}: ${rc.change}${rc.target ? ` in ${rc.target}` : ''}${rc.repo ? ` (repo ${rc.repo})` : ''}.${
     cause ? ` Root cause: ${cause}` : ''
-  }`;
+  } ${PR_REPLY_ASK}`;
 }
 
 // The first sentence (or line) of a text, ending in its stop.

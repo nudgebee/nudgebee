@@ -141,6 +141,10 @@ func pickMode(a RemediationAction) string {
 	return "manual"
 }
 
+// prReplyAsk ends a Raise a PR pick: seen on dev, the reply opened with the whole diff and the PR's link was its last
+// line.
+const prReplyAsk = "Reply with the pull request's link first and one line on what it changes; the diff is in the PR."
+
 // pickQueryText is the message a pick sends into the alert's conversation: the same words on every surface.
 func pickQueryText(pick remediationPickRequest, plan RemediationPlan) string {
 	a := plan.Actions[pick.Option-1]
@@ -158,7 +162,7 @@ func pickQueryText(pick remediationPickRequest, plan RemediationPlan) string {
 		if cause := firstSentence(plan.RootCause); cause != "" {
 			text += " Root cause: " + cause
 		}
-		return text
+		return text + " " + prReplyAsk
 	}
 	return fmt.Sprintf("Go with option %d: %s.", pick.Option, strings.TrimRight(strings.TrimSpace(firstNonEmpty(a.Action, a.Title)), "."))
 }

@@ -3,7 +3,7 @@ import apiAskNudgebee from '@api1/ask-nudgebee';
 import apiKubernetes from '@api1/kubernetes';
 import RemediationLoopPanel, { answerApproval } from '../RemediationLoopPanel';
 import RemediationResolutionCard from '../../RemediationResolutionCard';
-import { clockOnly, loopNeedsPoll } from '../../remediationLoop';
+import { PR_REPLY_ASK, clockOnly, loopNeedsPoll } from '../../remediationLoop';
 
 jest.mock('@api1/kubernetes', () => ({
   __esModule: true,
@@ -1555,6 +1555,37 @@ describe('Round 17: code fixes, PRs and changes a person makes', () => {
     ...over,
   });
 
+  it('a PR recorded after the turn ended replaces "didn’t run it" (seen on dev: the runs list was read first)', async () => {
+    apiAskNudgebee.aiGenerateInvestigate.mockResolvedValue(sentOk);
+    const props = baseProps();
+    const { rerender } = render(<RemediationLoopPanel {...props} remediation={codePlan} />);
+    fireEvent.click(screen.getByTestId('remediation-loop-raise-pr-1'));
+    await waitFor(() => expect(apiAskNudgebee.aiGenerateInvestigate).toHaveBeenCalledTimes(1));
+    rerender(<RemediationLoopPanel {...props} remediation={{ ...codePlan, loop: { ...codePlan.loop, conversation_busy: true } }} />);
+    rerender(<RemediationLoopPanel {...props} remediation={{ ...codePlan, loop: { ...codePlan.loop, conversation_busy: false } }} />);
+    expect(headline()).toHaveTextContent('Nubi didn’t run it');
+    // The server's row names the option and plan version.
+    const row = prRow({ created_at: new Date().toISOString(), data: { ...prRow().data, option: 1, plan_version: 'pv-code' } });
+    rerender(<RemediationLoopPanel {...props} remediation={codePlan} resolutions={[row]} />);
+    expect(headline()).toHaveTextContent('PR open: Cap MaxOutputSize in fetch worker');
+    expect(screen.queryByTestId('remediation-loop-not-run-chat')).not.toBeInTheDocument();
+  });
+
+  it('a row of the same option from before the pick does not hide "didn’t run it"', async () => {
+    apiAskNudgebee.aiGenerateInvestigate.mockResolvedValue(sentOk);
+    const props = baseProps();
+    const { rerender } = render(<RemediationLoopPanel {...props} remediation={codePlan} />);
+    fireEvent.click(screen.getByTestId('remediation-loop-raise-pr-1'));
+    await waitFor(() => expect(apiAskNudgebee.aiGenerateInvestigate).toHaveBeenCalledTimes(1));
+    rerender(<RemediationLoopPanel {...props} remediation={{ ...codePlan, loop: { ...codePlan.loop, conversation_busy: true } }} />);
+    rerender(<RemediationLoopPanel {...props} remediation={{ ...codePlan, loop: { ...codePlan.loop, conversation_busy: false } }} />);
+    expect(headline()).toHaveTextContent('Nubi didn’t run it');
+    // An option-1 PR created long before this pick (its row read late) is not this pick's.
+    const older = prRow({ created_at: Z('10:06'), data: { ...prRow().data, option: 1, plan_version: 'pv-code' } });
+    rerender(<RemediationLoopPanel {...props} remediation={codePlan} resolutions={[older]} />);
+    expect(headline()).toHaveTextContent('Nubi didn’t run it');
+  });
+
   it('a code fix with a repo: labelled Code fix, shows the change, offers Raise a PR and never "Use this fix"', () => {
     renderPanel(codePlan);
     expect(headline()).toHaveTextContent('Cause is in code — fix needs a change');
@@ -1584,8 +1615,7 @@ describe('Round 17: code fixes, PRs and changes a person makes', () => {
     expect(apiAskNudgebee.aiGenerateInvestigate).toHaveBeenCalledWith(
       expect.objectContaining({
         session_id: 'event-fp1',
-        query:
-          'Raise a PR for option 1 of plan v3: Set a bounded MaxOutputSize on FetchOptions in worker/fetch.go (repo example-org/worker). Root cause: The fetch worker buffers command output without a limit.',
+        query: `Raise a PR for option 1 of plan v3: Set a bounded MaxOutputSize on FetchOptions in worker/fetch.go (repo example-org/worker). Root cause: The fetch worker buffers command output without a limit. ${PR_REPLY_ASK}`,
       })
     );
     await act(async () => resolveSend(sentOk));

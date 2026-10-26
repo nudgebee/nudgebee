@@ -1050,6 +1050,10 @@ const RemediationLoopPanel = ({
       ? { option: picked.option, preparing: true }
       : null;
   const chosen = recorded || pickedHere;
+  // A run or PR of the not-run pick's option recorded since that pick wins over "didn't run it": the runs list can be
+  // read before the row lands. An older run of the same option does not.
+  const recordedSincePick =
+    Boolean(recorded) && recorded.option === pickError.option && (timeMs(recorded.row?.created_at) || 0) >= (pickError.at || Infinity) - 60 * 1000;
   // Right after the send the conversation may not read busy yet; a pick that never saw it busy ends after a grace.
   const PICK_GRACE_MS = 60 * 1000;
   useEffect(() => {
@@ -1060,7 +1064,7 @@ const RemediationLoopPanel = ({
     }
     if (web.length || slack.length) return;
     if (picked.sawBusy || Date.now() - picked.at > PICK_GRACE_MS) {
-      setPickError({ option: picked.option, message: '', notRun: true });
+      setPickError({ option: picked.option, message: '', notRun: true, at: picked.at });
       setPicked(null);
     }
     // Re-evaluated on every read of the remediation.
@@ -1207,7 +1211,7 @@ const RemediationLoopPanel = ({
       return;
     }
     if (approved.sawBusy || Date.now() - approved.at > PICK_GRACE_MS) {
-      setPickError({ option: approved.option || 0, message: '', notRun: true });
+      setPickError({ option: approved.option || 0, message: '', notRun: true, at: approved.at });
       setPicked(null);
       setApproved(null);
     }
@@ -1438,7 +1442,7 @@ const RemediationLoopPanel = ({
         </>
       ),
     };
-  } else if (pickError.notRun) {
+  } else if (pickError.notRun && !recordedSincePick) {
     where = {
       key: 'not-run',
       tone: 'warning',
