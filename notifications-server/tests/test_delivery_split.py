@@ -9,11 +9,13 @@ import asyncio
 import fnmatch
 import json
 import time
+import uuid
 from collections import defaultdict
 from datetime import timedelta
 from types import SimpleNamespace
 
 import redis
+from sqlalchemy.exc import SQLAlchemyError
 
 from notifications_server.services import message as message_module
 from notifications_server.services.delivery_split import account_sections, has_recommendations, merged_parameters
@@ -952,3 +954,87 @@ def test_a_batch_rule_finding_flushes_to_its_own_rules_channel(monkeypatch):
     assert result == {"status": "ok"}
     assert service.sent and service.sent[0][1] == OPS
     assert [event["title"] for event in service.sent[0][2]["events"]] == ["cpu high"]
+
+
+def test_a_batch_flush_hands_the_template_its_account_names(monkeypatch):
+    service = _service({PROD: [_batch_deliver(OPS)]}, monkeypatch)
+    looked_up = []
+
+    async def names(_session, tenant_id, batch):
+        looked_up.append((tenant_id, len(batch)))
+        return {PROD: "k8s-dev"}
+
+    monkeypatch.setattr(GroupedMessageHandler, "_batch_account_names", staticmethod(names))
+
+    _flush_batch(service, [_batch_item(PROD, "cpu high"), _batch_item(PROD, "disk full")])
+
+    assert looked_up == [(TENANT, 2)]  # once per flush, not once per channel
+    assert service.sent[0][2]["account_names"] == {PROD: "k8s-dev"}
+
+
+class _AccountsSession:
+    def __init__(self, rows=(), error=None):
+        self.rows, self.error = list(rows), error
+        self.statements, self.savepoint_rolled_back = [], False
+
+    async def execute(self, statement):
+        self.statements.append(statement)
+        if self.error:
+            raise self.error
+        return SimpleNamespace(all=lambda: self.rows)
+
+    def begin_nested(self):
+        session = self
+
+        class _Savepoint:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, *_):
+                session.savepoint_rolled_back = exc_type is not None
+                return False
+
+        return _Savepoint()
+
+    async def rollback(self):
+        raise AssertionError("a full rollback would expire the installations the sends still use")
+
+
+ACCOUNT_A, ACCOUNT_B = "a2a30b02-0f67-42e5-a2ab-c658230fd798", "21a3b9a9-8d4e-4a8f-9744-dcd61d828344"
+
+
+def _held(account_id):
+    return ({"type": "batch", "parameters": {"cloud_account_id": account_id, "title": "x"}}, None, 0)
+
+
+def test_batch_account_names_maps_each_account_id_to_its_name():
+    session = _AccountsSession(rows=[(uuid.UUID(ACCOUNT_A), "k8s-dev"), (uuid.UUID(ACCOUNT_B), "k8s-prod")])
+
+    names = asyncio.run(
+        GroupedMessageHandler._batch_account_names(
+            session, TENANT, [_held(ACCOUNT_A), _held(ACCOUNT_B), _held(ACCOUNT_A)]
+        )
+    )
+
+    assert names == {ACCOUNT_A: "k8s-dev", ACCOUNT_B: "k8s-prod"}
+    assert len(session.statements) == 1
+    params = session.statements[0].compile().params
+    assert sorted(next(v for v in params.values() if isinstance(v, (list, tuple)))) == sorted([ACCOUNT_A, ACCOUNT_B])
+    assert TENANT in params.values()  # scoped to the flushing tenant's accounts
+
+
+def test_batch_account_names_skips_malformed_ids_without_querying_for_them():
+    session = _AccountsSession()
+
+    names = asyncio.run(GroupedMessageHandler._batch_account_names(session, TENANT, [_held("acc-prod"), _held(None)]))
+
+    assert names == {} and session.statements == []
+
+
+def test_batch_account_names_falls_back_to_ids_when_the_lookup_fails():
+    session = _AccountsSession(error=SQLAlchemyError("connection reset"))
+
+    names = asyncio.run(GroupedMessageHandler._batch_account_names(session, TENANT, [_held(ACCOUNT_A)]))
+
+    assert names == {}
+    assert session.savepoint_rolled_back  # only the lookup rolls back; the sends keep their session

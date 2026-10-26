@@ -223,12 +223,12 @@ class TestBatchedFindings:
         assert msg["attachments"][-1]["color"] == "#94A3B8"  # neutral footer
 
 
-def _batch_event(i, with_id=True, account_name="prod-aws", account_id="acc-1", priority="high"):
+def _batch_event(i, with_id=True, account_id="acc-1", priority="high"):
+    # Shaped like a real finding: the account by id only, no name.
     return {
         "id": f"f-{i}" if with_id else None,
         "title": f"Issue {i}",
         "priority": priority,
-        "account_name": account_name,
         "cloud_account_id": account_id,
     }
 
@@ -252,13 +252,21 @@ class TestGroupedBatchFindings:
         assert item.account_id == "" and item.finding_id == ""
 
     def test_account_display_name_preferred_over_raw_id(self):
-        item = get_batch_findings_aggregated_message_params([_batch_event(0)]).items[0]
+        params = get_batch_findings_aggregated_message_params([_batch_event(0)], account_names={"acc-1": "prod-aws"})
+        item = params.items[0]
         assert item.account == "prod-aws" and item.account_id == "acc-1"
 
     def test_account_falls_back_to_raw_id_without_a_display_name(self):
-        event = {"id": "f-0", "title": "x", "cloud_account_id": "acc-1"}
-        item = get_batch_findings_aggregated_message_params([event]).items[0]
-        assert item.account == "acc-1"
+        params = get_batch_findings_aggregated_message_params([_batch_event(0)], account_names={"acc-2": "prod-gcp"})
+        assert params.items[0].account == "acc-1"
+        assert get_batch_findings_aggregated_message_params([_batch_event(0)]).items[0].account == "acc-1"
+
+    def test_account_name_comes_from_the_lookup_not_the_findings_own_fields(self):
+        # A finding's cluster is whatever label its source sent (empty, or a
+        # placeholder like "cluster-name"), not the account's name.
+        event = {**_batch_event(0), "cluster": "cluster-name", "account_name": "stale"}
+        params = get_batch_findings_aggregated_message_params([event], account_names={"acc-1": "prod-aws"})
+        assert params.items[0].account == "prod-aws"
 
     def test_account_ids_are_deduped_and_sorted(self):
         events = [

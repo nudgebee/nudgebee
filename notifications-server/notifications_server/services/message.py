@@ -93,6 +93,7 @@ from notifications_server.message_templates.slack.finding import (
 from notifications_server.message_templates.slack.webhook_sanitize import strip_interactive_slack_elements
 from notifications_server.models.db_base import BaseDB
 from notifications_server.models.models import (
+    CloudAccount,
     SentNotifications,
     NotificationRuleMappings,
     MessagingPlatform,
@@ -1045,6 +1046,38 @@ class GroupedMessageHandler:
 
         await run_in_cache_thread(_execute)
 
+    @staticmethod
+    async def _batch_account_names(session, tenant_id, batch):
+        """{account id: name} for a batch digest — a finding carries only its
+        account id. Empty on failure, so the digest falls back to the ids
+        rather than not going out."""
+        account_ids = set()
+        for payload, _, _ in batch:
+            finding = payload.get("parameters") or {}
+            account_id = finding.get("cloud_account_id") or finding.get("account_id")
+            # A malformed id would fail the whole uuid IN query, not just its own row.
+            try:
+                uuid.UUID(str(account_id))
+            except ValueError:
+                continue
+            account_ids.add(str(account_id))
+        if not account_ids:
+            return {}
+        try:
+            # A savepoint, so a failure rolls back only this read — a full
+            # rollback would expire the installations the sends below still use.
+            async with session.begin_nested():
+                result = await session.execute(
+                    select(CloudAccount.id, CloudAccount.account_name).filter(
+                        CloudAccount.id.in_(account_ids), CloudAccount.tenant == tenant_id
+                    )
+                )
+                rows = result.all()
+        except SQLAlchemyError as e:
+            LOG.warning("Account names for the batch digest of tenant %s failed; showing ids: %s", tenant_id, e)
+            return {}
+        return {str(account_id): name for account_id, name in rows if name}
+
     async def _send_batch(self, session, tenant_id, orig_type, batch, routes, installed_platforms, dispatch):
         """Returns (attempted indexes, {index: still-pending platforms}, raw
         responses, [(title, that route's responses), ...] to record once the
@@ -1053,6 +1086,7 @@ class GroupedMessageHandler:
         failed_platforms_by_index = defaultdict(set)
         platform_responses = []
         sent = []
+        account_names = await self._batch_account_names(session, tenant_id, batch) if orig_type == "batch" else None
         for ip, channel, indexes in routes:
             # batch[i][1] is the item's pending-platforms list on a retry;
             # skip a platform that's already delivered it.
@@ -1068,6 +1102,8 @@ class GroupedMessageHandler:
                 # so the newest queued one is the state shown.
                 events = latest_per_key(events)
             params = {"events": events}
+            if account_names is not None:
+                params["account_names"] = account_names
             responses = (
                 await self.message_service.send_template_notification(
                     session, tenant_id, {"parameters": params}, f"grouped_{orig_type}", [ip]

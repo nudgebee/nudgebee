@@ -40,19 +40,22 @@ class BatchFindingsSummaryParams(BaseModel):
     window_end_ms: int = 0
 
 
-def _item_from(finding: Dict[str, Any]) -> BatchFindingItem:
+def _item_from(finding: Dict[str, Any], account_names: Dict[str, str]) -> BatchFindingItem:
     account_id = finding.get("cloud_account_id") or finding.get("account_id") or ""
     return BatchFindingItem(
         title=finding.get("title") or "Untitled finding",
         severity=(finding.get("priority") or "").title(),
-        account=finding.get("account_name") or account_id,
+        account=account_names.get(account_id) or account_id,
         account_id=account_id,
         finding_id=finding.get("id") or "",
     )
 
 
-def get_batch_findings_aggregated_message_params(events: List[Dict[str, Any]]) -> BatchFindingsSummaryParams:
-    items = [_item_from(event) for event in events[:MAX_BATCH_ITEMS]]
+def get_batch_findings_aggregated_message_params(
+    events: List[Dict[str, Any]], account_names: Optional[Dict[str, str]] = None
+) -> BatchFindingsSummaryParams:
+    """account_names maps account id to its name; a finding carries only the id."""
+    items = [_item_from(event, account_names or {}) for event in events[:MAX_BATCH_ITEMS]]
     account_ids = sorted({a for a in (e.get("cloud_account_id") or e.get("account_id") for e in events) if a})
     # Computed once here, shared by every platform's "View All" link — only
     # the utm_source differs, so each renderer builds its own URL from these.
