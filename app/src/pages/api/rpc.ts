@@ -1,7 +1,14 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import crypto from 'crypto';
 import { context, propagation, trace, SpanStatusCode } from '@opentelemetry/api';
-import { authenticateRequest, buildSessionVariables, forwardAction, NO_TENANT_ROLE_MESSAGE, tokenScopeDeniedMessage } from '@lib/rpcGateway';
+import {
+  authenticateRequest,
+  buildSessionVariables,
+  forwardAction,
+  NO_TENANT_ROLE_MESSAGE,
+  tokenScopeDeniedMessage,
+  traceIdFromTraceparent,
+} from '@lib/rpcGateway';
 import { clientGone } from '@lib/graphqlGatewayHandler';
 
 // JSON-RPC 2.0 gateway. Thin protocol shell — auth, route lookup, envelope
@@ -206,6 +213,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             res.status(result.error.status).json(
               rpcError(rpcId, RPC_UPSTREAM_ERROR, `upstream_${result.error.status}`, {
                 method: result.error.method,
+                trace_id: traceIdFromTraceparent(traceParent),
                 payload: result.error.payload,
               })
             );

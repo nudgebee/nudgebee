@@ -717,6 +717,7 @@ export async function tryBypassGraphQL(opts: {
     )
   );
 
+  const traceId = traceIdFromTraceparent(opts.traceparent);
   const data: Record<string, unknown> = {};
   const errors: Array<{ message: string; path?: string[] }> = [];
   parsed.fields.forEach((f, i) => {
@@ -738,6 +739,9 @@ export async function tryBypassGraphQL(opts: {
       } else if (r.error.kind === 'upstream_error') {
         err.extensions = { upstream: { status: r.error.status, body: r.error.payload } };
       }
+      // The upstream stamps this trace_id on its log lines, so a generic message
+      // ("database connection failed") can be matched to the logged cause.
+      if (traceId) err.extensions = { ...err.extensions, trace_id: traceId };
       errors.push(err);
     }
   });
@@ -812,6 +816,12 @@ export function bypassGraphQLAsServer(opts: {
     tenantOverride: opts.tenantOverride,
     signal: opts.signal,
   });
+}
+
+// Trace id field of a W3C traceparent (`00-<trace_id>-<span_id>-<flags>`); '' when malformed.
+export function traceIdFromTraceparent(traceparent: string | undefined): string {
+  const traceId = traceparent?.split('-')[1] ?? '';
+  return /^[0-9a-f]{32}$/.test(traceId) ? traceId : '';
 }
 
 function forwardErrorMessage(err: ForwardError): string {
