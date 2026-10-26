@@ -273,6 +273,16 @@ func (p *PodSynthesizer) NeighborsForPod(tenantID, podID string) (*DbNode, []*Db
 	return pod, neighbors, edges, nil
 }
 
+// podSearchApplies reports whether a SearchNodes call may return synthesized
+// Pods: the node-type filter permits Pods, the source is k8s or unset, and no
+// role is asked for. A Pod can never carry a role (it is not a role target and
+// no role has Pod as its typed equivalent), and the Pod query does not read the
+// roles filter, so without the last rule every roles search also returned the
+// matching namespace's Pods.
+func podSearchApplies(params SearchNodesParams) bool {
+	return includesPod(params.NodeTypes) && (params.Source == "" || params.Source == "k8s") && len(params.Roles) == 0
+}
+
 // SearchPods executes the k8s_pods slice of a SearchNodes call.
 // It mirrors SearchNodes' filter semantics (name, name_pattern, namespace,
 // cluster, account_ids, labels) and returns SearchNodeResult rows the

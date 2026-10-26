@@ -649,21 +649,29 @@ func buildKGInsights(graph KnowledgeGraph, serviceName string, upstream, downstr
 	// edges may land directly on Cache / MessageQueue / Storage nodes that
 	// were previously hidden behind an ExternalService hop — surface those
 	// too so the insight count doesn't shrink for tenants on the new code.
+	// A node is bucketed by what it acts as (EffectiveRole): an in-cluster
+	// redis Workload a user tagged "cache" counts as a cache, the same as a
+	// typed Cache node, and is not listed again under its type.
 	var externalServices, databases, caches, queues, storage []string
 	for _, node := range graph.Nodes {
 		name, _ := node.Properties["name"].(string)
 		if name == "" {
 			continue
 		}
+		switch EffectiveRole(node.NodeType, node.Properties) {
+		case NodeRoleDatabase:
+			databases = append(databases, name)
+			continue
+		case NodeRoleCache:
+			caches = append(caches, name)
+			continue
+		case NodeRoleMessageQueue:
+			queues = append(queues, name)
+			continue
+		}
 		switch node.NodeType {
 		case NodeTypeExternalService:
 			externalServices = append(externalServices, name)
-		case NodeTypeDatabase:
-			databases = append(databases, name)
-		case NodeTypeCache:
-			caches = append(caches, name)
-		case NodeTypeMessageQueue:
-			queues = append(queues, name)
 		case NodeTypeStorage:
 			storage = append(storage, name)
 		}

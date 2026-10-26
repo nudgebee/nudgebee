@@ -131,8 +131,8 @@ func (l ServiceDependencyGraphAgent) GetSystemPrompt(ctx *security.RequestContex
 		},
 		{
 			Question:    "Find all databases in the prod namespace",
-			Answer:      `kg_search_nodes(query:"", node_types:["Database"], namespace:"prod")`,
-			Explanation: "KG search for discovery by type and namespace",
+			Answer:      `kg_search_nodes(query:"", roles:["database"], namespace:"prod")`,
+			Explanation: "roles covers Database-type nodes and workloads or VMs that act as databases; node_types:[\"Database\"] would miss the in-cluster ones",
 		},
 		{
 			Question:    "Find all RDS databases in our AWS account",

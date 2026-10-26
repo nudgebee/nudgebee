@@ -5505,11 +5505,10 @@ func (s *Service) SearchNodes(tenantID string, params SearchNodesParams) (*Searc
 	graphResultCount := len(results)
 
 	// Synth Pod search. Pods are not in knowledge_graph_node, so the
-	// SQL above never returns them. When the caller's node-type filter
-	// permits Pods (empty or contains Pod), and they didn't restrict
-	// source to a non-k8s value, ask the synthesizer to query
-	// public.k8s_pods directly and merge results, respecting Limit.
-	if s.podSynth != nil && includesPod(params.NodeTypes) && (params.Source == "" || params.Source == "k8s") {
+	// SQL above never returns them. When the caller's filters permit Pods
+	// (podSearchApplies), ask the synthesizer to query public.k8s_pods
+	// directly and merge results, respecting Limit.
+	if s.podSynth != nil && podSearchApplies(params) {
 		remaining := limit - len(results)
 		if remaining > 0 {
 			podResults, podErr := s.podSynth.SearchPods(tenantID, params, remaining)

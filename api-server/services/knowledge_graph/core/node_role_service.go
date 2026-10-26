@@ -255,8 +255,9 @@ func (n lockedRoleNode) decode() (map[string]interface{}, map[string]interface{}
 	return props, qa, nil
 }
 
-// writeLiveNodeRole stores a node's role-bearing maps, leaving updated_at
-// alone: it is the node's last-seen time, which a role change does not renew.
+// writeLiveNodeRole stores a node's role-bearing maps. The table's update
+// trigger (set_public_knowledge_graph_node_updated_at) still bumps updated_at,
+// so the node's "Last Seen" moves to the time of the role change.
 func writeLiveNodeRole(tx *sqlx.Tx, tenantID, nodeID string, props, qa map[string]interface{}) error {
 	propsJSON, err := json.Marshal(props)
 	if err != nil {

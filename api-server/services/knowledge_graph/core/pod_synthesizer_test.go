@@ -230,3 +230,27 @@ func TestUnmarshalLabels(t *testing.T) {
 		t.Errorf("mixed-type JSON not stringified correctly: got %v", mixed)
 	}
 }
+
+func TestPodSearchApplies(t *testing.T) {
+	cases := []struct {
+		name   string
+		params SearchNodesParams
+		want   bool
+	}{
+		{"no filters", SearchNodesParams{}, true},
+		{"k8s source", SearchNodesParams{Source: "k8s"}, true},
+		{"pod type", SearchNodesParams{NodeTypes: []NodeType{NodeTypePod}}, true},
+		{"aws source", SearchNodesParams{Source: "aws"}, false},
+		{"workload type only", SearchNodesParams{NodeTypes: []NodeType{NodeTypeWorkload}}, false},
+		// A role search must not return Pods: none can carry a role.
+		{"roles", SearchNodesParams{Roles: []string{"cache"}, Namespace: "redis-test"}, false},
+		{"roles with pod type", SearchNodesParams{Roles: []string{"cache"}, NodeTypes: []NodeType{NodeTypePod}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := podSearchApplies(tc.params); got != tc.want {
+				t.Errorf("podSearchApplies(%+v) = %v, want %v", tc.params, got, tc.want)
+			}
+		})
+	}
+}

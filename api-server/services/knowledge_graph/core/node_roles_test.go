@@ -252,3 +252,34 @@ func TestEveryNodeWriterAppliesUserRoles(t *testing.T) {
 		t.Errorf("forcing test no longer sees core.SaveNodes as a writer (found %v); fix the patterns", writers)
 	}
 }
+
+// Investigation insights count a node by what it acts as: a tagged Workload is
+// a cache like a typed Cache node, and a tagged ExternalService is not listed
+// again as an external service.
+func TestBuildKGInsights_BucketsByEffectiveRole(t *testing.T) {
+	graph := KnowledgeGraph{Nodes: []KgNode{
+		{NodeType: NodeTypeWorkload, Properties: map[string]interface{}{"name": "redis-master", PropRole: NodeRoleCache}},
+		{NodeType: NodeTypeCache, Properties: map[string]interface{}{"name": "elasticache-1"}},
+		{NodeType: NodeTypeDatabase, Properties: map[string]interface{}{"name": "billing-rds"}},
+		{NodeType: NodeTypeExternalService, Properties: map[string]interface{}{"name": "pg.example.internal", PropRole: NodeRoleDatabase}},
+		{NodeType: NodeTypeExternalService, Properties: map[string]interface{}{"name": "api.stripe.com"}},
+		{NodeType: NodeTypeComputeInstance, Properties: map[string]interface{}{"name": "mq-vm-01", PropRole: NodeRoleMessageQueue}},
+		// A custom kind's free "role" is not in the vocabulary and changes nothing.
+		{NodeType: NodeTypeWorkload, Properties: map[string]interface{}{"name": "sw-core-01", PropRole: "core-switch"}},
+	}}
+	var msgs []string
+	for _, in := range buildKGInsights(graph, "checkout", nil, nil) {
+		msgs = append(msgs, in.Message)
+	}
+	joined := strings.Join(msgs, "\n")
+	for _, want := range []string{
+		"Uses 2 caches: redis-master, elasticache-1",
+		"Uses 2 databases: billing-rds, pg.example.internal",
+		"Uses 1 message queues: mq-vm-01",
+		"Connected to 1 external services: api.stripe.com",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("insights missing %q; got:\n%s", want, joined)
+		}
+	}
+}
