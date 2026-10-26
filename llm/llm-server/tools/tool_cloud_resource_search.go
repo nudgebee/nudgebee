@@ -7,6 +7,8 @@ import (
 
 	"nudgebee/llm/common"
 	"nudgebee/llm/tools/core"
+
+	"github.com/lib/pq"
 )
 
 const ToolCloudResourceSearch = "cloud_resource_search_execute"
@@ -61,7 +63,7 @@ func (r CloudResourceSearchTool) Description() string {
 
 **Input:** JSON with the following fields:
 * resource_name (optional): Name or partial name of the resource, or its full id (e.g. an EC2 instance id).
-* service (optional): Cloud service name (e.g., 'EC2', 'S3', 'Lambda').
+* service (optional): Cloud service name (e.g., 'EC2', 'S3', 'Lambda', 'Cosmos DB'). Friendly names and provider identifiers (e.g. 'microsoft.documentdb/databaseaccounts') both work.
 * resource_type (optional): Type of resource (e.g., 'instance', 'bucket').
 * region (optional): Region to search in.
 
@@ -177,47 +179,40 @@ func (r CloudResourceSearchTool) Call(nbRequestContext core.NbToolContext, input
 		`
 		args = append(args, nbRequestContext.AccountId)
 	}
-	argIdx := 2
-
-	if request.ResourceName != "" {
-		// A full resource id (i-0abc…, a bucket name) finds its resource
-		// exactly; a substring match on ids would add noise to name searches.
-		query += fmt.Sprintf(" AND (cr.name ILIKE $%d OR cr.resourse_id = $%d)", argIdx, argIdx+1)
-		args = append(args, "%"+request.ResourceName+"%", request.ResourceName)
-		argIdx += 2
-	}
-	if request.Service != "" {
-		query += fmt.Sprintf(" AND cr.service_name ILIKE $%d", argIdx)
-		args = append(args, "%"+request.Service+"%")
-		argIdx++
-	}
-	if request.ResourceType != "" {
-		query += fmt.Sprintf(" AND cr.type ILIKE $%d", argIdx)
-		args = append(args, "%"+request.ResourceType+"%")
-		argIdx++
-	}
-	if request.Region != "" {
-		query += fmt.Sprintf(" AND cr.region = $%d", argIdx)
-		args = append(args, request.Region)
+	servicePatterns := cloudServicePatterns(request.Service)
+	search := func(typeAliases []string) ([]CloudResourceInfo, error) {
+		filters, filterArgs := cloudResourceFilters(request, servicePatterns, typeAliases, len(args)+1)
+		rows, err := dbms.Db.Queryx(cloudResourceSearchPage(query+filters), append(append([]interface{}{}, args...), filterArgs...)...)
+		if err != nil {
+			return nil, err
+		}
+		defer func() {
+			if err := rows.Close(); err != nil {
+				nbRequestContext.Ctx.GetLogger().Warn("cloud_resource_search: failed to close rows", "error", err)
+			}
+		}()
+		var found []CloudResourceInfo
+		for rows.Next() {
+			var res CloudResourceInfo
+			if err := rows.StructScan(&res); err == nil {
+				found = append(found, res)
+			}
+		}
+		return found, nil
 	}
 
-	query = cloudResourceSearchPage(query)
-
-	var resources []CloudResourceInfo
-	rows, err := dbms.Db.Queryx(query, args...)
+	resources, err := search(nil)
 	if err != nil {
 		return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			nbRequestContext.Ctx.GetLogger().Warn("cloud_resource_search: failed to close rows", "error", err)
-		}
-	}()
-
-	for rows.Next() {
-		var res CloudResourceInfo
-		if err := rows.StructScan(&res); err == nil {
-			resources = append(resources, res)
+	// A service name passed as the type ("cosmos") finds nothing in cr.type;
+	// retry matching it as a service. Only on a miss, so a real type such as
+	// "vm" is not widened to every row of the service.
+	if len(resources) == 0 && request.ResourceType != "" {
+		if aliases := cloudServiceAliasPatterns(request.ResourceType); len(aliases) > 0 {
+			if resources, err = search(aliases); err != nil {
+				return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
+			}
 		}
 	}
 
@@ -242,9 +237,9 @@ func (r CloudResourceSearchTool) Call(nbRequestContext core.NbToolContext, input
 			WHERE account = $1 AND is_active = true
 			  AND region IS NOT NULL AND region <> '' AND LOWER(region) <> 'global'`
 		regionArgs := []interface{}{nbRequestContext.AccountId}
-		if request.Service != "" {
-			regionQuery += ` AND service_name ILIKE $2`
-			regionArgs = append(regionArgs, "%"+request.Service+"%")
+		if len(servicePatterns) > 0 {
+			regionQuery += ` AND service_name ILIKE ANY($2)`
+			regionArgs = append(regionArgs, pq.Array(servicePatterns))
 		}
 		regionQuery += ` ORDER BY region`
 
@@ -277,6 +272,9 @@ func (r CloudResourceSearchTool) Call(nbRequestContext core.NbToolContext, input
 				response.Message = hint
 			}
 		}
+		if request.Service != "" || request.ResourceType != "" {
+			response.Message = strings.TrimSpace(response.Message + serviceMissNote)
+		}
 	}
 
 	responseJSON, _ := common.MarshalJson(response)
@@ -285,6 +283,55 @@ func (r CloudResourceSearchTool) Call(nbRequestContext core.NbToolContext, input
 		Type:   core.NBToolResponseTypeJson,
 		Status: core.NBToolResponseStatusSuccess,
 	}, nil
+}
+
+// serviceMissNote follows a service or type search that found nothing, so the
+// model does not report an empty inventory as an unsupported service (#42036).
+const serviceMissNote = " Inventory names services by provider identifiers (Azure ARM types such as microsoft.documentdb/databaseaccounts for Cosmos DB, AWS names such as AmazonDynamoDB); if a friendly name found nothing, retry with that identifier. No matching synced resource does not mean Nudgebee does not support the service."
+
+// cloudResourceFilters builds the AND clauses for a search, numbering
+// placeholders from argIdx. With typeAliases, the type filter also matches
+// those service names.
+func cloudResourceFilters(request CloudResourceSearchRequest, servicePatterns, typeAliases []string, argIdx int) (string, []interface{}) {
+	var b strings.Builder
+	var args []interface{}
+	if request.ResourceName != "" {
+		// A full resource id (i-0abc…, a bucket name) finds its resource
+		// exactly; a substring match on ids would add noise to name searches.
+		fmt.Fprintf(&b, " AND (cr.name ILIKE $%d OR cr.resourse_id = $%d)", argIdx, argIdx+1)
+		args = append(args, "%"+request.ResourceName+"%", request.ResourceName)
+		argIdx += 2
+	}
+	if len(servicePatterns) > 0 {
+		fmt.Fprintf(&b, " AND cr.service_name ILIKE ANY($%d)", argIdx)
+		args = append(args, pq.Array(servicePatterns))
+		argIdx++
+	}
+	if request.ResourceType != "" {
+		if len(typeAliases) > 0 {
+			fmt.Fprintf(&b, " AND (cr.type ILIKE $%d OR cr.service_name ILIKE ANY($%d))", argIdx, argIdx+1)
+			args = append(args, "%"+request.ResourceType+"%", pq.Array(likePatterns(typeAliases)))
+			argIdx += 2
+		} else {
+			fmt.Fprintf(&b, " AND cr.type ILIKE $%d", argIdx)
+			args = append(args, "%"+request.ResourceType+"%")
+			argIdx++
+		}
+	}
+	if request.Region != "" {
+		fmt.Fprintf(&b, " AND cr.region = $%d", argIdx)
+		args = append(args, request.Region)
+	}
+	return b.String(), args
+}
+
+// likePatterns wraps each value for a substring ILIKE match.
+func likePatterns(values []string) []string {
+	patterns := make([]string, len(values))
+	for i, v := range values {
+		patterns[i] = "%" + v + "%"
+	}
+	return patterns
 }
 
 // cloudResourceSearchLimit caps one lookup's rows; cloudCutoffNote says when

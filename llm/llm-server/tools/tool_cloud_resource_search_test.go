@@ -69,3 +69,94 @@ func TestCloudCutoffNote(t *testing.T) {
 	assert.Contains(t, note, "Showing 2 of 87")
 	assert.Contains(t, note, "by account: aws-demo 54, dev-aws 21, aws-prod 12")
 }
+
+// TestCloudServicePatterns pins #42036: Azure inventory stores ARM types, so a
+// friendly service name must expand to the stored service_name.
+func TestCloudServicePatterns(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string // a pattern that must be present
+	}{
+		{"cosmos", "%microsoft.documentdb/databaseaccounts%"},
+		{"Cosmos DB", "%microsoft.documentdb/databaseaccounts%"},
+		{"Azure Cosmos DB", "%microsoft.documentdb/databaseaccounts%"},
+		{"AKS", "%microsoft.containerservice/managedclusters%"},
+		{"App Service", "%microsoft.web/sites%"},
+		{"Azure Key Vault", "%keyvault%"},       // prefix stripped, compact
+		{"secrets manager", "%secretsmanager%"}, // compact form matches AWSSecretsManager
+		{"Amazon SQS", "%AWSQueueService%"},     // prefix stripped, then alias
+		{"GKE", "%Kubernetes Engine%"},
+		{"function", "%AWSLambda%"}, // singular and plural both mapped
+		{"blobs", "%AmazonS3%"},
+		{"ALBs", "%AWSELB%"},
+		{"Cloud SQL", "%Cloud SQL%"}, // input kept as given (GCP names have spaces)
+		{"microsoft.documentdb/databaseaccounts", "%microsoft.documentdb/databaseaccounts%"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			assert.Contains(t, cloudServicePatterns(tc.input), tc.want)
+		})
+	}
+
+	t.Run("empty input yields no filter", func(t *testing.T) {
+		assert.Nil(t, cloudServicePatterns("  "))
+	})
+	t.Run("duplicates dropped case-insensitively", func(t *testing.T) {
+		assert.Equal(t, []string{"%EC2%"}, cloudServicePatterns("EC2"))
+	})
+	t.Run("short prefix-stripped remainder is not a pattern", func(t *testing.T) {
+		// "AmazonES" is the stored OpenSearch name; %es% would match most services.
+		assert.NotContains(t, cloudServicePatterns("AmazonES"), "%es%")
+		assert.NotContains(t, cloudServicePatterns("Azure AD"), "%ad%")
+		// Short names still resolve through the alias table.
+		assert.Contains(t, cloudServicePatterns("Amazon SQS"), "%AWSQueueService%")
+	})
+	t.Run("alias lookup is nil for names without an entry", func(t *testing.T) {
+		assert.Nil(t, cloudServiceAliasPatterns("dynamodb"))
+		assert.Equal(t, []string{"microsoft.documentdb/databaseaccounts"}, cloudServiceAliasPatterns("Azure Cosmos DB"))
+	})
+}
+
+// storedServiceNames are service_name values the cloud collectors write.
+var storedServiceNames = strings.Split(`AWSBackup|AWSCloudFormation|AWSCloudTrail|AWSConfig|AWSELB|AWSElasticBeanstalk|AWSFargate|AWSGlue|AWSIAM|AWSKMS|AWSLambda|AWSQueueService|AWSSecretsManager|AWSSecurityHub|AWSStepFunctions|AWSSystemsManager|AWSWAF|AWSXRay|AmazonBedrock|AmazonCloudFront|AmazonCloudWatch|AmazonDynamoDB|AmazonEC2|AmazonECR|AmazonECS|AmazonEFS|AmazonEKS|AmazonES|AmazonElastiCache|AmazonEventBridge|AmazonFSx|AmazonGuardDuty|AmazonInspector|AmazonMSK|AmazonMemoryDB|AmazonOpenSearchService|AmazonRDS|AmazonRedshift|AmazonRoute53|AmazonS3|AmazonSES|AmazonSNS|AmazonSageMaker|AmazonVPC|Artifact Registry|BigQuery|Cloud Load Balancing|Cloud Monitoring|Cloud Tasks|Compute Engine|compute.googleapis.com/Disk|Firestore|Cloud Functions|Kubernetes Engine|Gemini API|IAM|Memorystore|Networking|Cloud Pub/Sub|Cloud Run|Cloud SQL|Cloud Scheduler|Secret Manager|Cloud Storage|VM Manager|Vertex AI|microsoft.app/containerapps|microsoft.cache/redis|microsoft.cdn/profiles|microsoft.compute/disks|microsoft.compute/virtualmachinescalesets|microsoft.compute/virtualmachines|microsoft.containerservice/managedclusters|microsoft.dbformariadb/servers|microsoft.dbformysql/flexibleservers|microsoft.dbforpostgresql/flexibleservers|microsoft.documentdb/databaseaccounts|microsoft.keyvault/vaults|microsoft.network/applicationgateways|microsoft.network/azurefirewalls|microsoft.network/dnszones|microsoft.network/frontdoors|microsoft.network/virtualnetworks|microsoft.sql/managedinstances|microsoft.sql/servers|microsoft.storage/storageaccounts|microsoft.storage/storageaccounts/fileservices|microsoft.web/sites|microsoft.web/sites/functions|microsoft.containerregistry/registries|microsoft.logic/workflows|microsoft.operationalinsights/workspaces|microsoft.recoveryservices/vaults|microsoft.servicebus/namespaces|microsoft.eventhub/namespaces|microsoft.web/serverfarms|microsoft.network/loadbalancers|microsoft.network/networksecuritygroups|microsoft.network/publicipaddresses`, "|")
+
+// TestCloudServicePatternsCorpus checks friendly names people type against the
+// stored names: each must find its service (no miss) without matching most of
+// the catalog (no over-match). Services NudgeBee does not collect are left out.
+func TestCloudServicePatternsCorpus(t *testing.T) {
+	for _, q := range strings.Split(`EC2|AWS EC2|Amazon EC2|S3|AWS S3|Amazon S3|RDS|AWS RDS|Amazon RDS|Aurora|DynamoDB|AWS DynamoDB|Lambda|AWS Lambda|SQS|AWS SQS|Amazon SQS|SNS|AWS SNS|ELB|ALB|Application Load Balancer|load balancer|EKS|AWS EKS|ECS|ECR|EFS|IAM|AWS IAM|KMS|CloudWatch|CloudFront|Route 53|Route53|Secrets Manager|Step Functions|ElastiCache|AWS ElastiCache|Redshift|OpenSearch|Elasticsearch|MSK|Kafka|MemoryDB|SageMaker|Bedrock|WAF|CloudTrail|Systems Manager|SSM|Fargate|Glue|EventBridge|Backup|VPC|GuardDuty|Compute Engine|GCE|GCP VM|GKE|Kubernetes Engine|Cloud SQL|GCP Cloud SQL|Cloud Storage|GCS|BigQuery|Pub/Sub|PubSub|Cloud Run|Cloud Functions|Memorystore|Firestore|Secret Manager|Artifact Registry|Vertex AI|Cloud Tasks|Cloud Scheduler|Cosmos DB|Azure Cosmos DB|AKS|App Service|Function App|Azure Functions|Key Vault|Azure SQL|SQL Database|Azure VM|VM|Virtual Machine|Storage Account|Blob|Azure Files|Redis|Azure Cache for Redis|Service Bus|Event Hubs|Event Hub|Log Analytics|Container Apps|ACR|Container Registry|Front Door|Application Gateway|VNet|NSG|Public IP|PostgreSQL|Postgres|MySQL|MariaDB|Logic Apps|Recovery Services Vault|Azure Firewall|DNS`, "|") {
+		var hits []string
+		for _, s := range storedServiceNames {
+			for _, p := range cloudServicePatterns(q) {
+				if strings.Contains(strings.ToLower(s), strings.ToLower(strings.Trim(p, "%"))) {
+					hits = append(hits, s)
+					break
+				}
+			}
+		}
+		assert.NotEmpty(t, hits, "%q matched no stored service", q)
+		assert.LessOrEqual(t, len(hits), 5, "%q matched too many services: %v", q, hits)
+	}
+}
+
+func TestCloudServicePatternsShortRemainder(t *testing.T) {
+	assert.Contains(t, cloudServicePatterns("AWS RDS"), "%amazonrds%")
+	assert.Contains(t, cloudServicePatterns("Azure SQL"), "%microsoft.sql%")
+	assert.NotContains(t, cloudServicePatterns("AWS RDS"), "%rds%")
+}
+
+func TestCloudResourceFilters(t *testing.T) {
+	req := CloudResourceSearchRequest{ResourceName: "orders", Service: "cosmos", ResourceType: "cosmos", Region: "eastus"}
+	sql, args := cloudResourceFilters(req, []string{"%cosmos%"}, nil, 2)
+	assert.Equal(t, " AND (cr.name ILIKE $2 OR cr.resourse_id = $3) AND cr.service_name ILIKE ANY($4) AND cr.type ILIKE $5 AND cr.region = $6", sql)
+	assert.Len(t, args, 5)
+
+	// The alias retry adds one placeholder for the type's service names.
+	sql, args = cloudResourceFilters(req, []string{"%cosmos%"}, []string{"microsoft.documentdb/databaseaccounts"}, 2)
+	assert.Equal(t, " AND (cr.name ILIKE $2 OR cr.resourse_id = $3) AND cr.service_name ILIKE ANY($4) AND (cr.type ILIKE $5 OR cr.service_name ILIKE ANY($6)) AND cr.region = $7", sql)
+	assert.Len(t, args, 6)
+
+	sql, args = cloudResourceFilters(CloudResourceSearchRequest{Region: "us-east-1"}, nil, nil, 2)
+	assert.Equal(t, " AND cr.region = $2", sql)
+	assert.Equal(t, []interface{}{"us-east-1"}, args)
+}

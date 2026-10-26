@@ -316,6 +316,40 @@ func TestNudgebeeDebugAgent_Execute(t *testing.T) {
 				ExpectedFinalAnswerFragments: []string{"slack", "teams"},
 				ExpectedLLMClaims:            []string{"The answer says you can chat with NuBi from Slack and Microsoft Teams."},
 			},
+			// #42036: support questions must not turn a missing doc match or a
+			// partial list (configured integrations, event filters) into "not supported".
+			{
+				SessionId:                    "ut-nudgebee-docs-90",
+				AccountId:                    os.Getenv("TEST_ACCOUNT"),
+				UserId:                       os.Getenv("TEST_USER"),
+				Query:                        "Does Nudgebee support Azure Cosmos DB?",
+				ExpectedToolCalls:            []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 2}},
+				MaxToolCalls:                 2,
+				RequireExternalReference:     true,
+				ExpectedFinalAnswerFragments: []string{"microsoft.documentdb"},
+				ForbiddenFinalFragments:      []string{"not supported", "does not support", "doesn't support"},
+				ExpectedLLMClaims:            []string{"The answer says Nudgebee supports Azure Cosmos DB."},
+			},
+			{
+				SessionId:               "ut-nudgebee-docs-91",
+				AccountId:               os.Getenv("TEST_ACCOUNT"),
+				UserId:                  os.Getenv("TEST_USER"),
+				Query:                   "Does Nudgebee support AWS DynamoDB?",
+				ExpectedToolCalls:       []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 2}},
+				MaxToolCalls:            2,
+				ForbiddenFinalFragments: []string{"not supported", "does not support", "doesn't support"},
+				ExpectedLLMClaims:       []string{"The answer does not say that Nudgebee lacks support for AWS DynamoDB, and does not use the tenant's configured integrations as the list of supported services."},
+			},
+			{
+				SessionId:               "ut-nudgebee-docs-92",
+				AccountId:               os.Getenv("TEST_ACCOUNT"),
+				UserId:                  os.Getenv("TEST_USER"),
+				Query:                   "Does Nudgebee support Azure Cache for Redis?",
+				ExpectedToolCalls:       []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 2}},
+				MaxToolCalls:            2,
+				ForbiddenFinalFragments: []string{"not supported", "does not support", "doesn't support"},
+				ExpectedLLMClaims:       []string{"The answer says Nudgebee supports Azure Cache for Redis."},
+			},
 		}
 	for _, tc := range testCases {
 		t.Run(tc.SessionId, func(t *testing.T) {

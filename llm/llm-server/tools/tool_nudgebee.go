@@ -875,7 +875,7 @@ func (NudgebeeIntegrationsListTool) InferToolRequestType(ctx *security.RequestCo
 	return nudgebeeReadRequestType(ctx, input, conversation)
 }
 func (NudgebeeIntegrationsListTool) Description() string {
-	return "List configured Nudgebee integrations visible to the requesting user. Supports filtering by category (e.g., 'database', 'messaging', 'ticketing', 'observability_platform'), exact type, multiple types, status, or name substring. Defaults to 20 results (100 for category queries, max 100). If the response indicates truncation, use limit or narrow your filter. Read-only."
+	return "List configured Nudgebee integrations visible to the requesting user. Supports filtering by category (e.g., 'database', 'messaging', 'ticketing', 'observability_platform'), exact type, multiple types, status, or name substring. Defaults to 20 results (100 for category queries, max 100). If the response indicates truncation, use limit or narrow your filter. Shows what this tenant has configured, not which integration types or cloud services Nudgebee supports. Read-only."
 }
 func (NudgebeeIntegrationsListTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{Type: core.ToolSchemaTypeObject, Properties: map[string]core.ToolSchemaProperty{
@@ -1069,7 +1069,7 @@ func (NudgebeeDocsSearchTool) InferToolRequestType(ctx *security.RequestContext,
 	return nudgebeeReadRequestType(ctx, input, conversation)
 }
 func (NudgebeeDocsSearchTool) Description() string {
-	return "Search indexed Nudgebee product documentation. Use once for product concepts, features, setup, and instructions; never use it as evidence for current tenant counts, configuration, or status."
+	return "Search indexed Nudgebee product documentation. Use once for product concepts, features, setup, and instructions; never use it as evidence for current tenant counts, configuration, or status. A service or feature missing from the results is not evidence that Nudgebee does not support it."
 }
 func (NudgebeeDocsSearchTool) InputSchema() core.ToolSchema {
 	return DocsAgentTool{}.InputSchema()
