@@ -100,7 +100,7 @@ const metricSeriesSupportedShapes = "Prometheus/metrics tool files ({query: [{me
 	"any JSON holding equal-length \"timestamps\" and \"values\" arrays (e.g. event_<id>_evidence.json), " +
 	"AWS CloudWatch get-metric-data (MetricDataResults) and get-metric-statistics (Datapoints), " +
 	"Azure az monitor metrics list (value[].timeseries[].data), " +
-	"GCP time-series list (points[].interval/value)"
+	"GCP Cloud Monitoring timeSeries (points[].interval/value)"
 
 var errMetricSeriesFileTooLarge = fmt.Errorf("file is larger than %d MB", metricSeriesMaxFileBytes>>20)
 
@@ -142,7 +142,7 @@ func (t MetricSeriesAnalysisTool) Description() string {
 		"(also whether an alert is flapping or firing on missing data). " +
 		"Pass file_ref = the exact workspace file name a metrics or CLI step saved (e.g. metrics_prometheus_<n>.json, a cloud CLI metric output file, event_<id>_evidence.json), " +
 		"copied from that step's result; never guess a name. Or pass points inline. " +
-		"Reads Prometheus/metrics tool files, AWS CloudWatch get-metric-data and get-metric-statistics, Azure az monitor metrics list, GCP time-series list, " +
+		"Reads Prometheus/metrics tool files, AWS CloudWatch get-metric-data and get-metric-statistics, Azure az monitor metrics list, GCP Cloud Monitoring timeSeries, " +
 		"and any JSON with matching timestamps/values arrays. " +
 		"Returns per series: a plain summary to quote, baseline (first/last/min/median/max), the trend and whether it is steady, " +
 		"step changes (from, to, at) and the level held since the last one, data gaps, " +

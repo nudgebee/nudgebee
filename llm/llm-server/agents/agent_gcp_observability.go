@@ -42,44 +42,43 @@ func (a GcpMetricsAgent) GetNameAliases() []string {
 }
 
 func (a GcpMetricsAgent) GetDescription() string {
-	return `Retrieves and analyzes GCP Cloud Monitoring metrics (CPU, memory, disk, network, request latency/error rate, managed-service metrics) via the gcloud CLI. Used as the metrics backend for GCP accounts without a Prometheus/Datadog/Elasticsearch provider. Handles its own metric-type and resource discovery.`
+	return `Retrieves and analyzes GCP Cloud Monitoring metrics (CPU, memory, disk, network, request latency/error rate, managed-service metrics) via the Cloud Monitoring v3 REST API. Used as the metrics backend for GCP accounts without a Prometheus/Datadog/Elasticsearch provider. Handles its own metric-type and resource discovery.`
 }
 
 func (a GcpMetricsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
 	instructions := []string{
-		"**Goal:** Answer the user's question using GCP Cloud Monitoring metrics. Base every conclusion on CLI output — never invent metric values, resource names, or time ranges.",
-		"**Tool name:** Your gcloud tool is `gcloud_execute`. Do NOT emit variants like `gcp_monitoring` or `gcp_metrics_execute` — the planner will fail to resolve them. Use `shell_execute` only for the Cloud Monitoring v3 REST path described below.",
-		"**Project is pre-configured:** The GCP project comes from the authenticated account credentials (environment variable). Do NOT run `gcloud config set project`. Pass `--project <project_id>` only when you need to target a non-default project.",
-		"**Primary read — `gcloud monitoring time-series list` (note the hyphen in `time-series`):** Use it for standard reads. You MUST scope every query to keep output bounded:",
-		"  - `--filter` selects the metric type and resource, e.g. `--filter='metric.type=\"compute.googleapis.com/instance/cpu/utilization\"'`. Add resource labels to narrow further, e.g. ` AND resource.labels.instance_id=\"...\"`.",
-		"  - `--interval-start-time` / `--interval-end-time` bound the window (RFC3339). Prefer the `[[Time:-1h]]` / `[[Time:Now]]` macros — NEVER compute timestamps yourself.",
-		"  - `--format=json` for parseable output; `--format='table(...)'` (columns in single quotes) for a compact summary.",
+		"**Goal:** Answer the user's question using GCP Cloud Monitoring metrics. Base every conclusion on API output — never invent metric values, resource names, or time ranges.",
+		"**gcloud has no metric-data commands:** there is no `gcloud monitoring time-series` or `gcloud monitoring metric-descriptors` in any gcloud release (gcloud monitoring covers dashboards, policies, snoozes and uptime only). Read metrics through the Cloud Monitoring v3 REST API with `shell_execute` and `curl`, authenticated with `$(gcloud auth print-access-token)`.",
+		"**Project id:** the REST URL needs it. Get it once with `gcloud config get-value project` via `gcloud_execute` (this also starts the workspace's gcloud session, which the access token needs). If it prints nothing or `(unset)`, list the projects you can read with `gcloud projects list --format='value(projectId)'`. Do NOT run `gcloud config set project`. Use another project id only when the question names one.",
+		"**Read time series** (`-G` + `--data-urlencode` so the filter needs no hand-encoding; the time macros expand to RFC3339): `curl -s -G -H \"Authorization: Bearer $(gcloud auth print-access-token)\" 'https://monitoring.googleapis.com/v3/projects/<project_id>/timeSeries' --data-urlencode 'filter=metric.type=\"compute.googleapis.com/instance/cpu/utilization\"' --data-urlencode 'interval.startTime=[[Time:-1h]]' --data-urlencode 'interval.endTime=[[Time:Now]]' --data-urlencode 'aggregation.alignmentPeriod=300s' --data-urlencode 'aggregation.perSeriesAligner=ALIGN_MEAN' --data-urlencode 'pageSize=1000'`. You MUST bound every read:",
+		"  - `filter` selects the metric type and resource; narrow with resource labels, e.g. ` AND resource.labels.instance_id=\"...\"`.",
+		"  - `interval.startTime` / `interval.endTime` bound the window. Prefer the `[[Time:-1h]]` / `[[Time:Now]]` macros — NEVER compute timestamps yourself.",
+		"  - Align with `aggregation.alignmentPeriod` (300s for an hour, wider for longer windows) and `aggregation.perSeriesAligner=ALIGN_MEAN`: one point per period per series, so every resource fits in one page.",
+		"  - `pageSize` caps POINTS, not series. A response with `nextPageToken` is partial — some resources are missing. Before concluding about \"all\" resources, fetch the next page (`--data-urlencode 'pageToken=<nextPageToken>'`), widen the alignment period, or say the result is partial.",
 		"**Common metric types (discover, don't assume — instrumentation varies):**",
 		"  - Compute CPU: `compute.googleapis.com/instance/cpu/utilization`",
 		"  - Compute memory (ops agent): `agent.googleapis.com/memory/percent_used`",
 		"  - GKE container CPU/memory: `kubernetes.io/container/cpu/core_usage_time`, `kubernetes.io/container/memory/used_bytes`",
 		"  - Cloud SQL: `cloudsql.googleapis.com/database/cpu/utilization`, `.../database/memory/utilization`",
 		"  - Cloud Run: `run.googleapis.com/container/cpu/utilizations`, `run.googleapis.com/request_latencies`",
-		"  If a metric type returns no data, list what actually exists: `gcloud monitoring metric-descriptors list --filter='metric.type=~\"<service>.*\"' --format='value(type)' --limit=50` (use ONE service keyword), then pick the right descriptor.",
-		"**Complex reads (aggregations, alignment, MQL) — Cloud Monitoring v3 REST via `shell_execute`:** `gcloud_execute` cannot pass filter/interval/aggregation params to the API. For those, run through `shell_execute`: `curl -s -H \"Authorization: Bearer $(gcloud auth print-access-token)\" 'https://monitoring.googleapis.com/v3/projects/<project_id>/timeSeries?filter=...&interval.startTime=...&interval.endTime=...&aggregation.alignmentPeriod=60s&aggregation.perSeriesAligner=ALIGN_MEAN'`. Run a `gcloud_execute` command first in the conversation so the workspace has an active gcloud session for the token to succeed.",
-		"**Large output:** Cloud Monitoring responses can be large. Filter at the API level first (tight `--filter`, short interval, `--limit`). When a response is still big, do NOT pull the full JSON into context — from `shell_execute`, run the read with its raw output redirected to a per-conversation workspace file (`gcloud monitoring time-series list ... --format=json > metrics_gcp.json`; the file persists across turns in this conversation), then `jq` that file for only the points you need and re-read the file instead of re-running the query.",
+		"  If a metric type returns no data, list what exists: `curl -s -G -H \"Authorization: Bearer $(gcloud auth print-access-token)\" 'https://monitoring.googleapis.com/v3/projects/<project_id>/metricDescriptors' --data-urlencode 'filter=metric.type = starts_with(\"run.googleapis.com/\")' | jq -r '.metricDescriptors[].type'` (one service prefix), then pick the right descriptor.",
+		"**Large output:** responses can be large. Filter at the API level first (tight `filter`, short interval, `pageSize`, aggregation). When a response is still big, do NOT pull the full JSON into context — redirect the curl output to a per-conversation workspace file (`curl ... > metrics_gcp.json`; the file persists across turns in this conversation), then `jq` that file for only the points you need and re-read the file instead of re-running the query.",
 		"**Self-correction:** On an error, read `Stderr` — it usually names the fix (bad filter syntax, missing flag, wrong metric type). Correct and retry ONCE per distinct cause; never repeat an identical failing command. On a permission error (`PERMISSION_DENIED`, missing `roles/monitoring.viewer`), report the missing role and scope as a finding — NEVER attempt to grant yourself IAM.",
 	}
 
 	constraints := []string{
 		"Do not ask the user for clarification — resolve using the available tools (metric-descriptor discovery, resource labels).",
-		"CRITICAL for stability: always bound queries with a `--filter`, a short `--interval`, and `--limit` to prevent context saturation.",
+		"CRITICAL for stability: always bound reads with a `filter`, a short interval, and `pageSize` (or an aggregation) to prevent context saturation.",
 		"Empty result means 'no data for these parameters', not 'healthy' — state it explicitly and, when a metric type returned nothing, confirm the metric descriptor exists before concluding.",
 		"Base the final answer only on values observed in CLI/API output. Prefer actual utilization metrics over quota/limit descriptors unless asked.",
 	}
 
 	toolUsage := map[string][]string{
 		tools.ToolExecuteGcpCliCommand: {
-			"Use **gcloud_execute** to run `gcloud monitoring time-series list` and `gcloud monitoring metric-descriptors list`.",
-			"Always prefer this tool for standard metric reads.",
+			"Use **gcloud_execute** for `gcloud config get-value project` and for resource lookups (e.g. `gcloud compute instances list` to find an instance's id or zone). It cannot read metric data.",
 		},
 		toolcore.ToolExecuteShellCommand: {
-			"Use **shell_execute** for the Cloud Monitoring v3 REST path (curl with `gcloud auth print-access-token`) when you need aggregation/alignment params, for `jq` post-processing, and for large-output offload to a workspace file (see **Large output**).",
+			"Use **shell_execute** for every metric read and descriptor lookup (curl to the Cloud Monitoring v3 REST API with `gcloud auth print-access-token`), for `jq` post-processing, and for large-output offload to a workspace file (see **Large output**).",
 		},
 	}
 
@@ -89,18 +88,13 @@ func (a GcpMetricsAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
 					Tool:        tools.ToolExecuteGcpCliCommand,
-					Input:       "gcloud monitoring time-series list --filter='metric.type=\"compute.googleapis.com/instance/cpu/utilization\"' --interval-start-time=[[Time:-1h]] --interval-end-time=[[Time:Now]] --format=json --limit=50",
-					Explanation: "Standard Cloud Monitoring read, scoped by metric type and a 1h window.",
+					Input:       "gcloud config get-value project",
+					Explanation: "The project id for the REST URL; also starts the gcloud session the access token needs.",
 				},
-			},
-		},
-		{
-			Question: "Show Cloud SQL CPU utilization for instance my-db over the last 6 hours",
-			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
-					Tool:        tools.ToolExecuteGcpCliCommand,
-					Input:       "gcloud monitoring time-series list --filter='metric.type=\"cloudsql.googleapis.com/database/cpu/utilization\" AND resource.labels.database_id=~\".*my-db\"' --interval-start-time=[[Time:-6h]] --interval-end-time=[[Time:Now]] --format=json --limit=50",
-					Explanation: "Cloud SQL metric type narrowed by resource label; window via time macros.",
+					Tool:        toolcore.ToolExecuteShellCommand,
+					Input:       "curl -s -G -H \"Authorization: Bearer $(gcloud auth print-access-token)\" 'https://monitoring.googleapis.com/v3/projects/<project_id>/timeSeries' --data-urlencode 'filter=metric.type=\"compute.googleapis.com/instance/cpu/utilization\"' --data-urlencode 'interval.startTime=[[Time:-1h]]' --data-urlencode 'interval.endTime=[[Time:Now]]' --data-urlencode 'aggregation.alignmentPeriod=300s' --data-urlencode 'aggregation.perSeriesAligner=ALIGN_MEAN' --data-urlencode 'pageSize=1000'",
+					Explanation: "Standard read: metric type, 1h window, 5-minute means so every instance fits in one page.",
 				},
 			},
 		},
@@ -108,9 +102,9 @@ func (a GcpMetricsAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 			Question: "What metrics are available for Cloud Run?",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
-					Tool:        tools.ToolExecuteGcpCliCommand,
-					Input:       "gcloud monitoring metric-descriptors list --filter='metric.type=~\"run.googleapis.com.*\"' --format='value(type)' --limit=50",
-					Explanation: "Descriptor discovery when the exact metric type is unknown — one service keyword.",
+					Tool:        toolcore.ToolExecuteShellCommand,
+					Input:       "curl -s -G -H \"Authorization: Bearer $(gcloud auth print-access-token)\" 'https://monitoring.googleapis.com/v3/projects/<project_id>/metricDescriptors' --data-urlencode 'filter=metric.type = starts_with(\"run.googleapis.com/\")' | jq -r '.metricDescriptors[].type'",
+					Explanation: "Descriptor discovery when the exact metric type is unknown — one service prefix.",
 				},
 			},
 		},
