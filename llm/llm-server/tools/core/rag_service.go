@@ -376,7 +376,7 @@ func QueryRAGByDocumentID(ctx context.Context, userId, accountId, id, query, mod
 		ids = append(ids, upper)
 	}
 	var should []any
-	for _, key := range append([]string{"kb_number"}, documentSourceIDKeys...) {
+	for _, key := range documentSourceIDKeys {
 		should = append(should, map[string]any{"field": key, "values": ids})
 	}
 	noRerank, noTracking := false, false

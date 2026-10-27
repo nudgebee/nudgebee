@@ -331,7 +331,7 @@ def _group_points(kb: KBCollection, points: List[Any]) -> List[List[Any]]:
 
     A manual KB collection is one document. An integration collection is one
     document per page, identified by the id its scraper stamped (Confluence
-    page_id, ServiceNow sys_id — the same id the source store and the Fact/SOP
+    page_id, ServiceNow kb_number — the same id the source store and the Fact/SOP
     marks key a document on), which every chunk of the page carries, including
     its figure descriptions. That id, not ``parent_id``, is the key: a page's
     ``parent_id`` is a hash of its whole text, so after an edit the chunks that

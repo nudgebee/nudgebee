@@ -338,3 +338,89 @@ def test_a_batch_never_carries_the_same_key_twice(monkeypatch):
     ((sql, params),) = executed
     assert sql.count("('kb_document', ") == 1
     assert params["capabilities_0"] == ["a"], "the first row with capabilities wins over an empty one"
+
+
+OLD_SYS = "24d9243187032100deddb882a2e3ec33"
+NEW_SYS = "10fa09b3c34013106146feac0501311f"
+GONE_SYS = "6925e7c6330c9750088176273e5c7bf6"
+
+
+def test_servicenow_marks_move_from_sys_id_to_kb_number(monkeypatch):
+    """A mark stored under any indexed version's sys_id moves to the article's KB number."""
+    client = _client(
+        [
+            {"sys_id": OLD_SYS, "kb_number": "KB0000029", "chunk_index": 0},
+            {"sys_id": NEW_SYS, "kb_number": "KB0000029", "chunk_index": 1},
+        ]
+    )
+    marks = [
+        f"{COLLECTION}|{OLD_SYS}",
+        f"{COLLECTION}|{NEW_SYS}",
+        f"{COLLECTION}|{GONE_SYS}",
+        f"missing_coll|{OLD_SYS}",
+    ]
+    moved = {}
+    monkeypatch.setattr(db_query, "list_sys_id_keyed_marks", lambda: marks)
+    monkeypatch.setattr(db_query, "rekey_kb_document_marks", lambda pairs: moved.update(pairs) or len(pairs))
+
+    assert seed.rekey_servicenow_marks(client) == 2
+    # A sys_id no longer indexed, and a collection that is gone, are left alone.
+    assert moved == {
+        f"{COLLECTION}|{OLD_SYS}": f"{COLLECTION}|KB0000029",
+        f"{COLLECTION}|{NEW_SYS}": f"{COLLECTION}|KB0000029",
+    }
+
+
+def test_nothing_to_move_once_marks_use_kb_numbers(monkeypatch):
+    client = _client([{"sys_id": OLD_SYS, "kb_number": "KB0000029"}])
+    monkeypatch.setattr(db_query, "list_sys_id_keyed_marks", lambda: [])
+    monkeypatch.setattr(db_query, "rekey_kb_document_marks", lambda pairs: len(pairs))
+    assert seed.rekey_servicenow_marks(client) == 0
+
+
+def test_the_most_recently_changed_mark_moves_first(monkeypatch):
+    """Two versions of one article both marked: pairs keep the newest-first order, so it wins."""
+    client = _client(
+        [
+            {"sys_id": OLD_SYS, "kb_number": "KB0000029"},
+            {"sys_id": NEW_SYS, "kb_number": "KB0000029"},
+        ]
+    )
+    newest_first = [f"{COLLECTION}|{NEW_SYS}", f"{COLLECTION}|{OLD_SYS}"]
+    seen = []
+    monkeypatch.setattr(db_query, "list_sys_id_keyed_marks", lambda: newest_first)
+    monkeypatch.setattr(db_query, "rekey_kb_document_marks", lambda pairs: seen.extend(pairs) or len(pairs))
+
+    seed.rekey_servicenow_marks(client)
+
+    assert [old for old, _ in seen] == newest_first
+
+
+def test_a_mark_on_a_version_no_longer_indexed_moves_via_the_stored_source(monkeypatch):
+    """The reported case: the old version's chunks are gone, but its stored source still names the article."""
+    client = _client([{"sys_id": NEW_SYS, "kb_number": "KB0010108"}])
+    source = f"{COLLECTION}__source"
+    client.create_collection(source, vectors_config=models.VectorParams(size=2, distance=models.Distance.COSINE))
+    client.upsert(
+        source,
+        points=[
+            models.PointStruct(
+                id=_uid(99),
+                vector=[0.1, 0.2],
+                payload={
+                    "source_id": GONE_SYS,
+                    "url": "https://x.service-now.com/kb_view.do?sysparm_article=KB0010108",
+                },
+            )
+        ],
+    )
+    moved = {}
+    monkeypatch.setattr(
+        db_query, "list_sys_id_keyed_marks", lambda: [f"{COLLECTION}|{GONE_SYS}", f"{COLLECTION}|{OLD_SYS}"]
+    )
+    monkeypatch.setattr(db_query, "rekey_kb_document_marks", lambda pairs: moved.update(pairs) or len(pairs))
+
+    seed.rekey_servicenow_marks(client)
+
+    # GONE_SYS is found through its stored source; OLD_SYS is in neither and stays put.
+    assert moved == {f"{COLLECTION}|{GONE_SYS}": f"{COLLECTION}|KB0010108"}

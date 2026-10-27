@@ -588,8 +588,9 @@ def list_collection_documents(collection_name: str, limit: int = 50, offset: str
 # document on that same id, so this is the join between an indexed point and its stored
 # source. A new scrape adds its key here. Public because search results must carry the
 # same keys (controllers/knowledge_document.py): llm-server keys a document's Fact/SOP
-# mark on them.
-SOURCE_ID_KEYS = ("source_id", "page_id", "sys_id")
+# mark on them. kb_number comes before sys_id because ServiceNow gives every new article
+# version a new sys_id.
+SOURCE_ID_KEYS = ("source_id", "page_id", "kb_number", "sys_id")
 
 
 def _source_identifier(metadata: dict) -> str | None:
@@ -608,9 +609,18 @@ def stored_source_for(collection_name: str, metadata: dict) -> dict | None:
     """The newest stored source of the page a chunk belongs to, found by the id its
     points carry; None when the scrape kept none or it holds no content. One lookup for
     everything that reads a page's source, so the Docs page and the agent's read agree."""
-    source_id = _source_identifier(metadata)
-    stored = source_store.get_by_source_id(collection_name, source_id) if source_id else None
-    return stored if stored and stored.get("content") else None
+    if not isinstance(metadata, dict):
+        return None
+    # Every id the page carries, not just the first: a ServiceNow article synced before
+    # kb_number joined SOURCE_ID_KEYS has its source stored under its sys_id.
+    for key in SOURCE_ID_KEYS:
+        value = metadata.get(key)
+        if value is None or value == "":
+            continue
+        stored = source_store.get_by_source_id(collection_name, str(value))
+        if stored and stored.get("content"):
+            return stored
+    return None
 
 
 def get_collection_document(collection_name: str, point_id: str) -> dict | None:

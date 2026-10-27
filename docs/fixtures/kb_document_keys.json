@@ -42,6 +42,17 @@
       "label_key": "int-2_knowledge_base|abc123"
     },
     {
+      "name": "servicenow kb_number wins over sys_id, which changes with every article version",
+      "collection": "int-2_knowledge_base",
+      "metadata": {
+        "kb_number": "KB0010108",
+        "sys_id": "abc123"
+      },
+      "url": null,
+      "key": "int-2_knowledge_base|KB0010108",
+      "label_key": "int-2_knowledge_base|KB0010108"
+    },
+    {
       "name": "source_id wins over page_id",
       "collection": "int-1_knowledge_base",
       "metadata": {

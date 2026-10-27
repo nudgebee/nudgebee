@@ -34,6 +34,7 @@ writer puts new labels into Postgres directly. It is deleted once that writer sh
 
 import logging
 import os
+import re
 import threading
 from typing import Any, Dict, List, Optional
 
@@ -54,6 +55,7 @@ _PAYLOAD_FIELDS = [
         "capabilities",
         "source_id",
         "page_id",
+        "kb_number",
         "sys_id",
         "url",
         "parent_id",
@@ -179,6 +181,82 @@ def run(client) -> Dict[str, int]:
     return summary
 
 
+_KB_ARTICLE_IN_URL = re.compile(r"sysparm_article=(KB\w+)")
+
+
+def _scroll_kb_numbers(client, collection: str, field: str, ids: List[str], fields: List[str], read) -> Dict[str, str]:
+    """sys_id -> KB number from the points of ``collection`` whose ``field`` is one of ``ids``;
+    ``read`` turns a payload into ``(sys_id, kb_number)``."""
+    from qdrant_client import models
+
+    out: Dict[str, str] = {}
+    offset = None
+    while True:
+        points, offset = client.scroll(
+            collection_name=collection,
+            scroll_filter=models.Filter(must=[models.FieldCondition(key=field, match=models.MatchAny(any=ids))]),
+            limit=SCROLL_BATCH,
+            offset=offset,
+            with_payload=models.PayloadSelectorInclude(include=fields),
+            with_vectors=False,
+        )
+        for point in points:
+            sys_id, kb_number = read(point.payload or {})
+            if sys_id and kb_number and kb_number.strip():
+                out[sys_id] = kb_number.strip()
+        if offset is None or not points:
+            return out
+
+
+def _from_chunk(payload: Dict[str, Any]):
+    metadata = payload.get("metadata") or {}
+    return metadata.get("sys_id"), str(metadata.get("kb_number") or "")
+
+
+def _from_stored_source(payload: Dict[str, Any]):
+    match = _KB_ARTICLE_IN_URL.search(str(payload.get("url") or ""))
+    return payload.get("source_id"), match.group(1) if match else ""
+
+
+def rekey_servicenow_marks(client) -> int:
+    """Move Fact/SOP marks stored under a ServiceNow sys_id to the article's KB number.
+
+    sys_id changes with every article version; the KB number does not, so marks are now
+    keyed on it (document_key.SOURCE_ID_KEYS). Only Qdrant knows which KB number a sys_id
+    belongs to, which is why this runs here: first from the indexed chunks, then, for a
+    version no longer indexed, from the stored source, whose URL names the article
+    (``sysparm_article=KB…``). A sys_id found in neither is left as it is. Idempotent: once
+    moved, nothing matches on the next run.
+    """
+    from rag.core.documents.source_store import source_collection_name
+    from rag.core.utils.db_query import list_sys_id_keyed_marks, rekey_kb_document_marks
+
+    # Keys arrive most recently changed first; pairs keep that order so the newer mark wins.
+    keys = list_sys_id_keyed_marks()
+    by_collection: Dict[str, List[str]] = {}
+    for key in keys:
+        collection, sys_id = key.rsplit("|", 1)
+        by_collection.setdefault(collection, []).append(sys_id)
+    found: Dict[str, str] = {}
+    for collection, sys_ids in by_collection.items():
+        kb_numbers: Dict[str, str] = {}
+        if client.collection_exists(collection):
+            kb_numbers = _scroll_kb_numbers(
+                client, collection, "metadata.sys_id", sys_ids, ["metadata.sys_id", "metadata.kb_number"], _from_chunk
+            )
+        missing = [s for s in sys_ids if s not in kb_numbers]
+        source = source_collection_name(collection)
+        if missing and client.collection_exists(source):
+            kb_numbers.update(
+                _scroll_kb_numbers(client, source, "source_id", missing, ["source_id", "url"], _from_stored_source)
+            )
+        found.update({f"{collection}|{s}": f"{collection}|{kb_numbers[s]}" for s in sys_ids if s in kb_numbers})
+    pairs = [(key, found[key]) for key in keys if key in found]
+    changed = rekey_kb_document_marks(pairs)
+    logger.info("kb_document_seed: moved %d ServiceNow marks to KB numbers (%d found)", changed, len(pairs))
+    return changed
+
+
 def start_background() -> threading.Thread:
     """Run on a daemon thread so startup is not held up by the scroll."""
 
@@ -186,7 +264,12 @@ def start_background() -> threading.Thread:
         try:
             from rag.qdrant.client import get_qdrant_client
 
-            run(get_qdrant_client())
+            client = get_qdrant_client()
+            try:
+                rekey_servicenow_marks(client)
+            except Exception:  # the label seed below must still run
+                logger.exception("kb_document_seed: moving ServiceNow marks failed; it runs again on the next restart")
+            run(client)
         except Exception:  # never take the process down from a daemon thread
             logger.exception("kb_document_seed: failed; it runs again on the next restart")
 

@@ -13,7 +13,7 @@ base's collection (``kb_<id>``) holds one note or upload and has no per-page key
 from typing import Any, Optional
 
 # Same order as collection.SOURCE_ID_KEYS and llm-server's documentSourceIDKeys.
-SOURCE_ID_KEYS = ("source_id", "page_id", "sys_id")
+SOURCE_ID_KEYS = ("source_id", "page_id", "kb_number", "sys_id")
 
 
 def _render(value: Any) -> Optional[str]:

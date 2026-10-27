@@ -901,7 +901,7 @@ def process_servicenow_kb_article(article, base_url, snow_client=None, sources=N
             # converted and will be chunked; this is the only copy.
             sources.append(
                 {
-                    "source_id": str(sys_id),
+                    "source_id": str(kb_number or sys_id),
                     "title": short_description,
                     "url": article_url,
                     "content": html_text,

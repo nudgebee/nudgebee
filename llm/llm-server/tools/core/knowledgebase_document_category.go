@@ -37,8 +37,9 @@ const errKBDocumentKeyForeign = "kb: document_key does not belong to this knowle
 // documentSourceIDKeys are the metadata keys a scraper stamps its own document
 // id on, in the order rag-server reads them (_SOURCE_ID_KEYS in
 // rag/core/documents/collection.py): Confluence writes page_id, ServiceNow
-// sys_id, and newer loaders source_id.
-var documentSourceIDKeys = []string{"source_id", "page_id", "sys_id"}
+// kb_number and sys_id, and newer loaders source_id. kb_number comes before
+// sys_id because ServiceNow gives every new article version a new sys_id.
+var documentSourceIDKeys = []string{"source_id", "page_id", "kb_number", "sys_id"}
 
 // DocumentKey is the stable handle a Fact/SOP mark is stored against:
 // "<collection>|<source id>", or "<collection>|<url>" when the scraper stamped

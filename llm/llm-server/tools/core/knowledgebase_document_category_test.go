@@ -47,6 +47,14 @@ func TestDocumentKeyFromMetadataAcceptsNumericSourceID(t *testing.T) {
 	assert.Equal(t, "sn_knowledge_base|abc123", documentKeyFromMetadata(servicenow))
 }
 
+// ServiceNow gives every new article version a new sys_id; the KB number stays.
+func TestDocumentKeyFromMetadataKeepsServiceNowMarksAcrossVersions(t *testing.T) {
+	v1 := RAGSearchResult{Metadata: map[string]any{"collection": "sn_knowledge_base", "kb_number": "KB0010108", "sys_id": "6925e7c6330c9750088176273e5c7bf6"}}
+	v2 := RAGSearchResult{Metadata: map[string]any{"collection": "sn_knowledge_base", "kb_number": "KB0010108", "sys_id": "eb748367334cdb90088176273e5c7b58"}}
+	assert.Equal(t, "sn_knowledge_base|KB0010108", documentKeyFromMetadata(v1))
+	assert.Equal(t, documentKeyFromMetadata(v1), documentKeyFromMetadata(v2))
+}
+
 func TestValidKBNoteCategory(t *testing.T) {
 	for _, category := range []string{"", KBNoteCategorySOP, KBNoteCategoryFact} {
 		assert.True(t, ValidKBNoteCategory(category), category)

@@ -827,6 +827,60 @@ def seed_kb_document_labels(rows: list[dict]) -> int:
             return result.rowcount or 0
 
 
+def list_sys_id_keyed_marks() -> list[str]:
+    """Fact/SOP mark keys still stored as ``<collection>|<ServiceNow sys_id>`` (32 hex
+    characters), from before the KB number became a ServiceNow article's key. Most recently
+    changed first, so when two versions of one article both carry a mark, the newer choice is
+    the one that moves. Raises on a database error."""
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT document_key FROM llm_kb_capability_entries "
+                "WHERE entry_type = 'kb_document_mark' AND document_key ~ '[|][0-9a-f]{32}$' "
+                "GROUP BY document_key ORDER BY MAX(updated_at) DESC"
+            )
+        )
+        return [row.document_key for row in rows]
+
+
+def rekey_kb_document_marks(pairs: list[tuple[str, str]]) -> int:
+    """Move each mark from its old key to its new one, keeping the user's choice. Where the
+    same tenant or account already has a mark under the new key, that newer mark wins and
+    the old row is dropped. Returns the number of rows moved or dropped. Raises on a
+    database error."""
+    changed = 0
+    with engine.connect() as connection:
+        with connection.begin():
+            # Replicas starting together run this one at a time, so each sees the other's moves.
+            connection.execute(text("SELECT pg_advisory_xact_lock(hashtext('kb_document_mark_rekey'))"))
+            for old, new in pairs:
+                params = {"old": old, "new": new}
+                changed += (
+                    connection.execute(
+                        text(
+                            "DELETE FROM llm_kb_capability_entries o "
+                            "WHERE o.entry_type = 'kb_document_mark' AND o.document_key = :old "
+                            "AND EXISTS (SELECT 1 FROM llm_kb_capability_entries n "
+                            "WHERE n.entry_type = 'kb_document_mark' AND n.document_key = :new "
+                            "AND n.tenant_id = o.tenant_id AND n.account_id IS NOT DISTINCT FROM o.account_id)"
+                        ),
+                        params,
+                    ).rowcount
+                    or 0
+                )
+                changed += (
+                    connection.execute(
+                        text(
+                            "UPDATE llm_kb_capability_entries SET document_key = :new, updated_at = NOW() "
+                            "WHERE entry_type = 'kb_document_mark' AND document_key = :old"
+                        ),
+                        params,
+                    ).rowcount
+                    or 0
+                )
+    return changed
+
+
 def get_kb_summary_collection_names() -> set[str]:
     """Every collection that has an entry_type = 'kb_collection' row. The backfill
     uses it to find collections whose chunks are labelled but whose row is missing.

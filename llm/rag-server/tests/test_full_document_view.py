@@ -184,8 +184,9 @@ def test_servicenow_keeps_the_article_body_as_its_source():
     assert document is not None
     assert len(sources) == 1
     stored = sources[0]
-    # Keyed on the id the indexed points carry, so the document view can find it.
-    assert stored["source_id"] == "abc123"
+    # Keyed on the KB number the indexed points carry, so the document view can find it
+    # after a new article version gets a new sys_id.
+    assert stored["source_id"] == "KB0010001"
     assert stored["title"] == "Reset the VPN client"
     assert stored["content"] == article["text"], "the body is kept as ServiceNow returned it, not converted"
     assert stored["content_type"] == "text/html"
@@ -220,12 +221,25 @@ def test_a_servicenow_document_resolves_through_sys_id(monkeypatch):
     assert document["content_source"] == "source"
 
 
+def test_a_servicenow_source_stored_under_sys_id_is_still_found(monkeypatch):
+    """Sources synced before kb_number became the key are stored under the sys_id."""
+    stored = {"abc123": {"content": "the whole article"}}
+    monkeypatch.setattr(
+        source_store, "get_by_source_id", lambda collection_name, source_id, **kw: stored.get(source_id)
+    )
+
+    found = collection.stored_source_for("coll", {"kb_number": "KB0010108", "sys_id": "abc123"})
+
+    assert found == {"content": "the whole article"}
+
+
 def test_the_source_identifier_is_looked_up_in_one_place():
     """Each scrape stamps its own key; the join knows all of them, callers know none."""
     from rag.core.documents.collection import _source_identifier
 
     assert _source_identifier({"page_id": "page-1"}) == "page-1"
     assert _source_identifier({"sys_id": "abc123"}) == "abc123"
+    assert _source_identifier({"kb_number": "KB0010108", "sys_id": "abc123"}) == "KB0010108"
     assert _source_identifier({"source_id": "s-1"}) == "s-1"
     # Numeric ids are normalised, since source storage keys on the string form.
     assert _source_identifier({"page_id": 12345}) == "12345"
