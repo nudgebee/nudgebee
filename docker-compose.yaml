@@ -314,7 +314,9 @@ services:
       LLM_SERVER_WORKSPACE_RUNTIME: docker
       LLM_SERVER_WORKSPACE_DOCKER_HOST: unix:///var/run/docker.sock
       LLM_SERVER_WORKSPACE_DOCKER_NETWORK: nudgebee-workspace
-      LLM_SERVER_AGENT_CODEAGENT_IMAGE: ${LLM_SERVER_AGENT_CODEAGENT_IMAGE:-ghcr.io/nudgebee/code-analysis-agent:latest}
+      # Tracks the same `edge` channel as every other service in this file, so
+      # a compose install never pulls the stale `latest` tag (Phase 2 / WS2).
+      LLM_SERVER_AGENT_CODEAGENT_IMAGE: ${LLM_SERVER_AGENT_CODEAGENT_IMAGE:-ghcr.io/nudgebee/code-analysis-agent:edge}
       # Vector search is proxied through the rag-server, not Qdrant directly.
       RAG_SERVER_URL: http://rag-server:9999
     depends_on:

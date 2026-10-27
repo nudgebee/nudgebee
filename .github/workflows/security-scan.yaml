@@ -64,15 +64,14 @@ jobs:
           - image: llm-server
           - image: rag-server
           - image: ml-k8s-server
-          # These two ship as `:latest`, NOT `:edge` — postgres_migrations.image.tag
-          # and llm-server's LLM_SERVER_AGENT_CODEAGENT_IMAGE in
-          # deploy/kubernetes/nudgebee/values.yaml both pin `latest`, and the two
-          # tags are different digests. Scanning only `edge` reported numbers for
-          # an image no operator installs, so scan both: `edge` tracks what main
-          # will ship, `latest` is what a chart install pulls today.
+          # migrations ships as `:latest` on main (postgres_migrations.image.tag)
+          # and the two tags are different digests. Scanning only `edge` reported
+          # numbers for an image no operator installs, so scan both: `edge`
+          # tracks what main will ship, `latest` is what an install from this
+          # branch pulls. code-analysis-agent used to sit here too;
+          # it now tracks `edge` on main and the release version in published
+          # charts (Phase 2 WS2), so the default entry above covers it.
           - image: migrations
-            tag: latest
-          - image: code-analysis-agent
             tag: latest
     steps:
       - name: Resolve namespace

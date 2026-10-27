@@ -373,6 +373,16 @@ jobs:
             .postgres_migrations.image.tag = strenv(VERSION)
           ' deploy/kubernetes/nudgebee/values.yaml
 
+          # Re-pin the code-analysis-agent image to this release. llm-server
+          # pulls it via its workspace container runtime rather than running it
+          # as a chart container, so the per-subchart bump above does not cover
+          # it (there is no code-analysis-agent subchart). Without this, a
+          # published chart keeps whatever floating tag values.yaml carries and
+          # an operator's agent image can change under them.
+          CODEAGENT_REF="${REGISTRY}/${NS}/code-analysis-agent:${VERSION}" yq -i '
+            .llm-server.env.LLM_SERVER_AGENT_CODEAGENT_IMAGE = strenv(CODEAGENT_REF)
+          ' deploy/kubernetes/nudgebee/values.yaml
+
           first_party=(
             services-server migrations app ticket-server
             llm-gateway llm-server rag-server ml-k8s-server
