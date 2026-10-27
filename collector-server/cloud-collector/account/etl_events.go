@@ -459,8 +459,8 @@ func StoreEvents(ctx *security.RequestContext, accountId string) (StoreEventResp
 	// events from the close step. Without this, long-lived alarms get closed
 	// and then filtered out by the dedup check (finding_id already exists),
 	// leaving them stuck as CLOSED.
-	currentFindingIds := lo.Map(events.Items, func(event providers.Event, _ int) string {
-		return event.FiringFindingID()
+	currentFindingIds := lo.FlatMap(events.Items, func(event providers.Event, _ int) []string {
+		return event.StoredFindingIDs()
 	})
 
 	// Collect fingerprints of RESOLVED events so their existing FIRING counterparts
@@ -620,15 +620,14 @@ func storeMultipleEventsInDB(ctx *security.RequestContext, dbms *common.Database
 func insertNewEvents(ctx *security.RequestContext, dbms *common.DatabaseManager, originatingAccount providers.Account, internalDBAccountID string, events []providers.Event) error {
 	funcName := "etl.events.insertNewEvents"
 
-	// 1. Compute per-firing finding_ids for incoming events.
-	findingIds := lo.Map(events, func(event providers.Event, _ int) string {
-		return event.FiringFindingID()
+	// 1. Find which incoming firings already exist (processed firings), under
+	// their current finding_id or the one they were stored under before a format change
+	storedFindingIds := lo.FlatMap(events, func(event providers.Event, _ int) []string {
+		return event.StoredFindingIDs()
 	})
-
-	// 2. Find which of these finding_ids already exist (processed firings)
 	existingFindingIds := []string{}
 	query := `SELECT finding_id FROM events WHERE cloud_account_id = $1 AND finding_id = ANY($2)`
-	err := dbms.QueryAndScan(&existingFindingIds, query, internalDBAccountID, pq.Array(findingIds))
+	err := dbms.QueryAndScan(&existingFindingIds, query, internalDBAccountID, pq.Array(storedFindingIds))
 	if err != nil {
 		ctx.GetLogger().Error("failed to query for existing events by finding_id", "error", err)
 		return err
@@ -638,10 +637,11 @@ func insertNewEvents(ctx *security.RequestContext, dbms *common.DatabaseManager,
 		return fid, true
 	})
 
-	// 3. Filter out events whose per-firing finding_id already exists
-	eventsToProcess := lo.Filter(events, func(event providers.Event, idx int) bool {
-		candidateFindingId := findingIds[idx]
-		return !existingFindingIdsMap[candidateFindingId]
+	// 2. Filter out events whose firing is already stored
+	eventsToProcess := lo.Filter(events, func(event providers.Event, _ int) bool {
+		return !lo.SomeBy(event.StoredFindingIDs(), func(fid string) bool {
+			return existingFindingIdsMap[fid]
+		})
 	})
 
 	if len(eventsToProcess) == 0 {

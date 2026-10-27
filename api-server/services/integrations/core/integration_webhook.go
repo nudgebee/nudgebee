@@ -57,7 +57,8 @@ type EventIncomingWebhook struct {
 	// under Investigation.Fingerprint, so events opened before the change still
 	// close. Empty when the format did not change for this alert. Transitional:
 	// remove once no open datadog_webhook event carries a "<monitorID>-"
-	// fingerprint (#39861).
+	// fingerprint (#39861), and no open azure_monitor_webhook event is
+	// fingerprinted by its alertId.
 	LegacyFingerprint string `json:"legacy_fingerprint,omitempty"`
 	// PodNameCandidates are names that may be pods, from a parser whose payload
 	// cannot say which of its values is the pod (a Kibana group id is the group
@@ -1115,7 +1116,10 @@ func ReplayWebhookEvent(sc *security.RequestContext, webhookEventId string) erro
 	// Find the matching event from the processed events
 	var targetEvent *EventIncomingWebhook
 	for i := range webhookEvents {
-		if webhookEvents[i].EventId == webhookData.EventID {
+		// Case-insensitive: a parser may since have lowercased an id it used to keep
+		// as the sender spelled it (Azure Monitor alertIds), and a delivery stored
+		// before that must still replay.
+		if strings.EqualFold(webhookEvents[i].EventId, webhookData.EventID) {
 			targetEvent = &webhookEvents[i]
 			break
 		}

@@ -30,9 +30,9 @@ func TestGCPWebhookEventFromRowMatchesPollingRow(t *testing.T) {
 	event, err := gcloud.ConvertWebhookIncident(nil, account, []byte(body))
 	require.NoError(t, err)
 
-	row, err := gcpWebhookEventRow(ctx, event, account, account.ID)
+	row, err := webhookEventRow(ctx, event, account, account.ID)
 	require.NoError(t, err)
-	got, err := gcpWebhookEventFromRow(row)
+	got, err := webhookEventFromRow(row)
 	require.NoError(t, err)
 
 	assert.Equal(t, "example-project:sample-db", got.SubjectName)
@@ -50,7 +50,7 @@ func TestGCPWebhookEventFromRowMatchesPollingRow(t *testing.T) {
 
 	resourceId := "res-1"
 	row["cloud_resource_id"] = &resourceId
-	got, err = gcpWebhookEventFromRow(row)
+	got, err = webhookEventFromRow(row)
 	require.NoError(t, err)
 	assert.Equal(t, "res-1", got.CloudResourceId)
 	assert.Equal(t, "example-project:sample-db", got.Labels["gcp_event_instance"])
