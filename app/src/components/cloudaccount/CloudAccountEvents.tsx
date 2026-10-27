@@ -519,6 +519,7 @@ const CloudAccountEvents = (props: {
             <DsDropdownMenu
               align='end'
               size='sm'
+              disablePortal={false}
               items={menuItemsConfig.map((m) => ({
                 id: `events-action-${item.id}-${m.id}`,
                 label: m.label,

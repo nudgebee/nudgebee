@@ -875,6 +875,7 @@ const InstancesView = (props: {
                   <DsDropdownMenu
                     align='end'
                     size='sm'
+                    disablePortal={false}
                     items={menuItems.map((m: any) => ({
                       id: `rds-action-${item.resourse_id}-${m.id}`,
                       label: m.label,
