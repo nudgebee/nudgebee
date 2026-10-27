@@ -145,6 +145,12 @@ func TestAzureDetermineNodeType(t *testing.T) {
 		{"Databricks workspace", "workspaces", "microsoft.databricks/workspaces", core.NodeTypeAIService},
 		{"Arc machine", "machines", "microsoft.hybridcompute/machines", core.NodeTypeComputeInstance},
 		{"Logic App", "workflows", "microsoft.logic/workflows", core.NodeTypeServerlessFunction},
+		{"App Service plan", "serverfarms", "microsoft.web/serverfarms", core.NodeTypeComputeInstancePool},
+		{"Function inside an app", "functions", "microsoft.web/sites/functions", core.NodeTypeServerlessFunction},
+		// The rest of Microsoft.Web / Microsoft.Logic is not a function
+		{"Web certificate stays generic", "certificates", "microsoft.web/certificates", core.NodeTypeCloudResource},
+		{"API connection stays generic", "connections", "microsoft.web/connections", core.NodeTypeCloudResource},
+		{"Integration account stays generic", "integrationaccounts", "microsoft.logic/integrationaccounts", core.NodeTypeCloudResource},
 		{"Communication Services", "communicationservices", "microsoft.communication/communicationservices", core.NodeTypeEmailService},
 		// Deliberately left as CloudResource (no clean existing node type)
 		{"Data Factory stays generic", "factories", "microsoft.datafactory/factories", core.NodeTypeCloudResource},
@@ -164,6 +170,44 @@ func TestAzureDetermineNodeType(t *testing.T) {
 // ============================================================================
 // GenerateUniqueKey Tests
 // ============================================================================
+
+// Microsoft.Web/sites holds web apps, function apps and Logic Apps alike; only
+// the row's kind tells them apart, so each must get its own label rather than
+// every site being called a function app.
+func TestAzureSiteSpecificTypeFollowsKind(t *testing.T) {
+	source, _ := NewAzureSource(AzureSourceConfig{}, nil)
+	h := NewAzureSourceTestHelper(source)
+
+	tests := []struct {
+		name, rowType, service, meta string
+		want                         string
+	}{
+		{"web app", "sites", "microsoft.web/sites", `{"kind":"app"}`, "AzureAppService"},
+		{"linux web app", "sites", "microsoft.web/sites", `{"kind":"app,linux"}`, "AzureAppService"},
+		{"function app", "sites", "microsoft.web/sites", `{"kind":"functionapp"}`, "AzureFunctionApp"},
+		{"linux function app", "sites", "microsoft.web/sites", `{"kind":"functionapp,linux"}`, "AzureFunctionApp"},
+		{"logic app standard", "sites", "microsoft.web/sites", `{"kind":"functionapp,workflowapp"}`, "AzureLogicApp"},
+		{"site with no kind", "sites", "microsoft.web/sites", `{}`, "AzureAppService"},
+		{"logic app workflow", "workflows", "microsoft.logic/workflows", `{}`, "AzureLogicApp"},
+		{"app service plan", "serverfarms", "microsoft.web/serverfarms", `{"kind":"functionapp"}`, "AzureAppServicePlan"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rows := []sources.CloudResourceRow{{
+				ID: "1", Name: "r1", Type: tt.rowType, ServiceName: tt.service,
+				CloudProvider: "Azure", Region: "eastus", Tenant: "t", Account: "a", IsActive: true,
+				Meta: json.RawMessage(tt.meta), Tags: json.RawMessage(`{}`),
+			}}
+			nodes, _ := h.ConvertResourcesToGraph(nil, rows, &core.SourceBuildRequest{TenantID: "t", CloudAccountID: "a"})
+			if len(nodes) != 1 {
+				t.Fatalf("expected 1 node, got %d", len(nodes))
+			}
+			if nodes[0].SpecificType != tt.want {
+				t.Errorf("specific_type = %q, want %q", nodes[0].SpecificType, tt.want)
+			}
+		})
+	}
+}
 
 func TestAzureGenerateUniqueKey(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))

@@ -159,7 +159,9 @@
     "is_active": true,
     "external_resource_id": "plan1",
     "arn": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Web/serverfarms/plan1",
-    "meta": {}
+    "meta": {
+      "kind": "functionapp"
+    }
   },
   {
     "id": "vm1",
@@ -266,6 +268,7 @@
     "external_resource_id": "func1",
     "arn": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Web/sites/func1",
     "meta": {
+      "kind": "functionapp,linux",
       "properties": {
         "serverFarmId": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Web/serverfarms/plan1",
         "virtualNetworkSubnetId": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Network/virtualNetworks/vnet1/subnets/subnet1"
@@ -277,6 +280,53 @@
         }
       ]
     }
+  },
+  {
+    "id": "web1",
+    "resourse_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Web/sites/web1",
+    "name": "web1",
+    "type": "sites",
+    "service_name": "microsoft.web/sites",
+    "account": "sub1",
+    "region": "eastus",
+    "cloud_provider": "Azure",
+    "is_active": true,
+    "external_resource_id": "web1",
+    "arn": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Web/sites/web1",
+    "meta": {
+      "kind": "app,linux",
+      "properties": {
+        "serverFarmId": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Web/serverfarms/plan1"
+      }
+    }
+  },
+  {
+    "id": "logic1",
+    "resourse_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Logic/workflows/logic1",
+    "name": "logic1",
+    "type": "workflows",
+    "service_name": "microsoft.logic/workflows",
+    "account": "sub1",
+    "region": "eastus",
+    "cloud_provider": "Azure",
+    "is_active": true,
+    "external_resource_id": "logic1",
+    "arn": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Logic/workflows/logic1",
+    "meta": {}
+  },
+  {
+    "id": "cert1",
+    "resourse_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Web/certificates/cert1",
+    "name": "cert1",
+    "type": "certificates",
+    "service_name": "microsoft.web/certificates",
+    "account": "sub1",
+    "region": "eastus",
+    "cloud_provider": "Azure",
+    "is_active": true,
+    "external_resource_id": "cert1",
+    "arn": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Web/certificates/cert1",
+    "meta": {}
   },
   {
     "id": "ra1",

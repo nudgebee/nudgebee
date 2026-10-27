@@ -1,6 +1,39 @@
 {
   "nodes": [
     {
+      "unique_key": "azure:test-account-azure-1:eastus:CloudResource::cert1",
+      "node_type": "CloudResource",
+      "specific_type": "CloudResource",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "account_number": "",
+        "arn": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Web/certificates/cert1",
+        "cloud_provider": "Azure",
+        "external_resource_id": "cert1",
+        "is_active": true,
+        "labels": null,
+        "name": "cert1",
+        "nb_account_id": "sub1",
+        "nb_resource_id": "cert1",
+        "region": "eastus",
+        "resource_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Web/certificates/cert1",
+        "service_name": "microsoft.web/certificates",
+        "source": "azure",
+        "status": "",
+        "subtype": "certificates",
+        "type": "certificates"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "cert1",
+        "region": "eastus"
+      },
+      "ontology_attributes": {}
+    },
+    {
       "unique_key": "azure:test-account-azure-1:eastus:CloudResource::ra1",
       "node_type": "CloudResource",
       "specific_type": "CloudResource",
@@ -151,6 +184,43 @@
       },
       "ontology_attributes": {
         "name": "vmss1",
+        "region": "eastus"
+      }
+    },
+    {
+      "unique_key": "azure:test-account-azure-1:eastus:ComputeInstancePool::plan1",
+      "node_type": "ComputeInstancePool",
+      "specific_type": "AzureAppServicePlan",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "account_number": "",
+        "arn": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Web/serverfarms/plan1",
+        "cloud_provider": "Azure",
+        "external_resource_id": "plan1",
+        "is_active": true,
+        "labels": null,
+        "name": "plan1",
+        "nb_account_id": "sub1",
+        "nb_resource_id": "plan1",
+        "region": "eastus",
+        "resource_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Web/serverfarms/plan1",
+        "service_name": "microsoft.web/serverfarms",
+        "source": "azure",
+        "status": "",
+        "subtype": "serverfarms",
+        "type": "serverfarms"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "plan1",
+        "region": "eastus",
+        "status": ""
+      },
+      "ontology_attributes": {
+        "name": "plan1",
         "region": "eastus"
       }
     },
@@ -383,39 +453,75 @@
       }
     },
     {
-      "unique_key": "azure:test-account-azure-1:eastus:ServerlessFunction::plan1",
+      "unique_key": "azure:test-account-azure-1:eastus:ServerlessFunction::logic1",
       "node_type": "ServerlessFunction",
-      "specific_type": "AzureFunctionApp",
+      "specific_type": "AzureLogicApp",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",
       "level": "",
       "source": "azure",
       "properties": {
         "account_number": "",
-        "arn": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Web/serverfarms/plan1",
+        "arn": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Logic/workflows/logic1",
         "cloud_provider": "Azure",
-        "external_resource_id": "plan1",
+        "external_resource_id": "logic1",
         "is_active": true,
         "labels": null,
-        "name": "plan1",
+        "name": "logic1",
         "nb_account_id": "sub1",
-        "nb_resource_id": "plan1",
+        "nb_resource_id": "logic1",
         "region": "eastus",
-        "resource_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Web/serverfarms/plan1",
-        "service_name": "microsoft.web/serverfarms",
+        "resource_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Logic/workflows/logic1",
+        "service_name": "microsoft.logic/workflows",
         "source": "azure",
         "status": "",
-        "subtype": "serverfarms",
-        "type": "serverfarms"
+        "subtype": "workflows",
+        "type": "workflows"
       },
       "labels": {},
       "query_attributes": {
-        "name": "plan1",
+        "name": "logic1",
         "region": "eastus"
       },
       "ontology_attributes": {
         "location": "eastus",
-        "name": "plan1"
+        "name": "logic1"
+      }
+    },
+    {
+      "unique_key": "azure:test-account-azure-1:eastus:ServerlessFunction::web1",
+      "node_type": "ServerlessFunction",
+      "specific_type": "AzureAppService",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "account_number": "",
+        "arn": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Web/sites/web1",
+        "cloud_provider": "Azure",
+        "external_resource_id": "web1",
+        "is_active": true,
+        "labels": null,
+        "name": "web1",
+        "nb_account_id": "sub1",
+        "nb_resource_id": "web1",
+        "region": "eastus",
+        "resource_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Web/sites/web1",
+        "service_name": "microsoft.web/sites",
+        "source": "azure",
+        "status": "",
+        "subtype": "sites",
+        "type": "sites"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "web1",
+        "region": "eastus"
+      },
+      "ontology_attributes": {
+        "location": "eastus",
+        "name": "web1"
       }
     },
     {
@@ -724,7 +830,7 @@
     },
     {
       "src_key": "azure:test-account-azure-1:eastus:ServerlessFunction::func1",
-      "dst_key": "azure:test-account-azure-1:eastus:ServerlessFunction::plan1",
+      "dst_key": "azure:test-account-azure-1:eastus:ComputeInstancePool::plan1",
       "relationship_type": "HOSTED_ON",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",
@@ -769,6 +875,24 @@
       "source": "azure",
       "properties": {
         "connection_type": "function_subnet",
+        "contributing_sources": [
+          "azure"
+        ]
+      },
+      "contributing_sources": [
+        "azure"
+      ]
+    },
+    {
+      "src_key": "azure:test-account-azure-1:eastus:ServerlessFunction::web1",
+      "dst_key": "azure:test-account-azure-1:eastus:ComputeInstancePool::plan1",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "connection_type": "app_service_plan",
         "contributing_sources": [
           "azure"
         ]

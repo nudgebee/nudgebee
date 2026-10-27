@@ -483,6 +483,29 @@ func TestE2E_TierA_AzureAllEdges(t *testing.T) {
 
 	assertGoldenGraph(t, e2eGoldenPath("azure_all_edges"), nodes, edges)
 
+	// The golden file only proves the labels did not change, so state what the
+	// Microsoft.Web / Microsoft.Logic rows must be: Azure keeps web apps and
+	// function apps under the same resource type, and only kind tells them apart.
+	wantLabels := map[string]string{
+		"func1":  "AzureFunctionApp",
+		"web1":   "AzureAppService",
+		"logic1": "AzureLogicApp",
+		"plan1":  "AzureAppServicePlan",
+		"cert1":  string(core.NodeTypeCloudResource),
+	}
+	for _, n := range nodes {
+		name, _ := n.Properties["name"].(string)
+		if want, ok := wantLabels[name]; ok {
+			if n.SpecificType != want {
+				t.Errorf("azure_all_edges: %s specific_type = %q, want %q", name, n.SpecificType, want)
+			}
+			delete(wantLabels, name)
+		}
+	}
+	for name := range wantLabels {
+		t.Errorf("azure_all_edges: expected node %q not produced", name)
+	}
+
 	// Azure edge-type coverage gate (offline-reachable meta-driven edges).
 	wantEdgeTypes := []core.RelationshipType{
 		core.RelationshipBelongsTo,
