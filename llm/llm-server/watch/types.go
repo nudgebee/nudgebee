@@ -47,6 +47,9 @@ type SourceKind string
 const (
 	SourceKindTool SourceKind = "tool"
 	SourceKindSQL  SourceKind = "sql"
+	// SourceKindTimer observes nothing: the watch ends EXPIRED at its deadline. A plain "look again at HH:MM" wait,
+	// for NudgeBee's own watches only (#42461).
+	SourceKindTimer SourceKind = "timer"
 )
 
 // PredicateKind identifies how an observation is evaluated for termination.
@@ -57,6 +60,8 @@ const (
 	PredicateKindRegex     PredicateKind = "regex"
 	PredicateKindSubstring PredicateKind = "substring"
 	PredicateKindLLMJudge  PredicateKind = "llm_judge"
+	// PredicateKindNever never matches: a timer watch's predicate.
+	PredicateKindNever PredicateKind = "never"
 )
 
 // Watch is the persisted form of a watch task — one row in llm_watch_tasks.
@@ -93,6 +98,9 @@ type Watch struct {
 	// NotifySession: chat routing key (Slack "<channel>-<thread_ts>", Teams/GChat id)
 	// captured at create → terminal notify routes back. NULL for legacy/web rows.
 	NotifySession *string `db:"notify_session"`
+
+	// Origin is who set the watch up: nil for a person, otherwise the NudgeBee feature that owns it (OriginRemediation).
+	Origin *string `db:"origin"`
 
 	Status       Status `db:"status"`
 	PollCount    int    `db:"poll_count"`
@@ -135,7 +143,16 @@ type CreateInput struct {
 	// NotifySession — see Watch.NotifySession. Optional; watch_resource sets it
 	// from the tool-call context's session id when chat-routable.
 	NotifySession string
+	// Origin — see Watch.Origin. Empty for a person's watch.
+	Origin string
 }
+
+// OriginRemediation is the origin of a remediation follow-up's wait (#42461).
+const OriginRemediation = "remediation"
+
+// IsNudgeBees reports whether NudgeBee, not a person, set the watch up: it has its own cap, is not merged with a
+// person's, ends without a chat summary, and a person cannot cancel it.
+func (w Watch) IsNudgeBees() bool { return w.Origin != nil && *w.Origin != "" }
 
 // Observation is what a Source.Observe returns for a single poll. Data is the
 // raw textual representation of the observation (JSON, plain text, etc.) that

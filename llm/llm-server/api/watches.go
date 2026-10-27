@@ -206,6 +206,12 @@ func handleWatchesApi(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 			actionError(c, 403, errorUserAccessMessage)
 			return
 		}
+		// NudgeBee's own wait (a remediation follow-up's) ends with its follow-up; a person's cancel would start the
+		// next check early.
+		if existing.IsNudgeBees() {
+			actionError(c, 409, "api: this is NudgeBee's own wait for a remediation follow-up; it ends with the follow-up")
+			return
+		}
 
 		// Manager.Cancel is the same SQL guard the Hasura update permission
 		// enforced: WHERE tenant_id=$1 AND id=$2 AND status IN
@@ -301,6 +307,16 @@ type watchRow struct {
 	ExpiresAt       string  `json:"expires_at"`
 	CreatedAt       string  `json:"created_at"`
 	UpdatedAt       string  `json:"updated_at"`
+	// Origin is "" for a person's watch, else the NudgeBee feature that owns it (a remediation wait): the drawer
+	// shows it without a Cancel, and no chat summary comes for it.
+	Origin string `json:"origin"`
+}
+
+func originOf(w watch.Watch) string {
+	if w.Origin == nil {
+		return ""
+	}
+	return *w.Origin
 }
 
 func toListResponse(in []watch.Watch) []watchRow {
@@ -331,6 +347,7 @@ func toListResponse(in []watch.Watch) []watchRow {
 			ExpiresAt:       w.ExpiresAt.Format("2006-01-02T15:04:05.000000Z"),
 			CreatedAt:       w.CreatedAt.Format("2006-01-02T15:04:05.000000Z"),
 			UpdatedAt:       w.UpdatedAt.Format("2006-01-02T15:04:05.000000Z"),
+			Origin:          originOf(w),
 		})
 	}
 	return out

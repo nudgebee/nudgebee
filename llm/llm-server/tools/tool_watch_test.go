@@ -425,3 +425,15 @@ func TestWatchSource_RealClassifiersRefuseWritesTheDenyListMissed(t *testing.T) 
 		})
 	}
 }
+
+// A timer is NudgeBee's own kind of wait (#42461): a chat cannot set one up through watch_resource.
+func TestWatchResourceTool_RefusesTimerWatches(t *testing.T) {
+	for _, args := range []map[string]any{
+		{"source_kind": "timer", "source_config": map[string]any{}, "predicate_kind": "regex", "predicate_expr": "x", "poll_interval_sec": 60, "max_duration_sec": 600},
+		{"source_kind": "tool", "source_config": map[string]any{"tool_name": "kubectl_execute"}, "predicate_kind": "never", "predicate_expr": "-", "poll_interval_sec": 60, "max_duration_sec": 600},
+	} {
+		_, err := parseWatchInput(args)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `source_kind must be "tool" or "sql"`)
+	}
+}

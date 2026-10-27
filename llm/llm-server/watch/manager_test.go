@@ -234,7 +234,7 @@ func TestCreate_RejectsWhenTenantAtCap(t *testing.T) {
 	m, mock, _ := newMockManager(t)
 	expectNoDuplicate(mock)
 	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM llm_watch_tasks`).
-		WithArgs(sqlmock.AnyArg()).
+		WithArgs(sqlmock.AnyArg(), false).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
 
 	in := validCreateInput()
@@ -249,7 +249,7 @@ func TestCreate_AllowsBelowCap(t *testing.T) {
 	m, mock, _ := newMockManager(t)
 	expectNoDuplicate(mock)
 	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM llm_watch_tasks`).
-		WithArgs(sqlmock.AnyArg()).
+		WithArgs(sqlmock.AnyArg(), false).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(4))
 	mock.ExpectExec("INSERT INTO llm_watch_tasks").
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -270,7 +270,7 @@ func TestCreate_AtomicQuotaGuardRejectsWhenInsertAffectsZeroRows(t *testing.T) {
 	m, mock, _ := newMockManager(t)
 	expectNoDuplicate(mock)
 	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM llm_watch_tasks`).
-		WithArgs(sqlmock.AnyArg()).
+		WithArgs(sqlmock.AnyArg(), false).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(4))
 	mock.ExpectExec("INSERT INTO llm_watch_tasks").
 		WillReturnResult(sqlmock.NewResult(0, 0))
@@ -320,6 +320,7 @@ func TestCreate_PersistsAllFields(t *testing.T) {
 			frozen, frozen,
 			in.ParentMessageID,            // parent_message_id (nil unless set on the input)
 			"C0123ABCD-1699900000.001500", // notify_session
+			(*string)(nil),                // origin: a person's watch
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -631,7 +632,7 @@ func TestAssertTenantQuota_BoundaryAtCap(t *testing.T) {
 	m, mock, _ := newMockManager(t)
 	expectNoDuplicate(mock)
 	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM llm_watch_tasks`).
-		WithArgs(sqlmock.AnyArg()).
+		WithArgs(sqlmock.AnyArg(), false).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
 	_, err := m.Create(context.Background(), validCreateInput())
 	require.ErrorIs(t, err, ErrTenantQuotaExceeded)
@@ -640,7 +641,7 @@ func TestAssertTenantQuota_BoundaryAtCap(t *testing.T) {
 	m2, mock2, _ := newMockManager(t)
 	expectNoDuplicate(mock2)
 	mock2.ExpectQuery(`SELECT COUNT\(\*\) FROM llm_watch_tasks`).
-		WithArgs(sqlmock.AnyArg()).
+		WithArgs(sqlmock.AnyArg(), false).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(4))
 	mock2.ExpectExec("INSERT INTO llm_watch_tasks").
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -679,7 +680,7 @@ func TestAssertTenantQuota_TOCTOU_DocumentsBug(t *testing.T) {
 	expectNoDuplicate(mock)
 	// First create: count=4 → ok, insert.
 	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM llm_watch_tasks`).
-		WithArgs(sqlmock.AnyArg()).
+		WithArgs(sqlmock.AnyArg(), false).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(4))
 	mock.ExpectExec("INSERT INTO llm_watch_tasks").
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -687,7 +688,7 @@ func TestAssertTenantQuota_TOCTOU_DocumentsBug(t *testing.T) {
 	// in production this is the racy moment). Both succeed → 6 rows
 	// total despite cap=5.
 	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM llm_watch_tasks`).
-		WithArgs(sqlmock.AnyArg()).
+		WithArgs(sqlmock.AnyArg(), false).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(4))
 	mock.ExpectExec("INSERT INTO llm_watch_tasks").
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -1020,5 +1021,58 @@ func TestMarkTerminal_ObservationIsIndependentOfPolled(t *testing.T) {
 		Observation: &obs,
 	})
 	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// NudgeBee's own watch (#42461) is never merged with another, counts against its own cap, not a person's, and is
+// stored with its origin.
+func TestCreate_NudgeBeesWatchHasItsOwnCapAndNoDedup(t *testing.T) {
+	withConfig(t, func() {
+		config.Config.WatchMaxPerTenant = 1
+		config.Config.WatchMaxOriginPerTenant = 50
+	})
+	m, mock, _ := newMockManager(t)
+	in := validCreateInput()
+	in.Origin = OriginRemediation
+	// No duplicate lookup: the first query is the quota, over NudgeBee's own watches.
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM llm_watch_tasks`).
+		WithArgs(sqlmock.AnyArg(), true).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(10))
+	mock.ExpectExec(`(?s)INSERT INTO llm_watch_tasks.*\(origin IS NOT NULL\) = \(\$21::text IS NOT NULL\)\s*\) < \$22`).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w, err := m.Create(context.Background(), in)
+	require.NoError(t, err)
+	require.NotNil(t, w.Origin)
+	assert.Equal(t, OriginRemediation, *w.Origin)
+	assert.True(t, w.IsNudgeBees())
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A timer watch (#42461) observes nothing: one tick at its deadline. NudgeBee's own waits get their own duration
+// bound, so a remediation hold of up to 2 hours is not cut at a person's 1-hour limit.
+func TestCreate_TimerWatchTicksOnceAtItsDeadline(t *testing.T) {
+	withConfig(t, func() {
+		config.Config.WatchMaxPerTenant = 0
+		config.Config.WatchMaxOriginPerTenant = 0
+		config.Config.WatchMaxDurationSec = 3600
+		config.Config.WatchMaxOriginDurationSec = 7800
+	})
+	m, mock, frozen := newMockManager(t)
+	in := validCreateInput()
+	in.Origin = OriginRemediation
+	in.SourceKind = SourceKindTimer
+	in.SourceConfig = json.RawMessage(`{"reason":"confirm the fix held"}`)
+	in.PredicateKind, in.PredicateExpr = PredicateKindNever, "-"
+	in.PollIntervalSec, in.MaxDurationSec = 60, 7200
+	mock.ExpectExec("INSERT INTO llm_watch_tasks").WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w, err := m.Create(context.Background(), in)
+	require.NoError(t, err)
+	assert.Equal(t, 7200, w.MaxDurationSec, "not clamped to a person's 1 hour")
+	assert.Equal(t, 7200, w.PollIntervalSec)
+	assert.Equal(t, frozen.Add(2*time.Hour), w.NextPollAt)
+	assert.Equal(t, w.ExpiresAt, w.NextPollAt)
+	assert.Equal(t, "waiting until 14:00 UTC: confirm the fix held", DescribeTarget(*w))
 	require.NoError(t, mock.ExpectationsWereMet())
 }

@@ -36,8 +36,8 @@ func BootstrapWatch() error {
 		return nil
 	}
 	watch.SetLLMJudgeClientFactory(buildWatchJudgeClient)
-	watch.SetSecurityContextBuilder(buildWatchSecurityContext)
-	watch.SetOwnerAccessChecker(core.CheckWatchOwnerAccess)
+	// The poll's own context also checks its owner's access, once per poll (#42461).
+	watch.SetSecurityContextBuilder(core.WatchPollSecurityContext)
 	watch.SetSummarizerFactory(newLlmSummarizer)
 	if err := watch.RegisterDispatcher(); err != nil {
 		return fmt.Errorf("BootstrapWatch: register dispatcher: %w", err)
@@ -104,31 +104,4 @@ func buildWatchJudgeClient(ctx *security.RequestContext, w watch.Watch) (watch.L
 		// passing it here failed the message_id FK and lost the usage row.
 		messageID: "",
 	}, nil
-}
-
-// buildWatchSecurityContext rehydrates a SecurityContext from the IDs
-// stored on the watch row. The poll runs as a tenant_admin scoped to the
-// originating account — the same tenancy the user had when they
-// registered the watch.
-//
-// Sources are read-only (mutating verbs and SQL writes are refused at
-// create time), and core.CheckWatchOwnerAccess re-checks the originating user
-// on every poll, ending the watch as FAILED once they may no longer run
-// Nubi on the account.
-func buildWatchSecurityContext(w watch.Watch) (*security.SecurityContext, error) {
-	userID := ""
-	if w.UserID != nil {
-		userID = w.UserID.String()
-	}
-	sc := security.NewSecurityContextForTenantAccountAdmin(
-		w.TenantID.String(),
-		userID,
-		[]string{w.AccountID.String()},
-	)
-	if sc == nil {
-		slog.Error("watch.bootstrap: security context builder returned nil",
-			"tenant_id", w.TenantID.String(), "account_id", w.AccountID.String())
-		return nil, fmt.Errorf("watch.bootstrap: failed to build security context for tenant %s", w.TenantID.String())
-	}
-	return sc, nil
 }

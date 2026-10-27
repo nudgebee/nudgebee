@@ -1263,6 +1263,8 @@ type appConfig struct {
 	WatchMinIntervalSec        int  `mapstructure:"llm_server_watch_min_interval_sec"`
 	WatchMaxDurationSec        int  `mapstructure:"llm_server_watch_max_duration_sec"`
 	WatchMaxPerTenant          int  `mapstructure:"llm_server_watch_max_per_tenant"`
+	WatchMaxOriginPerTenant    int  `mapstructure:"llm_server_watch_max_origin_per_tenant"`
+	WatchMaxOriginDurationSec  int  `mapstructure:"llm_server_watch_max_origin_duration_sec"`
 	WatchMaxFailures           int  `mapstructure:"llm_server_watch_max_failures"`
 	WatchPrimingPollTimeoutSec int  `mapstructure:"llm_server_watch_priming_poll_timeout_sec"`
 	WatchSubmitTimeoutSec      int  `mapstructure:"llm_server_watch_submit_timeout_sec"`
@@ -1838,8 +1840,9 @@ func init() {
 	viper.SetDefault("llm_productivity_manual_baseline_minutes", 25)
 	viper.SetDefault("llm_productivity_engineer_hourly_rate_usd", 30.0)
 
-	// Watch (background-poll-and-notify) defaults. Disabled by default — opt in via env.
-	viper.SetDefault("llm_server_watch_enabled", false)
+	// Watch (background-poll-and-notify) defaults. On by default (#42461): remediation waits run on watches, and polls
+	// run as the person who set the watch up and only read. Turn off with LLM_SERVER_WATCH_ENABLED=false.
+	viper.SetDefault("llm_server_watch_enabled", true)
 	viper.SetDefault("llm_server_watch_dispatcher_interval_sec", 10)
 	viper.SetDefault("llm_server_watch_worker_count", 10)
 	viper.SetDefault("llm_server_watch_worker_queue_size", 50)
@@ -1854,6 +1857,12 @@ func init() {
 	// shared async-completion prompt, so this is a generous ceiling.
 	viper.SetDefault("llm_server_watch_max_duration_sec", 3600)
 	viper.SetDefault("llm_server_watch_max_per_tenant", 20)
+	// NudgeBee's own live watches per tenant (remediation waits), capped apart from a person's: about one per open
+	// remediation follow-up.
+	viper.SetDefault("llm_server_watch_max_origin_per_tenant", 500)
+	// NudgeBee's own waits may run longer than a person's watch: a remediation hold lasts up to its rule's for: plus
+	// a settling window, at most 2 hours.
+	viper.SetDefault("llm_server_watch_max_origin_duration_sec", 7800)
 	viper.SetDefault("llm_server_watch_max_failures", 3)
 	// Matches WatchPollTimeoutSec deliberately: priming runs the SAME command a
 	// real poll runs, so a budget below the poll budget means a command the

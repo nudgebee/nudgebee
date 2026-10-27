@@ -112,28 +112,38 @@ func TestRecoveryContext_SystemRuns(t *testing.T) {
 	}
 }
 
-func TestCheckWatchOwnerAccess(t *testing.T) {
+// A watch's poll runs as the person who set it up, with their own access (#42461), and ends once they lose it; a
+// watch with no user runs as NudgeBee limited to its account.
+func TestWatchPollSecurityContext(t *testing.T) {
 	account, tenant, owner := uuid.New(), uuid.New(), uuid.New()
 	w := watch.Watch{TenantID: tenant, AccountID: account, UserID: &owner}
 	reader := wireSecurityContext(t, fmt.Sprintf(`{"TenantId":%q,"UserId":%q,"Roles":["tenant_admin_readonly"],"AccountIds":[%q]}`, tenant, owner, account))
 	stranger := wireSecurityContext(t, fmt.Sprintf(`{"TenantId":%q,"UserId":%q,"Roles":[],"AccountIds":[]}`, tenant, owner))
 
 	stubNewSecurityContext(t, func(string, string) (*security.SecurityContext, error) { return reader, nil })
-	assert.NoError(t, CheckWatchOwnerAccess(w))
+	sc, err := WatchPollSecurityContext(w)
+	require.NoError(t, err)
+	assert.Same(t, reader, sc, "the poll runs with the person's own context")
 
 	stubNewSecurityContext(t, func(string, string) (*security.SecurityContext, error) { return stranger, nil })
-	assert.ErrorIs(t, CheckWatchOwnerAccess(w), watch.ErrOwnerAccessRevoked)
+	_, err = WatchPollSecurityContext(w)
+	assert.ErrorIs(t, err, watch.ErrOwnerAccessRevoked)
 
 	stubNewSecurityContext(t, func(string, string) (*security.SecurityContext, error) {
 		return nil, fmt.Errorf("%w: client error 400", security.ErrSecurityContextRejected)
 	})
-	assert.ErrorIs(t, CheckWatchOwnerAccess(w), watch.ErrOwnerAccessRevoked)
+	_, err = WatchPollSecurityContext(w)
+	assert.ErrorIs(t, err, watch.ErrOwnerAccessRevoked)
 
 	stubNewSecurityContext(t, func(string, string) (*security.SecurityContext, error) { return nil, errors.New("server error 503") })
-	err := CheckWatchOwnerAccess(w)
+	_, err = WatchPollSecurityContext(w)
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, watch.ErrOwnerAccessRevoked)
 
 	system := watch.Watch{TenantID: tenant, AccountID: account}
-	assert.NoError(t, CheckWatchOwnerAccess(system), "a watch with no owner has no one to re-check")
+	sc, err = WatchPollSecurityContext(system)
+	require.NoError(t, err)
+	assert.Equal(t, security.GetSystemUserId(), sc.GetUserId(), "a watch with no user runs as NudgeBee")
+	assert.True(t, sc.CanRunAI(account.String()))
+	assert.False(t, sc.CanRunAI(uuid.NewString()), "limited to the watch's account")
 }

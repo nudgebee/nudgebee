@@ -163,6 +163,10 @@ func (WatchCancelTool) Call(nbCtx core.NbToolContext, input core.NBToolCallReque
 		// watch's account. Reported as not found, so nothing leaks about it.
 		return errorResponse(fmt.Sprintf("watch %s not found", id)), nil
 	}
+	if existing.IsNudgeBees() {
+		// A remediation follow-up's own wait ends with the follow-up; cancelling it would start the next check early.
+		return errorResponse(fmt.Sprintf("watch %s is NudgeBee's own wait for a remediation follow-up and ends with it; it cannot be cancelled", id)), nil
+	}
 	if existing.Status.IsTerminal() {
 		// Already over: nothing to cancel, and its outcome stays as it is.
 		return jsonResponse(map[string]any{
