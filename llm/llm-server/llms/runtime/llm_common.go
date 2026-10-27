@@ -1645,14 +1645,6 @@ func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 		if sc := rc.ctx.GetSecurityContext(); sc != nil {
 			tenantId = sc.GetTenantId()
 		}
-		// Native tool declarations must be baked into the cached content: Google AI
-		// rejects a request that sets both CachedContent and tools. Materialize the
-		// caller's options to recover them. Callers that pass no tools (react_3 and
-		// every summarizer) yield an empty slice, leaving the cache path unchanged.
-		cacheCallOpts := llms.CallOptions{}
-		for _, opt := range optionsToSend {
-			opt(&cacheCallOpts)
-		}
 
 		cacheReq := &CacheRequest{
 			TenantId:       tenantId,
@@ -1667,7 +1659,7 @@ func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 			Scope:          rc.cacheScope,
 			Capabilities:   rc.capabilities,
 			PromptVariant:  rc.promptVariant,
-			Tools:          cacheCallOpts.Tools,
+			Tools:          cacheRequestTools(optionsToSend),
 		}
 
 		cacheResp := cacheManager.ApplyCache(ctx, cacheReq)
@@ -3257,6 +3249,9 @@ func generateLLMContentWithRetry(ctx *security.RequestContext, llm llms.Model, p
 			Scope:          rc.cacheScope,
 			Capabilities:   rc.capabilities,
 			PromptVariant:  rc.promptVariant,
+			// Same tools as the ApplyCache request, so the invalidation derives
+			// the same account-scope key and actually drops the stale entry.
+			Tools: cacheRequestTools(rc.options),
 		}
 		if cm := GetCacheManager(); cm != nil {
 			_ = cm.InvalidateCache(goCtx, cacheReq)
@@ -4430,4 +4425,18 @@ func safeError(err error) string {
 		return "unknown error (nil)"
 	}
 	return err.Error()
+}
+
+// cacheRequestTools materializes the native tool declarations from a call's
+// options for CacheRequest.Tools. They must be baked into the cached content
+// (Google AI rejects a request that sets both CachedContent and tools) and they
+// select the account-scope cache slot, so ApplyCache and InvalidateCache must
+// both derive them the same way. Callers that pass no tools (react_3 and every
+// summarizer) yield an empty slice, leaving the cache path unchanged.
+func cacheRequestTools(opts []llms.CallOption) []llms.Tool {
+	callOpts := llms.CallOptions{}
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+	return callOpts.Tools
 }

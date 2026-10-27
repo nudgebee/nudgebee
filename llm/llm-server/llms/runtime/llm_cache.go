@@ -238,36 +238,11 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 	// Stamp trace_id/span_id from the request context so cache decisions
 	// correlate with the conversation's other log lines in Loki.
 	logger := common.TraceLogger(ctx)
-	// Append a capability fingerprint to agentName so that requests with different
-	// allowed_tools sets get distinct Google AI CachedContent slots. Google AI uses
-	// a single slot per cache key, so alternating tool scopes would otherwise thrash
-	// each other. Anthropic uses inline cache_control (content-addressed) and is unaffected.
-	agentName := req.AgentName
-	if fp := capabilityFingerprint(req.Capabilities); fp != "" {
-		agentName = req.AgentName + ":" + fp
-	}
-	// Isolate the lean vs full orchestrator prompt into distinct slots, for the
-	// same reason as the capability fingerprint: the lean prompt is a different
-	// cacheable prefix and must not overwrite the full-prompt slot. Empty
-	// (full/default) appends nothing, leaving existing slots byte-identical.
-	// Global scope is shared by helpers (memory_rerank, summaries) that inherit the
-	// variant from whichever orchestrator called them; their prompt does not depend
-	// on it, so a suffix there only splits one cache into two identical slots.
-	// Must match the key built in InvalidateCache.
-	if req.PromptVariant != "" && req.Scope != CacheScopeGlobal {
-		agentName = agentName + ":" + req.PromptVariant
-	}
-
-	// Generate cache key based on scope, including a short hash of the api key
-	// so two requests with the same (account, conv, agent, model) but different
-	// Google projects (=different api keys) get distinct slots. Without this a
-	// reused local-cache hit would reference a CachedContent owned by another
-	// project and 403 at use time.
-	cacheKey := generateCacheKey(req.Scope, req.AccountId, req.ConversationId, agentName, req.Model, credsFingerprint(req.ApiKey, "", "", "", "", "", ""))
+	cacheKey := googleAICacheKey(req)
 
 	logger.Info("Google AI cache: Starting cache check",
 		"conversationId", req.ConversationId,
-		"agentName", agentName,
+		"cacheKey", cacheKey,
 		"model", req.Model,
 		"totalMessages", len(req.Messages))
 
@@ -913,22 +888,9 @@ func (p *GoogleAICacheProvider) createCache(ctx context.Context, req *CacheReque
 
 func (p *GoogleAICacheProvider) InvalidateCache(ctx context.Context, req *CacheRequest) error {
 	logger := common.TraceLogger(ctx)
-	agentName := req.AgentName
-	if fp := capabilityFingerprint(req.Capabilities); fp != "" {
-		agentName = req.AgentName + ":" + fp
-	}
-	// Isolate the lean vs full orchestrator prompt into distinct slots, for the
-	// same reason as the capability fingerprint: the lean prompt is a different
-	// cacheable prefix and must not overwrite the full-prompt slot. Empty
-	// (full/default) appends nothing, leaving existing slots byte-identical.
-	// Global scope is shared by helpers (memory_rerank, summaries) that inherit the
-	// variant from whichever orchestrator called them; their prompt does not depend
-	// on it, so a suffix there only splits one cache into two identical slots.
-	// Must match the key built in ApplyCache.
-	if req.PromptVariant != "" && req.Scope != CacheScopeGlobal {
-		agentName = agentName + ":" + req.PromptVariant
-	}
-	cacheKey := generateCacheKey(req.Scope, req.AccountId, req.ConversationId, agentName, req.Model, credsFingerprint(req.ApiKey, "", "", "", "", "", ""))
+	// The caller must pass the same Tools as the ApplyCache request, or this
+	// derives a different key and the stale entry survives.
+	cacheKey := googleAICacheKey(req)
 
 	var cacheInfo CacheInfo
 	exists := false
@@ -1134,15 +1096,72 @@ func (p *BedrockCacheProvider) GetProviderName() string {
 // to reuse a slot owned by the first call's project and get 403 from the
 // CachedContent API. credsFp should be the short hash of the api key (or
 // empty when the provider has no slot-cache semantics).
-func generateCacheKey(scope CacheScope, accountId, conversationId, agentName, model, credsFp string) string {
+func generateCacheKey(scope CacheScope, accountId, conversationId, agentName, model, credsFp string, toolsFp ...string) string {
 	switch scope {
 	case CacheScopeGlobal:
 		return fmt.Sprintf("global:%s:%s:%s", agentName, model, credsFp)
 	case CacheScopeAccount:
+		if len(toolsFp) > 0 && toolsFp[0] != "" {
+			return fmt.Sprintf("account:%s:%s:%s:%s:%s", accountId, agentName, model, credsFp, toolsFp[0])
+		}
 		return fmt.Sprintf("account:%s:%s:%s:%s", accountId, agentName, model, credsFp)
 	default:
 		return fmt.Sprintf("conv:%s:%s:%s:%s:%s", accountId, conversationId, agentName, model, credsFp)
 	}
+}
+
+// googleAICacheKey derives the Google AI CachedContent slot key for req. It is
+// the single source for ApplyCache and InvalidateCache, so the two can never
+// disagree on which slot a request owns.
+//
+// Google AI uses a single CachedContent slot per key, so every input that
+// changes the content hash (hashContent: messages + tools) for a long-lived
+// scope must also change the key — otherwise alternating requests evict each
+// other's slot (content_changed thrash). Anthropic uses inline cache_control
+// (content-addressed) and is unaffected.
+func googleAICacheKey(req *CacheRequest) string {
+	// Requests with different allowed_tools sets get distinct slots.
+	agentName := req.AgentName
+	if fp := capabilityFingerprint(req.Capabilities); fp != "" {
+		agentName = req.AgentName + ":" + fp
+	}
+	// Isolate the lean vs full orchestrator prompt into distinct slots, for the
+	// same reason as the capability fingerprint: the lean prompt is a different
+	// cacheable prefix and must not overwrite the full-prompt slot. Empty
+	// (full/default) appends nothing, leaving existing slots byte-identical.
+	// Global scope is shared by helpers (memory_rerank, summaries) that inherit the
+	// variant from whichever orchestrator called them; their prompt does not depend
+	// on it, so a suffix there only splits one cache into two identical slots.
+	if req.PromptVariant != "" && req.Scope != CacheScopeGlobal {
+		agentName = agentName + ":" + req.PromptVariant
+	}
+	// The api key hash gives different Google projects (=different api keys)
+	// distinct slots. Without it a reused local-cache hit would reference a
+	// CachedContent owned by another project and 403 at use time. The tools
+	// fingerprint gives each native tool set its own account-scope slot, since
+	// the tools are baked into the cached content and part of its hash.
+	return generateCacheKey(req.Scope, req.AccountId, req.ConversationId, agentName, req.Model, credsFingerprint(req.ApiKey, "", "", "", "", "", ""), toolsFingerprint(req.Tools))
+}
+
+// toolsFingerprint returns a deterministic 8-hex-char hash derived from the tool definitions in tools,
+// or an empty string when tools is empty. This is used to isolate CacheScopeAccount cache slots.
+func toolsFingerprint(tools []llms.Tool) string {
+	if len(tools) == 0 {
+		return ""
+	}
+	toolDefs := make([]string, 0, len(tools))
+	for _, t := range tools {
+		if t.Function == nil {
+			continue
+		}
+		toolDefs = append(toolDefs, fmt.Sprintf("%s:%s:%s:%v", t.Type, t.Function.Name, t.Function.Description, t.Function.Parameters))
+	}
+	if len(toolDefs) == 0 {
+		return ""
+	}
+	sort.Strings(toolDefs)
+	h := sha256.Sum256([]byte(strings.Join(toolDefs, "|")))
+	return hex.EncodeToString(h[:4])
 }
 
 // capabilityFingerprint returns an 8-hex-char suffix derived from the sorted
