@@ -1128,24 +1128,32 @@ def _publish_kb_labels(fresh, collection_name, stored_before):
 def refresh_kb_collection_summary(collection_name):
     """Recompute a collection's rollup row of llm_kb_capability_entries — every
     kind, shape and capability its labelled chunks carry — from the labels in its
-    vector payload, which is the source of truth. The row is only what the
-    Knowledge Base tab reads; nothing decides from it whether a chunk is
-    classified.
+    vector payload, which is the source of truth, and write the per-page label rows
+    (entry_type = 'kb_document') the documents modal reads from the same scan. The
+    rollup is only what the Knowledge Base tab reads; nothing decides from it whether
+    a chunk is classified.
 
     Called after ingest labels chunks, after a prune removes some, and by the
-    backfill. Best-effort: a failure is logged and leaves the previous row, which
-    is stale, never wrong about what is classified.
+    backfill. Best-effort: a failure is logged and leaves the previous rows, which
+    are stale, never wrong about what is classified. A failed scan writes neither; the
+    page rows are written after the rollup, and a failure writing them leaves the
+    rollup in place. A prune leaves the rows of removed pages, which nothing lists,
+    and a page that is later re-created is re-labelled over them.
     """
     try:
+        from rag.core.documents import kb_document_seed
+
         client = get_qdrant_client()
         kinds, shapes, capabilities = set(), set(), set()
+        pages = {}
+        payload_keys = list(dict.fromkeys(_LABEL_PAYLOAD_KEYS + kb_document_seed.PAYLOAD_FIELDS))
         offset = None
         while True:
             batch, offset = client.scroll(
                 collection_name=collection_name,
                 limit=_SUMMARY_SCROLL_BATCH,
                 offset=offset,
-                with_payload=_LABEL_PAYLOAD_KEYS,
+                with_payload=payload_keys,
                 with_vectors=False,
             )
             for point in batch:
@@ -1158,6 +1166,7 @@ def refresh_kb_collection_summary(collection_name):
                     shapes.add(shape)
                 if isinstance(metadata.get("capabilities"), list):
                     capabilities.update(c for c in metadata["capabilities"] if isinstance(c, str))
+                kb_document_seed.keep_page_point(pages, collection_name, point)
             if offset is None or not batch:
                 break
 
@@ -1166,6 +1175,21 @@ def refresh_kb_collection_summary(collection_name):
         set_kb_collection_summary(collection_name, sorted(kinds), sorted(shapes), sorted(capabilities))
     except Exception:
         logger.exception(f"kb_metadata: could not refresh the classification summary of {collection_name}")
+        return
+    _write_kb_page_labels(collection_name, pages)
+
+
+def _write_kb_page_labels(collection_name, pages):
+    """Upsert the per-page label rows collected by one summary scan; best-effort."""
+    try:
+        from rag.core.documents import kb_document_seed
+        from rag.core.utils.db_query import upsert_kb_document_labels
+
+        rows = kb_document_seed.rows_from_pages(collection_name, pages)
+        for start in range(0, len(rows), kb_document_seed.INSERT_BATCH):
+            upsert_kb_document_labels(rows[start : start + kb_document_seed.INSERT_BATCH])
+    except Exception:
+        logger.exception(f"kb_metadata: could not write the per-page label rows of {collection_name}")
 
 
 def _forget_kb_collection_summary(collection_name):
