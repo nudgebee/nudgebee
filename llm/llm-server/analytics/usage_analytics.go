@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"nudgebee/llm/agents/core"
 	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 
@@ -1295,13 +1296,7 @@ func (chat *Store) ListConversationCosts(filter UsageMetricsFilter, sortBy, sort
 			COALESCE(c.account_id::text, '')                 AS account_id,
 			c.created_at                                     AS created_at,
 			c.updated_at                                     AS updated_at,
-			COALESCE((
-				SELECT EXTRACT(EPOCH FROM (
-					MAX(COALESCE(m.responded_at, m.updated_at)) - MIN(m.created_at)
-				))
-				FROM llm_conversation_messages m
-				WHERE m.conversation_id = c.id
-			), 0)                                            AS wall_clock_seconds,
+			COALESCE(%s, 0)                                  AS wall_clock_seconds,
 			COALESCE(SUM(t.latency_seconds), 0)              AS total_model_time_seconds,
 			COALESCE(SUM(t.latency_seconds) / NULLIF(COUNT(t.id), 0), 0) AS avg_latency_seconds,
 			COALESCE(SUM(%s), 0)                             AS cost_usd,
@@ -1317,7 +1312,7 @@ func (chat *Store) ListConversationCosts(filter UsageMetricsFilter, sortBy, sort
 		GROUP BY c.id
 		ORDER BY %s %s
 		LIMIT $%d OFFSET $%d`,
-		perCallCostExpr, usageBaseFrom, where, sortCol, dir, n+1, n+2)
+		core.ConversationWallClockSQL("c.id"), perCallCostExpr, usageBaseFrom, where, sortCol, dir, n+1, n+2)
 
 	rowArgs := append(append([]any{}, args...), limit, offset)
 

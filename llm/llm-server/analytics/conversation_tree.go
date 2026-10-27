@@ -489,21 +489,23 @@ func (chat *Store) GetConversationTree(sessionID, accountID string) (Conversatio
 		// Measure from the first real activity, not the conversation row's
 		// created_at: event-driven conversations are created well before (or
 		// reused long after) the agent runs, and that idle gap is not work.
-		start := time.Time{}
+		// Idle gaps (a chat reopened hours or days later) are dropped too.
+		var spans [][2]time.Time
 		for _, m := range tree.Messages {
-			if !m.CreatedAt.IsZero() && (start.IsZero() || m.CreatedAt.Before(start)) {
-				start = m.CreatedAt
+			if !m.CreatedAt.IsZero() {
+				spans = append(spans, [2]time.Time{m.CreatedAt, m.CreatedAt})
 			}
 		}
 		for _, m := range mcScans {
-			if !m.CreatedAt.IsZero() && (start.IsZero() || m.CreatedAt.Before(start)) {
-				start = m.CreatedAt
+			if !m.CreatedAt.IsZero() {
+				spans = append(spans, [2]time.Time{m.CreatedAt, m.CreatedAt.Add(time.Duration(m.LatencySeconds * float64(time.Second)))})
 			}
 		}
-		if start.IsZero() {
-			start = sum.StartedAt
+		if len(spans) > 0 {
+			tree.Conversation.WallClockSeconds = core.WallClockActiveSeconds(spans)
+		} else {
+			tree.Conversation.WallClockSeconds = math.Max(0, lastCallEnd.Sub(sum.StartedAt).Seconds())
 		}
-		tree.Conversation.WallClockSeconds = math.Max(0, lastCallEnd.Sub(start).Seconds())
 	} else if sum.EndedAt.Valid {
 		tree.Conversation.EndedAt = sum.EndedAt.Time
 		tree.Conversation.WallClockSeconds = sum.EndedAt.Time.Sub(sum.StartedAt).Seconds()
