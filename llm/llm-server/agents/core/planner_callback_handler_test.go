@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"nudgebee/llm/knowledge"
 	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/stretchr/testify/assert"
