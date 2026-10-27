@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"regexp"
+	"strconv"
 	"testing"
 	"time"
 
@@ -280,25 +281,24 @@ func heldData(t *testing.T, extra map[string]any) []byte {
 		"rechecks": 1, "hold_until": verdictT0.Add(15 * time.Minute).Format(time.RFC3339), "hold_from": verdictT0.Add(6 * time.Minute).Format(time.RFC3339Nano)}})
 }
 
-// An alert that closed after a plan step waits out the hold with no model turn, then ends as a suggestion
-// ("Likely fixed") with the verdict and the plan's cause key on the run row (C4). Nothing resolves the event: a
-// person does, from the tab.
+// An alert that closed after a plan step starts a hold: the run row says until when the fix must hold, and Nubi's
+// turn runs, told so (#42461: waiting for it is Nubi's, not a code re-check). A look after the hold ends it as a
+// suggestion ("Likely fixed") with the verdict and the plan's cause key on the run row (C4). Nothing resolves the
+// event: a person does, from the tab.
 func TestSettleByVerdictSuggestsAFixThatHeld(t *testing.T) {
 	calls := stubVerdict(t, signalOf(firing("ev", -time.Hour, ended(2*time.Minute))))
 	db, mock := verdictDB(t)
 	run := followupRun{Id: "run-1", EventId: "ev", AccountId: "acc", Status: "Success", CreatedAt: verdictT0,
 		Data: stepData(t, map[string]any{"followup": map[string]any{"claimed_at": verdictT0.Format(time.RFC3339Nano)}})}
 
-	// First look: the hold's re-check is scheduled (the rule's for: is not known: 15 min), and the run row says until
-	// when the fix must hold.
+	// First look: the hold is set (the rule's for: is not known: 15 min) and no re-check is scheduled; Nubi's turn
+	// runs.
 	record := map[string]any{}
-	mock.ExpectExec(regexp.QuoteMeta(`'recheck_request'`)).WithArgs("run-1", 15, soakReason, followupMaxRechecks+1).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectQuery(regexp.QuoteMeta(`'recheck_at'`)).WithArgs("run-1", "", 15, 15, followupMaxRechecks+1).
-		WillReturnRows(sqlmock.NewRows([]string{"at"}).AddRow("2026-10-22T16:51:00.123456+05:30"))
 	mock.ExpectExec(regexp.QuoteMeta(`data->'followup' || $2::jsonb`)).WithArgs("run-1", mergedInto{t, record}).WillReturnResult(sqlmock.NewResult(0, 1))
-	assert.True(t, settleByVerdict(db, run, slog.Default()), "no model turn")
+	mock.ExpectExec(regexp.QuoteMeta(`data->'followup' || $2::jsonb`)).WithArgs("run-1", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+	assert.False(t, settleByVerdict(db, run, slog.Default()), "Nubi's turn runs")
 	require.NoError(t, mock.ExpectationsWereMet())
-	assert.Equal(t, map[string]any{"hold_until": "2026-10-22T11:21:00Z", "hold_from": "2026-10-22T11:06:00Z"}, record, "the re-check time, in UTC, and when the hold began")
+	assert.Equal(t, map[string]any{"hold_until": "2026-10-22T11:21:00Z", "hold_from": "2026-10-22T11:06:00Z"}, record, "until when it must hold, in UTC, and when the hold began")
 
 	// The re-check: the follow-up ends as a suggestion with the verdict and the cause key; hold_until stays.
 	swap(t, &verdictNow, func() time.Time { return verdictT0.Add(16 * time.Minute) })
@@ -340,11 +340,10 @@ func TestSettleByVerdictRolloutEchoIsNotARefire(t *testing.T) {
 	run := followupRun{Id: "run-1", EventId: "ev", AccountId: "acc", Status: "Success", CreatedAt: verdictT0,
 		Data: stepData(t, map[string]any{"command": "kubectl rollout undo deploy/api -n shop", "followup": map[string]any{"claimed_at": verdictT0.Format(time.RFC3339Nano)}})}
 
-	mock.ExpectExec(regexp.QuoteMeta(`'recheck_request'`)).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectQuery(regexp.QuoteMeta(`'recheck_at'`)).WillReturnRows(sqlmock.NewRows([]string{"at"}).AddRow("2026-10-22T11:15:20Z"))
 	mock.ExpectExec(regexp.QuoteMeta(`data->'followup' || $2::jsonb`)).WithArgs("run-1", `{"hold_from":"2026-10-22T11:00:20Z","hold_until":"2026-10-22T11:15:20Z"}`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	assert.True(t, settleByVerdict(db, run, slog.Default()), "the first look holds for the re-check, no model turn")
+	mock.ExpectExec(regexp.QuoteMeta(`data->'followup' || $2::jsonb`)).WithArgs("run-1", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+	assert.False(t, settleByVerdict(db, run, slog.Default()), "the first look starts the hold; Nubi's turn runs")
 	require.NoError(t, mock.ExpectationsWereMet())
 
 	swap(t, &verdictNow, func() time.Time { return verdictT0.Add(15*time.Minute + 20*time.Second) })
@@ -404,10 +403,9 @@ func TestSettleByVerdictClearedBeforeChange(t *testing.T) {
 	calls := stubVerdict(t, signalOf(firing("ev", -time.Hour, ended(-time.Minute))))
 	db, mock := verdictDB(t)
 	run := followupRun{Id: "run-1", EventId: "ev", AccountId: "acc", Status: "Success", CreatedAt: verdictT0, Data: stepData(t, nil)}
-	mock.ExpectExec(regexp.QuoteMeta(`'recheck_request'`)).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectQuery(regexp.QuoteMeta(`'recheck_at'`)).WillReturnRows(sqlmock.NewRows([]string{"at"}).AddRow("2026-10-22T11:21:00Z"))
 	mock.ExpectExec(regexp.QuoteMeta(`data->'followup' || $2::jsonb`)).WillReturnResult(sqlmock.NewResult(0, 1))
-	assert.True(t, settleByVerdict(db, run, slog.Default()), "held first, no suggestion yet")
+	mock.ExpectExec(regexp.QuoteMeta(`data->'followup' || $2::jsonb`)).WillReturnResult(sqlmock.NewResult(0, 1))
+	assert.False(t, settleByVerdict(db, run, slog.Default()), "a hold first, no suggestion yet")
 	require.NoError(t, mock.ExpectationsWereMet())
 
 	swap(t, &verdictNow, func() time.Time { return verdictT0.Add(16 * time.Minute) })
@@ -485,6 +483,38 @@ func TestSettleByVerdictFiringAtTheSourceIsNotClear(t *testing.T) {
 	assert.Equal(t, verdictNotFixed, record["verdict"])
 	assert.Equal(t, "still_firing", record["verdict_reason"])
 	assert.Empty(t, *calls)
+}
+
+// A look that came because its wait's condition matched (#42461: the rollout finished, pods ready) is minutes after
+// the cluster recovered, before the alert's source closes: still firing there is too early, not "still firing",
+// whatever the re-check count. The same look after a timer is a re-check and records it.
+func TestSettleByVerdictConditionMetIsAFirstLook(t *testing.T) {
+	stubVerdict(t, signalOf(firing("ev", -time.Hour, nil)))
+	for _, tc := range []struct {
+		name     string
+		rechecks int
+		ended    string
+		verdict  string
+	}{
+		{"condition matched", 1, `{"kind":"condition","status":"COMPLETED"}`, ""},
+		{"timer", 1, `{"kind":"timer","status":"EXPIRED"}`, verdictNotFixed},
+		{"second condition matched", 2, `{"kind":"condition","status":"COMPLETED"}`, verdictNotFixed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock := verdictDB(t)
+			run := followupRun{Id: "run-1", EventId: "ev", AccountId: "acc", Status: "Success", CreatedAt: verdictT0,
+				Data: []byte(`{"step":"0:execute","followup":{"claimed_at":"2026-10-22T11:06:00Z","rechecks":` + strconv.Itoa(tc.rechecks) + `,"wait_ended":` + tc.ended + `}}`)}
+			record := map[string]any{}
+			mock.ExpectExec(regexp.QuoteMeta(`'{followup}'`)).WithArgs("run-1", mergedInto{t, record}).WillReturnResult(sqlmock.NewResult(0, 1))
+			assert.False(t, settleByVerdict(db, run, slog.Default()), "a model turn checks on it")
+			require.NoError(t, mock.ExpectationsWereMet())
+			if tc.verdict == "" {
+				assert.NotContains(t, record, "verdict")
+			} else {
+				assert.Equal(t, tc.verdict, record["verdict"])
+			}
+		})
+	}
 }
 
 // A mute the person picked suppresses the event, chosen by them; it is not a fix.
@@ -621,22 +651,35 @@ func TestSuggestByVerdictCauseKey(t *testing.T) {
 	}
 }
 
-// A re-check the model asked for (schedule_recheck) is not a hold. The
-// alert first seen clear there starts a hold, scheduled even at the model's last re-check, and is not fixed yet.
+// A re-check the model asked for (schedule_recheck) is not a hold. The alert first seen clear there starts a hold
+// and is not fixed yet; Nubi's turn runs, told until when.
 func TestSettleByVerdictModelRecheckStartsAHold(t *testing.T) {
 	calls := stubVerdict(t, signalOf(firing("ev", -time.Hour, ended(8*time.Minute))))
 	swap(t, &verdictNow, func() time.Time { return verdictT0.Add(10 * time.Minute) })
 	db, mock := verdictDB(t)
 	run := followupRun{Id: "run-1", EventId: "ev", AccountId: "acc", Status: "Success", CreatedAt: verdictT0,
 		Data: []byte(`{"step":"0:execute","followup":{"claimed_at":"2026-10-22T11:10:00Z","rechecks":2,"recheck_reason":"pods still starting"}}`)}
-	mock.ExpectExec(regexp.QuoteMeta(`'recheck_request'`)).WithArgs("run-1", 15, soakReason, followupMaxRechecks+1).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectQuery(regexp.QuoteMeta(`'recheck_at'`)).WillReturnRows(sqlmock.NewRows([]string{"at"}).AddRow("2026-10-22T11:25:00Z"))
 	mock.ExpectExec(regexp.QuoteMeta(`data->'followup' || $2::jsonb`)).WithArgs("run-1", `{"hold_from":"2026-10-22T11:10:00Z","hold_until":"2026-10-22T11:25:00Z"}`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	assert.True(t, settleByVerdict(db, run, slog.Default()), "the hold is code's: no model turn")
+	mock.ExpectExec(regexp.QuoteMeta(`data->'followup' || $2::jsonb`)).WithArgs("run-1", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+	assert.False(t, settleByVerdict(db, run, slog.Default()), "Nubi's turn runs; waiting for the hold is its call")
 	require.NoError(t, mock.ExpectationsWereMet())
 	assert.Empty(t, *calls, "not resolved before the hold ends")
+}
+
+// A look before the hold is over (Nubi looked early) keeps the hold set for this clear: nothing new is recorded but
+// the check itself.
+func TestSettleByVerdictLookDuringTheHoldKeepsIt(t *testing.T) {
+	stubVerdict(t, signalOf(firing("ev", -time.Hour, ended(2*time.Minute))))
+	db, mock := verdictDB(t)
+	run := followupRun{Id: "run-1", EventId: "ev", AccountId: "acc", Status: "Success", CreatedAt: verdictT0,
+		Data: []byte(`{"step":"0:execute","followup":{"claimed_at":"2026-10-22T11:06:00Z","rechecks":1,"hold_from":"2026-10-22T11:04:00Z","hold_until":"2026-10-22T11:19:00Z"}}`)}
+	record := map[string]any{}
+	mock.ExpectExec(regexp.QuoteMeta(`data->'followup' || $2::jsonb`)).WithArgs("run-1", mergedInto{t, record}).WillReturnResult(sqlmock.NewResult(0, 1))
+	assert.False(t, settleByVerdict(db, run, slog.Default()))
+	require.NoError(t, mock.ExpectationsWereMet())
+	assert.NotContains(t, record, "hold_until", "the hold for this clear is kept")
+	assert.Contains(t, record, "verdict_checked_at")
 }
 
 // The resolve label names the cause of the plan the run carried out, as
@@ -712,10 +755,9 @@ func TestSettleByVerdictOldHoldDoesNotCountForALaterClear(t *testing.T) {
 		Data: stepData(t, map[string]any{"followup": map[string]any{"claimed_at": verdictT0.Add(35 * time.Minute).Format(time.RFC3339Nano), "rechecks": 2,
 			"hold_from": verdictT0.Add(6 * time.Minute).Format(time.RFC3339Nano), "hold_until": verdictT0.Add(21 * time.Minute).Format(time.RFC3339)}})}
 	record := map[string]any{}
-	mock.ExpectExec(regexp.QuoteMeta(`'recheck_request'`)).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectQuery(regexp.QuoteMeta(`'recheck_at'`)).WillReturnRows(sqlmock.NewRows([]string{"at"}).AddRow("2026-10-22T11:55:00Z"))
 	mock.ExpectExec(regexp.QuoteMeta(`data->'followup' || $2::jsonb`)).WithArgs("run-1", mergedInto{t, record}).WillReturnResult(sqlmock.NewResult(0, 1))
-	assert.True(t, settleByVerdict(db, run, slog.Default()))
+	mock.ExpectExec(regexp.QuoteMeta(`data->'followup' || $2::jsonb`)).WithArgs("run-1", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+	assert.False(t, settleByVerdict(db, run, slog.Default()))
 	require.NoError(t, mock.ExpectationsWereMet(), "a new hold, not a suggestion")
 	assert.Equal(t, map[string]any{"hold_until": "2026-10-22T11:55:00Z", "hold_from": "2026-10-22T11:40:00Z"}, record)
 	assert.Empty(t, *calls)

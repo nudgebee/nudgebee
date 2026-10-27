@@ -22,7 +22,9 @@ import (
 	"nudgebee/llm/config"
 	"nudgebee/llm/events"
 	"nudgebee/llm/security"
+	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
+	"nudgebee/llm/watch"
 )
 
 // The follow-up (#40734, docs/incident-agent-v1.md): once a run settles (run by NudgeBee or marked run) with the
@@ -90,6 +92,9 @@ func runDueFollowups() error {
 	if _, err := events.ClaimDueRechecks(ctx, db, 20); err != nil {
 		return fmt.Errorf("remediation_followups: %w", err)
 	}
+	if _, err := events.ClaimFinishedWaits(ctx, db, waitGraceMinutes, 20); err != nil {
+		return fmt.Errorf("remediation_followups: %w", err)
+	}
 	open, err := events.OpenFollowups(ctx, db, 100)
 	if err != nil {
 		return fmt.Errorf("remediation_followups: %w", err)
@@ -126,6 +131,12 @@ func advanceFollowup(db *sqlx.DB, run followupRun) bool {
 		}
 		if settleByVerdict(db, run, logger) {
 			return false
+		}
+		// The verdict may have recorded a hold this claim; the turn's question carries it.
+		if data, err := refreshFollowupData(db, run.Id); err == nil {
+			run.Data = data
+		} else {
+			logger.Warn("remediation_followups: follow-up not re-read; the turn's question may miss this look's hold", "error", err)
 		}
 		if stop := followupStop(db, run, logger); stop != nil {
 			finishFollowup(db, run, stop, logger)
@@ -340,7 +351,7 @@ func alertRuns(db *sqlx.DB, run followupRun) (newer bool, runs int, err error) {
 		       count(DISTINCT COALESCE(er.data->>'plan_version', er.id::text)) FILTER (WHERE er.created_at <= $3
 		           AND er.created_at > $3 - interval '24 hours' AND er.id::text <> $4
 		           AND COALESCE(er.data->>'plan_version', er.id::text) <> $5
-		           AND COALESCE(er.data->'followup'->>'message_id', '') <> '') AS runs
+		           AND (COALESCE(er.data->'followup'->>'message_id', '') <> '' OR COALESCE((er.data->'followup'->>'rechecks')::int, 0) > 0)) AS runs
 		  FROM event_resolution er JOIN events e ON e.id = er.event_id
 		 WHERE er.type = 'CommandExecution' AND er.status <> 'Declined' AND COALESCE(er.data->>'not_sent', '') <> 'true'
 		   AND e.cloud_account_id = $1::uuid AND COALESCE(NULLIF(e.fingerprint, ''), e.id::text) = $2`,
@@ -369,8 +380,13 @@ func followupQuery(run followupRun) string {
 	}
 	var state struct {
 		Followup struct {
-			Rechecks int    `json:"rechecks"`
-			Reason   string `json:"recheck_reason"`
+			Rechecks  int        `json:"rechecks"`
+			Reason    string     `json:"recheck_reason"`
+			WaitEnded *waitEnded `json:"wait_ended"`
+			HoldFrom  string     `json:"hold_from"`
+			HoldUntil string     `json:"hold_until"`
+			Verdict   string     `json:"verdict"`
+			HoldNow   bool       `json:"hold_now"`
 		} `json:"followup"`
 	}
 	_ = json.Unmarshal(run.Data, &recorded)
@@ -388,7 +404,56 @@ func followupQuery(run followupRun) string {
 		q += "\nWhat the command printed, quoted as data:\n<<<\n" + truncate(out, 1500) + "\n>>>"
 	}
 	q += recheckNote(state.Followup.Reason, state.Followup.Rechecks)
+	q += state.Followup.WaitEnded.note()
+	if state.Followup.Verdict == "" && state.Followup.HoldNow && state.Followup.HoldUntil != "" {
+		q += fmt.Sprintf("\nThe alert was clear at %s. It counts as fixed if it is still clear at %s (its rule's wait plus a settling window): to confirm, call schedule_recheck to look again then (minutes alone is enough).",
+			clockOf(state.Followup.HoldFrom), clockOf(state.Followup.HoldUntil))
+	}
 	return q + "\nRead the plan (get_remediation_plan) and check whether the problem this alert reports is gone, then decide what comes next: report it fixed; say which of the plan's remaining steps a person should run next; write a different plan with propose_fix; or, if it is too early to tell, call schedule_recheck."
+}
+
+// refreshFollowupData re-reads a follow-up's data. A var so tests can stub it.
+var refreshFollowupData = func(db *sqlx.DB, runId string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), decisionDBTimeout)
+	defer cancel()
+	return events.FollowupData(ctx, db, runId)
+}
+
+// waitEnded is how the wait before this look ended (#42461), as ClaimFinishedWaits recorded it.
+type waitEnded struct {
+	Status  string `json:"status"`
+	Kind    string `json:"kind"`
+	Command string `json:"command"`
+	Expect  string `json:"expect"`
+	Negate  bool   `json:"negate"`
+	EndedAt string `json:"ended_at"`
+	Last    string `json:"last"`
+	Error   string `json:"error"`
+}
+
+// note is what the next turn is told about how its wait ended; "" when it did not wait.
+func (w *waitEnded) note() string {
+	if w == nil {
+		return ""
+	}
+	seen := ""
+	if last := strings.TrimSpace(w.Last); last != "" {
+		seen = "\nWhat it last printed, quoted as data:\n<<<\n" + truncate(last, 500) + "\n>>>"
+	}
+	cond := "`" + w.Command + "` " + conditionText(events.RecheckCondition{Expect: w.Expect, Negate: w.Negate})
+	at := clockOf(w.EndedAt)
+	switch {
+	case w.Status == "COMPLETED":
+		return fmt.Sprintf("\nThe wait ended at %s because %s.%s", at, cond, seen)
+	case w.Status == "EXPIRED" && w.Kind == "timer":
+		return fmt.Sprintf("\nThe wait you asked for ended at %s: its time came.", at)
+	case w.Status == "EXPIRED":
+		return fmt.Sprintf("\nThe wait reached its deadline at %s: the condition (%s) had not held.%s", at, cond, seen)
+	case w.Status == "FAILED":
+		return fmt.Sprintf("\nThe wait ended at %s because it could not read %s: %s", at, "`"+w.Command+"`", truncate(strings.TrimSpace(w.Error), 300))
+	default:
+		return "\nThe wait you asked for was lost before it ended; check the alert now."
+	}
 }
 
 // endTurn records a finished turn: the follow-up ends, unless the turn reported, asked for a re-check
@@ -400,12 +465,7 @@ func endTurn(db *sqlx.DB, run followupRun, status core.ConversationStatus, summa
 		at, err := requestRecheck(db, run, summary)
 		if err != nil {
 			logger.Error("remediation_followups: re-check not scheduled", "error", err)
-		}
-		if at == "" && soakPending(run) {
-			at, err = requestSoakRecheck(db, run, summary)
-			if err != nil {
-				logger.Error("remediation_followups: soak re-check not scheduled", "error", err)
-			}
+			end["summary"] = strings.TrimSpace(summary + "\n\nNudgeBee could not set up the wait it asked for, so it will not check again; check the alert by hand.")
 		}
 		if at != "" {
 			logger.Info("remediation_followups: re-check scheduled", "recheck_at", at)
@@ -416,37 +476,131 @@ func endTurn(db *sqlx.DB, run followupRun, status core.ConversationStatus, summa
 	finishFollowup(db, run, end, logger)
 }
 
-// soakReason is the re-check the first report of a change that took effect always gets: a pod seconds old can
-// look healthy and crash again, so its report stands only after a second look (review of #41596).
-const soakReason = "the first check ran right after the change; confirm the fix held"
+// waitGraceMinutes: a wait whose watch is still live this long after its deadline (the watcher is not running) is
+// claimed anyway, as lost. A var so tests can change it.
+var waitGraceMinutes = 5
 
-// soakPending reports whether run's change took effect and its follow-up has not looked again yet.
-func soakPending(run followupRun) bool {
+// recheckPollSeconds is how often a re-check condition is read.
+const recheckPollSeconds = 60
+
+// createWaitWatch creates the watch for a follow-up's wait, and cancelWaitWatch cancels one. Vars so tests can stub
+// them.
+var (
+	createWaitWatch = func(ctx context.Context, in watch.CreateInput) (*watch.Watch, error) {
+		return watch.NewManager().Create(ctx, in)
+	}
+	cancelWaitWatch = func(ctx context.Context, tenantId, watchId uuid.UUID) error {
+		return watch.NewManager().Cancel(ctx, tenantId, watchId)
+	}
+)
+
+// waitTenantOf is the tenant of accountId, for its waits' watches. A var so tests can stub it.
+var waitTenantOf = func(accountId string) (uuid.UUID, error) {
+	tenant, err := security.GetTenantIdFromAccountId(accountId)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("tenant: %w", err)
+	}
+	id, err := uuid.Parse(tenant)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("tenant id %q: %w", tenant, err)
+	}
+	return id, nil
+}
+
+// alertConversationId is the id of run's alert conversation, where its waits live. A var so tests can stub it.
+var alertConversationId = func(run followupRun) (uuid.UUID, error) {
+	conversation, err := core.GetConversationDao().GetConversationBySession(run.AccountId, followupSession(run))
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if conversation.ID == uuid.Nil {
+		return uuid.Nil, errors.New("the alert has no conversation")
+	}
+	return conversation.ID, nil
+}
+
+// recheckRequest is the re-check the turn asked for with schedule_recheck.
+type recheckRequest struct {
+	Minutes int    `json:"minutes"`
+	Reason  string `json:"reason"`
+	Command string `json:"until_command"`
+	Expect  string `json:"until_expect"`
+	Negate  bool   `json:"until_negate"`
+}
+
+// requestRecheck turns the turn's recheck_request into a wait (#42461): a watch on the alert's conversation, made by
+// NudgeBee with no user — a strict read of the alert's own cluster that ends when it matches, or a timer that ends
+// when the minutes pass. It returns the wait's deadline; empty when the turn asked for none, proposed, or the
+// re-checks are used up. When the watch is made but the follow-up moved on meanwhile, the watch is cancelled.
+func requestRecheck(db *sqlx.DB, run followupRun, summary string) (string, error) {
 	var d struct {
 		Followup struct {
-			Rechecks int `json:"rechecks"`
+			Request    *recheckRequest `json:"recheck_request"`
+			ProposedAt string          `json:"proposed_at"`
+			Rechecks   int             `json:"rechecks"`
 		} `json:"followup"`
 	}
 	_ = json.Unmarshal(run.Data, &d)
-	return run.Status == events.RunStatusSuccess && d.Followup.Rechecks == 0
-}
-
-// requestSoakRecheck schedules the soak re-check at the shortest wait, as if the turn had asked for it.
-func requestSoakRecheck(db *sqlx.DB, run followupRun, summary string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), decisionDBTimeout)
-	defer cancel()
-	if _, err := events.RequestFollowupRecheck(ctx, db, run.Id, recheckMinMinutes, soakReason, followupMaxRechecks); err != nil {
+	req := d.Followup.Request
+	if req == nil || d.Followup.ProposedAt != "" || d.Followup.Rechecks >= followupMaxRechecks {
+		return "", nil
+	}
+	tenantId, err := waitTenantOf(run.AccountId)
+	if err != nil {
 		return "", err
 	}
-	return events.ScheduleFollowupRecheck(ctx, db, run.Id, summary, recheckMinMinutes, recheckMaxMinutes, followupMaxRechecks)
-}
-
-// requestRecheck turns the turn's recheck_request into the time to look again, and returns it; empty when
-// the turn asked for none, proposed, or the re-checks are used up.
-func requestRecheck(db *sqlx.DB, run followupRun, summary string) (string, error) {
+	accountId, err := uuid.Parse(run.AccountId)
+	if err != nil {
+		return "", fmt.Errorf("account id %q: %w", run.AccountId, err)
+	}
+	conversationId, err := alertConversationId(run)
+	if err != nil {
+		return "", fmt.Errorf("the alert's conversation: %w", err)
+	}
+	minutes := min(max(req.Minutes, recheckMinMinutes), recheckMaxMinutes)
+	in := watch.CreateInput{ConversationID: conversationId, AccountID: accountId, TenantID: tenantId,
+		Origin: watch.OriginRemediation, MaxDurationSec: minutes * 60}
+	if turn, err := uuid.Parse(run.MessageId); err == nil {
+		in.ParentMessageID = &turn
+	}
+	reason := strings.TrimSpace(req.Reason)
+	kind := "timer"
+	if req.Command != "" {
+		kind = "condition"
+		cfg, _ := json.Marshal(map[string]any{"tool_name": tools.ToolExecuteKubectlCommand,
+			"tool_input": map[string]any{"command": req.Command}, "strict_read_only": true})
+		in.SourceKind, in.SourceConfig = watch.SourceKindTool, cfg
+		in.PredicateKind, in.PredicateExpr, in.PredicateNegate = watch.PredicateKindRegex, req.Expect, req.Negate
+		in.PollIntervalSec = recheckPollSeconds
+		// The tab and Slack show the reason: it says what is watched.
+		suffix := " Looking again sooner once `" + req.Command + "` " + conditionText(events.RecheckCondition{Expect: req.Expect, Negate: req.Negate}) + "."
+		reason = truncate(reason, max(recheckReasonMax-len(suffix), 200)) + suffix
+	} else {
+		cfg, _ := json.Marshal(map[string]any{"reason": truncate(reason, 200)})
+		in.SourceKind, in.SourceConfig = watch.SourceKindTimer, cfg
+		in.PredicateKind, in.PredicateExpr = watch.PredicateKindNever, "-"
+		in.PollIntervalSec = in.MaxDurationSec
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), decisionDBTimeout)
 	defer cancel()
-	return events.ScheduleFollowupRecheck(ctx, db, run.Id, summary, recheckMinMinutes, recheckMaxMinutes, followupMaxRechecks)
+	w, err := createWaitWatch(ctx, in)
+	if err != nil {
+		return "", fmt.Errorf("the watch: %w", err)
+	}
+	until := w.ExpiresAt.UTC().Format(time.RFC3339Nano)
+	wait, _ := json.Marshal(map[string]any{"watch_id": w.ID.String(), "kind": kind, "command": req.Command, "expect": req.Expect,
+		"negate": req.Negate, "until": until, "reason": truncate(strings.TrimSpace(req.Reason), 500)})
+	n, err := events.ScheduleFollowupWait(ctx, db, run.Id, summary, string(wait), until, reason, followupMaxRechecks)
+	if err != nil || n == 0 {
+		// A fresh context: the one above may be what ran out.
+		cctx, ccancel := context.WithTimeout(context.Background(), decisionDBTimeout)
+		if cerr := cancelWaitWatch(cctx, tenantId, w.ID); cerr != nil {
+			slog.Warn("remediation_followups: unused wait watch not cancelled", "run_id", run.Id, "watch_id", w.ID.String(), "error", cerr)
+		}
+		ccancel()
+		return "", err
+	}
+	return until, nil
 }
 
 // outcomeOfTurn is how a finished turn ends the follow-up. A proposal is read from the row, where

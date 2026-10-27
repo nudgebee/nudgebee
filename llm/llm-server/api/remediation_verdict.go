@@ -77,6 +77,11 @@ type verdictRun struct {
 		// recorded, null included.
 		CauseKey     *events.CauseKey `json:"cause_key"`
 		CauseKeyRead bool             `json:"cause_key_read"`
+		// WaitEnded is how the wait before this look ended (#42461).
+		WaitEnded *struct {
+			Kind   string `json:"kind"`
+			Status string `json:"status"`
+		} `json:"wait_ended"`
 	} `json:"followup"`
 }
 
@@ -343,6 +348,12 @@ func settleByVerdict(db *sqlx.DB, run followupRun, logger *slog.Logger) bool {
 	}
 	snapshotCauseKey(db, run, facts, logger)
 	in := verdictInput{Status: run.Status, Rollback: facts.rollback(), RanAt: run.CreatedAt.UTC(), Rechecks: facts.Followup.Rechecks}
+	if w := facts.Followup.WaitEnded; w != nil && w.Kind == "condition" && w.Status == "COMPLETED" && facts.Followup.Rechecks <= 1 {
+		// The first wait ended because the cluster recovered (#42461), minutes before the alert's source closes: a
+		// first look, not a re-check, so a still-firing alert is too early here, not "still firing". Only the first:
+		// a loose condition that matches at once would otherwise make every look too early until the cap.
+		in.Rechecks = 0
+	}
 	hold := verdictHoldUnknownFor
 	if !in.Rollback && in.Status == events.RunStatusSuccess {
 		signal, err := readAlertSignal(db, run)
@@ -360,13 +371,13 @@ func settleByVerdict(db *sqlx.DB, run followupRun, logger *slog.Logger) bool {
 	case v.Verdict == verdictFixed || v.Verdict == verdictClearedBeforeChange:
 		return suggestByVerdict(db, run, v, logger)
 	case v.Hold:
-		// Clear: look again once the hold is over, with no model turn.
-		if at, err := requestHoldRecheck(db, run, hold); err == nil && at != "" {
-			logger.Info("remediation_followups: holding for the re-check", "recheck_at", at)
-			recordHoldUntil(db, run, at, logger)
-			return true
+		// Clear, not yet for long enough: the fix counts once it is still clear when the hold is over. Whether to
+		// wait for that is Nubi's (#42461): its turn is told until when, and a later look records the verdict. A
+		// hold is set once per clear; a clear that started again after it gets a new one.
+		if !facts.holdCovers(in.Signal.ClearedAt) {
+			recordHoldUntil(db, run, verdictNow().Add(hold), logger)
 		}
-		markVerdictChecked(db, run, verdictResult{}, logger)
+		markVerdictChecked(db, run, verdictResult{Hold: true}, logger)
 		return false
 	}
 	markVerdictChecked(db, run, v, logger)
@@ -437,28 +448,20 @@ func (f verdictRun) holdOver(now, clearedAt time.Time) bool {
 	return err == nil && !clearedAt.IsZero() && !clearedAt.After(from)
 }
 
-// requestHoldRecheck schedules the next look once the hold is over. A hold may take one look beyond the model's
-// re-checks, so a clear first seen at the model's last re-check still gets its hold instead of ending with no
-// verdict.
-func requestHoldRecheck(db *sqlx.DB, run followupRun, hold time.Duration) (string, error) {
-	minutes := int((hold + time.Minute - 1) / time.Minute)
-	ctx, cancel := context.WithTimeout(context.Background(), decisionDBTimeout)
-	defer cancel()
-	if _, err := events.RequestFollowupRecheck(ctx, db, run.Id, minutes, soakReason, followupMaxRechecks+1); err != nil {
-		return "", err
+// holdCovers reports whether a hold is already set for the clear that started at clearedAt (the clear began by the
+// time the hold did).
+func (f verdictRun) holdCovers(clearedAt time.Time) bool {
+	if _, err := time.Parse(time.RFC3339Nano, f.Followup.HoldUntil); err != nil {
+		return false
 	}
-	return events.ScheduleFollowupRecheck(ctx, db, run.Id, "", minutes, minutes, followupMaxRechecks+1)
+	from, err := time.Parse(time.RFC3339Nano, f.Followup.HoldFrom)
+	return err == nil && !clearedAt.IsZero() && !clearedAt.After(from)
 }
 
 // recordHoldUntil records data.followup.hold_until (RFC3339, UTC): the alert is clear, and the fix counts once it
-// is still clear at the re-check due then ("Verifying: the goal must hold until HH:MM"). It is
-// left in place when the verdict lands, so the record keeps the time the fix had to hold until.
-func recordHoldUntil(db *sqlx.DB, run followupRun, recheckAt string, logger *slog.Logger) {
-	until, err := time.Parse(time.RFC3339Nano, recheckAt)
-	if err != nil {
-		logger.Warn("remediation_followups: re-check time not read", "recheck_at", recheckAt, "error", err)
-		return
-	}
+// is still clear then ("Verifying: the goal must hold until HH:MM"). It is left in place when the verdict lands, so
+// the record keeps the time the fix had to hold until.
+func recordHoldUntil(db *sqlx.DB, run followupRun, until time.Time, logger *slog.Logger) {
 	ctx, cancel := context.WithTimeout(context.Background(), decisionDBTimeout)
 	defer cancel()
 	body, _ := json.Marshal(map[string]any{"hold_until": until.UTC().Format(time.RFC3339), "hold_from": verdictNow().UTC().Format(time.RFC3339Nano)})
@@ -475,6 +478,9 @@ func markVerdictChecked(db *sqlx.DB, run followupRun, v verdictResult, logger *s
 	defer cancel()
 	patch := verdictFields(v)
 	patch["verdict_checked_at"] = verdictNow().Format(time.RFC3339Nano)
+	// hold_now: this look saw the alert clear and holding, so the turn is told until when (#42461); a look that saw
+	// it firing again must not be.
+	patch["hold_now"] = v.Hold
 	body, _ := json.Marshal(patch)
 	if _, err := events.SetFollowupVerdict(ctx, db, run.Id, string(body)); err != nil {
 		logger.Error("remediation_followups: verdict not recorded", "error", err)

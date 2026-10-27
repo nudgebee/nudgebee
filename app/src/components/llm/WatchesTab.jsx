@@ -125,7 +125,8 @@ export function describeWatchOutcome(w) {
     return 'the check could not run';
   }
   if (w?.status === 'EXPIRED') {
-    return 'gave up before the condition was met';
+    // A timer watch (NudgeBee's own wait) has no condition: reaching its time is how it ends.
+    return w.source_kind === 'timer' ? 'waited until the set time' : 'gave up before the condition was met';
   }
   return '';
 }
@@ -141,7 +142,9 @@ function WatchRow({ watch: w, onCancel }) {
   // is sometimes the in-flight poll that fired right after the matching one — useful
   // as a diagnostic but misleading as the headline (e.g. shows "timed out" even
   // when the watch COMPLETED on the previous poll).
-  const lastObsRaw = isTerminal ? w.final_result || w.error || w.last_poll_result : w.last_poll_result;
+  // A timer observes nothing; its stock "expired before condition was met" result would contradict its outcome.
+  const isTimer = w.source_kind === 'timer';
+  const lastObsRaw = isTimer ? w.error : isTerminal ? w.final_result || w.error || w.last_poll_result : w.last_poll_result;
   // Coerce to string before measuring/slicing: the backend fields
   // (final_result / last_poll_result / error) have no client-side type
   // guarantee. If a structured object ever arrives, `.length`/`.slice` would
@@ -180,7 +183,7 @@ function WatchRow({ watch: w, onCancel }) {
             </Typography>
           </Tooltip>
         </Box>
-        {!isTerminal && (
+        {!isTerminal && !w.origin && (
           <Tooltip title='Cancel watch' placement='bottom'>
             <IconButton
               size='small'

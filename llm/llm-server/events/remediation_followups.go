@@ -3,7 +3,6 @@ package events
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -169,6 +168,7 @@ func OpenFollowups(ctx context.Context, db *sqlx.DB, limit int) ([]FollowupRun, 
 		  FROM event_resolution er JOIN events e ON e.id = er.event_id
 		 WHERE er.type = 'CommandExecution' AND er.data->'followup' IS NOT NULL
 		   AND er.data->'followup'->>'done_at' IS NULL AND er.data->'followup'->>'recheck_at' IS NULL
+		   AND (er.data->'followup'->'wait' IS NULL OR COALESCE(er.data->'followup'->>'message_id', '') <> '')
 		   AND `+remediationLoopTenant+`
 		 ORDER BY (er.data->'followup'->>'claimed_at')::timestamptz LIMIT $1`,
 		limit)
@@ -179,23 +179,70 @@ func OpenFollowups(ctx context.Context, db *sqlx.DB, limit int) ([]FollowupRun, 
 }
 
 // ClaimDueRechecks claims at most limit follow-ups waiting for a re-check whose time has come, as a new
-// claim whose turn is still to start.
+// claim whose turn is still to start. Only rows from before waits ran on watches (#42461): a row with a wait is
+// claimed when its watch ends (ClaimFinishedWaits), even though it also carries recheck_at for older pods.
 func ClaimDueRechecks(ctx context.Context, db *sqlx.DB, limit int) ([]FollowupRun, error) {
 	var claimed []FollowupRun
 	err := db.SelectContext(ctx, &claimed, `WITH due AS (
 		SELECT er.id FROM event_resolution er JOIN events e ON e.id = er.event_id
 		 WHERE er.type = 'CommandExecution' AND er.data->'followup' IS NOT NULL AND er.data->'followup'->>'done_at' IS NULL
 		   AND (er.data->'followup'->>'recheck_at')::timestamptz <= now()
+		   AND er.data->'followup'->'wait' IS NULL
 		   AND `+remediationLoopTenant+`
 		 ORDER BY (er.data->'followup'->>'recheck_at')::timestamptz LIMIT $1 FOR UPDATE OF er SKIP LOCKED),
 	upd AS (
 		UPDATE event_resolution r
 		   SET data = jsonb_set(r.data, '{followup}', ((r.data->'followup') - 'recheck_at' - 'message_id') || jsonb_build_object('claimed_at', now()))
 		  FROM due WHERE r.id = due.id AND r.data->'followup'->>'recheck_at' IS NOT NULL AND r.data->'followup'->>'done_at' IS NULL
+		   AND r.data->'followup'->'wait' IS NULL
 		RETURNING r.*)
 	SELECT `+followupRunColumns+` FROM upd er JOIN events e ON e.id = er.event_id`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("ClaimDueRechecks: %w", err)
+	}
+	return claimed, nil
+}
+
+// ClaimFinishedWaits claims at most limit follow-ups whose wait's watch ended (#42461): matched (COMPLETED), its
+// deadline passed (EXPIRED) or it could not read (FAILED). A watch that is gone, or still live or cancelled
+// graceMinutes past the wait's deadline (the watcher is not running, or something else cancelled it), claims too,
+// as lost — never earlier for a cancel, so cancelling a wait does not start the next look early. The claim
+// removes the wait (and the recheck_at kept for older pods), so a late end of the same watch cannot claim twice,
+// and keeps how it ended as wait_ended for the next turn. Only rows with no turn running.
+func ClaimFinishedWaits(ctx context.Context, db *sqlx.DB, graceMinutes, limit int) ([]FollowupRun, error) {
+	var claimed []FollowupRun
+	err := db.SelectContext(ctx, &claimed, `WITH waiting AS (
+		SELECT er.id, e.cloud_account_id AS account_id, er.data->'followup'->'wait' AS wait,
+		       CASE WHEN er.data->'followup'->'wait'->>'watch_id' ~ '^`+uuidPattern+`$'
+		            THEN (er.data->'followup'->'wait'->>'watch_id')::uuid END AS watch_id
+		  FROM event_resolution er JOIN events e ON e.id = er.event_id
+		 WHERE er.type = 'CommandExecution' AND er.data->'followup'->'wait' IS NOT NULL
+		   AND er.data->'followup'->>'done_at' IS NULL AND COALESCE(er.data->'followup'->>'message_id', '') = ''
+		   AND `+remediationLoopTenant+`
+		 FOR UPDATE OF er SKIP LOCKED),
+	due AS (
+		SELECT w.id, jsonb_build_object(
+		         'status', CASE WHEN t.id IS NULL THEN 'LOST'
+		                        WHEN t.status IN ('COMPLETED','EXPIRED','FAILED') THEN t.status ELSE 'LOST' END,
+		         'kind', w.wait->>'kind', 'command', w.wait->>'command', 'expect', w.wait->>'expect',
+		         'negate', w.wait->'negate', 'until', w.wait->>'until', 'reason', w.wait->>'reason',
+		         'ended_at', COALESCE(t.updated_at, now()), 'final', t.final_result, 'last', t.last_poll_result,
+		         'error', t.error) AS ended
+		  FROM waiting w
+		  LEFT JOIN llm_watch_tasks t ON t.id = w.watch_id AND t.account_id = w.account_id
+		 WHERE t.id IS NULL OR t.status IN ('COMPLETED','EXPIRED','FAILED')
+		    OR (t.status IN ('PENDING','ACTIVE','CANCELLED') AND (w.wait->>'until')::timestamptz + make_interval(mins => $1) < now())
+		 LIMIT $2),
+	upd AS (
+		UPDATE event_resolution r
+		   SET data = jsonb_set(r.data, '{followup}', ((r.data->'followup') - 'wait' - 'recheck_at' - 'message_id')
+		       || jsonb_build_object('claimed_at', now(), 'wait_ended', due.ended))
+		  FROM due WHERE r.id = due.id AND r.data->'followup'->'wait' IS NOT NULL AND r.data->'followup'->>'done_at' IS NULL
+		   AND COALESCE(r.data->'followup'->>'message_id', '') = ''
+		RETURNING r.*)
+	SELECT `+followupRunColumns+` FROM upd er JOIN events e ON e.id = er.event_id`, graceMinutes, limit)
+	if err != nil {
+		return nil, fmt.Errorf("ClaimFinishedWaits: %w", err)
 	}
 	return claimed, nil
 }
@@ -226,43 +273,51 @@ func OpenFollowupOfTurn(ctx context.Context, db *sqlx.DB, messageId, accountId s
 	return run, nil
 }
 
-// ScheduleFollowupRecheck turns the turn's recheck_request into the time to look again, between minMinutes
-// and maxMinutes, and returns it; empty when the turn asked for none, proposed, or the follow-up has used
-// its maxRechecks. A non-empty summary is kept as the last report while it waits.
-func ScheduleFollowupRecheck(ctx context.Context, db *sqlx.DB, runId, summary string, minMinutes, maxMinutes, maxRechecks int) (string, error) {
-	var at string
-	err := db.GetContext(ctx, &at, `UPDATE event_resolution
-		   SET data = jsonb_set(data, '{followup}', ((data->'followup') - 'recheck_request') || jsonb_build_object(
-		       'recheck_at', now() + make_interval(mins => LEAST(GREATEST((data->'followup'->'recheck_request'->>'minutes')::int, $3), $4)),
-		       'recheck_reason', data->'followup'->'recheck_request'->>'reason',
+// ScheduleFollowupWait records the wait for the turn's recheck_request (#42461): wait (a JSON object holding its
+// watch_id, kind, command, expect, negate, until and reason), recheck_reason, one more re-check, recheck_at = until
+// for older pods, and summary as the last report while it waits; the turn that asked is over, so its message_id
+// goes (a claim takes only rows with no turn). It returns the rows changed; 0 when the follow-up
+// ended, proposed, or used its maxRechecks meanwhile (the caller then cancels the watch).
+func ScheduleFollowupWait(ctx context.Context, db *sqlx.DB, runId, summary, wait, until, reason string, maxRechecks int) (int64, error) {
+	n, err := affected(db.ExecContext(ctx, `UPDATE event_resolution
+		   SET data = jsonb_set(data, '{followup}', ((data->'followup') - 'recheck_request' - 'wait_ended' - 'message_id') || jsonb_build_object(
+		       'wait', $3::jsonb, 'recheck_at', $4::text, 'recheck_reason', $5::text,
 		       'rechecks', COALESCE((data->'followup'->>'rechecks')::int, 0) + 1)
 		       || CASE WHEN $2::text = '' THEN '{}'::jsonb ELSE jsonb_build_object('summary', $2::text) END)
 		 WHERE id = $1 AND data->'followup' IS NOT NULL AND data->'followup'->>'done_at' IS NULL
 		   AND data->'followup'->'recheck_request' IS NOT NULL AND data->'followup'->>'proposed_at' IS NULL
-		   AND COALESCE((data->'followup'->>'rechecks')::int, 0) < $5
-		RETURNING data->'followup'->>'recheck_at'`, runId, summary, minMinutes, maxMinutes, maxRechecks)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
+		   AND COALESCE((data->'followup'->>'rechecks')::int, 0) < $6`, runId, summary, wait, until, reason, maxRechecks))
 	if err != nil {
-		return "", fmt.Errorf("ScheduleFollowupRecheck: %w", err)
+		return 0, fmt.Errorf("ScheduleFollowupWait: %w", err)
 	}
-	return at, nil
+	return n, nil
 }
 
 // RequestFollowupRecheck records the turn's request to look again in minutes, for reason, unless the
 // follow-up ended, proposed, or used its maxRechecks; it returns the rows changed (1 when recorded).
-func RequestFollowupRecheck(ctx context.Context, db *sqlx.DB, runId string, minutes int, reason string, maxRechecks int) (int64, error) {
+//
+// until (#42461), when set, makes the wait end as soon as a read matches: {command, expect, negate}.
+func RequestFollowupRecheck(ctx context.Context, db *sqlx.DB, runId string, minutes int, reason string, until RecheckCondition, maxRechecks int) (int64, error) {
 	n, err := affected(db.ExecContext(ctx, `UPDATE event_resolution
 		   SET data = jsonb_set(data, '{followup}', data->'followup' || jsonb_build_object('recheck_request',
-		       jsonb_build_object('minutes', $2::int, 'reason', $3::text)))
+		       jsonb_build_object('minutes', $2::int, 'reason', $3::text)
+		       || CASE WHEN $5::text = '' THEN '{}'::jsonb
+		               ELSE jsonb_build_object('until_command', $5::text, 'until_expect', $6::text, 'until_negate', $7::bool) END))
 		 WHERE id = $1 AND data->'followup' IS NOT NULL AND data->'followup'->>'done_at' IS NULL
 		   AND data->'followup'->>'proposed_at' IS NULL
-		   AND COALESCE((data->'followup'->>'rechecks')::int, 0) < $4`, runId, minutes, reason, maxRechecks))
+		   AND COALESCE((data->'followup'->>'rechecks')::int, 0) < $4`, runId, minutes, reason, maxRechecks, until.Command, until.Expect, until.Negate))
 	if err != nil {
 		return 0, fmt.Errorf("RequestFollowupRecheck: %w", err)
 	}
 	return n, nil
+}
+
+// RecheckCondition is what a re-check waits for besides its deadline (#42461): a read of the alert's own cluster
+// whose output matches Expect (a regular expression), or stops matching it with Negate. The zero value: a timer.
+type RecheckCondition struct {
+	Command string
+	Expect  string
+	Negate  bool
 }
 
 // ClaimFollowupProposal takes the follow-up's one proposal, with findings, before the plan is written, so a
@@ -445,6 +500,15 @@ func ruleForSeconds(duration string) (int, bool) {
 		return 0, false
 	}
 	return int(d.Seconds()), true
+}
+
+// FollowupData is the data of run runId as it is now, for a turn started after code wrote to it this claim.
+func FollowupData(ctx context.Context, db *sqlx.DB, runId string) ([]byte, error) {
+	var data []byte
+	if err := db.GetContext(ctx, &data, `SELECT COALESCE(data, '{}'::jsonb) FROM event_resolution WHERE id = $1`, runId); err != nil {
+		return nil, fmt.Errorf("FollowupData: %w", err)
+	}
+	return data, nil
 }
 
 // SetFollowupVerdict merges patch (a JSON object: verdict, verdict_at, verdict_reason, verdict_checked_at)

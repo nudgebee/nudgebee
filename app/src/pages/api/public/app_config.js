@@ -38,10 +38,10 @@ export default async function handler(req, res) {
     k8sCollectorUrl: process.env.K8S_COLLECTOR_ENDPOINT || '',
     signingPublicKey: process.env.SIGNING_PUBLIC_KEY || '',
     // Background-watch feature flag. Mirrors LLM_SERVER_WATCH_ENABLED on
-    // llm-server, which only mounts the /v1/watches route when set. The chat
-    // UI polls the watch-list endpoint solely when this is true, so the route's
-    // absence never produces a 404.
-    watchEnabled: process.env.LLM_SERVER_WATCH_ENABLED === 'true',
+    // llm-server, which is on unless set to false (remediation waits run on
+    // watches), so this is on unless set to false too. A llm-server with watches
+    // off answers the watch list with 404, which the client latches off.
+    watchEnabled: process.env.LLM_SERVER_WATCH_ENABLED !== 'false',
     pwaEnabled: !branding.isWhiteLabel && (process.env.ENABLE_PWA === 'true' || process.env.NEXT_PUBLIC_ENABLE_PWA === 'true'),
     pwaThemeColor: resolvePwaThemeColor(branding),
   });

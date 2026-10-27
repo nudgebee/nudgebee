@@ -13438,6 +13438,7 @@ type AILlmWatchRow {
   expires_at: String!
   created_at: String!
   updated_at: String!
+  origin: String
 }
 
 type AILlmWatchCancelResponse {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"nudgebee/llm/config"
 	"nudgebee/llm/events"
 	"nudgebee/llm/security"
+	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 )
 
@@ -119,15 +121,18 @@ func (ScheduleRecheckTool) Name() string { return toolcore.ToolScheduleRecheck }
 func (ScheduleRecheckTool) GetType() toolcore.NBToolType { return toolcore.NBToolTypeTool }
 
 func (ScheduleRecheckTool) Description() string {
-	return `Asks NudgeBee to run this follow-up check again later, during a follow-up check after a remediation step. Call it when it is too early to tell whether the step worked: for example the metric behind the alert is averaged over a window that still includes the time before the step, or a rollout is still in progress. Pass how many minutes to wait (5 to 30) and what the next check should look at. Your current turn still ends with your report; the next check runs in this conversation. It is refused after you proposed a new plan and after the follow-up's re-checks are used up.`
+	return `Asks NudgeBee to run this follow-up check again later, during a follow-up check after a remediation step. Call it when it is too early to tell whether the step worked: for example the metric behind the alert is averaged over a window that still includes the time before the step, a rollout is still in progress, or the alert has cleared and must stay clear for a while to count as fixed. Pass how many minutes to wait at most (5 to 120) and what the next check should look at. To look again as soon as something is true in the alert's cluster (a rollout finished, all pods ready, no new restarts), also pass until_command, a kubectl read of the alert's own cluster, and until_expect, a regular expression its output must match (until_negate: until it stops matching); NudgeBee runs it every minute. Without until_command the next check runs when the minutes pass. Your current turn still ends with your report; the next check runs in this conversation. It is refused after you proposed a new plan and after the follow-up's re-checks are used up.`
 }
 
 func (ScheduleRecheckTool) InputSchema() toolcore.ToolSchema {
 	return toolcore.ToolSchema{
 		Type: toolcore.ToolSchemaTypeObject,
 		Properties: map[string]toolcore.ToolSchemaProperty{
-			"minutes": {Type: toolcore.ToolSchemaTypeInteger, Description: "Minutes to wait before the next check, 5 to 30"},
-			"reason":  {Type: toolcore.ToolSchemaTypeString, Description: "Why it is too early to tell, and what the next check should look at"},
+			"minutes":       {Type: toolcore.ToolSchemaTypeInteger, Description: "Minutes to wait at most before the next check, 5 to 120"},
+			"reason":        {Type: toolcore.ToolSchemaTypeString, Description: "Why it is too early to tell, and what the next check should look at"},
+			"until_command": {Type: toolcore.ToolSchemaTypeString, Description: "Optional. A kubectl read of the alert's own cluster (no cluster or context flag) whose output says the next check can run now"},
+			"until_expect":  {Type: toolcore.ToolSchemaTypeString, Description: "With until_command: a regular expression the command's output must match"},
+			"until_negate":  {Type: toolcore.ToolSchemaTypeBoolean, Description: "With until_command: look again once the output stops matching until_expect"},
 		},
 		Required: []string{"minutes", "reason"},
 	}
@@ -144,10 +149,14 @@ func (ScheduleRecheckTool) Call(ctx toolcore.NbToolContext, input toolcore.NBToo
 	case int:
 		minutes = m
 	default:
-		return fail(fmt.Errorf("schedule_recheck: minutes must be a number from 5 to 30, got %v", input.Arguments["minutes"]))
+		return fail(fmt.Errorf("schedule_recheck: minutes must be a number from %d to %d, got %v", recheckMinMinutes, recheckMaxMinutes, input.Arguments["minutes"]))
 	}
 	reason, _ := input.Arguments["reason"].(string)
-	out, err := scheduleRecheck(ctx, minutes, strings.TrimSpace(reason))
+	command, _ := input.Arguments["until_command"].(string)
+	expect, _ := input.Arguments["until_expect"].(string)
+	negate, _ := input.Arguments["until_negate"].(bool)
+	out, err := scheduleRecheck(ctx, minutes, strings.TrimSpace(reason),
+		events.RecheckCondition{Command: strings.TrimSpace(command), Expect: strings.TrimSpace(expect), Negate: negate})
 	if err != nil {
 		return fail(err)
 	}
@@ -825,27 +834,44 @@ func proposalText(plan RemediationPlan) string {
 	return b.String()
 }
 
-// How long the agent may ask to wait before the next check, and how many re-checks one follow-up gets.
-// Vars so tests can change them.
+// How long the agent may ask to wait at most before the next check, and how many re-checks one follow-up gets. The
+// longest wait covers a hold (an alert rule's for: plus a settling window, at most 2 hours). Vars so tests can change
+// them.
 var (
 	recheckMinMinutes   = 5
-	recheckMaxMinutes   = 30
-	followupMaxRechecks = 2
+	recheckMaxMinutes   = 120
+	followupMaxRechecks = 3
 )
 
-// scheduleRecheck is schedule_recheck (#40734): in a follow-up the agent asks to look again in N minutes. It only
-// records the request; at turn end the job turns it into requestRecheck, or drops it if the turn proposed. Hard
-// limits (not a follow-up, ended/proposed, newer run, run cap, re-check cap) refuse with a reason the model reads.
-func scheduleRecheck(ctx toolcore.NbToolContext, minutes int, reason string) (string, error) {
+// recheckUntilMaxCommand bounds a re-check condition's command, and recheckReasonMax the reason.
+const (
+	recheckUntilMaxCommand = 500
+	recheckReasonMax       = 1000
+)
+
+// scheduleRecheck is schedule_recheck (#40734): in a follow-up the agent asks to look again, at most N minutes on.
+// It only records the request; at turn end the job turns it into a wait (requestRecheck: a watch, #42461), or drops
+// it if the turn proposed. With until the watch ends as soon as a strict kubectl read of the alert's own cluster
+// matches; without it, when the minutes pass. Hard limits (not a follow-up, ended/proposed, newer run, run cap,
+// re-check cap, a condition that is not a strict read) refuse with a reason the model reads.
+func scheduleRecheck(ctx toolcore.NbToolContext, minutes int, reason string, until events.RecheckCondition) (string, error) {
 	if minutes < recheckMinMinutes || minutes > recheckMaxMinutes {
 		return "", fmt.Errorf("schedule_recheck: minutes must be from %d to %d, got %d", recheckMinMinutes, recheckMaxMinutes, minutes)
 	}
 	if reason == "" {
 		return "", errors.New("schedule_recheck: pass the reason: why it is too early to tell, and what the next check should look at")
 	}
+	if (until.Command == "") != (until.Expect == "") {
+		return "", errors.New("schedule_recheck: pass until_command and until_expect together (or neither, to wait for the minutes)")
+	}
 	db, run, err := followupRunOf(ctx, "schedule_recheck")
 	if err != nil {
 		return "", err
+	}
+	if until.Command != "" {
+		if refusal := recheckConditionRefusal(ctx, run.AccountId, until); refusal != "" {
+			return "", errors.New("schedule_recheck: " + refusal)
+		}
 	}
 	newer, _, err := alertRuns(db, run)
 	switch {
@@ -854,14 +880,46 @@ func scheduleRecheck(ctx toolcore.NbToolContext, minutes int, reason string) (st
 	case newer:
 		return "", errors.New("schedule_recheck: a newer remediation run of this alert replaced this check. Report your findings instead")
 	}
-	n, err := events.RequestFollowupRecheck(context.Background(), db, run.Id, minutes, truncate(reason, 1000), followupMaxRechecks)
+	n, err := events.RequestFollowupRecheck(context.Background(), db, run.Id, minutes, truncate(reason, recheckReasonMax), until, followupMaxRechecks)
 	if err != nil {
 		return "", fmt.Errorf("schedule_recheck: recording the request: %w", err)
 	}
 	if n != 1 {
 		return "", fmt.Errorf("schedule_recheck: refused: this follow-up proposed a new plan, or used its %d re-checks. Report your findings instead", followupMaxRechecks)
 	}
+	if until.Command != "" {
+		return fmt.Sprintf("NudgeBee will check this alert again once `%s` %s, and in about %d minutes at the latest, in this conversation. End this turn with what you found so far and what the next check should confirm.", until.Command, conditionText(until), minutes), nil
+	}
 	return fmt.Sprintf("NudgeBee will check this alert again in about %d minutes, in this conversation. End this turn with what you found so far and what the next check should confirm.", minutes), nil
+}
+
+// recheckAccountProvider is the cloud provider of an account ("k8s" for a cluster). A var so tests can stub it.
+var recheckAccountProvider = tools.GetCloudProviderForAccount
+
+// recheckConditionRefusal says why until cannot be a re-check condition on accountId, or "" when it can: only a
+// strict kubectl read of a Kubernetes account's own cluster, which NudgeBee runs with no one to confirm it.
+func recheckConditionRefusal(ctx toolcore.NbToolContext, accountId string, until events.RecheckCondition) string {
+	if !strings.EqualFold(recheckAccountProvider(accountId), "k8s") {
+		return "until_command only works on a Kubernetes account. Pass minutes alone"
+	}
+	if len(until.Command) > recheckUntilMaxCommand {
+		return fmt.Sprintf("until_command is longer than %d characters", recheckUntilMaxCommand)
+	}
+	if reason := checkRejection(ctx.Ctx, accountId, "k8s", until.Command); reason != "" {
+		return "until_command: " + reason + " Use a plain read such as kubectl get"
+	}
+	if _, err := regexp.Compile(until.Expect); err != nil {
+		return "until_expect is not a valid regular expression: " + err.Error()
+	}
+	return ""
+}
+
+// conditionText is what a re-check condition waits for, after its command.
+func conditionText(until events.RecheckCondition) string {
+	if until.Negate {
+		return "stops matching `" + until.Expect + "`"
+	}
+	return "matches `" + until.Expect + "`"
 }
 
 // recheckNote is what a re-check turn is told about why it runs.

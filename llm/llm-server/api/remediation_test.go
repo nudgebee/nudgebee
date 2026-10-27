@@ -34,6 +34,7 @@ import (
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
+	"nudgebee/llm/watch"
 	"nudgebee/llm/workspace"
 )
 
@@ -1859,6 +1860,9 @@ type followupFixture struct {
 	messages   map[string]followupMessage // each turn's message, by id
 	proposals  []followupRun
 	proposeErr error
+	waits      []watch.CreateInput // the watches requestRecheck made, in order
+	waitIds    []uuid.UUID
+	cancelled  []uuid.UUID
 }
 
 type followupMessage struct {
@@ -1875,8 +1879,29 @@ func newFollowupFixture(t *testing.T) *followupFixture {
 		CREATE TABLE events (id uuid PRIMARY KEY, cloud_account_id uuid NOT NULL, fingerprint text, tenant text NOT NULL DEFAULT 'tenant-1');
 		CREATE TABLE cloud_accounts (id uuid PRIMARY KEY, tenant text);
 		CREATE TABLE feature_flag (feature_id text, tenant_id text, account_id uuid, status text);
+		CREATE TABLE llm_watch_tasks (id uuid PRIMARY KEY, account_id uuid NOT NULL, status text NOT NULL,
+		  final_result text, last_poll_result text, error text, updated_at timestamptz NOT NULL DEFAULT now());
 		INSERT INTO feature_flag VALUES ('`+events.RemediationLoopFeature+`', 'tenant-1', NULL, 'enabled')`)
 	f := &followupFixture{t: t, db: db, account: uuid.NewString(), event: uuid.NewString(), messages: map[string]followupMessage{}}
+	// A wait is a watch (#42461): the fixture records each one made; finishWatch ends one as the watcher would.
+	swap(t, &waitTenantOf, func(string) (uuid.UUID, error) { return followupTenantId, nil })
+	swap(t, &alertConversationId, func(followupRun) (uuid.UUID, error) { return followupConversationId, nil })
+	swap(t, &createWaitWatch, func(_ context.Context, in watch.CreateInput) (*watch.Watch, error) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		id := uuid.New()
+		f.waits, f.waitIds = append(f.waits, in), append(f.waitIds, id)
+		if _, err := f.db.Exec(`INSERT INTO llm_watch_tasks (id, account_id, status) VALUES ($1, $2, 'PENDING')`, id, in.AccountID); err != nil {
+			return nil, err
+		}
+		return &watch.Watch{ID: id, ExpiresAt: time.Now().Add(time.Duration(in.MaxDurationSec) * time.Second)}, nil
+	})
+	swap(t, &cancelWaitWatch, func(_ context.Context, _, id uuid.UUID) error {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.cancelled = append(f.cancelled, id)
+		return nil
+	})
 	_, err := db.Exec(`INSERT INTO cloud_accounts VALUES ($1, 'tenant-1')`, f.account)
 	require.NoError(t, err)
 	_, err = db.Exec(`INSERT INTO events VALUES ($1, $2, 'fp-1')`, f.event, f.account)
@@ -1932,6 +1957,22 @@ func newFollowupFixture(t *testing.T) *followupFixture {
 		return RemediationPlan{Summary: "Raise the memory limit", Actions: []RemediationAction{{Action: "Raise limit", ExecuteCommand: "kubectl set resources deploy/api -n shop --limits=memory=1Gi"}}}, "version-2", nil
 	})
 	return f
+}
+
+var (
+	followupTenantId       = uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	followupConversationId = uuid.MustParse("44444444-4444-4444-4444-444444444444")
+)
+
+// finishWatch ends the watch of the wait made n-th (0-based) with status, as the watcher would.
+func (f *followupFixture) finishWatch(n int, status, last string) {
+	f.t.Helper()
+	f.mu.Lock()
+	id := f.waitIds[n]
+	f.mu.Unlock()
+	_, err := f.db.Exec(`INSERT INTO llm_watch_tasks (id, account_id, status, last_poll_result) VALUES ($1, $2, $3, $4)
+		ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, last_poll_result = EXCLUDED.last_poll_result`, id, f.account, status, last)
+	require.NoError(f.t, err)
 }
 
 // toolCtx is a tool call's context in the turn messageId: read-only, as runFollowupTurn runs it.
@@ -2063,28 +2104,18 @@ func TestFollowupRunsOneTurnAndRecordsIt(t *testing.T) {
 	assert.Equal(t, 1, f.turnCount(), "one turn")
 }
 
-// Review of #41596 (5ae0daa2): a check right after a restart reported "healthy" on a pod seconds old, and the
-// alert fired again. A change that took effect is reported only after a second look: the first report waits
-// for a re-check at the shortest wait, even when the turn asked for none.
-func TestFollowupReportsAChangeOnlyAfterASecondLook(t *testing.T) {
+// A report of a change that took effect ends the follow-up (#42461): there is no forced second look any more.
+// Looking again (until a rollout is done, or until a cleared alert has held) is Nubi's to ask for.
+func TestFollowupReportEndsWithoutAForcedSecondLook(t *testing.T) {
 	f := newFollowupFixture(t)
 	run := f.insertRun(f.event, "Success", 6*time.Minute, map[string]any{"output": "deployment.apps/api restarted"})
 	f.tick(2)
 	fu := f.followup(run)
-	assert.Nil(t, fu["done_at"], "a seconds-old pod is not reported fixed")
-	assert.Equal(t, soakReason, fu["recheck_reason"])
-	assert.EqualValues(t, 1, fu["rechecks"])
-	at, err := time.Parse(time.RFC3339Nano, fu["recheck_at"].(string))
-	require.NoError(t, err)
-	assert.WithinDuration(t, time.Now().Add(time.Duration(recheckMinMinutes)*time.Minute), at, time.Minute)
-
-	f.dueRecheck(run)
-	f.tick(2)
-	assert.Equal(t, 2, f.turnCount())
-	assert.Contains(t, f.queries[1], soakReason)
-	fu = f.followup(run)
-	assert.Equal(t, followupReported, fu["outcome"], "the second look's report stands")
+	assert.Equal(t, followupReported, fu["outcome"])
 	assert.NotEmpty(t, fu["done_at"])
+	assert.Nil(t, fu["recheck_at"])
+	assert.Nil(t, fu["wait"])
+	assert.Empty(t, f.waits, "no wait was made")
 }
 
 // How a turn ended is the outcome, and it is never retried.
@@ -2342,19 +2373,20 @@ func TestFollowupWithEmptyFingerprint(t *testing.T) {
 	assert.Equal(t, followupSuperseded, f.followup(older)["outcome"])
 }
 
-// schedule_recheck makes the follow-up wait and run another turn, told why; it is bounded (minutes, count,
-// not after a proposal) and dropped when a person stops the turn or the turn fails.
+// schedule_recheck makes the follow-up wait and run another turn, told why (#42461: the wait is a watch on the
+// alert's conversation, a timer without a condition); it is bounded (minutes, count, not after a proposal) and
+// dropped when a person stops the turn or the turn fails.
 func TestFollowupRecheck(t *testing.T) {
 	f := newFollowupFixture(t)
 	run := f.insertRun(f.event, "Success", 6*time.Minute, nil)
 	var duringErr error
 	f.during = []func(toolcore.NbToolContext){func(ctx toolcore.NbToolContext) {
-		for _, m := range []int{4, 31} {
-			if _, err := scheduleRecheck(ctx, m, "p95"); err == nil || !strings.Contains(err.Error(), "from 5 to 30") {
+		for _, m := range []int{4, 121} {
+			if _, err := scheduleRecheck(ctx, m, "p95", events.RecheckCondition{}); err == nil || !strings.Contains(err.Error(), "from 5 to 120") {
 				duringErr = errors.Join(duringErr, errors.New("minutes out of range accepted"))
 			}
 		}
-		_, err := scheduleRecheck(ctx, 10, "p95 is averaged over 10 minutes that still include the restart")
+		_, err := scheduleRecheck(ctx, 10, "p95 is averaged over 10 minutes that still include the restart", events.RecheckCondition{})
 		duringErr = errors.Join(duringErr, err)
 	}}
 	f.tick(2)
@@ -2365,26 +2397,39 @@ func TestFollowupRecheck(t *testing.T) {
 	assert.Nil(t, fu["recheck_request"])
 	assert.EqualValues(t, 1, fu["rechecks"])
 	assert.Equal(t, "the deployment is still crash-looping", fu["summary"], "the report so far is shown while it waits")
+	require.Len(t, f.waits, 1)
+	in := f.waits[0]
+	assert.Equal(t, watch.SourceKindTimer, in.SourceKind, "no condition: a timer")
+	assert.Equal(t, watch.OriginRemediation, in.Origin)
+	assert.Nil(t, in.UserID, "NudgeBee's own wait")
+	assert.Equal(t, followupConversationId, in.ConversationID, "on the alert's conversation")
+	assert.NotNil(t, in.ParentMessageID)
+	assert.Equal(t, 600, in.MaxDurationSec)
+	wait, _ := fu["wait"].(map[string]any)
+	require.NotNil(t, wait)
+	assert.Equal(t, f.waitIds[0].String(), wait["watch_id"])
 	at, err := time.Parse(time.RFC3339Nano, fu["recheck_at"].(string))
 	require.NoError(t, err)
-	assert.WithinDuration(t, time.Now().Add(10*time.Minute), at, time.Minute)
-	f.tick(2)
-	assert.Equal(t, 1, f.turnCount(), "not due before its time")
+	assert.WithinDuration(t, time.Now().Add(10*time.Minute), at, time.Minute, "recheck_at mirrors the deadline for the tab")
 
-	_, err = f.db.Exec(`UPDATE event_resolution SET data = jsonb_set(data, '{followup,recheck_at}', to_jsonb((now() - interval '1 second')::text)) WHERE id = $1`, run)
-	require.NoError(t, err)
+	f.dueRecheck(run)
+	f.tick(2)
+	assert.Equal(t, 1, f.turnCount(), "only the watch ending claims it, not recheck_at")
+
+	f.finishWatch(0, "EXPIRED", "")
 	f.tick(2)
 	assert.Equal(t, []string{"event-fp-1", "event-fp-1"}, f.turns)
 	assert.Contains(t, f.queries[1], "This is re-check 1, which you asked for: p95 is averaged")
+	assert.Contains(t, f.queries[1], "its time came")
 	fu = f.followup(run)
 	assert.Equal(t, followupReported, fu["outcome"])
 	assert.NotEmpty(t, fu["done_at"])
-	assert.Nil(t, fu["recheck_at"])
+	assert.Nil(t, fu["wait"])
 
 	// Past followupMaxRechecks the tool refuses.
 	f2 := newFollowupFixture(t)
-	run2 := f2.insertRun(f2.event, "Success", 6*time.Minute, map[string]any{"followup": map[string]any{"claimed_at": time.Now().Format(time.RFC3339Nano), "rechecks": 2, "message_id": "turn-2"}})
-	_, err = scheduleRecheck(f2.toolCtx(f2.account, "turn-2"), 10, "again")
+	run2 := f2.insertRun(f2.event, "Success", 6*time.Minute, map[string]any{"followup": map[string]any{"claimed_at": time.Now().Format(time.RFC3339Nano), "rechecks": followupMaxRechecks, "message_id": "turn-2"}})
+	_, err = scheduleRecheck(f2.toolCtx(f2.account, "turn-2"), 10, "again", events.RecheckCondition{})
 	require.ErrorContains(t, err, "re-checks")
 	assert.Nil(t, f2.followup(run2)["recheck_request"])
 
@@ -2392,12 +2437,12 @@ func TestFollowupRecheck(t *testing.T) {
 	f3 := newFollowupFixture(t)
 	run3 := f3.insertRun(f3.event, "Failed", 6*time.Minute, nil)
 	f3.during = []func(toolcore.NbToolContext){func(ctx toolcore.NbToolContext) {
-		_, duringErr = scheduleRecheck(ctx, 10, "wait for the rollout")
+		_, duringErr = scheduleRecheck(ctx, 10, "wait for the rollout", events.RecheckCondition{})
 		if duringErr == nil {
 			_, duringErr = proposeFix(ctx, "the limit is still 512Mi", testPlanJSON)
 		}
 		if duringErr == nil {
-			if _, err := scheduleRecheck(ctx, 10, "after proposing"); err == nil {
+			if _, err := scheduleRecheck(ctx, 10, "after proposing", events.RecheckCondition{}); err == nil {
 				duringErr = errors.New("re-check after a proposal accepted")
 			}
 		}
@@ -2407,20 +2452,126 @@ func TestFollowupRecheck(t *testing.T) {
 	fu = f3.followup(run3)
 	assert.Equal(t, followupProposed, fu["outcome"])
 	assert.NotEmpty(t, fu["done_at"])
-	assert.Nil(t, fu["recheck_at"])
+	assert.Nil(t, fu["wait"])
 	assert.Equal(t, 1, f3.turnCount())
+	assert.Empty(t, f3.waits)
+
+	// A wait that cannot be set up ends the follow-up with the report and a plain sentence, not the error.
+	f5 := newFollowupFixture(t)
+	run5 := f5.insertRun(f5.event, "Success", 6*time.Minute, nil)
+	swap(t, &createWaitWatch, func(context.Context, watch.CreateInput) (*watch.Watch, error) {
+		return nil, errors.New("the alert's conversation: sql: no rows in result set")
+	})
+	f5.during = []func(toolcore.NbToolContext){func(ctx toolcore.NbToolContext) {
+		_, duringErr = scheduleRecheck(ctx, 10, "wait for the rollout", events.RecheckCondition{})
+	}}
+	f5.tick(2)
+	require.NoError(t, duringErr)
+	fu = f5.followup(run5)
+	assert.NotEmpty(t, fu["done_at"])
+	assert.Contains(t, fu["summary"], "could not set up the wait")
+	assert.NotContains(t, fu["summary"], "sql:")
 
 	for _, end := range []core.ConversationStatus{core.ConversationStatusTerminated, core.ConversationStatusFailed} {
 		f4 := newFollowupFixture(t)
 		run4 := f4.insertRun(f4.event, "Success", 6*time.Minute, nil)
-		f4.during = []func(toolcore.NbToolContext){func(ctx toolcore.NbToolContext) { _, duringErr = scheduleRecheck(ctx, 10, "wait for the rollout") }}
+		f4.during = []func(toolcore.NbToolContext){func(ctx toolcore.NbToolContext) {
+			_, duringErr = scheduleRecheck(ctx, 10, "wait for the rollout", events.RecheckCondition{})
+		}}
 		f4.turnEnds = []core.ConversationStatus{end}
 		f4.tick(3)
 		require.NoError(t, duringErr)
 		fu = f4.followup(run4)
 		assert.NotEmpty(t, fu["done_at"], end)
-		assert.Nil(t, fu["recheck_at"], end)
+		assert.Nil(t, fu["wait"], end)
 		assert.Equal(t, 1, f4.turnCount(), end)
+		assert.Empty(t, f4.waits, end)
+	}
+}
+
+// With until_command the wait is a strict read of the alert's own cluster (#42461): the next turn runs as soon as
+// it matches and is told what it printed; a condition that is not a strict read, or on a cloud account, is refused;
+// a cancelled watch never starts a turn, and a watch that is lost past its deadline does, saying so.
+func TestFollowupRecheckUntilCondition(t *testing.T) {
+	const rollout = "kubectl get deploy api -n shop -o jsonpath='{.status.readyReplicas}/{.spec.replicas}'"
+	swap(t, &recheckAccountProvider, func(string) string { return "k8s" })
+	until := events.RecheckCondition{Command: rollout, Expect: `^3/3$`}
+
+	f := newFollowupFixture(t)
+	run := f.insertRun(f.event, "Success", 6*time.Minute, nil)
+	var duringErr error
+	f.during = []func(toolcore.NbToolContext){func(ctx toolcore.NbToolContext) {
+		for _, bad := range []struct {
+			until events.RecheckCondition
+			want  string
+		}{
+			{events.RecheckCondition{Command: "kubectl -n shop delete pod api-1", Expect: "x"}, "not a read"},
+			{events.RecheckCondition{Command: rollout, Expect: "("}, "not a valid regular expression"},
+			{events.RecheckCondition{Expect: "3/3"}, "together"},
+		} {
+			if _, err := scheduleRecheck(ctx, 10, "rollout", bad.until); err == nil || !strings.Contains(err.Error(), bad.want) {
+				duringErr = errors.Join(duringErr, fmt.Errorf("%+v: got %v, want %q", bad.until, err, bad.want))
+			}
+		}
+		_, err := scheduleRecheck(ctx, 45, "the rollout of 3 new pods is still going", until)
+		duringErr = errors.Join(duringErr, err)
+	}}
+	f.tick(2)
+	require.NoError(t, duringErr)
+
+	require.Len(t, f.waits, 1)
+	in := f.waits[0]
+	assert.Equal(t, watch.SourceKindTool, in.SourceKind)
+	assert.Equal(t, watch.PredicateKindRegex, in.PredicateKind)
+	assert.Equal(t, `^3/3$`, in.PredicateExpr)
+	assert.Equal(t, 2700, in.MaxDurationSec)
+	var cfg map[string]any
+	require.NoError(t, json.Unmarshal(in.SourceConfig, &cfg))
+	assert.Equal(t, true, cfg["strict_read_only"], "polls follow the strict read rule")
+	fu := f.followup(run)
+	assert.Contains(t, fu["recheck_reason"], "Looking again sooner once `"+rollout+"` matches `^3/3$`.", "the tab and Slack show what is watched")
+
+	f.finishWatch(0, "COMPLETED", "3/3")
+	f.tick(2)
+	require.Equal(t, 2, f.turnCount())
+	assert.Contains(t, f.queries[1], "because `"+rollout+"` matches `^3/3$`")
+	assert.Contains(t, f.queries[1], "<<<\n3/3\n>>>")
+
+	// A cancelled watch never starts a turn; a lost one does, once past its deadline.
+	f2 := newFollowupFixture(t)
+	run2 := f2.insertRun(f2.event, "Success", 6*time.Minute, nil)
+	f2.during = []func(toolcore.NbToolContext){func(ctx toolcore.NbToolContext) { _, duringErr = scheduleRecheck(ctx, 10, "rollout", until) }}
+	f2.tick(2)
+	require.NoError(t, duringErr)
+	f2.finishWatch(0, "CANCELLED", "")
+	f2.tick(2)
+	assert.Equal(t, 1, f2.turnCount(), "cancelled: no turn before the deadline")
+	_, err := f2.db.Exec(`UPDATE event_resolution SET data = jsonb_set(data, '{followup,wait,until}', to_jsonb((now() - interval '6 minutes')::text)) WHERE id = $1`, run2)
+	require.NoError(t, err)
+	f2.tick(2)
+	require.Equal(t, 2, f2.turnCount(), "past its deadline a cancelled wait is claimed, as lost")
+	assert.Contains(t, f2.queries[1], "was lost before it ended")
+
+	// Not on a cloud account.
+	swap(t, &recheckAccountProvider, func(string) string { return "aws" })
+	f3 := newFollowupFixture(t)
+	f3.insertRun(f3.event, "Success", 6*time.Minute, nil)
+	f3.during = []func(toolcore.NbToolContext){func(ctx toolcore.NbToolContext) { _, duringErr = scheduleRecheck(ctx, 10, "rollout", until) }}
+	f3.tick(2)
+	require.ErrorContains(t, duringErr, "only works on a Kubernetes account")
+}
+
+// The turn is told until when a cleared alert must hold only when this look saw it clear (#42461): a hold from an
+// earlier clear, after the alert fired again, is not repeated to it.
+func TestFollowupQueryHoldNote(t *testing.T) {
+	run := followupRun{EventId: "ev", Command: "kubectl rollout restart deploy/api -n shop", Status: "Success", CreatedAt: time.Now()}
+	for _, tc := range []struct {
+		holdNow bool
+		want    bool
+	}{{true, true}, {false, false}} {
+		run.Data = []byte(fmt.Sprintf(`{"followup":{"hold_from":"2026-10-22T11:06:00Z","hold_until":"2026-10-22T11:21:00Z","hold_now":%v}}`, tc.holdNow))
+		q := followupQuery(run)
+		assert.Equal(t, tc.want, strings.Contains(q, "counts as fixed if it is still clear at 11:21 UTC"), "hold_now=%v: %s", tc.holdNow, q)
 	}
 }
 

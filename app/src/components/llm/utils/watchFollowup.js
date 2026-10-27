@@ -57,7 +57,8 @@ export function reconcilePendingFollowups({ rows, messages, pending, now, budget
   }
   const next = new Map();
   (rows || []).forEach((r) => {
-    if (!r?.id || !TERMINAL_WATCH_STATUSES.includes(r.status)) {
+    // NudgeBee's own watches (remediation waits) end without a chat block: the next turn is the answer.
+    if (!r?.id || !TERMINAL_WATCH_STATUSES.includes(r.status) || r.origin) {
       return;
     }
     // Landed — either just now or already present on initial load. Drop it for
