@@ -188,14 +188,14 @@ export const buildLegacyTableSx = ({ showExpandable, stickyColumnIndex }) => ({
     position: showExpandable && 'sticky',
     right: '0px',
   },
-  [`tbody tr td:nth-of-type(${stickyColumnIndex})`]: {
-    position: 'sticky',
-    right: showExpandable ? ds.space.mul(0, 15) : '0px',
-    '@media (max-width: 1380px)': {
-      right: showExpandable ? ds.space.mul(0, 25) : '0px',
-    },
-  },
   ...(stickyColumnIndex && {
+    [`tbody tr td:nth-of-type(${stickyColumnIndex})`]: {
+      position: 'sticky',
+      right: showExpandable ? ds.space.mul(0, 15) : '0px',
+      '@media (max-width: 1380px)': {
+        right: showExpandable ? ds.space.mul(0, 25) : '0px',
+      },
+    },
     [`tbody tr:has(.MuiModal-root:not(.MuiModal-hidden)) td:nth-of-type(${stickyColumnIndex})`]: {
       zIndex: 10,
     },
