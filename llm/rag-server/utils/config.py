@@ -157,6 +157,12 @@ class Config:
     reranker_threshold = float(os.environ.get("RAG_RERANKER_THRESHOLD", 0.50))
     reranker_max_length = int(os.environ.get("RAG_RERANKER_MAX_LENGTH", 128))  # tokens per (query, doc) pair
     reranker_max_doc_chars = int(os.environ.get("RAG_RERANKER_MAX_DOC_CHARS", 500))  # doc chars scored
+    # Chunk context: the page title, heading path and (inside a table) the table's
+    # header row, embedded and reranked with each chunk so a table row or a
+    # paragraph deep in a section still says what it is about. The stored chunk
+    # text is unchanged. Turning it off stops new chunks getting context; points
+    # already written keep theirs until their source re-syncs.
+    chunk_context_enabled = os.environ.get("RAG_CHUNK_CONTEXT_ENABLED", "true").lower() == "true"
     # Ranked mode: score every candidate, group chunks by their parent document,
     # and return the best N documents without filtering, leaving the relevance
     # decision to the caller that has the conversation to judge against. Off by

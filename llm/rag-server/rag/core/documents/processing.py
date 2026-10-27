@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -465,6 +466,7 @@ def _chunk_long_documents(documents):
         # parent) already read; without parent_id every chunk lists as its own
         # document and none of them group.
         parent_id = getattr(doc, "id", None) or hashlib.md5(content.encode()).hexdigest()
+        contexts = _chunk_contexts(pieces, (doc.metadata or {}).get("title")) if Config.chunk_context_enabled else []
         for i, piece in enumerate(pieces):
             # Deep copy, not dict(): a shallow copy shares mutable values
             # (e.g. the `capabilities` list) across every chunk of this
@@ -474,8 +476,100 @@ def _chunk_long_documents(documents):
             metadata.setdefault("parent_id", parent_id)
             metadata["chunk_index"] = i
             metadata["chunk_count"] = len(pieces)
-            chunked.append(Document(page_content=piece, metadata=metadata))
+            chunk = Document(page_content=piece, metadata=metadata)
+            if contexts and contexts[i]:
+                metadata["chunk_context"] = contexts[i]
+                # The id hashes the context too, so a chunk whose text is
+                # unchanged but now carries context is re-embedded once instead
+                # of being skipped as already stored.
+                chunk.id = hashlib.md5(f"{contexts[i]}\n\n{piece}".encode()).hexdigest()
+            chunked.append(chunk)
     return chunked
+
+
+# Caps keep the context short next to a ~400-char chunk. The reranker scores
+# only Config.reranker_max_doc_chars, so it drops context lines that would not
+# fit beside the whole chunk (Document.retrieval_text).
+_CONTEXT_PATH_MAX_CHARS = 100
+_CONTEXT_TABLE_HEADER_MAX_CHARS = 120
+_HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+
+
+def _chunk_contexts(pieces, title):
+    """What each chunk is about: "Title › Heading › Subheading", plus the
+    table's header row when the chunk starts inside a table.
+
+    Kept out of the chunk text: knowledge_document.join_chunks rebuilds a page
+    from its chunks by their exact overlap, so the stored text must stay a plain
+    slice of the page. The context goes into metadata and into the text that is
+    embedded and reranked. Returns [] when the chunks do not join back cleanly,
+    since offsets into the page would then be wrong.
+    """
+    starts = []
+    page = ""
+    for i, piece in enumerate(pieces):
+        carried = min(_CHUNK_OVERLAP_CHARS, len(page)) if i else 0
+        if carried and not piece.startswith(page[-carried:]):
+            return []
+        starts.append(len(page) - carried)
+        page += piece[carried:]
+
+    title = (title or "").strip()
+    if not title and page.startswith("Title: "):
+        title = page[len("Title: ") :].split("\n", 1)[0].strip()
+    return [_context_at(page, start, title) for start in starts]
+
+
+def _context_at(page, pos, title):
+    headings = []  # (level, text) stack of the sections pos sits inside
+    fence = ""  # opening marker of the code fence we are inside, if any
+    for line in page[:pos].split("\n"):
+        # A "# restart the pods" inside a code fence is a shell comment. As in
+        # CommonMark, a fence closes only on the same character, at least as
+        # long, with nothing after it, so a ``` inside a ```` block stays code.
+        marker = _FENCE_RE.match(line)
+        if marker:
+            if not fence:
+                fence = marker.group(1)
+            elif marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence) and not marker.group(2).strip():
+                fence = ""
+            continue
+        heading = None if fence else _HEADING_RE.match(line)
+        if not heading:
+            continue
+        level = len(heading.group(1))
+        # Docusaurus ends each heading with a zero-width space (its anchor link).
+        text = heading.group(2).replace("\u200b", "").strip()
+        headings = [h for h in headings if h[0] < level] + [(level, text)]
+    # The page's H1 usually repeats the title ("Supported Cloud Services" under
+    # "Supported Cloud Services | NudgeBee").
+    names = [text for level, text in headings if not (level == 1 and title.startswith(text))]
+    path = " › ".join(([title] if title else []) + names)
+    if len(path) > _CONTEXT_PATH_MAX_CHARS:
+        path = "…" + path[-(_CONTEXT_PATH_MAX_CHARS - 1) :]
+
+    header = _table_header_before(page, pos)
+    if header and len(header) > _CONTEXT_TABLE_HEADER_MAX_CHARS:
+        header = header[: _CONTEXT_TABLE_HEADER_MAX_CHARS - 1] + "…"
+    return "\n".join(part for part in (path, header) if part)
+
+
+def _table_header_before(page, pos):
+    """The header row of the markdown table pos is inside, when that row is
+    before pos (a chunk that starts at or above the header already holds it)."""
+    line_start = page.rfind("\n", 0, pos) + 1
+    if not page.startswith("|", line_start):
+        return ""
+    first = line_start
+    while first > 0:
+        previous = page.rfind("\n", 0, first - 1) + 1
+        if not page.startswith("|", previous):
+            break
+        first = previous
+    if first >= pos:
+        return ""
+    return page[first:].split("\n", 1)[0].strip()
 
 
 def _split_on_paragraphs(text, limit, overlap):
@@ -504,15 +598,29 @@ def _split_on_paragraphs(text, limit, overlap):
         else:
             current = para
         while len(current) > limit:
-            chunks.append(current[:limit])
+            cut = _line_cut(current, limit, overlap)
+            chunks.append(current[:cut])
             # max(1, ...) rather than max(0, ...): guarantees forward
             # progress even if a future caller passes overlap >= limit,
-            # where limit - overlap <= 0 would otherwise re-slice from 0
+            # where cut - overlap <= 0 would otherwise re-slice from 0
             # every time and loop forever.
-            current = current[max(1, limit - overlap) :]
+            current = current[max(1, cut - overlap) :]
     if current:
         chunks.append(current)
     return chunks or [text[:limit]]
+
+
+def _line_cut(text, limit, overlap):
+    """Where to slice a paragraph longer than `limit`: just after the last line
+    break in the second half of the window, else at `limit`. A markdown table is
+    one paragraph, and slicing it at a fixed width split rows mid-cell, so a
+    service name could be cut in two ("| Dyna" / "moDB |"). The next chunk still
+    starts with the last `overlap` characters before the cut, which is what
+    knowledge_document.join_chunks relies on."""
+    newline = text.rfind("\n", limit // 2, limit)
+    if newline != -1 and newline + 1 > overlap:
+        return newline + 1
+    return limit
 
 
 _KB_CHUNK_SHAPES = frozenset(
@@ -632,6 +740,20 @@ def _content_id(doc):
 def _group_chunk_ids(group):
     """Normalised ids of every chunk a source document will be split into."""
     return {_normalize_point_id(_content_id(chunk)) for doc in group for chunk in _chunk_long_documents([doc])}
+
+
+def _chunk_id_pairs(group):
+    """(id, legacy id) of every chunk a source document will be split into; the
+    legacy id hashes the chunk text alone, as chunks were keyed before
+    chunk_context. The two are equal for a chunk without context."""
+    return [
+        (
+            _normalize_point_id(_content_id(chunk)),
+            _normalize_point_id(hashlib.md5(chunk.page_content.encode()).hexdigest()),
+        )
+        for doc in group
+        for chunk in _chunk_long_documents([doc])
+    ]
 
 
 def _unclassified_groups(groups, classified_ids):
@@ -893,13 +1015,21 @@ def _classify_kb_source_documents(documents, module, account_id, collection_name
     if module != "knowledge_base":
         return {}
     groups = [documents] if whole_call_is_one_document else [[doc] for doc in documents]
-    ids = set().union(*(_group_chunk_ids(group) for group in groups)) if groups else set()
+    pairs = [pair for group in groups for pair in _chunk_id_pairs(group)]
+    ids = {new for new, _ in pairs} | {legacy for _, legacy in pairs}
     try:
         stored_labels = _classified_labels(collection_name, ids)
     except Exception:
         # Fail open: at worst everything is classified again.
         logger.exception(f"kb_metadata: could not read the stored classifications of {collection_name}")
         stored_labels = {}
+    # A chunk stored before it carried a chunk_context sits under its old id,
+    # the hash of its text alone. Its labels describe the same text, so they
+    # count for the new id too: the first sync after chunk context shipped would
+    # otherwise send every long document back to the classifier.
+    for new, legacy in pairs:
+        if new not in stored_labels and legacy in stored_labels:
+            stored_labels[new] = stored_labels[legacy]
     if account_id:
         _classify_source_documents(_unclassified_groups(groups, stored_labels.keys()), account_id, collection_name)
     return stored_labels
@@ -1241,8 +1371,8 @@ def process_documents(
         collection_name,
         whole_call_is_one_document=bool(knowledgebase_id),
     )
-    # Chunk ids hash page_content only, so the labels stamped above cannot
-    # change them.
+    # Chunk ids hash the chunk's text and chunk_context, never its labels, so
+    # the labels stamped above cannot change them.
     documents = _chunk_long_documents(documents)
     # The chunks this run classified, before stored labels are carried onto the
     # rest (see _carry_over_labels).

@@ -1187,6 +1187,19 @@ def _get_section_from_url(page_url: str, base_url: str) -> str:
     return path
 
 
+def _response_html(resp: requests.Response) -> str:
+    """The page as text, decoded as UTF-8 when the server names no charset.
+
+    The docs site sends ``Content-Type: text/html`` with no charset, and requests
+    then decodes as ISO-8859-1 (its HTTP default for text/*), so every non-ASCII
+    character was indexed garbled: a table's ✓ became ``â\\x9c\\x93``. The pages
+    are UTF-8 (``<meta charset="utf-8">``).
+    """
+    if "charset" not in (resp.headers.get("Content-Type") or "").lower():
+        resp.encoding = "utf-8"
+    return str(resp.text)
+
+
 def _fetch_nudgebee_doc_page(page_url: str, base_url: str) -> Document | None:
     """Fetch a single Nudgebee doc page and return a Document or None."""
     try:
@@ -1196,7 +1209,7 @@ def _fetch_nudgebee_doc_page(page_url: str, base_url: str) -> Document | None:
         logger.warning(f"Failed to fetch Nudgebee doc page {page_url}: {e}")
         return None
 
-    content, title = _extract_nudgebee_doc_content(resp.text)
+    content, title = _extract_nudgebee_doc_content(_response_html(resp))
     if not content:
         logger.info(f"No content extracted from {page_url}, skipping")
         return None
