@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"nudgebee/llm/agents/core"
 	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 
@@ -1313,7 +1312,7 @@ func (chat *Store) ListConversationCosts(filter UsageMetricsFilter, sortBy, sort
 		GROUP BY c.id
 		ORDER BY %s %s
 		LIMIT $%d OFFSET $%d`,
-		core.ConversationWallClockSQL("c.id"), perCallCostExpr, usageBaseFrom, where, sortCol, dir, n+1, n+2)
+		conversationWallClockSQL("c.id"), perCallCostExpr, usageBaseFrom, where, sortCol, dir, n+1, n+2)
 
 	rowArgs := append(append([]any{}, args...), limit, offset)
 

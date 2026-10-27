@@ -4,7 +4,8 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
-	"nudgebee/llm/agents/core"
+	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -498,6 +499,56 @@ func (chat *Store) GetConversationToolCallsStats(conversationId, accountId strin
 	}, nil
 }
 
+// wallClockIdleGapSeconds is the longest quiet stretch still counted as part of a
+// conversation's wall clock. A longer gap means the chat was left and reopened
+// later (hours or days), and that idle time is not work: it would otherwise land
+// in the UI's Overhead (wall - model - tool - wait) as 100h against 15m of
+// activity.
+const wallClockIdleGapSeconds = 30 * 60
+
+// conversationWallClockSQL returns a scalar subquery: the seconds between a
+// conversation's first and last message activity, minus every idle gap of
+// wallClockIdleGapSeconds or more between consecutive messages. convID is a SQL
+// expression for the llm_conversations.id. NULL when the conversation has no
+// messages, so callers pick their own fallback.
+func conversationWallClockSQL(convID string) string {
+	return fmt.Sprintf(`(
+		SELECT EXTRACT(EPOCH FROM (MAX(w.e) - MIN(w.s)))
+			- COALESCE(SUM(CASE WHEN w.gap >= make_interval(secs => %d) THEN EXTRACT(EPOCH FROM w.gap) END), 0)
+		FROM (
+			SELECT q.s, q.e,
+				q.s - MAX(q.e) OVER (ORDER BY q.s ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS gap
+			FROM (
+				SELECT m.created_at AS s, COALESCE(m.responded_at, m.updated_at) AS e
+				FROM llm_conversation_messages m
+				WHERE m.conversation_id = %s
+			) q
+		) w
+	)`, wallClockIdleGapSeconds, convID)
+}
+
+// wallClockActiveSeconds is the Go counterpart of conversationWallClockSQL for
+// callers that already hold the timestamps: the first-start to last-end span with
+// idle gaps of wallClockIdleGapSeconds or more removed. spans are [start, end]
+// pairs; a point event has start == end.
+func wallClockActiveSeconds(spans [][2]time.Time) float64 {
+	if len(spans) == 0 {
+		return 0
+	}
+	sort.Slice(spans, func(i, j int) bool { return spans[i][0].Before(spans[j][0]) })
+	first, maxEnd := spans[0][0], spans[0][1]
+	idle := 0.0
+	for _, sp := range spans[1:] {
+		if gap := sp[0].Sub(maxEnd).Seconds(); gap >= wallClockIdleGapSeconds {
+			idle += gap
+		}
+		if sp[1].After(maxEnd) {
+			maxEnd = sp[1]
+		}
+	}
+	return math.Max(0, maxEnd.Sub(first).Seconds()-idle)
+}
+
 // GetConversationTimeBreakdown calculates time breakdown for a conversation
 func (chat *Store) GetConversationTimeBreakdown(conversationId, accountId string) (TimeBreakdown, error) {
 	query := `
@@ -505,7 +556,7 @@ func (chat *Store) GetConversationTimeBreakdown(conversationId, accountId string
 			SELECT id FROM llm_conversations WHERE session_id = $1 AND account_id = $2::uuid
 		),
 		-- Message activity per conversation with long idle gaps removed (see
-		-- ConversationWallClockSQL), not the row's (updated_at - created_at):
+		-- conversationWallClockSQL), not the row's (updated_at - created_at):
 		-- updated_at is re-stamped by anything that touches the row later. Same
 		-- definition the conversation list uses. Falls back to the row timestamps
 		-- only when a conversation has no messages.
@@ -562,7 +613,7 @@ func (chat *Store) GetConversationTimeBreakdown(conversationId, accountId string
 		ToolTime  float64 `db:"tool_time"`
 	}
 
-	query = strings.Replace(query, "__WALL_CLOCK_SECONDS__", core.ConversationWallClockSQL("c.id"), 1)
+	query = strings.Replace(query, "__WALL_CLOCK_SECONDS__", conversationWallClockSQL("c.id"), 1)
 	err := chat.dbManager.Db.Get(&result, query, conversationId, accountId)
 	if err != nil {
 		slog.Error("getting conversation time breakdown", "error", err)

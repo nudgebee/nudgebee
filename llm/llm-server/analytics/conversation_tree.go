@@ -501,7 +501,7 @@ func (chat *Store) GetConversationTree(sessionID, accountID string) (Conversatio
 			}
 		}
 		if len(spans) > 0 {
-			tree.Conversation.WallClockSeconds = core.WallClockActiveSeconds(spans)
+			tree.Conversation.WallClockSeconds = wallClockActiveSeconds(spans)
 		} else {
 			tree.Conversation.WallClockSeconds = math.Max(0, lastCallEnd.Sub(sum.StartedAt).Seconds())
 		}

@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -3039,56 +3037,6 @@ func (chat *ConversationDao) UpdateConversationMessageMetrics(id string, metrics
 		return fmt.Errorf("history: failed to update message metrics: %w", err)
 	}
 	return nil
-}
-
-// WallClockIdleGapSeconds is the longest quiet stretch still counted as part of a
-// conversation's wall clock. A longer gap means the chat was left and reopened
-// later (hours or days), and that idle time is not work: it would otherwise land
-// in the UI's Overhead (wall - model - tool - wait) as 100h against 15m of
-// activity.
-const WallClockIdleGapSeconds = 30 * 60
-
-// ConversationWallClockSQL returns a scalar subquery: the seconds between a
-// conversation's first and last message activity, minus every idle gap of
-// WallClockIdleGapSeconds or more between consecutive messages. convID is a SQL
-// expression for the llm_conversations.id. NULL when the conversation has no
-// messages, so callers pick their own fallback.
-func ConversationWallClockSQL(convID string) string {
-	return fmt.Sprintf(`(
-		SELECT EXTRACT(EPOCH FROM (MAX(w.e) - MIN(w.s)))
-			- COALESCE(SUM(CASE WHEN w.gap >= make_interval(secs => %d) THEN EXTRACT(EPOCH FROM w.gap) END), 0)
-		FROM (
-			SELECT q.s, q.e,
-				q.s - MAX(q.e) OVER (ORDER BY q.s ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS gap
-			FROM (
-				SELECT m.created_at AS s, COALESCE(m.responded_at, m.updated_at) AS e
-				FROM llm_conversation_messages m
-				WHERE m.conversation_id = %s
-			) q
-		) w
-	)`, WallClockIdleGapSeconds, convID)
-}
-
-// WallClockActiveSeconds is the Go counterpart of ConversationWallClockSQL for
-// callers that already hold the timestamps: the first-start to last-end span with
-// idle gaps of WallClockIdleGapSeconds or more removed. spans are [start, end]
-// pairs; a point event has start == end.
-func WallClockActiveSeconds(spans [][2]time.Time) float64 {
-	if len(spans) == 0 {
-		return 0
-	}
-	sort.Slice(spans, func(i, j int) bool { return spans[i][0].Before(spans[j][0]) })
-	first, maxEnd := spans[0][0], spans[0][1]
-	idle := 0.0
-	for _, sp := range spans[1:] {
-		if gap := sp[0].Sub(maxEnd).Seconds(); gap >= WallClockIdleGapSeconds {
-			idle += gap
-		}
-		if sp[1].After(maxEnd) {
-			maxEnd = sp[1]
-		}
-	}
-	return math.Max(0, maxEnd.Sub(first).Seconds()-idle)
 }
 
 func (chat *ConversationDao) GetLatestConversationBySessionID(sessionID string, accountId string) (Conversation, error) {
