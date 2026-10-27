@@ -28,7 +28,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 EXPOSE 8000
 CMD ["/app/services"]
 
-FROM alpine:3.22 AS release-stage
+FROM ghcr.io/nudgebee/alpine:3.22 AS release-stage
 # OS-package cache-bust: bumping OS_PKG_EPOCH (ISO week) changes this layer's
 # cache key so BuildKit re-runs the apk install and pulls current Alpine security
 # patches — its registry cache (mode=max) otherwise serves a stale package layer

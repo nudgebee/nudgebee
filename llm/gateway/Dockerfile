@@ -15,7 +15,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go build -trimpath -o /app/llm-gateway ./cmd/gateway
 
 # --- runtime ---
-FROM public.ecr.aws/docker/library/alpine:3.20
+FROM ghcr.io/nudgebee/alpine:3.20
 RUN apk add --no-cache ca-certificates && adduser -D -u 10001 gateway
 WORKDIR /app
 COPY --from=build /app/llm-gateway /app/llm-gateway

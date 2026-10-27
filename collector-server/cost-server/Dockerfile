@@ -22,7 +22,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 RUN chmod +x /app/cost-server
 
 
-FROM alpine:3.22 AS release-stage
+FROM ghcr.io/nudgebee/alpine:3.22 AS release-stage
 ARG OS_PKG_EPOCH=2026-W36
 RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
     && apk upgrade --no-cache \

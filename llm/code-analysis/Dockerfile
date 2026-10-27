@@ -55,7 +55,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go install gitlab.com/gitlab-org/cli/cmd/glab@v1.112.0
 
 # Final stage
-FROM alpine:3.22
+FROM ghcr.io/nudgebee/alpine:3.22
 
 
 WORKDIR /app
