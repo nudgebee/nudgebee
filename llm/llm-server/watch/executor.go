@@ -183,6 +183,11 @@ func (e *Executor) RunOnePoll(parent context.Context, w Watch) {
 	pollRctx := security.NewRequestContext(pollCtx, rctx.GetSecurityContext(), logger, rctx.GetTracer(), rctx.GetMeter())
 
 	obs, obsErr := src.Observe(pollRctx, w)
+	if errors.Is(obsErr, ErrNotReadOnly) {
+		// Nothing ran, and no later poll would run it either: end the watch now.
+		e.terminate(rctx, logger, w, TerminalUpdate{Status: StatusFailed, ErrMsg: obsErr.Error()})
+		return
+	}
 	if obsErr != nil {
 		e.recordFailure(rctx, logger, w, fmt.Sprintf("observe failed: %v", obsErr), nil, pollPhaseObserve)
 		return

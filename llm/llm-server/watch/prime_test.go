@@ -166,6 +166,8 @@ func TestPrime_DoesNotWriteAnything(t *testing.T) {
 type countingTool struct {
 	name  string
 	calls int32
+	// writes makes the classifier call every command a delete.
+	writes bool
 }
 
 func (c *countingTool) Name() string                 { return c.name }
@@ -175,6 +177,9 @@ func (c *countingTool) InputSchema() toolcore.ToolSchema {
 	return toolcore.ToolSchema{Type: toolcore.ToolSchemaTypeObject}
 }
 func (c *countingTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (toolcore.ToolRequestType, error) {
+	if c.writes {
+		return toolcore.ToolRequestTypeDelete, nil
+	}
 	return toolcore.ToolRequestTypeRead, nil
 }
 func (c *countingTool) Call(_ toolcore.NbToolContext, _ toolcore.NBToolCallRequest) (toolcore.NBToolResponse, error) {
@@ -222,6 +227,24 @@ func TestPrime_MutatingCommandIsRejectedWithoutExecuting(t *testing.T) {
 
 	assert.Equal(t, 0, tool.callCount(),
 		"the destructive command must NEVER have been executed by the priming poll")
+}
+
+// TestPrime_WriteTheDenyListMissesIsRejectedWithoutExecuting (#42460): the
+// deny-list only sees a verb right after the executable, so `kubectl -n bar
+// delete pod foo` passed ValidateConfig. The tool's classifier refuses it in
+// Observe, before Call, and Prime reports it as a config rejection.
+func TestPrime_WriteTheDenyListMissesIsRejectedWithoutExecuting(t *testing.T) {
+	tool := &countingTool{name: "prime_classified_write_probe", writes: true}
+	toolcore.RegisterNBToolFactory(tool.name, func(string) (toolcore.NBTool, error) { return tool, nil })
+
+	in := primeInput(SourceKindTool, PredicateKindRegex, "deleted")
+	in.SourceConfig = json.RawMessage(`{"tool_name":"` + tool.name + `","tool_input":{"command":"kubectl -n bar delete pod foo"}}`)
+
+	out := Prime(superAdminCtx(), in, 5*time.Second)
+
+	require.ErrorIs(t, out.Err, ErrNotReadOnly)
+	assert.Equal(t, PrimePhaseValidate, out.Phase)
+	assert.Equal(t, 0, tool.callCount(), "the write must never have been executed by the priming poll")
 }
 
 // TestPrime_AgentStyleToolIsRejectedWithoutExecuting: the other half of

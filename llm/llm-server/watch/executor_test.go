@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"sync"
@@ -393,6 +394,30 @@ func TestRunOnePoll_ExpiredWithEmptyObservation(t *testing.T) {
 	last := notifier.lastCall(t)
 	assert.Equal(t, StatusExpired, last.Status)
 	assert.Contains(t, last.Summary, "before condition was met")
+}
+
+// TestRunOnePoll_NotReadOnly_TerminatesFailedAtOnce (#42460): a command refused
+// as not a read never ran and never will, so the watch ends on the first poll
+// instead of retrying up to WatchMaxFailures.
+func TestRunOnePoll_NotReadOnly_TerminatesFailedAtOnce(t *testing.T) {
+	exec, _, mock, notifier, _ := newExecutorWithMocks(t)
+	src := &fakeSource{
+		kind:       SourceKind("fake_obs_not_read_only"),
+		observeErr: fmt.Errorf("tool source: %w: \"kubectl -n demo delete pod x\" is a delete", ErrNotReadOnly),
+	}
+	installSource(t, src)
+	withConfig(t, func() { config.Config.WatchMaxFailures = 3 })
+
+	w := validRunningWatch(src.kind, PredicateKindRegex, "completed")
+	mock.ExpectExec(`SET status = \$1`).
+		WithArgs(string(StatusFailed), nil, sqlmock.AnyArg(), sqlmock.AnyArg(), w.ID, w.TenantID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	exec.RunOnePoll(context.Background(), w)
+
+	require.NoError(t, mock.ExpectationsWereMet())
+	last := notifier.lastCall(t)
+	assert.Equal(t, StatusFailed, last.Status)
 }
 
 func TestRunOnePoll_SourceNotRegistered_TerminatesFailed(t *testing.T) {
