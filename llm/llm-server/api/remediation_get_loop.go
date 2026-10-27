@@ -118,11 +118,13 @@ type pendingApproval struct {
 	MessageId      string `json:"message_id"`
 	AgentId        string `json:"agent_id"`
 	// ThreadUrl links to the Slack thread of a Slack-started approval, when it is known.
-	ThreadUrl string    `json:"thread_url,omitempty"`
-	Tool      string    `json:"tool"`
-	Command   string    `json:"command"`
-	CreatedAt time.Time `json:"created_at"`
-	Origin    string    `json:"origin"` // web | slack
+	ThreadUrl string `json:"thread_url,omitempty"`
+	Tool      string `json:"tool"`
+	Command   string `json:"command"`
+	// Automation names the automation a step runs and its inputs, when it runs one (its Command is automation:<id>).
+	Automation string    `json:"automation,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	Origin     string    `json:"origin"` // web | slack
 }
 
 // deniedApproval is a plan step (run_step) a person denied in this alert's conversation.
@@ -130,7 +132,8 @@ type deniedApproval struct {
 	MessageId   string `json:"message_id"`
 	Tool        string `json:"tool"`
 	Command     string `json:"command"`
-	Option      int    `json:"option,omitempty"` // 1-based
+	Automation  string `json:"automation,omitempty"` // as pendingApproval's
+	Option      int    `json:"option,omitempty"`     // 1-based
 	PlanVersion string `json:"plan_version"`
 	// StepKey is the step's own key (events.ApprovalKey of the step), as a run of it carries in
 	// data.step_key; set for an apply or rollback whose command is known.

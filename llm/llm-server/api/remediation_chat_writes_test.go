@@ -38,7 +38,7 @@ func TestChatWriteOf(t *testing.T) {
 		{"gh api comment is a note", tools.ToolExecuteGithubCliCommand, `{"command":"gh api -X POST repos/example/app/issues/1/comments -f body=x"}`, false, "", "", false},
 		{"gh read", tools.ToolExecuteGithubCliCommand, `{"command":"gh pr view 12"}`, false, "", "", false},
 		{"saved automation", "automation_restart_crashlooping_pods", `{"namespace": "demo", "reason":"r"}`, true, "automation", `automation_restart_crashlooping_pods {"namespace":"demo","reason":"r"}`, false},
-		{"workflow trigger", tools.ToolWorkflowTrigger, `{"id":"wf-1"}`, true, "automation", `workflow_trigger {"id":"wf-1"}`, false},
+		{"workflow trigger is the step of its automation", tools.ToolWorkflowTrigger, `{"id":"wf-1"}`, true, "automation", "automation:wf-1", false},
 		{"creating an automation", tools.ToolWorkflowCreate, `{"name":"x"}`, false, "", "", false},
 		{"ticket", "ticket_master_v2", `{"command":"create a ticket"}`, false, "", "", false},
 		{"run_step records its own row", toolcore.ToolRunStep, `{"plan_version":"v","step":1,"action":"apply","command":"kubectl scale deploy/x --replicas=1"}`, false, "", "", false},
@@ -46,7 +46,7 @@ func TestChatWriteOf(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			write, ok := chatWriteOf(tc.tool, tc.input)
+			write, ok := chatWriteOf("", tc.tool, tc.input)
 			assert.Equal(t, tc.recorded, ok)
 			if !tc.recorded {
 				return

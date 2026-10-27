@@ -168,13 +168,15 @@ func aiSearchResponse(eligible []model.AIInvocableWorkflow, query string, limit 
 	out := make([]model.AIWorkflowCandidate, 0, len(ranked))
 	for _, c := range ranked {
 		out = append(out, model.AIWorkflowCandidate{
-			ID:             c.ID,
-			AccountID:      c.AccountID,
-			Name:           c.Name,
-			Description:    c.Description,
-			LLMDescription: c.Definition.LLMDescription,
-			Inputs:         c.Definition.Inputs,
-			AutoApprove:    c.AutoApprove,
+			ID:              c.ID,
+			AccountID:       c.AccountID,
+			Name:            c.Name,
+			Description:     c.Description,
+			LLMDescription:  c.Definition.LLMDescription,
+			Inputs:          c.Definition.Inputs,
+			AutoApprove:     c.AutoApprove,
+			HasApprovalStep: hasApprovalStep(c.Definition.Tasks),
+			Version:         c.Version,
 		})
 	}
 
@@ -182,6 +184,17 @@ func aiSearchResponse(eligible []model.AIInvocableWorkflow, query string, limit 
 		Workflows:      out,
 		TotalInvocable: len(eligible),
 	}
+}
+
+// hasApprovalStep reports whether tasks, at any depth, include a core.approval
+// task: a run of it can stop and wait for a person partway.
+func hasApprovalStep(tasks []model.Task) bool {
+	for _, t := range tasks {
+		if t.Type == "core.approval" || hasApprovalStep(t.Tasks) {
+			return true
+		}
+	}
+	return false
 }
 
 // rankAIWorkflows orders candidates by how well they match query and returns the

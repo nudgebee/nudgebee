@@ -185,6 +185,7 @@ func deniedApprovalsOf(accountId, planEventId string, rows []deniedConfirmation)
 			MessageId:   r.MessageId,
 			Tool:        firstNonEmpty(commandTool(command), toolcore.ToolRunStep),
 			Command:     command,
+			Automation:  questionAutomation(config.Question),
 			Option:      option,
 			PlanVersion: planVersion,
 			DeniedAt:    r.DeniedAt.UTC(),

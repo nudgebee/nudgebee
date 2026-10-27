@@ -1880,7 +1880,8 @@ func newFollowupFixture(t *testing.T) *followupFixture {
 		CREATE TABLE cloud_accounts (id uuid PRIMARY KEY, tenant text);
 		CREATE TABLE feature_flag (feature_id text, tenant_id text, account_id uuid, status text);
 		CREATE TABLE llm_watch_tasks (id uuid PRIMARY KEY, account_id uuid NOT NULL, status text NOT NULL,
-		  final_result text, last_poll_result text, error text, updated_at timestamptz NOT NULL DEFAULT now());
+		  final_result text, last_poll_result text, error text, updated_at timestamptz NOT NULL DEFAULT now(),
+		  expires_at timestamptz NOT NULL DEFAULT now() + interval '1 hour');
 		INSERT INTO feature_flag VALUES ('`+events.RemediationLoopFeature+`', 'tenant-1', NULL, 'enabled')`)
 	f := &followupFixture{t: t, db: db, account: uuid.NewString(), event: uuid.NewString(), messages: map[string]followupMessage{}}
 	// A wait is a watch (#42461): the fixture records each one made; finishWatch ends one as the watcher would.
@@ -2042,6 +2043,11 @@ func TestFollowupClaimsOnlyDueRunsOnce(t *testing.T) {
 	f := newFollowupFixture(t)
 	due := f.insertRun(f.event, "Success", 6*time.Minute, nil)
 	manual := f.insertRun(f.event, "Success", 7*time.Minute, map[string]any{"manual": true})
+	// An automation's run is due by when it ended (#42459), however long ago it started.
+	settledAgo := func(d time.Duration) map[string]any {
+		return map[string]any{"settled_at": time.Now().Add(-d).UTC().Format(time.RFC3339Nano)}
+	}
+	longAutomation := f.insertRun(f.event, "Success", 2*time.Hour, settledAgo(6*time.Minute))
 	for _, notDue := range []struct {
 		status string
 		ago    time.Duration
@@ -2053,6 +2059,7 @@ func TestFollowupClaimsOnlyDueRunsOnce(t *testing.T) {
 		{"Failed", 8 * time.Minute, map[string]any{"not_sent": true}}, // provably never ran
 		{"Success", 2 * time.Hour, nil},                               // more than an hour past due
 		{"Success", 8 * time.Minute, map[string]any{"followup": map[string]any{"done_at": "x"}}},
+		{"Success", 2 * time.Hour, settledAgo(2 * time.Minute)}, // an automation that ended only now
 	} {
 		f.insertRun(f.event, notDue.status, notDue.ago, notDue.data)
 	}
@@ -2080,7 +2087,7 @@ func TestFollowupClaimsOnlyDueRunsOnce(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	assert.ElementsMatch(t, []string{due, manual}, claimed)
+	assert.ElementsMatch(t, []string{due, manual, longAutomation}, claimed)
 	assert.Equal(t, "event-fp-1", f.followup(due)["session"])
 	again, err := events.ClaimDueFollowups(t.Context(), f.db, followupDelay, 10)
 	require.NoError(t, err)
@@ -2960,4 +2967,288 @@ func TestAlertToolsRefuseOutsideAnAlertsConversation(t *testing.T) {
 		_, err := tool.Call(ctx, input)
 		assert.ErrorContains(t, err, "not about an alert", name)
 	}
+}
+
+// restartAutomation is an account's automation a plan step may run (#42459).
+func restartAutomation() tools.AutomationOption {
+	return tools.AutomationOption{ID: "wf-restart", Name: "Restart VM service", Description: "Restarts a service on a VM.", Version: "v-7",
+		Inputs: []tools.AutomationInput{{ID: "service", Required: true}, {ID: "host", Required: true}, {ID: "grace", Default: "30s"}}}
+}
+
+// A plan step may run one of the account's automations only as written: an automation NudgeBee may run, with every
+// input it requires and none it does not declare, as a fix or mitigation, and in a step of its own. A kept step gets
+// the automation's name and live version; a dropped one is said, so an agent's plan is refused with the reason.
+func TestPlanAutomationStepsAreCheckedAgainstTheAccountsAutomations(t *testing.T) {
+	step := func(mut func(*RemediationAction)) RemediationAction {
+		a := RemediationAction{Action: "Restart nginx", Kind: RemediationKindMitigation, Confidence: 60, TradeOff: "drops connections",
+			Automation: &PlanAutomation{ID: "wf-restart", Inputs: map[string]any{"service": "nginx", "host": "vm-1"}}}
+		if mut != nil {
+			mut(&a)
+		}
+		return a
+	}
+	cases := []struct {
+		name   string
+		action RemediationAction
+		reason string // "" when kept
+	}{
+		{"valid", step(nil), ""},
+		{"optional input given", step(func(a *RemediationAction) { a.Automation.Inputs["grace"] = "10s" }), ""},
+		{"unknown automation", step(func(a *RemediationAction) { a.Automation.ID = "wf-other" }), "not one of the account's automations"},
+		{"missing required input", step(func(a *RemediationAction) { delete(a.Automation.Inputs, "host") }), "needs the inputs host"},
+		{"blank required input", step(func(a *RemediationAction) { a.Automation.Inputs["host"] = " " }), "needs the inputs host"},
+		{"undeclared input", step(func(a *RemediationAction) { a.Automation.Inputs["force"] = true }), "has no input force"},
+		{"diagnostic", step(func(a *RemediationAction) { a.Kind = "diagnostic" }), "never to diagnose"},
+		{"also a command", step(func(a *RemediationAction) { a.ExecuteCommand = "kubectl get pods" }), "not both"},
+		{"also a change", step(func(a *RemediationAction) { a.RequiredChange = &RequiredChange{Target: "x", Change: "y"} }), "not both"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := RemediationPlan{Actions: []RemediationAction{tc.action}}
+			finalizePlan(&plan, nil, nil, nil, []tools.AutomationOption{restartAutomation()})
+			if tc.reason == "" {
+				require.Len(t, plan.Actions, 1)
+				a := plan.Actions[0].Automation
+				assert.Equal(t, "Restart VM service", a.Name)
+				assert.Equal(t, "v-7", a.Version)
+				assert.Empty(t, plan.Actions[0].VerifyCommand)
+				return
+			}
+			assert.Empty(t, plan.Actions)
+			require.Len(t, plan.Dropped, 1)
+			assert.Contains(t, plan.Dropped[0].Reason, tc.reason)
+		})
+	}
+	// Without the account's automations (none, or the list could not be read) no automation step is kept.
+	plan := RemediationPlan{Actions: []RemediationAction{step(nil)}}
+	finalizePlan(&plan, nil, nil, nil, nil)
+	assert.Empty(t, plan.Actions)
+	// A step is its automation: a second step of the same automation, with other inputs, could not be approved apart.
+	twice := RemediationPlan{Actions: []RemediationAction{step(nil), step(func(a *RemediationAction) {
+		a.Action = "Restart php-fpm"
+		a.Automation.Inputs["service"] = "php-fpm"
+	})}}
+	finalizePlan(&twice, nil, nil, nil, []tools.AutomationOption{restartAutomation()})
+	require.Len(t, twice.Actions, 1)
+	assert.Equal(t, "nginx", twice.Actions[0].Automation.Inputs["service"])
+	require.Len(t, twice.Dropped, 1)
+	assert.Contains(t, twice.Dropped[0].Reason, "already a step of this plan")
+}
+
+// An automation step is identified by automation:<workflow id> wherever a command step is by its command: the plan
+// step, run_step's check of the command it was passed, a run from the chat, and "I ran this".
+func TestAnAutomationStepIsIdentifiedByItsAutomation(t *testing.T) {
+	plan := RemediationPlan{Actions: []RemediationAction{
+		{Action: "Raise the pool", RequiredChange: &RequiredChange{Where: "deployment_source", Target: "values.yaml", Change: "pool 150"}},
+		{Action: "Restart nginx", Kind: RemediationKindMitigation, Automation: &PlanAutomation{ID: "wf-restart", Name: "Restart VM service"}},
+	}}
+	ref := "automation:wf-restart"
+	assert.Equal(t, ref, stepRef(plan.Actions[1]))
+	assert.Equal(t, "1:apply", planStep(plan, RemediationSlotExecute, ref, ""))
+	assert.True(t, planHasCommand(plan, RemediationSlotExecute, ref, ""))
+	option, slot, found := planOptionOf(plan, ref)
+	assert.True(t, found)
+	assert.Equal(t, 2, option)
+	assert.Equal(t, RemediationSlotExecute, slot)
+	assert.True(t, planOperatorStep(plan, ref, ""))
+	assert.Equal(t, pickKindRun, pickMode(plan.Actions[1]))
+	assert.True(t, planHasCommandStep(plan), "an automation is a step NudgeBee runs while the alert fires")
+
+	execute, err := stepRequest(plan, "acct", "evt", runStepRequest{Step: 2, Action: "apply", Command: ref})
+	require.NoError(t, err)
+	assert.Equal(t, ref, execute.Command)
+	_, err = stepRequest(plan, "acct", "evt", runStepRequest{Step: 2, Action: "apply", Command: "automation_restart_vm_service"})
+	assert.ErrorContains(t, err, "not step 2's command")
+	_, err = stepRequest(plan, "acct", "evt", runStepRequest{Step: 2, Action: "rollback", Command: ref})
+	assert.ErrorContains(t, err, "no undo command")
+	assert.Equal(t, chatWriteToolAutomation, commandTool(ref))
+
+	// A run of the same automation from the chat is that step.
+	write, ok := chatWriteOf("", tools.ToolWorkflowTrigger, `{"id":"wf-restart","inputs":{"service":"nginx"}}`)
+	require.True(t, ok)
+	assert.Equal(t, ref, write.Command)
+}
+
+// How an automation's run settles from its watch.
+func TestAutomationRunOutcome(t *testing.T) {
+	data := []byte(`{"name":"Restart VM service","url":"https://example.com/run"}`)
+	cases := []struct {
+		name, watch, observed, status, message string
+		verified                               bool
+	}{
+		{"completed", "COMPLETED", `{"status":"COMPLETED","ended":true}`, events.RunStatusSuccess, "completed", true},
+		{"failed partway", "COMPLETED", `{"status":"FAILED","ended":true,"error":"ssh refused","step":"2 of 3"}`, events.RunStatusFailed, "stopped at step 2 of 3: ssh refused", false},
+		{"parked on its own approval", "COMPLETED", `{"status":"RUNNING","ended":true,"waiting_approval":true}`, events.RunStatusUnknown, "waiting on an approval of its own", false},
+		{"still running", "EXPIRED", `{"status":"RUNNING","ended":false}`, events.RunStatusUnknown, "still running after 60 minutes", false},
+		{"unreadable", "FAILED", "", events.RunStatusUnknown, "could not read how", false},
+		{"lost", "LOST", "", events.RunStatusUnknown, "could not read how", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status, message, patch := automationRunOutcome(events.AutomationRunToSettle{Data: data, WatchStatus: tc.watch, Observed: tc.observed})
+			assert.Equal(t, tc.status, status)
+			assert.Contains(t, message, tc.message)
+			raw, _ := json.Marshal(patch)
+			assert.Equal(t, tc.verified, verifiedSuccess(status, readRunFacts(raw)))
+			if status != events.RunStatusSuccess {
+				assert.Contains(t, message, "https://example.com/run")
+			}
+		})
+	}
+}
+
+// The planning turn lists the automations a step may run, and nothing when there are none.
+func TestAutomationCatalogText(t *testing.T) {
+	assert.Empty(t, automationCatalogText(nil))
+	text := automationCatalogText([]tools.AutomationOption{restartAutomation()})
+	for _, want := range []string{"wf-restart", "Restart VM service", "service (string, required)", "grace (string, optional)", `"automation": {"id"`} {
+		assert.Contains(t, text, want)
+	}
+}
+
+// An approved automation step starts one run as the approver, recorded before it starts, and waits on a watch; the
+// automation as it is now is checked first, and a run that did not start, or whose wait could not be set up, settles
+// at once.
+func TestAutomationStepRunsOnceAsTheApprover(t *testing.T) {
+	approver := "bbbbbbbb-0000-4000-8000-000000000002"
+	setup := func(t *testing.T) (*runFixture, *[]map[string]any, *[]watch.CreateInput) {
+		f := newRunFixture(t)
+		f.stored.Plan = RemediationPlan{Actions: []RemediationAction{{Action: "Restart nginx", Kind: RemediationKindMitigation,
+			Automation: &PlanAutomation{ID: "wf-restart", Name: "Restart VM service", Version: "v-7", Inputs: map[string]any{"service": "nginx", "host": "vm-1"}}}}}
+		swap(t, &automationsAsApprover, func(context.Context, string, string, string) ([]tools.AutomationOption, error) {
+			return []tools.AutomationOption{restartAutomation()}, nil
+		})
+		triggers := &[]map[string]any{}
+		swap(t, &triggerAutomation, func(_ context.Context, accountId, _, userId, workflowId string, inputs map[string]any) (string, error) {
+			assert.Equal(t, f.account, accountId)
+			assert.Equal(t, approver, userId)
+			assert.Equal(t, "wf-restart", workflowId)
+			*triggers = append(*triggers, inputs)
+			return "exec-1", nil
+		})
+		watches := &[]watch.CreateInput{}
+		swap(t, &automationWatchRoom, func(context.Context, string) error { return nil })
+		swap(t, &alertConversationOfEvent, func(*security.RequestContext, string, string) (uuid.UUID, error) { return followupConversationId, nil })
+		swap(t, &createAutomationWatch, func(_ context.Context, in watch.CreateInput) (*watch.Watch, error) {
+			*watches = append(*watches, in)
+			return &watch.Watch{ID: uuid.New()}, nil
+		})
+		return f, triggers, watches
+	}
+	const ref = "automation:wf-restart"
+	run := func(f *runFixture) (int, map[string]any) {
+		gin.SetMode(gin.TestMode)
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		ctx := security.NewRequestContextForTenantAdminWithUser(context.Background(), "aaaaaaaa-0000-4000-8000-000000000001", approver)
+		request := RemediationExecuteRequest{AccountId: f.account, EventId: f.event, Command: ref, Slot: RemediationSlotExecute, PlanVersion: f.stored.Version}
+		runAutomationStep(ctx, request, f.stored, ref, approver).write(c)
+		var out map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec.Code, out
+	}
+
+	t.Run("runs once and waits on its watch", func(t *testing.T) {
+		f, triggers, watches := setup(t)
+		code, out := run(f)
+		require.Equal(t, 200, code, out)
+		assert.Equal(t, events.RunStatusInProgress, dataOf(out)["status"])
+		require.Len(t, *triggers, 1)
+		assert.Equal(t, map[string]any{"service": "nginx", "host": "vm-1", "event": map[string]any{"id": f.event}}, (*triggers)[0])
+		require.Len(t, *watches, 1)
+		w := (*watches)[0]
+		assert.Equal(t, watch.SourceKindAutomationRun, w.SourceKind)
+		assert.Equal(t, watch.OriginRemediation, w.Origin)
+		require.NotNil(t, w.UserID)
+		assert.Equal(t, approver, w.UserID.String(), "the run is read as the person who approved it")
+		rows := f.rows()
+		require.Len(t, rows, 1)
+		assert.Equal(t, events.RunStatusInProgress, rows[0]["status"])
+		assert.Equal(t, events.RunKindAutomation, rows[0]["kind"])
+		assert.Equal(t, "exec-1", rows[0]["execution_id"])
+		assert.NotEmpty(t, rows[0]["automation_watch_id"])
+
+		code, out = run(f)
+		assert.Equal(t, 409, code, "a second approval of the same step runs nothing")
+		assert.Contains(t, errorMessage(out), "already")
+		assert.Len(t, *triggers, 1)
+	})
+
+	t.Run("an automation changed since the plan runs nothing", func(t *testing.T) {
+		f, triggers, _ := setup(t)
+		changed := restartAutomation()
+		changed.Version = "v-8"
+		swap(t, &automationsAsApprover, func(context.Context, string, string, string) ([]tools.AutomationOption, error) {
+			return []tools.AutomationOption{changed}, nil
+		})
+		code, out := run(f)
+		assert.Equal(t, 409, code)
+		assert.Contains(t, errorMessage(out), "changed since these fixes were written")
+		assert.Empty(t, *triggers)
+		assert.Empty(t, f.rows(), "nothing is recorded")
+	})
+
+	t.Run("an alert with no conversation to follow the run in runs nothing", func(t *testing.T) {
+		f, triggers, _ := setup(t)
+		swap(t, &alertConversationOfEvent, func(*security.RequestContext, string, string) (uuid.UUID, error) {
+			return uuid.Nil, errors.New("none")
+		})
+		code, out := run(f)
+		assert.Equal(t, 409, code)
+		assert.Contains(t, errorMessage(out), "no conversation")
+		assert.Empty(t, *triggers)
+		assert.Empty(t, f.rows())
+	})
+
+	t.Run("no room for the run's wait starts nothing", func(t *testing.T) {
+		f, triggers, _ := setup(t)
+		swap(t, &automationWatchRoom, func(context.Context, string) error { return watch.ErrTenantQuotaExceeded })
+		code, out := run(f)
+		assert.Equal(t, 503, code)
+		assert.Contains(t, errorMessage(out), "nothing was run")
+		assert.Empty(t, *triggers)
+		assert.Empty(t, f.rows())
+	})
+
+	t.Run("an automation's own input named event keeps its value", func(t *testing.T) {
+		f, triggers, _ := setup(t)
+		withEvent := restartAutomation()
+		withEvent.Inputs = append(withEvent.Inputs, tools.AutomationInput{ID: "event", Required: true})
+		swap(t, &automationsAsApprover, func(context.Context, string, string, string) ([]tools.AutomationOption, error) {
+			return []tools.AutomationOption{withEvent}, nil
+		})
+		f.stored.Plan.Actions[0].Automation.Inputs["event"] = "checkout-latency"
+		code, _ := run(f)
+		require.Equal(t, 200, code)
+		require.Len(t, *triggers, 1)
+		assert.Equal(t, "checkout-latency", (*triggers)[0]["event"])
+	})
+
+	t.Run("a run Automations refused is recorded as not run", func(t *testing.T) {
+		f, _, watches := setup(t)
+		swap(t, &triggerAutomation, func(context.Context, string, string, string, string, map[string]any) (string, error) {
+			return "", &tools.AutomationNotStartedError{Reason: "it is not ACTIVE"}
+		})
+		code, _ := run(f)
+		require.Equal(t, 200, code)
+		rows := f.rows()
+		require.Len(t, rows, 1)
+		assert.Equal(t, events.RunStatusFailed, rows[0]["status"])
+		assert.Equal(t, true, rows[0]["not_sent"])
+		assert.Empty(t, *watches)
+	})
+
+	t.Run("a run whose wait could not be set up settles unknown with its link", func(t *testing.T) {
+		f, _, _ := setup(t)
+		swap(t, &createAutomationWatch, func(context.Context, watch.CreateInput) (*watch.Watch, error) {
+			return nil, errors.New("tenant quota")
+		})
+		code, out := run(f)
+		require.Equal(t, 200, code)
+		assert.Equal(t, events.RunStatusUnknown, dataOf(out)["status"])
+		rows := f.rows()
+		require.Len(t, rows, 1)
+		assert.Equal(t, events.RunStatusUnknown, rows[0]["status"])
+		assert.Equal(t, "exec-1", rows[0]["execution_id"])
+	})
 }

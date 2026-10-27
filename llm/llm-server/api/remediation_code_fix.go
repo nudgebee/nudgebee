@@ -49,7 +49,7 @@ func firingPlanRefusal(ctx context.Context, accountId, eventId string, plan Reme
 // planHasCommandStep reports whether a step of plan runs a command.
 func planHasCommandStep(plan RemediationPlan) bool {
 	for _, a := range plan.Actions {
-		if strings.TrimSpace(a.ExecuteCommand) != "" {
+		if stepRef(a) != "" {
 			return true
 		}
 	}

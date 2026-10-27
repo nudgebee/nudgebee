@@ -151,8 +151,11 @@ func pendingApprovalsOf(rows []waitingConfirmation) []pendingApproval {
 		}
 		command := questionCommand(config.Question)
 		tool := config.ToolName
-		if write, ok := chatWriteOf(config.ToolName, `{"command":`+jsonString(command)+`}`); ok {
+		if write, ok := chatWriteOf("", config.ToolName, `{"command":`+jsonString(command)+`}`); ok {
 			tool = write.Tool
+		}
+		if _, ok := automationRefID(command); ok {
+			tool = chatWriteToolAutomation
 		}
 		origin, threadUrl := approvalOrigin(r.Context)
 		out = append(out, pendingApproval{
@@ -162,6 +165,7 @@ func pendingApprovalsOf(rows []waitingConfirmation) []pendingApproval {
 			ThreadUrl:      threadUrl,
 			Tool:           tool,
 			Command:        command,
+			Automation:     questionAutomation(config.Question),
 			CreatedAt:      r.CreatedAt,
 			Origin:         origin,
 		})
@@ -171,6 +175,19 @@ func pendingApprovalsOf(rows []waitingConfirmation) []pendingApproval {
 
 // questionCommand is the command an approval card asks about: the text after its last "Command - ",
 // unwrapped from a {"command": …} or {"query": …} input.
+// automationCardPrefix opens the approval card's line naming the automation a step runs and its inputs.
+const automationCardPrefix = "Automation - "
+
+// questionAutomation is the automation an approval card names (its automationCardPrefix line), or "".
+func questionAutomation(question string) string {
+	for _, line := range strings.Split(question, "\n") {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), automationCardPrefix); ok {
+			return strings.TrimSpace(rest)
+		}
+	}
+	return ""
+}
+
 func questionCommand(question string) string {
 	command := question
 	if i := strings.LastIndex(command, "Command - "); i >= 0 {

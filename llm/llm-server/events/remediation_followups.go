@@ -134,7 +134,7 @@ const followupRunColumns = `er.id, er.event_id, e.cloud_account_id::text AS acco
 	COALESCE(er.data->'followup'->>'message_id', '') AS message_id`
 
 // ClaimDueFollowups claims at most limit settled runs (not not_sent) due a follow-up: loop on, delayMinutes old or more,
-// none yet. Runs over an hour past due are skipped, so an outage or a fresh enable doesn't flood turns or replace the
+// none yet. An automation run's age counts from when it ended (data.settled_at), not from when it started. Runs over an hour past due are skipped, so an outage or a fresh enable doesn't flood turns or replace the
 // current plan. SKIP LOCKED + the NULL guard give each row to one claimer, even with overlapping leaders.
 func ClaimDueFollowups(ctx context.Context, db *sqlx.DB, delayMinutes, limit int) ([]FollowupRun, error) {
 	var claimed []FollowupRun
@@ -142,8 +142,8 @@ func ClaimDueFollowups(ctx context.Context, db *sqlx.DB, delayMinutes, limit int
 		SELECT er.id, COALESCE(NULLIF(e.fingerprint, ''), e.id::text) AS alert FROM event_resolution er JOIN events e ON e.id = er.event_id
 		 WHERE er.type = 'CommandExecution' AND er.status IN `+SettledRunStatuses+`
 		   AND COALESCE(er.data->>'not_sent', '') <> 'true' AND er.data->'followup' IS NULL
-		   AND er.created_at < LOCALTIMESTAMP - make_interval(mins => $1)
-		   AND er.created_at > LOCALTIMESTAMP - make_interval(mins => $1 + 60)
+		   AND COALESCE((er.data->>'settled_at')::timestamptz, er.created_at::timestamptz) < now() - make_interval(mins => $1)
+		   AND COALESCE((er.data->>'settled_at')::timestamptz, er.created_at::timestamptz) > now() - make_interval(mins => $1 + 60)
 		   AND `+remediationLoopTenant+`
 		 ORDER BY er.created_at LIMIT $2 FOR UPDATE OF er SKIP LOCKED),
 	upd AS (

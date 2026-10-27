@@ -28,6 +28,10 @@ const (
 	RunStatusDeclined = "Declined"
 )
 
+// RunKindAutomation marks a run row (data.kind) that started a run of the account's automation (#42459): it stays
+// InProgress while the run goes on and is settled when its watch (data.automation_watch_id) ends.
+const RunKindAutomation = "automation"
+
 // SettledRunStatuses is the SQL list of the statuses of a run that ended: it ran, or may have (not one
 // still running, nor a declined step). For "status IN " + SettledRunStatuses.
 const SettledRunStatuses = "('Success', 'Failed', 'Unknown')"
@@ -294,12 +298,14 @@ func (r *EventAnalysisRepository) SettleRemediationRun(ctx *security.RequestCont
 }
 
 // ReapRemediationRuns marks Unknown every run still InProgress UnknownRerunWait after it was claimed: its
-// settle never happened (the process died, the database was down). It returns how many it marked.
+// settle never happened (the process died, the database was down). It returns how many it marked. An automation run
+// whose wait was set up is not one: its watch's end settles it (AutomationRunsToSettle), however long it runs.
 func ReapRemediationRuns(ctx context.Context, db *sqlx.DB) (int64, error) {
 	n, err := affected(db.ExecContext(ctx, `UPDATE event_resolution
 		    SET status = 'Unknown', data = COALESCE(NULLIF(data, 'null'::jsonb), '{}'::jsonb) || '{"reaped": true}'::jsonb,
 		        status_message = 'No result was recorded. The command may have run.', updated_at = NOW()
-		  WHERE type = 'CommandExecution' AND status = 'InProgress' AND created_at < LOCALTIMESTAMP - $1::interval`,
+		  WHERE type = 'CommandExecution' AND status = 'InProgress' AND created_at < LOCALTIMESTAMP - $1::interval
+		    AND NOT (COALESCE(data->>'kind', '') = 'automation' AND COALESCE(data->>'automation_watch_id', '') <> '')`,
 		fmt.Sprintf("%d seconds", int(UnknownRerunWait.Seconds()))))
 	if err != nil {
 		return 0, fmt.Errorf("ReapRemediationRuns: %w", err)
@@ -327,4 +333,73 @@ func StepStatuses(ctx context.Context, db *sqlx.DB, eventId, planVersion string)
 		out[r.Step] = r.Status
 	}
 	return out, nil
+}
+
+// SetAutomationRunWatch records the started run of an automation step and the watch its wait is, while the row is
+// still InProgress, and reports whether it did.
+func SetAutomationRunWatch(ctx context.Context, db *sqlx.DB, runId, executionId, url, watchId, statusMessage string) (bool, error) {
+	patch, err := json.Marshal(map[string]any{"execution_id": executionId, "url": url, "automation_watch_id": watchId})
+	if err != nil {
+		return false, fmt.Errorf("SetAutomationRunWatch: %w", err)
+	}
+	n, err := affected(db.ExecContext(ctx, `UPDATE event_resolution
+		    SET data = COALESCE(NULLIF(data, 'null'::jsonb), '{}'::jsonb) || $2::jsonb, status_message = $3, updated_at = NOW()
+		  WHERE id = $1 AND type = 'CommandExecution' AND status = 'InProgress'`, runId, string(patch), statusMessage))
+	if err != nil {
+		return false, fmt.Errorf("SetAutomationRunWatch: %w", err)
+	}
+	return n == 1, nil
+}
+
+// AutomationRunToSettle is an automation step's run whose watch ended, with what the watch saw last.
+type AutomationRunToSettle struct {
+	Id        string `db:"id"`
+	EventId   string `db:"event_id"`
+	AccountId string `db:"account_id"`
+	Data      []byte `db:"data"`
+	// WatchStatus is the watch's status, LOST when it is gone or still live past its deadline and graceMinutes.
+	WatchStatus string `db:"watch_status"`
+	Observed    string `db:"observed"`
+	WatchError  string `db:"watch_error"`
+}
+
+// AutomationRunsToSettle are at most limit automation runs still InProgress whose watch ended: matched (COMPLETED), ran
+// out of time (EXPIRED), could not read (FAILED), or was cancelled, gone, or is still live graceMinutes past its
+// deadline (the watcher is not running).
+func AutomationRunsToSettle(ctx context.Context, db *sqlx.DB, graceMinutes, limit int) ([]AutomationRunToSettle, error) {
+	var out []AutomationRunToSettle
+	err := db.SelectContext(ctx, &out, `SELECT er.id::text, er.event_id::text, e.cloud_account_id::text AS account_id,
+		       COALESCE(er.data, '{}'::jsonb) AS data,
+		       CASE WHEN t.id IS NULL OR t.status NOT IN ('COMPLETED','EXPIRED','FAILED') THEN 'LOST' ELSE t.status END AS watch_status,
+		       COALESCE(t.last_poll_result, '') AS observed, COALESCE(t.error, '') AS watch_error
+		  FROM event_resolution er JOIN events e ON e.id = er.event_id
+		  LEFT JOIN llm_watch_tasks t ON t.id = CASE WHEN er.data->>'automation_watch_id' ~ '^`+uuidPattern+`$'
+		                                             THEN (er.data->>'automation_watch_id')::uuid END
+		                             AND t.account_id = e.cloud_account_id
+		 WHERE er.type = 'CommandExecution' AND er.status = 'InProgress' AND er.data->>'kind' = 'automation'
+		   AND COALESCE(er.data->>'automation_watch_id', '') <> ''
+		   AND (t.id IS NULL OR t.status IN ('COMPLETED','EXPIRED','FAILED','CANCELLED')
+		        OR t.expires_at + make_interval(mins => $1) < now())
+		 ORDER BY er.created_at LIMIT $2`, graceMinutes, limit)
+	if err != nil {
+		return nil, fmt.Errorf("AutomationRunsToSettle: %w", err)
+	}
+	return out, nil
+}
+
+// SettleAutomationRun settles an automation run from its watch, only while it is InProgress (one writer wins), with
+// data.settled_at now: its follow-up and verdict go by when the run ended. It returns the rows changed.
+func SettleAutomationRun(ctx context.Context, db *sqlx.DB, runId, status string, patch map[string]any, statusMessage string) (int64, error) {
+	patchJSON, err := json.Marshal(patch)
+	if err != nil {
+		return 0, fmt.Errorf("SettleAutomationRun: %w", err)
+	}
+	n, err := affected(db.ExecContext(ctx, `UPDATE event_resolution
+		    SET status = $2, data = COALESCE(NULLIF(data, 'null'::jsonb), '{}'::jsonb) || $3::jsonb || jsonb_build_object('settled_at', now()),
+		        status_message = $4, updated_at = NOW()
+		  WHERE id = $1 AND type = 'CommandExecution' AND status = 'InProgress'`, runId, status, string(patchJSON), statusMessage))
+	if err != nil {
+		return 0, fmt.Errorf("SettleAutomationRun: %w", err)
+	}
+	return n, nil
 }

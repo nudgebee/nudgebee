@@ -1,6 +1,7 @@
 package watch
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"nudgebee/llm/security/egressfilter"
 	toolcore "nudgebee/llm/tools/core"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -637,6 +639,11 @@ func DescribeTarget(w Watch) string {
 			target += ": " + r
 		}
 		return target
+	}
+	if w.SourceKind == SourceKindAutomationRun {
+		var cfg AutomationRunSourceConfig
+		_ = json.Unmarshal([]byte(w.SourceConfig), &cfg)
+		return "until the automation " + strconv.Quote(cmp.Or(strings.TrimSpace(cfg.Name), cfg.WorkflowID)) + " finishes its run"
 	}
 	if w.SourceKind != SourceKindTool {
 		return ""

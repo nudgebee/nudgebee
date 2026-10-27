@@ -79,6 +79,9 @@ func deliveryFor(a RemediationAction, f executorFacts) (string, string, bool) {
 	if a.AlertRuleChange != nil {
 		return DeliveryRun, "", false // applied from the card through NudgeBee's own rule update
 	}
+	if a.Automation != nil {
+		return DeliveryRun, "", false // the account's automation, run as the person who approves it
+	}
 	exec := strings.TrimSpace(a.ExecuteCommand)
 	if exec == "" {
 		return DeliverySource, "", false
@@ -128,7 +131,7 @@ func refusalKey(provider, command string) string {
 func planOperatorStep(plan RemediationPlan, command, action string) bool {
 	command, action = strings.TrimSpace(command), strings.TrimSpace(action)
 	for _, a := range plan.Actions {
-		exec := strings.TrimSpace(a.ExecuteCommand)
+		exec := stepRef(a)
 		if command != "" && exec == command {
 			return true
 		}
@@ -237,6 +240,9 @@ func refusalsFromAttempts(rows []attemptRow, provider string) map[string]executo
 	out := map[string]executorRefusal{}
 	seen := map[string]bool{}
 	for _, r := range rows {
+		if _, ok := automationRefID(r.Command); ok {
+			continue // an automation's run says nothing about what the executor may run
+		}
 		failed := strings.EqualFold(r.Status, "Failed")
 		succeeded := verifiedSuccess(r.Status, runFacts{ExitCodeReported: r.ExitCodeReported, Manual: r.Manual})
 		if (!failed && !succeeded) || (failed && !isPermissionRefusal(r.Error)) {

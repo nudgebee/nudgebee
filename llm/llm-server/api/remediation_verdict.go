@@ -66,7 +66,9 @@ type verdictRun struct {
 	ApprovedBy string `json:"approved_by"`
 	// PlanVersion is the plan version the run carried out (C1 plan_version?, run_step), or "".
 	PlanVersion string `json:"plan_version"`
-	Followup    struct {
+	// SettledAt is when an automation run ended (#42459): the change is judged from then, not from when it started.
+	SettledAt string `json:"settled_at"`
+	Followup  struct {
 		Rechecks         int    `json:"rechecks"`
 		ClaimedAt        string `json:"claimed_at"`
 		VerdictCheckedAt string `json:"verdict_checked_at"`
@@ -348,6 +350,9 @@ func settleByVerdict(db *sqlx.DB, run followupRun, logger *slog.Logger) bool {
 	}
 	snapshotCauseKey(db, run, facts, logger)
 	in := verdictInput{Status: run.Status, Rollback: facts.rollback(), RanAt: run.CreatedAt.UTC(), Rechecks: facts.Followup.Rechecks}
+	if settled, err := time.Parse(time.RFC3339Nano, facts.SettledAt); err == nil {
+		in.RanAt = settled.UTC()
+	}
 	if w := facts.Followup.WaitEnded; w != nil && w.Kind == "condition" && w.Status == "COMPLETED" && facts.Followup.Rechecks <= 1 {
 		// The first wait ended because the cluster recovered (#42461), minutes before the alert's source closes: a
 		// first look, not a re-check, so a still-firing alert is too early here, not "still firing". Only the first:

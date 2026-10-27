@@ -397,3 +397,29 @@ func TestSearchAIInvocableWorkflowsTagsTheAccount(t *testing.T) {
 	require.Len(t, got.Workflows, 1)
 	assert.Equal(t, "test-account", got.Workflows[0].AccountID)
 }
+
+func TestSearchAIInvocableWorkflowsSaysWhichCanStopForAnApproval(t *testing.T) {
+	// The remediation plan offers only automations a run never parks on a person's
+	// approval partway, and binds the option to the version it read.
+	stubFeatureFlag(t, true, nil)
+	plain := aiCandidate("wf-plain", "restart-consumers", "Restarts the consumers.")
+	plain.Version = "v-1"
+	plain.Definition.Tasks = []model.Task{{ID: "restart", Type: "cloud.k8s.cli"}}
+	gated := aiCandidate("wf-gated", "restart-payments", "Restarts the payment consumers.")
+	gated.Definition.Tasks = []model.Task{{ID: "group", Type: "core.parallel", Tasks: []model.Task{{ID: "ok", Type: "core.approval"}}}}
+	store := new(MockWorkflowStore)
+	store.On("ListAIInvocableWorkflows", mock.Anything, mock.Anything, mock.Anything).
+		Return([]model.AIInvocableWorkflow{plain, gated}, nil)
+	s := &Service{store: store}
+
+	got, err := s.SearchAIInvocableWorkflows(aiRequestContext(true), "test-account", "", 0)
+	require.NoError(t, err)
+	require.Len(t, got.Workflows, 2)
+	byID := map[string]model.AIWorkflowCandidate{}
+	for _, w := range got.Workflows {
+		byID[w.ID] = w
+	}
+	assert.False(t, byID["wf-plain"].HasApprovalStep)
+	assert.Equal(t, "v-1", byID["wf-plain"].Version)
+	assert.True(t, byID["wf-gated"].HasApprovalStep, "a nested core.approval counts")
+}

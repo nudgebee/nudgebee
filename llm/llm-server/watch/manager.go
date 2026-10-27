@@ -317,6 +317,16 @@ WHERE tenant_id = $1 AND status IN ('PENDING','ACTIVE') AND (origin IS NOT NULL)
 	return nil
 }
 
+// OriginRoomLeft reports whether the tenant can take one more of NudgeBee's own watches now (ErrTenantQuotaExceeded
+// when not), for a caller that must know before it starts what the watch is for. Best effort, as Create's own check.
+func (m *Manager) OriginRoomLeft(ctx context.Context, tenantID uuid.UUID) error {
+	db, err := m.dbHandle()
+	if err != nil {
+		return err
+	}
+	return assertTenantQuota(ctx, db, tenantID, true, config.Config.WatchMaxOriginPerTenant)
+}
+
 // fetchDueClaimLeaseSec is how far into the future a claimed row's
 // next_poll_at is bumped on FetchDue. Acts as a short row-level lease so a
 // duplicate dispatcher (leader-election failover, or

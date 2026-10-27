@@ -38,8 +38,12 @@ const (
 type chatWrite struct {
 	// Tool is the label the row carries: the CLI or database the command runs with, "shell", or
 	// "automation".
-	Tool    string
+	Tool string
+	// Command is the command, or automation:<workflow id> for a run of an automation (stepRef), so a run from the
+	// chat and the plan's step of the same automation are one step.
 	Command string
+	// Automation names an automation run and its inputs, for the card and the record.
+	Automation string
 	// ExitCodes: a clean result from this tool means the command exited 0 (the workspace reports
 	// how a command ended). An automation reports no exit code.
 	ExitCodes bool
@@ -78,9 +82,9 @@ var knownCLIs = map[string]bool{"kubectl": true, "helm": true, "argocd": true, "
 // (tools/tool_workflow_automation.go).
 const automationToolPrefix = "automation_"
 
-// chatWriteOf is how an approved call of tool with input is recorded, and whether it is: only infra
+// chatWriteOf is how an approved call of tool with input on accountId is recorded, and whether it is: only infra
 // writes are. github_execute only for the gh calls that change something (ghChanges).
-func chatWriteOf(tool, input string) (chatWrite, bool) {
+func chatWriteOf(accountId, tool, input string) (chatWrite, bool) {
 	tool = strings.TrimSpace(tool)
 	switch {
 	case chatWriteCLITools[tool] != "":
@@ -109,9 +113,28 @@ func chatWriteOf(tool, input string) (chatWrite, bool) {
 		}
 		return chatWrite{Tool: firstWord(command), Command: command, ExitCodes: true}, true
 	case strings.HasPrefix(tool, automationToolPrefix), tool == tools.ToolWorkflowTrigger:
-		return chatWrite{Tool: chatWriteToolAutomation, Command: strings.TrimSpace(tool + " " + compactJSON(input))}, true
+		return automationChatWrite(accountId, tool, input), true
 	}
 	return chatWrite{}, false
+}
+
+// automationChatWrite is the record of a run of an automation from the chat: automation:<workflow id> when the
+// workflow is known, so it is the plan's step of that automation (stepRef); else the call as written.
+func automationChatWrite(accountId, tool, input string) chatWrite {
+	write := chatWrite{Tool: chatWriteToolAutomation, Command: strings.TrimSpace(tool + " " + compactJSON(input))}
+	var args map[string]any
+	_ = json.Unmarshal([]byte(input), &args)
+	id, name := "", ""
+	if tool == tools.ToolWorkflowTrigger {
+		id, _ = args["id"].(string)
+	} else {
+		id, name, _ = tools.AutomationOfTool(accountId, tool)
+	}
+	if id = strings.TrimSpace(id); id != "" {
+		write.Command = automationRefPrefix + id
+		write.Automation = fmt.Sprintf("%q with input %s", firstNonEmpty(name, id), compactJSON(input))
+	}
+	return write
 }
 
 // ghChanges reports whether a gh (or git) command changes something on the repository's host: a
@@ -206,9 +229,12 @@ func compactJSON(input string) string {
 }
 
 // commandTool is the CLI a plan command runs with, as a chat write's data.tool names it; "shell" for
-// any other command, "" for none.
+// any other command, "automation" for a run of an automation, "" for none.
 func commandTool(command string) string {
 	first := firstWord(command)
+	if _, ok := automationRefID(command); ok {
+		return chatWriteToolAutomation
+	}
 	switch {
 	case first == "":
 		return ""
@@ -334,7 +360,7 @@ func recordApprovedChatWrite(ctx *security.RequestContext, w agentcore.ApprovedW
 		}
 		return agentcore.ApprovedWriteClaim{}
 	}
-	write, ok := chatWriteOf(w.Tool, w.Input)
+	write, ok := chatWriteOf(w.AccountId, w.Tool, w.Input)
 	if !ok || !events.RemediationLoopOn(w.AccountId) {
 		return agentcore.ApprovedWriteClaim{}
 	}
@@ -380,6 +406,9 @@ func recordApprovedChatWrite(ctx *security.RequestContext, w agentcore.ApprovedW
 		"command":     write.Command,
 		"approved_by": approver,
 		"slot":        RemediationSlotExecute,
+	}
+	if write.Automation != "" {
+		data["automation"] = write.Automation
 	}
 	if w.Rule == nil {
 		withApprovalAnswer(data, approvalAnswerOf(detached.GetContext(), w.AccountId, w.Ref.MessageId))
@@ -525,7 +554,7 @@ func planOptionOf(plan RemediationPlan, command string) (option int, slot string
 		return 0, "", false
 	}
 	for i, a := range plan.Actions {
-		if strings.TrimSpace(a.ExecuteCommand) == command {
+		if stepRef(a) == command {
 			return i + 1, RemediationSlotExecute, true
 		}
 	}
@@ -557,13 +586,26 @@ func chatWriteCardQuestion(ctx *security.RequestContext, w agentcore.ApprovedWri
 		}
 		cancel()
 	}
-	option := ""
+	option, automation := "", ""
+	if _, ok := automationRefID(command); ok {
+		label = chatWriteToolAutomation
+		if write, isWrite := chatWriteOf(w.AccountId, w.Tool, w.Input); isWrite {
+			automation = write.Automation
+		}
+	}
 	readCtx, cancel := context.WithTimeout(ctx.GetContext(), decisionDBTimeout)
 	defer cancel()
 	if eventId, err := chatWriteStore.alertEvent(ctx.WithContext(readCtx), w.AccountId, session); err == nil {
 		if stored, found := chatWriteStore.plan(ctx.WithContext(readCtx), w.AccountId, eventId); found {
 			option = planOptionText(stored.Plan, command, step, undo)
+			if index, _, found := planOptionOf(stored.Plan, command); found && stored.Plan.Actions[index-1].Automation != nil {
+				automation = automationLine(*stored.Plan.Actions[index-1].Automation)
+			}
 		}
+	}
+	if automation != "" {
+		// The automation and its inputs, on a line of their own the Remediation tab reads back (questionAutomation).
+		option = strings.TrimSpace(option + "\n" + automationCardPrefix + automation)
 	}
 	return approvalCardText(label, where, option, command)
 }
@@ -575,7 +617,7 @@ func cardSubject(w agentcore.ApprovedWrite) (command, label string, step int, un
 		request := runStepInput(toolcore.ParseNBToolCallRequestFromInput(w.Input))
 		return strings.TrimSpace(request.Command), request.Action, request.Step, request.Action == "rollback", request.Step > 0
 	}
-	write, ok := chatWriteOf(w.Tool, w.Input)
+	write, ok := chatWriteOf(w.AccountId, w.Tool, w.Input)
 	return write.Command, write.Tool, 0, false, ok
 }
 

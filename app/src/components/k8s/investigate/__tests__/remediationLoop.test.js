@@ -23,6 +23,9 @@ import {
   optionMode,
   optionRepoOf,
   repoChangeOf,
+  automationOf,
+  automationHref,
+  optionOfCommand,
 } from '../remediationLoop';
 
 // Fixtures shaped exactly like the contracts: the C7 read (plan fields top level + loop), C1 run rows, C3 pull
@@ -328,5 +331,58 @@ describe('timelineOf: an approved run says what was recorded with its approval',
   });
   it('a change a person made carries no approval note', () => {
     expect(approvedText({ manual: true, approval_note: 'x' })).toBe('Made by Asha');
+  });
+});
+
+describe("an option that runs the account's own automation (#42459)", () => {
+  const action = {
+    action: 'Restart nginx',
+    kind: 'mitigation',
+    automation: { id: 'wf-restart', name: 'Restart VM service', version: 'v-7', inputs: { service: 'nginx', host: 'vm-1', retries: 2 } },
+  };
+  it('is run by the assistant after an approval, and names the automation and its inputs', () => {
+    expect(optionMode(action)).toBe('run');
+    expect(automationOf(action)).toEqual({
+      id: 'wf-restart',
+      name: 'Restart VM service',
+      inputs: [
+        ['host', 'vm-1'],
+        ['retries', '2'],
+        ['service', 'nginx'],
+      ],
+    });
+    expect(automationOf({ action: 'x', execute_command: 'kubectl get pods' })).toBeNull();
+    expect(automationHref('acct 1', 'wf-restart')).toBe('/automation/wf-restart?accountId=acct%201');
+    // An approval's command names its option: the command, or automation:<id>.
+    const res = { actions: [{ action: 'Scale', execute_command: 'kubectl scale deploy/api --replicas=3' }, action] };
+    expect(optionOfCommand(res, 'automation:wf-restart')).toBe(2);
+    expect(optionOfCommand(res, 'kubectl scale deploy/api --replicas=3')).toBe(1);
+    expect(optionOfCommand(res, 'automation:wf-other')).toBe(0);
+  });
+  it("shows the run's state on the timeline with a link to the run", () => {
+    const row = (status, data = {}) => ({
+      id: 'r1',
+      type: 'CommandExecution',
+      status,
+      status_message: status === 'Failed' ? 'Automation "Restart VM service" ended failed, stopped at step 2 of 3.' : '',
+      created_at: '2026-10-27T10:00:00Z',
+      updated_at: '2026-10-27T10:20:00Z',
+      data: {
+        command: 'automation:wf-restart',
+        kind: 'automation',
+        name: 'Restart VM service',
+        url: 'https://example.com/run',
+        option: 1,
+        step: '0:apply',
+        ...data,
+      },
+    });
+    const ran = (status) =>
+      timelineOf({ res: { plan_version: 'pv1', actions: [action] }, rows: [row(status)], loop: {} })
+        .flatMap((it) => it.steps || [])
+        .find((st) => st.key === 'ran');
+    expect(ran('InProgress')).toMatchObject({ text: 'Running: automation Restart VM service', href: 'https://example.com/run', live: true });
+    expect(ran('Success')).toMatchObject({ text: 'Completed: automation Restart VM service', detail: '' });
+    expect(ran('Failed')).toMatchObject({ tone: 'critical', detail: 'Automation "Restart VM service" ended failed, stopped at step 2 of 3.' });
   });
 });

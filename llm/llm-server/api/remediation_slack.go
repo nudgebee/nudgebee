@@ -37,6 +37,8 @@ type slackCardStep struct {
 	// SourceChange describes a step whose fix is a change in source (code, a deployment source, ...): where, what
 	// and the repo (sourceChangeText); empty for a command step.
 	SourceChange string
+	// Automation names the automation a step runs and its inputs (automationLine); its Command is automation:<id>.
+	Automation string
 	// AfterStep is the 1-based step this one runs after (its After), 0 for none.
 	AfterStep int
 	// The step's decision, when there is one: its status, how it ended, when, and its status message.
@@ -157,8 +159,11 @@ func buildRemediationSlackCards(ctx *security.RequestContext, db *sqlx.DB, accou
 		card := slackCard{Kind: "plan", PlanVersion: planVersion, RootCause: plan.RootCause, Summary: plan.Summary}
 		for i, a := range plan.Actions {
 			step := slackCardStep{Index: i, Title: firstNonEmpty(a.Title, a.Action), Kind: a.Kind,
-				Confidence: int(a.Confidence), Command: strings.TrimSpace(a.ExecuteCommand), Rollback: strings.TrimSpace(a.RollbackCommand),
+				Confidence: int(a.Confidence), Command: stepRef(a), Rollback: strings.TrimSpace(a.RollbackCommand),
 				TradeOff: a.TradeOff, DeliveryReason: a.DeliveryReason, SourceChange: sourceChangeText(a)}
+			if a.Automation != nil {
+				step.Automation = automationLine(*a.Automation)
+			}
 			step.Runnable = a.Delivery == DeliveryRun && step.Command != ""
 			if d, ok := decisions[fmt.Sprintf("%d:apply", i)]; ok {
 				at := d.row.UpdatedAt

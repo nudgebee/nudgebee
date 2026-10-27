@@ -2114,3 +2114,42 @@ describe('Round 18: the tab is the investigation’s next steps, made runnable',
     expect(headline()).toHaveTextContent(`Fix options · after your note at ${clockOnly(Z('16:52'))}`);
   });
 });
+
+describe("an option that runs the account's own automation (#42459)", () => {
+  const withAutomation = {
+    ...v6,
+    actions: [
+      {
+        action: 'Restart nginx',
+        kind: 'mitigation',
+        confidence: 50,
+        trade_off: 'drops open connections',
+        automation: { id: 'wf-restart', name: 'Restart VM service', inputs: { service: 'nginx', host: 'vm-1' } },
+      },
+    ],
+  };
+  it('names the automation with a link and its inputs, with Use this fix and no command', () => {
+    renderPanel({ ...withAutomation, loop: ready });
+    const option = screen.getByTestId('remediation-loop-option-automation-1');
+    expect(option).toHaveTextContent('Runs automation: Restart VM service');
+    expect(option).toHaveTextContent('Inputs: host=vm-1, service=nginx');
+    expect(within(option).getByRole('link')).toHaveAttribute('href', '/automation/wf-restart?accountId=acc-1');
+    expect(screen.getByTestId('remediation-loop-ask-option-1')).toHaveTextContent('Use this fix');
+    expect(screen.queryByTestId('remediation-loop-option-command-1')).toBeNull();
+  });
+  it('its approval names the automation, not its reference', () => {
+    const approval = {
+      ...webApproval,
+      tool: 'automation',
+      command: 'automation:wf-restart',
+      automation: '"Restart VM service" with host=vm-1, service=nginx',
+    };
+    renderPanel({ ...withAutomation, loop: { ...ready, pending_approvals: [approval] } });
+    // No pick on this tab (another person, a reload): the approval's own command names the option.
+    expect(headline()).toHaveTextContent(/wants to restart nginx/i);
+    expect(screen.getByTestId('remediation-loop-approval-automation')).toHaveTextContent(
+      'Runs automation "Restart VM service" with host=vm-1, service=nginx'
+    );
+    expect(where()).not.toHaveTextContent('automation:wf-restart');
+  });
+});

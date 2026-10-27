@@ -104,6 +104,10 @@ type automationTool struct {
 	// same automationToolCacheTTL as everything else here, so withdrawing it
 	// takes at most that long to stop suppressing the prompt.
 	autoApprove bool
+	// hasApprovalStep and version come with the candidate: a remediation plan offers only an automation whose run
+	// never stops for a person's approval, bound to the version it read (#42459).
+	hasApprovalStep bool
+	version         string
 }
 
 type automationInput struct {
@@ -121,6 +125,9 @@ type automationCandidate struct {
 	LLMDescription string            `json:"llm_description"`
 	Inputs         []automationInput `json:"inputs,omitempty"`
 	AutoApprove    bool              `json:"auto_approve,omitempty"`
+	// HasApprovalStep and Version: see automationTool.
+	HasApprovalStep bool   `json:"has_approval_step,omitempty"`
+	Version         string `json:"version,omitempty"`
 }
 
 type automationSearchResponse struct {
@@ -273,6 +280,9 @@ func buildAutomationTools(accountId string, candidates []automationCandidate) []
 			inputs:      c.Inputs,
 			reasonArg:   reasonArgFor(c.Inputs),
 			autoApprove: c.AutoApprove,
+
+			hasApprovalStep: c.HasApprovalStep,
+			version:         c.Version,
 		})
 	}
 	return tools

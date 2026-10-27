@@ -26,13 +26,13 @@ export const readData = (resolution) => (typeof resolution?.data === 'string' ? 
 const readVerify = (resolution) => readData(resolution).verify ?? null;
 
 /**
- * Whether a remediation run is a fix NudgeBee saw work: it ran and reported exit code 0 (not: no exit
- * code, unknown outcome, operator-marked). Mirrors llm-server verifiedSuccess.
+ * Whether a remediation run is a fix NudgeBee saw work: it ran and reported exit code 0, or the automation
+ * it ran completed (not: no exit code, unknown outcome, operator-marked). Mirrors llm-server verifiedSuccess.
  * @param {object} resolution
  */
 export const verifiedSuccess = (resolution) => {
   const data = readData(resolution);
-  return resolution?.status === 'Success' && data.exit_code_reported === true && data.manual !== true;
+  return resolution?.status === 'Success' && (data.exit_code_reported === true || data.automation_completed === true) && data.manual !== true;
 };
 
 export const describeResolution = (resolution, now = Date.now()) => {

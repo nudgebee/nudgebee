@@ -863,6 +863,12 @@ type AIWorkflowCandidate struct {
 	// AutoApprove says the author has allowed the assistant to run this
 	// automation without asking the user to confirm first.
 	AutoApprove bool `json:"auto_approve,omitempty"`
+	// HasApprovalStep: the live definition contains a core.approval task, so a
+	// run can stop and wait for a person partway.
+	HasApprovalStep bool `json:"has_approval_step,omitempty"`
+	// Version is the live version's id, so a caller can tell the automation
+	// changed since it last read it. Empty where it is not read.
+	Version string `json:"version,omitempty"`
 }
 
 // AIInvocableWorkflow pairs a workflow's identity with the definition that would
@@ -876,6 +882,9 @@ type AIInvocableWorkflow struct {
 	// because llm-server decides whether to show a confirmation card at the
 	// moment it synthesises the tool, and has no other route to this column.
 	AutoApprove bool
+	// Version is the live version's id (workflows.live_version_id); empty where
+	// it is not read.
+	Version string
 	// Definition is the LIVE version's definition.
 	Definition WorkflowDefinition
 }

@@ -591,6 +591,8 @@ func optionText(a RemediationAction, index, after int) string {
 	}
 	var line string
 	switch rc := a.RequiredChange; {
+	case a.Automation != nil:
+		line = oneLine("Runs automation "+automationLine(*a.Automation), optionLineChars)
 	case strings.TrimSpace(a.ExecuteCommand) != "":
 		line = "`" + oneLine(a.ExecuteCommand, optionLineChars-2) + "`"
 	case rc != nil && strings.TrimSpace(rc.Change) != "":

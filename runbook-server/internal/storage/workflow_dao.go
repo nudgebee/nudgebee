@@ -691,7 +691,7 @@ func (s *WorkflowDao) ListAIInvocableWorkflows(ctx context.Context, tenantID, ac
 	}
 
 	const query = `
-		SELECT w.id::text, w.name, w.description, w.ai_auto_approve, lv.definition
+		SELECT w.id::text, w.name, w.description, w.ai_auto_approve, w.live_version_id::text, lv.definition
 		FROM workflows w
 		JOIN workflow_versions lv ON lv.id = w.live_version_id
 		WHERE w.tenant_id = $1 AND w.account_id = $2
@@ -717,9 +717,10 @@ func (s *WorkflowDao) ListAIInvocableWorkflows(ctx context.Context, tenantID, ac
 			id, name    string
 			desc        sql.NullString
 			autoApprove bool
+			version     string
 			defBytes    []byte
 		)
-		if err := rows.Scan(&id, &name, &desc, &autoApprove, &defBytes); err != nil {
+		if err := rows.Scan(&id, &name, &desc, &autoApprove, &version, &defBytes); err != nil {
 			return nil, fmt.Errorf("failed to scan AI-invocable workflow: %w", err)
 		}
 		var def model.WorkflowDefinition
@@ -734,6 +735,7 @@ func (s *WorkflowDao) ListAIInvocableWorkflows(ctx context.Context, tenantID, ac
 			Name:        name,
 			Description: desc.String,
 			AutoApprove: autoApprove,
+			Version:     version,
 			Definition:  def,
 		})
 	}

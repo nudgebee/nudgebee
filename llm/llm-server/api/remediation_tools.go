@@ -349,6 +349,9 @@ func renderPlanCards(cards slackCards) string {
 		fmt.Fprintf(&b, "Current plan for this alert (plan_version %s).\nCause: %s\n%s\n", c.PlanVersion, c.RootCause, c.Summary)
 		for _, s := range c.Steps {
 			fmt.Fprintf(&b, "\nStep %d: %s (%s, %d%% likely to resolve)", s.Index+1, s.Title, firstNonEmpty(s.Kind, "unclassified"), s.Confidence)
+			if s.Automation != "" {
+				fmt.Fprintf(&b, "\n  Runs the account's automation %s", s.Automation)
+			}
 			if s.Command != "" {
 				fmt.Fprintf(&b, "\n  Command: %s", s.Command)
 			}
@@ -530,7 +533,7 @@ func stepRequest(plan RemediationPlan, accountId, eventId string, request runSte
 	want := ""
 	switch request.Action {
 	case "apply":
-		execute.Slot, want = RemediationSlotExecute, action.ExecuteCommand
+		execute.Slot, want = RemediationSlotExecute, stepRef(action)
 		if strings.TrimSpace(want) == "" {
 			return execute, fmt.Errorf("run_step: step %d is a change a person makes outside NudgeBee; when they have made it, use done", request.Step)
 		}
@@ -554,7 +557,7 @@ func stepRequest(plan RemediationPlan, accountId, eventId string, request runSte
 	execute.Command = strings.TrimSpace(want)
 	if execute.Command == "" {
 		// A decision that runs nothing names its step the way the panel does: its command, or its action.
-		execute.Command, execute.Action = strings.TrimSpace(action.ExecuteCommand), strings.TrimSpace(action.Action)
+		execute.Command, execute.Action = stepRef(action), strings.TrimSpace(action.Action)
 	}
 	return execute, nil
 }
@@ -567,6 +570,12 @@ func stepResultText(request runStepRequest, data any) string {
 		return fmt.Sprintf("Recorded: step %d declined.", request.Step)
 	case "done":
 		return fmt.Sprintf("Recorded: step %d marked done by the person.", request.Step)
+	}
+	if result.Status == events.RunStatusInProgress && result.AutomationURL != "" {
+		// An automation step's run goes on after this call (#42459): NudgeBee follows it and checks the alert after.
+		return fmt.Sprintf("Step %d started the automation's run (%s). NudgeBee follows the run to its end, then checks the alert; the person sees its state"+
+			" in the alert's Slack thread and on the event's Remediation tab. Your final answer is one or two sentences: that the automation"+
+			" started and that NudgeBee reports when it ends. Do not start it again or run its steps another way.", request.Step, result.AutomationURL)
 	}
 	text := fmt.Sprintf("Step %d %s: %s.", request.Step, map[string]string{"apply": "ran", "rollback": "rolled back"}[request.Action], result.Status)
 	if result.ExitCode != nil {

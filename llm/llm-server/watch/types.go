@@ -50,7 +50,18 @@ const (
 	// SourceKindTimer observes nothing: the watch ends EXPIRED at its deadline. A plain "look again at HH:MM" wait,
 	// for NudgeBee's own watches only (#42461).
 	SourceKindTimer SourceKind = "timer"
+	// SourceKindAutomationRun reads one run of a customer's automation until it ends (#42459): a remediation step that
+	// runs an automation waits on it. Registered by package tools, which can call runbook-server.
+	SourceKindAutomationRun SourceKind = "automation_run"
 )
+
+// AutomationRunSourceConfig is an automation_run watch's source config: the run it reads, and the automation's name
+// for display.
+type AutomationRunSourceConfig struct {
+	WorkflowID  string `json:"workflow_id"`
+	ExecutionID string `json:"execution_id"`
+	Name        string `json:"name,omitempty"`
+}
 
 // PredicateKind identifies how an observation is evaluated for termination.
 // Each kind has a single predicate_expr string interpreted differently.

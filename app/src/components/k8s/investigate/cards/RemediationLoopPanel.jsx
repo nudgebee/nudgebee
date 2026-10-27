@@ -66,6 +66,9 @@ import {
   CHANGE_LABEL,
   changeOnly,
   optionMode,
+  automationOf,
+  automationHref,
+  optionOfCommand,
   optionRepoOf,
   prOf,
   prRequestText,
@@ -237,6 +240,7 @@ RepoPicker.propTypes = {
 function OptionRow({
   index,
   action,
+  accountId,
   repo,
   disabled,
   onAsk,
@@ -256,6 +260,7 @@ function OptionRow({
   // change a person makes and then marks done. It is never offered as "Use this fix" with a command.
   const mode = optionMode(action, repo);
   const change = requiredChangeOf(action);
+  const automation = automationOf(action);
   const kind = change
     ? { text: CHANGE_LABEL[change.where] || 'Change to make', tone: 'success' }
     : KIND_META[trimmed(action?.kind).toLowerCase()] || null;
@@ -364,6 +369,24 @@ function OptionRow({
           ) : null}
         </Box>
       ) : null}
+      {automation ? (
+        <Box
+          sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)', ...textSx }}
+          data-testid={`remediation-loop-option-automation-${index}`}
+        >
+          <Box sx={{ overflowWrap: 'anywhere' }}>
+            <Box component='span' sx={{ color: 'var(--ds-gray-600)' }}>
+              {'Runs automation: '}
+            </Box>
+            <Link href={automationHref(accountId, automation.id)} openInNew>
+              {automation.name}
+            </Link>
+          </Box>
+          {automation.inputs.length ? (
+            <Box sx={{ ...hintSx, overflowWrap: 'anywhere' }}>{`Inputs: ${automation.inputs.map(([k, v]) => `${k}=${v}`).join(', ')}`}</Box>
+          ) : null}
+        </Box>
+      ) : null}
       {/* What runs, on one line that scrolls rather than breaking mid-word. */}
       {run ? (
         <Box data-testid={`remediation-loop-option-command-${index}`}>
@@ -403,6 +426,8 @@ function OptionRow({
 OptionRow.propTypes = {
   index: PropTypes.number.isRequired,
   action: PropTypes.object.isRequired,
+  // The account, for the link to an automation the option runs.
+  accountId: PropTypes.string,
   disabled: PropTypes.bool,
   onAsk: PropTypes.func.isRequired,
   // How the option's repository is known ({repo, known}: optionRepoOf).
@@ -568,7 +593,14 @@ function ApprovalCard({ approval, canAct, onAnswer, refreshedAt, assistantLabel 
           {`The investigation was refreshed at ${clockOnly(refreshedAt)}, after these fixes`}
         </Box>
       ) : null}
-      <CodeBlock code={trimmed(approval.command) || '(no command shown)'} language='bash' tone='dark' wrap copyToast='Command copied' />
+      {trimmed(approval.automation) ? (
+        <Box
+          sx={{ ...textSx, overflowWrap: 'anywhere' }}
+          data-testid='remediation-loop-approval-automation'
+        >{`Runs automation ${approval.automation}`}</Box>
+      ) : (
+        <CodeBlock code={trimmed(approval.command) || '(no command shown)'} language='bash' tone='dark' wrap copyToast='Command copied' />
+      )}
       {sent ? (
         <Box sx={hintSx} data-testid='remediation-loop-approval-sent'>
           {sent}
@@ -1403,7 +1435,12 @@ const RemediationLoopPanel = ({
         attemptsOf(remediation, [currentRun], assistantLabel)[0]?.title)) ||
     '';
   const account = trimmed(remediation?.target?.account_name) || trimmed(remediation?.target?.account_id);
-  const approvalWhat = titleOfOption(pickedOptionNumber) || currentTitle || (options.length === 1 ? optionTitle(options[0]) : '');
+  // Without a pick on this tab (another person, a reload), the approval's own command names its option.
+  const approvalWhat =
+    titleOfOption(pickedOptionNumber) ||
+    titleOfOption(optionOfCommand(remediation, (web[0] || slack[0])?.command)) ||
+    currentTitle ||
+    (options.length === 1 ? optionTitle(options[0]) : '');
   const approvalHeadline = `Approve: ${assistantLabel} wants to ${approvalWhat ? phrase(approvalWhat) : 'run this'}${
     account ? ` on ${account}` : ''
   }`;
@@ -1518,7 +1555,11 @@ const RemediationLoopPanel = ({
           sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}
           data-testid='remediation-loop-waiting-slack'
         >
-          <CodeBlock code={trimmed(p.command) || '(no command shown)'} language='bash' tone='dark' wrap copyToast='Command copied' />
+          {trimmed(p.automation) ? (
+            <Box sx={{ ...textSx, overflowWrap: 'anywhere' }}>{`Runs automation ${p.automation}`}</Box>
+          ) : (
+            <CodeBlock code={trimmed(p.command) || '(no command shown)'} language='bash' tone='dark' wrap copyToast='Command copied' />
+          )}
           {/^https?:\/\//.test(trimmed(p.thread_url)) ? (
             <Box sx={textSx} data-testid='remediation-loop-slack-thread'>
               <Link href={p.thread_url} openInNew secondaryText>
@@ -1961,6 +2002,7 @@ const RemediationLoopPanel = ({
               <OptionRow
                 index={i + 1}
                 action={a}
+                accountId={accountId}
                 showAsk={picking}
                 showConfidence={distinctConfidence && confidences[i] !== 50}
                 disabled={Boolean(goDisabledReason) || Boolean(picked?.sending)}

@@ -43,7 +43,7 @@ func planStep(plan RemediationPlan, slot, command, action string) string {
 	command, action = strings.TrimSpace(command), strings.TrimSpace(action)
 	rollback := strings.EqualFold(strings.TrimSpace(slot), RemediationSlotRollback)
 	for i, a := range plan.Actions {
-		exec := strings.TrimSpace(a.ExecuteCommand)
+		exec := stepRef(a)
 		switch {
 		case rollback:
 			if command != "" && strings.TrimSpace(a.RollbackCommand) == command {
@@ -95,6 +95,8 @@ type runFacts struct {
 	ExitCodeReported bool `json:"exit_code_reported"`
 	Manual           bool `json:"manual"`
 	NotSent          bool `json:"not_sent"`
+	// AutomationCompleted: the automation a step ran reported its run COMPLETED (#42459).
+	AutomationCompleted bool `json:"automation_completed"`
 }
 
 func readRunFacts(data []byte) runFacts {
@@ -104,10 +106,10 @@ func readRunFacts(data []byte) runFacts {
 }
 
 // verifiedSuccess reports whether a run row shows NudgeBee ran the command and the agent reported exit
-// code 0. A run without a reported exit code, a run whose outcome is unknown and a step the operator
-// marked done are not verified, and nothing may count them as a fix that worked.
+// code 0, or ran the automation and its run completed. A run without a reported exit code, a run whose outcome
+// is unknown and a step the operator marked done are not verified, and nothing may count them as a fix that worked.
 func verifiedSuccess(status string, f runFacts) bool {
-	return status == events.RunStatusSuccess && f.ExitCodeReported && !f.Manual
+	return status == events.RunStatusSuccess && (f.ExitCodeReported || f.AutomationCompleted) && !f.Manual
 }
 
 // sentCommand is what NudgeBee learned from sending one approved command to its executor.
@@ -203,6 +205,8 @@ type runResult struct {
 	ExitCode *int   `json:"exit_code"`
 	Status   string `json:"status"`
 	RunId    string `json:"run_id,omitempty"`
+	// AutomationURL links the run of an automation step (#42459).
+	AutomationURL string `json:"automation_url,omitempty"`
 }
 
 // runStatusMessage is what the resolutions list shows beside a settled run.

@@ -256,6 +256,28 @@ export function optionRepoOf(loop, n) {
   return { repo: trimmed(found?.repo), known: trimmed(found?.known) };
 }
 
+// automationOf is the account's own automation an option runs (#42459): {id, name, inputs: [[key, text]]}, or null.
+export function automationOf(action) {
+  const a = action?.automation;
+  if (!a || typeof a !== 'object' || !trimmed(a.id)) return null;
+  const inputs = Object.entries(a.inputs && typeof a.inputs === 'object' ? a.inputs : {})
+    .sort(([x], [y]) => x.localeCompare(y))
+    .map(([k, v]) => [k, typeof v === 'string' ? v : JSON.stringify(v)]);
+  return { id: trimmed(a.id), name: trimmed(a.name) || trimmed(a.id), inputs };
+}
+
+// optionOfCommand is the option (from 1) an approval's command runs: its execute_command, or automation:<id> for an
+// option that runs the account's automation (llm-server stepRef); 0 for none.
+export function optionOfCommand(res, command) {
+  const c = trimmed(command);
+  if (!c) return 0;
+  const i = planOptions(res).findIndex((a) => trimmed(a?.execute_command) === c || (automationOf(a) && `automation:${automationOf(a).id}` === c));
+  return i + 1;
+}
+
+// automationHref is the automation's page on the account.
+export const automationHref = (accountId, id) => `/automation/${encodeURIComponent(id)}?accountId=${encodeURIComponent(trimmed(accountId))}`;
+
 // optionMode is how an option is carried out from the tab: 'pr' (a change in the repository the workload comes from:
 // Raise a PR), 'pr_pick' (a change in a repository the person confirms or picks first: Raise a PR…), 'manual' (a
 // change a person makes, then marks done), or 'run' (the assistant runs it after an approval).
@@ -519,7 +541,7 @@ export function attemptsOf(res, rows, assistant = 'The assistant') {
       runOptionTitle(res, r) ||
       (r.type === 'PullRequest'
         ? 'PR raised'
-        : r.type === 'WorkflowExecution' || data.tool === 'automation'
+        : r.type === 'WorkflowExecution' || data.tool === 'automation' || data.kind === 'automation'
         ? 'Automation run'
         : data.slot === 'rollback'
         ? 'Rollback'
@@ -845,6 +867,21 @@ export function timelineOf({ res, rows, labels, loop, nbStatus, pending = {}, as
       } else if (pr.state === 'closed') {
         steps.push({ key: 'pr-closed', icon: 'not-fixed', text: 'Closed without merging', at: pr.endedAt || r.updated_at || '' });
       }
+    } else if (data.kind === 'automation') {
+      // A run of the account's automation (#42459): its state, its run's link, and how it ended when not cleanly.
+      const word = { InProgress: 'Running', Success: 'Completed', Failed: 'Failed', Unknown: 'Outcome unknown' }[r.status] || 'Ran';
+      const running = r.status === 'InProgress';
+      steps.push({
+        key: 'ran',
+        icon: 'ran',
+        tone: r.status === 'Failed' ? 'critical' : '',
+        text: `${word}: automation ${trimmed(data.name) || trimmed(data.workflow_id)}`,
+        href: trimmed(data.url),
+        linkText: 'View run',
+        detail: running || r.status === 'Success' ? '' : trimmed(r.status_message),
+        at: running ? r.created_at || '' : r.updated_at || r.created_at || '',
+        live: running,
+      });
     } else if (r.status === 'Failed') {
       steps.push({ key: 'ran', icon: 'ran', tone: 'critical', text: ranText('Failed'), command: full, at: r.updated_at || r.created_at || '' });
     } else if (r.status === 'Success' || r.status === 'Unknown') {
@@ -1036,6 +1073,8 @@ export function timelineOf({ res, rows, labels, loop, nbStatus, pending = {}, as
   // The attempt under way that has no run yet comes last: a pick made on this tab, an approval waiting, or one just
   // approved.
   const approvals = pending.approvals || [];
+  // Without a pick on this tab, the approval's own command names its option.
+  const asked = optionOfCommand(res, approvals[0]?.command);
   if (pending.pick || approvals.length || pending.approvedAt) {
     const steps = [];
     if (pending.pick) {
@@ -1057,7 +1096,7 @@ export function timelineOf({ res, rows, labels, loop, nbStatus, pending = {}, as
       type: 'attempt',
       id: 'attempt-pending',
       k: attemptNo + 1,
-      title: pending.pick?.title || 'Change',
+      title: pending.pick?.title || (asked ? optionTitle(planOptions(res)[asked - 1]) : '') || 'Change',
       result: { text: 'In progress', tone: 'info' },
       phase: 'running',
       steps,

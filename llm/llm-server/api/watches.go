@@ -206,10 +206,10 @@ func handleWatchesApi(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 			actionError(c, 403, errorUserAccessMessage)
 			return
 		}
-		// NudgeBee's own wait (a remediation follow-up's) ends with its follow-up; a person's cancel would start the
-		// next check early.
+		// NudgeBee's own wait (a remediation follow-up's, or an automation step's run) ends on its own; a person's cancel
+		// would start the next check early, or leave the step's run unsettled.
 		if existing.IsNudgeBees() {
-			actionError(c, 409, "api: this is NudgeBee's own wait for a remediation follow-up; it ends with the follow-up")
+			actionError(c, 409, "api: this is NudgeBee's own wait for a remediation step; it ends on its own")
 			return
 		}
 

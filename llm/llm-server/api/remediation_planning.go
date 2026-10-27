@@ -805,7 +805,12 @@ func planningQuery(ctx *security.RequestContext, row events.PlanningRequest) (qu
 		state, _ := alertStateOf(*inc)
 		firing = state == "firing"
 	}
-	return planningRequestText(row, incidentClosedAt(inc), firing) + "\n\n" + evidenceHeading(inc, row.EventId, evidenceEvent, evidenceAt) + "\n" + evidence, ""
+	query = planningRequestText(row, incidentClosedAt(inc), firing)
+	// The automations a step may run (#42459); none listed, none offered.
+	if catalog := automationCatalogText(planAutomations(row.AccountId)); catalog != "" {
+		query += "\n\n" + catalog
+	}
+	return query + "\n\n" + evidenceHeading(inc, row.EventId, evidenceEvent, evidenceAt) + "\n" + evidence, ""
 }
 
 // investigationSource is the event the investigation read for eventId was run for (an investigation is reused
@@ -1042,7 +1047,7 @@ func planChanges(prev, next RemediationPlan) []string {
 		switch {
 		case !ok:
 			changes = append(changes, "Added: "+name(a))
-		case strings.TrimSpace(old.ExecuteCommand) != strings.TrimSpace(a.ExecuteCommand) ||
+		case stepRef(old) != stepRef(a) || automationInputsText(automationInputsOf(old)) != automationInputsText(automationInputsOf(a)) ||
 			strings.TrimSpace(old.RollbackCommand) != strings.TrimSpace(a.RollbackCommand) || !sameRequiredChange(old.RequiredChange, a.RequiredChange):
 			changes = append(changes, "Changed: "+name(a))
 		}

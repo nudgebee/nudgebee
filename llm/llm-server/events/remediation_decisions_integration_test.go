@@ -496,3 +496,66 @@ func TestDecisionOnAnotherTargetIsRefused(t *testing.T) {
 	require.Equal(t, DecisionPlanChanged, conflict.Reason)
 	require.Equal(t, 0, f.rows(event))
 }
+
+// An automation step's run (#42459) stays InProgress while its watch runs, however long: the reaper leaves it, and it
+// is settled from the watch's end. A run whose wait was never set up is still reaped.
+func TestAutomationRunSettlesFromItsWatch(t *testing.T) {
+	f := newDecisionFixture(t)
+	_, err := f.db.Exec(`CREATE TABLE llm_watch_tasks (LIKE public.llm_watch_tasks INCLUDING ALL)`)
+	require.NoError(t, err)
+	watchRow := func(status string, expiresIn string, observed string) string {
+		id := uuid.NewString()
+		_, err := f.db.Exec(`INSERT INTO llm_watch_tasks (id, conversation_id, account_id, tenant_id, source_kind, source_config, predicate_kind,
+			predicate_expr, poll_interval_sec, max_duration_sec, status, next_poll_at, expires_at, last_poll_result, origin)
+			VALUES ($1, $2, $3, $4, 'automation_run', '{}', 'regex', '"ended":true', 30, 3600, $5, now(), now() + $6::interval, $7, 'remediation')`,
+			id, uuid.NewString(), f.account, uuid.NewString(), status, expiresIn, observed)
+		require.NoError(t, err)
+		return id
+	}
+	run := func(watchId string) string {
+		// Each its own automation: one automation runs once at a time on an account (already_running).
+		id, c := f.decide(f.event(), RunStatusInProgress, "automation:"+uuid.NewString(), func(d *RemediationDecision) { d.Data["kind"] = RunKindAutomation })
+		require.Nil(t, c)
+		if watchId != "" {
+			set, err := SetAutomationRunWatch(context.Background(), f.db, id, "exec-1", "https://example.com/run", watchId, "Running")
+			require.NoError(t, err)
+			require.True(t, set)
+		}
+		f.age(id, pastUnknownRerunWait)
+		return id
+	}
+	ended := run(watchRow("COMPLETED", "1 hour", `{"status":"COMPLETED","ended":true}`))
+	running := run(watchRow("ACTIVE", "1 hour", `{"status":"RUNNING","ended":false}`))
+	stuck := run(watchRow("ACTIVE", "-1 hour", `{"status":"RUNNING","ended":false}`))
+	noWait := run("")
+
+	reaped, err := ReapRemediationRuns(context.Background(), f.db)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, reaped, "only the run whose wait was never set up")
+	var status string
+	require.NoError(t, f.db.Get(&status, `SELECT status FROM event_resolution WHERE id = $1`, noWait))
+	require.Equal(t, RunStatusUnknown, status)
+
+	due, err := AutomationRunsToSettle(context.Background(), f.db, 5, 20)
+	require.NoError(t, err)
+	got := map[string]AutomationRunToSettle{}
+	for _, r := range due {
+		got[r.Id] = r
+	}
+	require.Len(t, got, 2)
+	require.Equal(t, "COMPLETED", got[ended].WatchStatus)
+	require.Contains(t, got[ended].Observed, `"status":"COMPLETED"`)
+	require.Equal(t, "LOST", got[stuck].WatchStatus, "a watch live past its deadline and the grace is lost")
+	require.NotContains(t, got, running)
+
+	n, err := SettleAutomationRun(context.Background(), f.db, ended, RunStatusSuccess, map[string]any{"automation_completed": true}, "done")
+	require.NoError(t, err)
+	require.EqualValues(t, 1, n)
+	n, err = SettleAutomationRun(context.Background(), f.db, ended, RunStatusFailed, map[string]any{}, "late")
+	require.NoError(t, err)
+	require.EqualValues(t, 0, n, "a settled run is settled once")
+	var settledAt string
+	require.NoError(t, f.db.Get(&settledAt, `SELECT COALESCE(data->>'settled_at', '') FROM event_resolution WHERE id = $1`, ended))
+	_, err = time.Parse(time.RFC3339Nano, settledAt)
+	require.NoError(t, err, "settled_at %q is read as RFC 3339 by the verdict", settledAt)
+}

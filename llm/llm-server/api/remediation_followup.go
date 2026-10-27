@@ -84,6 +84,8 @@ func runDueFollowups() error {
 		return fmt.Errorf("remediation_followups: %w", err)
 	}
 	db := dbManager.Db
+	// An automation step's run whose wait ended is settled first, so its follow-up is claimed on this tick (#42459).
+	settleAutomationRuns(db)
 	ctx, cancel := context.WithTimeout(context.Background(), decisionDBTimeout)
 	defer cancel()
 	if _, err := events.ClaimDueFollowups(ctx, db, followupDelay, 20); err != nil {

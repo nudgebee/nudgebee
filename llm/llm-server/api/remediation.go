@@ -52,6 +52,9 @@ type RemediationGenerateRequest struct {
 	// AlertRule is the rule the event came from and what may be changed on it; an
 	// action may propose one of those changes (see remediation_alert_rule.go).
 	AlertRule *RemediationAlertRule `json:"alert_rule,omitempty"`
+	// automations are the account's automations an action may run (remediation_automation.go), read once per
+	// generation; never stored with the request.
+	automations []tools.AutomationOption
 }
 
 // Confidence is the model's 0-100 self-reported estimate. The model is unreliable about the exact
@@ -194,6 +197,9 @@ type RemediationAction struct {
 	// TradeOff names what the action gives up: what it stops, deletes, suspends, scales away or re-creates,
 	// or the deliberate change by a person it reverses. Shown on the card; such a step is a mitigation.
 	TradeOff string `json:"trade_off,omitempty"`
+	// Automation, when set, is a run of one of the account's own automations in place of a command
+	// (remediation_automation.go); a step has one or the other.
+	Automation *PlanAutomation `json:"automation,omitempty"`
 }
 
 // HardeningItem is an improvement the incident does not require; kept apart from actions so it never reads as the fix.
@@ -330,6 +336,12 @@ func normalizePlan(plan *RemediationPlan, availableArtifacts []string, alertRule
 			continue
 		}
 
+		if a.Automation != nil {
+			// It runs the automation (checkPlanAutomations kept only a valid one); there is no command to check or undo.
+			a.VerifyCommand, a.RollbackCommand = "", ""
+			kept = append(kept, *a)
+			continue
+		}
 		if strings.TrimSpace(a.ExecuteCommand) == "" {
 			// Command-less -> kept only with an artifact or a stated required change (code / chart / process
 			// fixes are still the fix); otherwise it points at nothing.
@@ -372,11 +384,13 @@ func normalizePlan(plan *RemediationPlan, availableArtifacts []string, alertRule
 
 // finalizePlan runs the inventory checks and then normalizePlan; use it for any plan the model wrote or
 // rewrote, so no path skips a check. replicas may be nil when inventory is unavailable.
-func finalizePlan(plan *RemediationPlan, availableArtifacts []string, alertRule *RemediationAlertRule, replicas func(kind, name, ns string) string) []planValidationNote {
+func finalizePlan(plan *RemediationPlan, availableArtifacts []string, alertRule *RemediationAlertRule, replicas func(kind, name, ns string) string,
+	automations []tools.AutomationOption) []planValidationNote {
 	if replicas != nil {
 		markScaleFromZero(plan, replicas)
 	}
-	return normalizePlan(plan, availableArtifacts, alertRule)
+	notes := checkPlanAutomations(plan, automations)
+	return append(notes, normalizePlan(plan, availableArtifacts, alertRule)...)
 }
 
 // keepDependentsAfter places each action directly after the one its After names, so ranking never
@@ -713,6 +727,9 @@ func planMarkdown(plan RemediationPlan) string {
 		if detail != "" && detail != name {
 			fmt.Fprintf(&b, "\n\n%s", detail)
 		}
+		if a.Automation != nil {
+			fmt.Fprintf(&b, "\n\n**Runs automation** %s", automationLine(*a.Automation))
+		}
 		for _, cmd := range [][2]string{{"Run", a.ExecuteCommand}, {"Verify", a.VerifyCommand}, {"Rollback", a.RollbackCommand}} {
 			if cmd[1] != "" {
 				fmt.Fprintf(&b, "\n\n**%s**\n```bash\n%s\n```", cmd[0], cmd[1])
@@ -867,6 +884,7 @@ func generateRemediationPlan(ctx *security.RequestContext, request RemediationGe
 	}
 	trace.EvidenceSource = evidenceFromStoredAnalysis
 	artifacts := remediationArtifacts(request.AvailableArtifacts, hasCodeFix)
+	request.automations = planAutomations(request.AccountId)
 	if strings.TrimSpace(evidence) == "" {
 		return RemediationPlan{}, trace, errRemediationInput{"investigation context is required"}
 	}
@@ -910,7 +928,7 @@ func generateRemediationPlan(ctx *security.RequestContext, request RemediationGe
 	modelPlan.Actions = append([]RemediationAction(nil), plan.Actions...)
 	trace.ModelPlan = &modelPlan
 
-	trace.Validation = finalizePlan(&plan, artifacts, request.AlertRule, inventoryReplicas(request.AccountId))
+	trace.Validation = finalizePlan(&plan, artifacts, request.AlertRule, inventoryReplicas(request.AccountId), request.automations)
 	plan = repairAgainstTargetState(ctx, request, llm, systemPrompt, plan, &trace, artifacts)
 	for _, d := range plan.Dropped {
 		ctx.GetLogger().Info("remediation_generate: dropped alert-rule action", "action", d.Action, "reason", d.Reason)
@@ -1091,7 +1109,7 @@ func planHasCommand(plan RemediationPlan, slot, command, executeCommand string) 
 	for _, a := range plan.Actions {
 		switch strings.ToLower(strings.TrimSpace(slot)) {
 		case "", RemediationSlotExecute:
-			if strings.TrimSpace(a.ExecuteCommand) == command {
+			if stepRef(a) != "" && stepRef(a) == command {
 				return true
 			}
 		case RemediationSlotVerify:
@@ -1390,7 +1408,7 @@ func decideStep(ctx *security.RequestContext, request RemediationExecuteRequest,
 		if err != nil {
 			return refuse(400, "remediation: "+err.Error())
 		}
-		request.Command, request.Action = action.ExecuteCommand, action.Action
+		request.Command, request.Action = stepRef(action), action.Action
 	}
 	command := strings.TrimSpace(request.Command)
 	// Only a command from this event's stored plan runs. Generation is grounded server-side; accepting
@@ -1412,6 +1430,16 @@ func decideStep(ctx *security.RequestContext, request RemediationExecuteRequest,
 		return recordOperatorStep(ctx, request, userId, stored)
 	case RemediationSlotDecline:
 		return recordDecline(ctx, request, userId, stored)
+	}
+	if _, ok := automationRefID(command); ok {
+		// A run of the account's automation (remediation_automation.go): no command to check, and it has no undo.
+		if strings.EqualFold(slot, RemediationSlotRollback) {
+			return refuse(400, "remediation: an automation step has no undo")
+		}
+		if reason := stepOrderRejection(ctx, request.EventId, stored, planStep(stored.Plan, slot, command, "")); reason != "" {
+			return refuse(409, reason)
+		}
+		return runAutomationStep(ctx, request, stored, command, userId)
 	}
 	if reason := remediationCommandRejection(command); reason != "" {
 		return refuse(400, reason)
