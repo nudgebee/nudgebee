@@ -1054,10 +1054,10 @@ func summarizeDownstream(seedID string, nodes []*DbNode, edges []*DbEdge, nodeMi
 	return deps
 }
 
-// unresolvedVPCAddressSubtype marks an ExternalService the VPC flow source
+// UnresolvedVPCAddressSubtype marks an ExternalService the VPC flow source
 // minted for an address it could not identify (set alongside is_sync_gap in
 // flow_sources/vpc_flowlogs_flow_source.go).
-const unresolvedVPCAddressSubtype = "vpc-unresolved-ip"
+const UnresolvedVPCAddressSubtype = "vpc-unresolved-ip"
 
 // isUnresolvedVPCAddress reports whether a node is an address we failed to put a
 // name to, rather than something the operator can act on.
@@ -1076,7 +1076,7 @@ func isUnresolvedVPCAddress(n *DbNode) bool {
 	if n == nil || n.NodeType != NodeTypeExternalService {
 		return false
 	}
-	return impactNodeAttr(n, "subtype") == unresolvedVPCAddressSubtype
+	return impactNodeAttr(n, "subtype") == UnresolvedVPCAddressSubtype
 }
 
 // sortImpactedServices orders internal dependents before unresolved external

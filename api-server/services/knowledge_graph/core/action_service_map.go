@@ -314,10 +314,16 @@ type KgEvidenceNode struct {
 // humans, for whom they are noise. It is two strings per node, and dropping
 // them silently disables cross-resource correlation for every cloud provider —
 // which is not a trade the size saving is worth.
+//
+// subtype is here for the same consumer. The VPC flow source collects every
+// address it could not identify into one node per VPC (UnresolvedVPCAddressSubtype)
+// with flow edges to and from each instance that talked to one, so correlation
+// walking this card saw any two instances of a VPC as two hops apart. It has
+// to recognise that node to stop walking through it.
 var evidenceNodeProperties = []string{
 	"name", "namespace", "cluster",
 	"kind", "engine", "role", "region",
-	"resource_id", "arn",
+	"resource_id", "arn", "subtype",
 	"phase", "status", "state", "ready",
 }
 
