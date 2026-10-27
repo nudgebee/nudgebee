@@ -112,6 +112,12 @@ def apply_team_change(session, change: Dict[str, Any]) -> str:
         return _apply_team_change(session, change)
 
 
+def store_team_name(session, integration_id, name: str) -> None:
+    """Save the name of a team that was recorded without one."""
+    _write_config_values(session, integration_id, {"team_name": name})
+    session.commit()
+
+
 def _apply_team_change(session, change: Dict[str, Any]) -> str:
     integ = (
         session.query(Integration)

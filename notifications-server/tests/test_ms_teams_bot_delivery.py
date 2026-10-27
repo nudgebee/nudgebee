@@ -2,6 +2,7 @@
 refused."""
 
 import asyncio
+import dataclasses
 
 from types import SimpleNamespace
 from unittest import mock
@@ -196,9 +197,21 @@ def test_channels_are_listed_once_and_cached():
     sender._teams_connector = lambda service_url: client
     first = sender.list_channels(TEAM)
     second = sender.list_channels(TEAM)
-    assert first == [{"id": "19:general@thread.tacv2", "name": "General"}, {"id": "19:ops", "name": "Ops"}]
+    assert first == [
+        {"id": "19:general@thread.tacv2", "name": "General (default channel)"},
+        {"id": "19:ops", "name": "Ops"},
+    ]
     assert second == first
     assert client.teams.get_teams_channels.call_count == 1
+
+
+def test_the_team_name_is_read_from_microsoft():
+    client = mock.Mock()
+    client.teams.get_team_details.return_value = SimpleNamespace(name="Platform")
+    sender = _sender_with(mock.Mock())
+    sender._teams_connector = lambda service_url: client
+    assert sender.team_name(TEAM) == "Platform"
+    client.teams.get_team_details.assert_called_once_with("19:general@thread.tacv2")
 
 
 # ------------------------------- alert sends -------------------------------
@@ -323,6 +336,56 @@ def test_a_team_whose_channels_fail_still_appears(svc):
     ):
         result = svc.get_ms_teams_channels(SimpleNamespace(tenant_id="nb-tenant"))
     assert result["data"][0]["channels"] == []
+
+
+def _picker_with(svc, team, sender):
+    with (
+        mock.patch.object(common_module, "load_teams", return_value=[team]),
+        mock.patch.object(common_module, "get_sender", return_value=sender),
+        mock.patch.object(common_module, "store_team_name") as store,
+    ):
+        return svc.get_ms_teams_channels(SimpleNamespace(tenant_id="nb-tenant")), store
+
+
+def test_the_picker_reads_and_keeps_a_missing_team_name(svc):
+    sender = mock.Mock()
+    sender.list_channels.return_value = [{"id": "19:ops", "name": "Ops"}]
+    sender.team_name.return_value = "Platform"
+    result, store = _picker_with(svc, dataclasses.replace(TEAM, name=""), sender)
+    assert result["data"][0]["name"] == "Platform"
+    store.assert_called_once_with(svc.session, "int-1", "Platform")
+
+
+def test_a_stored_team_name_is_not_read_again(svc):
+    sender = mock.Mock()
+    sender.list_channels.return_value = []
+    result, store = _picker_with(svc, TEAM, sender)
+    assert result["data"][0]["name"] == "Platform"
+    sender.team_name.assert_not_called()
+    store.assert_not_called()
+
+
+def test_a_team_name_that_cant_be_read_leaves_the_picker_working(svc):
+    sender = mock.Mock()
+    sender.list_channels.return_value = [{"id": "19:ops", "name": "Ops"}]
+    sender.team_name.side_effect = bs.TeamsBotError("Microsoft Teams returned 502", status=502)
+    result, store = _picker_with(svc, dataclasses.replace(TEAM, name=""), sender)
+    assert result["data"] == [{"name": "", "id": "group-1", "channels": [{"id": "19:ops", "name": "Ops"}]}]
+    store.assert_not_called()
+
+
+def test_a_team_name_that_cant_be_saved_is_still_shown(svc):
+    sender = mock.Mock()
+    sender.list_channels.return_value = []
+    sender.team_name.return_value = "Platform"
+    with (
+        mock.patch.object(common_module, "load_teams", return_value=[dataclasses.replace(TEAM, name="")]),
+        mock.patch.object(common_module, "get_sender", return_value=sender),
+        mock.patch.object(common_module, "store_team_name", side_effect=RuntimeError("db down")),
+    ):
+        result = svc.get_ms_teams_channels(SimpleNamespace(tenant_id="nb-tenant"))
+    assert result["data"][0]["name"] == "Platform"
+    svc.session.rollback.assert_called_once()
 
 
 def test_the_test_send_needs_the_app_in_the_team(svc):

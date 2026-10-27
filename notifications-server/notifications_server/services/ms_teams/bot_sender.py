@@ -246,12 +246,20 @@ class TeamsBotSender:
             return cached[1]
         result = self._call(lambda: self._teams_connector(team.service_url).teams.get_teams_channels(team.thread_id))
         channels = [
-            # The General channel has no name and shares the team's thread id.
-            {"id": c.id, "name": c.name or "General"}
+            # The default channel shares the team's thread id and always comes back
+            # without a name, even when the team renamed it.
+            {"id": c.id, "name": c.name or "General (default channel)"}
             for c in (getattr(result, "conversations", None) or [])
         ]
         self._channel_cache[team.thread_id] = (time.monotonic() + CHANNEL_CACHE_SECONDS, channels)
         return channels
+
+    def team_name(self, team: TeamRef) -> str:
+        """The team's display name, read from Microsoft."""
+        if not team.thread_id:
+            return ""
+        details = self._call(lambda: self._teams_connector(team.service_url).teams.get_team_details(team.thread_id))
+        return getattr(details, "name", None) or ""
 
     def forget_channels(self, team_thread_id: str) -> None:
         self._channel_cache.pop(team_thread_id, None)

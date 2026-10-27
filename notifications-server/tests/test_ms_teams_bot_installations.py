@@ -139,6 +139,19 @@ def test_install_rename_uninstall_and_reinstall():
     assert _team(session)[0].status == "enabled"
 
 
+def test_a_stored_team_name_survives_later_messages():
+    session = _session_with(_teams_integration("tenant-a", NB_TENANT))
+    # Teams leaves the team name out of message events.
+    assert bi.apply_team_change(session, _change(team_name="", from_message=True)) == bi.RECORDED
+    integ, cfg = _team(session)
+    assert "team_name" not in cfg
+
+    bi.store_team_name(session, integ.id, "Platform")
+    assert _team(session)[1]["team_name"] == "Platform"
+    assert bi.apply_team_change(session, _change(team_name="", from_message=True)) == bi.UNCHANGED
+    assert _team(session)[1]["team_name"] == "Platform"
+
+
 def test_a_team_row_moves_with_its_microsoft_tenant():
     other_tenant = "bbbbbbbb-2222-4222-8222-222222222222"
     session = _session_with(_teams_integration("tenant-a", NB_TENANT))

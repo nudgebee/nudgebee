@@ -47,6 +47,7 @@ from notifications_server.services.messaging_installations import (
     ms_teams_aad_tenant_owner,
 )
 from notifications_server.services.ms_teams.activity import channel_data_of
+from notifications_server.services.ms_teams.bot_installations import store_team_name
 
 from botbuilder.core import TurnContext, BotFrameworkAdapterSettings, BotFrameworkAdapter
 from botbuilder.schema import Activity, ActivityTypes, Attachment
@@ -287,8 +288,27 @@ class CommonService:
             except TeamsBotError as e:
                 LOG.warning("Listing channels of Teams team %s failed: %s", team.aad_group_id, e)
                 channels = []
-            teams.append({"name": team.name, "id": team.aad_group_id, "channels": channels})
+            teams.append(
+                {"name": team.name or self._fill_team_name(sender, team), "id": team.aad_group_id, "channels": channels}
+            )
         return teams
+
+    def _fill_team_name(self, sender, team):
+        """Teams leaves the team name out of message events, so a team first
+        recorded from a message (installed before its Microsoft tenant was
+        connected) has none. Read it from Microsoft once and keep it."""
+        try:
+            name = sender.team_name(team)
+        except TeamsBotError as e:
+            LOG.warning("Reading the name of Teams team %s failed: %s", team.aad_group_id, e)
+            return ""
+        if name:
+            try:
+                store_team_name(self.session, team.integration_id, name)
+            except Exception as e:
+                self.session.rollback()
+                LOG.warning("Saving the name of Teams team %s failed: %s", team.aad_group_id, e)
+        return name
 
     def get_google_chat_channels(self, tenant):
         """List the Google Chat spaces bound to this tenant (google_chat_space integrations).
