@@ -17,8 +17,14 @@ from notifications_server.repositories.oauth_repository import (
     update_state_tenant,
 )
 from notifications_server.routers.common import verify_action_token
-from notifications_server.services.messaging_installations import ms_teams_aad_tenant_owner
-from notifications_server.services.ms_teams.ms_teams import MsTeamsService, aad_tenant_id_of
+from notifications_server.services.ms_teams import connect_link
+from notifications_server.services.ms_teams.ms_teams import (
+    ALREADY_CONNECTED,
+    CONNECTED,
+    TENANT_LINKED_ELSEWHERE,
+    aad_tenant_id_of,
+    connect_ms_teams_tenant,
+)
 from notifications_server.services.discord.discord import DiscordService
 from notifications_server.clients.discord_client import DiscordClient
 from pydantic import BaseModel
@@ -52,12 +58,6 @@ async def ms_teams_oauth_redirect(request: Request, data: Dict[Any, Any]):
     tenant_id = data["tenant_id"]
 
     LOG.info(f"MS Teams Installation request for tenant: {tenant_id}")
-    with Session(sync_engine) as session:
-        installations = find_installation_by_tenant_and_platform(session, tenant_id, "ms_teams")
-    if len(installations) > 0:
-        LOG.info(f"MS Teams Installation exists for tenant: {tenant_id}")
-        raise HTTPException(status_code=400, detail=INSTALLATION_ALREADY_EXISTS)
-
     user_email = request.headers.get("x-user-email", None)
 
     token_result = teams_app.acquire_token_by_authorization_code(
@@ -65,21 +65,57 @@ async def ms_teams_oauth_redirect(request: Request, data: Dict[Any, Any]):
     )
     account = teams_app.get_accounts()[0]
     aad_tenant_id = aad_tenant_id_of(token_result, account)
-    with Session(sync_engine) as session:
-        owner = ms_teams_aad_tenant_owner(session, aad_tenant_id)
-    if owner and owner != str(tenant_id):
+
+    def _connect():
+        with Session(sync_engine) as session:
+            return connect_ms_teams_tenant(
+                session,
+                tenant_id,
+                aad_tenant_id,
+                installed_by=token_result["id_token_claims"]["preferred_username"],
+                client_id=account["local_account_id"],
+                user_email=user_email,
+            )
+
+    outcome = await run_in_threadpool(_connect)
+    if outcome == ALREADY_CONNECTED:
+        LOG.info(f"MS Teams Installation exists for tenant: {tenant_id}")
+        raise HTTPException(status_code=400, detail=INSTALLATION_ALREADY_EXISTS)
+    if outcome == TENANT_LINKED_ELSEWHERE:
         LOG.warning(
             f"MS Teams tenant {aad_tenant_id} is already linked to another tenant; refusing install for {tenant_id}"
         )
         raise HTTPException(status_code=400, detail=MS_TEAMS_TENANT_ALREADY_LINKED)
-    await run_in_threadpool(
-        lambda: MsTeamsService(sync_engine).save_teams_installation(
-            teams_app.client_id, tenant_id, token_result, account, user_email
-        )
-    )
     success_html = render_success_page("MS-Teams", settings.base_url)
 
     return HTMLResponse(content=success_html)
+
+
+class MsTeamsLinkRequest(BaseModel):
+    token: str = ""
+
+
+@router.post("/link/ms-teams", dependencies=[Depends(verify_action_token)])
+async def ms_teams_link(request: Request, body: MsTeamsLinkRequest):
+    """Redeem a connect link from the Teams bot as the signed-in admin of the
+    workspace in the tenant-id header. The app has already checked the admin's
+    role; this checks the link and that the admin is whoever added the bot,
+    then connects."""
+    try:
+        tenant_id = UUID(request.headers.get("tenant-id") or "")
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Tenant id missing for installation")
+    user_email = request.headers.get("x-user-email") or ""
+
+    def _redeem():
+        with Session(sync_engine) as session:
+            return connect_link.redeem(session, body.token, tenant_id, user_email)
+
+    code = await run_in_threadpool(_redeem)
+    LOG.info("Microsoft Teams connect link for tenant %s: %s", tenant_id, code)
+    if code == CONNECTED:
+        return {"status": CONNECTED}
+    return JSONResponse(status_code=400, content={"code": code})
 
 
 slack_router = APIRouter(

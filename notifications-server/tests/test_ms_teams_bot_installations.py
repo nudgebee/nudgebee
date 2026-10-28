@@ -397,24 +397,21 @@ def test_tenant_owner_is_the_oldest_claim_however_rows_come_back():
     assert mi.ms_teams_aad_tenant_owner(session, "tenant-c", enabled_only=True) == older
 
 
-def _run_connect(owner, tenant_id="aaaaaaaa-1111-4111-8111-111111111111"):
+def _run_connect(outcome, tenant_id="aaaaaaaa-1111-4111-8111-111111111111"):
     from notifications_server.routers import tools
 
     request = SimpleNamespace(headers={"x-user-email": "admin@example.com"})
-    token_result = {"id_token_claims": {"tid": "tenant-a", "preferred_username": "admin@example.com"}}
-    service = mock.Mock()
+    token_result = {"id_token_claims": {"tid": "tenant-a", "preferred_username": "dana@corp.example"}}
     with (
-        mock.patch.object(tools, "find_installation_by_tenant_and_platform", return_value=[]),
         mock.patch.object(tools, "teams_app") as teams_app,
-        mock.patch.object(tools, "ms_teams_aad_tenant_owner", return_value=owner) as owner_lookup,
-        mock.patch.object(tools, "MsTeamsService", return_value=service),
+        mock.patch.object(tools, "connect_ms_teams_tenant", return_value=outcome) as connect,
         mock.patch.object(tools, "Session"),
         mock.patch.object(tools, "render_success_page", return_value="<html></html>"),
     ):
         teams_app.acquire_token_by_authorization_code.return_value = token_result
         teams_app.get_accounts.return_value = [{"home_account_id": "object-1.tenant-a", "local_account_id": "object-1"}]
         result = asyncio.run(tools.ms_teams_oauth_redirect(request, {"code": "c", "tenant_id": tenant_id}))
-    return result, service, owner_lookup
+    return result, connect
 
 
 def test_connect_refuses_a_microsoft_tenant_linked_elsewhere():
@@ -424,13 +421,32 @@ def test_connect_refuses_a_microsoft_tenant_linked_elsewhere():
     from notifications_server.routers import tools
 
     with pytest.raises(HTTPException) as exc:
-        _run_connect(owner="bbbbbbbb-2222-4222-8222-222222222222")
+        _run_connect(tools.TENANT_LINKED_ELSEWHERE)
     assert exc.value.status_code == 400
     assert exc.value.detail == tools.MS_TEAMS_TENANT_ALREADY_LINKED
 
 
-def test_connect_saves_when_the_microsoft_tenant_is_free_or_already_ours():
-    for owner in (None, "aaaaaaaa-1111-4111-8111-111111111111"):
-        _, service, owner_lookup = _run_connect(owner=owner)
-        assert owner_lookup.call_args.args[1] == "tenant-a"
-        service.save_teams_installation.assert_called_once()
+def test_connect_refuses_a_workspace_already_connected():
+    import pytest
+    from fastapi import HTTPException
+
+    from notifications_server.routers import tools
+
+    with pytest.raises(HTTPException) as exc:
+        _run_connect(tools.ALREADY_CONNECTED)
+    assert exc.value.status_code == 400
+    assert exc.value.detail == tools.INSTALLATION_ALREADY_EXISTS
+
+
+def test_sign_in_connect_goes_through_the_shared_connect():
+    from notifications_server.routers import tools
+
+    result, connect = _run_connect(tools.CONNECTED)
+    assert result.status_code == 200
+    args, kwargs = connect.call_args
+    assert args[1:] == ("aaaaaaaa-1111-4111-8111-111111111111", "tenant-a")
+    assert kwargs == {
+        "installed_by": "dana@corp.example",
+        "client_id": "object-1",
+        "user_email": "admin@example.com",
+    }, "sign-in keeps recording the Microsoft account that signed in"

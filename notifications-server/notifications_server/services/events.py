@@ -24,8 +24,12 @@ from notifications_server.services.cache import Cache
 from notifications_server.services import channel_analysis, delivery_records
 from notifications_server.services.channel_context import ChannelContextService
 from notifications_server.services.common import THREAD_CONTEXT_MARKER, latest_slack_notification
-from notifications_server.services.messaging_installations import load_installation_by_team, ms_teams_aad_tenant_owner
-from notifications_server.services.ms_teams import card_actions
+from notifications_server.services.messaging_installations import (
+    load_installation_by_team,
+    load_ms_teams_installation_by_aad_tenant,
+    ms_teams_aad_tenant_owner,
+)
+from notifications_server.services.ms_teams import card_actions, connect_link
 from notifications_server.services.ms_teams import thinking as teams_thinking
 from notifications_server.services.ms_teams.answer_card import answer_card
 from notifications_server.services.ms_teams.bot_sender import TeamsBotError, card_activity, get_sender
@@ -2280,6 +2284,20 @@ class Events:
             and activity.value.get("action_type") == "select_followup_option"
         )
 
+    async def _teams_tenant_not_connected(self, aad_tenant_id) -> bool:
+        """True when no enabled Teams connection is linked to this Microsoft
+        tenant. A failed check counts as connected, which keeps today's replies."""
+
+        def _load():
+            with Session(self.session.get_bind()) as session:
+                return load_ms_teams_installation_by_aad_tenant(session, aad_tenant_id)
+
+        try:
+            return await asyncio.to_thread(_load) is None
+        except Exception as e:
+            LOG.warning("Checking the Teams connection for tenant %s failed: %s", aad_tenant_id, e)
+            return False
+
     async def _reply_unidentified_user(self, activity, aad_user_id, teams_account_id):
         LOG.warning(f"Unable to get email for Teams user {aad_user_id}")
         await self.common_service.teams_reply(
@@ -2315,6 +2333,12 @@ class Events:
 
             if self._is_bot_message(activity):
                 LOG.debug("Skipping bot's own message")
+                return
+
+            if connect_link.offerable(activity) and await self._teams_tenant_not_connected(teams_account_id):
+                await self.common_service.teams_reply_with_card(
+                    activity, self.common_service.create_teams_not_connected_card(), teams_account_id
+                )
                 return
 
             user_email = await self.common_service.get_teams_user_info(aad_user_id, teams_account_id, activity)

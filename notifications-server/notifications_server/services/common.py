@@ -6,6 +6,7 @@ import re
 import time
 import uuid
 from datetime import datetime, timedelta
+from typing import Optional
 
 import nh3
 from slack_sdk.errors import SlackApiError
@@ -50,6 +51,7 @@ from notifications_server.services.messaging_installations import (
 )
 from notifications_server.services.ms_teams.activity import channel_data_of
 from notifications_server.services.ms_teams.bot_installations import store_team_name
+from notifications_server.services.ms_teams import connect_link
 
 from botbuilder.core import TurnContext, BotFrameworkAdapterSettings, BotFrameworkAdapter
 from botbuilder.schema import Activity, ActivityTypes, Attachment
@@ -2445,9 +2447,12 @@ class CommonService:
         return card
 
     @staticmethod
-    def create_teams_welcome_card(connected: bool):
+    def create_teams_welcome_card(connected: bool, connect_url: Optional[str] = None, integrations_only: bool = False):
         """The card shown when the app is added. A Microsoft tenant already
-        connected to NudgeBee gets how-to-use; otherwise, how to connect."""
+        connected to NudgeBee gets how-to-use; otherwise, how to connect: with
+        connect_url, its button carries a connect link for whoever added the
+        app; with integrations_only, it points to Integrations instead, for
+        someone who can't have a link."""
         from notifications_server.services.bot_messages import SIGNUP_URL
 
         branding_name = settings.urls.branding_name
@@ -2518,6 +2523,54 @@ class CommonService:
             )
             card["actions"] = [
                 {"type": "Action.OpenUrl", "title": f"Open {branding_name}", "url": f"{settings.base_url}/home"}
+            ]
+        elif connect_url:
+            card["body"] += [
+                {
+                    "type": "TextBlock",
+                    "text": f"Connect Microsoft Teams in {branding_name} to get alerts and ask questions here.",
+                    "wrap": True,
+                },
+                {
+                    "type": "TextBlock",
+                    "text": f"New to {branding_name}? [Sign up]({SIGNUP_URL})",
+                    "wrap": True,
+                    "size": "Small",
+                    "isSubtle": True,
+                },
+                # In the body, not the card's actions, so the line below can follow the button.
+                {
+                    "type": "ActionSet",
+                    "actions": [{"type": "Action.OpenUrl", "title": "Connect Microsoft Teams", "url": connect_url}],
+                },
+                {
+                    "type": "TextBlock",
+                    "text": (
+                        f"This button works for 7 days and only for the person who added {assistant_name}. "
+                        f"After that, connect from {branding_name} → Integrations."
+                    ),
+                    "wrap": True,
+                    "size": "Small",
+                    "isSubtle": True,
+                },
+            ]
+        elif integrations_only:
+            card["body"].append(
+                {
+                    "type": "TextBlock",
+                    "text": (
+                        f"Connect Microsoft Teams in {branding_name} to get alerts and ask questions here. "
+                        f"Connect from {branding_name} → Integrations → Microsoft Teams."
+                    ),
+                    "wrap": True,
+                }
+            )
+            card["actions"] = [
+                {
+                    "type": "Action.OpenUrl",
+                    "title": "Open Integrations",
+                    "url": f"{settings.base_url}/user-management#integrations",
+                }
             ]
         else:
             card["body"] += [
@@ -2820,8 +2873,42 @@ class CommonService:
             LOG.warning("Checking the Teams connection for tenant %s failed: %s", aad_tenant_id, e)
             self.session.rollback()
             connected = False
-        card = self.create_teams_welcome_card(connected)
+        if connected:
+            card = self.create_teams_welcome_card(True)
+        else:
+            # None when there's no link; the reason is logged.
+            connect_url = await connect_link.link_url(activity)
+            if connect_link.offerable(activity):
+                card = self.create_teams_welcome_card(False, connect_url=connect_url, integrations_only=not connect_url)
+            else:
+                card = self.create_teams_welcome_card(False)
         return await self.teams_reply_with_card(activity, card, None)
+
+    @staticmethod
+    def create_teams_not_connected_card() -> dict:
+        """The bot's reply to a message in a team whose Microsoft tenant isn't
+        connected: where to connect in NudgeBee. It never carries a connect
+        link; only the welcome card does, for whoever added the app."""
+        branding_name = settings.urls.branding_name
+        return {
+            "type": "AdaptiveCard",
+            ADAPTIVE_CARD_SCHEMA_KEY: ADAPTIVE_CARD_SCHEMA_URL,
+            "version": "1.4",
+            "body": [
+                {
+                    "type": "TextBlock",
+                    "text": f"Connect Microsoft Teams from {branding_name} → Integrations → Microsoft Teams.",
+                    "wrap": True,
+                }
+            ],
+            "actions": [
+                {
+                    "type": "Action.OpenUrl",
+                    "title": "Open Integrations",
+                    "url": f"{settings.base_url}/user-management#integrations",
+                }
+            ],
+        }
 
     # ==================== Google Chat Bot Messaging Methods ====================
 

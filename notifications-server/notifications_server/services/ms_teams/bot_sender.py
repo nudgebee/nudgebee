@@ -237,6 +237,20 @@ class TeamsBotSender:
         )
         return {"name": getattr(member, "name", None) or "", "email": email}
 
+    def get_member_identity(self, service_url: str, conversation_id: str, member_id: str) -> Dict[str, str]:
+        """A member's sign-in name (UPN), home tenant and role. The Bot Connector
+        returns members as ChannelAccount, which has no fields for these, so they
+        arrive in additional_properties; nothing else is read."""
+        member = self._call(
+            lambda: self._connector(service_url).conversations.get_conversation_member(conversation_id, member_id)
+        )
+        properties = getattr(member, "additional_properties", None) or {}
+        return {
+            "upn": str(properties.get("userPrincipalName") or ""),
+            "tenant_id": str(properties.get("tenantId") or ""),
+            "user_role": str(properties.get("userRole") or ""),
+        }
+
     def list_channels(self, team: TeamRef) -> List[Dict[str, str]]:
         """The team's channels, cached per process for a few minutes."""
         if not team.thread_id:

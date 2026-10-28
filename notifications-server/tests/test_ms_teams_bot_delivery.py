@@ -427,16 +427,16 @@ def test_members_are_looked_up_in_the_team_not_the_thread():
 def test_connect_stores_no_graph_token():
     from notifications_server.services.ms_teams import ms_teams as ms_teams_module
 
-    service = ms_teams_module.MsTeamsService.__new__(ms_teams_module.MsTeamsService)
-    service.session = mock.Mock()
-    result = {"id_token_claims": {"tid": "tenant-a", "preferred_username": "admin@example.com"}}
-    account = {"home_account_id": "object-1.tenant-a", "local_account_id": "object-1"}
     with (
+        mock.patch.object(ms_teams_module, "find_installation_by_tenant_and_platform", return_value=[]),
+        mock.patch.object(ms_teams_module, "ms_teams_aad_tenant_owner", return_value=None),
         mock.patch.object(ms_teams_module, "upsert_messaging_integration") as upsert,
         mock.patch.object(ms_teams_module, "get_user_id_by_email", return_value=None),
         mock.patch.object(ms_teams_module, "create_audit_request"),
     ):
-        service.save_teams_installation("app-1", "nb-tenant", result, account, "admin@example.com")
+        ms_teams_module.connect_ms_teams_tenant(
+            mock.Mock(), "nb-tenant", "tenant-a", "admin@example.com", "object-1", "admin@example.com"
+        )
     config = upsert.call_args.kwargs["config"]
     assert not {"access_token", "refresh_token", "token_expires_at"} & set(config), "earlier tokens are left alone"
     assert upsert.call_args.kwargs["name"] == "tenant-a"

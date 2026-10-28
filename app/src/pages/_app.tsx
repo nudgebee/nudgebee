@@ -123,6 +123,8 @@ export default function App({ Component, pageProps }: AppProps<{ session: Sessio
             {router.pathname === '/status' ||
             // Opened from an approval email, often by someone with no session.
             router.pathname === '/automation/approvals/[token]' ||
+            // Opened from a Teams card, often signed out; must not redirect to sign-in with its link.
+            router.pathname === '/integrations/ms-teams/connect' ||
             router.pathname.indexOf('signin') >= 0 ||
             router.pathname.indexOf('signup') >= 0 ||
             router.pathname.indexOf('signup_verify') >= 0 ||
