@@ -213,6 +213,7 @@ func updateExperimentAccounts(c *gin.Context) {
 	// Get updated experiment
 	exp, err := db.GetExperiment(ctx, name)
 	if err != nil || exp == nil {
+		slog.Error("prompts api: failed to retrieve updated experiment", "name", name, "error", err)
 		c.JSON(500, gin.H{"error": "Failed to retrieve updated experiment"})
 		return
 	}

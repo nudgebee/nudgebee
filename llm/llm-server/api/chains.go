@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -385,6 +386,7 @@ func tryQueueConversationMessage(
 		}
 		existingQueued, err := core.GetConversationDao().GetQueuedConversationMessages(conversation.ID.String())
 		if err != nil {
+			slog.Error("chains: failed to read queued messages", "error", err, "conversation_id", conversation.ID)
 			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{common.Error{Message: "unable to read queued messages"}}))
 			return true
 		}
@@ -3751,6 +3753,11 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		// already-dispatched target must not terminate the current investigation.
 		claimedMsg, err := core.GetConversationDao().ClaimQueuedMessageById(agentContext, req.AccountId, req.ConversationId, req.MessageId,
 			agentContext.GetSecurityContext().GetUserId(), isSecurityContextAdmin(agentContext.GetSecurityContext(), req.AccountId))
+		if err != nil && !errors.Is(err, core.ErrQueuedMessageNotFoundOrLocked) && !errors.Is(err, sql.ErrNoRows) {
+			slog.Error("chains: failed to claim queued message", "error", err, "message_id", req.MessageId)
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{common.Error{Message: "api: unable to claim queued message"}}))
+			return
+		}
 		if err != nil || claimedMsg == nil {
 			c.JSON(http.StatusConflict, BuildApiResponse(nil, []error{common.Error{Message: "api: queued message unavailable or permission denied"}}))
 			return

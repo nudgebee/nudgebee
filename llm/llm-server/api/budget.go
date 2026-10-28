@@ -279,6 +279,7 @@ func handleBudgetStatusApi(r *gin.Engine, tracer trace.Tracer, meter metric.Mete
 
 		dbManager, err := common.GetDatabaseManager(common.Metastore)
 		if err != nil {
+			slog.Error("api: failed to get database manager", "error", err)
 			actionError(c, 500, "api: database error")
 			return
 		}
@@ -396,6 +397,7 @@ func handleBudgetStatusApi(r *gin.Engine, tracer trace.Tracer, meter metric.Mete
 
 		dbManager, err := common.GetDatabaseManager(common.Metastore)
 		if err != nil {
+			slog.Error("api: failed to get database manager", "error", err)
 			actionError(c, 500, "api: database error")
 			return
 		}
@@ -478,6 +480,7 @@ func handleBudgetStatusApi(r *gin.Engine, tracer trace.Tracer, meter metric.Mete
 
 		dbManager, err := common.GetDatabaseManager(common.Metastore)
 		if err != nil {
+			slog.Error("api: failed to get database manager", "error", err)
 			actionError(c, 500, "api: database error")
 			return
 		}
@@ -485,6 +488,7 @@ func handleBudgetStatusApi(r *gin.Engine, tracer trace.Tracer, meter metric.Mete
 		// Fetch config first to validate ownership
 		cfg, err := budget.GetBudgetConfigByID(dbManager, req.ID)
 		if err != nil {
+			slog.Error("api: failed to fetch budget config", "error", err, "id", req.ID)
 			actionError(c, 500, "api: failed to fetch budget config")
 			return
 		}

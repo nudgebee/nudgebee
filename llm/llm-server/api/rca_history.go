@@ -69,6 +69,9 @@ func executeEventRCAAnalysis(ctx *security.RequestContext, request EventRCAAnaly
 	// Rollout kill switch only blocks new generation. Reads and recovery remain
 	// version-aware so disabling generation cannot revert to overwriting reports.
 	disabled, flagErr := common.IsFeatureEnabledForAccount("RCA_REGENERATION_DISABLED", ctx.GetSecurityContext().GetTenantId(), request.AccountId)
+	if flagErr != nil {
+		ctx.GetLogger().Error("rca: failed to read RCA_REGENERATION_DISABLED flag", "error", flagErr, "account_id", request.AccountId)
+	}
 	if flagErr != nil || disabled {
 		c.JSON(503, BuildApiResponse(response, []error{errors.New("RCA generation is temporarily unavailable")}))
 		return
