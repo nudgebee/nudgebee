@@ -3,7 +3,7 @@ import TextareaAutosize, { type TextareaAutosizeProps } from '@mui/material/Text
 import { useForkRef } from '@mui/material/utils';
 import { Avatar, Box, ButtonBase as MuiButtonBase, ClickAwayListener, Popper, styled, Typography } from '@mui/material';
 import type { Theme } from '@mui/material/styles';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowRightWhiteIcon, CustomAgentBlueIcon, MenuArrowDownIcon } from '@assets';
 import { ds } from 'src/utils/colors';
 import { getIcon } from '@components/llm/common/AgentIcon';
@@ -334,6 +334,11 @@ interface ModelPickerPopoverProps {
   disabled?: boolean;
 }
 
+// Gap kept between the surface and the viewport edge, and the height below
+// which the surface's own chrome stops fitting.
+const EDGE_PADDING = 8;
+const MIN_SURFACE_HEIGHT = 320;
+
 export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
   // Defaulted because this component is exported: callers inside this file
   // guard on a non-empty list, but an external consumer needn't.
@@ -349,6 +354,7 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
   disabled = false,
 }) => {
   const [open, setOpen] = useState(false);
+  const [surface, setSurface] = useState<{ placement: 'left' | 'top-end' | 'bottom-end'; maxHeight: number } | null>(null);
   const anchorRef = useRef<HTMLDivElement | null>(null);
   // 'blanket' stages one model for every call, 'tier' one per task, and
   // 'config' hands the whole config over so its own per-task models apply. The
@@ -365,8 +371,28 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
   const [activeConfigKey, setActiveConfigKey] = useState<string>('');
   const [search, setSearch] = useState('');
 
+  const measureSurface = useCallback(() => {
+    const rect = anchorRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const above = rect.top - EDGE_PADDING;
+    const below = window.innerHeight - rect.bottom - EDGE_PADDING;
+    const centred = 2 * Math.min(above, below);
+    if (centred >= MIN_SURFACE_HEIGHT) setSurface({ placement: 'left', maxHeight: centred });
+    else if (above >= below) setSurface({ placement: 'top-end', maxHeight: Math.max(above, MIN_SURFACE_HEIGHT) });
+    else setSurface({ placement: 'bottom-end', maxHeight: Math.max(below, MIN_SURFACE_HEIGHT) });
+  }, []);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    window.addEventListener('resize', measureSurface);
+    return () => window.removeEventListener('resize', measureSurface);
+  }, [open, measureSurface]);
+
   const openPopover = () => {
     if (disabled) return;
+    // Measured before the surface renders, so its first paint is already placed
+    // and bounded.
+    measureSurface();
     const tierPicks = selectedTierModels ?? {};
     // Reopen in the mode the conversation is actually in, rather than always
     // in All-calls — landing in another mode reads as the selection vanishing.
@@ -603,16 +629,10 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
         <Popper
           open={open}
           anchorEl={anchorRef.current}
-          placement='top-start'
+          placement={surface?.placement ?? 'top-end'}
           modifiers={[
-            // Prefer opening upward, but fall back around the anchor rather than
-            // running off the top — this surface is tall enough that the space
-            // above the composer often isn't enough for it.
-            { name: 'flip', enabled: true, options: { fallbackPlacements: ['bottom-start', 'top-end', 'bottom-end'], padding: 8 } },
-            // altAxis lets it slide vertically to stay on screen; tether:false
-            // allows it to detach from the anchor edge when that's the only way
-            // to keep the whole surface visible.
-            { name: 'preventOverflow', enabled: true, options: { padding: 8, altAxis: true, tether: false } },
+            { name: 'flip', enabled: false },
+            { name: 'preventOverflow', enabled: true, options: { padding: EDGE_PADDING, altAxis: true, tether: false } },
           ]}
           sx={{ zIndex: 9999 }}
         >
@@ -631,10 +651,7 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
                 // ~560px: the two-pane list needs room for an endpoint column
                 // plus model names without either side truncating.
                 width: ds.space.mul(0, 280),
-                // Never taller than the viewport. The list below is the only
-                // flexible part, so it absorbs the shrink and keeps the mode
-                // toggle, search box and Apply/Clear row always reachable.
-                maxHeight: 'calc(100vh - 16px)',
+                maxHeight: surface ? `min(${surface.maxHeight}px, calc(100vh - 16px))` : 'calc(100vh - 16px)',
                 maxWidth: 'calc(100vw - 16px)',
               }}
             >
