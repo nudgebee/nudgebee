@@ -332,7 +332,7 @@ const (
 	RelationshipProvidesStorage RelationshipType = "PROVIDES_STORAGE" // PV → Storage backend
 
 	// Networking
-	RelationshipExposes         RelationshipType = "EXPOSES"           // K8sService → Workload
+	RelationshipExposes         RelationshipType = "EXPOSES"           // Workload → K8sService
 	RelationshipRoutesToService RelationshipType = "ROUTES_TO_SERVICE" // Ingress → K8sService
 	RelationshipRoutesToBackend RelationshipType = "ROUTES_TO_BACKEND" // LoadBalancer → Service
 	RelationshipProtects        RelationshipType = "PROTECTS"          // NetworkPolicy → Workload

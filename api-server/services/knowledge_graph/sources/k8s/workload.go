@@ -262,6 +262,37 @@ func (s *K8sSource) extractWorkloadLabels(workload *K8sWorkloadRow) map[string]i
 	return workloadLabels
 }
 
+// templateLabelsKey is the meta.config key the agent fills with a workload's pod
+// template labels (k8s-agent runner/pkg/discovery/converters.go, serviceDict).
+// Older agents don't send it.
+const templateLabelsKey = "template_labels"
+
+// extractTemplateLabels returns meta.config.template_labels and whether the
+// agent sent the key at all. A present but empty map (a workloadRef Rollout,
+// whose template lives on another object) is returned as present.
+func (s *K8sSource) extractTemplateLabels(workload *K8sWorkloadRow) (map[string]interface{}, bool) {
+	if len(workload.Meta) == 0 {
+		return nil, false
+	}
+	// Only the one key is decoded; the rest of config (containers, volumes, …)
+	// stays raw.
+	var meta struct {
+		Config map[string]json.RawMessage `json:"config"`
+	}
+	if err := json.Unmarshal(workload.Meta, &meta); err != nil {
+		return nil, false
+	}
+	raw, ok := meta.Config[templateLabelsKey]
+	if !ok {
+		return nil, false
+	}
+	var labels map[string]interface{}
+	if err := json.Unmarshal(raw, &labels); err != nil || labels == nil {
+		return nil, false
+	}
+	return labels, true
+}
+
 // labelsMatch checks if all selector labels match the workload labels
 func (s *K8sSource) labelsMatch(selector map[string]interface{}, labels map[string]interface{}) bool {
 	if len(selector) == 0 {

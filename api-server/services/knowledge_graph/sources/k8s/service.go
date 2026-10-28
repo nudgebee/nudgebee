@@ -220,6 +220,9 @@ func (s *K8sSource) convertK8sServicesToGraph(services []K8sServiceFromRelay, wo
 		workloadMap[key] = &workloads[i]
 	}
 
+	// Each workload's labels are read once here, not once per service.
+	candidates := s.serviceMatchCandidates(workloads)
+
 	for _, service := range services {
 		// Determine cluster name - we'll get this from the first matching workload
 		// or use a default value
@@ -272,8 +275,9 @@ func (s *K8sSource) convertK8sServicesToGraph(services []K8sServiceFromRelay, wo
 
 		// Match service to workloads based on selector
 		if len(service.Spec.Selector) > 0 {
-			matchedWorkloads := s.matchServiceToWorkloads(&service, workloads)
-			for _, workload := range matchedWorkloads {
+			matched := s.matchServiceToWorkloads(&service, candidates)
+			for _, m := range matched {
+				workload := m.workload
 				// Find the actual workload node - use the same key format as convertWorkloadsToGraph
 				workloadKey := fmt.Sprintf("%s/%s/%s/%s",
 					workload.ClusterName,
@@ -294,6 +298,7 @@ func (s *K8sSource) convertK8sServicesToGraph(services []K8sServiceFromRelay, wo
 					map[string]interface{}{
 						"connection_type": "service_selector",
 						"selector":        service.Spec.Selector,
+						"matched_on":      m.matchedOn,
 					},
 					req.TenantID,
 					req.CloudAccountID,
@@ -410,31 +415,91 @@ func (s *K8sSource) createNodeFromK8sService(service *K8sServiceFromRelay, clust
 	return core.NewNode(core.NodeTypeK8sService, uniqueKey, properties, req.TenantID, req.CloudAccountID, "k8s")
 }
 
+// Values of an EXPOSES edge's matched_on property: which of a workload's label
+// sets its Service selector was matched against.
+const (
+	matchedOnTemplateLabels = "template_labels"
+	matchedOnLabels         = "labels"
+)
+
+// rolloutsPodTemplateHashKey is added by Argo Rollouts to the selector of every
+// Service it manages (active, preview, canary, stable). It is on the Rollout's
+// pods but never on its pod template, so it is dropped when matching a Rollout
+// on its template labels.
+const rolloutsPodTemplateHashKey = "rollouts-pod-template-hash"
+
+// serviceMatchCandidate is a workload with the labels a Service selector is
+// matched against.
+type serviceMatchCandidate struct {
+	workload  *K8sWorkloadRow
+	labels    map[string]interface{}
+	matchedOn string
+}
+
+// serviceMatchCandidates picks each workload's labels for selector matching.
+// Kubernetes routes a Service to pods by their labels, so a row whose agent sent
+// the pod template's labels is matched on those alone. Rows from older agents
+// (no template_labels key) fall back to the object's own labels, as before.
+func (s *K8sSource) serviceMatchCandidates(workloads []K8sWorkloadRow) []serviceMatchCandidate {
+	candidates := make([]serviceMatchCandidate, 0, len(workloads))
+	for i := range workloads {
+		c := serviceMatchCandidate{workload: &workloads[i]}
+		if labels, ok := s.extractTemplateLabels(c.workload); ok {
+			c.labels, c.matchedOn = labels, matchedOnTemplateLabels
+		} else {
+			c.labels, c.matchedOn = s.extractWorkloadLabels(c.workload), matchedOnLabels
+		}
+		candidates = append(candidates, c)
+	}
+	return candidates
+}
+
 // matchServiceToWorkloads finds workloads that match the service selector
-func (s *K8sSource) matchServiceToWorkloads(service *K8sServiceFromRelay, workloads []K8sWorkloadRow) []K8sWorkloadRow {
-	matched := make([]K8sWorkloadRow, 0)
+func (s *K8sSource) matchServiceToWorkloads(service *K8sServiceFromRelay, candidates []serviceMatchCandidate) []serviceMatchCandidate {
+	matched := make([]serviceMatchCandidate, 0)
 
 	// If no selector, no matches
 	if len(service.Spec.Selector) == 0 {
 		return matched
 	}
 
-	for _, workload := range workloads {
+	// The selector a Rollout is matched with; computed only if one is in scope.
+	var rolloutSelector map[string]interface{}
+
+	for _, c := range candidates {
 		// Only match workloads in the same namespace
-		if workload.Namespace != service.Metadata.Namespace {
+		if c.workload.Namespace != service.Metadata.Namespace {
 			continue
 		}
 
-		// Extract labels from workload using multiple sources
-		workloadLabels := s.extractWorkloadLabels(&workload)
+		selector := service.Spec.Selector
+		// Only template labels lack the hash for certain; a row from an older
+		// agent keeps today's full-selector match.
+		if c.workload.Kind == "Rollout" && c.matchedOn == matchedOnTemplateLabels {
+			if rolloutSelector == nil {
+				rolloutSelector = withoutKey(service.Spec.Selector, rolloutsPodTemplateHashKey)
+			}
+			selector = rolloutSelector
+		}
 
 		// Check if all service selector labels match workload labels
-		if s.labelsMatch(service.Spec.Selector, workloadLabels) {
-			matched = append(matched, workload)
+		if s.labelsMatch(selector, c.labels) {
+			matched = append(matched, c)
 		}
 	}
 
 	return matched
+}
+
+// withoutKey returns a copy of m without key.
+func withoutKey(m map[string]interface{}, key string) map[string]interface{} {
+	out := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		if k != key {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // extractServiceFields keeps a service's type, cluster IP and ports.
