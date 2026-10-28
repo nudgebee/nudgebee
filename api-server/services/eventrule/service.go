@@ -125,6 +125,10 @@ func upsertEventRule(dbms *database.DatabaseManager, annotations any, labels any
 	if err != nil {
 		return "", false, fmt.Errorf("failed to marshal labels: %w", err)
 	}
+	// Every caller reaches the FK-constrained column through here, so narrow
+	// once: webhooks hand over free-form provider severities ("high", "error").
+	severity = NarrowSeverity(severity)
+	labelsJSON = narrowLabelsSeverity(labelsJSON)
 
 	if alertType == "" {
 		alertType = "metric"
@@ -1862,4 +1866,35 @@ func parseJSONStrings(params map[string]any) map[string]any {
 		}
 	}
 	return result
+}
+
+// NarrowSeverity maps a free-form severity onto the two values
+// event_rule_severity holds. event_rules.severity is foreign-keyed to that
+// table, so anything else fails the insert with 23503.
+func NarrowSeverity(severity string) string {
+	switch strings.ToLower(strings.TrimSpace(severity)) {
+	case "critical", "high":
+		return "critical"
+	default:
+		return "warning"
+	}
+}
+
+// narrowLabelsSeverity narrows labels["severity"] in a marshalled labels object,
+// leaving the JSON untouched when it has no string severity.
+func narrowLabelsSeverity(labelsJSON []byte) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(labelsJSON, &m); err != nil {
+		return labelsJSON
+	}
+	sev, ok := m["severity"].(string)
+	if !ok {
+		return labelsJSON
+	}
+	m["severity"] = NarrowSeverity(sev)
+	out, err := json.Marshal(m)
+	if err != nil {
+		return labelsJSON
+	}
+	return out
 }
