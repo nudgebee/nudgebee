@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import pytest
+import requests
 
 from notifications_server.configs import settings
 from notifications_server.message_templates.ms_teams.finding import (
@@ -20,6 +21,7 @@ from notifications_server.services import actions_common
 from notifications_server.services import events as events_module
 from notifications_server.services import message as message_module
 from notifications_server.services import workflow_approval
+from notifications_server.services.bot_messages import get_budget_exceeded_message
 from notifications_server.services.ms_teams import card_actions as ca
 from notifications_server.services.workflow_approval import Decision
 
@@ -413,7 +415,7 @@ def test_a_click_on_a_card_older_than_its_buttons_says_so(store):
         activity = _click()
     result = _run(activity)
     result.create.assert_not_called()
-    assert result.replies == [ca.SUPPRESS_CARD_TOO_OLD]
+    assert result.replies == [ca._branded(ca.SUPPRESS_CARD_TOO_OLD)]
 
 
 def test_a_click_while_another_holds_the_claim_says_its_running(store):
@@ -726,7 +728,7 @@ def test_a_decision_on_a_card_older_than_its_buttons_says_so(approval_store):
         activity = _approval_click(_approval_card())
     result = _run_approval(activity)
     result.post.assert_not_called()
-    assert result.replies == [ca.APPROVAL_CARD_TOO_OLD]
+    assert result.replies == [ca._branded(ca.APPROVAL_CARD_TOO_OLD)]
 
 
 def test_a_decision_while_another_is_being_recorded_says_so(approval_store):
@@ -820,7 +822,7 @@ def test_ask_nubi_when_too_many_run_says_so_and_frees_the_event(store, monkeypat
     monkeypatch.setattr(settings.slack, "event_analysis_max_pollers", 0)
     result = _run_ask(_ask_click())
     result.thread.assert_not_called()
-    assert result.replies == [ca.ANALYSIS_BUSY]
+    assert result.replies == [ca._branded(ca.ANALYSIS_BUSY)]
     assert result.release.call_args.args[0] == "event-1"
 
 
@@ -834,7 +836,7 @@ def test_ask_nubi_from_outside_the_workspace_or_with_forged_data_is_refused(stor
     assert _run_ask(forged).replies == [actions_common.UNABLE_TO_PROCESS_REQUEST]
     with mock.patch.object(ca.time, "time", return_value=time.time() - ca.MAX_AGE_SECONDS - 3600):
         old = _ask_click()
-    assert _run_ask(old).replies == [ca.ASK_NUBI_CARD_TOO_OLD]
+    assert _run_ask(old).replies == [ca._branded(ca.ASK_NUBI_CARD_TOO_OLD)]
 
 
 def _job():
@@ -851,7 +853,7 @@ def _job():
     }
 
 
-def _analyze(results, replies=None):
+def _analyze(results, replies=None, **job):
     from notifications_server.services import common as common_module
 
     posted = []
@@ -869,9 +871,10 @@ def _analyze(results, replies=None):
         mock.patch.object(ca.Cache, "refresh_teams_analysis"),
         mock.patch.object(ca.asyncio, "sleep", mock.AsyncMock()),
     ):
-        asyncio.run(ca._analyze(_job()))
+        asyncio.run(ca._analyze({**_job(), **job}))
     fake_service.close.assert_called_once()
-    _analyze.timeouts = [c.args[4] for c in call.call_args_list]
+    _analyze.timeouts = [c.args[4] if len(c.args) > 4 else c.kwargs["timeout"] for c in call.call_args_list]
+    _analyze.regenerate = [c.kwargs.get("regenerate", False) for c in call.call_args_list]
     return posted, stamps
 
 
@@ -931,16 +934,88 @@ def test_a_failed_post_is_retried_before_the_card_is_marked():
     assert len(posted) == 2 and stamps == ["Analyzed by Nubi. See the thread."]
 
 
-def test_a_failed_analysis_says_so_and_clears_the_card():
-    posted, stamps = _analyze([_result("FAILED")])
-    assert posted == [ca.ANALYSIS_FAILED]
-    assert stamps == [None]
+def test_an_analysis_that_failed_before_the_ask_runs_again():
+    # Asked with regenerate False, llm-server reads an earlier failure back for up to a day: repeating it
+    # would tell the user to try again when trying again can't help.
+    posted, stamps = _analyze([_result("FAILED"), {}, _result("COMPLETED", detailed_response="the write-up")])
+    assert _analyze.regenerate == [False, True, False]
+    assert posted == ["Here's the full write-up:\n\nthe write-up"]
+    assert stamps == [f"Analyzed by {settings.urls.assistant_name}. See the thread."]
 
 
-def test_an_analysis_that_cant_be_reached_stops_and_points_to_nudgebee():
+def test_an_analysis_that_fails_after_the_ask_says_what_to_do_next(monkeypatch):
+    monkeypatch.setattr(settings.urls, "assistant_name", "Sage")
+    monkeypatch.setattr(settings.urls, "branding_name", "Acme")
+    posted, stamps = _analyze([_result(), _result("FAILED")])
+    assert _analyze.regenerate == [False, False], "only a failure from before the ask is re-run"
+    (message,) = posted
+    assert message.startswith("Sage couldn't finish analyzing this alert.")
+    assert "[open it in Acme](" in message and "/investigate?id=event-1)" in message
+    assert "Refresh investigation" in message
+    assert stamps == ["Sage couldn't analyze this alert. See the thread for what to do next."]
+
+
+def test_an_analysis_that_cant_run_again_says_why():
+    over_budget = requests.HTTPError(response=SimpleNamespace(status_code=429))
+    posted, stamps = _analyze([_result("FAILED"), over_budget])
+    assert posted == [get_budget_exceeded_message()]
+    assert stamps == [ca._branded(ca.ANALYSIS_FAILED_LINE)]
+
+
+def test_ask_nubi_is_named_after_the_assistant(monkeypatch):
+    monkeypatch.setattr(settings.urls, "assistant_name", "Sage")
+    monkeypatch.setattr(ca, "buttons_enabled", lambda: True)
+    action = ca.ask_nubi_action({"id": "event-1", "cloud_account_id": ACCOUNT}, NB_TENANT)
+    assert action["title"] == "Ask Sage"
+
+
+def test_an_analysis_that_cant_be_reached_stops_and_points_to_the_alert():
     posted, stamps = _analyze([None, RuntimeError("down"), None, None])
-    assert posted == []
-    assert stamps == ["Still analyzing. Check the event in NudgeBee."]
+    (message,) = posted
+    assert message.startswith(f"{settings.urls.assistant_name} lost track of this analysis.")
+    assert "/investigate?id=event-1)" in message
+    assert stamps == [ca._branded(ca.ANALYSIS_LOST_LINE)]
+
+
+def test_an_analysis_still_running_at_the_deadline_points_to_the_alert():
+    posted, stamps = _analyze([], deadline=time.monotonic() - 1)
+    (message,) = posted
+    assert message.startswith("This analysis is taking longer than usual.") and "/investigate?id=event-1)" in message
+    assert stamps == [f"Still analyzing. Check the event in {settings.urls.branding_name}."]
+
+
+@pytest.mark.parametrize(
+    "status, says",
+    [
+        (429, get_budget_exceeded_message()),
+        (404, "no longer has this alert"),
+        (503, "is analyzing a lot of alerts right now"),
+    ],
+)
+def test_an_analysis_llm_server_refuses_says_why_at_once(status, says):
+    # Asking again can't help, so the user is told why instead of "Still analyzing".
+    refused = requests.HTTPError(response=SimpleNamespace(status_code=status))
+    posted, stamps = _analyze([refused])
+    assert len(_analyze.timeouts) == 1
+    (message,) = posted
+    assert says in message
+    assert stamps == [ca._branded(ca.ANALYSIS_FAILED_LINE)]
+
+
+def test_an_analysis_that_waits_says_why_once():
+    waiting = dict(_result(), status_reason="waiting on an approval")
+    done = _result("COMPLETED", detailed_response="the write-up")
+    posted, stamps = _analyze([waiting, waiting, done])
+    assert posted[0] == "On hold: waiting on an approval. Results will appear in this thread once it runs."
+    assert posted[1:] == ["Here's the full write-up:\n\nthe write-up"]
+    assert stamps == ["Analyzed by Nubi. See the thread."]
+
+
+def test_an_internal_status_reason_is_not_shown():
+    posted, _ = _analyze(
+        [dict(_result(), status_reason="pq: connection reset"), _result("COMPLETED", detailed_response="x")]
+    )
+    assert not any("pq:" in m for m in posted)
 
 
 def test_long_analysis_text_is_cut_by_size_with_a_link():

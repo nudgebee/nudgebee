@@ -39,7 +39,7 @@ from notifications_server.services.events import Events, event_cache
 from notifications_server.services.messaging_installations import load_installation, load_installation_by_team
 from notifications_server.services.ms_teams.bot_installations import record_team_installations
 from notifications_server.services.ms_teams.bot_sender import forget_changed_channels
-from notifications_server.services.bot_messages import get_bot_joined_message
+from notifications_server.services.bot_messages import get_bot_joined_message, get_budget_exceeded_message
 from notifications_server.utils.action_requests import ActionRequestBody, verify_action_request
 from notifications_server.utils.transformer import SLACK_SIGNIN_SECRET, Transformer
 
@@ -945,6 +945,8 @@ _EVENT_ANALYSIS_PROGRESS_SECTIONS = (
 # Advances the panel only -- no content to post for this one.
 _EVENT_ANALYSIS_SILENT_SECTIONS = ("log_analysis",)
 _EVENT_ANALYSIS_MAX_POLL_FAILURES = 3
+# Starting a fresh analysis can take much of a minute.
+_EVENT_ANALYSIS_RERUN_TIMEOUT_SECONDS = 90
 
 _active_event_analysis_pollers = 0
 _event_analysis_pollers_lock = threading.Lock()
@@ -1205,6 +1207,58 @@ def _run_event_analysis_poller(engine, slack_app, teams_app, context, user_id, t
             _active_event_analysis_pollers -= 1
 
 
+def investigation_url(event_id) -> str:
+    return f"{settings.base_url}/investigate?id={event_id}"
+
+
+def rerun_failed_event_analysis(event_id, account_id, user_id, tenant_id, timeout) -> Optional[str]:
+    """Start a fresh analysis of an event whose last one failed before this ask.
+    Polled with regenerate False, llm-server reads a failed analysis back for up
+    to a day (llm_server_event_analysis_freshness_hours), so asking again would
+    only repeat that failure. None when the run started, or may have (the next
+    poll tells); otherwise what to tell the user. Shared with Teams."""
+    try:
+        Events.call_event_analysis_api(
+            event_id=event_id,
+            account_id=account_id,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            timeout=timeout,
+            regenerate=True,
+        )
+        return None
+    except Exception as e:
+        refused = analysis_refusal(e)
+        if refused:
+            return refused
+        LOG.warning("event analysis: re-running the failed analysis of %s failed: %s", event_id, e)
+    return None
+
+
+def analysis_refusal(error) -> Optional[str]:
+    """What to tell the user when llm-server refused an analysis outright, or
+    None when the error may pass (a timeout, a restart) and asking again can
+    help. Shared with Teams."""
+    if not isinstance(error, requests.HTTPError) or error.response is None:
+        return None
+    status = error.response.status_code
+    if status == 429:
+        return get_budget_exceeded_message()
+    if status == 503:
+        return f"{settings.urls.assistant_name} is analyzing a lot of alerts right now. Try again in a few minutes."
+    if status == 404:
+        return f"{settings.urls.branding_name} no longer has this alert, so it can't be analyzed."
+    return None
+
+
+def _slack_analysis_failed(event_id) -> str:
+    return (
+        "I couldn't finish analyzing this alert. To see what went wrong, "
+        f"<{investigation_url(event_id)}|open it in {settings.urls.branding_name}> "
+        "and use *Refresh investigation* to run it again."
+    )
+
+
 def _end_db_transactions(service):
     """The poller only reads installations; ending its transactions before each
     wait keeps them from holding table locks for the whole analysis."""
@@ -1301,12 +1355,13 @@ def _poll_event_analysis(engine, slack_app, teams_app, context, user_id, token, 
                         context.channel_id,
                         context.team_id,
                         context.thread_ts,
-                        (
-                            f"<@{context.slack_user_id}> Hmm, something went wrong while analyzing this. "
-                            "Mind trying again?"
-                        ),
+                        f"<@{context.slack_user_id}> {_slack_analysis_failed(context.event_id)}",
                     )
-                    LOG.warning("event analysis poller: llm-server reported FAILED for event %s", context.event_id)
+                    LOG.warning(
+                        "event analysis poller: llm-server reported FAILED for event %s (%s)",
+                        context.event_id,
+                        result.get("status_reason") or "no reason given",
+                    )
                     return
 
                 _end_db_transactions(service)
@@ -1404,6 +1459,18 @@ def _run_event_analysis_background(engine, slack_app, teams_app, context: EventA
             _surface_event_clarification(service, context, user_id, result.get("event_fingerprint"))
 
             status = (result.get("status") or "").upper()
+            reason = None
+            if status == "FAILED":
+                # It failed before this ask: run it again rather than report that failure.
+                reason = rerun_failed_event_analysis(
+                    context.event_id,
+                    context.account_id,
+                    user_id,
+                    context.tenant_id,
+                    _EVENT_ANALYSIS_RERUN_TIMEOUT_SECONDS,
+                )
+                if reason is None:
+                    status = "IN_PROGRESS"
             if status == "COMPLETED":
                 # Already finished: a repeat click, or an analysis reused for a
                 # repeat of the alert, whose investigation was never posted to
@@ -1456,10 +1523,7 @@ def _run_event_analysis_background(engine, slack_app, teams_app, context: EventA
                     context.channel_id,
                     context.team_id,
                     context.thread_ts,
-                    (
-                        f"<@{context.slack_user_id}> Hmm, looks like something went sideways with the "
-                        "investigation. Mind if we try that again?"
-                    ),
+                    f"<@{context.slack_user_id}> {reason or _slack_analysis_failed(context.event_id)}",
                 )
                 _close_event_analysis_stream(
                     service, token, context, stream_ts, "failed", task_ids=[_EVENT_ANALYSIS_PLACEHOLDER_TASK_ID]
@@ -1467,6 +1531,7 @@ def _run_event_analysis_background(engine, slack_app, teams_app, context: EventA
                 _finalize_card_after_analysis(service, context, outcome="failed")
         except Exception as e:
             LOG.exception("Event analysis background task failed: %s", e)
+            refused = analysis_refusal(e)
             # Best-effort: this recovery runs with no safety net above it (the
             # outer block is try/finally, not try/except), and both calls
             # below are live Slack requests that can themselves fail (e.g. a
@@ -1487,7 +1552,8 @@ def _run_event_analysis_background(engine, slack_app, teams_app, context: EventA
                     context.channel_id,
                     context.team_id,
                     context.thread_ts,
-                    f"<@{context.slack_user_id}> Hmm, something went wrong while analyzing this. Mind trying again?",
+                    f"<@{context.slack_user_id}> "
+                    + (refused or "Hmm, something went wrong while analyzing this. Mind trying again?"),
                 )
             except Exception:
                 LOG.exception("Recovery after analysis failure also failed")

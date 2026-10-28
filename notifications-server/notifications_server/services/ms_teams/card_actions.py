@@ -81,12 +81,15 @@ BUSY = object()  # the action is running on this card now
 
 SUPPRESS_THIS_DURATIONS = (("1 hour", 1), ("4 hours", 4), ("24 hours", 24), ("7 days", 168))
 SUPPRESS_ALL_DURATIONS = (("4 hours", 4), ("24 hours", 24), ("7 days", 168))
+# Messages naming the product or the assistant hold {brand} and {assistant},
+# filled by _branded when sent: the deployment's branding can change while the
+# server runs (configs/branding_overrides.py).
 PICK_A_DURATION = "Pick how long to suppress the alert for, then press Suppress."
 ALREADY_SUPPRESSED = "This alert was already suppressed from this card."
 STILL_SUPPRESSING = "Still suppressing this alert. It'll show on the card in a moment."
 SUPPRESS_CARD_TOO_OLD = (
     "This card is more than 7 days old, so its Suppress menu no longer works."
-    " Suppress the alert from Triage Rules in NudgeBee."
+    " Suppress the alert from Triage Rules in {brand}."
 )
 
 PICK_AN_OPTION = "Pick an option, then press Submit."
@@ -95,18 +98,33 @@ STILL_RECORDING = "Still recording the decision on this approval."
 APPROVAL_EXPIRED = "This approval request has expired."
 APPROVAL_FAILED = "Couldn't record the decision. Please try again."
 STILL_ANALYZING = "Still analyzing. Results will appear in this card's thread."
-ANALYSIS_FAILED = "Something went wrong analyzing this. Try again in a moment."
-ANALYSIS_BUSY = "Nubi is analyzing a lot of alerts right now. Try again in a minute."
+ANALYSIS_FAILED = (
+    "{assistant} couldn't finish analyzing this alert. To see what went wrong, [open it in {brand}]({url})"
+    " and use **Refresh investigation** to run it again."
+)
+ANALYSIS_FAILED_LINE = "{assistant} couldn't analyze this alert. See the thread for what to do next."
+ANALYSIS_BUSY = "{assistant} is analyzing a lot of alerts right now. Try again in a minute."
+ANALYSIS_WAITING = "On hold: {reason}. Results will appear in this thread once it runs."
+ANALYSIS_SLOW = (
+    "This analysis is taking longer than usual. [Open the alert in {brand}]({url}) to see its result when it finishes."
+)
+ANALYSIS_SLOW_LINE = "Still analyzing. Check the event in {brand}."
+ANALYSIS_LOST = "{assistant} lost track of this analysis. [Open the alert in {brand}]({url}) to see its result."
+ANALYSIS_LOST_LINE = "{assistant} lost track of this analysis. See the thread."
 FEEDBACK_ALREADY = "This answer was already rated."
 FEEDBACK_FAILED = "Couldn't record your feedback. Please try again."
 FEEDBACK_CARD_TOO_OLD = "This answer is too old to rate."
 ASK_NUBI_CARD_TOO_OLD = (
-    "This card is more than 7 days old, so its buttons no longer work." " Ask Nubi about the event from NudgeBee."
+    "This card is more than 7 days old, so its buttons no longer work." " Ask {assistant} about the event from {brand}."
 )
 APPROVAL_CARD_TOO_OLD = (
     "This card is more than 7 days old, so its buttons no longer work."
-    " Answer the approval from the automation's run in NudgeBee."
+    " Answer the approval from the automation's run in {brand}."
 )
+
+
+def _branded(text: str, **values) -> str:
+    return text.format(assistant=settings.urls.assistant_name, brand=settings.urls.branding_name, **values)
 
 
 def buttons_enabled() -> bool:
@@ -285,7 +303,7 @@ def ask_nubi_action(finding: dict, tenant_id) -> Optional[dict]:
     return {
         "type": "Action.Submit",
         "id": ASK_NUBI_ID,
-        "title": "Ask Nubi",
+        "title": f"Ask {settings.urls.assistant_name}",
         "data": {ACTION_KEY: ASK_NUBI, ASK_NUBI_DATA: sign(ASK_NUBI, params)},
     }
 
@@ -545,7 +563,7 @@ async def _suppress(common_service, activity, user_email, aad_tenant_id) -> None
     duration_hours = int((params or {}).get("duration_hours") or 0)
     if not (params and params.get("account_id") and params.get("scope") and duration_hours > 0):
         if expired(raw, SUPPRESS, tenant_id):
-            return await reply(SUPPRESS_CARD_TOO_OLD)
+            return await reply(_branded(SUPPRESS_CARD_TOO_OLD))
         LOG.warning("Rejecting a Teams suppress click with invalid data")
         return await reply(UNABLE_TO_PROCESS_REQUEST)
     account_id = params["account_id"]
@@ -656,7 +674,7 @@ async def _approve(common_service, activity, user_email, aad_tenant_id) -> None:
     params = verify(raw, APPROVE, tenant_id)
     if not (params and params.get("token") and params.get("status")):
         if expired(raw, APPROVE, tenant_id):
-            return await reply(APPROVAL_CARD_TOO_OLD)
+            return await reply(_branded(APPROVAL_CARD_TOO_OLD))
         LOG.warning("Rejecting a Teams approval click with invalid data")
         return await reply(UNABLE_TO_PROCESS_REQUEST)
 
@@ -771,7 +789,7 @@ async def _ask_nubi(common_service, activity, user_email, aad_tenant_id) -> None
     params = verify(raw, ASK_NUBI, tenant_id) if raw else None
     if not (params and params.get("event_id") and params.get("account_id")):
         if raw and expired(raw, ASK_NUBI, tenant_id):
-            return await reply(ASK_NUBI_CARD_TOO_OLD)
+            return await reply(_branded(ASK_NUBI_CARD_TOO_OLD))
         LOG.warning("Rejecting a Teams Ask Nubi click with invalid data")
         return await reply(UNABLE_TO_PROCESS_REQUEST)
 
@@ -799,7 +817,7 @@ async def _ask_nubi(common_service, activity, user_email, aad_tenant_id) -> None
             _active_analyses += 1
     if busy:
         await cache.aio.release_teams_analysis(event_id, token)
-        return await reply(ANALYSIS_BUSY)
+        return await reply(_branded(ANALYSIS_BUSY))
 
     started = False
     card_ref = (tenant_id, channel_id, message_id)
@@ -874,17 +892,28 @@ def _cut(text: str, event_id) -> str:
     head = data[:WRITEUP_LIMIT].decode(errors="ignore").rstrip()
     if head.count("```") % 2:
         head += "\n```"  # close a cut code block, so the link isn't inside it
-    url = f"{settings.base_url}/investigate?id={event_id}"
-    return f"{head}\n\n… [See the full analysis in NudgeBee]({url})"
+    from notifications_server.services.actions_common import investigation_url
+
+    return f"{head}\n\n… [See the full analysis in {settings.urls.branding_name}]({investigation_url(event_id)})"
 
 
-async def _take_result(result, progress, post, stamp) -> bool:
+async def _take_result(result, progress, post, stamp, rerun, event_id) -> bool:
     """Post what a poll result newly completed. True once the analysis ended."""
-    from notifications_server.services.actions_common import final_writeup
+    from notifications_server.services.actions_common import final_writeup, investigation_url
 
     sent = progress["sent"]
     statuses = result.get("task_statuses") or {}
     status = (result.get("status") or "").upper()
+    failed = _branded(ANALYSIS_FAILED, url=investigation_url(event_id))
+    if progress["first"] and status == "FAILED":
+        # It failed before this ask: run it again rather than report that failure.
+        progress["first"] = False
+        reason = await rerun()
+        if reason is None:
+            return False
+        await post(reason)
+        await stamp(_branded(ANALYSIS_FAILED_LINE))
+        return True
     if progress["first"] and status == "COMPLETED":
         # Finished earlier (a repeat ask, or an analysis reused for a repeat of
         # the alert): its sections are not posted one by one; the write-up
@@ -905,12 +934,17 @@ async def _take_result(result, progress, post, stamp) -> bool:
             investigation_posted="investigation" in posted,
         )
         if await post(content, preamble):
-            await stamp("Analyzed by Nubi. See the thread.")
+            await stamp(f"Analyzed by {settings.urls.assistant_name}. See the thread.")
             return True
     elif status == "FAILED":
-        await post(ANALYSIS_FAILED)
-        await stamp(None)
+        await post(failed)
+        await stamp(_branded(ANALYSIS_FAILED_LINE))
         return True
+    reason = result.get("status_reason") or ""
+    if status == "IN_PROGRESS" and reason.startswith("waiting") and progress.get("waiting") != reason:
+        # A parked run says why it waits, in the words the event page shows.
+        if await post(ANALYSIS_WAITING.format(reason=reason)):
+            progress["waiting"] = reason
     return False
 
 
@@ -921,6 +955,11 @@ async def _analyze(job) -> None:
     ask, or one reused for a repeat of the alert) posts the whole write-up, as
     on Slack."""
     from notifications_server import slack_app, teams_app
+    from notifications_server.services.actions_common import (
+        analysis_refusal,
+        investigation_url,
+        rerun_failed_event_analysis,
+    )
     from notifications_server.services.common import CommonService
     from notifications_server.services.events import Events
 
@@ -944,6 +983,18 @@ async def _analyze(job) -> None:
         progress = {"sent": set(), "posted": set(), "first": True}
         failures, calls = 0, 0
         token = job["token"]
+
+        async def rerun():
+            await cache.aio.refresh_teams_analysis(event_id, _analysis_claim_ttl(kickoff=True), token)
+            return await asyncio.to_thread(
+                rerun_failed_event_analysis,
+                event_id,
+                job["account_id"],
+                job["user_id"],
+                job["tenant_id"],
+                ANALYSIS_KICKOFF_TIMEOUT_SECONDS,
+            )
+
         while time.monotonic() < job["deadline"]:
             kickoff = calls == 0
             await cache.aio.refresh_teams_analysis(event_id, _analysis_claim_ttl(kickoff=kickoff), token)
@@ -961,6 +1012,11 @@ async def _analyze(job) -> None:
                     timeout,
                 )
             except Exception as e:
+                refused = analysis_refusal(e)
+                if refused:
+                    await post(refused)
+                    await stamp(_branded(ANALYSIS_FAILED_LINE))
+                    return
                 LOG.debug("Teams event analysis poll failed: %s", e)
                 result = None
             if not isinstance(result, dict):
@@ -971,11 +1027,17 @@ async def _analyze(job) -> None:
                     break
             else:
                 failures = 0
-                if await _take_result(result, progress, post, stamp):
+                if await _take_result(result, progress, post, stamp, rerun, event_id):
                     return
             await cache.aio.refresh_teams_analysis(event_id, _analysis_claim_ttl(), token)
             await asyncio.sleep(settings.slack.event_analysis_poll_seconds)
-        await stamp("Still analyzing. Check the event in NudgeBee.")
+        url = investigation_url(event_id)
+        if failures >= ANALYSIS_MAX_POLL_FAILURES:
+            await post(_branded(ANALYSIS_LOST, url=url))
+            await stamp(_branded(ANALYSIS_LOST_LINE))
+        else:
+            await post(_branded(ANALYSIS_SLOW, url=url))
+            await stamp(_branded(ANALYSIS_SLOW_LINE))
     finally:
         service.close()
 

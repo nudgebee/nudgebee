@@ -1555,7 +1555,7 @@ class Events:
             self.common_service.slack_reply_in_thread(channel_id, team_id, thread_ts, get_llm_offline_message())
 
     @staticmethod
-    def call_event_analysis_api(event_id, account_id, user_id, tenant_id, timeout=1200):
+    def call_event_analysis_api(event_id, account_id, user_id, tenant_id, timeout=1200, regenerate=False):
         try:
             # Call LLM server's event analysis endpoint directly
             url = settings.services.llm_server + "/v1/analyze/event"
@@ -1566,7 +1566,7 @@ class Events:
                     "account_id": account_id,
                     "user_id": user_id,
                     "source": "InstantNotification",
-                    "regenerate": False,
+                    "regenerate": regenerate,
                     "update_evidences": True,
                 }
             }

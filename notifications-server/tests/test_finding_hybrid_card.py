@@ -8,6 +8,8 @@ a duplicate heading), and no attachment may carry blocks/footer/ts (Slack's
 import json
 from types import SimpleNamespace
 
+import requests
+
 import notifications_server.services.actions_common as actions_common
 from notifications_server.message_templates.slack.finding import (
     FINDING_CALLBACK_ID,
@@ -15,6 +17,7 @@ from notifications_server.message_templates.slack.finding import (
     get_slack_finding_message,
 )
 from notifications_server.services.actions_common import SlackInteractiveActionsService
+from notifications_server.services.bot_messages import get_budget_exceeded_message
 
 
 def _finding(priority="HIGH", evidences=None):
@@ -324,6 +327,7 @@ def _run_background(
     get_message_attachments=None,
     context_kwargs=None,
     poller_started=True,
+    analyze=None,
 ):
     """Drives _run_event_analysis_background with sensible defaults for the
     user_id lookup / cache write / reaction that now happen inside it (moved
@@ -364,7 +368,9 @@ def _run_background(
             staticmethod(lambda **k: (_ for _ in ()).throw(analysis_error)),
         )
     else:
-        monkeypatch.setattr(actions_common.Events, "call_event_analysis_api", staticmethod(lambda **k: analysis_result))
+        monkeypatch.setattr(
+            actions_common.Events, "call_event_analysis_api", staticmethod(analyze or (lambda **k: analysis_result))
+        )
 
     defaults = dict(
         event_id="find-77",
@@ -686,6 +692,14 @@ class TestAskNubiAnalyse:
         assert "trying again" in calls["thread"].lower()
         assert calls.get("closed") is True
 
+    def test_background_task_says_why_llm_server_refused_the_analysis(self, monkeypatch):
+        calls, _ = _run_background(
+            monkeypatch, analysis_error=requests.HTTPError(response=SimpleNamespace(status_code=429))
+        )
+
+        assert calls["thread"] == f"<@U1> {get_budget_exceeded_message()}"
+        assert calls.get("closed") is True
+
     def test_background_task_marks_card_analyzed_on_success(self, monkeypatch):
         base_attachments = [
             {"callback_id": actions_common.FINDING_CALLBACK_ID, "text": "orig", "actions": [{"name": "ask_nubi"}]}
@@ -718,8 +732,34 @@ class TestAskNubiAnalyse:
             },
         )
 
-        assert "went sideways" in calls["thread"]
+        assert "couldn't finish analyzing this alert" in calls["thread"]
+        assert "Refresh investigation" in calls["thread"]
         assert calls["update_last"] == original_attachments  # button restored, not stamped "Analyzed"
+
+    def test_background_task_runs_an_analysis_that_failed_before_the_ask_again(self, monkeypatch):
+        # Asked with regenerate False, llm-server reads an earlier failure back for up to a day.
+        asked = []
+
+        def analyze(**k):
+            asked.append(k.get("regenerate", False))
+            return {"status": "FAILED"} if len(asked) == 1 else {"status": "IN_PROGRESS"}
+
+        calls, _ = _run_background(monkeypatch, analyze=analyze)
+
+        assert asked == [False, True]
+        assert calls.get("poller_started") is True
+        assert "thread" not in calls  # nothing to report yet: the fresh run is underway
+
+    def test_background_task_says_why_a_failed_analysis_cant_run_again(self, monkeypatch):
+        def analyze(**k):
+            if k.get("regenerate"):
+                raise requests.HTTPError(response=SimpleNamespace(status_code=429))
+            return {"status": "FAILED"}
+
+        calls, _ = _run_background(monkeypatch, analyze=analyze)
+
+        assert calls["thread"] == f"<@U1> {get_budget_exceeded_message()}"
+        assert "poller_started" not in calls
 
     def test_background_task_does_not_touch_card_when_poller_starts(self, monkeypatch):
         # The poller owns finalization once started; stamping here too would race it.
@@ -1033,7 +1073,9 @@ class TestEventAnalysisPoller:
     def test_explicit_failed_status_posts_apology_and_clears_card(self, monkeypatch):
         calls = _run_poller(monkeypatch, [{"status": "FAILED", "task_statuses": {}}])
 
-        assert any("something went wrong" in m for m in calls["posted"])
+        assert any(
+            "couldn't finish analyzing this alert" in m and "/investigate?id=find-77|" in m for m in calls["posted"]
+        )
         assert calls["update"][0]["text"] == "orig"  # status line dropped, not stamped Analyzed
         # The panel must not hang on "in_progress"/"pending" -- every task
         # settles to "error" so the user isn't left staring at a stuck panel.
