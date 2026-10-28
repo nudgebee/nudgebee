@@ -43,14 +43,20 @@ MAX_ATTEMPTS = 3
 MAX_RETRY_WAIT_SECONDS = 10
 CHANNEL_CACHE_SECONDS = 600
 
-APP_NOT_IN_TEAM = "The NudgeBee app isn't added to this team in Microsoft Teams"
+# Messages naming the product hold {brand}, filled by _branded when raised: the
+# deployment's branding can change while the server runs.
+APP_NOT_IN_TEAM = "The {brand} app isn't added to this team in Microsoft Teams"
 NOT_SUPPORTED = "This action isn't supported for Microsoft Teams"
 # The bot lists and posts to a team's standard channels only.
 CHANNEL_NOT_IN_TEAM = (
     "This channel isn't a standard channel of the selected Microsoft Teams team; "
-    "NudgeBee can post only to standard channels"
+    "{brand} can post only to standard channels"
 )
-CHANNEL_FORBIDDEN = "Microsoft Teams refused the post; check that the NudgeBee app is still added to this team"
+CHANNEL_FORBIDDEN = "Microsoft Teams refused the post; check that the {brand} app is still added to this team"
+
+
+def _branded(text: str) -> str:
+    return text.format(brand=settings.urls.branding_name)
 
 
 class TeamsBotError(Exception):
@@ -61,12 +67,12 @@ class TeamsBotError(Exception):
 
 class AppNotInTeamError(TeamsBotError):
     def __init__(self):
-        super().__init__(APP_NOT_IN_TEAM)
+        super().__init__(_branded(APP_NOT_IN_TEAM))
 
 
 class ChannelNotInTeamError(TeamsBotError):
     def __init__(self):
-        super().__init__(CHANNEL_NOT_IN_TEAM)
+        super().__init__(_branded(CHANNEL_NOT_IN_TEAM))
 
 
 @dataclass
@@ -208,7 +214,7 @@ class TeamsBotSender:
             )
         except TeamsBotError as e:
             if e.status == 403:
-                raise TeamsBotError(CHANNEL_FORBIDDEN, status=403) from e
+                raise TeamsBotError(_branded(CHANNEL_FORBIDDEN), status=403) from e
             raise
         return getattr(response, "id", None) or ""
 

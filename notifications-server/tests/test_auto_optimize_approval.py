@@ -92,13 +92,19 @@ def test_a_settled_approval_says_why_in_the_servers_words():
 def test_a_user_without_edit_access_leaves_the_approval_open():
     for status_code in (401, 403):
         outcome, _, _ = _decide(status_code=status_code, body={"error": "unauthorized"})
-        assert outcome == aoa.Outcome(aoa.NO_ACCESS, False)
+        assert outcome == aoa.Outcome(aoa._branded(aoa.NO_ACCESS), False)
+
+
+def test_replies_name_the_deployments_product(monkeypatch):
+    monkeypatch.setattr(settings.urls, "branding_name", "Acme")
+    outcome, _, _ = _decide(status_code=403, body={"error": "unauthorized"})
+    assert outcome.message == "You need edit access to this account in Acme to approve or reject its changes."
 
 
 @pytest.mark.parametrize("user", [(None, None), ("user-9", [OTHER_TENANT])])
 def test_someone_who_is_not_a_user_of_the_tenant_cannot_decide(user):
     outcome, post, _ = _decide(user=user)
-    assert outcome == aoa.Outcome(aoa.NOT_A_USER, False)
+    assert outcome == aoa.Outcome(aoa._branded(aoa.NOT_A_USER), False)
     post.assert_not_called()
 
 
@@ -108,7 +114,7 @@ def test_failures_leave_the_approval_open():
         _decide(status_code=502, body=None),
         _decide(post_error=requests.ConnectionError("down")),
     ):
-        assert outcome == aoa.Outcome(aoa.FAILED, False)
+        assert outcome == aoa.Outcome(aoa._branded(aoa.FAILED), False)
 
 
 def test_a_failed_user_lookup_leaves_the_approval_open():
@@ -117,18 +123,18 @@ def test_a_failed_user_lookup_leaves_the_approval_open():
         mock.patch.object(aoa, "get_user_tenants", side_effect=RuntimeError("db down")),
         mock.patch.object(aoa.requests, "post", post),
     ):
-        assert aoa.decide(TOKEN, "approve", "dana@example.com") == aoa.Outcome(aoa.FAILED, False)
+        assert aoa.decide(TOKEN, "approve", "dana@example.com") == aoa.Outcome(aoa._branded(aoa.FAILED), False)
     post.assert_not_called()
 
 
 def test_bad_data_or_a_missing_service_token_never_calls_the_server(monkeypatch):
     for kwargs in ({"option": "needs_info"}, {"token": "auto_optimize:nope"}):
         outcome, post, _ = _decide(**kwargs)
-        assert outcome == aoa.Outcome(aoa.FAILED, False)
+        assert outcome == aoa.Outcome(aoa._branded(aoa.FAILED), False)
         post.assert_not_called()
     monkeypatch.setattr(settings, "workflow_server_token", "")
     outcome, post, _ = _decide()
-    assert outcome == aoa.Outcome(aoa.FAILED, False)
+    assert outcome == aoa.Outcome(aoa._branded(aoa.FAILED), False)
     post.assert_not_called()
 
 

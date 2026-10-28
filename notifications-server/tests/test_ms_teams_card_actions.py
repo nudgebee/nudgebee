@@ -1040,14 +1040,14 @@ def test_charts_in_the_analysis_post_as_a_note_not_their_json():
     chart = f"```nb-chart\n{spec}\n```"
     writeup = f"Memory climbed to the limit.\n\n{chart}\n\nThen the pod was killed.\n\n{chart}"
     posted, stamps = _analyze([_result("COMPLETED", detailed_response=writeup)])
-    assert posted == [f"Here's the full write-up:\n\n{writeup.replace(chart, ca.CHART_NOTE)}"]
+    assert posted == [f"Here's the full write-up:\n\n{writeup.replace(chart, ca._branded(ca.CHART_NOTE))}"]
     assert '"series"' not in posted[0] and "investigate?id=" not in posted[0], "nothing left to cut"
     assert stamps == ["Analyzed by Nubi. See the thread."]
 
 
 def test_only_chart_blocks_become_notes():
     text = 'Before\n\n```json\n{"a": 1}\n```\n\n```nb-chart\n{"type": "bar", "labels": []}\n```\nAfter'
-    assert ca._charts_as_notes(text) == f'Before\n\n```json\n{{"a": 1}}\n```\n\n{ca.CHART_NOTE}\nAfter'
+    assert ca._charts_as_notes(text) == f'Before\n\n```json\n{{"a": 1}}\n```\n\n{ca._branded(ca.CHART_NOTE)}\nAfter'
     assert ca._charts_as_notes("no charts here") == "no charts here"
 
 

@@ -42,7 +42,7 @@ def _full_output_suffix(metadata: Optional[WorkflowMetadata]) -> str:
             account_id=metadata.account_id,
             utm_source=URLRoutes.UTMSource.GCHAT,
         )
-        return f"\n\n… <{url}|View full output in NudgeBee>"
+        return f"\n\n… <{url}|View full output in {settings.urls.branding_name}>"
     return "..."
 
 

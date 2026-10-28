@@ -35,8 +35,8 @@ from notifications_server.services.delivery_errors import google_chat_failure, s
 from notifications_server.services.cache import SLACK_USERS_FRESH_SECONDS, Cache
 from notifications_server.services.ms_teams.identity import sender_email
 from notifications_server.services.ms_teams.bot_sender import (
-    APP_NOT_IN_TEAM,
     NOT_SUPPORTED,
+    AppNotInTeamError,
     TeamsBotError,
     card_activity,
     get_sender,
@@ -2819,7 +2819,7 @@ class CommonService:
             (t for t in load_teams(self.session, messaging_platform.tenant_id) if t.aad_group_id == team_id), None
         )
         if team is None:
-            return {"success": False, "platform": "ms_teams", "error": APP_NOT_IN_TEAM}
+            return {"success": False, "platform": "ms_teams", "error": str(AppNotInTeamError())}
         sender = get_sender()
         try:
             sender.check_channel(team, channel_id)

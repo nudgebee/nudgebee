@@ -23,13 +23,15 @@ LOG = logging.getLogger(__name__)
 TOKEN_PREFIX = "auto_optimize:"
 DECISIONS = {"approve": "APPROVED", "reject": "REJECTED"}
 
+# Messages naming the product hold {brand}, filled by _branded when sent: the
+# deployment's branding can change while the server runs.
 NOT_A_USER = (
-    "No NudgeBee user in this workspace matches your email, so this approval can't be decided from here."
-    " Review it in NudgeBee."
+    "No {brand} user in this workspace matches your email, so this approval can't be decided from here."
+    " Review it in {brand}."
 )
-NO_ACCESS = "You need edit access to this account in NudgeBee to approve or reject its changes."
+NO_ACCESS = "You need edit access to this account in {brand} to approve or reject its changes."
 NOT_FOUND = "This approval no longer exists."
-FAILED = "Couldn't record the decision. Please try again, or review it in NudgeBee."
+FAILED = "Couldn't record the decision. Please try again, or review it in {brand}."
 
 
 @dataclass
@@ -57,6 +59,10 @@ def parse_token(token) -> Optional[Tuple[str, str, str]]:
         return None
 
 
+def _branded(text: str) -> str:
+    return text.format(brand=settings.urls.branding_name)
+
+
 def _user_in_tenant(user_email, tenant_id) -> Optional[str]:
     if not user_email:
         return None
@@ -73,20 +79,20 @@ def decide(token, option, user_email) -> Outcome:
     decision = DECISIONS.get(str(option or "").lower())
     if not (parsed and decision):
         LOG.warning("Rejecting an Auto Optimize approval click with invalid data")
-        return Outcome(FAILED, False)
+        return Outcome(_branded(FAILED), False)
     approval_id, account_id, tenant_id = parsed
 
     try:
         user_id = _user_in_tenant(user_email, tenant_id)
     except Exception as e:
         LOG.error("Looking up the user for an Auto Optimize approval failed: %s", e)
-        return Outcome(FAILED, False)
+        return Outcome(_branded(FAILED), False)
     if not user_id:
-        return Outcome(NOT_A_USER, False)
+        return Outcome(_branded(NOT_A_USER), False)
 
     if not settings.workflow_server_token:
         LOG.error("WORKFLOW_SERVER_TOKEN is not set; Auto Optimize approvals can't be decided from chat")
-        return Outcome(FAILED, False)
+        return Outcome(_branded(FAILED), False)
 
     try:
         response = requests.post(
@@ -101,7 +107,7 @@ def decide(token, option, user_email) -> Outcome:
         )
     except requests.RequestException as e:
         LOG.warning("Deciding an Auto Optimize approval failed: %s", e)
-        return Outcome(FAILED, False)
+        return Outcome(_branded(FAILED), False)
 
     try:
         body = response.json() or {}
@@ -118,6 +124,6 @@ def decide(token, option, user_email) -> Outcome:
         return Outcome(NOT_FOUND, True)
     if response.status_code in (401, 403):
         LOG.info("Auto Optimize approval refused for user %s: %s", user_id, response.text[:200])
-        return Outcome(NO_ACCESS, False)
+        return Outcome(_branded(NO_ACCESS), False)
     LOG.warning("Deciding an Auto Optimize approval returned %s: %s", response.status_code, response.text[:500])
-    return Outcome(FAILED, False)
+    return Outcome(_branded(FAILED), False)

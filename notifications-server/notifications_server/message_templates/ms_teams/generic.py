@@ -67,7 +67,7 @@ def _full_output_suffix(metadata: Optional[WorkflowMetadata]) -> str:
             account_id=metadata.account_id,
             utm_source=URLRoutes.UTMSource.TEAMS,
         )
-        return f"\n\n… [View full output in NudgeBee]({url})"
+        return f"\n\n… [View full output in {settings.urls.branding_name}]({url})"
     return "..."
 
 

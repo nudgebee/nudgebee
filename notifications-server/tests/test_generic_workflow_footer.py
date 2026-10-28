@@ -165,7 +165,8 @@ class TestMsTeamsGenericFooter:
             "(https://app.test/automation/wf-123?accountId=acct-456&utm=teams)" in text
         )
 
-    def test_a_long_message_is_truncated_so_the_card_still_fits(self, base_url):
+    def test_a_long_message_is_truncated_so_the_card_still_fits(self, base_url, monkeypatch):
+        monkeypatch.setattr(settings.urls, "branding_name", "Acme")
         # Regression for #41714: a 33 KB message used to push the card past
         # Teams' size limit, so the automation output never arrived at all.
         params = GenericMessageParams(
@@ -174,7 +175,7 @@ class TestMsTeamsGenericFooter:
         )
         card = get_ms_teams_generic_message_template(params)
         assert ca.fits(card), "a truncated message must still fit Teams' size limit"
-        assert "View full output in NudgeBee" in card["body"][0]["text"]
+        assert "View full output in Acme" in card["body"][0]["text"]
         assert "https://app.test/automation/wf-1?accountId=acct-1&utm=teams" in card["body"][0]["text"]
 
     def test_a_long_message_without_a_workflow_link_still_truncates(self):
@@ -223,7 +224,8 @@ class TestGoogleChatGenericFooter:
             "Automation: <https://app.test/automation/wf-123?accountId=acct-456&utm=gchat|cleanup-old-instances>" in out
         )
 
-    def test_a_long_message_is_truncated_so_it_still_fits(self, base_url):
+    def test_a_long_message_is_truncated_so_it_still_fits(self, base_url, monkeypatch):
+        monkeypatch.setattr(settings.urls, "branding_name", "Acme")
         # Regression for #41714: a 33 KB message used to exceed Google Chat's
         # size limit, so the automation output never arrived at all.
         params = GenericMessageParams(
@@ -232,7 +234,7 @@ class TestGoogleChatGenericFooter:
         )
         out = get_google_chat_generic_message_template(params)
         assert len(out.encode()) <= 32_000
-        assert "<https://app.test/automation/wf-1?accountId=acct-1&utm=gchat|View full output in NudgeBee>" in out
+        assert "<https://app.test/automation/wf-1?accountId=acct-1&utm=gchat|View full output in Acme>" in out
 
     def test_a_long_message_without_a_workflow_link_still_truncates(self):
         params = GenericMessageParams(message="x" * 33_000)

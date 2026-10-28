@@ -925,7 +925,7 @@ def answer(status_code: int, data: dict, message: str, slot: str) -> Outcome:
             return Outcome("Declined.", True)
         status = data.get("status")
         if status == "Success":
-            return Outcome("Ran and exited 0. NudgeBee checks on it next.", True)
+            return Outcome(f"Ran and exited 0. {brand} checks on it next.", True)
         if status == "Failed":
             return Outcome(f"Ran and failed: {_cap(data.get('error'), 800)}", True)
         return Outcome(f"The outcome is unknown: {_cap(data.get('error'), 800)} Check before running it again.", True)

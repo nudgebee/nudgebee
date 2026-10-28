@@ -142,7 +142,7 @@ def test_a_refusal_is_not_retried():
     with pytest.raises(bs.TeamsBotError) as exc:
         _sender_with(connector).send(SERVICE_URL, "c", bs.card_activity({"type": "AdaptiveCard"}))
     assert exc.value.status == 403
-    assert str(exc.value) == bs.CHANNEL_FORBIDDEN, "a refused post says what to check"
+    assert str(exc.value) == bs._branded(bs.CHANNEL_FORBIDDEN), "a refused post says what to check"
     assert connector.conversations.send_to_conversation.call_count == 1
 
 
@@ -391,7 +391,7 @@ def test_a_team_name_that_cant_be_saved_is_still_shown(svc):
 def test_the_test_send_needs_the_app_in_the_team(svc):
     with mock.patch.object(common_module, "load_teams", return_value=[]):
         result = svc._send_test_ms_teams(SimpleNamespace(tenant_id="nb"), "19:ops", "group-1", "hello", "nb")
-    assert result == {"success": False, "platform": "ms_teams", "error": bs.APP_NOT_IN_TEAM}
+    assert result == {"success": False, "platform": "ms_teams", "error": bs._branded(bs.APP_NOT_IN_TEAM)}
 
 
 def test_graph_only_actions_are_refused(svc):
@@ -599,7 +599,7 @@ def test_a_channel_outside_the_team_is_refused():
     sender, _ = _sender_listing(["19:ops"], ["19:ops"])
     with pytest.raises(bs.TeamsBotError) as exc:
         sender.check_channel(TEAM, "19:another-customers-channel")
-    assert str(exc.value) == bs.CHANNEL_NOT_IN_TEAM
+    assert str(exc.value) == bs._branded(bs.CHANNEL_NOT_IN_TEAM)
 
 
 def test_an_alert_to_a_channel_outside_the_team_is_not_sent():
@@ -622,7 +622,7 @@ def test_a_test_send_to_a_channel_outside_the_team_is_not_sent(svc):
         mock.patch.object(common_module, "get_sender", return_value=sender),
     ):
         result = svc._send_test_ms_teams(SimpleNamespace(tenant_id="nb"), "19:elsewhere", "group-1", "hello", "nb")
-    assert result == {"success": False, "platform": "ms_teams", "error": bs.CHANNEL_NOT_IN_TEAM}
+    assert result == {"success": False, "platform": "ms_teams", "error": bs._branded(bs.CHANNEL_NOT_IN_TEAM)}
     sender.send.assert_not_called()
 
 

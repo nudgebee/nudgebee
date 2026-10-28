@@ -873,14 +873,15 @@ def _run_analysis(job) -> None:
             _active_analyses -= 1
 
 
-CHART_NOTE = "_Chart: open the investigation in Nudgebee to view it._"
+CHART_NOTE = "_Chart: open the investigation in {brand} to view it._"
 
 
 def _charts_as_notes(text: str) -> str:
     """The text with each nb-chart block replaced by a one-line note: a Teams
     message has no chart element, and the chart's JSON spec would otherwise
     post as raw text (and use up the size limit)."""
-    return "".join(CHART_NOTE if segment.is_chart else segment.text for segment in split_nb_chart_segments(text))
+    note = _branded(CHART_NOTE)
+    return "".join(note if segment.is_chart else segment.text for segment in split_nb_chart_segments(text))
 
 
 def _cut(text: str, event_id) -> str:

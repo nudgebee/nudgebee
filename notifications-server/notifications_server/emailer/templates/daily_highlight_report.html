@@ -106,7 +106,7 @@
   {% if overview_hidden_count > 0 %}
   <p style="font-family:'DM Sans',Arial,sans-serif; font-size:12px; color:#6B7280; line-height:1.6; margin:6px 0 0;">
     +{{ overview_hidden_count }} more cluster{{ 's' if overview_hidden_count != 1 else '' }} with activity
-    &nbsp;<a href="{{ base_url }}/home?accountId={{ ranked_overview_rows[0].account.id }}" style="color:{{ _primary_color }}; text-decoration:none; font-weight:500;">open NudgeBee</a> to see the rest.
+    &nbsp;<a href="{{ base_url }}/home?accountId={{ ranked_overview_rows[0].account.id }}" style="color:{{ _primary_color }}; text-decoration:none; font-weight:500;">open {{ _brand_name }}</a> to see the rest.
   </p>
   {% endif %}
 
@@ -359,7 +359,7 @@
   <div style="border-top:2px dotted #D1D5DB; margin:28px 0 0;"></div>
   <p style="font-family:'DM Sans',Arial,sans-serif; font-size:13px; color:#6B7280; line-height:1.6; margin:16px 0 0;">
     {{ hidden_count }} more cluster{{ 's' if hidden_count != 1 else '' }} need{{ 's' if hidden_count == 1 else '' }} attention — see the Cluster table above, or
-    <a href="{{ base_url }}/home?accountId={{ ranked_accounts[0].account.id }}" style="color:{{ _primary_color }}; text-decoration:none; font-weight:500;">open NudgeBee</a> for full detail.
+    <a href="{{ base_url }}/home?accountId={{ ranked_accounts[0].account.id }}" style="color:{{ _primary_color }}; text-decoration:none; font-weight:500;">open {{ _brand_name }}</a> for full detail.
   </p>
   {% endif %}
 {% endblock %}
