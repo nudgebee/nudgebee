@@ -84,6 +84,9 @@ type replayEvent struct {
 	// Tags, on a cloud alarm, are the tags of the resource it is about, stored
 	// the way the cloud collector stores them.
 	Tags map[string]string `json:"tags,omitempty"`
+	// Source, on a cloud alarm, is the source it is stored under; a polled
+	// CloudWatch alarm when empty.
+	Source string `json:"source,omitempty"`
 }
 
 func (e replayEvent) placed() bool { return e.Placed == nil || *e.Placed }
@@ -738,6 +741,9 @@ func insertReplayEvent(t *testing.T, ctx context.Context, tx *sqlx.Tx, tenant, a
 	status, endsAt := "FIRING", (*time.Time)(nil)
 	if e.Path == "cloud" {
 		source = "AWS_CloudWatch_Alarm"
+		if e.Source != "" {
+			source = e.Source
+		}
 		subjectNS, subjectType, ownerKind, owner = e.SubjectNamespace, e.SubjectType, "", ""
 		serviceKey = fmt.Sprintf("arn:aws:replay:us-east-1:000000000000:%s:%s", e.SubjectType, e.Subject)
 		if e.EndsS != nil && *e.EndsS <= e.StartsS {

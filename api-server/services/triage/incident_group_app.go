@@ -54,8 +54,10 @@ const (
 // cloudResourceAlarmSources are the sources whose alerts are about the cloud
 // resource the event is linked to. Other events can carry a resource too — a
 // Kubernetes alert carries its cluster — and reading tags there would relate
-// every pod alert in a cluster through the cluster's tags.
-var cloudResourceAlarmSources = []string{"AWS_CloudWatch_Alarm", "AWS_EventBridge", "Azure_Monitor_Alert", "GCP_Metric_Alert"}
+// every pod alert in a cluster through the cluster's tags. An Azure alert pushed
+// by webhook is linked to its resource as a polled one is, and one firing that
+// arrives both ways is one event stored under whichever came last.
+var cloudResourceAlarmSources = []string{"AWS_CloudWatch_Alarm", "AWS_EventBridge", "Azure_Monitor_Alert", "azure_monitor_webhook", "GCP_Metric_Alert"}
 
 // applicationTagKeys are the tags that name an application, most specific first,
 // normalised (resourceTagKey). Generic organisation-wide tags (project, team,
