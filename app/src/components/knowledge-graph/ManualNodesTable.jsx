@@ -14,6 +14,7 @@ import Tooltip from '@ui/Tooltip';
 import { DeleteIconRed, EditIcon, pmCheckCircle as MergeIcon } from '@assets';
 import { ds } from 'src/utils/colors';
 import { nodeRoleLabel } from './nodeRoleLabels';
+import { humanizeType } from './kgFilterCascade';
 
 // What each status tells the operator. An adopted node is the collector's
 // now — nothing left to do; a possible duplicate wants a Merge.
@@ -47,35 +48,8 @@ const buildMenuItems = (row) => {
   return items;
 };
 
-const splitPascalCase = (type) =>
-  (type || '')
-    .replace(/([a-z])([A-Z])/g, '$1 $2')
-    .replace(/([0-9])([A-Z][a-z])/g, '$1 $2')
-    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
-
-// Product names that are PascalCase themselves stay whole after the split
-// ("DynamoDBTable" → "DynamoDB Table", not "Dynamo DB Table").
-const PRODUCT_NAMES = [
-  'BigQuery',
-  'CloudFormation',
-  'CloudFront',
-  'CloudTrail',
-  'CloudWatch',
-  'DynamoDB',
-  'ElastiCache',
-  'GitHub',
-  'GitLab',
-  'GuardDuty',
-  'OpenSearch',
-  'PagerDuty',
-  'SageMaker',
-];
-const PRODUCT_NAME_REJOINS = PRODUCT_NAMES.map((name) => [new RegExp(`\\b${splitPascalCase(name)}\\b`, 'g'), name]);
-
-// PascalCase specific type → spaced label ("SQSQueue" → "SQS Queue",
-// "EC2Instance" → "EC2 Instance"). The type picker and the Knowledge Graph's
-// Node Type filter and node cards all show these labels.
-export const humanizeType = (type) => PRODUCT_NAME_REJOINS.reduce((label, [re, name]) => label.replace(re, name), splitPascalCase(type));
+// humanizeType lives in ./kgFilterCascade; re-exported for existing importers.
+export { humanizeType };
 
 // "Where" cell: the account (or "Outside connected accounts") plus the
 // identity qualifiers that place the node.

@@ -1,6 +1,6 @@
 // Node Type filter options (#40705): groups and leaves read as spaced names, and
 // search still finds a type by its spaced or raw PascalCase name.
-import { buildNodeTypeOptions } from '../KnowledgeGraph';
+import { buildNodeTypeOptions } from '../kgFilterCascade';
 
 const options = buildNodeTypeOptions(['ComputeInstance', 'Database', 'VPC'], {
   ComputeInstance: ['EC2Instance', 'GCEInstance'],

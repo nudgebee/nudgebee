@@ -518,13 +518,16 @@ const apiKnowledgeGraph = {
     return queryGraphQL(KG_GET_COMPLETE_GRAPH, 'KnowledgeGraph', { request }, undefined, signal);
   },
 
-  getFilterOptions: async function (data?: { accountIds?: string[]; nodeTypes?: string[] }) {
-    const request: { account_ids?: string[]; node_types?: string[] } = {};
+  getFilterOptions: async function (data?: { accountIds?: string[]; nodeTypes?: string[]; specificTypes?: string[] }) {
+    const request: { account_ids?: string[]; node_types?: string[]; specific_types?: string[] } = {};
     if (data?.accountIds?.length) {
       request.account_ids = data.accountIds;
     }
     if (data?.nodeTypes?.length) {
       request.node_types = data.nodeTypes;
+    }
+    if (data?.specificTypes?.length) {
+      request.specific_types = data.specificTypes;
     }
     return await queryGraphQL(KG_GET_FILTER_OPTIONS.replace('__WHERE__', gqlStringify(request)), 'KgFilterOptions', {});
   },

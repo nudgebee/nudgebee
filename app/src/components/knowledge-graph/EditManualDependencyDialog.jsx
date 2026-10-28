@@ -333,7 +333,8 @@ const EditManualDependencyDialog = ({ open, row, schema, onClose, onSaved }) => 
             return {
               ...prev,
               [`${prefix}_picker_account_id`]: accountId,
-              [`${prefix}_picker_node_type`]: node.node_type || prev[`${prefix}_node_type`] || '',
+              // The picker's type dropdown lists specific types (grouped by node type).
+              [`${prefix}_picker_node_type`]: node.specific_type || node.node_type || prev[`${prefix}_node_type`] || '',
             };
           });
         })

@@ -60,6 +60,8 @@ import {
   decodeFilterOptions,
   computeFilterOptionsClientSide,
   buildAccountOptions,
+  getNodeTypeLeaves,
+  buildNodeTypeOptions,
   TENANT_ACCOUNT_LABEL,
 } from './kgFilterCascade';
 import { getAutoFitCenter } from './kgViewport';
@@ -797,35 +799,8 @@ const useGraphBuilder = (rawData, onInfoClick, accMap, onFocusClick) => {
 // Renders the cloud-provider icon shown in each Account filter group header.
 const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
-// The selectable leaves for a given node_type: its known specific_types, or (when none are
-// known yet — no ontology data, or not backfilled) a single leaf identical to the node_type
-// itself, so every node type stays selectable and accounted for either way.
-function getNodeTypeLeaves(nodeType, specificTypesByNodeType) {
-  const specificTypes = specificTypesByNodeType?.[nodeType];
-  return specificTypes?.length ? specificTypes : [nodeType];
-}
-
-// Builds the grouped Node Type filter options: one leaf per specific_type, grouped by its
-// broad node_type. A node_type whose only leaf is identical to itself (no ontology mapping,
-// or the AWS/GCP/Azure specific_type extractors' own fallback-to-node_type default) has
-// nothing to drill into, so it's left ungrouped rather than rendered as a group header with
-// one child of the same name — FilterDropdown buckets ungrouped options under "Other".
-// Labels and group headers are spaced ("RDS Instance", "Compute Instance"); `searchText` keeps
-// the raw PascalCase leaf so typing "RDSInstance" still finds it, and real leaves add their broad
-// (ontological) type too — e.g. searching "compute" surfaces EC2Instance/GCEInstance/etc. even
-// though none of those specific-type labels themselves contain "compute".
-export function buildNodeTypeOptions(nodeTypes, specificTypesByNodeType) {
-  return (nodeTypes || []).flatMap((nodeType) => {
-    const leaves = getNodeTypeLeaves(nodeType, specificTypesByNodeType);
-    const hasRealBreakdown = !(leaves.length === 1 && leaves[0] === nodeType);
-    const group = humanizeType(nodeType);
-    return leaves.map((leaf) => ({
-      label: humanizeType(leaf),
-      value: leaf,
-      ...(hasRealBreakdown ? { group, searchText: `${leaf} ${nodeType} ${group}` } : { searchText: leaf }),
-    }));
-  });
-}
+// getNodeTypeLeaves and buildNodeTypeOptions are imported from ./kgFilterCascade (shared
+// with the Manual Dependency dialog's KG node picker).
 
 // Translates the flat set of selected Node Type filter leaf values (specific_types, or a bare
 // node_type when it has no breakdown) back into the two independent backend filter arrays.

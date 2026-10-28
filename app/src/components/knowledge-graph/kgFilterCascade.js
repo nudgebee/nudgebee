@@ -14,6 +14,66 @@
 //   - label/attr keys -> per-key bucket coverage (a key survives iff one of its
 //                       (account,node_type,specific_type) buckets is present in the scope)
 
+const splitPascalCase = (type) =>
+  (type || '')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/([0-9])([A-Z][a-z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
+
+// Product names that are PascalCase themselves stay whole after the split
+// ("DynamoDBTable" → "DynamoDB Table", not "Dynamo DB Table").
+const PRODUCT_NAMES = [
+  'BigQuery',
+  'CloudFormation',
+  'CloudFront',
+  'CloudTrail',
+  'CloudWatch',
+  'DynamoDB',
+  'ElastiCache',
+  'GitHub',
+  'GitLab',
+  'GuardDuty',
+  'OpenSearch',
+  'PagerDuty',
+  'SageMaker',
+];
+const PRODUCT_NAME_REJOINS = PRODUCT_NAMES.map((name) => [new RegExp(`\\b${splitPascalCase(name)}\\b`, 'g'), name]);
+
+// PascalCase specific type → spaced label ("SQSQueue" → "SQS Queue",
+// "EC2Instance" → "EC2 Instance"). The type picker and the Knowledge Graph's
+// Node Type filter and node cards all show these labels.
+export const humanizeType = (type) => PRODUCT_NAME_REJOINS.reduce((label, [re, name]) => label.replace(re, name), splitPascalCase(type));
+
+// The selectable leaves for a given node_type: its known specific_types, or (when none are
+// known yet — no ontology data, or not backfilled) a single leaf identical to the node_type
+// itself, so every node type stays selectable and accounted for either way.
+export function getNodeTypeLeaves(nodeType, specificTypesByNodeType) {
+  const specificTypes = specificTypesByNodeType?.[nodeType];
+  return specificTypes?.length ? specificTypes : [nodeType];
+}
+
+// Builds the grouped Node Type filter options: one leaf per specific_type, grouped by its
+// broad node_type. A node_type whose only leaf is identical to itself (no ontology mapping,
+// or the AWS/GCP/Azure specific_type extractors' own fallback-to-node_type default) has
+// nothing to drill into, so it's left ungrouped rather than rendered as a group header with
+// one child of the same name — FilterDropdown buckets ungrouped options under "Other".
+// Labels and group headers are spaced ("RDS Instance", "Compute Instance"); `searchText` keeps
+// the raw PascalCase leaf so typing "RDSInstance" still finds it, and real leaves add their broad
+// (ontological) type too — e.g. searching "compute" surfaces EC2Instance/GCEInstance/etc. even
+// though none of those specific-type labels themselves contain "compute".
+export function buildNodeTypeOptions(nodeTypes, specificTypesByNodeType) {
+  return (nodeTypes || []).flatMap((nodeType) => {
+    const leaves = getNodeTypeLeaves(nodeType, specificTypesByNodeType);
+    const hasRealBreakdown = !(leaves.length === 1 && leaves[0] === nodeType);
+    const group = humanizeType(nodeType);
+    return leaves.map((leaf) => ({
+      label: humanizeType(leaf),
+      value: leaf,
+      ...(hasRealBreakdown ? { group, searchText: `${leaf} ${nodeType} ${group}` } : { searchText: leaf }),
+    }));
+  });
+}
+
 // Parse a canonical 6-part KG unique key into its components.
 // Format: {cloud_provider}:{account}:{location}:{NodeType}:{hierarchy}:{name}
 // (see api-server/services/knowledge_graph/core/unique_key_builder.go). `name` is
