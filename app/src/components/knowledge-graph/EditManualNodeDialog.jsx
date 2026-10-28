@@ -36,7 +36,7 @@ import { ds } from 'src/utils/colors';
 export const OUTSIDE_ACCOUNTS = '__outside__';
 const placeValue = (place) => place.cloud_account_id || OUTSIDE_ACCOUNTS;
 
-const EMPTY_KEYS = { name: '', region: '', namespace: '', network: '' };
+const EMPTY_KEYS = { name: '', region: '', namespace: '', resource_group: '', network: '' };
 
 // The type picker's entry for introducing a kind the tenant does not use yet.
 export const NEW_KIND = '__new_kind__';
@@ -204,7 +204,13 @@ const EditManualNodeDialog = ({ open, row, initial, schema, onClose, onSaved, on
       setPlace(row.cloud_account_id || OUTSIDE_ACCOUNTS);
       // Outside an account specific_type is the node type, or the tenant's own kind.
       setSpecificType(row.specific_type || row.node_type);
-      setKeys({ name: row.name, region: row.region || '', namespace: row.namespace || '', network: row.network_node_id || '' });
+      setKeys({
+        name: row.name,
+        region: row.region || '',
+        namespace: row.namespace || '',
+        resource_group: row.resource_group || '',
+        network: row.network_node_id || '',
+      });
       setDescription(row.description || '');
       setProperties(Object.fromEntries(Object.entries(row.properties || {}).map(([k, v]) => [k, toEditable(v)])));
       setFreeProperties(toFreeRows(row.properties));
@@ -464,16 +470,16 @@ const EditManualNodeDialog = ({ open, row, initial, schema, onClose, onSaved, on
           request.region = keys.region.trim();
         }
       } else {
-        // Send exactly the key fields this type declares: a cloud resource has a
-        // region (and maybe a VPC), a Kubernetes one a namespace.
+        // Send exactly the key fields this type declares, whatever they are: a
+        // cloud resource has a region (and maybe a VPC or resource group), a
+        // Kubernetes one a namespace. Reading the list rather than naming each
+        // field keeps a new key field working without a change here.
         request.cloud_account_id = place;
         request.specific_type = kind.specific_type;
-        const declares = (field) => kind.key_fields.some((f) => f.name === field);
-        if (declares('region')) {
-          request.region = keys.region.trim();
-        }
-        if (declares('namespace')) {
-          request.namespace = keys.namespace.trim();
+        for (const f of kind.key_fields) {
+          if (f.name !== 'name' && f.name !== 'network') {
+            request[f.name] = String(keys[f.name] || '').trim();
+          }
         }
         if (keys.network) {
           request.network_node_id = keys.network;

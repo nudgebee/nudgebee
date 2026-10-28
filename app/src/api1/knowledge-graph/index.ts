@@ -150,6 +150,8 @@ export interface ManualNodeCreateRequest {
   name: string;
   region?: string;
   namespace?: string;
+  // An Azure resource's resource group: part of its key.
+  resource_group?: string;
   network_node_id?: string;
   description?: string;
   properties?: Record<string, ManualNodePropertyValue>;

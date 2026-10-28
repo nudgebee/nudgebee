@@ -506,6 +506,31 @@ func TestE2E_TierA_AzureAllEdges(t *testing.T) {
 		t.Errorf("azure_all_edges: expected node %q not produced", name)
 	}
 
+	// Azure names are unique per resource group and parent, so resources that
+	// share a name elsewhere must stay separate nodes, and one resource reported
+	// with two region spellings must stay one.
+	wantNodesNamed := map[string]int{
+		"orders":                            2, // one database per server
+		"default":                           3, // two accounts' blob services and one's file service
+		"privatelink.blob.core.windows.net": 2, // one zone per resource group
+		"region-app":                        1, // "South Central US" and "southcentralus"
+	}
+	gotNodesNamed := map[string]int{}
+	for _, n := range nodes {
+		name, _ := n.Properties["name"].(string)
+		if _, ok := wantNodesNamed[name]; ok {
+			gotNodesNamed[name]++
+		}
+		if _, ok := n.Properties["key_collisions"]; ok {
+			t.Errorf("azure_all_edges: %s shares its unique key with another resource", n.UniqueKey)
+		}
+	}
+	for name, want := range wantNodesNamed {
+		if gotNodesNamed[name] != want {
+			t.Errorf("azure_all_edges: %d nodes named %q, want %d", gotNodesNamed[name], name, want)
+		}
+	}
+
 	// Azure edge-type coverage gate (offline-reachable meta-driven edges).
 	wantEdgeTypes := []core.RelationshipType{
 		core.RelationshipBelongsTo,

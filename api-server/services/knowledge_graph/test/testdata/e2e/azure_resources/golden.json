@@ -37,7 +37,7 @@
       }
     },
     {
-      "unique_key": "azure:test-account-azure-1:eastus:ComputeInstance:vnet-1:app-vm",
+      "unique_key": "azure:test-account-azure-1:eastus:ComputeInstance::app-vm",
       "node_type": "ComputeInstance",
       "specific_type": "AzureVirtualMachine",
       "cloud_account_id": "test-account-azure-1",
@@ -160,7 +160,7 @@
       }
     },
     {
-      "unique_key": "azure:test-account-azure-1:eastus:ManagedCluster:microsoft.containerservice/managedclusters:app-aks",
+      "unique_key": "azure:test-account-azure-1:eastus:ManagedCluster::app-aks",
       "node_type": "ManagedCluster",
       "specific_type": "AKSCluster",
       "cloud_account_id": "test-account-azure-1",
@@ -309,7 +309,7 @@
       }
     },
     {
-      "unique_key": "azure:test-account-azure-1:eastus:Subnet:vnet-1:app-subnet",
+      "unique_key": "azure:test-account-azure-1:eastus:Subnet::app-subnet",
       "node_type": "Subnet",
       "specific_type": "AzureSubnet",
       "cloud_account_id": "test-account-azure-1",
@@ -397,8 +397,8 @@
   ],
   "edges": [
     {
-      "src_key": "azure:test-account-azure-1:eastus:ComputeInstance:vnet-1:app-vm",
-      "dst_key": "azure:test-account-azure-1:eastus:Subnet:vnet-1:app-subnet",
+      "src_key": "azure:test-account-azure-1:eastus:ComputeInstance::app-vm",
+      "dst_key": "azure:test-account-azure-1:eastus:Subnet::app-subnet",
       "relationship_type": "HOSTED_ON",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",
@@ -415,7 +415,7 @@
       ]
     },
     {
-      "src_key": "azure:test-account-azure-1:eastus:ComputeInstance:vnet-1:app-vm",
+      "src_key": "azure:test-account-azure-1:eastus:ComputeInstance::app-vm",
       "dst_key": "azure:test-account-azure-1:eastus:VPC::app-vnet",
       "relationship_type": "HOSTED_ON",
       "cloud_account_id": "test-account-azure-1",
@@ -433,7 +433,7 @@
       ]
     },
     {
-      "src_key": "azure:test-account-azure-1:eastus:Subnet:vnet-1:app-subnet",
+      "src_key": "azure:test-account-azure-1:eastus:Subnet::app-subnet",
       "dst_key": "azure:test-account-azure-1:eastus:VPC::app-vnet",
       "relationship_type": "BELONGS_TO",
       "cloud_account_id": "test-account-azure-1",

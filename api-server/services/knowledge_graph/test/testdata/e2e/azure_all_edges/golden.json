@@ -1,7 +1,7 @@
 {
   "nodes": [
     {
-      "unique_key": "azure:test-account-azure-1:eastus:CloudResource::cert1",
+      "unique_key": "azure:test-account-azure-1:eastus:CloudResource:rg1:cert1",
       "node_type": "CloudResource",
       "specific_type": "CloudResource",
       "cloud_account_id": "test-account-azure-1",
@@ -34,7 +34,7 @@
       "ontology_attributes": {}
     },
     {
-      "unique_key": "azure:test-account-azure-1:eastus:CloudResource::ra1",
+      "unique_key": "azure:test-account-azure-1:eastus:CloudResource:rg1:ra1",
       "node_type": "CloudResource",
       "specific_type": "CloudResource",
       "cloud_account_id": "test-account-azure-1",
@@ -67,7 +67,44 @@
       "ontology_attributes": {}
     },
     {
-      "unique_key": "azure:test-account-azure-1:eastus:ComputeInstance:/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Network/virtualNetworks/vnet1:vm1",
+      "unique_key": "azure:test-account-azure-1:eastus:ComputeInstance:mc_rg1_aks1_eastus:aks-vmss",
+      "node_type": "ComputeInstance",
+      "specific_type": "AzureVirtualMachine",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "account_number": "",
+        "arn": "/subscriptions/sub1/resourceGroups/MC_rg1_aks1_eastus/providers/Microsoft.Compute/virtualMachineScaleSets/aks-vmss",
+        "cloud_provider": "Azure",
+        "external_resource_id": "aks-vmss",
+        "is_active": true,
+        "labels": null,
+        "name": "aks-vmss",
+        "nb_account_id": "sub1",
+        "nb_resource_id": "aks-vmss",
+        "region": "eastus",
+        "resource_id": "/subscriptions/sub1/resourceGroups/MC_rg1_aks1_eastus/providers/Microsoft.Compute/virtualMachineScaleSets/aks-vmss",
+        "service_name": "microsoft.compute/virtualmachinescalesets",
+        "source": "azure",
+        "status": "",
+        "subtype": "virtualmachinescalesets",
+        "type": "virtualmachinescalesets"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "aks-vmss",
+        "region": "eastus",
+        "subtype": "virtualmachinescalesets"
+      },
+      "ontology_attributes": {
+        "name": "aks-vmss",
+        "region": "eastus"
+      }
+    },
+    {
+      "unique_key": "azure:test-account-azure-1:eastus:ComputeInstance:rg1:vm1",
       "node_type": "ComputeInstance",
       "specific_type": "AzureVirtualMachine",
       "cloud_account_id": "test-account-azure-1",
@@ -114,44 +151,7 @@
       }
     },
     {
-      "unique_key": "azure:test-account-azure-1:eastus:ComputeInstance::aks-vmss",
-      "node_type": "ComputeInstance",
-      "specific_type": "AzureVirtualMachine",
-      "cloud_account_id": "test-account-azure-1",
-      "tenant_id": "test-tenant-1",
-      "level": "",
-      "source": "azure",
-      "properties": {
-        "account_number": "",
-        "arn": "/subscriptions/sub1/resourceGroups/MC_rg1_aks1_eastus/providers/Microsoft.Compute/virtualMachineScaleSets/aks-vmss",
-        "cloud_provider": "Azure",
-        "external_resource_id": "aks-vmss",
-        "is_active": true,
-        "labels": null,
-        "name": "aks-vmss",
-        "nb_account_id": "sub1",
-        "nb_resource_id": "aks-vmss",
-        "region": "eastus",
-        "resource_id": "/subscriptions/sub1/resourceGroups/MC_rg1_aks1_eastus/providers/Microsoft.Compute/virtualMachineScaleSets/aks-vmss",
-        "service_name": "microsoft.compute/virtualmachinescalesets",
-        "source": "azure",
-        "status": "",
-        "subtype": "virtualmachinescalesets",
-        "type": "virtualmachinescalesets"
-      },
-      "labels": {},
-      "query_attributes": {
-        "name": "aks-vmss",
-        "region": "eastus",
-        "subtype": "virtualmachinescalesets"
-      },
-      "ontology_attributes": {
-        "name": "aks-vmss",
-        "region": "eastus"
-      }
-    },
-    {
-      "unique_key": "azure:test-account-azure-1:eastus:ComputeInstance::vmss1",
+      "unique_key": "azure:test-account-azure-1:eastus:ComputeInstance:rg1:vmss1",
       "node_type": "ComputeInstance",
       "specific_type": "AzureVirtualMachine",
       "cloud_account_id": "test-account-azure-1",
@@ -188,7 +188,7 @@
       }
     },
     {
-      "unique_key": "azure:test-account-azure-1:eastus:ComputeInstancePool::plan1",
+      "unique_key": "azure:test-account-azure-1:eastus:ComputeInstancePool:rg1:plan1",
       "node_type": "ComputeInstancePool",
       "specific_type": "AzureAppServicePlan",
       "cloud_account_id": "test-account-azure-1",
@@ -225,7 +225,83 @@
       }
     },
     {
-      "unique_key": "azure:test-account-azure-1:eastus:LoadBalancer::lb1",
+      "unique_key": "azure:test-account-azure-1:eastus:Database:rg1:sqlsrv-a/databases/orders",
+      "node_type": "Database",
+      "specific_type": "AzureSQLDatabase",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "account_number": "",
+        "arn": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Sql/servers/sqlsrv-a/databases/orders",
+        "cloud_provider": "Azure",
+        "external_resource_id": "db-orders-a",
+        "is_active": true,
+        "labels": null,
+        "name": "orders",
+        "nb_account_id": "sub1",
+        "nb_resource_id": "db-orders-a",
+        "region": "eastus",
+        "resource_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Sql/servers/sqlsrv-a/databases/orders",
+        "service_name": "microsoft.sql/servers",
+        "source": "azure",
+        "status": "",
+        "subtype": "databases",
+        "type": "databases"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "orders",
+        "region": "eastus",
+        "subtype": "databases"
+      },
+      "ontology_attributes": {
+        "location": "eastus",
+        "name": "orders",
+        "type": "databases"
+      }
+    },
+    {
+      "unique_key": "azure:test-account-azure-1:eastus:Database:rg2:sqlsrv-b/databases/orders",
+      "node_type": "Database",
+      "specific_type": "AzureSQLDatabase",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "account_number": "",
+        "arn": "/subscriptions/sub1/resourceGroups/rg2/providers/Microsoft.Sql/servers/sqlsrv-b/databases/orders",
+        "cloud_provider": "Azure",
+        "external_resource_id": "db-orders-b",
+        "is_active": true,
+        "labels": null,
+        "name": "orders",
+        "nb_account_id": "sub1",
+        "nb_resource_id": "db-orders-b",
+        "region": "eastus",
+        "resource_id": "/subscriptions/sub1/resourceGroups/rg2/providers/Microsoft.Sql/servers/sqlsrv-b/databases/orders",
+        "service_name": "microsoft.sql/servers",
+        "source": "azure",
+        "status": "",
+        "subtype": "databases",
+        "type": "databases"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "orders",
+        "region": "eastus",
+        "subtype": "databases"
+      },
+      "ontology_attributes": {
+        "location": "eastus",
+        "name": "orders",
+        "type": "databases"
+      }
+    },
+    {
+      "unique_key": "azure:test-account-azure-1:eastus:LoadBalancer:rg1:lb1",
       "node_type": "LoadBalancer",
       "specific_type": "AzureLoadBalancer",
       "cloud_account_id": "test-account-azure-1",
@@ -267,7 +343,7 @@
       }
     },
     {
-      "unique_key": "azure:test-account-azure-1:eastus:ManagedCluster:microsoft.containerservice/managedclusters:aks1",
+      "unique_key": "azure:test-account-azure-1:eastus:ManagedCluster:rg1:aks1",
       "node_type": "ManagedCluster",
       "specific_type": "AKSCluster",
       "cloud_account_id": "test-account-azure-1",
@@ -305,7 +381,7 @@
       }
     },
     {
-      "unique_key": "azure:test-account-azure-1:eastus:NetworkInterface::nic1",
+      "unique_key": "azure:test-account-azure-1:eastus:NetworkInterface:rg1:nic1",
       "node_type": "NetworkInterface",
       "specific_type": "AzureNetworkInterface",
       "cloud_account_id": "test-account-azure-1",
@@ -345,7 +421,7 @@
       }
     },
     {
-      "unique_key": "azure:test-account-azure-1:eastus:PublicIP::pip1",
+      "unique_key": "azure:test-account-azure-1:eastus:PublicIP:rg1:pip1",
       "node_type": "PublicIP",
       "specific_type": "AzurePublicIP",
       "cloud_account_id": "test-account-azure-1",
@@ -381,7 +457,7 @@
       }
     },
     {
-      "unique_key": "azure:test-account-azure-1:eastus:SecurityGroup::nsg1",
+      "unique_key": "azure:test-account-azure-1:eastus:SecurityGroup:rg1:nsg1",
       "node_type": "SecurityGroup",
       "specific_type": "AzureNetworkSecurityGroup",
       "cloud_account_id": "test-account-azure-1",
@@ -417,7 +493,7 @@
       }
     },
     {
-      "unique_key": "azure:test-account-azure-1:eastus:ServerlessFunction::func1",
+      "unique_key": "azure:test-account-azure-1:eastus:ServerlessFunction:rg1:func1",
       "node_type": "ServerlessFunction",
       "specific_type": "AzureFunctionApp",
       "cloud_account_id": "test-account-azure-1",
@@ -453,7 +529,7 @@
       }
     },
     {
-      "unique_key": "azure:test-account-azure-1:eastus:ServerlessFunction::logic1",
+      "unique_key": "azure:test-account-azure-1:eastus:ServerlessFunction:rg1:logic1",
       "node_type": "ServerlessFunction",
       "specific_type": "AzureLogicApp",
       "cloud_account_id": "test-account-azure-1",
@@ -489,7 +565,7 @@
       }
     },
     {
-      "unique_key": "azure:test-account-azure-1:eastus:ServerlessFunction::web1",
+      "unique_key": "azure:test-account-azure-1:eastus:ServerlessFunction:rg1:web1",
       "node_type": "ServerlessFunction",
       "specific_type": "AzureAppService",
       "cloud_account_id": "test-account-azure-1",
@@ -525,7 +601,7 @@
       }
     },
     {
-      "unique_key": "azure:test-account-azure-1:eastus:ServiceIdentity::id1",
+      "unique_key": "azure:test-account-azure-1:eastus:ServiceIdentity:rg1:id1",
       "node_type": "ServiceIdentity",
       "specific_type": "AzureManagedIdentity",
       "cloud_account_id": "test-account-azure-1",
@@ -566,7 +642,83 @@
       }
     },
     {
-      "unique_key": "azure:test-account-azure-1:eastus:Storage::storage1",
+      "unique_key": "azure:test-account-azure-1:eastus:Storage:rg1:storage1/blobservices/default",
+      "node_type": "Storage",
+      "specific_type": "AzureStorageAccount",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "account_number": "",
+        "arn": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Storage/storageAccounts/storage1/blobServices/default",
+        "cloud_provider": "Azure",
+        "external_resource_id": "blob-storage1",
+        "is_active": true,
+        "labels": null,
+        "name": "default",
+        "nb_account_id": "sub1",
+        "nb_resource_id": "blob-storage1",
+        "region": "eastus",
+        "resource_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Storage/storageAccounts/storage1/blobServices/default",
+        "service_name": "microsoft.storage/storageaccounts",
+        "source": "azure",
+        "status": "",
+        "subtype": "blobservices",
+        "type": "blobservices"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "default",
+        "region": "eastus",
+        "subtype": "blobservices"
+      },
+      "ontology_attributes": {
+        "location": "eastus",
+        "name": "default",
+        "type": "blobservices"
+      }
+    },
+    {
+      "unique_key": "azure:test-account-azure-1:eastus:Storage:rg1:storage1/fileservices/default",
+      "node_type": "Storage",
+      "specific_type": "AzureStorageAccount",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "account_number": "",
+        "arn": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Storage/storageAccounts/storage1/fileServices/default",
+        "cloud_provider": "Azure",
+        "external_resource_id": "file-storage1",
+        "is_active": true,
+        "labels": null,
+        "name": "default",
+        "nb_account_id": "sub1",
+        "nb_resource_id": "file-storage1",
+        "region": "eastus",
+        "resource_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Storage/storageAccounts/storage1/fileServices/default",
+        "service_name": "microsoft.storage/storageaccounts",
+        "source": "azure",
+        "status": "",
+        "subtype": "fileservices",
+        "type": "fileservices"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "default",
+        "region": "eastus",
+        "subtype": "fileservices"
+      },
+      "ontology_attributes": {
+        "location": "eastus",
+        "name": "default",
+        "type": "fileservices"
+      }
+    },
+    {
+      "unique_key": "azure:test-account-azure-1:eastus:Storage:rg1:storage1",
       "node_type": "Storage",
       "specific_type": "AzureStorageAccount",
       "cloud_account_id": "test-account-azure-1",
@@ -604,7 +756,45 @@
       }
     },
     {
-      "unique_key": "azure:test-account-azure-1:eastus:Subnet:/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Network/virtualNetworks/vnet1:subnet1",
+      "unique_key": "azure:test-account-azure-1:eastus:Storage:rg2:storage2/blobservices/default",
+      "node_type": "Storage",
+      "specific_type": "AzureStorageAccount",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "account_number": "",
+        "arn": "/subscriptions/sub1/resourceGroups/rg2/providers/Microsoft.Storage/storageAccounts/storage2/blobServices/default",
+        "cloud_provider": "Azure",
+        "external_resource_id": "blob-storage2",
+        "is_active": true,
+        "labels": null,
+        "name": "default",
+        "nb_account_id": "sub1",
+        "nb_resource_id": "blob-storage2",
+        "region": "eastus",
+        "resource_id": "/subscriptions/sub1/resourceGroups/rg2/providers/Microsoft.Storage/storageAccounts/storage2/blobServices/default",
+        "service_name": "microsoft.storage/storageaccounts",
+        "source": "azure",
+        "status": "",
+        "subtype": "blobservices",
+        "type": "blobservices"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "default",
+        "region": "eastus",
+        "subtype": "blobservices"
+      },
+      "ontology_attributes": {
+        "location": "eastus",
+        "name": "default",
+        "type": "blobservices"
+      }
+    },
+    {
+      "unique_key": "azure:test-account-azure-1:eastus:Subnet:rg1:vnet1/subnets/subnet1",
       "node_type": "Subnet",
       "specific_type": "AzureSubnet",
       "cloud_account_id": "test-account-azure-1",
@@ -647,7 +837,7 @@
       }
     },
     {
-      "unique_key": "azure:test-account-azure-1:eastus:VPC::vnet1",
+      "unique_key": "azure:test-account-azure-1:eastus:VPC:rg1:vnet1",
       "node_type": "VPC",
       "specific_type": "AzureVirtualNetwork",
       "cloud_account_id": "test-account-azure-1",
@@ -681,12 +871,120 @@
         "location": "eastus",
         "name": "vnet1"
       }
+    },
+    {
+      "unique_key": "azure:test-account-azure-1:global:DNSZone:rg1:privatelink.blob.core.windows.net",
+      "node_type": "DNSZone",
+      "specific_type": "AzureDNSZone",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "account_number": "",
+        "arn": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Network/privateDnsZones/privatelink.blob.core.windows.net",
+        "cloud_provider": "Azure",
+        "external_resource_id": "zone-rg1",
+        "is_active": true,
+        "labels": null,
+        "name": "privatelink.blob.core.windows.net",
+        "nb_account_id": "sub1",
+        "nb_resource_id": "zone-rg1",
+        "region": "global",
+        "resource_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Network/privateDnsZones/privatelink.blob.core.windows.net",
+        "service_name": "microsoft.network/privatednszones",
+        "source": "azure",
+        "status": "",
+        "subtype": "privatednszones",
+        "type": "privatednszones"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "privatelink.blob.core.windows.net",
+        "region": "global"
+      },
+      "ontology_attributes": {
+        "location": "global",
+        "name": "privatelink.blob.core.windows.net"
+      }
+    },
+    {
+      "unique_key": "azure:test-account-azure-1:global:DNSZone:rg2:privatelink.blob.core.windows.net",
+      "node_type": "DNSZone",
+      "specific_type": "AzureDNSZone",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "account_number": "",
+        "arn": "/subscriptions/sub1/resourceGroups/rg2/providers/Microsoft.Network/privateDnsZones/privatelink.blob.core.windows.net",
+        "cloud_provider": "Azure",
+        "external_resource_id": "zone-rg2",
+        "is_active": true,
+        "labels": null,
+        "name": "privatelink.blob.core.windows.net",
+        "nb_account_id": "sub1",
+        "nb_resource_id": "zone-rg2",
+        "region": "global",
+        "resource_id": "/subscriptions/sub1/resourceGroups/rg2/providers/Microsoft.Network/privateDnsZones/privatelink.blob.core.windows.net",
+        "service_name": "microsoft.network/privatednszones",
+        "source": "azure",
+        "status": "",
+        "subtype": "privatednszones",
+        "type": "privatednszones"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "privatelink.blob.core.windows.net",
+        "region": "global"
+      },
+      "ontology_attributes": {
+        "location": "global",
+        "name": "privatelink.blob.core.windows.net"
+      }
+    },
+    {
+      "unique_key": "azure:test-account-azure-1:southcentralus:ServerlessFunction:rg1:region-app",
+      "node_type": "ServerlessFunction",
+      "specific_type": "AzureAppService",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "account_number": "",
+        "arn": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Web/sites/region-app",
+        "cloud_provider": "Azure",
+        "external_resource_id": "app-code",
+        "is_active": true,
+        "labels": null,
+        "name": "region-app",
+        "nb_account_id": "sub1",
+        "nb_resource_id": "app-code",
+        "region": "southcentralus",
+        "resource_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Web/sites/region-app",
+        "service_name": "microsoft.web/sites/functions",
+        "source": "azure",
+        "status": "",
+        "subtype": "functions",
+        "type": "functions"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "region-app",
+        "region": "South Central US"
+      },
+      "ontology_attributes": {
+        "location": "South Central US",
+        "name": "region-app"
+      }
     }
   ],
   "edges": [
     {
-      "src_key": "azure:test-account-azure-1:eastus:ComputeInstance:/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Network/virtualNetworks/vnet1:vm1",
-      "dst_key": "azure:test-account-azure-1:eastus:NetworkInterface::nic1",
+      "src_key": "azure:test-account-azure-1:eastus:ComputeInstance:rg1:vm1",
+      "dst_key": "azure:test-account-azure-1:eastus:NetworkInterface:rg1:nic1",
       "relationship_type": "ASSOCIATED_WITH",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",
@@ -703,8 +1001,8 @@
       ]
     },
     {
-      "src_key": "azure:test-account-azure-1:eastus:ComputeInstance:/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Network/virtualNetworks/vnet1:vm1",
-      "dst_key": "azure:test-account-azure-1:eastus:ServiceIdentity::id1",
+      "src_key": "azure:test-account-azure-1:eastus:ComputeInstance:rg1:vm1",
+      "dst_key": "azure:test-account-azure-1:eastus:ServiceIdentity:rg1:id1",
       "relationship_type": "RUNS_AS",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",
@@ -721,8 +1019,8 @@
       ]
     },
     {
-      "src_key": "azure:test-account-azure-1:eastus:LoadBalancer::lb1",
-      "dst_key": "azure:test-account-azure-1:eastus:ComputeInstance::vmss1",
+      "src_key": "azure:test-account-azure-1:eastus:LoadBalancer:rg1:lb1",
+      "dst_key": "azure:test-account-azure-1:eastus:ComputeInstance:rg1:vmss1",
       "relationship_type": "ROUTES_TO",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",
@@ -739,8 +1037,8 @@
       ]
     },
     {
-      "src_key": "azure:test-account-azure-1:eastus:ManagedCluster:microsoft.containerservice/managedclusters:aks1",
-      "dst_key": "azure:test-account-azure-1:eastus:ComputeInstance::aks-vmss",
+      "src_key": "azure:test-account-azure-1:eastus:ManagedCluster:rg1:aks1",
+      "dst_key": "azure:test-account-azure-1:eastus:ComputeInstance:mc_rg1_aks1_eastus:aks-vmss",
       "relationship_type": "MANAGES",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",
@@ -757,8 +1055,8 @@
       ]
     },
     {
-      "src_key": "azure:test-account-azure-1:eastus:ManagedCluster:microsoft.containerservice/managedclusters:aks1",
-      "dst_key": "azure:test-account-azure-1:eastus:Subnet:/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Network/virtualNetworks/vnet1:subnet1",
+      "src_key": "azure:test-account-azure-1:eastus:ManagedCluster:rg1:aks1",
+      "dst_key": "azure:test-account-azure-1:eastus:Subnet:rg1:vnet1/subnets/subnet1",
       "relationship_type": "HOSTED_ON",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",
@@ -775,8 +1073,8 @@
       ]
     },
     {
-      "src_key": "azure:test-account-azure-1:eastus:PublicIP::pip1",
-      "dst_key": "azure:test-account-azure-1:eastus:LoadBalancer::lb1",
+      "src_key": "azure:test-account-azure-1:eastus:PublicIP:rg1:pip1",
+      "dst_key": "azure:test-account-azure-1:eastus:LoadBalancer:rg1:lb1",
       "relationship_type": "ASSOCIATED_WITH",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",
@@ -793,8 +1091,8 @@
       ]
     },
     {
-      "src_key": "azure:test-account-azure-1:eastus:SecurityGroup::nsg1",
-      "dst_key": "azure:test-account-azure-1:eastus:NetworkInterface::nic1",
+      "src_key": "azure:test-account-azure-1:eastus:SecurityGroup:rg1:nsg1",
+      "dst_key": "azure:test-account-azure-1:eastus:NetworkInterface:rg1:nic1",
       "relationship_type": "PROTECTS",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",
@@ -811,8 +1109,8 @@
       ]
     },
     {
-      "src_key": "azure:test-account-azure-1:eastus:SecurityGroup::nsg1",
-      "dst_key": "azure:test-account-azure-1:eastus:Subnet:/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Network/virtualNetworks/vnet1:subnet1",
+      "src_key": "azure:test-account-azure-1:eastus:SecurityGroup:rg1:nsg1",
+      "dst_key": "azure:test-account-azure-1:eastus:Subnet:rg1:vnet1/subnets/subnet1",
       "relationship_type": "PROTECTS",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",
@@ -829,8 +1127,8 @@
       ]
     },
     {
-      "src_key": "azure:test-account-azure-1:eastus:ServerlessFunction::func1",
-      "dst_key": "azure:test-account-azure-1:eastus:ComputeInstancePool::plan1",
+      "src_key": "azure:test-account-azure-1:eastus:ServerlessFunction:rg1:func1",
+      "dst_key": "azure:test-account-azure-1:eastus:ComputeInstancePool:rg1:plan1",
       "relationship_type": "HOSTED_ON",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",
@@ -847,8 +1145,8 @@
       ]
     },
     {
-      "src_key": "azure:test-account-azure-1:eastus:ServerlessFunction::func1",
-      "dst_key": "azure:test-account-azure-1:eastus:Storage::storage1",
+      "src_key": "azure:test-account-azure-1:eastus:ServerlessFunction:rg1:func1",
+      "dst_key": "azure:test-account-azure-1:eastus:Storage:rg1:storage1",
       "relationship_type": "CALLS",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",
@@ -866,8 +1164,8 @@
       ]
     },
     {
-      "src_key": "azure:test-account-azure-1:eastus:ServerlessFunction::func1",
-      "dst_key": "azure:test-account-azure-1:eastus:Subnet:/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Network/virtualNetworks/vnet1:subnet1",
+      "src_key": "azure:test-account-azure-1:eastus:ServerlessFunction:rg1:func1",
+      "dst_key": "azure:test-account-azure-1:eastus:Subnet:rg1:vnet1/subnets/subnet1",
       "relationship_type": "HOSTED_ON",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",
@@ -884,8 +1182,8 @@
       ]
     },
     {
-      "src_key": "azure:test-account-azure-1:eastus:ServerlessFunction::web1",
-      "dst_key": "azure:test-account-azure-1:eastus:ComputeInstancePool::plan1",
+      "src_key": "azure:test-account-azure-1:eastus:ServerlessFunction:rg1:web1",
+      "dst_key": "azure:test-account-azure-1:eastus:ComputeInstancePool:rg1:plan1",
       "relationship_type": "HOSTED_ON",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",
@@ -902,8 +1200,8 @@
       ]
     },
     {
-      "src_key": "azure:test-account-azure-1:eastus:ServiceIdentity::id1",
-      "dst_key": "azure:test-account-azure-1:eastus:Storage::storage1",
+      "src_key": "azure:test-account-azure-1:eastus:ServiceIdentity:rg1:id1",
+      "dst_key": "azure:test-account-azure-1:eastus:Storage:rg1:storage1",
       "relationship_type": "HAS_ACCESS_TO",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",
@@ -921,8 +1219,8 @@
       ]
     },
     {
-      "src_key": "azure:test-account-azure-1:eastus:Subnet:/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Network/virtualNetworks/vnet1:subnet1",
-      "dst_key": "azure:test-account-azure-1:eastus:VPC::vnet1",
+      "src_key": "azure:test-account-azure-1:eastus:Subnet:rg1:vnet1/subnets/subnet1",
+      "dst_key": "azure:test-account-azure-1:eastus:VPC:rg1:vnet1",
       "relationship_type": "BELONGS_TO",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",

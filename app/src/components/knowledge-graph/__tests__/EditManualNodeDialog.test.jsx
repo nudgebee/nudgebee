@@ -457,3 +457,75 @@ it('does not rewrite the role when an edit leaves it alone', async () => {
   expect(apiKnowledgeGraph.setNodeRole).not.toHaveBeenCalled();
   expect(apiKnowledgeGraph.removeNodeRole).not.toHaveBeenCalled();
 });
+
+// An Azure key reads the resource group, so a declaration in an Azure account
+// must send it: the form sends whatever key fields the type declares.
+const AZURE_SCHEMA = [
+  {
+    cloud_account_id: 'az-1',
+    account_name: 'Prod Azure',
+    cloud_provider: 'Azure',
+    kinds: [
+      {
+        specific_type: 'AzureSQLDatabase',
+        node_type: 'Database',
+        key_fields: [
+          { name: 'name', label: 'Name', required: true },
+          { name: 'region', label: 'Region', required: true },
+          { name: 'resource_group', label: 'Resource group', required: true },
+        ],
+        properties: [],
+      },
+    ],
+  },
+];
+
+it('sends every key field the type declares, including an Azure resource group', async () => {
+  apiKnowledgeGraph.createManualNode.mockResolvedValue({ data: { data: { kg_create_manual_node: { data: { id: 3, kg_node_id: 'n3' } } } } });
+  renderDialog({ schema: AZURE_SCHEMA });
+
+  fireEvent.click(document.getElementById('manual-node-place'));
+  fireEvent.click(await screen.findByText('Prod Azure'));
+  fireEvent.click(document.getElementById('manual-node-type'));
+  fireEvent.click(await screen.findByText(/SQL Database/));
+
+  fireEvent.change(screen.getByTestId('manual-node-name'), { target: { value: 'sqlsrv1/orders' } });
+  fireEvent.change(screen.getByTestId('manual-node-region'), { target: { value: 'eastus' } });
+  const declare = screen.getByRole('button', { name: 'Declare' });
+  expect(declare).toBeDisabled(); // resource group still empty
+  fireEvent.change(screen.getByTestId('manual-node-resource_group'), { target: { value: ' rg-shop ' } });
+  fireEvent.click(declare);
+
+  await waitFor(() =>
+    expect(apiKnowledgeGraph.createManualNode).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cloud_account_id: 'az-1',
+        specific_type: 'AzureSQLDatabase',
+        name: 'sqlsrv1/orders',
+        region: 'eastus',
+        resource_group: 'rg-shop',
+      })
+    )
+  );
+});
+
+it('shows an Azure declaration with its resource group as a locked key field', () => {
+  renderDialog({
+    schema: AZURE_SCHEMA,
+    row: {
+      id: 11,
+      cloud_account_id: 'az-1',
+      cloud_provider: 'Azure',
+      specific_type: 'AzureSQLDatabase',
+      node_type: 'Database',
+      name: 'sqlsrv1/orders',
+      region: 'eastus',
+      resource_group: 'rg-shop',
+      properties: {},
+      labels: {},
+      status: 'active',
+    },
+  });
+  expect(screen.getByTestId('manual-node-resource_group')).toHaveValue('rg-shop');
+  expect(screen.getByTestId('manual-node-resource_group')).toBeDisabled();
+});

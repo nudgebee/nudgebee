@@ -53,6 +53,7 @@ type ManualNodeCreate struct {
 	Name           string                 `json:"name"`
 	Region         string                 `json:"region"`
 	Namespace      string                 `json:"namespace"`
+	ResourceGroup  string                 `json:"resource_group"`
 	NetworkNodeID  string                 `json:"network_node_id"`
 	Network        string                 `json:"network"`
 	Description    string                 `json:"description"`
@@ -439,6 +440,7 @@ func (r *ManualNodeRepository) prepare(req ManualNodeCreate) (*ManualNode, error
 	n.KGNodeID = built.ID
 	n.UniqueKey = built.UniqueKey
 	n.baseProperties = core.BaseProperties(built)
+	n.ResourceGroup, _ = built.Properties["resource_group"].(string)
 	if !core.IsManualNodeType(core.NodeType(n.NodeType)) {
 		return nil, fmt.Errorf("node type %q cannot be declared", n.NodeType)
 	}
@@ -533,6 +535,7 @@ func (r *ManualNodeRepository) cloudInput(n *ManualNode, account string, req Man
 		Name:           n.Name,
 		Region:         n.Region,
 		Namespace:      n.Namespace,
+		ResourceGroup:  req.ResourceGroup,
 		// The k8s source stamps the account name as the cluster name.
 		AccountName: acct.AccountName,
 	}
@@ -967,9 +970,20 @@ func (r *ManualNodeRepository) flagDuplicates(tenantID string) (int, error) {
 				   -- name (and the Kubernetes ones namespace) into it, and only that
 				   -- form is indexed (idx_kg_node_tenant_qa_name_ns). This runs
 				   -- once per declaration every build.
-				   AND n.query_attributes->>'name' = m.name
+				   -- An Azure resource inside another is declared by its path
+				   -- ("sqlsrv1/databases/orders"); the collected node's name is
+				   -- its own last segment.
+				   AND n.query_attributes->>'name' = CASE WHEN m.cloud_provider = 'Azure'
+				        THEN regexp_replace(m.name, '^.*/', '') ELSE m.name END
 				   -- A Kubernetes name is only unique within its namespace.
 				   AND (m.cloud_provider IS DISTINCT FROM 'K8s' OR n.query_attributes->>'namespace' = m.namespace)
+				   -- An Azure name is only unique within its resource group: the
+				   -- hierarchy part of an Azure key. A declaration made before the
+				   -- resource group was part of the key has none and matches by
+				   -- name alone, as it always did.
+				   AND (m.cloud_provider IS DISTINCT FROM 'Azure'
+				        OR m.base_properties->>'resource_group' IS NULL
+				        OR lower(split_part(n.unique_key, ':', 5)) = lower(m.base_properties->>'resource_group'))
 				 ORDER BY n.updated_at DESC
 				 LIMIT 1) AS dup
 			FROM kg_manual_nodes m
@@ -1031,6 +1045,7 @@ func (r *ManualNodeRepository) query(query string, args ...interface{}) ([]Manua
 		if err := unmarshalJSONB(base, &n.baseProperties); err != nil {
 			return nil, fmt.Errorf("manual node %d base properties: %w", n.ID, err)
 		}
+		n.ResourceGroup, _ = n.baseProperties["resource_group"].(string)
 		out = append(out, n)
 	}
 	if err := rows.Err(); err != nil {

@@ -346,5 +346,135 @@
       "roleDefinitionId": "/subscriptions/sub1/providers/Microsoft.Authorization/roleDefinitions/ba92f5b4-2d11-453d-a403-e96b0029c9fe",
       "scope": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Storage/storageAccounts/storage1"
     }
+  },
+  {
+    "id": "db-orders-a",
+    "resourse_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Sql/servers/sqlsrv-a/databases/orders",
+    "name": "orders",
+    "type": "databases",
+    "service_name": "microsoft.sql/servers",
+    "account": "sub1",
+    "region": "eastus",
+    "cloud_provider": "Azure",
+    "is_active": true,
+    "external_resource_id": "db-orders-a",
+    "arn": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Sql/servers/sqlsrv-a/databases/orders",
+    "meta": {}
+  },
+  {
+    "id": "db-orders-b",
+    "resourse_id": "/subscriptions/sub1/resourceGroups/rg2/providers/Microsoft.Sql/servers/sqlsrv-b/databases/orders",
+    "name": "orders",
+    "type": "databases",
+    "service_name": "microsoft.sql/servers",
+    "account": "sub1",
+    "region": "eastus",
+    "cloud_provider": "Azure",
+    "is_active": true,
+    "external_resource_id": "db-orders-b",
+    "arn": "/subscriptions/sub1/resourceGroups/rg2/providers/Microsoft.Sql/servers/sqlsrv-b/databases/orders",
+    "meta": {}
+  },
+  {
+    "id": "blob-storage1",
+    "resourse_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Storage/storageAccounts/storage1/blobServices/default",
+    "name": "default",
+    "type": "blobservices",
+    "service_name": "microsoft.storage/storageaccounts",
+    "account": "sub1",
+    "region": "eastus",
+    "cloud_provider": "Azure",
+    "is_active": true,
+    "external_resource_id": "blob-storage1",
+    "arn": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Storage/storageAccounts/storage1/blobServices/default",
+    "meta": {}
+  },
+  {
+    "id": "file-storage1",
+    "resourse_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Storage/storageAccounts/storage1/fileServices/default",
+    "name": "default",
+    "type": "fileservices",
+    "service_name": "microsoft.storage/storageaccounts",
+    "account": "sub1",
+    "region": "eastus",
+    "cloud_provider": "Azure",
+    "is_active": true,
+    "external_resource_id": "file-storage1",
+    "arn": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Storage/storageAccounts/storage1/fileServices/default",
+    "meta": {}
+  },
+  {
+    "id": "blob-storage2",
+    "resourse_id": "/subscriptions/sub1/resourceGroups/rg2/providers/Microsoft.Storage/storageAccounts/storage2/blobServices/default",
+    "name": "default",
+    "type": "blobservices",
+    "service_name": "microsoft.storage/storageaccounts",
+    "account": "sub1",
+    "region": "eastus",
+    "cloud_provider": "Azure",
+    "is_active": true,
+    "external_resource_id": "blob-storage2",
+    "arn": "/subscriptions/sub1/resourceGroups/rg2/providers/Microsoft.Storage/storageAccounts/storage2/blobServices/default",
+    "meta": {}
+  },
+  {
+    "id": "zone-rg1",
+    "resourse_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Network/privateDnsZones/privatelink.blob.core.windows.net",
+    "name": "privatelink.blob.core.windows.net",
+    "type": "privatednszones",
+    "service_name": "microsoft.network/privatednszones",
+    "account": "sub1",
+    "region": "global",
+    "cloud_provider": "Azure",
+    "is_active": true,
+    "external_resource_id": "zone-rg1",
+    "arn": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Network/privateDnsZones/privatelink.blob.core.windows.net",
+    "meta": {}
+  },
+  {
+    "id": "zone-rg2",
+    "resourse_id": "/subscriptions/sub1/resourceGroups/rg2/providers/Microsoft.Network/privateDnsZones/privatelink.blob.core.windows.net",
+    "name": "privatelink.blob.core.windows.net",
+    "type": "privatednszones",
+    "service_name": "microsoft.network/privatednszones",
+    "account": "sub1",
+    "region": "global",
+    "cloud_provider": "Azure",
+    "is_active": true,
+    "external_resource_id": "zone-rg2",
+    "arn": "/subscriptions/sub1/resourceGroups/rg2/providers/Microsoft.Network/privateDnsZones/privatelink.blob.core.windows.net",
+    "meta": {}
+  },
+  {
+    "id": "app-display",
+    "resourse_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Web/sites/region-app",
+    "name": "region-app",
+    "type": "sites",
+    "service_name": "microsoft.web/sites",
+    "account": "sub1",
+    "region": "South Central US",
+    "cloud_provider": "Azure",
+    "is_active": true,
+    "external_resource_id": "app-display",
+    "arn": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Web/sites/region-app",
+    "meta": {
+      "kind": "app"
+    }
+  },
+  {
+    "id": "app-code",
+    "resourse_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Web/sites/region-app",
+    "name": "region-app",
+    "type": "functions",
+    "service_name": "microsoft.web/sites/functions",
+    "account": "sub1",
+    "region": "southcentralus",
+    "cloud_provider": "Azure",
+    "is_active": true,
+    "external_resource_id": "app-code",
+    "arn": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Web/sites/region-app",
+    "meta": {
+      "kind": "app"
+    }
   }
 ]

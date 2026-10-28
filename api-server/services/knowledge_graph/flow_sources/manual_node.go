@@ -96,15 +96,18 @@ func (e *ManualNodeExistsError) Error() string {
 
 // ManualNode is one declaration, as returned to the UI.
 type ManualNode struct {
-	ID               int64                  `json:"id"`
-	TenantID         string                 `json:"tenant_id"`
-	CloudAccountID   string                 `json:"cloud_account_id,omitempty"`
-	CloudProvider    string                 `json:"cloud_provider,omitempty"`
-	NodeType         string                 `json:"node_type"`
-	SpecificType     string                 `json:"specific_type"`
-	Name             string                 `json:"name"`
-	Region           string                 `json:"region,omitempty"`
-	Namespace        string                 `json:"namespace,omitempty"`
+	ID             int64  `json:"id"`
+	TenantID       string `json:"tenant_id"`
+	CloudAccountID string `json:"cloud_account_id,omitempty"`
+	CloudProvider  string `json:"cloud_provider,omitempty"`
+	NodeType       string `json:"node_type"`
+	SpecificType   string `json:"specific_type"`
+	Name           string `json:"name"`
+	Region         string `json:"region,omitempty"`
+	Namespace      string `json:"namespace,omitempty"`
+	// ResourceGroup is an Azure declaration's resource group, read back from
+	// the built node (no column of its own) so the form can show it.
+	ResourceGroup    string                 `json:"resource_group,omitempty"`
 	NetworkNodeID    string                 `json:"network_node_id,omitempty"`
 	Description      string                 `json:"description,omitempty"`
 	Properties       map[string]interface{} `json:"properties,omitempty"`

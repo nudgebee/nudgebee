@@ -231,7 +231,7 @@ func TestAzureGenerateUniqueKey(t *testing.T) {
 			wantKey: "azure:acc-1:eastus:VPC::my-vnet",
 		},
 		{
-			name: "VM with VNet hierarchy",
+			name: "VM keyed by its resource group, not its VNet",
 			node: &core.DbNode{
 				NodeType:       core.NodeTypeComputeInstance,
 				CloudAccountID: "acc-1",
@@ -239,12 +239,13 @@ func TestAzureGenerateUniqueKey(t *testing.T) {
 					"name":                "my-vm",
 					"region":              "westus2",
 					"vnet_name_hierarchy": "prod-vnet",
+					"resource_id":         "/subscriptions/s/resourceGroups/RG-App/providers/Microsoft.Compute/virtualMachines/my-vm",
 				},
 			},
-			wantKey: "azure:acc-1:westus2:ComputeInstance:prod-vnet:my-vm",
+			wantKey: "azure:acc-1:westus2:ComputeInstance:rg-app:my-vm",
 		},
 		{
-			name: "AKS with service hierarchy",
+			name: "AKS keyed by its resource group",
 			node: &core.DbNode{
 				NodeType:       core.NodeTypeManagedCluster,
 				CloudAccountID: "acc-1",
@@ -252,22 +253,49 @@ func TestAzureGenerateUniqueKey(t *testing.T) {
 					"name":         "my-aks",
 					"region":       "eastus",
 					"service_name": "Microsoft.ContainerService",
+					"resource_id":  "/subscriptions/s/resourcegroups/rg-aks/providers/microsoft.containerservice/managedclusters/my-aks",
 				},
 			},
-			wantKey: "azure:acc-1:eastus:ManagedCluster:AKS:my-aks",
+			wantKey: "azure:acc-1:eastus:ManagedCluster:rg-aks:my-aks",
 		},
 		{
-			name: "VM with vnet_id fallback",
+			name: "resource group from properties when there is no id",
 			node: &core.DbNode{
 				NodeType:       core.NodeTypeComputeInstance,
 				CloudAccountID: "acc-1",
 				Properties: map[string]interface{}{
-					"name":    "my-vm",
-					"region":  "eastus",
-					"vnet_id": "vnet-123",
+					"name":           "my-vm",
+					"region":         "eastus",
+					"resource_group": "RG-Declared",
 				},
 			},
-			wantKey: "azure:acc-1:eastus:ComputeInstance:vnet-123:my-vm",
+			wantKey: "azure:acc-1:eastus:ComputeInstance:rg-declared:my-vm",
+		},
+		{
+			name: "region spelling normalised",
+			node: &core.DbNode{
+				NodeType:       core.NodeTypeServerlessFunction,
+				CloudAccountID: "acc-1",
+				Properties: map[string]interface{}{
+					"name":        "app-1",
+					"region":      "South Central US",
+					"resource_id": "/subscriptions/s/resourcegroups/rg-web/providers/microsoft.web/sites/app-1",
+				},
+			},
+			wantKey: "azure:acc-1:southcentralus:ServerlessFunction:rg-web:app-1",
+		},
+		{
+			name: "child resource carries its parent",
+			node: &core.DbNode{
+				NodeType:       core.NodeTypeDatabase,
+				CloudAccountID: "acc-1",
+				Properties: map[string]interface{}{
+					"name":        "orders",
+					"region":      "eastus",
+					"resource_id": "/subscriptions/s/resourcegroups/rg-db/providers/microsoft.sql/servers/sqlsrv1/databases/orders",
+				},
+			},
+			wantKey: "azure:acc-1:eastus:Database:rg-db:sqlsrv1/databases/orders",
 		},
 		{
 			name:    "Nil node",

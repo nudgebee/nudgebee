@@ -37,10 +37,11 @@ type ManualNodeField struct {
 
 // Identity input keys.
 const (
-	ManualNodeFieldName      = "name"
-	ManualNodeFieldRegion    = "region"
-	ManualNodeFieldNetwork   = "network"
-	ManualNodeFieldNamespace = "namespace"
+	ManualNodeFieldName          = "name"
+	ManualNodeFieldRegion        = "region"
+	ManualNodeFieldNetwork       = "network"
+	ManualNodeFieldNamespace     = "namespace"
+	ManualNodeFieldResourceGroup = "resource_group"
 )
 
 // ManualNodeKind is one type a user may declare in an account of a provider.
@@ -84,6 +85,8 @@ type ManualNodeInput struct {
 	Network        *ManualNodeNetwork
 	// Namespace is a Kubernetes resource's namespace (part of its key).
 	Namespace string
+	// ResourceGroup is an Azure resource's resource group (part of its key).
+	ResourceGroup string
 	// AccountName is the connected account's display name; for a Kubernetes
 	// account it is the cluster name the collector stamps on its nodes.
 	AccountName string
