@@ -101,6 +101,18 @@ var logActions = map[string]bool{
 	"k8s_pod_log_enricher": true,
 }
 
+// normalizeRuleSeverity clamps a severity to event_rule_severity, which holds
+// only 'critical' and 'warning'. Webhooks and provider syncs pass through
+// whatever the source reports ("high", "P1", "Critical", ""), so anything that
+// is not critical is stored as a warning rather than failing the insert on the
+// foreign key.
+func normalizeRuleSeverity(severity string) string {
+	if strings.EqualFold(strings.TrimSpace(severity), "critical") {
+		return "critical"
+	}
+	return "warning"
+}
+
 // upsertEventRule inserts or updates an event rule, returning the id and whether a row was affected.
 // isDefinition says whether this write carries the rule's *definition* (its
 // query, evaluation window and type) rather than one firing of it. It exists
@@ -133,6 +145,7 @@ func upsertEventRule(dbms *database.DatabaseManager, annotations any, labels any
 	if alertType == "" {
 		alertType = "metric"
 	}
+	severity = normalizeRuleSeverity(severity)
 
 	var providerConfigJSON *string
 	if providerConfig != nil {

@@ -308,7 +308,7 @@ func SyncProviderRules(sc *security.RequestContext, accountId, source string) (P
 		_, _, err := upsertEventRule(dbms, annotations, labels,
 			rule.Name, rule.Query, rule.Duration,
 			accountId, tenantId,
-			ruleSource, "alert", normalizeSyncSeverity(rule.Severity), rule.Enabled,
+			ruleSource, "alert", rule.Severity, rule.Enabled,
 			rule.AlertType, provider, providerSource,
 			// isDefinition: these rules were read from the provider's own rule
 			// API, so they ARE the definition. Without this the write lands under
@@ -366,15 +366,4 @@ func disableMissingProviderRules(dbms *database.DatabaseManager, accountId, tena
 		return 0, err
 	}
 	return int(affected), nil
-}
-
-// normalizeSyncSeverity clamps a provider severity to event_rule_severity,
-// which holds only 'critical' and 'warning'. A provider that reports anything
-// else (or nothing) is treated as a warning rather than failing the insert on
-// the foreign key.
-func normalizeSyncSeverity(severity string) string {
-	if severity == "critical" {
-		return "critical"
-	}
-	return "warning"
 }

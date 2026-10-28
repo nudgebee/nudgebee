@@ -9,16 +9,17 @@ import (
 )
 
 // event_rules.severity is FK-constrained to exactly {critical, warning}; a
-// provider reporting anything else must be clamped, not passed through, or the
+// provider or webhook reporting anything else must be clamped, not passed through, or the
 // insert fails with 23503.
-func TestNormalizeSyncSeverity(t *testing.T) {
+func TestNormalizeRuleSeverity(t *testing.T) {
 	allowed := map[string]bool{"critical": true, "warning": true}
 	for _, in := range []string{"critical", "warning", "high", "P1", "info", "", "banana"} {
-		got := normalizeSyncSeverity(in)
+		got := normalizeRuleSeverity(in)
 		assert.True(t, allowed[got], "severity %q produced %q", in, got)
 	}
-	assert.Equal(t, "critical", normalizeSyncSeverity("critical"))
-	assert.Equal(t, "warning", normalizeSyncSeverity("high"))
+	assert.Equal(t, "critical", normalizeRuleSeverity("critical"))
+	assert.Equal(t, "critical", normalizeRuleSeverity(" Critical "))
+	assert.Equal(t, "warning", normalizeRuleSeverity("high"))
 }
 
 // Every syncable source must resolve to a provider pair the alertrule registry
