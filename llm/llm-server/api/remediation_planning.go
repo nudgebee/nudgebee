@@ -664,11 +664,35 @@ func planWriteRefusal(sc *security.SecurityContext, accountId string) string {
 // strict reads, like the follow-up check; only the current firing's evidence (the conversation spans earlier
 // firings); and the marker propose_fix writes the request's plan by.
 // planningTurnConfig is row's turn config: planningConfig with the one-line note the app shows for the turn's message
-// instead of a person's bubble.
+// instead of a person's bubble, and what the turn's knowledge search is told about the event (planningKnowledgeHints).
 func planningTurnConfig(row events.PlanningRequest) toolcore.NBQueryConfig {
 	config := planningConfig(row.Kind)
 	config.SystemNote = planningSystemNote(row)
+	config.KnowledgeHints = planningKnowledgeHints(row)
 	return config
+}
+
+// planningKnowledgeHints names the kind of row's event for the turn's knowledge search, as the investigation's hints
+// do. Without them the search runs on the planning instruction alone, which never names the alert, and a team's SOP
+// for it is not found (#42793). Only the hints: a workload in the config would also make the turn's metric and log
+// tools refuse to pick a target on their own. Empty when the event cannot be read. A var so tests can stub it.
+var planningKnowledgeHints = func(row events.PlanningRequest) []string {
+	if row.EventId == "" {
+		return nil
+	}
+	dbManager, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), decisionDBTimeout)
+	defer cancel()
+	var e events.Event
+	if err := dbManager.Db.QueryRowContext(ctx, `SELECT COALESCE(category, ''), COALESCE(finding_type, ''), COALESCE(aggregation_key, '')
+		FROM events WHERE id = $1 AND cloud_account_id = $2`, row.EventId, row.AccountId).Scan(&e.Category, &e.FindingType, &e.AggregationKey); err != nil {
+		slog.Warn("remediation_planning: the event's knowledge hints not read", "error", err, "planning_id", row.Id, "event_id", row.EventId)
+		return nil
+	}
+	return eventKnowledgeHints(e)
 }
 
 // planningSystemNote is the one-line note for a planning turn's message.

@@ -2447,15 +2447,24 @@ func eventLabelValues(parsedLabels map[string]any) []string {
 	return values
 }
 
+// genericEventKinds are category and finding type values that name no kind of event. Most alerts carry "issue" in
+// both, and a search that leads with them finds nothing for some alert names (#42793).
+var genericEventKinds = map[string]bool{"issue": true, "alert": true}
+
 // eventKnowledgeHints names the kind of event for knowledge discovery. The
 // title is left out: it describes one occurrence, and the investigation
-// prompt already starts with it.
+// prompt already starts with it. Generic and repeated values are left out too.
 func eventKnowledgeHints(event events.Event) []string {
 	var hints []string
+	seen := map[string]bool{}
 	for _, v := range []string{event.Category, event.FindingType, event.AggregationKey} {
-		if v = strings.TrimSpace(v); v != "" {
-			hints = append(hints, v)
+		v = strings.TrimSpace(v)
+		key := strings.ToLower(v)
+		if v == "" || genericEventKinds[key] || seen[key] {
+			continue
 		}
+		seen[key] = true
+		hints = append(hints, v)
 	}
 	return hints
 }

@@ -1249,3 +1249,32 @@ func TestAgentWrittenPlanIsAddedToTheChatWithTheLoopOff(t *testing.T) {
 	require.NotEmpty(t, version)
 	assert.Equal(t, 1, appended, "loop off: the plan is in the alert's chat")
 }
+
+// #42793: a planning turn's knowledge search is told the alert's name, as the investigation's is, and the config saved
+// with the turn's message keeps it for a recovered turn. No workload: it would make the turn's metric and log tools
+// refuse to pick a target on their own.
+func TestPlanningTurnConfigCarriesTheEventsKnowledgeHints(t *testing.T) {
+	swap(t, &planningKnowledgeHints, func(row events.PlanningRequest) []string { return []string{"QueueBacklogHigh"} })
+	config := planningTurnConfig(events.PlanningRequest{Kind: planTurnAuto, EventId: uuid.NewString(), AccountId: uuid.NewString()})
+	assert.Equal(t, []string{"QueueBacklogHigh"}, config.KnowledgeHints)
+	assert.Empty(t, config.Workload)
+	assert.Empty(t, config.Namespace)
+	assert.Empty(t, config.EventId)
+	raw, err := json.Marshal(config)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"knowledge_hints":["QueueBacklogHigh"]`)
+}
+
+// #42793: the hints are read from the event, without its generic kind, and only from the planning request's account.
+func TestPlanningKnowledgeHintsReadTheEvent(t *testing.T) {
+	db := remediationScratchDB(t, "planning_knowledge", `CREATE TABLE events (id uuid PRIMARY KEY, cloud_account_id uuid NOT NULL,
+		category text, finding_type text, aggregation_key text)`)
+	withMetastore(t, db)
+	account, event := uuid.NewString(), uuid.NewString()
+	_, err := db.Exec(`INSERT INTO events VALUES ($1, $2, 'issue', NULL, 'QueueBacklogHigh')`, event, account)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"QueueBacklogHigh"}, planningKnowledgeHints(events.PlanningRequest{EventId: event, AccountId: account}))
+	assert.Empty(t, planningKnowledgeHints(events.PlanningRequest{EventId: event, AccountId: uuid.NewString()}), "another account's event is not read")
+	assert.Empty(t, planningKnowledgeHints(events.PlanningRequest{EventId: uuid.NewString(), AccountId: account}), "a missing event gives no hints")
+}
