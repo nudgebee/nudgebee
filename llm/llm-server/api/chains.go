@@ -2346,6 +2346,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 					Message: err.Error(),
 				},
 			}))
+			return
 		}
 		c.JSON(http.StatusOK, BuildApiResponse(data, nil))
 	})
