@@ -4,7 +4,7 @@
 # Build this image first: docker build -t playwright-base-image -f Dockerfile_base .
 
 # --- Stage 1: Build playwright-go CLI ---
-FROM golang:1.26 AS go-builder
+FROM ghcr.io/nudgebee/golang:1.26.10 AS go-builder
 
 ARG TARGETPLATFORM
 ARG TARGETOS
@@ -29,21 +29,22 @@ RUN PWGO_VER=$(go list -m -f '{{.Version}}' github.com/mxschmitt/playwright-go) 
     go install github.com/mxschmitt/playwright-go/cmd/playwright@${PWGO_VER}
 
 # --- Stage 1b: Rebuild the GitHub CLI (gh) on a patched Go toolchain ---
-# GitHub ships `gh` compiled on Go 1.26.4, which carries two Go-stdlib CVEs:
-# CVE-2026-39822 (HIGH, os.Root symlink traversal) and CVE-2026-42505 (MEDIUM,
-# crypto/tls ECH). Both are fixed in Go 1.26.5. `apt install gh` can't clear them
-# (it's a prebuilt Go binary), so rebuild the SAME gh release (v2.96.0) on Go
-# 1.26.6 and copy it in — llm-server shells out to `gh` (tools/tool_github.go),
-# so behaviour is unchanged. Same technique as the redis wait-for-port / postgres
-# gosu mirrors. CGO_ENABLED=0 -> a static binary that runs on the ubuntu runtime.
-FROM golang:1.26.6 AS gh-builder
+# GitHub's prebuilt `gh` lags the Go stdlib and x/* security releases, and
+# `apt install gh` can't clear that (it's a prebuilt Go binary), so build gh
+# from source and copy it in — llm-server shells out to `gh`
+# (tools/tool_github.go). gh v2.101+ and glab v1.122+ (the first releases on
+# patched x/net, x/crypto, x/image, grpc and klauspost/compress) require Go
+# 1.27, so this stage builds on golang:1.27.3 while the service itself stays on
+# 1.26. Same technique as the redis wait-for-port / postgres gosu mirrors.
+# CGO_ENABLED=0 -> a static binary that runs on the ubuntu runtime.
+FROM ghcr.io/nudgebee/golang:1.27.3 AS gh-builder
 ARG TARGETOS
 ARG TARGETARCH
 ENV GOOS=${TARGETOS:-linux}
 ENV GOARCH=${TARGETARCH:-amd64}
 ENV CGO_ENABLED=0
 ENV GOTOOLCHAIN=local
-RUN go install github.com/cli/cli/v2/cmd/gh@v2.96.0
+RUN go install github.com/cli/cli/v2/cmd/gh@v2.103.3
 # glab (GitLab CLI) shares this stage: it is also a Go binary with no apt package
 # on ubuntu:noble, so a source build on the patched toolchain is the only route
 # and the CVE rationale above applies verbatim. llm-server shells out to `glab`
@@ -51,7 +52,7 @@ RUN go install github.com/cli/cli/v2/cmd/gh@v2.96.0
 # Keep this version in lockstep with llm/code-analysis/Dockerfile — that image is
 # the workspace pod, and a version split there would make the same agent prompt
 # behave differently depending on which execution path served the call.
-RUN go install gitlab.com/gitlab-org/cli/cmd/glab@v1.112.0
+RUN go install gitlab.com/gitlab-org/cli/cmd/glab@v1.126.0
 
 # --- Stage 2: Install Playwright browsers and copy playwright-go CLI ---
 FROM ubuntu:noble AS playwright-installer
@@ -83,9 +84,9 @@ RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# gh (GitHub CLI): use the Go-1.26.6 rebuild from the gh-builder stage instead of
-# `apt install gh`. GitHub's apt package is compiled on Go 1.26.4 and carries the
-# stdlib CVEs noted above; the rebuild clears them. This also drops the apt
+# gh (GitHub CLI): use the source rebuild from the gh-builder stage instead of
+# `apt install gh`. GitHub's apt package lags Go security releases and carries the
+# CVEs noted above; the rebuild clears them. This also drops the apt
 # keyring / extra-repo setup the apt install required.
 COPY --from=gh-builder /go/bin/gh /usr/bin/gh
 COPY --from=gh-builder /go/bin/glab /usr/bin/glab

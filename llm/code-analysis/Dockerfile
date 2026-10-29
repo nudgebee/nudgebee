@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM golang:1.26.6-alpine AS builder
+FROM ghcr.io/nudgebee/golang:1.26.10-alpine AS builder
 
 WORKDIR /app
 
@@ -38,7 +38,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux GOBIN=/usr/local/bin \
-    go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0
+    go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
 
 # Install the GitLab CLI (glab) from source rather than `apk add glab`.
 # Two reasons: (1) Alpine v3.22 community pins glab at 1.58.0-r5, which is far
@@ -49,10 +49,17 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # avoid: apk `github-cli` here vs a source build there, free to drift.
 # Consumed by llm-server's gitlab_execute tool (tools/tool_gitlab.go) and by
 # this service's own glab tool (tools/glab_tool.go).
+#
+# glab gets its own stage because v1.122+ (the first release on patched
+# x/net/x/image/x/crypto) requires Go 1.27. It is a static CGO-free binary, so
+# building it on a newer toolchain than the shipped /usr/local/go is safe —
+# unlike golangci-lint, which must match the toolchain it analyses with.
+FROM ghcr.io/nudgebee/golang:1.27.3-alpine AS glab-builder
+ENV GOTOOLCHAIN=local
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux GOBIN=/usr/local/bin \
-    go install gitlab.com/gitlab-org/cli/cmd/glab@v1.112.0
+    go install gitlab.com/gitlab-org/cli/cmd/glab@v1.126.0
 
 # Final stage
 FROM ghcr.io/nudgebee/alpine:3.22
@@ -225,7 +232,7 @@ RUN npm install --no-save --prefix /tmp/tarfix "tar@${TAR_VERSION}" \
 COPY --from=builder /usr/local/go /usr/local/go
 ENV PATH=/usr/local/go/bin:$PATH
 COPY --from=builder /usr/local/bin/golangci-lint /usr/local/bin/golangci-lint
-COPY --from=builder /usr/local/bin/glab /usr/local/bin/glab
+COPY --from=glab-builder /usr/local/bin/glab /usr/local/bin/glab
 
 # Create a non-root user
 RUN adduser -D -g '' appuser

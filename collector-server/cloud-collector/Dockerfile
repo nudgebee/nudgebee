@@ -7,11 +7,11 @@
 # internal registry via --build-arg.
 ARG RUNTIME_BASE=ghcr.io/nudgebee/nudgebee-cloud-collector-base:alpine3.22
 
-FROM golang:1.26.6-alpine AS build-stage
+FROM ghcr.io/nudgebee/golang:1.26.10-alpine AS build-stage
 
 # Use the builder image's bundled Go toolchain, never an auto-downloaded one.
 # GOTOOLCHAIN=local guarantees the compile uses whatever go the base image ships
-# (currently 1.26.6) and future-proofs a base bump: raising the builder to
+# (currently 1.26.10) and future-proofs a base bump: raising the builder to
 # golang:1.26.7-alpine automatically compiles with 1.26.7 — with a hardcoded
 # version this line would silently download and reuse the old toolchain. It also
 # gives the `go build` layer a distinct cache key so edge.yaml's registry cache

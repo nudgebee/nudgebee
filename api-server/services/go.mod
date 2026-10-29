@@ -2,7 +2,7 @@ module nudgebee/services
 
 go 1.26.1
 
-toolchain go1.26.6
+toolchain go1.26.10
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.48.0
@@ -212,7 +212,7 @@ require (
 	golang.org/x/arch v0.29.0 // indirect
 	golang.org/x/crypto v0.57.0
 	golang.org/x/exp v0.0.0-20260709172345-9ea1abe57597 // indirect
-	golang.org/x/net v0.58.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect

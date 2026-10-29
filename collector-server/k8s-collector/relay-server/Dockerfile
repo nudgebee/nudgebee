@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM golang:1.26.6-alpine AS build-stage
+FROM ghcr.io/nudgebee/golang:1.26.10-alpine AS build-stage
 
 # Use the builder image's bundled Go toolchain, never an auto-downloaded one.
 # Pins the compile to the base's Go and gives the build layer a distinct cache

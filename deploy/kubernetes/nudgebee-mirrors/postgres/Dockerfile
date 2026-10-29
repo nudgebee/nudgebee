@@ -20,8 +20,8 @@
 # root at build, so no USER switch is needed for apk.
 
 # Stage 1: rebuild gosu on a patched Go toolchain.
-FROM golang:1.26.6-alpine AS gosu
-# Use the builder's bundled Go (1.26.6), never an auto-downloaded one, so gosu
+FROM ghcr.io/nudgebee/golang:1.26.10-alpine AS gosu
+# Use the builder's bundled Go (1.26.10), never an auto-downloaded one, so gosu
 # picks up the stdlib fixes instead of a stale toolchain. CGO off -> the same
 # static binary the upstream release ships.
 ENV GOTOOLCHAIN=local CGO_ENABLED=0

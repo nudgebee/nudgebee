@@ -2,7 +2,7 @@
 # Depends on the published github.com/maximhq/bifrost/core module — a normal
 # `go build`, no fork or replace.
 
-FROM ghcr.io/nudgebee/golang:1.26.6 AS build
+FROM ghcr.io/nudgebee/golang:1.26.10 AS build
 WORKDIR /app
 
 COPY ./ ./

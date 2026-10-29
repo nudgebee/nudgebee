@@ -2,7 +2,7 @@ module nudgebee/runbook
 
 go 1.26.0
 
-toolchain go1.26.6
+toolchain go1.26.10
 
 require (
 	github.com/Cyprinus12138/otelgin v1.0.3
@@ -148,7 +148,7 @@ require (
 	golang.org/x/arch v0.22.0 // indirect
 	golang.org/x/exp v0.0.0-20251209150349-8475f28825e9 // indirect
 	golang.org/x/mod v0.41.0 // indirect
-	golang.org/x/net v0.58.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/term v0.46.0 // indirect

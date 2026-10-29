@@ -20,8 +20,8 @@
 #     migration, not this change).
 
 # Stage 1: rebuild wait-for-port on a patched Go toolchain.
-FROM golang:1.26.6-alpine AS wait-for-port
-# Use the builder's bundled Go (1.26.6), never an auto-downloaded one, so the
+FROM ghcr.io/nudgebee/golang:1.26.10-alpine AS wait-for-port
+# Use the builder's bundled Go (1.26.10), never an auto-downloaded one, so the
 # helper picks up the stdlib fixes (e.g. CVE-2026-39822 / -42505 are fixed in
 # 1.26.5) instead of a stale toolchain. CGO_ENABLED=0 forces a fully static
 # binary — the builder is musl (alpine) but the runtime is glibc (debian-11), so

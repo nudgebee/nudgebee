@@ -2,7 +2,7 @@ module nudgebee/llm
 
 go 1.26.1
 
-toolchain go1.26.6
+toolchain go1.26.10
 
 require (
 	cloud.google.com/go/aiplatform v1.126.0
@@ -208,7 +208,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/arch v0.29.0 // indirect
 	golang.org/x/mod v0.41.0 // indirect
-	golang.org/x/net v0.59.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/term v0.46.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
