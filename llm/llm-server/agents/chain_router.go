@@ -379,6 +379,14 @@ func InferAgent(ctx *security.RequestContext, userId string, accountId string, c
 	chainName := chainRes.Response[0]
 	chain, ok := getAgent(ctx, chainName, accountId)
 	if !ok {
+		// An @-mentioned agent this account can't use (not shared with it, or no
+		// such agent) is reported rather than answered by the help agent.
+		if name, _ := common.ParseAgentMention(query); name != "" && name == chainName {
+			if _, isHelp := chain.(HelpAgent); !isHelp {
+				ctx.GetLogger().Info("router: mentioned agent not available on account", "agent", name)
+				return nil, &UnavailableAgentError{AgentName: name}
+			}
+		}
 		ctx.GetLogger().Error("Unable to identify agent", "chain", chainName)
 		return nil, errors.New("llm: unable to identify intent. My expertise is focused on Kubernetes, Helm, Events, Logs, Metrics, Recommendations, Software Development. Could you please provide more details or rephrase your question so I can better assist you?")
 	}
@@ -386,9 +394,24 @@ func InferAgent(ctx *security.RequestContext, userId string, accountId string, c
 	return chain, err
 }
 
+// UnavailableAgentError is returned when a query @-mentions an agent the account can't use.
+type UnavailableAgentError struct {
+	AgentName string
+}
+
+func (e *UnavailableAgentError) Error() string {
+	return fmt.Sprintf("@%s isn't available on this account.", e.AgentName)
+}
+
+// InferAgentOrHelp falls back to the help agent when no agent is inferred,
+// except for an UnavailableAgentError, which is returned so the caller can tell the user.
 func InferAgentOrHelp(ctx *security.RequestContext, userId string, accountId string, conversationId string, query string, configs ...core.ConversationSessionRequestConfig) (core.NBAgent, error) {
 	agent, err := InferAgent(ctx, userId, accountId, conversationId, query, configs...)
 	if err != nil {
+		var unavailable *UnavailableAgentError
+		if errors.As(err, &unavailable) {
+			return nil, err
+		}
 		return HelpAgent{}, nil
 	}
 

@@ -51,7 +51,7 @@ const initialState: AgentState = {
 function agentReducer(state: AgentState, action: AgentAction): AgentState {
   switch (action.type) {
     case 'FETCH_AGENTS_START':
-      return { ...state, loadingAgents: true };
+      return { ...state, loadingAgents: true, allAgents: [], enabledAgents: [] };
     case 'FETCH_AGENTS_SUCCESS':
       return { ...state, loadingAgents: false, allAgents: action.allAgents, enabledAgents: action.enabledAgents };
     case 'FETCH_AGENTS_EMPTY':
@@ -69,14 +69,22 @@ export const useAgentConfiguration = (accountId: string | number): UseAgentConfi
   const [state, dispatch] = useReducer(agentReducer, initialState);
 
   // --- Logic: List Agents ---
+  // Like the skill list below: the previous account's agents are cleared on a switch and a
+  // late reply for it is dropped, so @ never offers agents the current account can't use.
+  const agentsAccountRef = useRef<string | number>(accountId);
   const listAgents = useCallback(async () => {
+    agentsAccountRef.current = accountId;
     if (!accountId) {
+      dispatch({ type: 'FETCH_AGENTS_EMPTY' });
       return;
     }
 
     dispatch({ type: 'FETCH_AGENTS_START' });
     try {
       const res: any = await apiAskNudgebee.listAgents({ accountId });
+      if (agentsAccountRef.current !== accountId) {
+        return;
+      }
       const listAgentResponse: RawAgent[] = res?.data?.data?.ai_list_agents?.data ?? [];
 
       if (listAgentResponse.length > 0) {
@@ -98,7 +106,9 @@ export const useAgentConfiguration = (accountId: string | number): UseAgentConfi
       }
     } catch (error) {
       console.error('Failed to list agents', error);
-      dispatch({ type: 'FETCH_AGENTS_END' });
+      if (agentsAccountRef.current === accountId) {
+        dispatch({ type: 'FETCH_AGENTS_END' });
+      }
     }
   }, [accountId]);
 

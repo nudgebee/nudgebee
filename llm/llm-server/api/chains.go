@@ -560,6 +560,23 @@ func dispatchQueuedMessage(parent *security.RequestContext, conversation core.Co
 	return err
 }
 
+// respondUnavailableAgent answers a chat whose @-mentioned agent the account
+// can't use, instead of letting another agent answer it. Reports whether it did.
+func respondUnavailableAgent(c *gin.Context, err error, query, conversationId, sessionId string) bool {
+	var unavailable *agents.UnavailableAgentError
+	if !errors.As(err, &unavailable) {
+		return false
+	}
+	c.JSON(http.StatusOK, BuildApiResponse(core.NBAgentResponse{
+		Response:       []string{unavailable.Error()},
+		Query:          query,
+		ConversationId: conversationId,
+		SessionId:      sessionId,
+		Status:         core.ConversationStatusFailed,
+	}, nil))
+	return true
+}
+
 func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 	groupV2 := r.Group("/v1/completions")
 
@@ -987,6 +1004,9 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		// Handle user conversation question to add context to the original question
 		if agent == nil {
 			agent, err = agents.InferAgentOrHelp(agentContext, request.UserId, request.AccountId, request.ConversationId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithIsNewConversation(isNewConversation), core.ConversationSessionRequestWithConfig(request.Config))
+			if respondUnavailableAgent(c, err, request.Query, request.ConversationId, request.SessionId) {
+				return
+			}
 			if err != nil {
 				logger.Error("api: error getting router chain", "error", err)
 				c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
@@ -1439,6 +1459,9 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		// Handle user conversation question to add context to the original question
 		if agent == nil {
 			agent, err = agents.InferAgentOrHelp(agentContext, request.UserId, request.AccountId, request.ConversationId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithConfig(request.Config))
+			if respondUnavailableAgent(c, err, request.Query, request.ConversationId, request.SessionId) {
+				return
+			}
 			if err != nil {
 				logger.Error("api: error getting router chain", "error", err)
 				c.JSON(500, BuildApiResponse(nil, []error{
