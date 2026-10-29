@@ -773,19 +773,37 @@ func writtenPlanRefusal(plan RemediationPlan, trace RemediationTrace, written in
 	return nil
 }
 
-// droppedText says what validation removed from a plan, for the model to correct.
+// droppedText says which actions validation removed from a plan and why, for the model to correct. Corrections that
+// kept their action (a trade-off filled in, an after cleared) are left out: listed beside the removals, with only the
+// command or value they touched, the model took them for the reason and corrected the wrong action.
 func droppedText(plan RemediationPlan, trace RemediationTrace) string {
 	var parts []string
 	for _, d := range plan.Dropped {
 		parts = append(parts, d.Action+": "+d.Reason)
 	}
 	for _, n := range trace.Validation {
-		parts = append(parts, firstNonEmpty(n.Action, "plan")+": "+firstNonEmpty(n.Detail, n.Rule))
+		if why := droppedWhy(n); why != "" {
+			parts = append(parts, firstNonEmpty(n.Action, "plan")+": "+why)
+		}
 	}
 	if len(parts) == 0 {
 		return ""
 	}
 	return " (" + strings.Join(parts, "; ") + ")"
+}
+
+// droppedWhy is why a validation note's rule removed its action, or "" when the rule kept it. An automation's removal
+// is in plan.Dropped with its reason.
+func droppedWhy(n planValidationNote) string {
+	switch n.Rule {
+	case "execute_rejected_by_executor_dropped":
+		return "its command would be refused when run: " + strings.TrimPrefix(remediationCommandRejection(n.Detail), "remediation: ")
+	case "read_only_action_dropped":
+		return "its command only reads state, so it changes nothing"
+	case "no_command_and_no_artifact_dropped":
+		return "it has no command, prepared artifact or required_change to apply"
+	}
+	return ""
 }
 
 // lastPlanInputs is the generate request the event's stored plan was built from, for this account and

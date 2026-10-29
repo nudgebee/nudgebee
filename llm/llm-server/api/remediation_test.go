@@ -2365,6 +2365,26 @@ func TestWrittenPlanRefusal(t *testing.T) {
 	assert.Error(t, writtenPlanRefusal(RemediationPlan{}, RemediationTrace{}, 0), "nothing to run is refused too")
 }
 
+// The refusal names each removed action with why, and leaves out corrections to the action that was kept: a live
+// planning turn was told "persist_rule: None; persist_rule: patch_rule" beside the patch command alone, rewrote the
+// kept step and sent the same refused patch four times.
+func TestWrittenPlanRefusalSaysWhyAndOnlyForRemovedActions(t *testing.T) {
+	var plan RemediationPlan
+	require.NoError(t, json.Unmarshal([]byte(`{"actions":[
+		{"action":"patch_rule","kind":"mitigation","execute_command":"kubectl patch prometheusrule queue-alerts -n demo --type=merge -p '{\"spec\":{\"groups\":[{\"name\":\"q\",\"rules\":[{\"alert\":\"QueueBacklogHigh\",\"expr\":\"sum(queue_ready) > 100\"}]}]}}'"},
+		{"action":"persist_rule","kind":"fix","after":"patch_rule","trade_off":"None","title":"Persist the rule",
+		 "required_change":{"where":"deployment_source","repo":"example/infra","target":"charts/queue/values.yaml","change":"exclude parked queues","reason":"kept across deploys"}}]}`), &plan))
+	trace := RemediationTrace{Validation: finalizePlan(&plan, nil, nil, nil, nil)}
+	require.Len(t, plan.Actions, 1)
+	require.Equal(t, "persist_rule", plan.Actions[0].Action)
+
+	err := writtenPlanRefusal(plan, trace, 2)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "patch_rule: its command would be refused when run: command contains shell metacharacters")
+	assert.NotContains(t, err.Error(), "persist_rule", "the kept action's corrections are not reasons")
+	assert.NotContains(t, err.Error(), "kubectl patch", "the reason, not the command the model already wrote")
+}
+
 // An event with an empty fingerprint is its own alert: it is superseded and has its own event-<id> conversation.
 func TestFollowupWithEmptyFingerprint(t *testing.T) {
 	f := newFollowupFixture(t)
