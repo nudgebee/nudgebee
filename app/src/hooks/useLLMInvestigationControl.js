@@ -1172,6 +1172,13 @@ export const useLLMInvestigationControl = (accountId, eventId) => {
         throw new Error('Investigation generation failed');
       }
 
+      // Refused before anything was saved (an @-mentioned agent the account can't use,
+      // a missing integration): show why instead of waiting on a run that never started.
+      if (response.data.status === 'FAILED') {
+        snackbar.error(response.data.response?.[0] || 'Failed to start investigation.');
+        throw new Error('Investigation generation failed');
+      }
+
       if (response.data.status === 'QUEUED' && response.data.message_id) {
         // This request raced with active work on the server. Retire only its
         // optimistic bubble; the persisted message belongs in the waiting list.
