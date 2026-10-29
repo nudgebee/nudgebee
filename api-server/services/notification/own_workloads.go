@@ -45,8 +45,12 @@ const OwnNamespacesSQL = `
 	WHERE s.name = '` + NudgebeeWorkloadsAttr + `'`
 
 // RecommendationNamespaceSQL is the Kubernetes namespace of the recommendation
-// aliased as r, or NULL for one that has none (cloud resources).
-const RecommendationNamespaceSQL = `COALESCE(r.recommendation->'metadata'->>'namespace', r.recommendation->>'namespace', ` + models.PopeyeNamespaceSQL + `)`
+// aliased as r, or NULL for one that has none (cloud resources). Rightsizing
+// payloads are keyed by container and carry no namespace, so the last fallback
+// is the "namespace/..." prefix of account_object_id, taken only when it is a
+// valid namespace name; cloud ids (ARNs) contain colons and never match.
+const RecommendationNamespaceSQL = `COALESCE(r.recommendation->'metadata'->>'namespace', r.recommendation->>'namespace', ` + models.PopeyeNamespaceSQL + `,
+	substring(r.account_object_id from '^([a-z0-9](?:[-a-z0-9]*[a-z0-9])?)/'))`
 
 // NotOwnRecommendationSQL is a WHERE condition that keeps out recommendations
 // (aliased as r) on NudgeBee's own workloads.
@@ -60,7 +64,7 @@ const NotOwnRecommendationSQL = `NOT EXISTS (SELECT 1 FROM (` + OwnNamespacesSQL
 // tenant the query reads (a parameter, or r.tenant_id for a single row), so the
 // set of such images is built once per query, not once per finding.
 func NotOwnImageSQL(tenantExpr string) string {
-	return `NOT COALESCE(r.rule_name = 'image_scan' AND (r.cloud_account_id, r.recommendation->>'image_name') IN (
+	return `NOT COALESCE(r.rule_name IN ('image_scan', 'image_scan_summary') AND (r.cloud_account_id, r.recommendation->>'image_name') IN (
 		SELECT p.cloud_account_id, container->>'image'
 		FROM k8s_pods p
 		CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(p.meta->'config'->'containers') = 'array'

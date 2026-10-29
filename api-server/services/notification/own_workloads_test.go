@@ -104,12 +104,15 @@ func TestOwnWorkloads_DB(t *testing.T) {
 	}
 
 	mustExec(`INSERT INTO recommendation VALUES
-		('00000000-0000-0000-0000-000000000001', $3, $1, 'pod_right_sizing', 'acme-observability/Deployment/agent', '{"namespace": "acme-observability"}'),
+		('00000000-0000-0000-0000-000000000001', $3, $1, 'pod_right_sizing', 'acme-observability/Deployment/agent', '{"agent": [{"add_info": {"estimated_savings": -9.5}}]}'),
 		('00000000-0000-0000-0000-000000000002', $3, $1, 'replica_right_sizing', 'x', '{"metadata": {"namespace": "acme-observability"}}'),
 		('00000000-0000-0000-0000-000000000003', $3, $1, 'workload_misconfigurations', 'acme-observability/Deployment/agent', '[{"level": "warning"}]'),
 		('00000000-0000-0000-0000-000000000004', $3, $1, 'pod_right_sizing', 'payments/Deployment/api', '{"namespace": "payments"}'),
 		('00000000-0000-0000-0000-000000000005', $3, $1, 'aws_ec2_underutilized', 'i-123', '{"cpu": 3}'),
-		('00000000-0000-0000-0000-000000000006', $3, $2, 'pod_right_sizing', 'nudgebee-agent/Deployment/agent', '{"namespace": "nudgebee-agent"}')`,
+		('00000000-0000-0000-0000-000000000006', $3, $2, 'pod_right_sizing', 'nudgebee-agent/Deployment/agent', '{"agent": []}'),
+		('00000000-0000-0000-0000-000000000011', $3, $1, 'pv_rightsize', 'acme-observability/data-agent-0', '{}'),
+		('00000000-0000-0000-0000-000000000012', $3, $1, 'aws_elb_idle', 'arn:aws:elasticloadbalancing:us-east-1:1:loadbalancer/app/acme-observability/x', '{}'),
+		('00000000-0000-0000-0000-000000000013', $3, $1, 'pod_right_sizing', 'payments/Deployment/api', '{"api": []}')`,
 		noSetting, turnedOff, tenant)
 
 	// Image-scan findings name an image, not a namespace: one is NudgeBee's own
@@ -133,7 +136,8 @@ func TestOwnWorkloads_DB(t *testing.T) {
 		('00000000-0000-0000-0000-000000000007', $2, $1, 'image_scan', 'registry/agent:1', '{"image_name": "registry/agent:1"}'),
 		('00000000-0000-0000-0000-000000000008', $2, $1, 'image_scan', 'registry/shared:1', '{"image_name": "registry/shared:1"}'),
 		('00000000-0000-0000-0000-000000000009', $2, $1, 'image_scan', 'registry/gone:1', '{"image_name": "registry/gone:1"}'),
-		('00000000-0000-0000-0000-000000000010', $2, $1, 'image_scan', 'x', '{}')`,
+		('00000000-0000-0000-0000-000000000010', $2, $1, 'image_scan', 'x', '{}'),
+		('00000000-0000-0000-0000-000000000014', $2, $1, 'image_scan_summary', 'registry/agent:1', '{"image_name": "registry/agent:1"}')`,
 		noSetting, tenant)
 
 	for id, want := range map[string]bool{
@@ -147,6 +151,10 @@ func TestOwnWorkloads_DB(t *testing.T) {
 		"00000000-0000-0000-0000-000000000008": false,
 		"00000000-0000-0000-0000-000000000009": false,
 		"00000000-0000-0000-0000-000000000010": false,
+		"00000000-0000-0000-0000-000000000011": true,
+		"00000000-0000-0000-0000-000000000012": false,
+		"00000000-0000-0000-0000-000000000013": false,
+		"00000000-0000-0000-0000-000000000014": true,
 	} {
 		got, err := isOwnRecommendation(db, id)
 		require.NoError(t, err)
