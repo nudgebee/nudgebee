@@ -17,10 +17,18 @@ COPY poetry.lock pyproject.toml ./
 # Install dependencies. Cache mounts persist /root/.cache/{uv,pip}
 # across builds via BuildKit; the explicit `rm -rf` of those dirs is
 # removed because the cache mount keeps them out of the image layer.
+# Drop pip from the conda envs. Dependencies are installed with uv and
+# nothing calls pip at runtime, but pip vendors its own msgpack, urllib3 and
+# setuptools copies that Trivy flags (still unpatched in pip 26.2.2). Its
+# extracted copies in the conda package cache carry the same manifest.
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=cache,target=/root/.cache/pip \
     conda run -n myenv pip uninstall -y importlib-metadata || true && \
     conda run -n myenv uv pip install --system --requirements pyproject.toml && \
+    for env in myenv base; do \
+        if conda list -n "$env" --json | grep -q '"name": "pip"'; then conda remove -y --force -n "$env" pip || exit 1; fi; \
+    done && \
+    rm -rf /opt/conda/pkgs/pip-* && \
     conda clean --yes --all
 
 FROM uv-base AS production

@@ -26,6 +26,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=cache,target=/root/.cache/pip \
     uv pip install --system --requirements pyproject.toml
 
+# Drop pip from the runtime image. Dependencies are installed with uv and
+# nothing calls pip at runtime, but pip vendors its own msgpack, urllib3 and
+# setuptools copies that Trivy flags (still unpatched in pip 26.2.2).
+RUN if python -m pip --version >/dev/null 2>&1; then python -m pip uninstall -y pip; fi
+
 # Copy application source code
 COPY notifications_server notifications_server
 
