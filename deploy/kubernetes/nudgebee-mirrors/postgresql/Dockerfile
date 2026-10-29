@@ -24,7 +24,7 @@ USER root
 # these debian-11 images can get.
 RUN export DEBIAN_FRONTEND=noninteractive \
     && echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
-    && sed -i -E 's#https?://(deb|security)\.debian\.org#http://archive.debian.org#g' /etc/apt/sources.list \
+    && find /etc/apt/ -name '*.list' -exec sed -i -E 's#https?://(deb|security)\.debian\.org#http://archive.debian.org#g' {} + \
     && apt-get update \
     && apt-get upgrade -y \
     && apt-get clean \
