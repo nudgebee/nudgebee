@@ -198,6 +198,9 @@ func (r CloudResourceSearchTool) Call(nbRequestContext core.NbToolContext, input
 				found = append(found, res)
 			}
 		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
 		return found, nil
 	}
 
