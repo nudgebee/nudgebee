@@ -39,8 +39,15 @@ ARG OS_PKG_EPOCH
 
 # Bitnami images run as non-root (uid 1001); switch to root to patch, then back.
 USER root
+# Debian 11 (bullseye) LTS ended Aug 2026 and its final point/security updates
+# moved to archive.debian.org. security.debian.org still serves the
+# bullseye-security index but its package pool is gone (every .deb 404s), so
+# point every bullseye source at the archive, which holds the same final release
+# plus the packages. The sources are frozen now, so this is the last OS refresh
+# these debian-11 images can get.
 RUN export DEBIAN_FRONTEND=noninteractive \
     && echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
+    && sed -i -E 's#https?://(deb|security)\.debian\.org#http://archive.debian.org#g' /etc/apt/sources.list \
     && apt-get update \
     && apt-get upgrade -y \
     && apt-get clean \
