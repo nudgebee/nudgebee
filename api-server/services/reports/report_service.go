@@ -11,6 +11,7 @@ import (
 	"nudgebee/services/config"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/internal/database/models"
+	"nudgebee/services/notification"
 	"nudgebee/services/query"
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
@@ -232,7 +233,44 @@ func toFloat64(v interface{}) float64 {
 	}
 }
 
-func prepareCombinedHighlightQuery(tenant, startDate, endDate string, accountIds []string) query.QueryRequest {
+// ownNamespacesForReport returns the namespaces the tenant's reports leave out
+// on each account (see notification.OwnNamespacesByAccount). On an error it
+// logs and leaves nothing out.
+func ownNamespacesForReport(context *security.RequestContext, tenantId string) map[string][]string {
+	dbManager, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		context.GetLogger().Error("error getting database manager", "error", err)
+		return nil
+	}
+	own, err := notification.OwnNamespacesByAccount(dbManager.Db, tenantId)
+	if err != nil {
+		context.GetLogger().Error("error reading NudgeBee's own namespaces, reporting everything", "error", err, "tenant", tenantId)
+		return nil
+	}
+	return own
+}
+
+// notOwnNamespaceClauses keeps rows on NudgeBee's own workloads out of a report
+// query: a row is dropped only when it is on an account in own and its
+// namespaceColumn names one of that account's namespaces.
+func notOwnNamespaceClauses(own map[string][]string, namespaceColumn string) []query.QueryWhereClause {
+	accountIds := lo.Keys(own)
+	sort.Strings(accountIds)
+	clauses := make([]query.QueryWhereClause, 0, len(accountIds))
+	for _, accountId := range accountIds {
+		if len(own[accountId]) == 0 {
+			continue
+		}
+		clauses = append(clauses, query.QueryWhereClause{Or: []query.QueryWhereClause{
+			{Binary: query.BinaryWhereClause{"account_id": map[query.BinaryWhereClauseType]any{query.Nq: accountId}}},
+			{Binary: query.BinaryWhereClause{namespaceColumn: map[query.BinaryWhereClauseType]any{query.IsNull: true}}},
+			{Binary: query.BinaryWhereClause{namespaceColumn: map[query.BinaryWhereClauseType]any{query.NotIn: own[accountId]}}},
+		}})
+	}
+	return clauses
+}
+
+func prepareCombinedHighlightQuery(tenant, startDate, endDate string, accountIds []string, own map[string][]string) query.QueryRequest {
 	whereClauses := []query.QueryWhereClause{
 		{Binary: query.BinaryWhereClause{"tenant_id": map[query.BinaryWhereClauseType]any{query.Eq: tenant}}},
 		{Binary: query.BinaryWhereClause{"created_at": map[query.BinaryWhereClauseType]any{query.Lte: any(endDate)}}},
@@ -245,6 +283,7 @@ func prepareCombinedHighlightQuery(tenant, startDate, endDate string, accountIds
 			Binary: query.BinaryWhereClause{"account_id": map[query.BinaryWhereClauseType]any{query.In: accountIds}},
 		})
 	}
+	whereClauses = append(whereClauses, notOwnNamespaceClauses(own, "subject_namespace")...)
 
 	return query.QueryRequest{
 		Table: "event_groupings_v2",
@@ -266,7 +305,7 @@ func prepareCombinedHighlightQuery(tenant, startDate, endDate string, accountIds
 // opportunity-lost total, with nothing to show that it happened.
 var optimizationRuleNames = []string{"pod_right_sizing", "unused_pvc", "pv_rightsize", "replica_right_sizing", "abandoned_resource", "eks_cluster_upgrade"}
 
-func prepareRecommendationQuery(tenant string, accountIds []string) query.QueryRequest {
+func prepareRecommendationQuery(tenant string, accountIds []string, own map[string][]string) query.QueryRequest {
 	whereClauses := []query.QueryWhereClause{
 		{Binary: query.BinaryWhereClause{"tenant_id": map[query.BinaryWhereClauseType]any{query.Eq: tenant}}},
 		{Binary: query.BinaryWhereClause{"status": map[query.BinaryWhereClauseType]any{query.In: []string{"Open", "InProgress"}}}},
@@ -278,6 +317,7 @@ func prepareRecommendationQuery(tenant string, accountIds []string) query.QueryR
 			Binary: query.BinaryWhereClause{"account_id": map[query.BinaryWhereClauseType]any{query.In: accountIds}},
 		})
 	}
+	whereClauses = append(whereClauses, notOwnNamespaceClauses(own, "resource_k8s_namespace")...)
 
 	return query.QueryRequest{
 		Table: "recommendation_groupings_v2",
@@ -315,6 +355,7 @@ func calculateOpportunityLost(context *security.RequestContext, tenantId string,
 			FROM recommendation r
 			INNER JOIN cloud_accounts ca ON ca.id = r.cloud_account_id
 			WHERE r.tenant_id = $1
+			  AND ` + notification.NotOwnRecommendationSQL + `
 			  AND r.status IN ('Open', 'InProgress')
 			  AND r.rule_name = ANY($2)
 			  AND (CARDINALITY($3::uuid[]) = 0 OR r.cloud_account_id = ANY($3))
@@ -334,7 +375,7 @@ func calculateOpportunityLost(context *security.RequestContext, tenantId string,
 	return opportunityLost, nil
 }
 
-func getTroubleshootHighlights(context *security.RequestContext, tenantId string, startDate, endDate string, accountIds []string) (map[string]interface{}, error) {
+func getTroubleshootHighlights(context *security.RequestContext, tenantId string, startDate, endDate string, accountIds []string, own map[string][]string) (map[string]interface{}, error) {
 	subjectTypeToKey := map[string]string{
 		"node":                  "node_events",
 		"HighErrorCriticalLogs": "app_events",
@@ -342,7 +383,7 @@ func getTroubleshootHighlights(context *security.RequestContext, tenantId string
 	}
 
 	// Single combined query for all event types grouped by subject_type
-	combinedQuery := prepareCombinedHighlightQuery(tenantId, startDate, endDate, accountIds)
+	combinedQuery := prepareCombinedHighlightQuery(tenantId, startDate, endDate, accountIds, own)
 	resp, err := query.ExecuteQuery(context, combinedQuery)
 	if err != nil {
 		return nil, err
@@ -362,7 +403,7 @@ func getTroubleshootHighlights(context *security.RequestContext, tenantId string
 		}
 	}
 
-	queryRequest := prepareRecommendationQuery(tenantId, accountIds)
+	queryRequest := prepareRecommendationQuery(tenantId, accountIds, own)
 	recommendationData, err := query.ExecuteQuery(context, queryRequest)
 	if err != nil {
 		context.GetLogger().Error("Error executing query", "error", err)
@@ -424,15 +465,16 @@ func SendDailyHighlightEmailReport(context *security.RequestContext, request Ten
 			totalOpportunityLost float64
 		)
 
+		own := ownNamespacesForReport(context, tenant.Id)
 		g, _ := errgroup.WithContext(context.GetContext())
 		g.Go(func() error {
 			var err error
-			highlight1, err = getTroubleshootHighlights(context, tenant.Id, yesterdayFormatted, dateNowFormatted, accountIds)
+			highlight1, err = getTroubleshootHighlights(context, tenant.Id, yesterdayFormatted, dateNowFormatted, accountIds, own)
 			return err
 		})
 		g.Go(func() error {
 			var err error
-			highlight2, err = getTroubleshootHighlights(context, tenant.Id, dayBeforeFormatted, yesterdayFormatted, accountIds)
+			highlight2, err = getTroubleshootHighlights(context, tenant.Id, dayBeforeFormatted, yesterdayFormatted, accountIds, own)
 			return err
 		})
 		g.Go(func() error {
@@ -714,7 +756,7 @@ func karpenterExpected(connStatus map[string]interface{}) bool {
 	return strings.EqualFold(autoscalerType, "karpenter")
 }
 
-func prepareDailyTroubleshootCountsQuery(tenant, startDate, endDate string, accountIds []string) query.QueryRequest {
+func prepareDailyTroubleshootCountsQuery(tenant, startDate, endDate string, accountIds []string, own map[string][]string) query.QueryRequest {
 	whereClauses := []query.QueryWhereClause{
 		{Binary: query.BinaryWhereClause{"tenant_id": map[query.BinaryWhereClauseType]any{query.Eq: tenant}}},
 		{Binary: query.BinaryWhereClause{"created_at": map[query.BinaryWhereClauseType]any{query.Lte: endDate}}},
@@ -726,6 +768,7 @@ func prepareDailyTroubleshootCountsQuery(tenant, startDate, endDate string, acco
 			Binary: query.BinaryWhereClause{"account_id": map[query.BinaryWhereClauseType]any{query.In: accountIds}},
 		})
 	}
+	whereClauses = append(whereClauses, notOwnNamespaceClauses(own, "subject_namespace")...)
 
 	return query.QueryRequest{
 		Table: "event_groupings_v2",
@@ -750,7 +793,7 @@ func prepareDailyTroubleshootCountsQuery(tenant, startDate, endDate string, acco
 	}
 }
 
-func prepareTroubleshootSummaryQuery(tenant, startDate, endDate string, accountIds []string) query.QueryRequest {
+func prepareTroubleshootSummaryQuery(tenant, startDate, endDate string, accountIds []string, own map[string][]string) query.QueryRequest {
 	whereClauses := []query.QueryWhereClause{
 		{Binary: query.BinaryWhereClause{"tenant_id": map[query.BinaryWhereClauseType]any{query.Eq: tenant}}},
 		{Binary: query.BinaryWhereClause{"priority": map[query.BinaryWhereClauseType]any{query.Eq: "HIGH"}}},
@@ -763,6 +806,7 @@ func prepareTroubleshootSummaryQuery(tenant, startDate, endDate string, accountI
 			Binary: query.BinaryWhereClause{"account_id": map[query.BinaryWhereClauseType]any{query.In: accountIds}},
 		})
 	}
+	whereClauses = append(whereClauses, notOwnNamespaceClauses(own, "subject_namespace")...)
 
 	return query.QueryRequest{
 		Table: "event_groupings_v2",
@@ -825,7 +869,8 @@ func SendDailyEventsSummaryReport(context *security.RequestContext, request Tena
 		dateNowFormatted := dateNow.Format("2006-01-02 15:04:05-07:00")
 		yesterdayFormatted := yesterday.Format("2006-01-02 15:04:05-07:00")
 
-		queryRequest := prepareDailyTroubleshootCountsQuery(tenant.Id, yesterdayFormatted, dateNowFormatted, accountIds)
+		own := ownNamespacesForReport(context, tenant.Id)
+		queryRequest := prepareDailyTroubleshootCountsQuery(tenant.Id, yesterdayFormatted, dateNowFormatted, accountIds, own)
 		response, err := query.ExecuteQuery(context, queryRequest)
 		if err != nil {
 			context.GetLogger().Error("Error executing query", "error", err)
@@ -840,7 +885,7 @@ func SendDailyEventsSummaryReport(context *security.RequestContext, request Tena
 			},
 		}
 
-		queryRequest = prepareTroubleshootSummaryQuery(tenant.Id, yesterdayFormatted, dateNowFormatted, accountIds)
+		queryRequest = prepareTroubleshootSummaryQuery(tenant.Id, yesterdayFormatted, dateNowFormatted, accountIds, own)
 		response, err = query.ExecuteQuery(context, queryRequest)
 		if err != nil {
 			context.GetLogger().Error("Error executing query", "error", err)
@@ -1176,15 +1221,16 @@ func ProcessHourlyEventsBatchNotification(ctx *security.RequestContext) error {
 	}
 	allowedAccountIDs := lo.Keys(accountRules)
 
-	const eventQuery = `
-		SELECT 
-			id, cloud_account_id, title, cluster, subject_name, 
+	eventQuery := `
+		SELECT
+			id, cloud_account_id, title, cluster, subject_name,
 			subject_namespace, aggregation_key, created_at, priority
 		FROM events
 		WHERE cloud_account_id = ANY($1)
 		  AND created_at >= $2
 		  AND created_at < $3
 		  AND priority NOT IN ('DEBUG', 'INFO')
+		  AND ` + notification.NotOwnEventSQL("events") + `
 	`
 	eventRows, err := dbManager.Query(eventQuery, pq.Array(allowedAccountIDs), start, end)
 	defer func() {

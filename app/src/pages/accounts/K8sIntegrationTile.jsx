@@ -37,6 +37,14 @@ import { ds } from 'src/utils/colors';
 import { getFeatures, updateFeatureFlagForAccount } from '@lib/UserService';
 import { Checkbox } from '@ui/Checkbox';
 import EventAnalysisSettingsFields from '@components/accounts/EventAnalysisSettingsFields';
+import NudgebeeWorkloadsSettingsFields from '@components/accounts/NudgebeeWorkloadsSettingsFields';
+import {
+  DEFAULT_NUDGEBEE_WORKLOADS_FORM,
+  NUDGEBEE_WORKLOADS_ATTR,
+  buildNudgebeeWorkloadsValue,
+  getAgentInstallNamespace,
+  parseNudgebeeWorkloadsForm,
+} from '@api1/account/nudgebeeWorkloadsSettings';
 import {
   DEFAULT_EVENT_ANALYSIS_FORM,
   EVENT_ANALYSIS_ATTR,
@@ -92,6 +100,8 @@ const K8sIntegrationTile = () => {
   const [imageScanEnabled, setImageScanEnabled] = useState(true);
   const [imageScanExcludedNamespaces, setImageScanExcludedNamespaces] = useState('');
   const [eventAnalysisForm, setEventAnalysisForm] = useState(DEFAULT_EVENT_ANALYSIS_FORM);
+  const [nudgebeeWorkloadsForm, setNudgebeeWorkloadsForm] = useState(DEFAULT_NUDGEBEE_WORKLOADS_FORM);
+  const [agentNamespace, setAgentNamespace] = useState('');
   const [updateAccountStatus, setUpdateAccountStatus] = useState({});
   const [isStatusUpdating, setIsStatusUpdating] = useState(false);
   const [k8sCurlCommand, setK8sCurlCommand] = useState('');
@@ -358,6 +368,7 @@ const K8sIntegrationTile = () => {
       setImageScanEnabled(imageScan.enabled !== false);
       setImageScanExcludedNamespaces((imageScan.excluded_namespaces || []).join(', '));
       setEventAnalysisForm(parseEventAnalysisForm(accountAttrs.find((l) => l.name === EVENT_ANALYSIS_ATTR)?.value));
+      setNudgebeeWorkloadsForm(parseNudgebeeWorkloadsForm(accountAttrs.find((l) => l.name === NUDGEBEE_WORKLOADS_ATTR)?.value));
       if (
         selectedAccountId in cloudAccountAttributes &&
         cloudAccountAttributes[selectedAccountId] &&
@@ -400,6 +411,26 @@ const K8sIntegrationTile = () => {
       });
       fetchFeatureFlags(selectedAccountId);
     }
+  }, [accountSettings, selectedAccountId]);
+
+  // The agent's namespace is what the setting hides without being listed, so
+  // the modal names it. Cleared first so another account's value never shows.
+  useEffect(() => {
+    setAgentNamespace('');
+    if (!accountSettings || !selectedAccountId) {
+      return;
+    }
+    let cancelled = false;
+    getAgentInstallNamespace(selectedAccountId)
+      .then((ns) => {
+        if (!cancelled) {
+          setAgentNamespace(ns);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, [accountSettings, selectedAccountId]);
 
   useEffect(() => {
@@ -496,6 +527,11 @@ const K8sIntegrationTile = () => {
       snackbar.error(eventAnalysisValue.error);
       return;
     }
+    const nudgebeeWorkloadsValue = buildNudgebeeWorkloadsValue(nudgebeeWorkloadsForm);
+    if (nudgebeeWorkloadsValue.error) {
+      snackbar.error(nudgebeeWorkloadsValue.error);
+      return;
+    }
     setUpdating(true);
     const data = [
       {
@@ -533,6 +569,13 @@ const K8sIntegrationTile = () => {
       {
         name: EVENT_ANALYSIS_ATTR,
         value: eventAnalysisValue.value,
+        cloud_account_id: selectedAccountId,
+      },
+      // Unconditional, like image_scan: turning hiding back on or clearing the
+      // list has to overwrite the stored value.
+      {
+        name: NUDGEBEE_WORKLOADS_ATTR,
+        value: nudgebeeWorkloadsValue.value,
         cloud_account_id: selectedAccountId,
       },
     ];
@@ -863,6 +906,15 @@ const K8sIntegrationTile = () => {
               />
             </Box>
           </Box>
+
+          <Divider color={ds.background[200]} sx={{ marginTop: ds.space[5], marginBottom: ds.space[5] }} />
+
+          <NudgebeeWorkloadsSettingsFields
+            form={nudgebeeWorkloadsForm}
+            onChange={setNudgebeeWorkloadsForm}
+            agentNamespace={agentNamespace}
+            disabled={!hasWriteAccess()}
+          />
 
           <Divider color={ds.background[200]} sx={{ marginTop: ds.space[5], marginBottom: ds.space[5] }} />
 

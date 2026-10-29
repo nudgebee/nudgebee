@@ -13,6 +13,8 @@ import (
 	"nudgebee/services/internal/database"
 	"nudgebee/services/internal/database/models"
 	"nudgebee/services/security"
+
+	"github.com/jmoiron/sqlx"
 )
 
 func ProcessEvent(ctx *security.RequestContext, newEvent map[string]any) (err error) {
@@ -41,6 +43,12 @@ func ProcessEvent(ctx *security.RequestContext, newEvent map[string]any) (err er
 	source, _ := newEvent["source"].(string)
 	if source == "slo" {
 		ctx.GetLogger().Debug("skipping finding notification for SLO event — handled by slo service", "id", newEvent["id"])
+		return nil
+	}
+
+	if dbms, dbErr := database.GetDatabaseManager(database.Metastore); dbErr != nil {
+		ctx.GetLogger().Error("error getting database manager, sending without the own-workload check", "error", dbErr)
+	} else if skipOwnWorkload(ctx, dbms.Db, eventField(newEvent, "cloud_account_id"), eventField(newEvent, "subject_namespace")) {
 		return nil
 	}
 
@@ -120,6 +128,9 @@ func publishFindingTransition(ctx *security.RequestContext, newEvent map[string]
 	if nbStatus.Valid && lifecycle.SilencedByTriage(nbStatus.String) {
 		return nil
 	}
+	if skipOwnWorkload(ctx, dbms.Db, eventField(newEvent, "cloud_account_id"), eventField(newEvent, "subject_namespace")) {
+		return nil
+	}
 
 	ctx.GetLogger().Info(fmt.Sprintf("Publishing %s event to notification - %v", strings.TrimPrefix(notificationType, "finding_"), eventID))
 	message := map[string]any{
@@ -150,6 +161,12 @@ func TriggerNotificationForRecommendationResolution(ctx *security.RequestContext
 	if err != nil {
 		ctx.GetLogger().Error("error getting database manager", "error", err)
 		return err
+	}
+	if own, ownErr := isOwnRecommendation(dbms.Db, recommendation.Id); ownErr != nil {
+		ctx.GetLogger().Error("error checking for NudgeBee's own workload, sending anyway", "error", ownErr, "recommendation", recommendation.Id)
+	} else if own {
+		ctx.GetLogger().Info("not notifying: recommendation is on NudgeBee's own workload", "recommendation", recommendation.Id)
+		return nil
 	}
 	accountName := ""
 	if scanErr := dbms.Db.QueryRowx(`select ca.account_name from cloud_accounts ca where id=$1`, recommendation.CloudAccountId).Scan(&accountName); scanErr != nil && !errors.Is(scanErr, sql.ErrNoRows) {
@@ -232,6 +249,9 @@ func TriggerNotificationForEventResolution(ctx *security.RequestContext, event m
 		ctx.GetLogger().Error("error getting database manager", "error", err)
 		return err
 	}
+	if skipOwnWorkload(ctx, dbms.Db, derefString(event.CloudAccountId), derefString(event.SubjectNamespace)) {
+		return nil
+	}
 	accountName := ""
 	if scanErr := dbms.Db.QueryRowx(`select ca.account_name from cloud_accounts ca where id=$1`, *event.CloudAccountId).Scan(&accountName); scanErr != nil && !errors.Is(scanErr, sql.ErrNoRows) {
 		ctx.GetLogger().Error("Error getting account name", "error", scanErr)
@@ -256,4 +276,31 @@ func TriggerNotificationForEventResolution(ctx *security.RequestContext, event m
 	}
 
 	return nil
+}
+
+// skipOwnWorkload reports whether a notification about namespace on accountID
+// is left out because it is NudgeBee's own workload. On an error it logs and
+// lets the notification through.
+func skipOwnWorkload(ctx *security.RequestContext, db *sqlx.DB, accountID, namespace string) bool {
+	own, err := isOwnWorkload(db, accountID, namespace)
+	if err != nil {
+		ctx.GetLogger().Error("error checking for NudgeBee's own workload, sending anyway", "error", err, "account", accountID, "namespace", namespace)
+		return false
+	}
+	if own {
+		ctx.GetLogger().Info("not notifying: event is on NudgeBee's own workload", "account", accountID, "namespace", namespace)
+	}
+	return own
+}
+
+func eventField(event map[string]any, key string) string {
+	value, _ := event[key].(string)
+	return value
+}
+
+func derefString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }

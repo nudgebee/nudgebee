@@ -2697,6 +2697,9 @@ func UpsertAccountAttrs(context *security.RequestContext, request AccountAttrUps
 		if err := validateEventAnalysisAttribute(sc, attr); err != nil {
 			return AccountAttrUpsertResponse{}, err
 		}
+		if err := validateNudgebeeWorkloadsAttribute(context.GetSecurityContext(), attr); err != nil {
+			return AccountAttrUpsertResponse{}, err
+		}
 		for _, validate := range eeAttrValidators {
 			if err := validate(context.GetSecurityContext(), attr); err != nil {
 				return AccountAttrUpsertResponse{}, err

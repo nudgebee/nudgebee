@@ -5,6 +5,7 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/config"
 	"nudgebee/services/internal/database"
+	"nudgebee/services/notification"
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 	"time"
@@ -92,6 +93,7 @@ func ProcessProactiveNudges(ctx *security.RequestContext) error {
 				FROM recommendation r
 				LEFT JOIN cloud_accounts ca ON ca.id = r.cloud_account_id
 				WHERE r.tenant_id = $1
+					AND `+notification.NotOwnRecommendationSQL+`
 					AND r.status = 'Open'
 					AND r.category <> 'Security'
 					AND r.finops_band = 'Act Now'
