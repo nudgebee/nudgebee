@@ -15,6 +15,7 @@ import Text from '@shared/format/Text';
 import { Label } from '@ui/Label';
 import Tooltip from '@ui/Tooltip';
 import { eventBridgeStatus, newestTimestamp } from '@lib/eventBridgeStatus';
+import { stackRemovedReason } from '@lib/awsStackStatus';
 import { hasWriteAccess, canManage } from '@lib/auth';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
@@ -78,6 +79,26 @@ const TABLE_HEADERS = [
 
 // The status each page opens on; relaxed to "all" once if it returns nothing.
 const DEFAULT_STATUS_FILTER = 'active';
+
+// The Status cell: a plain status label, unless the collector disabled the
+// account because its CloudFormation stack was deleted or rolled back.
+const renderStatus = (item) => {
+  const agents = typeof item.agents === 'string' ? safeJSONParse(item.agents) : item.agents;
+  for (const agent of Array.isArray(agents) ? agents : []) {
+    const cs = typeof agent.connection_status === 'string' ? safeJSONParse(agent.connection_status) : agent.connection_status;
+    const reason = stackRemovedReason(item.status, cs?.cf_stack);
+    if (reason) {
+      return (
+        <Tooltip title={reason}>
+          <span>
+            <Label text='stack removed' tone='warning' />
+          </span>
+        </Tooltip>
+      );
+    }
+  }
+  return <Label text={item.status || '-'} />;
+};
 
 const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addAccountButtonText, AddOrgModalComponent, addOrgButtonText }) => {
   const [loading, setLoading] = useState(false);
@@ -463,7 +484,7 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
         { component: <Datetime value={item.created_at} /> },
         { component: <Text value={item?.created_by_name || '-'} /> },
         { component: <Text value={item.account_number || '-'} /> },
-        { component: <Label text={item.status || '-'} /> },
+        { component: renderStatus(item) },
         { component: <AccountEnvText accountName={item.account_name} accountEnv={item.account_env} /> },
         { component: renderRealtimeEvents(item) },
         { component: <ThreeDotsMenu sx={{ ...action.primary }} menuItems={getMenuItems(item)} data={item} onMenuClick={onMenuClick} /> },
