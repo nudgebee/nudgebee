@@ -1,5 +1,6 @@
 import dynamic from 'next/dynamic';
 import AnchorComponent from '@components/common/navigation/AnchorComponent';
+import PermissionDeniedContent from '@components/common/navigation/PermissionDeniedContent';
 import ErrorBoundary from '@shared/ErrorBoundary';
 import KubernetesEventsTable, { getTroubleshootEventsFilterStorageKey } from '@components/events/KubernetesEvents';
 import KubernetesGroupedEventsTable from '@components/k8s/details/groupedevents/KubernetesGroupedEventsTable';
@@ -146,25 +147,30 @@ const TroubleshootPage = () => {
   // The page-level scope, as a string, so it can drive the sub-tab remount key.
   const scopeKey = `${router.query.accountIds ?? ''}|${router.query.start_time ?? ''}|${router.query.end_time ?? ''}`;
 
-  // Gate the Investigations and Knowledge Graph tabs on the permission backing
-  // each tab's primary API: Investigations reads ai_list_conversations
-  // (→ ai_conversations:Read); Knowledge Graph reads kg_get_complete_graph
-  // (→ kg:Read). Only grants-only custom-role users are gated — tenant-wide
-  // admins and any account user keep access (their role authorizes the API); a
-  // grants-only user lacking the grant sees the tab disabled (not hidden) with a
-  // request-access tooltip. All Events (value 0) is never gated.
+  // Gate each tab on the permission backing its primary API: All Events / Event
+  // Resolutions / Analytics read events:Read; Investigations reads
+  // ai_list_conversations (→ ai_conversations:Read); Knowledge Graph reads
+  // kg_get_complete_graph (→ kg:Read). Matches the sidebar's own gate on these
+  // rows (layout/index.jsx). Only grants-only custom-role users are gated —
+  // tenant-wide admins and any account user keep access (their role authorizes
+  // the API); a grants-only user lacking the grant sees the tab disabled (not
+  // hidden) with a request-access tooltip.
   const grantsOnlyUser = isGrantsOnlyUser();
+  const canAccessEvents = !grantsOnlyUser || hasPermission('events', 'Read');
   const canAccessInvestigations = !grantsOnlyUser || hasPermission('ai_conversations', 'Read');
   const canAccessKg = !grantsOnlyUser || hasPermission('kg', 'Read');
 
   const anchorFilterOptions = useMemo(
     () =>
       filterOptions.map(({ tabOptions: _tabOptions, ...rest }) => {
-        const disabled = (rest.value === 1 && !canAccessInvestigations) || (rest.value === 3 && !canAccessKg);
-        const requiredPermission = rest.value === 1 ? 'ai_conversations:Read' : 'kg:Read';
+        const disabled =
+          ((rest.value === 0 || rest.value === 2 || rest.value === 4) && !canAccessEvents) ||
+          (rest.value === 1 && !canAccessInvestigations) ||
+          (rest.value === 3 && !canAccessKg);
+        const requiredPermission = rest.value === 1 ? 'ai_conversations:Read' : rest.value === 3 ? 'kg:Read' : 'events:Read';
         return { ...rest, disabled, disabledTooltip: disabled ? missingPermissionMessage(requiredPermission) : undefined };
       }),
-    [canAccessInvestigations, canAccessKg]
+    [canAccessEvents, canAccessInvestigations, canAccessKg]
   );
 
   // Drill-down from a summary widget: open the flat Events list filtered by the
@@ -242,18 +248,20 @@ const TroubleshootPage = () => {
     const decoded = decodeURIComponent(hash);
     const [fragment, subFragment] = decoded.split('/');
 
-    // Unknown top-level fragment (stale/typo'd link) — or a permission-gated tab
-    // the user can't access (a bookmarked/deep-linked #investigations or #kg) —
-    // fall back to All Events and canonicalize the URL, so a disabled tab can't
-    // be reached by URL and 403 on its API.
+    // Unknown top-level fragment (stale/typo'd link) — fall back to All Events
+    // (never gated) and canonicalize the URL.
     const parent = filterOptions.find((option) => option.fragment === fragment);
-    const gated = parent && ((parent.value === 1 && !canAccessInvestigations) || (parent.value === 3 && !canAccessKg));
-    if (!parent || gated) {
+    if (!parent) {
       setSelectedTab(0);
       setSelectedSubTab(0);
       replaceHash(`${filterOptions[0].fragment}/${filterOptions[0].tabOptions[0].fragment}`);
       return;
     }
+    // A permission-gated tab (a bookmarked/deep-linked #investigations or #kg
+    // the user can't access) still highlights and settles here — its content
+    // area renders a permission-denied placeholder below instead, so the real
+    // section (and its API calls) never mounts, rather than this effect
+    // silently bouncing the user to All Events.
     setSelectedTab(parent.value);
 
     // Resolve the sub-tab from subFragment when present (a top-level-only hash,
@@ -271,7 +279,10 @@ const TroubleshootPage = () => {
         replaceHash(`${parent.fragment}/${parent.tabOptions[0].fragment}`);
       }
     }
-  }, [router.asPath, canAccessInvestigations, canAccessKg]);
+  }, [router.asPath]);
+
+  // The active top-level tab's disabled entry (if any) -- see anchorFilterOptions above.
+  const blockedTab = anchorFilterOptions.find((opt) => opt.value === selectedTab && opt.disabled);
 
   return (
     <>
@@ -281,7 +292,8 @@ const TroubleshootPage = () => {
           single source of truth for both selectedTab and selectedSubTab. */}
       <AnchorComponent manageRoute={true} filterOptions={anchorFilterOptions} />
 
-      {selectedTab === 0 && (
+      {selectedTab === 0 && blockedTab && <PermissionDeniedContent message={blockedTab.disabledTooltip} />}
+      {selectedTab === 0 && !blockedTab && (
         <div style={{ margin: '0px var(--ds-space-6)' }}>
           {selectedSubTab <= 3 && (
             <Box sx={{ display: 'flex', justifyContent: 'flex-end', marginTop: 'var(--ds-space-4)' }}>
@@ -310,7 +322,8 @@ const TroubleshootPage = () => {
         </div>
       )}
 
-      {selectedTab === 1 && (
+      {selectedTab === 1 && blockedTab && <PermissionDeniedContent message={blockedTab.disabledTooltip} />}
+      {selectedTab === 1 && !blockedTab && (
         <div style={{ margin: '0px var(--ds-space-6)' }}>
           <Box sx={{ marginTop: 'var(--ds-space-4)' }}>
             <TroubleshootSummary tab={selectedSubTab === 1 ? 'manual' : 'auto'} range={summaryRange} />
@@ -329,7 +342,8 @@ const TroubleshootPage = () => {
           it renders like Analytics — top+horizontal margin, no briefing/sub-tab
           strip above it. It reads the account scope from router.query itself, so
           a plain ErrorBoundary (no scope remount key) is enough. */}
-      {selectedTab === 2 && (
+      {selectedTab === 2 && blockedTab && <PermissionDeniedContent message={blockedTab.disabledTooltip} />}
+      {selectedTab === 2 && !blockedTab && (
         <div style={{ margin: 'var(--ds-space-4) var(--ds-space-6) 0' }}>
           <ErrorBoundary>
             <EventResolutions />
@@ -337,7 +351,8 @@ const TroubleshootPage = () => {
         </div>
       )}
 
-      {selectedTab === 3 && (
+      {selectedTab === 3 && blockedTab && <PermissionDeniedContent message={blockedTab.disabledTooltip} />}
+      {selectedTab === 3 && !blockedTab && (
         <div style={{ margin: 'var(--ds-space-4)' }}>
           <ErrorBoundary>
             <KnowledgeGraphServiceMapWrapper />
@@ -348,7 +363,8 @@ const TroubleshootPage = () => {
       {/* Analytics drills back into All Events via applyWidgetFilter, which
           switches selectedTab itself — so a click here leaves this pane for the
           events list, exactly as the briefing's tiles do. */}
-      {selectedTab === 4 && (
+      {selectedTab === 4 && blockedTab && <PermissionDeniedContent message={blockedTab.disabledTooltip} />}
+      {selectedTab === 4 && !blockedTab && (
         <div style={{ margin: 'var(--ds-space-4) var(--ds-space-6) 0' }}>
           {/* The whole Analytics pane sits in one white panel (ds/Card — the same
               white surface ListingLayout gives the other tabs) so it reads as a

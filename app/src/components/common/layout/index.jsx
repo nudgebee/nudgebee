@@ -611,18 +611,52 @@ const PageLayout = ({ children }) => {
         icon: troubleshootIcon1,
         text: 'Troubleshoot',
         id: 'troubleshoot-sidenavbutton',
-        module: 'events',
+        // Union of the modules its rows declare (events / ai_conversations / kg),
+        // same reasoning as Optimize below — so the flyout opens for any grant
+        // that entitles something inside it, and each row's own module decides
+        // what is actually reachable once it is open.
+        modules: ['events', 'ai_conversations', 'kg'],
         subItems: [
-          { text: 'All Events', path: '/troubleshoot#all-events', id: 'sidenav-troubleshoot-all-events', icon: AllEventsIcon },
-          { text: 'Investigations', path: '/troubleshoot#investigations', id: 'sidenav-troubleshoot-investigations', icon: SearchBlueIcon },
+          {
+            text: 'All Events',
+            path: '/troubleshoot#all-events',
+            id: 'sidenav-troubleshoot-all-events',
+            icon: AllEventsIcon,
+            module: 'events',
+          },
+          // module matches the page's own gate (canAccessInvestigations,
+          // troubleshoot/index.jsx) -- without it the flyout showed this
+          // enabled for a grants-only user the page still turns away with a
+          // permission-denied placeholder.
+          {
+            text: 'Investigations',
+            path: '/troubleshoot#investigations',
+            id: 'sidenav-troubleshoot-investigations',
+            icon: SearchBlueIcon,
+            module: 'ai_conversations',
+          },
           {
             text: 'Event Resolutions',
             path: '/troubleshoot#event-resolutions',
             id: 'sidenav-troubleshoot-event-resolutions',
             icon: RecommendationResolutionIcon,
+            module: 'events',
           },
-          { text: 'Knowledge Graph', path: '/troubleshoot#kg', id: 'sidenav-troubleshoot-kg', icon: ServiceMapsIcon },
-          { text: 'Analytics', path: '/troubleshoot#analytics', id: 'sidenav-troubleshoot-analytics', icon: GroupedEventsIcon },
+          // module matches the page's own gate (canAccessKg, troubleshoot/index.jsx).
+          {
+            text: 'Knowledge Graph',
+            path: '/troubleshoot#kg',
+            id: 'sidenav-troubleshoot-kg',
+            icon: ServiceMapsIcon,
+            module: 'kg',
+          },
+          {
+            text: 'Analytics',
+            path: '/troubleshoot#analytics',
+            id: 'sidenav-troubleshoot-analytics',
+            icon: GroupedEventsIcon,
+            module: 'events',
+          },
         ],
       },
       {
@@ -788,20 +822,33 @@ const PageLayout = ({ children }) => {
     // read different modules declares them all (`modules`). Gating it on one alone
     // greys the parent out for a holder of another — and a disabled parent gets
     // pointerEvents:'none', so its flyout never opens and a granted sub-item stays
-    // unreachable even though the sub-item itself is enabled. The tooltip names the
-    // primary module.
+    // unreachable even though the sub-item itself is enabled. The tooltip names
+    // every module in the union — naming only the first (e.g. "spend:Read" on an
+    // entry any of spend/recommendations/autooptimize would unlock) wrongly
+    // implies that one specific grant is required.
+    const tooltipForModules = (modules) =>
+      modules.length > 1
+        ? `You need one of these permissions: ${modules.map((m) => `"${m}:Read"`).join(', ')}. Ask an admin to grant it.`
+        : missingPermissionMessage(`${modules[0]}:Read`);
     const gate = (entry) => {
       const modules = entry.modules ?? (entry.module ? [entry.module] : []);
-      return modules.length > 0 && !modules.some((m) => hasPermission(m, 'Read') || hasGrantOnAccount(m, 'Read', selectedCluster?.value))
-        ? { ...entry, disabled: true, disabledTooltip: missingPermissionMessage(`${modules[0]}:Read`) }
-        : entry;
+      if (modules.length === 0 || modules.some((m) => hasPermission(m, 'Read') || hasGrantOnAccount(m, 'Read', selectedCluster?.value))) {
+        return entry;
+      }
+      return { ...entry, disabled: true, disabledTooltip: tooltipForModules(modules) };
     };
     return items.map((item) => {
       const subItems = item.subItems?.map(gate);
       const gated = gate({ ...item, ...(subItems ? { subItems } : {}) });
-      return gated.disabled || !subItems?.length || subItems.some((sub) => !sub.disabled)
-        ? gated
-        : { ...gated, disabled: true, disabledTooltip: subItems[0].disabledTooltip };
+      if (gated.disabled || !subItems?.length || subItems.some((sub) => !sub.disabled)) {
+        return gated;
+      }
+      // Every sub-item is disabled (and the parent itself has no `module`, e.g.
+      // Infra) -- name every distinct module across them (k8s:Read + cloud:Read),
+      // not just the first sub-item's, which would wrongly suggest only that one
+      // grant unlocks the section.
+      const allModules = [...new Set(item.subItems.flatMap((sub) => sub.modules ?? (sub.module ? [sub.module] : [])))];
+      return { ...gated, disabled: true, disabledTooltip: tooltipForModules(allModules) };
     });
   }, [selectedCluster?.value, session, llmAnalyserEnabled, assistantName, nubiIconUrl, extraSections]);
 

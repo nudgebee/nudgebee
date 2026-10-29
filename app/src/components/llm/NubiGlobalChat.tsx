@@ -21,6 +21,7 @@ import { useData } from '@context/DataContext';
 import { useUpdateAllClusterOption } from '@shared/layout/UpdateDataContext';
 import { useNubiGlobalChat, NUBI_GLOBAL_CHAT_SHORTCUT_LABEL, isNubiFullPageRoute, isNubiLauncherHiddenRoute } from '@context/NubiGlobalChatContext';
 import { buildNubiWelcomeTemplates } from '@components/llm/NubiWelcome';
+import { hasPermission, isGrantsOnlyUser } from '@lib/auth';
 import { ds } from '@utils/colors';
 
 // The chat engine renders only inside the open drawer (MUI unmounts a closed
@@ -125,8 +126,12 @@ const NubiGlobalChat: React.FC = () => {
   }, [completedWhileClosed]);
 
   // The dedicated Nubi page is this same chat at full size — don't stack a
-  // launcher/drawer on top of it.
-  if (!mounted || isNubiFullPageRoute(router.pathname)) {
+  // launcher/drawer on top of it. Also matches the sidebar's and /ask-nudgebee's
+  // own gate (module: 'ai_conversations') -- without this, a grants-only user
+  // Nubi is hidden from everywhere else could still open it via this floating
+  // launcher.
+  const canUseNubi = !isGrantsOnlyUser() || hasPermission('ai_conversations', 'Read');
+  if (!mounted || isNubiFullPageRoute(router.pathname) || !canUseNubi) {
     return null;
   }
 

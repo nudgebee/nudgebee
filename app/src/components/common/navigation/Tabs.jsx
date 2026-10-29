@@ -99,7 +99,11 @@ const Tabs = ({
   const router = useRouter();
   const selectedOption = options?.tabOptions?.find((opt) => opt.value === value);
   const showBottomMargin = selectedOption?.showBottomMargin || false;
-  const safeValue = options?.tabOptions?.some((opt) => !opt.hidden && !opt.disabled && opt.value === value) ? value : false;
+  // A disabled sub-tab can still be the active one (a page may highlight it on
+  // purpose, e.g. a permission-gated #events/anomaly deep link, and render a
+  // permission-denied placeholder for its content) -- only exclude hidden
+  // options here, so MUI Tabs still underlines it instead of selecting nothing.
+  const safeValue = options?.tabOptions?.some((opt) => !opt.hidden && opt.value === value) ? value : false;
 
   const getTabUrl = (opt) => {
     // 1. Get the current resolved path (e.g., "/kubernetes/details/123?tab=1")
@@ -396,7 +400,7 @@ const Tabs = ({
                     component={behavior === 'router' && !softDisabled ? Link : 'button'}
                     value={opt.value}
                     icon={
-                      opt.count ? (
+                      opt.count && !opt.disabled ? (
                         <Chip variant='count' size='2xs' tone={opt.value === value ? 'info' : 'neutral'}>
                           {formatTabCount(opt.count)}
                         </Chip>

@@ -14,6 +14,7 @@ let mockGrants = [];
 jest.mock('@lib/auth', () => ({
   isGrantsOnlyUser: () => mockGrantsOnly,
   hasPermission: (module, cls) => mockGrants.includes(`${module}:${cls}`),
+  missingPermissionMessage: (permission) => `You need the "${permission}" permission.`,
 }));
 
 describe('ask-nudgebee page', () => {
@@ -37,11 +38,12 @@ describe('ask-nudgebee page', () => {
     expect(mockReplace).not.toHaveBeenCalled();
   });
 
-  it('sends a custom-role user without ai_conversations:Read to /home', () => {
+  it('renders a permission-denied placeholder for a custom-role user without ai_conversations:Read', () => {
     mockGrantsOnly = true;
     mockGrants = ['k8s:Read'];
     render(<AskNudgebeePage />);
     expect(screen.queryByText('nubi chat')).not.toBeInTheDocument();
-    expect(mockReplace).toHaveBeenCalledWith('/home');
+    expect(screen.getByText('Permission Denied')).toBeInTheDocument();
+    expect(mockReplace).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,5 @@
 import { queryGraphQL, gqlStringify, unwrapGraphQL } from '@lib/HttpService';
+import { isAccessDenied } from '@lib/accessDenied';
 import { eventSearchClause } from '@lib/eventSearch';
 
 import {
@@ -2981,6 +2982,9 @@ query k8s_event_groupings($limit:Int,$offset:Int){
         : { cloud_resourses: [] };
       return {
         data,
+        // Lets callers tell "no pod found" apart from "denied the read" -- both
+        // otherwise resolve to the same empty cloud_resourses.
+        accessDenied: isAccessDenied(response),
       };
     } catch (error) {
       console.log('Your Error is', error);

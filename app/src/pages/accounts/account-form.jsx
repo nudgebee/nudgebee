@@ -1,5 +1,7 @@
 import { Typography } from '@mui/material';
 import { useRouter } from 'next/router';
+import PermissionDeniedContent from '@components/common/navigation/PermissionDeniedContent';
+import { hasPermission, isGrantsOnlyUser, missingPermissionMessage } from '@lib/auth';
 import ServiceNowAccountModal from '@components/integrations/modal/ServiceNowAccountModal';
 import ZenDutyAccountModal from '@components/integrations/modal/ZenDutyAccountModal';
 import FreshdeskAccountModal from '@components/integrations/modal/FreshdeskAccountModal';
@@ -23,6 +25,15 @@ import AddSelfHostedAccountModal from './AddSelfHostedAccountModal';
 
 export default function AddAccountForm() {
   const { cloudProvider } = useRouter().query;
+
+  // Matches user-management's own gate on the "Integrations" tab (module:
+  // 'integrations', pages/user-management/index.jsx) -- without this, a
+  // grants-only user the tab hides Integrations from could still reach this
+  // form (and connect/configure any integration) by typing the URL.
+  const canReadIntegrations = !isGrantsOnlyUser() || hasPermission('integrations', 'Read');
+  if (!canReadIntegrations) {
+    return <PermissionDeniedContent message={missingPermissionMessage('integrations:Read')} />;
+  }
 
   return (
     <div style={{ paddingTop: 'var(--ds-space-5)' }}>

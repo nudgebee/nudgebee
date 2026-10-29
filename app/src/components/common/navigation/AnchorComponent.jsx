@@ -68,6 +68,10 @@ const AnchorComponent = ({
     const [parentFrag, childFrag] = hash.split('/');
 
     if (filterOptions && filterOptions.length > 0) {
+      // Matches by fragment regardless of disabled -- a disabled tab/sub-tab
+      // named directly in the URL still highlights as selected (the page
+      // renders a permission-denied placeholder in its content area for it
+      // instead of swapping to another tab behind the user's back).
       const parent = filterOptions.find((opt) => opt.fragment === parentFrag);
       if (parent) {
         let subtab = 0;
@@ -313,6 +317,9 @@ const AnchorComponent = ({
       const [parentFrag, childFrag] = hash.split('/');
 
       if (filterOptions.length > 0 && hash) {
+        // See getInitialState's matching comment: matches by fragment
+        // regardless of disabled, so a permission-gated tab/sub-tab named
+        // directly in the URL still highlights as selected.
         const parent = filterOptions.find((opt) => opt.fragment === parentFrag);
         if (parent) {
           // Only update if strictly different to avoid loop
@@ -351,12 +358,22 @@ const AnchorComponent = ({
     }
 
     if (onChangeFilter && activeDropdownTab !== undefined) {
+      const activeTabOption = filterOptions[activeDropdownTab];
+      const activeSubOption = activeTabOption?.tabOptions?.find((opt) => opt.value === (activeDropdownSubtab || 0));
+      // The active tab/sub-tab can be disabled (permission-gated) -- either it was
+      // named directly in the URL, or it's the index-0 default and that happens to
+      // be disabled. Surface it so the page can render a permission-denied
+      // placeholder in its content area, in place of that tab's real content,
+      // rather than this component silently navigating the user away.
+      const blocked = activeTabOption?.disabled ? activeTabOption : activeSubOption?.disabled ? activeSubOption : null;
+
       onChangeFilter(activeDropdownTab, activeDropdownSubtab || 0, {
         tab: activeDropdownTab,
         subtab: activeDropdownSubtab || 0,
+        blocked,
       });
     }
-  }, [activeDropdownSubtab, activeDropdownTab]);
+  }, [activeDropdownSubtab, activeDropdownTab, filterOptions]);
 
   const contentTopMargin = hideParentTabs ? ds.space[4] : ds.space.mul(0, 32);
 
@@ -620,7 +637,7 @@ const AnchorComponent = ({
                               two different code paths, so a count formatted only
                               in one of them shows "99+" above and "3.4k" below on
                               the same page. */}
-                          {opt.count && (
+                          {opt.count && !opt.disabled && (
                             <Chip variant='count' size='2xs' tone={selected ? 'info' : 'neutral'}>
                               {formatTabCount(opt.count)}
                             </Chip>
@@ -677,7 +694,7 @@ const AnchorComponent = ({
         <ErrorBoundary resetKey={router.asPath}>
           <PendingAgentInstallBanner />
         </ErrorBoundary>
-        {filterOptions?.[activeDropdownTab]?.options?.length > 0 ? (
+        {filterOptions?.[activeDropdownTab]?.options?.length > 0 && !filterOptions[activeDropdownTab]?.disabled ? (
           <Box position={'relative'} mb={ds.space[2]}>
             <Box
               sx={{

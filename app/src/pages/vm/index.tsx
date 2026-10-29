@@ -1,9 +1,11 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
 import { Box, CircularProgress } from '@mui/material';
 import AnchorComponent from '@components/common/navigation/AnchorComponent';
+import PermissionDeniedContent from '@components/common/navigation/PermissionDeniedContent';
 import ErrorBoundary from '@shared/ErrorBoundary';
 import { useData } from '@context/DataContext';
+import { hasPermission, isGrantsOnlyUser, missingPermissionMessage } from '@lib/auth';
 import apiVm from '@api1/vm';
 import VmEmptyState from '@components/vm/VmEmptyState';
 import VmSummary from '@components/vm/VmSummary';
@@ -78,6 +80,15 @@ const VM_NAME_LOOKUP_LIMIT = 500;
 const VmPage = () => {
   const router = useRouter();
   const { selectedCluster, setSelectedCluster, allCluster } = useData();
+  // Matches the sidebar's own gate on the Infra -> VM row (module: 'cloud',
+  // layout/index.jsx) -- without this, a grants-only user the sidebar hides VM
+  // from could still reach every tab here by typing the URL.
+  const canReadCloud = !isGrantsOnlyUser() || hasPermission('cloud', 'Read');
+  const filterOptions = useMemo(
+    () =>
+      canReadCloud ? tabOptions : tabOptions.map((opt) => ({ ...opt, disabled: true, disabledTooltip: missingPermissionMessage('cloud:Read') })),
+    [canReadCloud]
+  );
   const [accounts, setAccounts] = useState<any[]>([]);
   const [loadingAccounts, setLoadingAccounts] = useState(true);
   const [selectedTab, setSelectedTab] = useState<number | null>(null);
@@ -206,7 +217,7 @@ const VmPage = () => {
     );
   }
 
-  if (!accounts.length) {
+  if (canReadCloud && !accounts.length) {
     return (
       <Box sx={{ p: ds.space[6] }}>
         <VmEmptyState onAccountCreated={() => loadAccounts(true)} />
@@ -216,10 +227,11 @@ const VmPage = () => {
 
   return (
     <>
-      <AnchorComponent manageRoute={true} filterOptions={tabOptions} onChangeFilter={(val: number) => setSelectedTab(val)} />
+      <AnchorComponent manageRoute={true} filterOptions={filterOptions} onChangeFilter={(val: number) => setSelectedTab(val)} />
       <ErrorBoundary key={`${accountId}-${selectedTab ?? 'none'}`}>
-        {accountId && selectedTab === 0 && <VmSummary accountId={accountId} />}
-        {accountId && selectedTab === 1 && (
+        {!canReadCloud && <PermissionDeniedContent message={missingPermissionMessage('cloud:Read')} />}
+        {canReadCloud && accountId && selectedTab === 0 && <VmSummary accountId={accountId} />}
+        {canReadCloud && accountId && selectedTab === 1 && (
           <VmInventory
             accountId={accountId}
             vulnId={vulnScope}
@@ -227,7 +239,7 @@ const VmPage = () => {
             onClearScope={vulnScope ? clearScope : undefined}
           />
         )}
-        {accountId && selectedTab === 2 && (
+        {canReadCloud && accountId && selectedTab === 2 && (
           <VmVulnerabilities
             accountId={accountId}
             {...scopeProps}
@@ -236,11 +248,11 @@ const VmPage = () => {
             initialSeverity={severityParam}
           />
         )}
-        {accountId && selectedTab === PACKAGES_TAB && <VmPackages accountId={accountId} vmNames={vmNames} />}
-        {accountId && selectedTab === SERVICE_MAP_TAB && <VmServiceMap accountId={accountId} />}
-        {accountId && selectedTab === TRACES_TAB && <VmTraces accountId={accountId} />}
-        {accountId && selectedTab === ALERTS_TAB && <VmAlerts accountId={accountId} />}
-        {accountId && selectedTab === METRICS_TAB && <VmMetricsTab accountId={accountId} />}
+        {canReadCloud && accountId && selectedTab === PACKAGES_TAB && <VmPackages accountId={accountId} vmNames={vmNames} />}
+        {canReadCloud && accountId && selectedTab === SERVICE_MAP_TAB && <VmServiceMap accountId={accountId} />}
+        {canReadCloud && accountId && selectedTab === TRACES_TAB && <VmTraces accountId={accountId} />}
+        {canReadCloud && accountId && selectedTab === ALERTS_TAB && <VmAlerts accountId={accountId} />}
+        {canReadCloud && accountId && selectedTab === METRICS_TAB && <VmMetricsTab accountId={accountId} />}
       </ErrorBoundary>
     </>
   );
