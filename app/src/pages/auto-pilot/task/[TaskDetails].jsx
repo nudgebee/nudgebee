@@ -37,7 +37,7 @@ import Text from '@shared/format/Text';
 import { parseRecommendationMeta } from '@components/autopilot/taskChanges';
 import { Link } from '@ui/Link';
 import CustomTabs from '@shared/CustomTabs';
-import { hasWriteAccess } from '@lib/auth';
+import { hasWriteAccess, hasPermission, hasGrantOnAccount, isGrantsOnlyUser, missingPermissionMessage } from '@lib/auth';
 import { Button } from '@ui/Button';
 import { toast as snackbar } from '@ui/Toast';
 import AutoPilotApprovalStatusListingModal from '@components/autopilot/AutoPilotApprovalStatusListingModal';
@@ -51,6 +51,7 @@ import apiAccount from '@api1/account';
 import apiRecommendations from '@api1/recommendation';
 import { useData } from '@context/DataContext';
 import { useUpdateAllClusterOption } from '@shared/layout/UpdateDataContext';
+import PermissionDeniedContent from '@components/common/navigation/PermissionDeniedContent';
 import { ds } from 'src/utils/colors';
 
 const PRTicketLink = ({ prResolution, ticketLink }) => {
@@ -577,6 +578,18 @@ const AutoOptimizeDetails = () => {
   };
   const router = useRouter();
 
+  // Matches Optimize's own gate on this tab (canAccessModule(['autooptimize']),
+  // optimise/index.jsx) -- without this, a user that tab hides this from could
+  // still open any task's details by its direct link. Gated on router.isReady:
+  // router.query.accountId is empty on the first render, which would otherwise
+  // read as "no account scope" and let hasGrantOnAccount's early-return skew
+  // the check before the real query params are in.
+  const canReadAutoOptimize =
+    router.isReady &&
+    (!isGrantsOnlyUser(router.query?.accountId) ||
+      hasPermission('autooptimize', 'Read') ||
+      hasGrantOnAccount('autooptimize', 'Read', router.query?.accountId));
+
   const { allCluster } = useData();
   const updateAllClusters = useUpdateAllClusterOption();
 
@@ -801,6 +814,14 @@ const AutoOptimizeDetails = () => {
         })}
       </Box>
     ) : null;
+
+  if (!router.isReady) {
+    return null;
+  }
+
+  if (!canReadAutoOptimize) {
+    return <PermissionDeniedContent message={missingPermissionMessage('autooptimize:Read')} />;
+  }
 
   return (
     <>

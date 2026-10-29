@@ -742,12 +742,18 @@ const AnchorComponent = ({
             <Tabs
               options={{
                 ...filterOptions[activeDropdownTab],
-                tabOptions: showGroupedTabs
+                tabOptions: (showGroupedTabs
                   ? filterOptions[activeDropdownTab]?.tabOptions?.slice(range[0], range[1])
-                  : filterOptions[activeDropdownTab]?.tabOptions?.map((opt) => ({
-                      ...opt,
-                      showBottomMargin: true,
-                    })),
+                  : filterOptions[activeDropdownTab]?.tabOptions
+                )?.map((opt) => ({
+                  ...opt,
+                  // A sub-tab with no disabled/tooltip of its own inherits its parent's --
+                  // otherwise a permission-gated parent (e.g. Optimize) renders every one
+                  // of its sub-tabs (Right Sizing, Configuration, ...) as fully enabled.
+                  disabled: opt.disabled ?? filterOptions[activeDropdownTab]?.disabled,
+                  disabledTooltip: opt.disabledTooltip ?? filterOptions[activeDropdownTab]?.disabledTooltip,
+                  ...(!showGroupedTabs && { showBottomMargin: true }),
+                })),
               }}
               value={activeDropdownSubtab}
               smallSize={true}

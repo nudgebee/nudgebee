@@ -2,8 +2,9 @@ import dynamic from 'next/dynamic';
 import { useRouter } from 'next/router';
 import { useEffect, useState } from 'react';
 import { Box, CircularProgress, Typography } from '@mui/material';
-import { hasWriteAccess, hasPermission } from '@lib/auth';
+import { getUserSession, hasWriteAccess, hasPermission, missingPermissionMessage } from '@lib/auth';
 import AccountPickerModal from '@components/common/AccountPickerModal';
+import PermissionDeniedContent from '@components/common/navigation/PermissionDeniedContent';
 import { EmptyState } from '@ui/EmptyState';
 import apiWorkflow from '@api1/workflow';
 
@@ -42,6 +43,13 @@ const WorkflowPage = () => {
   // holder (workflows:Write) has no built-in account role, so hasWriteAccess alone
   // bounced them off /automation/new even though the create is authorized end to end.
   const canEdit = hasWriteAccess(accountIdStr) || hasPermission('workflows', 'Write');
+  // Matches /automation's own gate (canReadWorkflows, automation/index.jsx) -- without
+  // this, a user the sidebar and the list page both hide Automations from could still
+  // open any existing workflow's full builder by its direct link.
+  const session = getUserSession();
+  const isAdmin = session?.roles?.includes('tenant_admin') || session?.roles?.includes('account_admin');
+  const canReadWorkflows =
+    isAdmin || hasPermission('workflows', 'Read') || hasPermission('workflows', 'Execute') || hasPermission('workflows', 'Write');
 
   // Read-only users cannot create new workflows — bounce them back to the list.
   useEffect(() => {
@@ -55,7 +63,7 @@ const WorkflowPage = () => {
     router.replace({ pathname: router.pathname, query: { ...router.query, accountId: picked }, hash: window.location.hash.replace(/^#/, '') });
 
   useEffect(() => {
-    if (!needsAccount || typeof workflowId !== 'string') return undefined;
+    if (!needsAccount || !canReadWorkflows || typeof workflowId !== 'string') return undefined;
     let cancelled = false;
     setResolveState('resolving');
     apiWorkflow.getWorkflowAccount(workflowId).then((res: any) => {
@@ -72,10 +80,14 @@ const WorkflowPage = () => {
     return () => {
       cancelled = true;
     };
-  }, [needsAccount, workflowId]);
+  }, [needsAccount, workflowId, canReadWorkflows]);
 
   if (isNewWorkflow && !canEdit) {
     return null;
+  }
+
+  if (!isNewWorkflow && !canReadWorkflows) {
+    return <PermissionDeniedContent message={missingPermissionMessage('workflows:Read')} />;
   }
 
   if (needsAccount && resolveState === 'resolving') {
