@@ -506,11 +506,32 @@ func (chat *Store) GetConversationToolCallsStats(conversationId, accountId strin
 // activity.
 const wallClockIdleGapSeconds = 30 * 60
 
+// activityEventsSQL returns a query of (conversation_id, s, e) intervals of real work: model calls
+// and tool-type tool calls. Message and agent rows are left out on purpose: a
+// message's created_at is when it was queued, and the server stamps updated_at =
+// now() on messages and agents it reaps (KILLED) or resets, so their intervals
+// count queueing and clean-up delay as running time (a 22h message for 18s of
+// work). A model call is recorded when it finishes, so it ends at created_at.
+// Agent-type tool calls are left out because they enclose a sub-agent and carry
+// its reap time. convFilter is a format string with one %s for the table's
+// conversation_id column, e.g. "%s = c.id".
+func activityEventsSQL(convFilter string) string {
+	return fmt.Sprintf(`
+		SELECT t.conversation_id, t.created_at - make_interval(secs => COALESCE(t.latency_seconds, 0)) AS s, t.created_at AS e
+		FROM llm_conversation_token_usage t
+		WHERE %s
+		UNION ALL
+		SELECT tc.conversation_id, tc.created_at AS s, tc.updated_at AS e
+		FROM llm_conversation_tool_calls tc
+		WHERE %s AND tc.tool_type = 'tool' AND tc.updated_at >= tc.created_at`,
+		fmt.Sprintf(convFilter, "t.conversation_id"), fmt.Sprintf(convFilter, "tc.conversation_id"))
+}
+
 // conversationWallClockSQL returns a scalar subquery: the seconds between a
-// conversation's first and last message activity, minus every idle gap of
-// wallClockIdleGapSeconds or more between consecutive messages. convID is a SQL
-// expression for the llm_conversations.id. NULL when the conversation has no
-// messages, so callers pick their own fallback.
+// conversation's first and last activity (see activityEventsSQL), minus every idle
+// gap of wallClockIdleGapSeconds or more between consecutive events. convID is a
+// SQL expression for the llm_conversations.id. NULL when the conversation has no
+// activity, so callers pick their own fallback.
 func conversationWallClockSQL(convID string) string {
 	return fmt.Sprintf(`(
 		SELECT EXTRACT(EPOCH FROM (MAX(w.e) - MIN(w.s)))
@@ -518,13 +539,9 @@ func conversationWallClockSQL(convID string) string {
 		FROM (
 			SELECT q.s, q.e,
 				q.s - MAX(q.e) OVER (ORDER BY q.s ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS gap
-			FROM (
-				SELECT m.created_at AS s, COALESCE(m.responded_at, m.updated_at) AS e
-				FROM llm_conversation_messages m
-				WHERE m.conversation_id = %s
-			) q
+			FROM (%s) q
 		) w
-	)`, wallClockIdleGapSeconds, convID)
+	)`, wallClockIdleGapSeconds, activityEventsSQL("%s = "+convID))
 }
 
 // wallClockActiveSeconds is the Go counterpart of conversationWallClockSQL for
@@ -555,30 +572,34 @@ func (chat *Store) GetConversationTimeBreakdown(conversationId, accountId string
 		WITH conversation_ids AS (
 			SELECT id FROM llm_conversations WHERE session_id = $1 AND account_id = $2::uuid
 		),
-		-- Message activity per conversation with long idle gaps removed (see
-		-- conversationWallClockSQL), not the row's (updated_at - created_at):
-		-- updated_at is re-stamped by anything that touches the row later. Same
-		-- definition the conversation list uses. Falls back to the row timestamps
-		-- only when a conversation has no messages.
+		activity AS (__ACTIVITY_EVENTS__),
+		-- Real work per conversation with long idle gaps removed (see
+		-- conversationWallClockSQL). Same definition the conversation list uses.
 		wall_time AS (
-			SELECT COALESCE(SUM(COALESCE(__WALL_CLOCK_SECONDS__, EXTRACT(EPOCH FROM (c.updated_at - c.created_at)))), 0) as seconds
+			SELECT COALESCE(SUM(COALESCE(__WALL_CLOCK_SECONDS__, 0)), 0) as seconds
 			FROM llm_conversations c
 			WHERE c.session_id = $1 AND c.account_id = $2::uuid
 		),
+		-- An agent row's updated_at is the reap time when the run was KILLED, so
+		-- each row ends at its last real activity instead (never later than its own
+		-- updated_at).
 		agent_time AS (
 			SELECT
-				COALESCE(SUM(EXTRACT(EPOCH FROM (updated_at - created_at))), 0) as seconds
-			FROM llm_conversation_agent
-			WHERE conversation_id IN (SELECT id FROM conversation_ids)
-				AND updated_at IS NOT NULL
-				AND created_at IS NOT NULL
-				AND (parent_agent_id IS NULL OR parent_agent_id = '00000000-0000-0000-0000-000000000000')
+				COALESCE(SUM(GREATEST(0, EXTRACT(EPOCH FROM (LEAST(a.updated_at, COALESCE(act.last_end, a.created_at)) - a.created_at)))), 0) as seconds
+			FROM llm_conversation_agent a
+			LEFT JOIN LATERAL (
+				SELECT MAX(ev.e) AS last_end FROM activity ev
+				WHERE ev.conversation_id = a.conversation_id AND ev.e >= a.created_at AND ev.s <= a.updated_at
+			) act ON true
+			WHERE a.conversation_id IN (SELECT id FROM conversation_ids)
+				AND a.updated_at IS NOT NULL
+				AND a.created_at IS NOT NULL
+				AND (a.parent_agent_id IS NULL OR a.parent_agent_id = '00000000-0000-0000-0000-000000000000')
 		),
-		-- Union of tool-call intervals, not their sum: an agent-type call encloses
-		-- the tool-type calls its sub-agent makes, and parallel calls overlap, so
-		-- summing double-counts. The containment is only visible in the timestamps
-		-- (parent_tool_call_id is NULL on both sides), hence a gaps-and-islands merge
-		-- rather than a structural filter.
+		-- Union of tool-call intervals, not their sum: parallel calls overlap, so
+		-- summing double-counts. Agent-type calls are left out: they enclose the
+		-- tool-type calls their sub-agent makes and carry its reap time when the run
+		-- was KILLED.
 		tool_spans AS (
 			SELECT created_at, updated_at,
 				CASE WHEN created_at > MAX(updated_at) OVER (
@@ -587,6 +608,7 @@ func (chat *Store) GetConversationTimeBreakdown(conversationId, accountId string
 					THEN 1 ELSE 0 END as is_new_span
 			FROM llm_conversation_tool_calls
 			WHERE conversation_id IN (SELECT id FROM conversation_ids)
+				AND tool_type = 'tool'
 				AND updated_at IS NOT NULL
 				AND created_at IS NOT NULL
 		),
@@ -613,6 +635,7 @@ func (chat *Store) GetConversationTimeBreakdown(conversationId, accountId string
 		ToolTime  float64 `db:"tool_time"`
 	}
 
+	query = strings.Replace(query, "__ACTIVITY_EVENTS__", activityEventsSQL("%s IN (SELECT id FROM conversation_ids)"), 1)
 	query = strings.Replace(query, "__WALL_CLOCK_SECONDS__", conversationWallClockSQL("c.id"), 1)
 	err := chat.dbManager.Db.Get(&result, query, conversationId, accountId)
 	if err != nil {

@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
-	"math"
 	"time"
 
 	llmruntime "nudgebee/llm/llms/runtime"
@@ -477,34 +476,28 @@ func (chat *Store) GetConversationTree(sessionID, accountID string) (Conversatio
 		ModelCallCount:         len(mcScans),
 	}
 	// Derive end time from last model call completion, falling back to updated_at.
+	// A model call is recorded when it finishes, so created_at is its end.
 	var lastCallEnd time.Time
 	for _, m := range mcScans {
-		if end := m.CreatedAt.Add(time.Duration(m.LatencySeconds * float64(time.Second))); end.After(lastCallEnd) {
-			lastCallEnd = end
+		if m.CreatedAt.After(lastCallEnd) {
+			lastCallEnd = m.CreatedAt
 		}
 	}
 	if !lastCallEnd.IsZero() {
 		tree.Conversation.EndedAt = lastCallEnd
-		// Measure from the first real activity, not the conversation row's
-		// created_at: event-driven conversations are created well before (or
-		// reused long after) the agent runs, and that idle gap is not work.
-		// Idle gaps (a chat reopened hours or days later) are dropped too.
+		// Wall clock is built from real work only (model calls and tool-type tool
+		// calls, same as activityEventsSQL), not message or agent rows, whose
+		// timestamps include queueing and reap delay, and with idle gaps dropped.
 		var spans [][2]time.Time
-		for _, m := range tree.Messages {
-			if !m.CreatedAt.IsZero() {
-				spans = append(spans, [2]time.Time{m.CreatedAt, m.CreatedAt})
-			}
-		}
 		for _, m := range mcScans {
-			if !m.CreatedAt.IsZero() {
-				spans = append(spans, [2]time.Time{m.CreatedAt, m.CreatedAt.Add(time.Duration(m.LatencySeconds * float64(time.Second)))})
+			spans = append(spans, [2]time.Time{m.CreatedAt.Add(-time.Duration(m.LatencySeconds * float64(time.Second))), m.CreatedAt})
+		}
+		for _, tc := range tree.ToolCalls {
+			if tc.ToolType == "tool" && !tc.UpdatedAt.Before(tc.CreatedAt) {
+				spans = append(spans, [2]time.Time{tc.CreatedAt, tc.UpdatedAt})
 			}
 		}
-		if len(spans) > 0 {
-			tree.Conversation.WallClockSeconds = wallClockActiveSeconds(spans)
-		} else {
-			tree.Conversation.WallClockSeconds = math.Max(0, lastCallEnd.Sub(sum.StartedAt).Seconds())
-		}
+		tree.Conversation.WallClockSeconds = wallClockActiveSeconds(spans)
 	} else if sum.EndedAt.Valid {
 		tree.Conversation.EndedAt = sum.EndedAt.Time
 		tree.Conversation.WallClockSeconds = sum.EndedAt.Time.Sub(sum.StartedAt).Seconds()

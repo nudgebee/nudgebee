@@ -82,6 +82,78 @@ func TestGetConversationTree_PrefersStoredCostUsd(t *testing.T) {
 	assert.InDelta(t, 0.0456, tree.Conversation.TotalCostUsd, 1e-9)
 }
 
+// TestGetConversationTree_WallClockIgnoresQueueAndReapTime: the message was queued
+// 22h before the agent ran and the agent / agent-type tool call carry the reap
+// time, but only the model call and the real tool call are work.
+func TestGetConversationTree_WallClockIgnoresQueueAndReapTime(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	dao := &Store{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+
+	now := time.Now()
+	queued := now.Add(-22 * time.Hour)
+
+	mock.ExpectQuery("FROM llm_conversations").
+		WithArgs("sess-1", "acc-1").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"conversation_id", "session_id", "source", "status", "title", "started_at", "ended_at",
+		}).AddRow("conv-1", "sess-1", "web", "KILLED", "title", queued, now))
+
+	mock.ExpectQuery("FROM llm_conversation_token_usage").
+		WithArgs("sess-1", "acc-1").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "agent_id", "message_id", "llm_model", "llm_provider",
+			"input_tokens", "output_tokens", "cached_input_tokens", "cache_creation_tokens",
+			"thinking_tokens", "latency_seconds", "ttft_ms", "retry_attempt", "is_cache_hit",
+			"request_status", "stop_reason", "error_message", "created_at", "cost_usd",
+		}).AddRow(
+			"mc-1", "agent-1", "msg-1", "some-model", "bedrock",
+			1000, 200, 0, 0,
+			0, 60.0, 0, 0, false,
+			"success", "", "", now, 0.01,
+		))
+
+	mock.ExpectQuery("FROM llm_model_pricing").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"provider_name", "model_name",
+			"cost_per_million_input_tokens", "cost_per_million_output_tokens",
+			"cache_cost_per_million_tokens_per_hour", "cost_per_million_cached_input_tokens",
+			"cost_per_million_cache_creation_tokens", "cost_per_million_cached_storage_per_hour",
+			"context_threshold_tokens", "cost_per_million_input_tokens_long_ctx",
+			"cost_per_million_output_tokens_long_ctx", "cost_per_million_cached_input_tokens_long_ctx",
+			"cost_per_million_cache_creation_tokens_long_ctx",
+		}))
+
+	mock.ExpectQuery("FROM llm_conversation_messages").
+		WithArgs("sess-1", "acc-1").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "parent_agent_id", "role", "message_type", "agent_name", "status", "created_at", "updated_at",
+		}).AddRow("msg-1", "", "human", "generation", "", "KILLED", queued, now))
+
+	mock.ExpectQuery("FROM llm_conversation_agent").
+		WithArgs("sess-1", "acc-1").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "message_id", "parent_agent_id", "agent_name", "status", "created_at", "updated_at", "duration_seconds",
+		}).AddRow("agent-1", "msg-1", "", "k8s", "fail", queued.Add(time.Minute), now, 79000.0))
+
+	mock.ExpectQuery("FROM llm_conversation_tool_calls").
+		WithArgs("sess-1", "acc-1").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "agent_id", "message_id", "tool_name", "tool_id", "tool_type", "child_agent_id",
+			"status", "created_at", "updated_at", "duration_seconds",
+		}).
+			AddRow("tc-1", "agent-1", "msg-1", "logs", "", "agent", "", "fail", queued.Add(time.Minute), now, 79000.0).
+			AddRow("tc-2", "agent-1", "msg-1", "kubectl", "", "tool", "", "success", now.Add(-3*time.Minute), now.Add(-2*time.Minute), 60.0))
+
+	tree, err := dao.GetConversationTree("sess-1", "acc-1")
+	require.NoError(t, err)
+	// model call [now-60s, now] plus tool call [now-3m, now-2m]: 3m span, 1m idle gap
+	// inside the cap, so 3 minutes, not 22 hours.
+	assert.InDelta(t, 180.0, tree.Conversation.WallClockSeconds, 0.5)
+}
+
 func TestWallClockActiveSeconds(t *testing.T) {
 	base := time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
 	span := func(startMin, endMin int) [2]time.Time {
