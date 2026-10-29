@@ -84,6 +84,11 @@ type ConversationApiRequest struct {
 	// question a response answers. Never read or interpreted here; passed
 	// through unchanged.
 	ReplyRef string `json:"reply_ref,omitempty"`
+	// AskerRef: same mechanism as ReplyRef, for the question's asker instead of
+	// the thread. Needed because notifications-server's per-thread identity
+	// cache gets overwritten by whoever writes in the thread next, before this
+	// async response lands.
+	AskerRef string `json:"asker_ref,omitempty"`
 	// Index optionally pins query generation to a specific Elasticsearch index —
 	// the "Select an Index" dropdown selection on the logs and metrics tabs. It
 	// scopes the field list the query generator is shown (fields are per-index)
@@ -1103,7 +1108,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		timer.mark("routing")
 		// Execute the agent
 		handleRequestExecution(c, agentContext, request.Async, request.UserId, "chains_chat", logger, func(ctx *security.RequestContext) (core.NBAgentResponse, error) {
-			return core.HandleConversationSessionRequest(ctx, agent, request.UserId, request.AccountId, request.SessionId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithCallerSource(callerSource), core.ConversationSessionRequestWithConversationId(conversationId), core.ConversationSessionRequestWithMessageId(messageId), core.ConversationSessionRequestWithAgentId(agentId), core.ConversationSessionRequestWithConfig(request.Config), core.ConversationSessionRequestWithClientTools(request.ClientTools), core.ConversationSessionRequestWithCapabilities(request.Capabilities), core.ConversationSessionRequestWithIsNewConversation(isNewConversation), core.ConversationSessionRequestWithImages(request.Images), core.ConversationSessionRequestWithChannelContext(request.ChannelContext), core.ConversationSessionRequestWithChannelContextRefs(request.ChannelContextRefs), core.ConversationSessionRequestWithReplyRef(request.ReplyRef), core.ConversationSessionRequestWithRunProfile(newRunProfile))
+			return core.HandleConversationSessionRequest(ctx, agent, request.UserId, request.AccountId, request.SessionId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithCallerSource(callerSource), core.ConversationSessionRequestWithConversationId(conversationId), core.ConversationSessionRequestWithMessageId(messageId), core.ConversationSessionRequestWithAgentId(agentId), core.ConversationSessionRequestWithConfig(request.Config), core.ConversationSessionRequestWithClientTools(request.ClientTools), core.ConversationSessionRequestWithCapabilities(request.Capabilities), core.ConversationSessionRequestWithIsNewConversation(isNewConversation), core.ConversationSessionRequestWithImages(request.Images), core.ConversationSessionRequestWithChannelContext(request.ChannelContext), core.ConversationSessionRequestWithChannelContextRefs(request.ChannelContextRefs), core.ConversationSessionRequestWithReplyRef(request.ReplyRef), core.ConversationSessionRequestWithAskerRef(request.AskerRef), core.ConversationSessionRequestWithRunProfile(newRunProfile))
 		}, core.NBAgentResponse{
 			Response:       []string{"Your request has been received and will be processed asynchronously."},
 			Query:          request.Query,

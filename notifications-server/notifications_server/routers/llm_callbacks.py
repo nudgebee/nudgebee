@@ -42,6 +42,10 @@ class LLMResponse(BaseModel):
     # existed, and on responses to non-Slack-chat requests that never set it
     # (e.g. the automated event-investigation pipeline).
     reply_ref: Optional[str] = None
+    # Same mechanism as reply_ref, for who asked instead of which thread -- a
+    # later message in the thread overwrites the cache's slack_user_id before
+    # this response lands (#42744).
+    asker_ref: Optional[str] = None
     # From the llm-server watch feature: keys the in-progress status message on
     # "watch_registered", and on "final" lets the handler retire it.
     watch_id: Optional[str] = None

@@ -111,6 +111,10 @@ func sendReplyToNotificationServer(ctx *security.RequestContext, agentRequest NB
 		// across many distinct questions.
 		notificationRequest["reply_ref"] = agentRequest.ReplyRef
 	}
+	if agentRequest.AskerRef != "" {
+		// Echoed back exactly as received — see ConversationApiRequest.AskerRef.
+		notificationRequest["asker_ref"] = agentRequest.AskerRef
+	}
 
 	switch {
 	case err != nil:

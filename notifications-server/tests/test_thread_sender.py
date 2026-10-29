@@ -169,6 +169,18 @@ def test_each_message_in_a_slack_thread_runs_as_whoever_wrote_it(monkeypatch):
     assert {payload["session_id"] for _, payload in sent} == {f"{CHANNEL}-{THREAD}"}, "one conversation"
 
 
+def test_a_second_senders_message_captures_the_first_as_in_progress(monkeypatch):
+    """#42744 follow-up: whoever held the thread's slack_user_id just before a
+    new sender overwrites it is the best signal for "who's turn is actually
+    in progress", captured at the one moment that's known reliably."""
+    events = _slack(_slack_entry())
+    _sent(events, monkeypatch)
+    _slack_message(events, "bob@example.com", "U-BOB")
+    entry = events.cache.entries[THREAD]
+    assert entry["in_progress_asker"] == "U-ALICE"
+    assert entry["slack_user_id"] == "U-BOB"
+
+
 def test_someone_who_cant_access_a_slack_threads_account_is_told_and_the_question_keeps_waiting(monkeypatch):
     events = _slack(_slack_entry(**PENDING))
     sent = _sent(events, monkeypatch)

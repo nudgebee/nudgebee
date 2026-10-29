@@ -403,6 +403,7 @@ type additionalConversationSessionRequestConfig struct {
 	channelContext        string
 	channelContextRefs    map[string]any
 	replyRef              string
+	askerRef              string
 	skipHistory           bool
 	title                 string
 	// callerSource is the source the caller sent, before any fallback to the
@@ -746,6 +747,22 @@ func ConversationSessionRequestWithReplyRef(replyRef string) ConversationSession
 	}
 }
 
+type sessionRequestWithAskerRef struct {
+	askerRef string
+}
+
+func (h sessionRequestWithAskerRef) apply(c *additionalConversationSessionRequestConfig) {
+	c.askerRef = h.askerRef
+}
+
+// ConversationSessionRequestWithAskerRef carries an opaque per-question
+// correlator through to NBAgentRequest.AskerRef — see ConversationApiRequest.AskerRef.
+func ConversationSessionRequestWithAskerRef(askerRef string) ConversationSessionRequestConfig {
+	return sessionRequestWithAskerRef{
+		askerRef: askerRef,
+	}
+}
+
 type sessionRequestWithTitle struct {
 	title string
 }
@@ -886,6 +903,7 @@ func HandleConversationSessionRequest(ctx *security.RequestContext, agent NBAgen
 		ChannelContext:        defaultConfig.channelContext,
 		ChannelContextRefs:    defaultConfig.channelContextRefs,
 		ReplyRef:              defaultConfig.replyRef,
+		AskerRef:              defaultConfig.askerRef,
 		Title:                 defaultConfig.title,
 		CallerSource:          defaultConfig.callerSource,
 	}

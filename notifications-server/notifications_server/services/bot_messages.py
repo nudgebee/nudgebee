@@ -80,6 +80,13 @@ LLM_BUSY_MESSAGES: List[str] = [
     "Still on it! Give me a moment to wrap up your previous request...",
 ]
 
+# Used instead of LLM_BUSY_MESSAGES when the in-progress turn belongs to someone
+# else in the thread, so the reply doesn't claim it's the reader's own request.
+LLM_BUSY_OTHER_USER_MESSAGES: List[str] = [
+    "Hang tight! I'm still working on {asker_name}'s question -- mind asking again once I'm done?",
+    "Hold on -- {asker_name}'s question is still in progress. Try me again in a bit.",
+]
+
 LLM_OFFLINE_MESSAGES: List[str] = [
     "{assistant}'s offline right now. Couldn't get a response. Try again in a sec!",
     "Hmm, I couldn't reach {assistant}. Mind trying again in a moment?",
@@ -277,8 +284,12 @@ def get_thinking_indicator() -> str:
     return get_random_message(THINKING_INDICATORS)
 
 
-def get_llm_busy_message() -> str:
-    """Get a random message for when LLM is busy with another request."""
+def get_llm_busy_message(other_asker_name: Optional[str] = None) -> str:
+    """Random busy message. Pass other_asker_name when the in-progress turn
+    belongs to someone else, so the reply names them instead of implying it's
+    the reader's own request."""
+    if other_asker_name:
+        return get_random_message(LLM_BUSY_OTHER_USER_MESSAGES, asker_name=other_asker_name)
     return get_random_message(LLM_BUSY_MESSAGES)
 
 

@@ -221,6 +221,12 @@ class Events:
         channel_id = cached_entry.get("channel_id")
         if channel_id and thread_ts:
             payload["reply_ref"] = f"{channel_id}-{thread_ts}"
+        # Snapshotted now: a later message in the same thread overwrites this
+        # shared entry's slack_user_id before this answer comes back (#42744).
+        # Own field, not folded into reply_ref -- that's rsplit("-", 1)'d elsewhere.
+        asker_ref = cached_entry.get("slack_user_id")
+        if asker_ref:
+            payload["asker_ref"] = asker_ref
         # Deliberately its own field: channel conversation is third-party text and
         # must stay distinguishable from what the user actually asked. Never fold
         # it into `query`.
@@ -355,8 +361,17 @@ class Events:
                     cached_entry["user_id"] = user_id
 
                 if slack_user_id and cached_entry.get("slack_user_id") != slack_user_id:
-                    self.cache.update_event_entry(thread_ts, slack_user_id=slack_user_id)
+                    # Whoever held the slot just before this new sender arrives is the
+                    # best available signal for "who's turn is actually in progress" --
+                    # query_llm_server always gets a 202 regardless of whether llm-server
+                    # accepts the run, so there's no reliable "accepted for real" moment
+                    # to stamp this from on the send side (#42744 follow-up).
+                    previous_asker = cached_entry.get("slack_user_id")
+                    self.cache.update_event_entry(
+                        thread_ts, slack_user_id=slack_user_id, in_progress_asker=previous_asker
+                    )
                     cached_entry["slack_user_id"] = slack_user_id
+                    cached_entry["in_progress_asker"] = previous_asker
 
                 if self._has_pending_text_followup(cached_entry):
                     self._submit_followup(cached_entry, channel_id, team_id, thread_ts, slack_user_id, text)
@@ -1182,6 +1197,7 @@ class Events:
             # webhook post the write-up a second time.
             payload["session_id"] = cached_entry.get("followup_session_id") or payload["session_id"]
             payload.pop("reply_ref", None)
+            payload.pop("asker_ref", None)
         headers = {"x-tenant-id": cached_entry["tenant_id"], "x-user-id": cached_entry["user_id"]}
 
         followup_msg_ts = cached_entry.get("followup_msg_ts") if cached_entry else None
@@ -1241,8 +1257,9 @@ class Events:
             slack_progress.stop_progress_stream(self.common_service, cached_entry, channel_id, team_id, thread_ts)
             status = getattr(getattr(e, "response", None), "status_code", None)
             error_response = self._safe_error_response(e)
+            other_asker_name = self._other_asker_name(cached_entry, cached_entry.get("slack_user_id"), team_id)
             self.common_service.slack_reply_in_thread(
-                channel_id, team_id, thread_ts, self._llm_error_reply(status, error_response)
+                channel_id, team_id, thread_ts, self._llm_error_reply(status, error_response, other_asker_name)
             )
         except Exception as e:
             LOG.debug(f"Query to LLM failed: {e}")
@@ -1365,8 +1382,9 @@ class Events:
             slack_progress.stop_progress_stream(self.common_service, cached_entry, channel_id, team_id, thread_ts)
             status = getattr(getattr(e, "response", None), "status_code", None)
             error_response = self._safe_error_response(e)
+            other_asker_name = self._other_asker_name(cached_entry, cached_entry.get("slack_user_id"), team_id)
             self.common_service.slack_reply_in_thread(
-                channel_id, team_id, thread_ts, self._llm_error_reply(status, error_response)
+                channel_id, team_id, thread_ts, self._llm_error_reply(status, error_response, other_asker_name)
             )
         except Exception as e:
             LOG.debug(f"Query to LLM failed: {e}")
@@ -1432,7 +1450,7 @@ class Events:
             LOG.error("Unexpected error processing async LLM response: %s", e)
 
     @staticmethod
-    def _llm_error_reply(status, error_response):
+    def _llm_error_reply(status, error_response, other_asker_name=None):
         """
         Pick the user-facing reply for a failed LLM-server request.
 
@@ -1444,7 +1462,7 @@ class Events:
         if is_conversation_pending_followup_error(error_response):
             return get_llm_pending_followup_message()
         if is_conversation_in_progress_error(error_response):
-            return get_llm_busy_message()
+            return get_llm_busy_message(other_asker_name)
         if status == 429 or is_budget_exceeded_error(error_response):
             return get_budget_exceeded_message()
         return get_llm_offline_message()
@@ -1593,6 +1611,24 @@ class Events:
             self.common_service.slack_reply_in_thread(channel_id, team_id, thread_ts, f"{message}")
         except Exception as e:
             LOG.error("Failed to send error message to Slack: %s", e)
+
+    def _other_asker_name(self, cached_entry: Optional[dict], this_asker: Optional[str], team_id: str) -> Optional[str]:
+        """Display name of whoever's turn is actually in progress, when that's
+        someone other than this_asker (the person about to be told to wait)."""
+        in_progress_asker = cached_entry.get("in_progress_asker") if cached_entry else None
+        if not in_progress_asker or in_progress_asker == this_asker:
+            return None
+        return self.common_service.get_slack_user_display_name(team_id, in_progress_asker)
+
+    @staticmethod
+    def _response_asker(payload, cached_entry: Optional[dict]) -> Optional[str]:
+        """Who to <@mention>. Prefers payload.asker_ref over cached_entry's
+        slack_user_id, which a later message in the same thread may have
+        overwritten by the time this response arrives (#42744)."""
+        asker_ref = getattr(payload, "asker_ref", None)
+        if asker_ref:
+            return asker_ref
+        return cached_entry.get("slack_user_id") if cached_entry else None
 
     @staticmethod
     def _add_user_context_to_blocks(output_blocks: list, cached_entry: dict) -> list:
@@ -1838,10 +1874,9 @@ class Events:
                 # can only happen when there was no mermaid segment either.)
                 slack_groups = [Transformer.to_slack(MarkdownBlock(text=response_text.strip()))]
 
-            if cached_entry and cached_entry.get("slack_user_id"):
-                slack_groups[-1] = slack_groups[-1] + Transformer.to_slack(
-                    ContextBlock(text=f"<@{cached_entry.get('slack_user_id')}>")
-                )
+            asker = self._response_asker(payload, cached_entry)
+            if asker:
+                slack_groups[-1] = slack_groups[-1] + Transformer.to_slack(ContextBlock(text=f"<@{asker}>"))
 
             messages = batch_slack_groups(slack_groups, SLACK_MAX_BLOCKS_PER_MESSAGE)
 
@@ -1872,20 +1907,20 @@ class Events:
             # mid-turn must not mark an unrelated in-flight turn COMPLETED.
             if cached_entry and not watch_id:
                 event_cache.update_event_entry(thread_ts, status="COMPLETED")
+                event_cache.remove_event_keys(thread_ts, ["in_progress_asker"])
                 LOG.debug("Conversation marked as COMPLETED.")
 
             if len(messages) > 1:
                 LOG.debug(f"Response was split into {len(messages)} messages due to size limit")
         except Exception as e:
             LOG.error(f"Failed to process LLM server response: {e}")
+            asker = self._response_asker(payload, cached_entry)
+            mention = f"<@{asker}> " if asker else ""
             self.reply(
                 channel_id,
                 team_id,
                 thread_ts,
-                (
-                    f"<@{cached_entry.get('slack_user_id')}> Hey! The investigation finished, but I can't show results."
-                    " Try again."
-                ),
+                f"{mention}Hey! The investigation finished, but I can't show results. Try again.",
             )
             self._mark_finding_card_status(payload, channel_id, team_id, thread_ts, outcome="failed")
         finally:
@@ -2040,8 +2075,9 @@ class Events:
                         followup_session_id=payload.session_id or payload.conversation_id,
                         event_analysis_followup=True,
                     )
-                if cached_entry.get("slack_user_id"):
-                    blocks += Transformer.to_slack(ContextBlock(text=f"<@{cached_entry.get('slack_user_id')}>"))
+                asker = self._response_asker(payload, cached_entry)
+                if asker:
+                    blocks += Transformer.to_slack(ContextBlock(text=f"<@{asker}>"))
 
             followup_msg_ts = self.common_service.slack_reply_in_thread_as_blocks(
                 channel_id, team_id, thread_ts, blocks
@@ -2065,10 +2101,10 @@ class Events:
             # thread, so the user had no way to answer it and the conversation
             # sat WAITING indefinitely.
             LOG.error(f"Failed to send follow-up question to Slack: {e}", exc_info=True)
-            slack_user_id = cached_entry.get("slack_user_id") if cached_entry else None
+            asker = self._response_asker(payload, cached_entry)
             message = get_generic_error_message()
-            if slack_user_id:
-                message = f"<@{slack_user_id}> {message}"
+            if asker:
+                message = f"<@{asker}> {message}"
             try:
                 self.reply(channel_id, team_id, thread_ts, message)
             except Exception as reply_err:
@@ -2081,15 +2117,19 @@ class Events:
         instead of the generic one."""
         slack_progress.stop_progress_stream(self.common_service, cached_entry, channel_id, team_id, thread_ts)
 
+        asker = self._response_asker(payload, cached_entry)
         if is_conversation_pending_followup_error(payload.response):
             message = get_llm_pending_followup_message()
         elif is_conversation_in_progress_error(payload.response):
-            message = get_llm_busy_message()
+            # The rejected message isn't the in-progress one -- whoever's turn
+            # this busy reply names is still running, so its claim stays.
+            message = get_llm_busy_message(self._other_asker_name(cached_entry, asker, team_id))
         else:
             message = get_generic_error_message()
-        slack_user_id = cached_entry.get("slack_user_id") if cached_entry else None
-        if slack_user_id:
-            message = f"<@{slack_user_id}> {message}"
+            if cached_entry:
+                event_cache.remove_event_keys(thread_ts, ["in_progress_asker"])
+        if asker:
+            message = f"<@{asker}> {message}"
 
         self.reply(channel_id, team_id, thread_ts, message)
         self._mark_finding_card_status(payload, channel_id, team_id, thread_ts, outcome="failed")
