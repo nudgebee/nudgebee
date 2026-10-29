@@ -17,7 +17,16 @@ import VmTraces from '@components/vm/VmTraces';
 import VmServiceMap from '@components/vm/VmServiceMap';
 import VmLogs from '@components/vm/VmLogs';
 import VmMetricsTab from '@components/vm/VmMetricsTab';
-import { VmServerIcon, ApplicationsIcon, RecommendationIcon, OptimizeSummaryIcon, ServiceMapIcon, LogsTracesIcon, AllEventsIcon, QueryLogIcon } from '@assets';
+import {
+  VmServerIcon,
+  ApplicationsIcon,
+  RecommendationIcon,
+  OptimizeSummaryIcon,
+  ServiceMapIcon,
+  LogsTracesIcon,
+  AllEventsIcon,
+  QueryLogIcon,
+} from '@assets';
 import { ds } from '@utils/colors';
 
 /**
