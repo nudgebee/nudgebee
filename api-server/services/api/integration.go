@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"log/slog"
 	"nudgebee/services/common"
 	"nudgebee/services/integrations/core"
@@ -103,14 +104,29 @@ func handleIntegrationApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.Me
 			return
 		}
 
-		if payload["url"] == nil || payload["headers"] == nil || payload["payload"] == nil {
+		// JSON decodes headers as map[string]any, never map[string]string, so each
+		// field is checked rather than asserted: a wrong type is the caller's
+		// mistake, not a panic.
+		requestURL, urlOk := payload["url"].(string)
+		webhookPayload, payloadOk := payload["payload"].(string)
+		rawHeaders, headersOk := payload["headers"].(map[string]any)
+		if !urlOk || !payloadOk || !headersOk {
 			common.MetricsApiRequestsFailedTotal(c.Request.Context(), "integration_webhook_request", "invalid_payload")
-			logger.Error("integration: error binding request", "error", err)
-			c.JSON(400, common.ErrorActionBadRequest("invalid request payload"))
+			c.JSON(400, common.ErrorActionBadRequest("invalid request payload: url and payload must be strings, headers an object"))
 			return
 		}
+		headers := make(map[string]string, len(rawHeaders))
+		for k, v := range rawHeaders {
+			switch val := v.(type) {
+			case nil:
+			case string:
+				headers[k] = val
+			default:
+				headers[k] = fmt.Sprint(val)
+			}
+		}
 
-		err = core.ProcessEventWebook(security.NewRequestContextForSuperAdmin(logger, tracer, meter), payload["url"].(string), payload["headers"].(map[string]string), payload["payload"].(string))
+		err = core.ProcessEventWebook(security.NewRequestContextForSuperAdmin(logger, tracer, meter), requestURL, headers, webhookPayload)
 		if err != nil {
 			common.MetricsApiRequestsFailedTotal(c.Request.Context(), "integration_webhook_request", "process_webhook_failed")
 			logger.Error("integration: error creating access", "error", err)
