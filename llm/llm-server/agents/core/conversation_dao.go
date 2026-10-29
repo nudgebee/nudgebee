@@ -2592,7 +2592,7 @@ func (chat *ConversationDao) SaveConversationToolCall(conversationID, accountID,
 	query := `INSERT INTO public.llm_conversation_tool_calls
 	(conversation_id, message_id, tool_id, tool_name, parameters, response, user_id, account_id, agent_id, thought, params_sql, status, tool_type, child_agent_id, "references", metadata, memory_refs)
 	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
-	ON CONFLICT (conversation_id, message_id, tool_id, tool_name, agent_id)
+	ON CONFLICT (conversation_id, message_id, md5(tool_id), tool_name, agent_id)
 	DO UPDATE SET response = EXCLUDED.response, updated_at = now(), status = EXCLUDED.status, tool_type = EXCLUDED.tool_type, child_agent_id = EXCLUDED.child_agent_id, "references" = EXCLUDED.references, metadata = EXCLUDED.metadata
 	WHERE llm_conversation_tool_calls.status NOT IN ('success', 'error', 'terminated');`
 
@@ -2600,7 +2600,7 @@ func (chat *ConversationDao) SaveConversationToolCall(conversationID, accountID,
 		query = `INSERT INTO public.llm_conversation_tool_calls
 		(conversation_id, message_id, tool_id, tool_name, parameters, response, user_id, account_id, agent_id, thought, params_sql, status, tool_type, child_agent_id, "references", metadata, memory_refs)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
-		ON CONFLICT (conversation_id, message_id, tool_id, tool_name, agent_id)
+		ON CONFLICT (conversation_id, message_id, md5(tool_id), tool_name, agent_id)
 		DO UPDATE SET response = EXCLUDED.response, updated_at = now(), status = EXCLUDED.status, tool_type = EXCLUDED.tool_type, "references" = EXCLUDED.references, metadata = EXCLUDED.metadata
 		WHERE llm_conversation_tool_calls.status NOT IN ('success', 'error', 'terminated');`
 	}
