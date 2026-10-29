@@ -246,6 +246,9 @@ export const queryGraphQL = async (
       if (e.response?.data?.errors && e.response?.data?.errors[0].extensions && e.response?.data?.errors[0].extensions.code == 'invalid-jwt') {
         window.location.href = '/api/auth/signin';
       }
+      // Hand the 500 back like any other failure, so the caller shows its message
+      // rather than "no response" from an undefined result.
+      return e.response;
     } else {
       return e.response || e.request;
     }
