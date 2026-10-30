@@ -138,7 +138,8 @@ const buildCellAligns = (filteredHeaders, tableHeadingCenter, showUpdatedTable, 
 
 // Builds the resize-enabled Table sx: fixed layout, horizontal overflow, and sticky
 // first/last columns (first-column sticky is opt-in via stickyFirstColumn).
-const buildResizeTableSx = ({ totalTableWidth, isResizing, stickyFirstColumn }) => ({
+// Exported for direct unit testing — see CustomTable.test.jsx (same rules).
+export const buildResizeTableSx = ({ totalTableWidth, isResizing, stickyFirstColumn }) => ({
   width: '100%',
   minWidth: totalTableWidth || '100%',
   tableLayout: 'fixed',
@@ -156,6 +157,10 @@ const buildResizeTableSx = ({ totalTableWidth, isResizing, stickyFirstColumn }) 
       zIndex: 1,
       background: 'var(--ds-background-100)',
     },
+    // See buildResizeTableSx in CustomTable.jsx for the full stacking-context note.
+    'tbody tr:has(.MuiModal-root:not(.MuiModal-hidden)) td:first-of-type': {
+      zIndex: 10,
+    },
   }),
   'thead tr th:last-of-type': {
     position: 'sticky',
@@ -171,22 +176,30 @@ const buildResizeTableSx = ({ totalTableWidth, isResizing, stickyFirstColumn }) 
     zIndex: 1,
     background: 'var(--ds-background-100)',
   },
+  'tbody tr:has(.MuiModal-root:not(.MuiModal-hidden)) td:last-of-type': {
+    zIndex: 10,
+  },
 });
 
 // Builds the legacy (non-resize) Table sx: per-expandable sticky last column plus
 // optional sticky column at stickyColumnIndex with viewport-aware offset.
-const buildLegacyTableSx = ({ showExpandable, stickyColumnIndex }) => ({
+export const buildLegacyTableSx = ({ showExpandable, stickyColumnIndex }) => ({
   'tbody tr td:last-of-type': {
     position: showExpandable && 'sticky',
     right: '0px',
   },
-  [`tbody tr td:nth-of-type(${stickyColumnIndex})`]: {
-    position: 'sticky',
-    right: showExpandable ? ds.space.mul(0, 15) : '0px',
-    '@media (max-width: 1380px)': {
-      right: showExpandable ? ds.space.mul(0, 25) : '0px',
+  ...(stickyColumnIndex && {
+    [`tbody tr td:nth-of-type(${stickyColumnIndex})`]: {
+      position: 'sticky',
+      right: showExpandable ? ds.space.mul(0, 15) : '0px',
+      '@media (max-width: 1380px)': {
+        right: showExpandable ? ds.space.mul(0, 25) : '0px',
+      },
     },
-  },
+    [`tbody tr:has(.MuiModal-root:not(.MuiModal-hidden)) td:nth-of-type(${stickyColumnIndex})`]: {
+      zIndex: 10,
+    },
+  }),
 });
 
 const getDrillDownQuery = (row) => {

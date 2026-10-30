@@ -214,6 +214,7 @@ export const ECSTasks = (props: {
                   <DsDropdownMenu
                     align='end'
                     size='sm'
+                    disablePortal={false}
                     items={MENU_ITEMS.map((m) => ({
                       id: `ecs-task-action-${item.resourse_id}-${m.id}`,
                       label: m.label,
@@ -460,6 +461,7 @@ export const ECSServices = (props: {
                   <DsDropdownMenu
                     align='end'
                     size='sm'
+                    disablePortal={false}
                     items={menuItems.map((m: any) => ({
                       id: `ecs-service-action-${item.resourse_id}-${m.id}`,
                       label: m.label,
@@ -1093,6 +1095,7 @@ export const ECSClusters = (props: {
                   <DsDropdownMenu
                     align='end'
                     size='sm'
+                    disablePortal={false}
                     items={MENU_ITEMS.map((m) => ({
                       id: `ecs-cluster-action-${item.resourse_id}-${m.id}`,
                       label: m.label,
