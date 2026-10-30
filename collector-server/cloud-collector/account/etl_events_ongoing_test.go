@@ -254,3 +254,20 @@ func TestPrepareEventForDB_EndedBeforeRead(t *testing.T) {
 	assert.Equal(t, end.Format(time.RFC3339), eventMap["ends_at"], "stored with the time it ended, not as a moment")
 	assert.Equal(t, string(providers.EventStatusClosed), eventMap["status"])
 }
+
+func TestResolveKey(t *testing.T) {
+	// A resolve carrying the source's own id for the firing ends that firing
+	// only; another firing of the same fingerprint can still be on.
+	assert.Equal(t, "finding:projects/p/alerts/1", resolveKey(providers.Event{EventId: "projects/p/alertPolicies/9:gce_instance:vm-1", FindingId: "projects/p/alerts/1"}))
+	assert.Equal(t, "fingerprint:"+testAlarmFingerprint("cpu"), resolveKey(providers.Event{EventId: testAlarmFingerprint("cpu")}))
+}
+
+func TestResolvedFindingIDs(t *testing.T) {
+	events := []providers.Event{
+		{EventId: "fp-1", FindingId: "firing-1", LegacyFindingId: "legacy-1", EventStatus: providers.EventStatusResolved},
+		{EventId: "fp-2", FindingId: "firing-2", EventStatus: providers.EventStatusFiring},
+		{EventId: testAlarmFingerprint("cpu"), EventStatus: providers.EventStatusResolved},
+	}
+	assert.Equal(t, []string{"firing-1", "legacy-1"}, resolvedFindingIDs(events))
+	assert.Empty(t, resolvedFindingIDs(nil))
+}

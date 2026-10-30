@@ -195,7 +195,13 @@ func getAzureAlerts(ctx providers.CloudProviderContext, account providers.Accoun
 					}
 				}
 
-				events = append(events, convertAzureAlertToEvent(subID, alert, essentials))
+				event := convertAzureAlertToEvent(subID, alert, essentials)
+				// A resolve ends the stored firing at the resolve's date, so a
+				// resolved alert is dated by when it resolved.
+				if event.EventStatus == providers.EventStatusResolved && essentials.MonitorConditionResolvedDateTime != nil {
+					event.Date = *essentials.MonitorConditionResolvedDateTime
+				}
+				events = append(events, event)
 				alertsProcessed++
 			}
 		}

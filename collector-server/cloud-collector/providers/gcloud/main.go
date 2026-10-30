@@ -286,7 +286,15 @@ func (a *gcloudProvider) ListEvents(ctx providers.CloudProviderContext, account 
 
 		// Fallback to Cloud Logging method
 		// Requires: notification channels configured, Cloud Logging enabled
-		return getGCPAlertIncidents(ctx, account, query)
+		listedAt := time.Now().UTC()
+		fallback, fallbackErr := getGCPAlertIncidents(ctx, account, query)
+		if fallbackErr != nil {
+			return fallback, fallbackErr
+		}
+		// The fallback does not list what is open, so it ends nothing; the
+		// snapshot only keeps the batch-wide close off the firings left open.
+		fallback.Ongoing = unlistedIncidentSnapshot(listedAt)
+		return fallback, nil
 	}
 
 	// v3 API succeeded - return results (even if empty, which means no alerts firing)

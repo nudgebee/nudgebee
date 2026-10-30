@@ -1144,6 +1144,10 @@ func (a *azureProvider) ListEvents(ctx providers.CloudProviderContext, account p
 	return providers.ListEventResponse{
 		Items:   allEvents,
 		Summary: summary,
+		// Always set, even when no subscription's rules could be listed: the
+		// batch only holds the alerts that changed since the last poll, so the
+		// batch-wide close would otherwise close every alert still firing.
+		Ongoing: alertRuleSnapshot(ctx, account, allEvents),
 	}, nil
 }
 
