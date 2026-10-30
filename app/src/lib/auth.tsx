@@ -337,8 +337,10 @@ export function hasWriteAccess(accountId?: string, namespace?: string): boolean 
     return true;
   }
   if (accountId && namespace) {
-    const allowedNamespaces = getAllowedNamespaces(accountId) ?? [];
-    if (userData?.namespacedAccountIds?.includes(accountId) && allowedNamespaces != null && allowedNamespaces.includes(namespace)) {
+    // The namespaces this user administers on the account. Not getAllowedNamespaces:
+    // it returns null (all namespaces, read) for a read-only tenant admin.
+    const allowedNamespaces = userData?.k8sNamespaces?.[accountId] ?? [];
+    if (userData?.namespacedAccountIds?.includes(accountId) && allowedNamespaces.includes(namespace)) {
       return true;
     }
   }
