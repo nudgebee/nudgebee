@@ -30,5 +30,4 @@ export const optimizationCategoryOptionsFor = (clusterProvider: string | undefin
 };
 
 export const isOptimizationCategoryAllowedFor = (clusterProvider: string | undefined, category: string): boolean =>
-  !OPTIMIZATION_CATEGORY_OPTIONS.some((o) => o.value === category) ||
-  optimizationCategoryOptionsFor(clusterProvider, '').some((o) => o.value === category);
+  category !== 'K8sSpotRecommendation' || !isCloudProvider(clusterProvider);
