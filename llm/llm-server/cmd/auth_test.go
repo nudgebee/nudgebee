@@ -11,9 +11,9 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// Single auth contract: if LLM_SERVER_TOKEN is configured every request
-// must carry a matching header; if unset, the gate is a no-op. These tests
-// pin both branches plus the path-based skips (/health, /api/v1/workspace).
+// Single auth contract: protected llm-server routes fail closed when
+// LLM_SERVER_TOKEN is unset, require a matching header when configured,
+// and still allow explicit public paths to bypass the gate.
 func TestAuthHandlerMiddleware(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -64,11 +64,11 @@ func TestAuthHandlerMiddleware(t *testing.T) {
 		assert.Equal(t, http.StatusUnauthorized, do(r, "GET", "/api/admin/prompts/config", "wrong"))
 	})
 
-	t.Run("token unset: any header value passes", func(t *testing.T) {
+	t.Run("token unset: protected routes fail closed", func(t *testing.T) {
 		config.Config.LlmServerToken = ""
 		r := build()
-		assert.Equal(t, http.StatusOK, do(r, "GET", "/api/admin/prompts/config", ""))
-		assert.Equal(t, http.StatusOK, do(r, "GET", "/api/admin/prompts/config", "anything"))
+		assert.Equal(t, http.StatusServiceUnavailable, do(r, "GET", "/api/admin/prompts/config", ""))
+		assert.Equal(t, http.StatusServiceUnavailable, do(r, "GET", "/api/admin/prompts/config", "anything"))
 	})
 
 	t.Run("health and workspace paths skip the gate regardless", func(t *testing.T) {
