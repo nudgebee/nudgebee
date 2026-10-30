@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"nudgebee/services/audit"
@@ -695,10 +697,16 @@ func handleKnowledgeGraphAction(actionPayload *ActionRequest, c *gin.Context, tr
 
 		filterRepo := core.NewFilterRepository(dbManager, ctx.GetLogger())
 		filter, err := filterRepo.GetFilterForTenant(ctx, tenantID, "")
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			// A failed read is not "no filter": answering exists=false here would
+			// show the "all selected" defaults over the tenant's real filter.
+			ctx.GetLogger().Error("failed to read default filter for tenant", "tenant_id", tenantID, "error", err)
+			c.JSON(500, common.ErrorActionInternal("failed to read the knowledge graph filter"))
+			return
+		}
 		if err != nil {
 			// No row yet — return exists=false so the UI shows "all selected" defaults.
-			ctx.GetLogger().Info("no default filter for tenant, returning empty",
-				"tenant_id", tenantID, "error", err)
+			ctx.GetLogger().Info("no default filter for tenant, returning empty", "tenant_id", tenantID)
 			c.JSON(200, map[string]any{
 				"exists":       false,
 				"id":           nil,

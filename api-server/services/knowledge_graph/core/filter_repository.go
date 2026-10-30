@@ -85,7 +85,7 @@ func (r *FilterRepository) GetFilterForTenant(ctx *security.RequestContext, tena
 	)
 
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("no filter found for tenant %s", tenantID)
+		return nil, fmt.Errorf("no filter found for tenant %s: %w", tenantID, sql.ErrNoRows)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to query filter: %w", err)
