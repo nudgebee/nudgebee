@@ -2,11 +2,13 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"nudgebee/runbook/common"
+	"nudgebee/runbook/config"
 	"nudgebee/runbook/services/security"
 	"reflect"
 	"strings"
@@ -299,6 +301,21 @@ func (s *Server) getActionRequestDetails(c *gin.Context) (*security.RequestConte
 	return sc, args, accountID, true
 }
 
+func isAuthorizedActionToken(c *gin.Context) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	expected := config.Config.ServiceApiServerToken
+	if expected == "" {
+		return false
+	}
+	header := c.Request.Header.Get(config.Config.ServiceApiServerTokenHeader)
+	if header == "" {
+		header = c.Request.Header.Get("X-ACTION-TOKEN")
+	}
+	return subtle.ConstantTimeCompare([]byte(header), []byte(expected)) == 1
+}
+
 func buildContextFromPayload(ctx context.Context, c *gin.Context, h *ActionRequest, tracer *trace.Tracer, meter *metric.Meter, logger *slog.Logger) (*security.RequestContext, error) {
 	// no need to handle role as its calculated by security context
 	tenantId := ""
@@ -332,6 +349,9 @@ func buildContextFromPayload(ctx context.Context, c *gin.Context, h *ActionReque
 	var securityContext *security.SecurityContext
 	var err error
 	if role == "admin" && tenantId == "" && userId == "" {
+		if !isAuthorizedActionToken(c) {
+			return nil, errors.New("api: unauthorized super-admin context")
+		}
 		securityContext = security.NewSecurityContextForSuperAdmin()
 	} else if role == "admin" && tenantId != "" {
 		securityContext = security.NewSecurityContextForTenantAccountAdmin(tenantId, userId, []string{})

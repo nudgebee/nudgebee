@@ -196,6 +196,15 @@ func handleQueryAction(actionPayload *ActionRequest, c *gin.Context, tracer *tra
 				}
 			}
 
+			if expr == "date_unit" {
+				for _, arg := range args {
+					if !query.IsValidDateUnit(arg) {
+						c.JSON(400, common.ErrorActionBadRequest(fmt.Sprintf("invalid date_unit argument %q", arg)))
+						return
+					}
+				}
+			}
+
 			for i, col := range queryMap["columns"].([]query.QueryColumn) {
 				if col.Name == name {
 					col.Expr = expr

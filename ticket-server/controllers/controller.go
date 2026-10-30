@@ -649,6 +649,17 @@ func TestConnectionByConfig(ctx *gin.Context) {
 		return
 	}
 
+	if configuration.URL != "" {
+		if err := common.ValidateURL(configuration.URL); err != nil {
+			ctx.JSON(http.StatusOK, models.TestConnectionResponse{
+				Success: false,
+				Tool:    configuration.Tool,
+				Error:   fmt.Sprintf("target URL rejected: %v", err),
+			})
+			return
+		}
+	}
+
 	// The frontend omits the password on re-test (keep stored secret) and never
 	// sends auth_type. Rehydrate both from the stored integration so the test
 	// validates the real config — without auth_type a GitHub App integration is

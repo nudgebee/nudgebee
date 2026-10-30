@@ -1,14 +1,39 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
+import * as crypto from 'crypto';
 import { getErrorHtml } from '@lib/marketplaceCallbackHtml';
 
 const servicesEndpoint = process.env.SERVICE_API_SERVER_URL ?? 'http://localhost:8000';
 const servicesServerToken = process.env.ACTION_API_SERVER_TOKEN ?? '';
+
+// Optional during rollout: the marketplace site only sends this once ops sets
+// the variable and shares the value, so the callback stays usable while it is
+// unset — but warn once per process so the unauthenticated window is visible.
+const marketplaceSharedSecret = process.env.MARKETPLACE_SHARED_SECRET ?? '';
+if (!marketplaceSharedSecret) {
+  console.warn('[marketplace] MARKETPLACE_SHARED_SECRET is not set; marketplace callbacks are unauthenticated');
+}
 
 // Conservative RFC-5322-ish email shape — local@domain.tld with at-least-2-char TLD.
 // Validates the env-var input before splicing it into HTML to neutralize stray quotes,
 // angle brackets, or other characters that would break the surrounding markup or open
 // a stored-XSS path through an operator-controlled config value.
 const EMAIL_REGEX = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+
+/**
+ * Constant-time comparison for the marketplace shared secret.
+ *
+ * Both sides are SHA-256 hashed before `timingSafeEqual` so it never receives
+ * unequal-length buffers (it throws) and the comparison cannot leak the
+ * configured secret's length through timing.
+ */
+function secretMatches(presented: string | undefined, expected: string): boolean {
+  if (!presented) {
+    return false;
+  }
+  const presentedHash = crypto.createHash('sha256').update(presented).digest();
+  const expectedHash = crypto.createHash('sha256').update(expected).digest();
+  return crypto.timingSafeEqual(presentedHash, expectedHash);
+}
 
 /**
  * Render the "please contact <X> for your license" paragraph.
@@ -91,7 +116,22 @@ function getLicenseOnlyHtml(): string {
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  const userRequest = req.body;
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  if (marketplaceSharedSecret) {
+    const rawAuthHeader = req.headers['x-marketplace-secret'] ?? req.headers['authorization'];
+    const authHeader = Array.isArray(rawAuthHeader) ? rawAuthHeader[0] : rawAuthHeader;
+    if (!secretMatches(authHeader, marketplaceSharedSecret) && !secretMatches(authHeader, `Bearer ${marketplaceSharedSecret}`)) {
+      return res.status(401).json({ error: 'Unauthorized marketplace request' });
+    }
+  }
+
+  const userRequest = req.body ?? {};
+  if (!userRequest.email || !EMAIL_REGEX.test(userRequest.email)) {
+    return res.setHeader('Content-Type', 'text/html').status(400).send(getErrorHtml());
+  }
 
   if (userRequest.offeringtype === 'onprem') {
     return res.setHeader('Content-Type', 'text/html').status(200).send(getOnPremHtml());

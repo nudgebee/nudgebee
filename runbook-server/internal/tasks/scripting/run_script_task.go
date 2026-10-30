@@ -8,6 +8,7 @@ import (
 	"nudgebee/runbook/services/cloud"
 	integrationsService "nudgebee/runbook/services/integrations"
 	"nudgebee/runbook/services/relay"
+	"os"
 	"strings"
 	"time"
 )
@@ -120,8 +121,21 @@ func (t *RunScriptTask) Execute(taskCtx types.TaskContext, params map[string]any
 
 	// Executor Selection
 	if executorType, ok := params["executor_type"].(string); ok {
+		executorLower := strings.ToLower(executorType)
+		allowed := false
+		switch executorLower {
+		case "kubernetes", "agent", "aws_ssm", "azure_run_command", "gcp_compute_ssh", "ssh":
+			allowed = true
+		case "local":
+			// Opt-in only: the local executor runs scripts on the runbook host.
+			allowed = os.Getenv("ALLOW_LOCAL_EXECUTOR") == "true"
+		}
+		if !allowed {
+			return nil, fmt.Errorf("unsupported or disallowed executor_type: %s", executorType)
+		}
+
 		// Validation for specific executors
-		switch executorType {
+		switch executorLower {
 		case "aws_ssm", "gcp_compute_ssh":
 			if params["target_id"] == nil || params["target_id"] == "" {
 				return nil, fmt.Errorf("target_id is required for %s executor", executorType)
@@ -138,7 +152,7 @@ func (t *RunScriptTask) Execute(taskCtx types.TaskContext, params map[string]any
 				return nil, fmt.Errorf("integration_id is required for ssh executor")
 			}
 		}
-		config.ExecutorType = executorType
+		config.ExecutorType = executorLower
 	}
 
 	// Remote Execution Params

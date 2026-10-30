@@ -3,6 +3,7 @@ package executors
 import (
 	"fmt"
 	"nudgebee/runbook/config"
+	"os"
 	"strings"
 )
 
@@ -36,6 +37,9 @@ func NewExecutor(execConfig ExecutionConfig) (ScriptExecutor, error) {
 	case "agent":
 		return NewAgentExecutor(), nil
 	case "local":
+		if os.Getenv("ALLOW_LOCAL_EXECUTOR") != "true" {
+			return nil, fmt.Errorf("local executor is disabled for security; set ALLOW_LOCAL_EXECUTOR=true to enable in development")
+		}
 		return NewLocalExecutor(), nil
 	case "aws_ssm":
 		return NewAwsSsmExecutor(), nil
