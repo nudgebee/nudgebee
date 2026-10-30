@@ -330,9 +330,9 @@ export function hasWriteAccess(accountId?: string, namespace?: string): boolean 
   if (userData?.roles?.includes('tenant_admin')) {
     return true;
   }
-  if (userData?.roles?.includes('tenant_admin_readonly')) {
-    return false;
-  }
+  // A read-only tenant admin who is also an admin of this account (directly or
+  // through a group) may write here: roles add up, as the RPC gateway allows.
+  // With no account grant, tenant_admin_readonly still falls through to false.
   if (userData?.accountIds?.includes(accountId)) {
     return true;
   }
