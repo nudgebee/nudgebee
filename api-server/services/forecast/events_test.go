@@ -2,6 +2,7 @@ package forecast
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -192,6 +193,8 @@ func TestSlopePhrase(t *testing.T) {
 	assert.Equal(t, "flat", slopePhrase(-0.02), "worded from the rounded figure, never \"falling 0\"")
 	assert.Equal(t, "flat", slopePhrase(0.04))
 	assert.Equal(t, "rising 0.1 pp/day", slopePhrase(0.06))
+	assert.Equal(t, "flat", slopePhrase(math.NaN()))
+	assert.Equal(t, "flat", slopePhrase(math.Inf(-1)))
 	assert.Equal(t, "flat", slopePhrase(0))
 }
 

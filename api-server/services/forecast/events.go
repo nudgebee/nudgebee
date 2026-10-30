@@ -349,9 +349,10 @@ func quantity(v float64, unit string) string {
 // slopePhrase words the fitted slope; a breach can be fitted on a window whose trend
 // is flat or falling, and "rising -3 pp/day" would misreport it.
 func slopePhrase(slope float64) string {
-	// Worded from the rounded figure, so a slope of -0.02 reads "flat", not "falling 0".
+	// Worded from the rounded figure, so a slope of -0.02 reads "flat", not "falling 0";
+	// a slope that is not a number reads "flat" too, never "falling NaN".
 	switch shown := trimFloat(math.Abs(slope)); {
-	case shown == "0":
+	case shown == "0" || math.IsNaN(slope) || math.IsInf(slope, 0):
 		return "flat"
 	case slope > 0:
 		return fmt.Sprintf("rising %s pp/day", shown)
