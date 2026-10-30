@@ -189,6 +189,9 @@ func TestTrendInsights_ProjectionStatesTheClimbUsageAndForecast(t *testing.T) {
 func TestSlopePhrase(t *testing.T) {
 	assert.Equal(t, "rising 2.5 pp/day", slopePhrase(2.5))
 	assert.Equal(t, "falling 3 pp/day", slopePhrase(-3))
+	assert.Equal(t, "flat", slopePhrase(-0.02), "worded from the rounded figure, never \"falling 0\"")
+	assert.Equal(t, "flat", slopePhrase(0.04))
+	assert.Equal(t, "rising 0.1 pp/day", slopePhrase(0.06))
 	assert.Equal(t, "flat", slopePhrase(0))
 }
 

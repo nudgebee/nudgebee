@@ -192,6 +192,93 @@ func TestFit_ReplicaChangeAloneDoesNotCut(t *testing.T) {
 	assert.Equal(t, StatusProjected, res.Status, res.Reason)
 }
 
+// The rollout of a one-replica workload on the dev cluster (2026-10-29 02:00): for
+// minutes cAdvisor still reported the old pod while kube-state-metrics had dropped its
+// limit, so the hour averaged 1.167 pods and the per-pod limit read 0.171 of 0.2.
+func TestFit_RolloutBlipDoesNotCut(t *testing.T) {
+	values := series(72, 1, func(h float64) float64 { return 5 + 6*h/24 })
+	limits := constant(72, 0.2)
+	limits[50].V = 0.2 / 1.167
+	res := Fit(input(values, limits))
+	assert.Equal(t, 72, res.HoursOfData, "a one-hour skew of 14% is a rollout, not a limit change")
+	assert.Equal(t, StatusProjected, res.Status, res.Reason)
+	assert.Equal(t, 0.2, res.PerPodLimit)
+}
+
+func TestFit_RolloutBlipInTheNewestHourDoesNotCut(t *testing.T) {
+	limits := constant(72, 0.2)
+	limits[71].V = 0.2 / 1.167
+	res := Fit(input(series(72, 1, func(h float64) float64 { return 5 + 6*h/24 }), limits))
+	assert.Equal(t, 72, res.HoursOfData, "taking the skewed hour as the limit cut history to one bucket")
+	assert.Equal(t, 0.2, res.PerPodLimit, "the limit is the one that held, not the skewed hour")
+}
+
+func TestFit_TwoHourBlipDoesNotCut(t *testing.T) {
+	limits := constant(72, 0.5)
+	limits[30].V, limits[31].V = 0.43, 0.6
+	res := Fit(input(series(72, 1, func(h float64) float64 { return 5 + 6*h/24 }), limits))
+	assert.Equal(t, 72, res.HoursOfData)
+}
+
+func TestFit_LimitChangeIsTrustedAfterThreeHours(t *testing.T) {
+	values := series(72, 1, func(h float64) float64 { return 5 + 6*h/24 })
+	t.Run("two hours after the change the old limit still stands", func(t *testing.T) {
+		limits := constant(72, 0.5)
+		limits[70].V, limits[71].V = 1.0, 1.0
+		res := Fit(input(values, limits))
+		assert.Equal(t, 72, res.HoursOfData)
+		assert.Equal(t, 0.5, res.PerPodLimit)
+	})
+	t.Run("three hours after it the new limit cuts the history", func(t *testing.T) {
+		limits := constant(72, 0.5)
+		limits[69].V, limits[70].V, limits[71].V = 1.0, 1.0, 1.0
+		res := Fit(input(values, limits))
+		assert.Equal(t, 3, res.HoursOfData)
+		assert.Equal(t, 1.0, res.PerPodLimit)
+	})
+}
+
+func TestFit_ShortOldRegimeAtTheWindowStartStillCuts(t *testing.T) {
+	// The limit changed at hour 2; the two buckets before it are what is left of an
+	// older limit, not a blip.
+	limits := constant(72, 1.0)
+	limits[0].V, limits[1].V = 0.5, 0.5
+	res := Fit(input(series(72, 1, func(h float64) float64 { return 5 + 6*h/24 }), limits))
+	assert.Equal(t, 70, res.HoursOfData)
+}
+
+func TestFit_BlipAfterARealChangeDoesNotHideIt(t *testing.T) {
+	limits := constant(72, 0.5)
+	for i := 40; i < 72; i++ {
+		limits[i].V = 1.0
+	}
+	limits[60].V = 0.85
+	res := Fit(input(series(72, 1, func(h float64) float64 { return 5 + 6*h/24 }), limits))
+	assert.Equal(t, 32, res.HoursOfData, "the cut stays at the real change, the blip is skipped")
+	assert.Equal(t, 1.0, res.PerPodLimit)
+}
+
+func TestFit_ALimitAddedUnderThreeHoursAgoIsNoLimitYet(t *testing.T) {
+	limits := constant(72, 0)
+	limits[70].V, limits[71].V = 0.5, 0.5
+	res := Fit(input(series(72, 1, func(h float64) float64 { return 5 + 6*h/24 }), limits))
+	assert.Equal(t, StatusNoLimit, res.Status, "never a 0 limit reported as the workload's")
+	assert.Zero(t, res.PerPodLimit)
+}
+
+func TestLimitRegime_ShortWindows(t *testing.T) {
+	one := constant(1, 0.3)
+	cur, since := limitRegime(one)
+	assert.Equal(t, 0.3, cur)
+	assert.True(t, since.IsZero())
+
+	two := constant(2, 0.3)
+	two[1].V = 0.6
+	cur, since = limitRegime(two)
+	assert.Equal(t, 0.3, cur, "a one-hour-old limit is not trusted yet, whatever the window")
+	assert.True(t, since.IsZero())
+}
+
 func TestFit_SparseSamplesCountByBucket(t *testing.T) {
 	values := series(72, 1, func(h float64) float64 { return 5 + 6*h/24 })
 	sparse := make([]Point, 0, len(values))

@@ -48,10 +48,21 @@ type FitInput struct {
 }
 
 // limitChangeTolerance is how far the per-pod limit may wander before it counts as a
-// changed limit. Per-pod limit is a workload total divided by a pod count, and the two
-// are sampled at slightly different instants during a rollout, so an exact comparison
-// would cut the history at every rollout even when the limit stayed put.
+// different limit. Per-pod limit is a workload total divided by a pod count, and the two
+// are sampled at slightly different instants, so an exact comparison would see a change
+// in every bucket.
 const limitChangeTolerance = 0.05
+
+// limitChangeMinHours is how many consecutive buckets a per-pod limit must hold before
+// it counts as the workload's limit. A rollout skews one hour well past the tolerance:
+// cAdvisor reports the old pod's container for minutes after kube-state-metrics drops
+// its limit, so one replica reads as 1.17 pods and the per-pod limit 14% low (measured
+// on the dev cluster). Taken as a change, that cut up to three days of history at every
+// rollout, and a rollout in the newest hour cut it to one bucket. The price is that a
+// real limit change (a raised limit, a VPA resize, a PVC expansion) is trusted only after
+// this many hours; until then the limit shown and the suggestion are the previous one,
+// and the last 6h mix both regimes, so a breach can clear up to two hours late.
+const limitChangeMinHours = 3
 
 // minFitHours is the floor under Params.MinHours: the fit runs over whole days, so it
 // needs at least one.
@@ -89,12 +100,19 @@ func Fit(in FitInput) Result {
 		}
 		return res
 	}
-	currentLimit := limits[len(limits)-1].V
-	res.PerPodLimit = round(currentLimit, 3)
-
 	// History before the last limit change describes a different workload: a raised
 	// limit is a new regime, not a continuation of the trend.
-	since := lastLimitChange(limits, currentLimit)
+	currentLimit, since := limitRegime(limits)
+	if currentLimit <= 0 {
+		// A limit set under limitChangeMinHours ago is not the workload's limit yet.
+		res.Status = StatusNoLimit
+		res.Reason = in.NoLimitReason
+		if res.Reason == "" {
+			res.Reason = "the workload has no limit on this resource"
+		}
+		return res
+	}
+	res.PerPodLimit = round(currentLimit, 3)
 	values := pointsSince(finitePoints(in.Value), since)
 	res.HoursOfData = len(values)
 	res.Daily = dailyRows(values, in.PerPodLimit, pointsSince(finitePoints(in.PerPodUsage), since))
@@ -187,18 +205,42 @@ func finitePoints(in []Point) []Point {
 	return out
 }
 
-// lastLimitChange returns the first bucket of the trailing run whose limit matches
-// the current one, or the zero time when the limit never changed in the window.
-func lastLimitChange(limits []Point, current float64) time.Time {
+func sameLimit(v, limit float64) bool {
+	return math.Abs(v-limit) <= limit*limitChangeTolerance
+}
+
+// limitRegime returns the workload's current per-pod limit and the first bucket since
+// which it has held, or the zero time when it held all window. The current limit is the
+// newest that held limitChangeMinHours consecutive buckets (or all of a shorter window);
+// a run of other values shorter than that is a blip, not a change, unless it reaches
+// the window's start, where an older limit may have been cut off. limits is non-empty.
+func limitRegime(limits []Point) (float64, time.Time) {
+	cur := len(limits) - 1
 	for i := len(limits) - 1; i >= 0; i-- {
-		if math.Abs(limits[i].V-current) > current*limitChangeTolerance {
-			if i+1 < len(limits) {
-				return limits[i+1].T
-			}
-			return limits[i].T.Add(time.Hour)
+		run := 1
+		for j := i - 1; j >= 0 && run < limitChangeMinHours && sameLimit(limits[j].V, limits[i].V); j-- {
+			run++
+		}
+		if run >= limitChangeMinHours || run == i+1 {
+			cur = i
+			break
 		}
 	}
-	return time.Time{}
+	current := limits[cur].V
+	for j := cur; j >= 0; j-- {
+		if sameLimit(limits[j].V, current) {
+			continue
+		}
+		k := j
+		for k >= 0 && !sameLimit(limits[k].V, current) {
+			k--
+		}
+		if j-k >= limitChangeMinHours || k < 0 {
+			return current, limits[j+1].T
+		}
+		j = k + 1
+	}
+	return current, time.Time{}
 }
 
 func pointsSince(points []Point, since time.Time) []Point {
