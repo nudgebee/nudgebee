@@ -226,6 +226,7 @@ class Config:
     embeddings_api_key = os.environ.get("EMBEDDINGS_PROVIDER_API_KEY", "")
     embeddings_api_version = os.environ.get("EMBEDDINGS_PROVIDER_API_VERSION", "")  # Azure - '2023-05-15'
     embeddings_api_type = os.environ.get("EMBEDDINGS_PROVIDER_API_TYPE", "")
+    embeddings_api_style = os.environ.get("EMBEDDINGS_PROVIDER_API_STYLE", "")  # Azure - 'v1' (default) or 'classic'
     embeddings_region = os.environ.get("EMBEDDINGS_PROVIDER_REGION", "us-west-2")
 
     # Embedding output dimensions (Matryoshka truncation)

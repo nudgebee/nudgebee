@@ -100,7 +100,6 @@ PROVIDER_NAME_MAP = {
     # Embeddings
     "OpenAIEmbeddings": "openai",
     "AzureOpenAIEmbeddings": "azure",
-    "AzureAIEmbeddings": "azure",
     "GoogleGenAIEmbeddings": "googleai",
     "VertexAIEmbeddings": "vertexai",
     "BedrockEmbeddings": "bedrock",

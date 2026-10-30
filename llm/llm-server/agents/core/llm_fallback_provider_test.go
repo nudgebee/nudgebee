@@ -154,6 +154,41 @@ func TestConfiguredFallback_NewSlotOwnsItsConfiguration(t *testing.T) {
 	assert.False(t, getLLMDisableThinking(acct, r))
 }
 
+// A new fallback carries its own OAuth, headers, deployment and thinking flag.
+func TestConfiguredFallback_NewSlotUsesItsOwnAuthAndGatewaySettings(t *testing.T) {
+	const acct = "acct-fb-new-auth"
+	for _, scope := range []ModelTier{"", "reasoning"} {
+		k := func(base string) string { return fallbackKey(base, scope) }
+		res := seedAccount(t, acct, geminiIntegration(map[string]string{
+			k(llmFallbackProviderKey):             "custom",
+			k(llmFallbackModelKey):                "gpt-5.6-terra",
+			k("llm_fallback_api_endpoint"):        "https://gw.example/v1",
+			k("llm_fallback_api_type"):            "azure_ad",
+			k("llm_fallback_auth_type"):           "oauth_client_credentials",
+			k("llm_fallback_oauth_token_url"):     "https://idp.example/token",
+			k("llm_fallback_oauth_client_id"):     "fb-client",
+			k("llm_fallback_oauth_client_secret"): "fb-secret",
+			k("llm_fallback_oauth_scope"):         "api://gw/.default",
+			k("llm_fallback_extra_headers"):       `{"X-Project":"fb"}`,
+			k("llm_fallback_deployment_name"):     "gpt-5.6-terra_2026-07-09",
+			k("llm_fallback_disable_thinking"):    "true",
+		}))
+		res.Tier = scope
+
+		fb, err := configuredFallback(nil, acct, res)
+		require.NoError(t, err)
+		require.NotNil(t, fb)
+		r := fb.Resolution
+
+		auth := resolveLLMAuthSettings(acct, r)
+		assert.Equal(t, "oauth_client_credentials", auth.AuthType, "scope %q", scope)
+		assert.Equal(t, llmOAuthConfig{TokenURL: "https://idp.example/token", ClientID: "fb-client", ClientSecret: "fb-secret", Scope: "api://gw/.default"}, auth.OAuth)
+		assert.Equal(t, map[string]string{"X-Project": "fb"}, auth.ExtraHeaders)
+		assert.Equal(t, "gpt-5.6-terra_2026-07-09", resolveLLMDeploymentName(acct, r))
+		assert.True(t, getLLMDisableThinking(acct, r))
+	}
+}
+
 func TestConfiguredFallback_NoneAndIncomplete(t *testing.T) {
 	const acct = "acct-fb-none"
 	res := seedAccount(t, acct, geminiIntegration(nil))

@@ -1,0 +1,120 @@
+name: CodeQL
+
+# Advanced setup replacing GitHub's CodeQL default setup.
+#
+# Default setup analyzes every Go module in ONE job (autobuild walks all
+# go.mod files in sequence). The runner was killed every time it reached
+# collector-server/cloud-collector (AWS/Azure/GCP SDKs), so Go was never
+# analyzed. Here each Go module is its own matrix job with a manual
+# `go build ./...`, uploaded under its own category.
+#
+# The other languages keep default setup's behaviour: build-mode none,
+# default query suite, category /language:<lang>. Go has no build-mode none.
+#
+# Requires default setup to be OFF (Settings → Code security → CodeQL
+# analysis → Switch to advanced); the two cannot upload side by side.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '23 4 * * 1'   # weekly, Monday 04:23 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: codeql-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  analyze-go:
+    name: Analyze (go, ${{ matrix.module }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - api-server/services
+          - collector-server/cloud-collector
+          - collector-server/cost-server
+          - collector-server/k8s-collector/relay-server
+          - llm/code-analysis
+          - llm/gateway
+          - llm/gateway/scripts/matrix
+          - llm/llm-server
+          - runbook-server
+          - ticket-server
+          - vulnerability-server
+    env:
+      # The Go extractor processes up to 32 files concurrently by default;
+      # with the AWS/Azure/GCP SDK types loaded that exhausts the runner's
+      # 16 GB and the runner is killed mid-build (cloud-collector).
+      CODEQL_EXTRACTOR_GO_MAX_GOROUTINES: 4
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add swap
+        run: |
+          sudo swapoff -a
+          sudo fallocate -l 16G /mnt/codeql-swap
+          sudo chmod 600 /mnt/codeql-swap
+          sudo mkswap /mnt/codeql-swap
+          sudo swapon /mnt/codeql-swap
+          free -h
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+          # A warm build cache lets `go build` skip packages, which the
+          # CodeQL tracer would then not extract.
+          cache: false
+
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: go
+          build-mode: manual
+
+      - name: Build
+        working-directory: ${{ matrix.module }}
+        run: |
+          go build ./...
+          free -h
+
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:go/${{ matrix.module }}
+
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, javascript-typescript, python]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:${{ matrix.language }}

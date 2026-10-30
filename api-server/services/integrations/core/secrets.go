@@ -43,6 +43,7 @@ var llmSecretFieldPrefixes = []string{
 	"llm_fallback_api_key",
 	"llm_fallback_access_key",
 	"llm_fallback_secret_key",
+	"llm_fallback_oauth_client_secret",
 }
 
 // LLMSecretFieldPrefixes returns a copy of the secret prefixes, so other

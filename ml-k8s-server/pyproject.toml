@@ -67,7 +67,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.group.dev.dependencies]
 pre-commit = "4.6.2"
-black = "26.5.1"
+black = "26.10.1"
 mypy = "1.5.1"
 flake8 = "7.3.0"
 # The suite and its [tool.pytest.ini_options] block predate this entry: `make test` only

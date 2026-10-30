@@ -7,6 +7,7 @@ Used exclusively for reranking — each provider sends a prompt and returns text
 import base64
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from rag.core.types import LLM, LLMResult
@@ -45,6 +46,10 @@ def _bedrock_image_format(mime_type: str) -> str:
     return {"image/png": "png", "image/jpeg": "jpeg", "image/gif": "gif", "image/webp": "webp"}.get(
         (mime_type or "").lower(), "png"
     )
+
+
+# Reasoning models (o-series, gpt-5 family) reject a non-default temperature.
+_REASONING_MODEL_RX = re.compile(r"(?:^|[^a-z0-9])(?:o[1-9]|gpt-5)", re.IGNORECASE)
 
 
 def supports_vision(llm: Any) -> bool:
@@ -99,45 +104,30 @@ class OpenAILLM(LLM):
 
 
 class AzureOpenAILLM(LLM):
-    """Azure OpenAI LLM using the openai SDK with azure config."""
+    """Azure OpenAI chat over a client from rag.core.llm.azure (v1 or classic wire)."""
 
-    def __init__(self, model: str, api_key: str, api_version: str, azure_endpoint: str):
-        import openai
-
-        self._client = openai.AzureOpenAI(
-            api_key=api_key,
-            api_version=api_version,
-            azure_endpoint=azure_endpoint,
-        )
+    def __init__(self, client: Any, model: str):
+        self._client = client
+        # The model name is the Azure deployment name.
         self.model = model
+        self._extra: Dict[str, Any] = {} if _REASONING_MODEL_RX.search(model or "") else {"temperature": 0}
+
+    def _complete(self, messages: List[Any]) -> LLMResult:
+        resp = self._client.chat.completions.create(model=self.model, messages=messages, **self._extra)
+        # Azure can return no choices, e.g. when its content filter withholds the answer.
+        text = (resp.choices[0].message.content or "") if resp.choices else ""
+        usage = resp.usage
+        return LLMResult(
+            text=text,
+            input_tokens=usage.prompt_tokens if usage else 0,
+            output_tokens=usage.completion_tokens if usage else 0,
+        )
 
     def generate(self, prompt: str) -> LLMResult:
-        resp = self._client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": _ensure_user_content(prompt)}],
-            temperature=0,
-        )
-        text = resp.choices[0].message.content or ""
-        usage = resp.usage
-        return LLMResult(
-            text=text,
-            input_tokens=usage.prompt_tokens if usage else 0,
-            output_tokens=usage.completion_tokens if usage else 0,
-        )
+        return self._complete([{"role": "user", "content": _ensure_user_content(prompt)}])
 
     def generate_with_images(self, prompt: str, images: List[Dict[str, str]]) -> LLMResult:
-        resp = self._client.chat.completions.create(
-            model=self.model,
-            messages=[_user_message(_openai_image_content(prompt, images))],
-            temperature=0,
-        )
-        text = resp.choices[0].message.content or ""
-        usage = resp.usage
-        return LLMResult(
-            text=text,
-            input_tokens=usage.prompt_tokens if usage else 0,
-            output_tokens=usage.completion_tokens if usage else 0,
-        )
+        return self._complete([_user_message(_openai_image_content(prompt, images))])
 
 
 class AnthropicLLM(LLM):

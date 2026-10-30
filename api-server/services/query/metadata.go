@@ -7716,7 +7716,8 @@ var table_metadata = map[string]TableDefinition{
 								icv.name LIKE 'llm_tier_oauth_client_secret%' OR
 								icv.name LIKE 'llm_fallback_api_key%' OR
 								icv.name LIKE 'llm_fallback_access_key%' OR
-								icv.name LIKE 'llm_fallback_secret_key%'
+								icv.name LIKE 'llm_fallback_secret_key%' OR
+								icv.name LIKE 'llm_fallback_oauth_client_secret%'
 							) THEN ''
 							ELSE icv.value
 						END,

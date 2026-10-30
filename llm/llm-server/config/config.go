@@ -193,6 +193,33 @@ type appConfig struct {
 	LlmProviderMaxRetries     int    `mapstructure:"llm_provider_max_retries"`
 	LlmProviderThinkingLevel  string `mapstructure:"llm_provider_thinking_level"` // empty (default): use per-model default; "minimal"/"low"/"medium"/"high": explicit level
 
+	// ENV counterparts of the LLM-integration keys that, until now, only a DB
+	// integration could supply. Every other credential/endpoint key already has
+	// one; these did not, so an env-configured deployment (on-prem, test, local)
+	// had no way to set them at all — see resolveLLMAuthSettings and
+	// getLLMDisableThinking. Each sits BELOW its DB counterpart, matching the
+	// package rule that DB always beats ENV, so leaving them unset reproduces
+	// the previous behaviour exactly.
+	//
+	// LlmDisableThinking opts an OpenAI-compatible server out of chat-template
+	// thinking (chat_template_kwargs {"enable_thinking": false}) — the vLLM/Qwen3
+	// switch. Distinct from LlmProviderThinkingBudget, which only the Gemini and
+	// Bedrock-Anthropic clients translate.
+	LlmDisableThinking        bool   `mapstructure:"llm_disable_thinking"`
+	LlmAuthType               string `mapstructure:"llm_auth_type"` // "api_key" (default) or "oauth_client_credentials"
+	LlmOAuthTokenURL          string `mapstructure:"llm_oauth_token_url"`
+	LlmOAuthClientID          string `mapstructure:"llm_oauth_client_id"`
+	LlmOAuthClientSecret      string `mapstructure:"llm_oauth_client_secret"`
+	LlmOAuthScope             string `mapstructure:"llm_oauth_scope"`
+	LlmExtraHeaders           string `mapstructure:"llm_extra_headers"`
+	LlmProviderDeploymentName string `mapstructure:"llm_provider_deployment_name"` // Azure deployment when it differs from the model name
+	LlmProviderApiStyle       string `mapstructure:"llm_provider_api_style"`       // Azure OpenAI wire style: v1 (default) or classic
+	// Configured fallback, reference form only: name a slot ENV or DB already
+	// defines (e.g. "env:tier:summary") rather than restating a whole provider
+	// config in environment variables. The owned-slot form stays DB-only.
+	LlmFallbackRefSource string `mapstructure:"llm_fallback_ref_source"`
+	LlmFallbackRefModel  string `mapstructure:"llm_fallback_ref_model"`
+
 	// LlmThinkingLevelNativeEnabled sends a model's NATIVE thinking control instead of
 	// the legacy numeric budget, for models whose documented control is a level.
 	//
@@ -1300,6 +1327,21 @@ func init() {
 	//   huggingface:    "meta-llama/Llama-3.3-70B-Instruct"
 	viper.SetDefault("llm_model_name", "")
 	viper.SetDefault("llm_model_fallbacks", "")
+	// These must be registered, not merely tagged. viper.AutomaticEnv only
+	// exposes a key to Unmarshal once viper knows it exists, so a mapstructure
+	// tag alone leaves the field at its zero value however the environment is
+	// set — the variable is read by Get* but never reaches the struct.
+	viper.SetDefault("llm_disable_thinking", false)
+	viper.SetDefault("llm_auth_type", "")
+	viper.SetDefault("llm_oauth_token_url", "")
+	viper.SetDefault("llm_oauth_client_id", "")
+	viper.SetDefault("llm_oauth_client_secret", "")
+	viper.SetDefault("llm_oauth_scope", "")
+	viper.SetDefault("llm_extra_headers", "")
+	viper.SetDefault("llm_provider_deployment_name", "")
+	viper.SetDefault("llm_provider_api_style", "")
+	viper.SetDefault("llm_fallback_ref_source", "")
+	viper.SetDefault("llm_fallback_ref_model", "")
 	viper.SetDefault("llm_provider_api_endpoint", "") // https://api.openai.com/v1 | https://nudgebee-slm.services.ai.azure.com | https://api-inference.huggingface.co
 	viper.SetDefault("llm_provider_api_key", "")
 	viper.SetDefault("llm_provider_api_version", "") // 2024-05-01-preview | 2024-05-01-preview | 2024-05-01-preview

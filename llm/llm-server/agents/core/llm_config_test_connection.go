@@ -16,7 +16,6 @@ import (
 	"log/slog"
 	"net/http"
 	"nudgebee/llm/config"
-	"nudgebee/llm/llms/azure"
 	"nudgebee/llm/llms/bedrock"
 	"nudgebee/llm/llms/googleai"
 	"nudgebee/llm/llms/huggingface"
@@ -328,7 +327,7 @@ var providerScopedKeys = []string{
 	cfgKeyRegion, cfgKeyAccessKey, cfgKeySecretKey, cfgKeySessionToken,
 	llmAuthTypeKey, llmOAuthTokenURLKey, llmOAuthClientIDKey,
 	llmOAuthClientSecretKey, llmOAuthScopeKey, llmExtraHeadersKey,
-	llmDeploymentNameKey,
+	llmDeploymentNameKey, llmApiStyleKey,
 }
 
 // buildScopedCfg returns the effective config for a tier/agent probe target.
@@ -504,13 +503,19 @@ func newCustomFromConfig(model string, cfg map[string]string) (llms.Model, error
 }
 
 func newAzureFromConfig(model string, cfg map[string]string) (llms.Model, error) {
-	opts := []azure.Option{
-		azure.WithToken(cfg[cfgKeyAPIKey]),
-		azure.WithAPIVersion(cfg[cfgKeyAPIVersion]),
-		azure.WithBaseURL(cfg[cfgKeyAPIEndpoint]),
-		azure.WithModel(model),
+	authClient, oauthMode, err := probeAuthHTTPClient(cfg)
+	if err != nil {
+		return nil, err
 	}
-	return azure.New(opts...)
+	return newAzureOpenAIModel(azureOpenAIParams{
+		Endpoint:   cfg[cfgKeyAPIEndpoint],
+		APIStyle:   cfg[llmApiStyleKey],
+		APIVersion: cfg[cfgKeyAPIVersion],
+		Model:      model,
+		Token:      cfg[cfgKeyAPIKey],
+		OAuth:      oauthMode,
+		AuthClient: wrapProbeURLLogging(authClient),
+	})
 }
 
 func newAnthropicFromConfig(model string, cfg map[string]string) (llms.Model, error) {
@@ -647,7 +652,7 @@ func probeCfgFromResolution(res *LLMConfigResolution) map[string]string {
 		cfgKeyAccessKey: res.PinnedAccessKey, cfgKeySecretKey: res.PinnedSecretKey, cfgKeySessionToken: res.PinnedSessionToken,
 		llmAuthTypeKey: res.PinnedAuthType, llmOAuthTokenURLKey: res.PinnedOAuthTokenURL, llmOAuthClientIDKey: res.PinnedOAuthClientID,
 		llmOAuthClientSecretKey: res.PinnedOAuthClientSecret, llmOAuthScopeKey: res.PinnedOAuthScope,
-		llmExtraHeadersKey: res.PinnedExtraHeaders, llmDeploymentNameKey: res.PinnedDeploymentName,
+		llmExtraHeadersKey: res.PinnedExtraHeaders, llmDeploymentNameKey: res.PinnedDeploymentName, llmApiStyleKey: res.PinnedApiStyle,
 	} {
 		if v != "" {
 			out[k] = v

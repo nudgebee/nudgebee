@@ -72,16 +72,24 @@ class TextLoader:
 
 
 class UnstructuredXMLLoader:
-    """Load an XML file using unstructured library."""
+    """Load an XML file as its text content: inline text stays together, structural elements get their own line."""
 
     def __init__(self, file_path: str):
         self.file_path = file_path
 
     def load(self) -> List[Document]:
-        from unstructured.partition.xml import partition_xml
+        from lxml import etree  # type: ignore[import-untyped]
 
-        elements = partition_xml(filename=self.file_path)
-        text = "\n".join(str(el) for el in elements)
+        parser = etree.XMLParser(resolve_entities=False, no_network=True, recover=True)
+        tree = etree.parse(self.file_path, parser)
+        for el in tree.getroot().iter():
+            children = list(el)
+            has_inline_text = bool((el.text or "").strip()) or any((c.tail or "").strip() for c in children)
+            if children and not has_inline_text:
+                for child in children:
+                    child.tail = (child.tail or "") + "\n"
+        raw_text = etree.tostring(tree, method="text", encoding="unicode")
+        text = "\n".join(line.strip() for line in raw_text.splitlines() if line.strip())
         return [Document(page_content=text, metadata={"source": self.file_path})]
 
 
