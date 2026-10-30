@@ -114,6 +114,14 @@ jobs:
           - { image: nginx,             context: deploy/kubernetes/nudgebee-mirrors/nginx,             tag: stable-alpine3.20-slim-nb1 }
           - { image: trivy,             context: deploy/kubernetes/nudgebee-mirrors/trivy,             tag: 0.76.1-nb1 }
           - { image: kube-bench,        context: deploy/kubernetes/nudgebee-mirrors/kube-bench,        tag: v0.16.0-nb1 }
+          # Debian 12 successors to the debian-11 postgresql / redis mirrors above
+          # (Debian 11 LTS ended Aug 2026). Published ahead of any chart change:
+          # EE switches its charts to these first, then the switch syncs here.
+          # postgres:*-bookworm is the official image, for replacing the bitnami
+          # postgresql subchart; the redis / postgres ones need a Go build stage.
+          - { image: postgresql,        context: deploy/kubernetes/nudgebee-mirrors/postgresql-debian-12, tag: 16.6.0-debian-12-r2-nb1 }
+          - { image: redis,             context: deploy/kubernetes/nudgebee-mirrors/redis-debian-12,      tag: 7.0.15-debian-12-r20-nb1 }
+          - { image: postgres,          context: deploy/kubernetes/nudgebee-mirrors/postgres-bookworm,    tag: 16.15-bookworm-nb1 }
         plat:
           - { arch: amd64, platform: linux/amd64, runner: ubuntu-latest }
           - { arch: arm64, platform: linux/arm64, runner: ubuntu-24.04-arm }
@@ -173,6 +181,9 @@ jobs:
           - { image: nginx,             tag: stable-alpine3.20-slim-nb1 }
           - { image: trivy,             tag: 0.76.1-nb1 }
           - { image: kube-bench,        tag: v0.16.0-nb1 }
+          - { image: postgresql,        tag: 16.6.0-debian-12-r2-nb1 }
+          - { image: redis,             tag: 7.0.15-debian-12-r20-nb1 }
+          - { image: postgres,          tag: 16.15-bookworm-nb1 }
     steps:
       - uses: docker/setup-buildx-action@v3
 
