@@ -83,6 +83,9 @@ export interface NudgebeeSession extends Session {
   hasMultipleTenantAccess?: boolean;
   isSuperAdmin?: boolean;
   isSuperAdminReadonly?: boolean;
+  // Set when the identity provider must also be told about a logout: the
+  // route that returns its logout URL. Read by logout().
+  idpLogoutPath?: string;
   // Dynamic-RBAC custom-role grants ("<module>:<class>"). Read by hasPermission().
   permissions?: string[];
   // Whether custom roles are available (false only in a build without them, or
@@ -1542,6 +1545,9 @@ export const authOptions: NextAuthOptions = {
         };
         nudgeBeeSession.isSuperAdmin = !!token.isSuperAdmin;
         nudgeBeeSession.isSuperAdminReadonly = !!token.isSuperAdminReadonly;
+        if (typeof token.idpLogoutPath === 'string') {
+          nudgeBeeSession.idpLogoutPath = token.idpLogoutPath;
+        }
 
         // EE bundles attach their session-only fields via this hook.
         // No-op in OSS extractions where the EE init-server is stripped.

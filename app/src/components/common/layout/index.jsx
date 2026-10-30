@@ -5,7 +5,7 @@ import { useTenantBranding, toAssistantLabel } from '@hooks/useTenantBranding';
 import Box from '@mui/material/Box';
 import { Button, Container, Typography, Menu, MenuItem, IconButton, Popover } from '@mui/material';
 import { useRouter } from 'next/router';
-import { signOut } from 'next-auth/react';
+import { logout } from '@lib/logout';
 import Head from 'next/head';
 import Link from 'next/link';
 import { renderSlot } from '@lib/slots';
@@ -911,7 +911,7 @@ const PageLayout = ({ children }) => {
     setAnchorElUser(null);
     switch (subMenu) {
       case 'Logout':
-        signOut({ callbackUrl: '/' });
+        logout('/');
         break;
       case 'Switch Tenant':
         setOpenSwitchAccount(true);
