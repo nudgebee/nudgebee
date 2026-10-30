@@ -1,8 +1,6 @@
-import gzip
-
 from flask import request
 import json
-from apis.base.api import BaseAuthApi
+from apis.base.api import BaseAuthApi, read_json_body
 from controllers.event_controller import EventController
 
 
@@ -14,12 +12,7 @@ class Events(BaseAuthApi):
         return EventController
 
     def post(self):
-        if request.headers.get("Content-Encoding") == "gzip":
-            compressed_data = request.get_data()
-            decompressed_data = gzip.decompress(compressed_data)
-            event_data = json.loads(decompressed_data.decode("utf-8"))
-        else:
-            event_data = request.get_json()
+        event_data = read_json_body()
         cloud_account_id = request.cloud_account_id
         tenant = request.tenant
         self.controller.post_async(tenant, cloud_account_id, event_data)
