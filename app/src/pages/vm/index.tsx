@@ -65,7 +65,7 @@ const VM_NAME_LOOKUP_LIMIT = 500;
 
 const VmPage = () => {
   const router = useRouter();
-  const { selectedCluster, setSelectedCluster } = useData();
+  const { selectedCluster, setSelectedCluster, allCluster } = useData();
   const [accounts, setAccounts] = useState<any[]>([]);
   const [loadingAccounts, setLoadingAccounts] = useState(true);
   const [selectedTab, setSelectedTab] = useState<number | null>(null);
@@ -97,8 +97,26 @@ const VmPage = () => {
   // rendering a page that describes nothing, and push it into the shared
   // selection so the dropdown agrees with what is on screen.
   useEffect(() => {
-    if (!router.isReady || !accounts.length || accountId) return;
+    if (!router.isReady || !accounts.length) return;
     const fromQuery = typeof router.query.accountId === 'string' ? router.query.accountId : undefined;
+    // Wait for `allCluster` before deciding what a URL id means -- it loads
+    // independently of (and sometimes slower than) `accounts` above.
+    if (fromQuery && allCluster === null) return;
+    // `?accountId=` may already name a real, non-self-hosted account (direct
+    // link, or ClusterDropdown mid-switch away from /vm) -- route to its own
+    // page instead of swapping in an unrelated VM fleet. Checked before the
+    // `accountId` guard below so it still redirects even if `selectedCluster`
+    // hasn't caught up to the URL yet.
+    const knownOtherAccount = fromQuery
+      ? allCluster?.find((cluster: any) => cluster.value === fromQuery && cluster.cloud_provider !== SELF_HOSTED)
+      : undefined;
+    if (knownOtherAccount) {
+      const target =
+        knownOtherAccount.cloud_provider === 'K8s' ? `/kubernetes/details/${fromQuery}#summary` : `/cloud-account/details/${fromQuery}#summary`;
+      router.replace(target);
+      return;
+    }
+    if (accountId) return;
     const match = accounts.find((account) => account.id === fromQuery) || accounts[0];
     setSelectedCluster({
       label: match.account_name,
@@ -108,7 +126,7 @@ const VmPage = () => {
       account_type: match.account_type || '',
       agent: match.agents?.[0] || {},
     });
-  }, [router.isReady, router.query.accountId, accounts, accountId, setSelectedCluster]);
+  }, [router.isReady, router.query.accountId, accounts, accountId, allCluster, setSelectedCluster, router]);
 
   // Keep ?accountId= in step with the selection so a copied URL reopens on the
   // same fleet. Shallow: the account is read from context, not from the query.

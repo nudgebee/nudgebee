@@ -60,6 +60,7 @@ import { useRouter } from 'next/router';
 import { ECSInstances, ECSSummary } from '@components/cloudaccount/ecs';
 import { useData } from '@context/DataContext';
 import { ds } from '@utils/colors';
+import { isSelfHostedProvider } from '@components/overview/providers';
 
 const optimizeRadioTab = [
   { value: 'right-sizing', label: 'Right Sizing' },
@@ -113,6 +114,21 @@ const CloudAccounts = () => {
       setAccountId(newAccountId);
     }
   }, [router.query.CloudAccountDetails, router.query.accountId]);
+
+  // This route renders cloud-provider accounts only -- redirect a VM/K8s account
+  // to its own page instead of mislabeling its resources as cloud services (#40325).
+  // Checked against the URL's path segment, not `accountId` above (which also
+  // honours `?accountId=`): that query is briefly stale during a ClusterDropdown
+  // switch and would misfire this mid-navigation.
+  useEffect(() => {
+    const pathAccountId = router.query.CloudAccountDetails;
+    if (!pathAccountId || selectedCluster?.value !== pathAccountId) return;
+    if (isSelfHostedProvider(selectedCluster?.cloud_provider)) {
+      router.replace(`/vm?accountId=${pathAccountId}#summary`);
+    } else if (selectedCluster?.cloud_provider === 'K8s') {
+      router.replace(`/kubernetes/details/${pathAccountId}#summary`);
+    }
+  }, [router.query.CloudAccountDetails, selectedCluster, router]);
 
   const filterOptions = useMemo(() => {
     const baseOptions = [
