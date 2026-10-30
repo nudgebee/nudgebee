@@ -376,6 +376,7 @@ func RegisterHandler(
 
 		// —— reader: demultiplex replies from client, handle unsolicited agent messages ——
 		eg.Go(func() error {
+			var dispatch datasourceDispatch
 			for {
 				ws.SetReadDeadline(time.Now().Add(pongWait)) // nolint:errcheck
 				_, raw, err := ws.ReadMessage()
@@ -401,11 +402,15 @@ func RegisterHandler(
 					continue
 				}
 				if msg.Action == "datasource_inventory" {
-					go handleDatasourceInventory(egCtx, store, cacheInvalidator, accountID, agentType, agentID, raw, logger)
+					dispatch.inventory(egCtx, func() {
+						handleDatasourceInventory(egCtx, store, cacheInvalidator, accountID, agentType, agentID, raw, logger)
+					})
 					continue
 				}
 				if msg.Action == "datasource_metadata" {
-					go handleDatasourceMetadata(egCtx, store, cacheInvalidator, accountID, agentType, raw, logger)
+					dispatch.metadata(egCtx, func() {
+						handleDatasourceMetadata(egCtx, store, cacheInvalidator, accountID, agentType, raw, logger)
+					})
 					continue
 				}
 
@@ -726,6 +731,44 @@ func RegisterHandler(
 	}
 }
 
+// datasourceDispatch orders each kind of message and makes metadata wait for
+// earlier inventory, without blocking socket reads or inventory behind retries.
+type datasourceDispatch struct {
+	inventoryDone <-chan struct{}
+	metadataDone  <-chan struct{}
+}
+
+func (d *datasourceDispatch) inventory(ctx context.Context, handle func()) <-chan struct{} {
+	d.inventoryDone = runAfterDatasourceMessages(ctx, handle, d.inventoryDone)
+	return d.inventoryDone
+}
+
+func (d *datasourceDispatch) metadata(ctx context.Context, handle func()) <-chan struct{} {
+	d.metadataDone = runAfterDatasourceMessages(ctx, handle, d.inventoryDone, d.metadataDone)
+	return d.metadataDone
+}
+
+func runAfterDatasourceMessages(ctx context.Context, handle func(), previous ...<-chan struct{}) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for _, pending := range previous {
+			if pending == nil {
+				continue
+			}
+			select {
+			case <-pending:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if ctx.Err() == nil {
+			handle()
+		}
+	}()
+	return done
+}
+
 // handleDatasourceHealthUpdate processes health status messages from proxy agents
 // and persists them to the agent's connection_status JSONB in the database.
 //
@@ -792,26 +835,18 @@ func handleDatasourceInventory(ctx context.Context, store db.AgentStore, invalid
 }
 
 // metadataRetryDelays are the backoffs between retries of a metadata update
-// that raced its datasource_inventory counterpart (see
-// datasourceMetadataRetryLimit's doc comment). Sums to ~7.5s; the dispatch
-// in handleAgentMessage runs datasource_inventory and datasource_metadata
-// as independent goroutines with no ordering guarantee, so inventory's
-// INSERT usually lands within a few hundred ms of metadata's UPDATE losing
-// the race.
+// that arrives before its datasource_inventory counterpart. Sums to ~7.5s.
 var metadataRetryDelays = []time.Duration{500 * time.Millisecond, 1 * time.Second, 2 * time.Second, 4 * time.Second}
 
 // handleDatasourceMetadata processes metadata messages from proxy agents
 // and persists version/connection info to the integrations table.
 //
-// datasource_inventory and datasource_metadata are two independent
-// unsolicited messages with no ordering guarantee (see handleAgentMessage's
-// dispatch below): if metadata arrives before inventory's INSERT has
+// If metadata arrives before inventory's INSERT has
 // created the integrations row, the UPDATE here matches zero rows and the
 // labels are lost — the row that inventory then INSERTs keeps its default
 // '{}' labels until the agent happens to send metadata again on a future
 // reconnect (see #38718). This retries only the keys that raced, narrowing
-// that window; it does not eliminate it; a metadata message that fully
-// stops racing would need the two paths to synchronize by contract.
+// that window. Messages received after inventory wait for it to complete.
 //
 // When any integration's labels actually changed, llm-server's caches for the
 // account are invalidated: labels carry what Nubi reads to resolve a target
