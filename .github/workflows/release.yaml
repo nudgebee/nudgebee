@@ -183,6 +183,11 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
+          # Named context `repo` = the repo root. llm-server and code-analysis copy the
+          # LICENSE and a shared entrypoint script from it (`COPY --from=repo`); images
+          # that don't reference it ignore it.
+          build-contexts: |
+            repo=.
           push: true
           platforms: ${{ matrix.platform }}
           # Stamp the build identity into the app image. app/Dockerfile turns
