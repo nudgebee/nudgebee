@@ -202,7 +202,7 @@ jobs:
           - ghcr.io/nudgebee/postgresql:16.1.0-debian-11-r16-nb1
           - ghcr.io/nudgebee/postgres:16.15-alpine-nb1
           - ghcr.io/nudgebee/redis:7.2.17-alpine
-          - ghcr.io/nudgebee/rabbitmq:3.13.7-debian-12-r5-nb1
+          - ghcr.io/nudgebee/rabbitmq:4.2.9-management-alpine
           - ghcr.io/nudgebee/postgres-exporter:v0.20.1-nb1
           - ghcr.io/nudgebee/nginx:stable-alpine3.20-slim-nb1
           - ghcr.io/nudgebee/kubewatch:2.14.1-nb.2

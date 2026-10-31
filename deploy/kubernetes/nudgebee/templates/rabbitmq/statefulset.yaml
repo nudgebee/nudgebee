@@ -1,0 +1,446 @@
+{{- if .Values.rabbitmq.enabled }}
+{{- $r := include "nudgebee.rabbitmq.values" . | fromYaml }}
+{{- $fullname := include "nudgebee.rabbitmq.fullname" . }}
+{{- $headless := include "nudgebee.rabbitmq.headlessName" . }}
+{{- $podLabels := merge (dict) ($r.podLabels | default (dict)) ($r.commonLabels | default (dict)) }}
+{{- $p := $r.persistence }}
+{{- $podSC := $r.podSecurityContext }}
+{{- $ctrSC := $r.containerSecurityContext }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ include "nudgebee.rabbitmq.namespace" . | quote }}
+  labels:
+    {{- include "nudgebee.rabbitmq.labels" (dict "custom" (merge (dict) ($r.statefulsetLabels | default (dict)) ($r.commonLabels | default (dict))) "root" $) | nindent 4 }}
+  {{- with (merge (dict) ($r.statefulsetAnnotations | default (dict)) ($r.commonAnnotations | default (dict))) }}
+  annotations:
+    {{- include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) | nindent 4 }}
+  {{- end }}
+spec:
+  # Frozen by the Bitnami chart this replaces: serviceName, podManagementPolicy,
+  # selector and volumeClaimTemplates must stay identical (see _rabbitmq.tpl).
+  serviceName: {{ $headless }}
+  podManagementPolicy: {{ $r.podManagementPolicy }}
+  replicas: {{ $r.replicaCount }}
+  {{- with $r.updateStrategy }}
+  updateStrategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "nudgebee.rabbitmq.matchLabels" (dict "custom" $podLabels "root" $) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "nudgebee.rabbitmq.labels" (dict "custom" $podLabels "root" $) | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/rabbitmq/config.yaml") . | sha256sum }}
+        {{- with $r.commonAnnotations }}
+        {{- include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) | nindent 8 }}
+        {{- end }}
+        {{- with $r.podAnnotations }}
+        {{- include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) | nindent 8 }}
+        {{- end }}
+        {{- if and $r.metrics.enabled $r.metrics.podAnnotations }}
+        {{- include "nudgebee.rabbitmq.tpl" (dict "value" $r.metrics.podAnnotations "root" $) | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- $pullSecrets := concat (.Values.global.imagePullSecrets | default (list)) ($r.image.pullSecrets | default (list)) }}
+      {{- with $pullSecrets }}
+      imagePullSecrets:
+        {{- range . | uniq }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      {{- with $r.schedulerName }}
+      schedulerName: {{ . | quote }}
+      {{- end }}
+      serviceAccountName: {{ include "nudgebee.rabbitmq.serviceAccountName" . }}
+      {{- if $r.affinity }}
+      affinity:
+        {{- include "nudgebee.rabbitmq.tpl" (dict "value" $r.affinity "root" $) | nindent 8 }}
+      {{- else }}
+      {{- /* Bitnami's affinity presets (default: soft pod anti-affinity). */}}
+      {{- $selector := include "nudgebee.rabbitmq.matchLabels" (dict "custom" $podLabels "root" $) | fromYaml }}
+      {{- $na := $r.nodeAffinityPreset }}
+      affinity:
+        {{- range $kind, $type := dict "podAffinity" $r.podAffinityPreset "podAntiAffinity" $r.podAntiAffinityPreset }}
+        {{- if eq $type "soft" }}
+        {{ $kind }}:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- toYaml $selector | nindent 20 }}
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        {{- else if eq $type "hard" }}
+        {{ $kind }}:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  {{- toYaml $selector | nindent 18 }}
+              topologyKey: kubernetes.io/hostname
+        {{- end }}
+        {{- end }}
+        {{- if $na.type }}
+        nodeAffinity:
+          {{- if eq $na.type "hard" }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: {{ $na.key }}
+                    operator: In
+                    values:
+                      {{- range $na.values }}
+                      - {{ . | quote }}
+                      {{- end }}
+          {{- else }}
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - preference:
+                matchExpressions:
+                  - key: {{ $na.key }}
+                    operator: In
+                    values:
+                      {{- range $na.values }}
+                      - {{ . | quote }}
+                      {{- end }}
+              weight: 1
+          {{- end }}
+        {{- end }}
+      {{- end }}
+      {{- with $r.hostAliases }}
+      hostAliases:
+        {{- include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) | nindent 8 }}
+      {{- end }}
+      {{- with $r.nodeSelector }}
+      nodeSelector:
+        {{- include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) | nindent 8 }}
+      {{- end }}
+      {{- with $r.tolerations }}
+      tolerations:
+        {{- include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) | nindent 8 }}
+      {{- end }}
+      {{- with $r.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) | nindent 8 }}
+      {{- end }}
+      {{- with $r.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- if $podSC.enabled }}
+      securityContext:
+        {{- toYaml (omit $podSC "enabled") | nindent 8 }}
+      {{- end }}
+      {{- with $r.dnsPolicy }}
+      dnsPolicy: {{ . }}
+      {{- end }}
+      {{- with $r.dnsConfig }}
+      dnsConfig:
+        {{- include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ $r.terminationGracePeriodSeconds }}
+      enableServiceLinks: {{ $r.enableServiceLinks }}
+      initContainers:
+        # The Erlang cookie must be a file only its owner can read; a Secret
+        # volume is group-readable, so copy it into HOME with mode 0600.
+        # Bitnami passed the same Secret key as RABBITMQ_ERL_COOKIE.
+        - name: erlang-cookie
+          image: {{ include "nudgebee.rabbitmq.image" . }}
+          imagePullPolicy: {{ $r.image.pullPolicy }}
+          command:
+            - sh
+            - -ec
+            - |
+              mkdir -p /var/lib/rabbitmq/conf.d
+              cp /cookie-src/cookie /var/lib/rabbitmq/.erlang.cookie
+              chmod 600 /var/lib/rabbitmq/.erlang.cookie
+              {{- if or $r.auth.securePassword (not $r.auth.password) }}
+              # Bitnami's securePassword mode set the default user's password
+              # from the Secret at first boot; the official image reads it here.
+              printf 'default_pass = %s\n' "$(cat /password-src/password)" > /var/lib/rabbitmq/conf.d/20-default-pass.conf
+              {{- end }}
+          {{- if $ctrSC.enabled }}
+          securityContext:
+            {{- toYaml (omit $ctrSC "enabled") | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: home
+              mountPath: /var/lib/rabbitmq
+            - name: cookie-src
+              mountPath: /cookie-src
+              readOnly: true
+            {{- if or $r.auth.securePassword (not $r.auth.password) }}
+            - name: password-src
+              mountPath: /password-src
+              readOnly: true
+            {{- end }}
+        {{- with $r.initContainers }}
+        {{- include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) | nindent 8 }}
+        {{- end }}
+      containers:
+        - name: rabbitmq
+          image: {{ include "nudgebee.rabbitmq.image" . }}
+          imagePullPolicy: {{ $r.image.pullPolicy }}
+          {{- if $ctrSC.enabled }}
+          securityContext:
+            {{- toYaml (omit $ctrSC "enabled") | nindent 12 }}
+          {{- end }}
+          command: ["rabbitmq-server"]
+          {{- if $r.lifecycleHooks }}
+          lifecycle:
+            {{- include "nudgebee.rabbitmq.tpl" (dict "value" $r.lifecycleHooks "root" $) | nindent 12 }}
+          {{- else }}
+          lifecycle:
+            preStop:
+              exec:
+                # Bitnami ran its nodeshutdown.sh (bash) here; the official
+                # Alpine image has no bash and no such script.
+                command: ["sh", "-c", "rabbitmqctl stop_app"]
+          {{- end }}
+          env:
+            - name: MY_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: MY_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: MY_POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # Node name and data directory exactly as Bitnami set them: the data
+            # directory is named after the node, so any other name would boot an
+            # empty broker next to the existing data.
+            {{- if eq "hostname" $r.clustering.addressType }}
+            - name: RABBITMQ_NODENAME
+              value: "rabbit@$(MY_POD_NAME).{{ $headless }}.$(MY_POD_NAMESPACE).svc.{{ $r.clusterDomain }}"
+            {{- else }}
+            - name: RABBITMQ_NODENAME
+              value: "rabbit@$(MY_POD_NAME)"
+            {{- end }}
+            - name: RABBITMQ_USE_LONGNAME
+              value: "true"
+            # The base holds the feature-flags file (<node>-feature_flags) next
+            # to the data directory; it must stay on the PVC where Bitnami kept
+            # it, or every restart forgets which feature flags are enabled.
+            - name: RABBITMQ_MNESIA_BASE
+              value: {{ $p.mountPath | quote }}
+            - name: RABBITMQ_MNESIA_DIR
+              value: "{{ $p.mountPath }}/$(RABBITMQ_NODENAME)"
+            - name: HOME
+              value: /var/lib/rabbitmq
+            - name: RABBITMQ_CONFIG_FILE
+              value: /bitnami/rabbitmq/conf/rabbitmq.conf
+            - name: RABBITMQ_CONFIG_FILES
+              value: /var/lib/rabbitmq/conf.d
+            {{- if or $r.advancedConfiguration $r.advancedConfigurationExistingSecret }}
+            - name: RABBITMQ_ADVANCED_CONFIG_FILE
+              value: /bitnami/rabbitmq/conf/advanced.config
+            {{- end }}
+            - name: RABBITMQ_ENABLED_PLUGINS
+              value: {{ include "nudgebee.rabbitmq.plugins" . | quote }}
+            # RabbitMQ writes the plugins file at boot; /etc/rabbitmq is not
+            # writable for the non-root uid.
+            - name: RABBITMQ_ENABLED_PLUGINS_FILE
+              value: /var/lib/rabbitmq/enabled_plugins
+            {{- with $r.logs }}
+            - name: RABBITMQ_LOGS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with $r.featureFlags }}
+            - name: RABBITMQ_FEATURE_FLAGS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if $r.maxAvailableSchedulers }}
+            - name: RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS
+              value: {{ printf "+S %s:%s" (toString $r.maxAvailableSchedulers) (toString $r.onlineSchedulers) }}
+            {{- end }}
+            - name: RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "nudgebee.rabbitmq.passwordSecret" . }}
+                  key: rabbitmq-password
+            {{- with $r.extraEnvVars }}
+            {{- include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) | nindent 12 }}
+            {{- end }}
+          {{- if or $r.extraEnvVarsCM $r.extraEnvVarsSecret }}
+          envFrom:
+            {{- with $r.extraEnvVarsCM }}
+            - configMapRef:
+                name: {{ include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) }}
+            {{- end }}
+            {{- with $r.extraEnvVarsSecret }}
+            - secretRef:
+                name: {{ include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) }}
+            {{- end }}
+          {{- end }}
+          ports:
+            - name: amqp
+              containerPort: {{ $r.containerPorts.amqp }}
+            - name: dist
+              containerPort: {{ $r.containerPorts.dist }}
+            - name: stats
+              containerPort: {{ $r.containerPorts.manager }}
+            - name: epmd
+              containerPort: {{ $r.containerPorts.epmd }}
+            {{- if $r.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ $r.containerPorts.metrics }}
+            {{- end }}
+            {{- with $r.extraContainerPorts }}
+            {{- include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) | nindent 12 }}
+            {{- end }}
+          {{- /* Same checks as Bitnami: the management API health endpoints when
+                 the management plugin is on (wget, since the official Alpine
+                 image has no curl), else the CLI. Switches, timings and custom
+                 probes are honored. */}}
+          {{- $useCli := or $r.loadDefinition.enabled (not (contains "rabbitmq_management" $r.plugins)) }}
+          {{- if $r.customLivenessProbe }}
+          livenessProbe:
+            {{- include "nudgebee.rabbitmq.tpl" (dict "value" $r.customLivenessProbe "root" $) | nindent 12 }}
+          {{- else if $r.livenessProbe.enabled }}
+          livenessProbe:
+            {{- toYaml (omit $r.livenessProbe "enabled") | nindent 12 }}
+            exec:
+              command:
+                - sh
+                - -ec
+                {{- if $useCli }}
+                - rabbitmq-diagnostics -q ping
+                {{- else }}
+                - {{ printf "wget -q -O /dev/null --header \"Authorization: Basic $(printf '%%s:%%s' %s \"$RABBITMQ_PASSWORD\" | base64 -w0)\" http://127.0.0.1:%v/api/health/checks/virtual-hosts" $r.auth.username $r.containerPorts.manager | quote }}
+                {{- end }}
+          {{- end }}
+          {{- if $r.customReadinessProbe }}
+          readinessProbe:
+            {{- include "nudgebee.rabbitmq.tpl" (dict "value" $r.customReadinessProbe "root" $) | nindent 12 }}
+          {{- else if $r.readinessProbe.enabled }}
+          readinessProbe:
+            {{- toYaml (omit $r.readinessProbe "enabled") | nindent 12 }}
+            exec:
+              command:
+                - sh
+                - -ec
+                {{- if $useCli }}
+                - rabbitmq-diagnostics -q check_running && rabbitmq-diagnostics -q check_local_alarms
+                {{- else }}
+                - {{ printf "wget -q -O /dev/null --header \"Authorization: Basic $(printf '%%s:%%s' %s \"$RABBITMQ_PASSWORD\" | base64 -w0)\" http://127.0.0.1:%v/api/health/checks/local-alarms" $r.auth.username $r.containerPorts.manager | quote }}
+                {{- end }}
+          {{- end }}
+          {{- if $r.customStartupProbe }}
+          startupProbe:
+            {{- include "nudgebee.rabbitmq.tpl" (dict "value" $r.customStartupProbe "root" $) | nindent 12 }}
+          {{- else if $r.startupProbe.enabled }}
+          startupProbe:
+            {{- toYaml (omit $r.startupProbe "enabled") | nindent 12 }}
+            tcpSocket:
+              port: amqp
+          {{- end }}
+          {{- with $r.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: configuration
+              mountPath: /bitnami/rabbitmq/conf
+            - name: data
+              mountPath: {{ $p.mountPath }}
+              {{- with $p.subPath }}
+              subPath: {{ . }}
+              {{- end }}
+            - name: home
+              mountPath: /var/lib/rabbitmq
+            {{- if $r.loadDefinition.enabled }}
+            - name: load-definition-volume
+              mountPath: /app
+              readOnly: true
+            {{- end }}
+            {{- with $r.extraVolumeMounts }}
+            {{- include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) | nindent 12 }}
+            {{- end }}
+        {{- with $r.sidecars }}
+        {{- include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) | nindent 8 }}
+        {{- end }}
+      volumes:
+        - name: configuration
+          projected:
+            sources:
+              {{- if or (empty $r.configurationExistingSecret) $r.advancedConfiguration }}
+              - secret:
+                  name: {{ printf "%s-config" $fullname }}
+              {{- end }}
+              {{- if and $r.advancedConfigurationExistingSecret (not $r.advancedConfiguration) }}
+              - secret:
+                  name: {{ tpl $r.advancedConfigurationExistingSecret $ | quote }}
+              {{- end }}
+              {{- if $r.configurationExistingSecret }}
+              - secret:
+                  name: {{ tpl $r.configurationExistingSecret $ | quote }}
+              {{- end }}
+        - name: home
+          emptyDir: {}
+        - name: cookie-src
+          secret:
+            secretName: {{ include "nudgebee.rabbitmq.erlangSecret" . }}
+            items:
+              - key: rabbitmq-erlang-cookie
+                path: cookie
+        {{- if or $r.auth.securePassword (not $r.auth.password) }}
+        - name: password-src
+          secret:
+            secretName: {{ include "nudgebee.rabbitmq.passwordSecret" . }}
+            items:
+              - key: rabbitmq-password
+                path: password
+        {{- end }}
+        {{- if $r.loadDefinition.enabled }}
+        - name: load-definition-volume
+          secret:
+            secretName: {{ tpl $r.loadDefinition.existingSecret $ | quote }}
+        {{- end }}
+        {{- with $r.extraVolumes }}
+        {{- include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) | nindent 8 }}
+        {{- end }}
+  {{- if not $p.enabled }}
+        - name: data
+          emptyDir: {}
+  {{- else if $p.existingClaim }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ tpl $p.existingClaim $ }}
+  {{- else }}
+  {{- if $r.persistentVolumeClaimRetentionPolicy.enabled }}
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: {{ $r.persistentVolumeClaimRetentionPolicy.whenDeleted }}
+    whenScaled: {{ $r.persistentVolumeClaimRetentionPolicy.whenScaled }}
+  {{- end }}
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: data
+        labels:
+          {{- include "nudgebee.rabbitmq.matchLabels" (dict "custom" (merge (dict) ($p.labels | default (dict)) ($r.commonLabels | default (dict))) "root" $) | nindent 10 }}
+        {{- with $p.annotations }}
+        annotations:
+          {{- include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) | nindent 10 }}
+        {{- end }}
+      spec:
+        accessModes:
+          {{- range $p.accessModes }}
+          - {{ . | quote }}
+          {{- end }}
+        resources:
+          requests:
+            storage: {{ $p.size | quote }}
+        {{- include "nudgebee.rabbitmq.storageClass" (dict "persistence" $p "global" .Values.global) | nindent 8 }}
+        {{- with $p.selector }}
+        selector:
+          {{- include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) | nindent 10 }}
+        {{- end }}
+  {{- end }}
+{{- end }}

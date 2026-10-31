@@ -364,10 +364,19 @@ rabbitmq:
     requests:
       cpu: 50m
       memory: 250Mi
+  # Rendered by this chart (templates/rabbitmq/), not the Bitnami rabbitmq
+  # subchart it replaced: same StatefulSet, Services, Secrets, PVC, node name
+  # and data path, so `helm upgrade` rolls the broker onto this image and keeps
+  # every queue and message. Bitnami 12.6.1's defaults for every key not set
+  # here live in templates/rabbitmq/_rabbitmq.tpl. RabbitMQ 3.13 -> 4.2 is a
+  # one-way upgrade: 3.13 cannot boot on the data afterwards.
+  # See docs/security/rabbitmq-official-image-spec.md.
   image:
     registry: 'ghcr.io/nudgebee'
+    # Mirror of the official rabbitmq:4.2.9-management-alpine image
+    # (nudgebee-mirrors/clone-third-party.sh); 0 Critical/High in Grype.
     repository: rabbitmq
-    tag: 3.13.7-debian-12-r5-nb1
+    tag: 4.2.9-management-alpine
   extraConfiguration: |-
     consumer_timeout = 3600000
   # Ready = the AMQP listener accepts connections (the check the RabbitMQ

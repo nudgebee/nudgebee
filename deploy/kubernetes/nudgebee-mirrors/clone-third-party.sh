@@ -31,6 +31,10 @@ IMAGES=(
   # The umbrella chart's own Redis (templates/redis/, redis.image). The Redis
   # 7.0 Debian image it replaced was built by infra-mirrors-image.yaml.
   "docker.io/library/redis:7.2.17-alpine redis:7.2.17-alpine"
+  # The umbrella chart's own RabbitMQ (templates/rabbitmq/, rabbitmq.image).
+  # The -management variant: the migration Job's rabbitmq scripts use the
+  # management HTTP API.
+  "docker.io/library/rabbitmq:4.2.9-management-alpine rabbitmq:4.2.9-management-alpine"
   # Init container for the service pods (global.initImages.curl).
   "docker.io/curlimages/curl:8.23.0 curl:8.23.0"
   # Consumed by the nudgebee-agent chart (k8s-agent repo), not the chart in this
