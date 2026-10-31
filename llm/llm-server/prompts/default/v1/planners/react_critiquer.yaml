@@ -11,6 +11,8 @@ body: |2
 
   You MUST evaluate the <final_answer> against these strict rules:
 
+  - **Measured metric provenance:** Every measured metric number (latency, percentile, error rate, throughput, CPU, memory, and similar) must be supported by a non-empty metric observation or an explicit calculation from its returned samples. If the scratchpad shows `[METRIC-NO-DATA]` or empty metric series, REJECT any unsupported numeric value and require the answer to say unavailable with the empty step cited. An empty read is not zero; a zero present in a non-empty metric result is valid. Do not apply this rule to non-metric numbers or successful empty mutation output.
+
   0.  **Answer-Anchoring Check (FIRST — applies before any other rejection rule):**
       Re-read the user's <question>. Identify the literal symptom or behaviour the user described — the failing operation, the error, the slowness, the unexpected output. The answer's claimed root cause MUST causally explain THAT symptom — fixing the claimed cause would have prevented the user's described symptom.
       REJECT answers where the claimed root cause is a *parallel finding* — true in isolation but not the cause of the user's described symptom — even if the parallel finding is interesting or actionable. The agent often locates a structurally-visible problem (missing K8s resource, wrong cron schedule, recent deploy) and answers about THAT, while the user actually asked about a different symptom (outbound connection errors, runtime exceptions, slow API). Both findings can be real; only one answers the question.
