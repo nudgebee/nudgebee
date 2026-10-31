@@ -209,6 +209,21 @@ const OPTIONS_SOURCE_FETCHERS: Record<string, FetcherFn> = {
     return [];
   },
 
+  ticket_statuses: async (formValues) => {
+    const integrationId = formValues.integration_id;
+    if (!integrationId) return [];
+    const projectKey = formValues.project_key || '';
+    const meta: any = await apiTickets.getTicketMeta(integrationId, projectKey);
+    const templates = meta?.data?.tickets_get_create_meta?.data || [];
+    const statusField = templates
+      .map((template: any) => template?.fields?.transition_status)
+      .find((field: any) => field);
+    return (statusField?.allowedValues || []).map((value: any) => ({
+      label: value.name || value.value || String(value.id),
+      value: value.value || value.id,
+    }));
+  },
+
   // Kubernetes workload names scoped by account + namespace (optionally kind).
   // Mirrors the cascading fetch in useTaskFormData.ts so multi-select fields
   // like `vertical_rightsize_generate.workload_names` get the same dropdown
