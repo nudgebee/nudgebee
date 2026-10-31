@@ -47,7 +47,8 @@ func promptAccountID(query core.NBAgentRequest, own string) string {
 }
 
 type PrometheusAgent struct {
-	accountId string
+	accountId   string
+	openObserve bool
 }
 
 const PrometheusAgentName = "prometheus"
@@ -61,10 +62,26 @@ func (l PrometheusAgent) GetNameAliases() []string {
 }
 
 func (p PrometheusAgent) GetDescription() string {
+	if p.openObserve {
+		return `OpenObserve metrics expert. Retrieves, analyzes, and visualizes metrics using PromQL.`
+	}
 	return `Prometheus Expert. This tool is "smart" and handles its own resource discovery. Retrieves, analyzes, and visualizes Prometheus metrics by translating natural language questions into PromQL queries. Use this agent directly to monitor, query, troubleshoot, and chart metrics such as memory, CPU, network, and more in Kubernetes and cloud environments without needing separate reconnaissance. Returns metric data, summaries, and visualizations (charts/graphs) for automation, dashboards, or troubleshooting.`
 }
 
 func (l PrometheusAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
+	if l.openObserve {
+		toolName := tools.ToolOpenObserveMetricsExecute
+		return core.NBAgentPrompt{
+			Role:         "OpenObserve metrics investigator",
+			Instructions: []string{"Query OpenObserve metrics with PromQL. Use openobserve_metrics_execute for every metrics query and pass the expression in command. Use range or start_time/end_time for the requested time window. Use the visualization tool only when the user asks for a chart."},
+			Constraints:  []string{"Only use openobserve_metrics_execute to query metrics.", "Do not expose internal queries or tool names in the final answer."},
+			ToolUsage: map[string][]string{
+				toolName:               {"Use this tool to query OpenObserve metrics with a PromQL command and an optional time window."},
+				VisualizationAgentName: {"Use this tool only when the user asks for a chart; provide the metric series returned by openobserve_metrics_execute."},
+			},
+			OutputFormat: "A concise summary of the metric results.",
+		}
+	}
 	instructions := []string{
 		"**Your Primary Goal:** Answer user questions related to prometheus metrics.",
 		"**Your Method:** You MUST use following steps to answer users question",
@@ -326,6 +343,16 @@ func (l PrometheusAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 }
 
 func (p PrometheusAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
+	if p.openObserve {
+		var toolList []toolcore.NBTool
+		if tool, ok := toolcore.GetNBTool(p.accountId, tools.ToolOpenObserveMetricsExecute); ok {
+			toolList = append(toolList, tool)
+		}
+		if visualizationTool, ok := toolcore.GetNBTool(p.accountId, VisualizationAgentName); ok {
+			toolList = append(toolList, visualizationTool)
+		}
+		return toolList
+	}
 	// Resolved once rather than per tool: the lookup is an uncached call to the
 	// api-server. This agent is the fallback for every backend without a dedicated
 	// one, so the provider is only "prometheus" when the account actually uses it.

@@ -31,6 +31,8 @@ func newMetricsAgent(ctx *security.RequestContext, accountId string, provider se
 	var primaryAgent core.NBAgent
 
 	switch strings.ToLower(strings.TrimSpace(provider.Provider)) {
+	case "openobserve":
+		primaryAgent = &PrometheusAgent{accountId: accountId, openObserve: true}
 	case "datadog":
 		if metricsAgent, ok := core.GetNBAgent(ctx, "datadog_metrics", accountId, ""); ok {
 			primaryAgent = metricsAgent
@@ -91,8 +93,11 @@ func (f *metricsAgent) GetNameAliases() []string {
 func (f *metricsAgent) AcceptsExecutionTarget() {}
 
 func (f *metricsAgent) GetDescription() string {
+	if agent, ok := f.agent.(*PrometheusAgent); ok && agent.openObserve {
+		return agent.GetDescription()
+	}
 
-	return `Retrieves, analyzes, and visualizes metrics from various sources (Kubernetes, Prometheus, Datadog) by translating natural language questions into metrics queries. Use this for: CPU/memory/network utilization, performance trends, SLO/SLA data, threshold breaches, custom metric queries, and generating charts or graphs. Do NOT use for: log analysis (use ` + "`" + `logs` + "`" + ` agent instead), Kubernetes resource state inspection (use ` + "`" + `kubectl` + "`" + ` or ` + "`" + `kubectl_execute` + "`" + `), or querying Kubernetes events (use ` + "`" + `events` + "`" + ` agent).`
+	return `Retrieves, analyzes, and visualizes metrics from various sources (Kubernetes, Prometheus, Datadog, OpenObserve) by translating natural language questions into metrics queries. Use this for: CPU/memory/network utilization, performance trends, SLO/SLA data, threshold breaches, custom metric queries, and generating charts or graphs. Do NOT use for: log analysis (use ` + "`" + `logs` + "`" + ` agent instead), Kubernetes resource state inspection (use ` + "`" + `kubectl` + "`" + ` or ` + "`" + `kubectl_execute` + "`" + `), or querying Kubernetes events (use ` + "`" + `events` + "`" + ` agent).`
 }
 
 func (f *metricsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
@@ -418,7 +423,7 @@ func (m MetricsAgentTool) GetType() toolcore.NBToolType {
 }
 
 func (m MetricsAgentTool) Description() string {
-	return `Retrieves, analyzes, and visualizes metrics from various sources (Kubernetes, Prometheus, Datadog) by translating natural language questions into metrics queries. Use this for: CPU/memory/network utilization, performance trends, SLO/SLA data, threshold breaches, custom metric queries, and generating charts or graphs. Do NOT use for: log analysis (use ` + "`" + `logs` + "`" + ` agent instead), Kubernetes resource state inspection (use ` + "`" + `kubectl` + "`" + ` or ` + "`" + `kubectl_execute` + "`" + `), or querying Kubernetes events (use ` + "`" + `events` + "`" + ` agent). Returns metrics data, summaries, and visualizations based on your query.
+	return `Retrieves, analyzes, and visualizes metrics from various sources (Kubernetes, Prometheus, Datadog, OpenObserve) by translating natural language questions into metrics queries. Use this for: CPU/memory/network utilization, performance trends, SLO/SLA data, threshold breaches, custom metric queries, and generating charts or graphs. Do NOT use for: log analysis (use ` + "`" + `logs` + "`" + ` agent instead), Kubernetes resource state inspection (use ` + "`" + `kubectl` + "`" + ` or ` + "`" + `kubectl_execute` + "`" + `), or querying Kubernetes events (use ` + "`" + `events` + "`" + ` agent). Returns metrics data, summaries, and visualizations based on your query.
 
 	Usage:
 
