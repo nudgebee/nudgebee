@@ -28,7 +28,7 @@ This is the fastest way to run Nudgebee from source. **Infra in containers, back
 
 ### Prerequisites
 
-- [Docker](https://www.docker.com/products/docker-desktop/) (with `docker compose`) **or** [Podman Desktop](https://podman-desktop.io/) (with `podman-compose`)
+- [Docker](https://www.docker.com/products/docker-desktop/) with Docker Compose v2.24+ (the compose file uses optional `env_file` entries), or [Podman Desktop](https://podman-desktop.io/) with a `podman-compose` release that supports `env_file.required`
 - [Go 1.26+](https://go.dev/dl/)
 - [Node 25+ and npm](https://nodejs.org/en/download)
 
