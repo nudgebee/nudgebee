@@ -14,9 +14,9 @@ import {
 // The tab's only write is a per-row delete, which is irreversible and would take a
 // shared dev tenant's session memory with it, so nothing here clicks it — the cases
 // below cover the read surface: the five-row cap, the type filter and the inline
-// working-memory expansion. That leaves the suite with no fixtures to clean up and
-// safe to run twice, but it does depend on the signed-in user having recent Nubi
-// conversations; requireSessionRows() says so by name when they are missing.
+// working-memory expansion. When the signed-in user has fewer than two sessions, the tab
+// helper asks Nubi a short question or two first (ensureSessions), so the suite is safe to run
+// on an environment nobody has chatted on; requireSessionRows() stays as the backstop.
 // The type filter is client-side, so switching it cannot change the underlying rows
 // mid-test — only a remount refetches.
 

@@ -19,8 +19,9 @@ import {
 // here confirms a delete. The two delete cases open the confirmation, assert what it says,
 // and Cancel.
 //
-// That leaves the suite with no fixtures to create and nothing to clean up, so every case
-// is order-free and safe to run twice, which matters because CI sets retries: 1. The search
+// The one fixture is a single team-fact row, added through ensureCollectiveSeed only when the
+// tenant has none (a chat cannot be relied on to produce one), and it is never deleted. So
+// every case is order-free and safe to run twice, which matters because CI sets retries: 1. The search
 // cases type into the box and every case opens the tab fresh, so no case inherits a filter
 // from the one before it.
 test.describe("Nubi Collective Tab", () => {
