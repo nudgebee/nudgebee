@@ -341,10 +341,7 @@ type githubProjectOptionsQuery struct {
 	Errors []githubGraphQLError `json:"errors"`
 	Data struct {
 		Node struct {
-			Options struct {
-				Nodes    []githubProjectStatusOption `json:"nodes"`
-				PageInfo githubPageInfo `json:"pageInfo"`
-			} `json:"options"`
+			Options []githubProjectStatusOption `json:"options"`
 		} `json:"node"`
 	} `json:"data"`
 }
@@ -495,13 +492,10 @@ const githubProjectFieldsQuery = `query($id: ID!, $cursor: String) {
 	}
 }`
 
-const githubProjectOptionsQuery = `query($id: ID!, $cursor: String) {
+const githubProjectOptionsQuery = `query($id: ID!) {
 	node(id: $id) {
 		... on ProjectV2SingleSelectField {
-			options(first: 100, after: $cursor) {
-				nodes { id name }
-				pageInfo { hasNextPage endCursor }
-			}
+			options { id name }
 		}
 	}
 }`
@@ -557,6 +551,9 @@ func pageCursor(pageInfo githubPageInfo, context string, page int) (string, bool
 
 func isProjectsPermissionMessage(message string) bool {
 	message = strings.ToLower(message)
+	if strings.Contains(message, "rate limit") {
+		return false
+	}
 	return strings.Contains(message, "resource not accessible") ||
 		strings.Contains(message, "insufficient permission") ||
 		strings.Contains(message, "does not have access") ||
@@ -579,10 +576,15 @@ func githubGraphQLErrors(errors []githubGraphQLError) error {
 		return nil
 	}
 	err := fmt.Errorf("GitHub Projects status lookup failed: %s", errors[0].Message)
+	allPermissionErrors := true
 	for _, graphqlErr := range errors {
-		if isProjectsPermissionMessage(graphqlErr.Message) {
-			return &githubProjectsPermissionError{err: err}
+		if !isProjectsPermissionMessage(graphqlErr.Message) {
+			allPermissionErrors = false
+			break
 		}
+	}
+	if allPermissionErrors {
+		return &githubProjectsPermissionError{err: err}
 	}
 	return err
 }
@@ -611,26 +613,14 @@ func fetchProjectFields(ctx *gin.Context, client *github.Client, projectID strin
 }
 
 func fetchFieldOptions(ctx *gin.Context, client *github.Client, fieldID string) ([]githubProjectStatusOption, error) {
-	var options []githubProjectStatusOption
-	var cursor *string
-	for page := 1; ; page++ {
-		var response githubProjectOptionsQuery
-		if err := githubGraphQLRequest(ctx, client, githubProjectOptionsQuery, map[string]interface{}{"id": fieldID, "cursor": cursor}, &response); err != nil {
-			return nil, err
-		}
-		if err := githubGraphQLErrors(response.Errors); err != nil {
-			return nil, err
-		}
-		options = append(options, response.Data.Node.Options.Nodes...)
-		next, more, err := pageCursor(response.Data.Node.Options.PageInfo, "status options", page)
-		if err != nil {
-			return nil, err
-		}
-		if !more {
-			return options, nil
-		}
-		cursor = &next
+	var response githubProjectOptionsQuery
+	if err := githubGraphQLRequest(ctx, client, githubProjectOptionsQuery, map[string]interface{}{"id": fieldID}, &response); err != nil {
+		return nil, err
 	}
+	if err := githubGraphQLErrors(response.Errors); err != nil {
+		return nil, err
+	}
+	return response.Data.Node.Options, nil
 }
 
 func fetchProjects(ctx *gin.Context, client *github.Client, owner, repo string) ([]githubProject, error) {
@@ -661,9 +651,12 @@ func projectStatusValues(ctx *gin.Context, client *github.Client, owner, repo st
 	if err != nil {
 		return nil, err
 	}
-	values := []interface{}{
-		map[string]interface{}{"id": "open", "name": "open", "value": "open"},
-		map[string]interface{}{"id": "closed", "name": "closed", "value": "closed"},
+	type transitionOption struct {
+		id, name, value string
+	}
+	options := []transitionOption{
+		{id: "open", name: "open", value: "open"},
+		{id: "closed", name: "closed", value: "closed"},
 	}
 	for _, project := range projects {
 		fields, err := fetchProjectFields(ctx, client, project.ID)
@@ -683,11 +676,27 @@ func projectStatusValues(ctx *gin.Context, client *github.Client, owner, repo st
 					continue
 				}
 				value := fmt.Sprintf("github-project:%s:%s:%s", project.ID, field.ID, option.ID)
-				values = append(values, map[string]interface{}{
-					"id": option.ID, "name": fmt.Sprintf("Project #%d %s: %s", project.Number, project.Title, option.Name), "value": value,
+				options = append(options, transitionOption{
+					id: option.ID, name: fmt.Sprintf("Project #%d %s: %s", project.Number, project.Title, option.Name), value: value,
 				})
 			}
 		}
+	}
+	labelCounts := make(map[string]int, len(options))
+	for _, option := range options {
+		labelCounts[option.name]++
+	}
+	values := make([]interface{}, 0, len(options))
+	for _, option := range options {
+		name := option.name
+		if labelCounts[name] > 1 {
+			idSuffix := option.id
+			if len(idSuffix) > 8 {
+				idSuffix = idSuffix[len(idSuffix)-8:]
+			}
+			name = fmt.Sprintf("%s (%s)", name, idSuffix)
+		}
+		values = append(values, map[string]interface{}{"id": option.id, "name": name, "value": option.value})
 	}
 	return values, nil
 }
@@ -706,13 +715,11 @@ func FetchGitHubProjectTransitionMeta(ctx *gin.Context, configuration models.Tic
 		var permissionErr *githubProjectsPermissionError
 		if errors.As(err, &permissionErr) {
 			return map[string]interface{}{
-				"data": map[string]interface{}{
-					"options": []interface{}{
-						map[string]interface{}{"id": "open", "name": "open", "value": "open"},
-						map[string]interface{}{"id": "closed", "name": "closed", "value": "closed"},
-					},
-					"warning": "GitHub Projects status choices are unavailable because this token is not authorized to read Projects; open/closed remain available.",
+				"data": []interface{}{
+					map[string]interface{}{"id": "open", "name": "open", "value": "open"},
+					map[string]interface{}{"id": "closed", "name": "closed", "value": "closed"},
 				},
+				"warning": "GitHub Projects status choices are unavailable because this token is not authorized to read Projects; open/closed remain available.",
 			}, nil
 		}
 		return nil, err

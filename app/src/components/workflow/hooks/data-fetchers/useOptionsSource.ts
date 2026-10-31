@@ -216,11 +216,11 @@ const OPTIONS_SOURCE_FETCHERS: Record<string, FetcherFn> = {
     const meta: any = await apiTickets.getTicketTransitionMeta(integrationId, projectKey);
     const transitionMeta = meta?.data?.tickets_get_transition_meta;
     const rawOptions = transitionMeta?.data;
-    const warning = rawOptions?.warning;
+    const warning = transitionMeta?.warning;
     if (warning) {
       snackbar.warning(warning);
     }
-    const options = Array.isArray(rawOptions) ? rawOptions : rawOptions?.options || [];
+    const options = Array.isArray(rawOptions) ? rawOptions : [];
     return options.map((value: any) => ({
       label: value.name || value.value || String(value.id),
       value: value.value || value.id,

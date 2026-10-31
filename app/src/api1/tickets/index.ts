@@ -168,6 +168,7 @@ const GET_TRANSITION_META = `
 query GetTicketTransitionMeta($integration_id: String!, $project_key: String!) {
   tickets_get_transition_meta(integration_id: $integration_id, project_key: $project_key) {
     data
+    warning
   }
 }
 `;
