@@ -3,9 +3,9 @@ global:
     registry: 'ghcr.io/nudgebee'
   imagePullSecrets: []
   initImages:
-    # -nb2 rebuilds gosu on Go 1.26.5 (clears 1C/14H Go-stdlib CVEs); fully clean.
-    postgres: 'ghcr.io/nudgebee/postgres:16.10-alpine-nb2'
-    curl: 'ghcr.io/nudgebee/curl:8.10.1'
+    # -nb1 rebuilds gosu on a patched Go (clears 1C/14H Go-stdlib CVEs); fully clean.
+    postgres: 'ghcr.io/nudgebee/postgres:16.15-alpine-nb1'
+    curl: 'ghcr.io/nudgebee/curl:8.23.0'
   # `helm test` connection pods only (each service chart's
   # templates/tests/test-connection.yaml). A full ref, like initImages above,
   # rather than a repository composed onto global.image.registry: this is a
@@ -589,7 +589,7 @@ nudgebee-qdrant-server:
     # ghcr clone of docker.io/qdrant/qdrant — avoids Docker Hub rate limits.
     # Copied via deploy/kubernetes/nudgebee-mirrors/clone-third-party.sh (crane).
     repository: ghcr.io/nudgebee/qdrant
-    tag: 'v1.19.0'
+    tag: 'v1.19.2'
 temporal:
   enabled: true
   fullnameOverride: temporal
@@ -615,7 +615,7 @@ temporal:
   admintools:
     image:
       repository: ghcr.io/nudgebee/temporal-admin-tools
-      tag: '1.31.2'
+      tag: '1.31.4'
     # Disabled: the admintools Deployment is only a standing shell with the
     # temporal/tctl CLI for operators to exec into — no nudgebee component uses
     # it (workflow-server talks to temporal-frontend:7233 via SDK). Schema
@@ -627,7 +627,7 @@ temporal:
   shims:
     # Disabled: the chart's dockerize / temporal-elasticsearch-tool shims exist
     # only for Temporal 1.29 images ("Set to false if using Temporal 1.30 or
-    # higher" per the subchart values); we run 1.31.2, and with elasticsearch
+    # higher" per the subchart values); we run 1.31.4, and with elasticsearch
     # disabled nothing mounts them. Keeping them enabled also breaks upgrades
     # from chart 1.3.0: with schema.useHelmHooks=true the shims ConfigMap was
     # created as a pre-install/pre-upgrade hook (hooks carry no Helm ownership
@@ -656,7 +656,7 @@ temporal:
   server:
     image:
       repository: ghcr.io/nudgebee/temporal-server
-      tag: '1.31.2'
+      tag: '1.31.4'
     enabled: true
     replicaCount: 1
     # Small-tier resources. Upstream ships no resources for any temporal role, so

@@ -70,9 +70,9 @@ dependencies = [
     # transformers, unstructured->pypdf, fastapi->starlette). Pinned here to force
     # the patched versions. setuptools>=83 clears CVE-2026-59890 (old <81 cap no longer needed).
     "PyJWT>=2.15.0",
-    "pyasn1>=0.6.3",
+    "pyasn1>=0.6.5",
     "onnx>=1.22.0",
-    "pypdf>=6.21.2",
+    "pypdf>=6.21.4",
     "starlette>=1.3.1",
     "setuptools>=83",
 
@@ -223,7 +223,7 @@ constraint-dependencies = [
     "psutil==7.2.2",
     "psycopg2-binary==2.9.12",
     "py-cpuinfo==9.0.0",
-    "pyasn1==0.6.4",
+    "pyasn1==0.6.5",
     "pyasn1-modules==0.4.2",
     "pycodestyle==2.11.1",
     "pycparser==3.0",
@@ -232,7 +232,7 @@ constraint-dependencies = [
     "pyflakes==3.1.0",
     "pygments==2.20.0",
     "pyjwt==2.15.0",
-    "pypdf==6.21.2",
+    "pypdf==6.21.4",
     "pypdfium2==5.11.0",
     "pysnow==0.7.17",
     "pytest==9.1.1",

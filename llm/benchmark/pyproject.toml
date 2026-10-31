@@ -41,7 +41,7 @@ dependencies = [
     "langchain-google-vertexai==3.2.3",
     "langchain-ollama==1.1.0",
     "langchain-openai==1.2.1",
-    "langgraph-sdk==0.4.4",
+    "langgraph-sdk==0.4.6",
     "nest-asyncio==1.6.0",
     "opentelemetry-api==1.45.1",
     "opentelemetry-exporter-otlp==1.45.1",

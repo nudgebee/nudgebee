@@ -119,7 +119,7 @@ services:
       - redis_data:/data
 
   qdrant:
-    image: ghcr.io/nudgebee/qdrant:v1.19.0
+    image: ghcr.io/nudgebee/qdrant:v1.19.2
     networks: [nudgebee]
     restart: unless-stopped
     ports:
