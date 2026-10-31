@@ -1,6 +1,6 @@
 # Container Image Hardening — Driver
 
-**Goal:** `0 CRITICAL / 0 HIGH / 0 MEDIUM` (Trivy) across **every first-party image we publish**, and keep it there.
+**Goal:** `0 CRITICAL / 0 HIGH / 0 MEDIUM` (Grype; iterations 0–8 below were measured with Trivy) across **every first-party image we publish**, and keep it there.
 
 Scope = images this org **builds and publishes**, across three repos:
 
@@ -171,6 +171,7 @@ measured every run.
 | 2026-10-31 | 9 | Grype C+H (default settings, linux/amd64): replace the `alpine/k8s` toolbox clone with a kubectl-only `kubectl:1.32.13-nb1` mirror (same kubectl source tag, patched Go, x/net, x/text, spdystream); postgres mirror 16.10 to 16.15; Temporal server and admin-tools 1.31.2 to 1.31.4; Qdrant v1.19.0 to v1.19.2 | hook image 480 to 0, postgres 26 to 0, temporal-server 54 to 15, admin-tools 61 to 22, qdrant 151 to 55 (54 of 55 have no upstream fix) |
 | 2026-10-31 | 10 | Grype C+H: ml-base Python 3.11.8 to 3.11.18 (conda-forge); code-analysis-agent builds `gh` v2.103.3 from source on Go 1.27.3 instead of Alpine `github-cli` | ml-k8s-server 25 to 0, rag-server 28 to 0, code-analysis-agent 131 to 63 (linux/arm64) |
 | 2026-10-31 | 11 | Grype C+H (linux/arm64, DB of 2026-10-31): rag-server `pypdf` 6.21.4 and `pyasn1` 0.6.5; code-analysis-agent moves to Alpine 3.23 (Node 22 to 24, curl 8.23.0, aws-cli 2.32.7) and replaces the apk npm with npm 11.21.1 | rag-server 11 to 0, code-analysis-agent 74 (linux/amd64 edge) to 14 |
-| 2026-10-31 | 12 | Publish Debian 12 successors to the debian-11 bitnami mirrors (Debian 11 LTS ended Aug 2026; its NOFIX floor can't be patched): `postgresql:16.6.0-debian-12-r2-nb1`, `redis:7.0.15-debian-12-r20-nb1` (wait-for-port rebuilt on Go 1.26.10), and official `postgres:16.15-bookworm-nb1` (gosu 1.19 rebuilt) for replacing the bitnami postgresql subchart. Images only — charts still pin the debian-11 tags; EE switches first, then syncs | unchanged until charts switch |
+| 2026-10-31 | 12 | Grype C+H: Temporal 1.31.4 Go binaries rebuilt from the same tags on Go 1.26.10 with patched x/net and go-jose (temporal CLI 1.9.1 also patched echo and markdown); charts move to `1.31.4-nb1` | temporal-server 27 to 0, temporal-admin-tools 34 to 0 (published, linux/amd64) |
+| 2026-10-31 | 13 | Publish Debian 12 successors to the debian-11 bitnami mirrors (Debian 11 LTS ended Aug 2026; its NOFIX floor can't be patched): `postgresql:16.6.0-debian-12-r2-nb1`, `redis:7.0.15-debian-12-r20-nb1` (wait-for-port rebuilt on Go 1.26.10), and official `postgres:16.15-bookworm-nb1` (gosu 1.19 rebuilt) for replacing the bitnami postgresql subchart. Images only — charts still pin the debian-11 tags; EE switches first, then syncs | unchanged until charts switch |
 
-_Update this table after every merged iteration PR. Re-run the scan workflow (or `trivy image --ignore-unfixed --severity CRITICAL,HIGH,MEDIUM <image>`) to get the new numbers._
+_Update this table after every merged iteration PR. Re-run the scan workflow (or `grype --only-fixed <image>`) to get the new numbers._

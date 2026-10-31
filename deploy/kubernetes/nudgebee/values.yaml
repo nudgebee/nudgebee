@@ -615,7 +615,7 @@ temporal:
   admintools:
     image:
       repository: ghcr.io/nudgebee/temporal-admin-tools
-      tag: '1.31.4'
+      tag: '1.31.4-nb1'
     # Disabled: the admintools Deployment is only a standing shell with the
     # temporal/tctl CLI for operators to exec into — no nudgebee component uses
     # it (workflow-server talks to temporal-frontend:7233 via SDK). Schema
@@ -656,7 +656,7 @@ temporal:
   server:
     image:
       repository: ghcr.io/nudgebee/temporal-server
-      tag: '1.31.4'
+      tag: '1.31.4-nb1'
     enabled: true
     replicaCount: 1
     # Small-tier resources. Upstream ships no resources for any temporal role, so
