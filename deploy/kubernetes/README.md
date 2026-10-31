@@ -54,7 +54,9 @@ The chart's `$knownKeys` validator (in `nudgebee/templates/secrets-nudgebee.yaml
 | `nudgebee_secret.NUDGEBEE_ENCRYPTION_KEY`   | 32-byte hex (`openssl rand -hex 32`). Encrypts integration credentials at rest. **Losing it makes previously encrypted DB rows unreadable** — generate once, store in your secret manager. The chart `fail`s if empty or left as `__REPLACE__`. |
 | `nudgebee_secret.BASE_URL`                  | Public URL the app is reachable at (e.g. `https://nudgebee.acme.io`). Used as the OAuth redirect base and in email links. |
 
-`NEXTAUTH_SECRET` and `ACTION_API_SERVER_TOKEN` are **auto-generated** by the chart on fresh installs (lookup-or-generate pattern) and reused on upgrade — you don't need to set them. GitOps users who do offline render (Argo CD, Flux) must set them explicitly because `lookup` returns empty.
+`NEXTAUTH_SECRET`, `ACTION_API_SERVER_TOKEN`, `CLOUD_COLLECTOR_SERVER_TOKEN`, and `LLM_SERVER_TOKEN` are **auto-generated** by the chart on fresh installs (lookup-or-generate pattern) and reused on upgrade — you don't need to set them for a chart-managed Secret. The service tokens are distinct per destination. GitOps users who do offline render (Argo CD, Flux) must set these values explicitly or use an externally managed Secret that contains them, because `lookup` returns empty during offline rendering.
+
+If you supply the shared `nudgebee` Secret yourself, include non-empty `ACTION_API_SERVER_TOKEN`, `CLOUD_COLLECTOR_SERVER_TOKEN`, and `LLM_SERVER_TOKEN` values. Each caller and destination reads the matching value from that Secret; a missing value makes private routes return 503.
 
 ### Often-set
 
@@ -224,7 +226,7 @@ Before flipping production traffic onto the install:
 - [ ] **Observability sidecars** (Datadog / NewRelic agents / Prometheus exporters) wired in if you run them — Nudgebee already exposes Prometheus metrics on each service's `/metrics`.
 - [ ] **HPA / KEDA** (optional) — bundled charts don't add autoscalers by default.
 - [ ] **Image registry mirrored**, if you don't want to fetch from `ghcr.io/nudgebee` at deploy time.
-- [ ] **For GitOps (Argo CD / Flux):** explicitly set `NEXTAUTH_SECRET` and `ACTION_API_SERVER_TOKEN` — offline rendering can't use the chart's lookup-or-generate fallback.
+- [ ] **For GitOps (Argo CD / Flux):** explicitly set `NEXTAUTH_SECRET`, `ACTION_API_SERVER_TOKEN`, `CLOUD_COLLECTOR_SERVER_TOKEN`, and `LLM_SERVER_TOKEN`, or reference an external shared Secret containing them — offline rendering can't use the chart's lookup-or-generate fallback.
 
 ## Upgrade flow
 

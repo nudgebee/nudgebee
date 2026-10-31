@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -62,26 +63,20 @@ func authHandlerMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		authHeader := c.Request.Header.Get(config.Config.CloudCollectorServerTokenHeader)
+		if config.Config.CloudCollectorServerToken == "" {
+			logger.Error("CLOUD_COLLECTOR_SERVER_TOKEN is not configured", "path", c.Request.URL.Path, "method", c.Request.Method)
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"message": "service authentication is not configured"})
+			return
+		}
 
-		if authHeader == config.Config.CloudCollectorServerToken {
+		authHeader := c.Request.Header.Get(config.Config.CloudCollectorServerTokenHeader)
+		if subtle.ConstantTimeCompare([]byte(authHeader), []byte(config.Config.CloudCollectorServerToken)) == 1 {
 			c.Set(CTX_IS_PUBLIC, false)
 			c.Next()
 			return
-		} else {
-			maskedAuth := ""
-			if authHeader != "" {
-				if len(authHeader) > 8 {
-					maskedAuth = authHeader[:4] + "***"
-				} else {
-					maskedAuth = "***"
-				}
-			}
-			logger.Error("Unauthorized request", "path", c.Request.URL.Path, "method", c.Request.Method, "authHeader", maskedAuth)
-			c.Writer.WriteHeader(401)
-			c.Abort()
-			return
 		}
+		logger.Error("Unauthorized request", "path", c.Request.URL.Path, "method", c.Request.Method)
+		c.AbortWithStatus(http.StatusUnauthorized)
 	}
 }
 

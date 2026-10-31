@@ -60,7 +60,7 @@ serves `/request`, not `/health`, so a 404 there means it is alive.
 
 The `.env` file at the repository root configures local development. See `.env.example` for reference.
 
-Required environment variables: `PORT` (default 9999), `LOG_LEVEL` (use `debug`), `SERVICE_API_SERVER_URL`, `RELAY_SERVER_ENDPOINT`, `RAG_SERVER_URL`, `CLOUD_COLLECTOR_SERVER_URL`, `LLM_SERVER_DB_URL` (PostgreSQL), `ACTION_API_SERVER_TOKEN`, `RELAY_SERVER_SECRET_KEY`, `LLM_PROVIDER` (bedrock/azure/openai/googleai), `LLM_MODEL_NAME`, `LLM_PROVIDER_API_KEY`.
+Required environment variables: `PORT` (default 9999), `LOG_LEVEL` (use `debug`), `SERVICE_API_SERVER_URL`, `RELAY_SERVER_ENDPOINT`, `RAG_SERVER_URL`, `CLOUD_COLLECTOR_SERVER_URL`, `LLM_SERVER_DB_URL` (PostgreSQL), `LLM_SERVER_TOKEN`, `ACTION_API_SERVER_TOKEN`, `RELAY_SERVER_SECRET_KEY`, `LLM_PROVIDER` (bedrock/azure/openai/googleai), `LLM_MODEL_NAME`, `LLM_PROVIDER_API_KEY`.
 
 ### Testing API Endpoints Locally
 

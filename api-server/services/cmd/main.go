@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -61,21 +62,20 @@ func authHandlerMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		authHeader := c.Request.Header.Get(config.Config.ServiceApiServerTokenHeader)
+		if config.Config.ServiceApiServerToken == "" {
+			logger.Error("ACTION_API_SERVER_TOKEN is not configured", "path", c.Request.URL.Path, "method", c.Request.Method)
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"message": "service authentication is not configured"})
+			return
+		}
 
-		if authHeader == config.Config.ServiceApiServerToken {
+		authHeader := c.Request.Header.Get(config.Config.ServiceApiServerTokenHeader)
+		if subtle.ConstantTimeCompare([]byte(authHeader), []byte(config.Config.ServiceApiServerToken)) == 1 {
 			c.Set(CTX_IS_PUBLIC, false)
 			c.Next()
 			return
-		} else {
-			maskedAuth := "***"
-			if len(authHeader) > 4 {
-				maskedAuth = authHeader[:4] + "***"
-			}
-			logger.Error("Unauthorized request", "path", c.Request.URL.Path, "method", c.Request.Method, "authHeader", maskedAuth)
-			c.AbortWithStatus(401)
-			return
 		}
+		logger.Error("Unauthorized request", "path", c.Request.URL.Path, "method", c.Request.Method)
+		c.AbortWithStatus(http.StatusUnauthorized)
 	}
 }
 
@@ -104,17 +104,13 @@ func cleanup() {
 func main() {
 	slog.SetDefault(logger)
 
-	// Heads-up when the action token isn't configured. The auth middleware
-	// gates on `headerValue == ServiceApiServerToken`, so an empty config
-	// matches any request without the header — every endpoint is effectively
-	// unauthenticated. Not blocked here for backward-compat; operators
-	// should set the token in any non-throwaway deployment. Generate with:
+	// Private endpoints return 503 until the action token is configured.
+	// Generate with:
 	//   openssl rand -hex 32
-	// Set the same value as ACTION_API_SERVER_TOKEN in app/.env and the
-	// chart's nudgebee_secret.
+	// Set the same value as ACTION_API_SERVER_TOKEN for every caller.
 	if config.Config.ServiceApiServerToken == "" {
-		slog.Warn("ACTION_API_SERVER_TOKEN is empty — auth middleware will accept any request. " +
-			"Set ACTION_API_SERVER_TOKEN (and the matching value in app/.env / chart nudgebee_secret) for any non-throwaway deployment. " +
+		slog.Error("ACTION_API_SERVER_TOKEN is empty — private endpoints will return 503. " +
+			"Set the same ACTION_API_SERVER_TOKEN for services-server and its callers. " +
 			"Generate with: openssl rand -hex 32.")
 	}
 
