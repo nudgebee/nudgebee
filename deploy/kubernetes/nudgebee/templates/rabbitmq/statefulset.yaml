@@ -257,7 +257,7 @@ spec:
             {{- end }}
             {{- if $r.maxAvailableSchedulers }}
             - name: RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS
-              value: {{ printf "+S %s:%s" (toString $r.maxAvailableSchedulers) (toString $r.onlineSchedulers) }}
+              value: "+S {{ $r.maxAvailableSchedulers }}{{ if $r.onlineSchedulers }}:{{ $r.onlineSchedulers }}{{ end }}"
             {{- end }}
             - name: RABBITMQ_PASSWORD
               valueFrom:
@@ -298,7 +298,7 @@ spec:
                  the management plugin is on (wget, since the official Alpine
                  image has no curl), else the CLI. Switches, timings and custom
                  probes are honored. */}}
-          {{- $useCli := or $r.loadDefinition.enabled (not (contains "rabbitmq_management" $r.plugins)) }}
+          {{- $useCli := or $r.loadDefinition.enabled (not (has "rabbitmq_management" (splitList "," (include "nudgebee.rabbitmq.plugins" .)))) }}
           {{- if $r.customLivenessProbe }}
           livenessProbe:
             {{- include "nudgebee.rabbitmq.tpl" (dict "value" $r.customLivenessProbe "root" $) | nindent 12 }}
@@ -312,7 +312,7 @@ spec:
                 {{- if $useCli }}
                 - rabbitmq-diagnostics -q ping
                 {{- else }}
-                - {{ printf "wget -q -O /dev/null --header \"Authorization: Basic $(printf '%%s:%%s' %s \"$RABBITMQ_PASSWORD\" | base64 -w0)\" http://127.0.0.1:%v/api/health/checks/virtual-hosts" $r.auth.username $r.containerPorts.manager | quote }}
+                - {{ printf "wget -q -O /dev/null --header \"Authorization: Basic $(printf '%%s:%%s' '%s' \"$RABBITMQ_PASSWORD\" | base64 -w0)\" http://127.0.0.1:%v/api/health/checks/virtual-hosts" $r.auth.username $r.containerPorts.manager | quote }}
                 {{- end }}
           {{- end }}
           {{- if $r.customReadinessProbe }}
@@ -328,7 +328,7 @@ spec:
                 {{- if $useCli }}
                 - rabbitmq-diagnostics -q check_running && rabbitmq-diagnostics -q check_local_alarms
                 {{- else }}
-                - {{ printf "wget -q -O /dev/null --header \"Authorization: Basic $(printf '%%s:%%s' %s \"$RABBITMQ_PASSWORD\" | base64 -w0)\" http://127.0.0.1:%v/api/health/checks/local-alarms" $r.auth.username $r.containerPorts.manager | quote }}
+                - {{ printf "wget -q -O /dev/null --header \"Authorization: Basic $(printf '%%s:%%s' '%s' \"$RABBITMQ_PASSWORD\" | base64 -w0)\" http://127.0.0.1:%v/api/health/checks/local-alarms" $r.auth.username $r.containerPorts.manager | quote }}
                 {{- end }}
           {{- end }}
           {{- if $r.customStartupProbe }}

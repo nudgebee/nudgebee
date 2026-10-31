@@ -332,8 +332,10 @@ the rabbitmq block (e.g. metrics.podAnnotations refers to
 {{- if typeIs "string" .value -}}{{- tpl .value $ctx -}}{{- else -}}{{- tpl (toYaml .value) $ctx -}}{{- end -}}
 {{- end -}}
 {{- define "nudgebee.rabbitmq.toBytes" -}}
-{{- $value := int (regexReplaceAll "([0-9]+).*" . "${1}") }}
-{{- $unit := regexReplaceAll "[0-9]+(.*)" . "${1}" }}
+{{- /* A plain number of bytes arrives as a float64 from YAML/--set. */ -}}
+{{- $in := ternary . (printf "%d" (int64 .)) (kindIs "string" .) -}}
+{{- $value := int (regexReplaceAll "([0-9]+).*" $in "${1}") }}
+{{- $unit := regexReplaceAll "[0-9]+(.*)" $in "${1}" }}
 {{- if eq $unit "Ki" }}
     {{- mul $value 1024 }}
 {{- else if eq $unit "Mi" }}
@@ -358,6 +360,8 @@ the rabbitmq block (e.g. metrics.podAnnotations refers to
     {{- mul $value 1000 1000 1000 1000 1000 }}
 {{- else if eq $unit "E" }}
     {{- mul $value 1000 1000 1000 1000 1000 1000 }}
+{{- else }}
+    {{- $value }}
 {{- end }}
 {{- end -}}
 
