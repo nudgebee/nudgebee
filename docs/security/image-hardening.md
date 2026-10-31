@@ -1,6 +1,6 @@
 # Container Image Hardening — Driver
 
-**Goal:** `0 CRITICAL / 0 HIGH / 0 MEDIUM` (Trivy) across **every first-party image we publish**, and keep it there.
+**Goal:** `0 CRITICAL / 0 HIGH / 0 MEDIUM` (Grype; iterations 0–8 below were measured with Trivy) across **every first-party image we publish**, and keep it there.
 
 Scope = images this org **builds and publishes**, across three repos:
 
@@ -172,4 +172,4 @@ measured every run.
 | 2026-10-31 | 10 | Grype C+H: ml-base Python 3.11.8 to 3.11.18 (conda-forge); code-analysis-agent builds `gh` v2.103.3 from source on Go 1.27.3 instead of Alpine `github-cli` | ml-k8s-server 25 to 0, rag-server 28 to 0, code-analysis-agent 131 to 63 (linux/arm64) |
 | 2026-10-31 | 11 | Grype C+H (linux/arm64, DB of 2026-10-31): rag-server `pypdf` 6.21.4 and `pyasn1` 0.6.5; code-analysis-agent moves to Alpine 3.23 (Node 22 to 24, curl 8.23.0, aws-cli 2.32.7) and replaces the apk npm with npm 11.21.1 | rag-server 11 to 0, code-analysis-agent 74 (linux/amd64 edge) to 14 |
 
-_Update this table after every merged iteration PR. Re-run the scan workflow (or `trivy image --ignore-unfixed --severity CRITICAL,HIGH,MEDIUM <image>`) to get the new numbers._
+_Update this table after every merged iteration PR. Re-run the scan workflow (or `grype --only-fixed registry:<image>`) to get the new numbers._

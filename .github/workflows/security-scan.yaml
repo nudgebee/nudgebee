@@ -1,11 +1,16 @@
 name: Image Security Scan
 
-# Trivy vulnerability scan of every first-party image this repo publishes
+# Grype vulnerability scan of every first-party image this repo publishes
 # (`scan` job) plus the third-party images deployed alongside nudgebee
 # (`scan-deployed` job, Phase 2 — always report-only).
 # Part of the image-hardening program — see docs/security/image-hardening.md.
 #
-# Ratchet model: we gate on FIXABLE CRITICAL/HIGH/MEDIUM only (--ignore-unfixed),
+# Grype, not Trivy: customers scan our images with Grype, and it also matches
+# binaries that were not installed by the OS package manager (e.g. the
+# source-built curl in curlimages/curl, Chrome bundled by Playwright), which
+# Trivy does not see. Scanning with the same tool means our numbers match theirs.
+#
+# Ratchet model: we gate on FIXABLE CRITICAL/HIGH/MEDIUM only (fix.state=fixed),
 # because ~389 baseline findings live in Debian/UBI9/Ubuntu base-OS packages that
 # upstream has not patched yet (those are chased via base migration in Iter 3, not
 # a dependency bump). Un-fixable findings must never be able to keep CI red.
@@ -85,31 +90,35 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install Trivy
+      - name: Install Grype
         env:
-          TRIVY_VERSION: '0.72.0'
+          GRYPE_VERSION: '0.121.0'
         run: |
           set -euo pipefail
-          curl -sfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" -o /tmp/trivy.tgz
-          sudo tar -C /usr/local/bin -xzf /tmp/trivy.tgz trivy
-          trivy --version
+          base="https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}"
+          tgz="grype_${GRYPE_VERSION}_linux_amd64.tar.gz"
+          curl -sfL "$base/$tgz" -o "/tmp/$tgz"
+          curl -sfL "$base/grype_${GRYPE_VERSION}_checksums.txt" -o /tmp/grype_checksums.txt
+          (cd /tmp && grep " $tgz\$" grype_checksums.txt | sha256sum -c -)
+          sudo tar -C /usr/local/bin -xzf "/tmp/$tgz" grype
+          grype version
 
-      - name: Update Trivy vulnerability DB
+      - name: Update Grype vulnerability DB
         # Fetch the latest DB up front, with retries, so every scan runs against
-        # current advisories. Aqua republishes the DB roughly daily; combined with
+        # current advisories. Anchore republishes the DB daily; combined with
         # this workflow's daily schedule, newly-disclosed CVEs surface within ~a
         # day with no code change. Fail-closed: if the DB can't be fetched after
         # retries the job errors, rather than scanning against a stale/empty DB.
-        # The ghcr login above authenticates this pull, avoiding anonymous rate
-        # limits. Scans below run with --skip-db-update to reuse this exact DB.
+        # Scans below run with GRYPE_DB_AUTO_UPDATE=false to reuse this exact DB.
         run: |
           set -euo pipefail
           n=0
-          until trivy image --download-db-only; do
+          until grype db update; do
             n=$((n + 1))
-            if [ "$n" -ge 3 ]; then echo "::error::Trivy DB download failed after $n attempts"; exit 1; fi
+            if [ "$n" -ge 3 ]; then echo "::error::Grype DB download failed after $n attempts"; exit 1; fi
             echo "DB download attempt $n failed; retrying in 15s..."; sleep 15
           done
+          grype db status
 
       - name: Scan ${{ matrix.image }}:${{ matrix.tag || github.event.inputs.tag || 'edge' }}
         env:
@@ -121,14 +130,12 @@ jobs:
           set -euo pipefail
           echo "Scanning $IMAGE_REF"
 
-          # Full table (all severities) for the log; JSON for counting.
-          # --skip-db-update: reuse the DB fetched in the step above (already
-          # current) instead of re-downloading per scan.
-          trivy image --scanners vuln --severity CRITICAL,HIGH,MEDIUM \
-            --skip-db-update --format table "$IMAGE_REF" || true
-
-          trivy image --scanners vuln --severity CRITICAL,HIGH,MEDIUM \
-            --skip-db-update --format json -o result.json "$IMAGE_REF"
+          # One scan, two outputs: full table (all severities) for the log,
+          # JSON for counting. `registry:` pulls straight from ghcr using the
+          # login above, no docker daemon pull. GRYPE_DB_AUTO_UPDATE=false
+          # reuses the DB fetched in the step above.
+          GRYPE_DB_AUTO_UPDATE=false grype "registry:$IMAGE_REF" \
+            -o table -o json=result.json
 
           # Count fixable (has FixedVersion) vs unfixable, per severity.
           python3 - "$IMAGE_REF" <<'PY' | tee counts.env
@@ -136,11 +143,11 @@ jobs:
           d = json.load(open("result.json"))
           fx = {"CRITICAL":0,"HIGH":0,"MEDIUM":0}
           nf = {"CRITICAL":0,"HIGH":0,"MEDIUM":0}
-          for r in d.get("Results") or []:
-              for v in r.get("Vulnerabilities") or []:
-                  s = v.get("Severity")
-                  if s not in fx: continue
-                  (fx if v.get("FixedVersion") else nf)[s] += 1
+          for m in d.get("matches") or []:
+              v = m["vulnerability"]
+              s = (v.get("severity") or "").upper()
+              if s not in fx: continue
+              (fx if (v.get("fix") or {}).get("state") == "fixed" else nf)[s] += 1
           fixable_total = sum(fx.values())
           ref = sys.argv[1]
           print(f"FIXABLE_TOTAL={fixable_total}")
@@ -236,24 +243,29 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install Trivy
+      - name: Install Grype
         env:
-          TRIVY_VERSION: '0.72.0'
+          GRYPE_VERSION: '0.121.0'
         run: |
           set -euo pipefail
-          curl -sfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" -o /tmp/trivy.tgz
-          sudo tar -C /usr/local/bin -xzf /tmp/trivy.tgz trivy
-          trivy --version
+          base="https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}"
+          tgz="grype_${GRYPE_VERSION}_linux_amd64.tar.gz"
+          curl -sfL "$base/$tgz" -o "/tmp/$tgz"
+          curl -sfL "$base/grype_${GRYPE_VERSION}_checksums.txt" -o /tmp/grype_checksums.txt
+          (cd /tmp && grep " $tgz\$" grype_checksums.txt | sha256sum -c -)
+          sudo tar -C /usr/local/bin -xzf "/tmp/$tgz" grype
+          grype version
 
-      - name: Update Trivy vulnerability DB
+      - name: Update Grype vulnerability DB
         run: |
           set -euo pipefail
           n=0
-          until trivy image --download-db-only; do
+          until grype db update; do
             n=$((n + 1))
-            if [ "$n" -ge 3 ]; then echo "::error::Trivy DB download failed after $n attempts"; exit 1; fi
+            if [ "$n" -ge 3 ]; then echo "::error::Grype DB download failed after $n attempts"; exit 1; fi
             echo "DB download attempt $n failed; retrying in 15s..."; sleep 15
           done
+          grype db status
 
       - name: Scan ${{ matrix.ref }} (report-only)
         env:
@@ -262,22 +274,19 @@ jobs:
           set -euo pipefail
           echo "Scanning $IMAGE_REF (report-only — upstream-owned)"
 
-          trivy image --scanners vuln --severity CRITICAL,HIGH,MEDIUM \
-            --skip-db-update --format table "$IMAGE_REF" || true
-
-          trivy image --scanners vuln --severity CRITICAL,HIGH,MEDIUM \
-            --skip-db-update --format json -o result.json "$IMAGE_REF"
+          GRYPE_DB_AUTO_UPDATE=false grype "registry:$IMAGE_REF" \
+            -o table -o json=result.json
 
           python3 - "$IMAGE_REF" <<'PY'
           import json, sys, os
           d = json.load(open("result.json"))
           fx = {"CRITICAL":0,"HIGH":0,"MEDIUM":0}
           nf = {"CRITICAL":0,"HIGH":0,"MEDIUM":0}
-          for r in d.get("Results") or []:
-              for v in r.get("Vulnerabilities") or []:
-                  s = v.get("Severity")
-                  if s not in fx: continue
-                  (fx if v.get("FixedVersion") else nf)[s] += 1
+          for m in d.get("matches") or []:
+              v = m["vulnerability"]
+              s = (v.get("severity") or "").upper()
+              if s not in fx: continue
+              (fx if (v.get("fix") or {}).get("state") == "fixed" else nf)[s] += 1
           ref = sys.argv[1]
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
               f.write(f"### `{ref}` (report-only)\n\n")
