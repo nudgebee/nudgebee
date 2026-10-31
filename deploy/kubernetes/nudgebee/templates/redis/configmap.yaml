@@ -1,0 +1,27 @@
+{{- if .Values.redis.enabled }}
+{{- $fullname := include "nudgebee.redis.fullname" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ printf "%s-configuration" $fullname }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "nudgebee.redis.labels" . | nindent 4 }}
+data:
+  redis.conf: |-
+    port 6379
+    dir {{ .Values.redis.master.persistence.path }}
+    {{- with .Values.redis.commonConfiguration }}
+    {{- . | nindent 4 }}
+    {{- end }}
+    # Keep the AOF base in plain-command format. Redis 7.2 would otherwise write
+    # it as RDB v11, which the Redis 7.0 image of the previous chart release
+    # cannot load, so a `helm rollback` would crash-loop on the same volume.
+    aof-use-rdb-preamble no
+    {{- range .Values.redis.master.disableCommands }}
+    rename-command {{ . }} ""
+    {{- end }}
+    {{- with .Values.redis.master.configuration }}
+    {{- . | nindent 4 }}
+    {{- end }}
+{{- end }}

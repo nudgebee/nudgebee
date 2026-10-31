@@ -1,0 +1,81 @@
+{{- if .Values.redis.enabled }}
+{{- $fullname := include "nudgebee.redis.fullname" . }}
+{{- /* Every service reaches Redis as `redis-master` (REDIS_SERVER_HOST in secrets-nudgebee.yaml). */}}
+{{- $svc := .Values.redis.master.service | default dict }}
+{{- $type := $svc.type | default "ClusterIP" }}
+{{- $annotations := merge (dict) ($svc.annotations | default dict) (.Values.redis.commonAnnotations | default dict) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ printf "%s-master" $fullname }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "nudgebee.redis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: master
+  {{- with $annotations }}
+  annotations:
+    {{- tpl (toYaml .) $ | nindent 4 }}
+  {{- end }}
+spec:
+  # Same knobs the Bitnami chart exposed (redis.master.service.*), so an install
+  # that published Redis as NodePort/LoadBalancer keeps doing so.
+  type: {{ $type }}
+  {{- if and (eq $type "ClusterIP") $svc.clusterIP }}
+  clusterIP: {{ $svc.clusterIP }}
+  {{- end }}
+  {{- if or (eq $type "LoadBalancer") (eq $type "NodePort") }}
+  externalTrafficPolicy: {{ $svc.externalTrafficPolicy | default "Cluster" | quote }}
+  {{- end }}
+  {{- if and (eq $type "LoadBalancer") $svc.loadBalancerIP }}
+  loadBalancerIP: {{ $svc.loadBalancerIP }}
+  {{- end }}
+  {{- if and (eq $type "LoadBalancer") $svc.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml $svc.loadBalancerSourceRanges | nindent 4 }}
+  {{- end }}
+  {{- with $svc.externalIPs }}
+  externalIPs:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- if and $svc.sessionAffinity (ne $svc.sessionAffinity "None") }}
+  sessionAffinity: {{ $svc.sessionAffinity }}
+  {{- end }}
+  ports:
+    - name: tcp-redis
+      port: {{ (($svc.ports | default dict).redis) | default 6379 }}
+      targetPort: redis
+      {{- $nodePort := (($svc.nodePorts | default dict).redis) }}
+      {{- if and (or (eq $type "NodePort") (eq $type "LoadBalancer")) $nodePort }}
+      nodePort: {{ $nodePort }}
+      {{- end }}
+  selector:
+    {{- include "nudgebee.redis.matchLabels" . | nindent 4 }}
+    app.kubernetes.io/component: master
+---
+# Governing Service of the StatefulSet (its spec.serviceName).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ printf "%s-headless" $fullname }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "nudgebee.redis.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: tcp-redis
+      port: 6379
+      targetPort: redis
+  selector:
+    {{- include "nudgebee.redis.matchLabels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "nudgebee.redis.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+{{- end }}

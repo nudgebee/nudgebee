@@ -1,0 +1,50 @@
+{{- /*
+Redis features the Bitnami subchart offered and this chart does not render.
+Fails on install AND upgrade: an operator who turned one of these on would
+otherwise lose it without a word (HA, TLS, metrics), which is worse than an
+upgrade that stops and says what to change. A default install sets none of them.
+*/ -}}
+{{- if .Values.redis.enabled }}
+  {{- $r := .Values.redis }}
+  {{- $unsupported := list }}
+  {{- if and (eq (toString $r.architecture) "replication") (gt (int (default 0 (($r.replica | default dict).replicaCount))) 0) }}
+    {{- $unsupported = append $unsupported "redis.replica.replicaCount > 0 (replication)" }}
+  {{- end }}
+  {{- if (($r.sentinel | default dict).enabled) }}
+    {{- $unsupported = append $unsupported "redis.sentinel.enabled" }}
+  {{- end }}
+  {{- if (($r.tls | default dict).enabled) }}
+    {{- $unsupported = append $unsupported "redis.tls.enabled" }}
+  {{- end }}
+  {{- if (($r.metrics | default dict).enabled) }}
+    {{- $unsupported = append $unsupported "redis.metrics.enabled" }}
+  {{- end }}
+  {{- if and $r.master.kind (ne (toString $r.master.kind) "StatefulSet") }}
+    {{- $unsupported = append $unsupported (printf "redis.master.kind=%s" $r.master.kind) }}
+  {{- end }}
+  {{- if gt (int (default 1 $r.master.count)) 1 }}
+    {{- $unsupported = append $unsupported "redis.master.count > 1" }}
+  {{- end }}
+  {{- /* Objects or containers Bitnami added that this chart would silently drop. */}}
+  {{- if (($r.networkPolicy | default dict).enabled) }}
+    {{- $unsupported = append $unsupported "redis.networkPolicy.enabled" }}
+  {{- end }}
+  {{- if (($r.pdb | default dict).create) }}
+    {{- $unsupported = append $unsupported "redis.pdb.create" }}
+  {{- end }}
+  {{- $sa := $r.serviceAccount | default dict }}
+  {{- if or (and (hasKey $sa "create") (not $sa.create)) $sa.name }}
+    {{- $unsupported = append $unsupported "redis.serviceAccount.create/name" }}
+  {{- end }}
+  {{- range $k := list "sidecars" "initContainers" "extraVolumes" "extraVolumeMounts" "command" "args" "preExecCmds" }}
+    {{- if (get $r.master $k) }}
+      {{- $unsupported = append $unsupported (printf "redis.master.%s" $k) }}
+    {{- end }}
+  {{- end }}
+  {{- if $r.extraDeploy }}
+    {{- $unsupported = append $unsupported "redis.extraDeploy" }}
+  {{- end }}
+  {{- if $unsupported }}
+    {{- fail (printf "\n\n[ERROR] Unsupported Redis settings: %s\n\nThis chart now deploys the official Redis image itself instead of the Bitnami redis subchart, and does not render these features. Redis here only holds caches and locks, so a single instance is all the stack needs.\n\nRemove these keys from your values, or set redis.enabled=false and point nudgebee_secret.REDIS_SERVER_HOST at a Redis you run yourself.\n" (join ", " $unsupported)) }}
+  {{- end }}
+{{- end }}

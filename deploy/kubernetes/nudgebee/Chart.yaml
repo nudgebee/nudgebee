@@ -16,10 +16,6 @@ dependencies:
     repository: oci://registry-1.docker.io/bitnamicharts
     condition: rabbitmq.enabled
     version: '12.6.1'
-  - name: redis
-    repository: oci://registry-1.docker.io/bitnamicharts
-    condition: redis.enabled
-    version: '17.11.8'
   - name: services-server
     version: '0.1.0'
     repository: file://../services-server/

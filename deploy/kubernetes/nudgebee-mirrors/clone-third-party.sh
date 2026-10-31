@@ -28,6 +28,9 @@ IMAGES=(
   # service charts). Pinned rather than the previous untagged `busybox`, which
   # resolved to :latest.
   "docker.io/library/busybox:1.37.0 busybox:1.37.0"
+  # The umbrella chart's own Redis (templates/redis/, redis.image). The Redis
+  # 7.0 Debian image it replaced was built by infra-mirrors-image.yaml.
+  "docker.io/library/redis:7.2.17-alpine redis:7.2.17-alpine"
   # Init container for the service pods (global.initImages.curl).
   "docker.io/curlimages/curl:8.23.0 curl:8.23.0"
   # Consumed by the nudgebee-agent chart (k8s-agent repo), not the chart in this

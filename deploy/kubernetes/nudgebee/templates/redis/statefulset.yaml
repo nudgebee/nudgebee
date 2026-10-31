@@ -1,0 +1,211 @@
+{{- if .Values.redis.enabled }}
+{{- $fullname := include "nudgebee.redis.fullname" . }}
+{{- $master := .Values.redis.master }}
+{{- $persistence := $master.persistence }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ printf "%s-master" $fullname }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "nudgebee.redis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: master
+  {{- with .Values.redis.commonAnnotations }}
+  annotations:
+    {{- tpl (toYaml .) $ | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: 1
+  # Frozen by the Bitnami chart this replaces: selector, serviceName and
+  # volumeClaimTemplates below must stay byte-identical (see _redis.tpl).
+  selector:
+    matchLabels:
+      {{- include "nudgebee.redis.matchLabels" . | nindent 6 }}
+      app.kubernetes.io/component: master
+  serviceName: {{ printf "%s-headless" $fullname }}
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        {{- include "nudgebee.redis.labels" . | nindent 8 }}
+        app.kubernetes.io/component: master
+        {{- with $master.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/redis/configmap.yaml") . | sha256sum }}
+        {{- with $master.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ $fullname }}
+      automountServiceAccountToken: false
+      {{- $pullSecrets := concat (.Values.global.imagePullSecrets | default list) (.Values.redis.image.pullSecrets | default list) }}
+      {{- with $pullSecrets }}
+      imagePullSecrets:
+        {{- range . | uniq }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      {{- with $master.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
+      {{- with $master.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $master.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $master.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $master.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ $master.terminationGracePeriodSeconds | default 30 }}
+      # The uid/fsGroup Bitnami ran as (1001 unless overridden) own the files on
+      # the existing PVC, so keep them; the official image runs as any non-root uid.
+      {{- $uid := int (default 1001 (($master.containerSecurityContext | default dict).runAsUser)) }}
+      securityContext:
+        fsGroup: {{ int (default 1001 (($master.podSecurityContext | default dict).fsGroup)) }}
+        runAsUser: {{ $uid }}
+        runAsGroup: {{ $uid }}
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: {{ include "nudgebee.redis.image" . }}
+          imagePullPolicy: {{ .Values.redis.image.pullPolicy | default "IfNotPresent" }}
+          command: ["redis-server"]
+          args:
+            - /etc/redis/redis.conf
+            {{- if .Values.redis.auth.enabled }}
+            # Kubernetes expands $(REDIS_PASSWORD) itself, so any password
+            # characters are passed through intact. Redis replaces its process
+            # title at startup, so the password does not show in `ps`.
+            - --requirepass
+            - $(REDIS_PASSWORD)
+            {{- end }}
+            {{- range $master.extraFlags }}
+            - {{ . | quote }}
+            {{- end }}
+          {{- if or .Values.redis.auth.enabled $master.extraEnvVars }}
+          env:
+          {{- end }}
+          {{- if .Values.redis.auth.enabled }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "nudgebee.redis.secretName" . }}
+                  key: {{ include "nudgebee.redis.secretKey" . }}
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "nudgebee.redis.secretName" . }}
+                  key: {{ include "nudgebee.redis.secretKey" . }}
+          {{- end }}
+          {{- with $master.extraEnvVars }}
+            {{- tpl (toYaml .) $ | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: redis
+              containerPort: 6379
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "-p", "6379", "ping"]
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 5
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "-p", "6379", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 1
+            failureThreshold: 5
+          {{- with $master.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: redis-data
+              mountPath: {{ $persistence.path }}
+              {{- if $persistence.subPath }}
+              subPath: {{ $persistence.subPath }}
+              {{- else if $persistence.subPathExpr }}
+              subPathExpr: {{ $persistence.subPathExpr }}
+              {{- end }}
+            - name: config
+              mountPath: /etc/redis
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: {{ printf "%s-configuration" $fullname }}
+        - name: tmp
+          emptyDir: {}
+  {{- if not $persistence.enabled }}
+        - name: redis-data
+          {{- if or $persistence.medium $persistence.sizeLimit }}
+          emptyDir:
+            {{- with $persistence.medium }}
+            medium: {{ . | quote }}
+            {{- end }}
+            {{- with $persistence.sizeLimit }}
+            sizeLimit: {{ . | quote }}
+            {{- end }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+  {{- else if $persistence.existingClaim }}
+        - name: redis-data
+          persistentVolumeClaim:
+            claimName: {{ tpl $persistence.existingClaim . }}
+  {{- else }}
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: redis-data
+        labels:
+          {{- include "nudgebee.redis.matchLabels" . | nindent 10 }}
+          app.kubernetes.io/component: master
+          {{- with $persistence.labels }}
+          {{- toYaml . | nindent 10 }}
+          {{- end }}
+        {{- with $persistence.annotations }}
+        annotations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      spec:
+        accessModes:
+        {{- range $persistence.accessModes }}
+          - {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $persistence.size | quote }}
+        {{- with $persistence.selector }}
+        selector:
+          {{- tpl (toYaml .) $ | nindent 10 }}
+        {{- end }}
+        {{- with $persistence.dataSource }}
+        dataSource:
+          {{- tpl (toYaml .) $ | nindent 10 }}
+        {{- end }}
+        {{- include "nudgebee.redis.storageClass" . | nindent 8 }}
+  {{- end }}
+{{- end }}
