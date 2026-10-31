@@ -2,6 +2,7 @@
 {{- $fullname := include "nudgebee.redis.fullname" . }}
 {{- $master := .Values.redis.master }}
 {{- $persistence := $master.persistence }}
+{{- $port := int (default 6379 (($master.containerPorts | default (dict)).redis)) }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -24,7 +25,10 @@ spec:
       app.kubernetes.io/component: master
   serviceName: {{ printf "%s-headless" $fullname }}
   updateStrategy:
-    type: RollingUpdate
+    {{- toYaml ($master.updateStrategy | default (dict "type" "RollingUpdate")) | nindent 4 }}
+  {{- with $master.minReadySeconds }}
+  minReadySeconds: {{ . }}
+  {{- end }}
   template:
     metadata:
       labels:
@@ -59,9 +63,53 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with $master.affinity }}
+      {{- if $master.affinity }}
       affinity:
-        {{- toYaml . | nindent 8 }}
+        {{- tpl (toYaml $master.affinity) $ | nindent 8 }}
+      {{- else if (($master.nodeAffinityPreset | default (dict)).type) }}
+      {{- /* Bitnami's nodeAffinityPreset. Its pod (anti-)affinity presets are no-ops for one replica. */}}
+      {{- $na := $master.nodeAffinityPreset }}
+      affinity:
+        nodeAffinity:
+          {{- if eq $na.type "hard" }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: {{ $na.key }}
+                    operator: In
+                    values:
+                      {{- range $na.values }}
+                      - {{ . | quote }}
+                      {{- end }}
+          {{- else }}
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - preference:
+                matchExpressions:
+                  - key: {{ $na.key }}
+                    operator: In
+                    values:
+                      {{- range $na.values }}
+                      - {{ . | quote }}
+                      {{- end }}
+              weight: 1
+          {{- end }}
+      {{- end }}
+      {{- with $master.hostAliases }}
+      hostAliases:
+        {{- tpl (toYaml .) $ | nindent 8 }}
+      {{- end }}
+      {{- with $master.shareProcessNamespace }}
+      shareProcessNamespace: {{ . }}
+      {{- end }}
+      {{- with $master.schedulerName }}
+      schedulerName: {{ . | quote }}
+      {{- end }}
+      {{- with $master.dnsPolicy }}
+      dnsPolicy: {{ . }}
+      {{- end }}
+      {{- with $master.dnsConfig }}
+      dnsConfig:
+        {{- tpl (toYaml .) $ | nindent 8 }}
       {{- end }}
       {{- with $master.topologySpreadConstraints }}
       topologySpreadConstraints:
@@ -70,18 +118,30 @@ spec:
       terminationGracePeriodSeconds: {{ $master.terminationGracePeriodSeconds | default 30 }}
       # The uid/fsGroup Bitnami ran as (1001 unless overridden) own the files on
       # the existing PVC, so keep them; the official image runs as any non-root uid.
-      {{- $uid := int (default 1001 (($master.containerSecurityContext | default (dict)).runAsUser)) }}
+      # Bitnami's `enabled: false` switches (how OpenShift installs let the
+      # platform assign the uid) still drop the fixed ids.
+      {{- $podSC := $master.podSecurityContext | default (dict) }}
+      {{- $ctrSC := $master.containerSecurityContext | default (dict) }}
       securityContext:
-        fsGroup: {{ int (default 1001 (($master.podSecurityContext | default (dict)).fsGroup)) }}
+        {{- if ne (toString $podSC.enabled) "false" }}
+        fsGroup: {{ int (default 1001 $podSC.fsGroup) }}
+        {{- end }}
+        {{- if ne (toString $ctrSC.enabled) "false" }}
+        {{- $uid := int (default 1001 $ctrSC.runAsUser) }}
         runAsUser: {{ $uid }}
         runAsGroup: {{ $uid }}
         runAsNonRoot: true
+        {{- end }}
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: redis
           image: {{ include "nudgebee.redis.image" . }}
           imagePullPolicy: {{ .Values.redis.image.pullPolicy | default "IfNotPresent" }}
+          {{- with $master.lifecycleHooks }}
+          lifecycle:
+            {{- tpl (toYaml .) $ | nindent 12 }}
+          {{- end }}
           command: ["redis-server"]
           args:
             - /etc/redis/redis.conf
@@ -113,32 +173,46 @@ spec:
           {{- with $master.extraEnvVars }}
             {{- tpl (toYaml .) $ | nindent 12 }}
           {{- end }}
+          {{- if or $master.extraEnvVarsCM $master.extraEnvVarsSecret }}
+          envFrom:
+            {{- with $master.extraEnvVarsCM }}
+            - configMapRef:
+                name: {{ tpl . $ }}
+            {{- end }}
+            {{- with $master.extraEnvVarsSecret }}
+            - secretRef:
+                name: {{ tpl . $ }}
+            {{- end }}
+          {{- end }}
           ports:
             - name: redis
-              containerPort: 6379
-          livenessProbe:
+              containerPort: {{ $port }}
+          {{- /* Bitnami's probe switches and timings (same defaults); the check
+                 itself is redis-cli instead of Bitnami's /health scripts. */}}
+          {{- $probes := dict
+                "livenessProbe"  (merge (dict) ($master.livenessProbe | default (dict))  (dict "enabled" true  "initialDelaySeconds" 20 "periodSeconds" 5 "timeoutSeconds" 5 "successThreshold" 1 "failureThreshold" 5))
+                "readinessProbe" (merge (dict) ($master.readinessProbe | default (dict)) (dict "enabled" true  "initialDelaySeconds" 20 "periodSeconds" 5 "timeoutSeconds" 1 "successThreshold" 1 "failureThreshold" 5))
+                "startupProbe"   (merge (dict) ($master.startupProbe | default (dict))   (dict "enabled" false "initialDelaySeconds" 20 "periodSeconds" 5 "timeoutSeconds" 5 "successThreshold" 1 "failureThreshold" 5)) }}
+          {{- range $name := list "livenessProbe" "readinessProbe" "startupProbe" }}
+          {{- $p := get $probes $name }}
+          {{- if $p.enabled }}
+          {{ $name }}:
             exec:
-              command: ["redis-cli", "-p", "6379", "ping"]
-            initialDelaySeconds: 20
-            periodSeconds: 5
-            timeoutSeconds: 5
-            failureThreshold: 5
-          readinessProbe:
-            exec:
-              command: ["redis-cli", "-p", "6379", "ping"]
-            initialDelaySeconds: 5
-            periodSeconds: 5
-            timeoutSeconds: 1
-            failureThreshold: 5
+              command: ["redis-cli", "-p", "{{ $port }}", "ping"]
+            {{- toYaml (omit $p "enabled") | nindent 12 }}
+          {{- end }}
+          {{- end }}
           {{- with $master.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- if ne (toString $ctrSC.enabled) "false" }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+          {{- end }}
           volumeMounts:
             - name: redis-data
               mountPath: {{ $persistence.path }}

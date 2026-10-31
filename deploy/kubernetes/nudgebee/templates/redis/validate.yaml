@@ -41,6 +41,20 @@ upgrade that stops and says what to change. A default install sets none of them.
       {{- $unsupported = append $unsupported (printf "redis.master.%s" $k) }}
     {{- end }}
   {{- end }}
+  {{- /* Custom probes in Bitnami installs call its /health scripts, which the official image does not have. */}}
+  {{- range $k := list "customLivenessProbe" "customReadinessProbe" "customStartupProbe" }}
+    {{- if (get $r.master $k) }}
+      {{- $unsupported = append $unsupported (printf "redis.master.%s" $k) }}
+    {{- end }}
+  {{- end }}
+  {{- if $r.existingConfigmap }}
+    {{- $unsupported = append $unsupported "redis.existingConfigmap (use redis.commonConfiguration / redis.master.configuration)" }}
+  {{- end }}
+  {{- range $k := list "useExternalDNS" "serviceBindings" "sysctl" }}
+    {{- if ((get $r $k) | default (dict)).enabled }}
+      {{- $unsupported = append $unsupported (printf "redis.%s.enabled" $k) }}
+    {{- end }}
+  {{- end }}
   {{- if $r.extraDeploy }}
     {{- $unsupported = append $unsupported "redis.extraDeploy" }}
   {{- end }}

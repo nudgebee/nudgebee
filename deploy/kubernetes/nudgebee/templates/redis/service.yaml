@@ -37,8 +37,13 @@ spec:
   externalIPs:
     {{- toYaml . | nindent 4 }}
   {{- end }}
+  internalTrafficPolicy: {{ $svc.internalTrafficPolicy | default "Cluster" }}
   {{- if and $svc.sessionAffinity (ne $svc.sessionAffinity "None") }}
   sessionAffinity: {{ $svc.sessionAffinity }}
+  {{- with $svc.sessionAffinityConfig }}
+  sessionAffinityConfig:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   {{- end }}
   ports:
     - name: tcp-redis
@@ -48,6 +53,9 @@ spec:
       {{- if and (or (eq $type "NodePort") (eq $type "LoadBalancer")) $nodePort }}
       nodePort: {{ $nodePort }}
       {{- end }}
+    {{- with $svc.extraPorts }}
+    {{- tpl (toYaml .) $ | nindent 4 }}
+    {{- end }}
   selector:
     {{- include "nudgebee.redis.matchLabels" . | nindent 4 }}
     app.kubernetes.io/component: master

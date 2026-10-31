@@ -9,7 +9,7 @@ metadata:
     {{- include "nudgebee.redis.labels" . | nindent 4 }}
 data:
   redis.conf: |-
-    port 6379
+    port {{ int (default 6379 ((.Values.redis.master.containerPorts | default (dict)).redis)) }}
     dir {{ .Values.redis.master.persistence.path }}
     {{- with .Values.redis.commonConfiguration }}
     {{- . | nindent 4 }}
