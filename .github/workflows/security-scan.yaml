@@ -272,6 +272,7 @@ jobs:
 
       - name: Sanitize artifact name
         id: an
+        if: always()
         run: echo "name=$(echo '${{ matrix.ref }}' | sed 's#[/:]#_#g')" >> "$GITHUB_OUTPUT"
 
       - name: Upload scan JSON
@@ -307,8 +308,13 @@ jobs:
 
           SEV = ("CRITICAL", "HIGH", "MEDIUM")
           rows = {"first-party": [], "deployed": []}
+          unreadable = []
           for f in sorted(Path(sys.argv[1]).glob("*/result.json")):
-              d = json.load(open(f))
+              try:
+                  d = json.load(open(f))
+              except ValueError:  # a scan that failed before Grype wrote its JSON
+                  unreadable.append(f.parent.name)
+                  continue
               ref = ((d.get("source") or {}).get("target") or {}).get("userInput") or f.parent.name
               fx = dict.fromkeys(SEV, 0)
               nf = dict.fromkeys(SEV, 0)
@@ -346,4 +352,6 @@ jobs:
               print("> [!WARNING]\n> Not every scan job succeeded ("
                     + ", ".join(f"`{k}`: {v}" for k, v in bad.items())
                     + "); images whose scan failed are missing from these tables.\n")
+          if unreadable:
+              print("> [!WARNING]\n> Unreadable scan results (skipped): " + ", ".join(f"`{n}`" for n in unreadable) + "\n")
           PY
