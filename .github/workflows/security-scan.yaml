@@ -137,26 +137,18 @@ jobs:
           GRYPE_DB_AUTO_UPDATE=false grype "registry:$IMAGE_REF" \
             -o table -o json=result.json
 
-          # Count fixable (has FixedVersion) vs unfixable, per severity.
-          python3 - "$IMAGE_REF" <<'PY' | tee counts.env
-          import json, sys, os
+          # Count fixable C/H/M for the gate. The per-image counts are reported
+          # once, as a single table, by the `summary` job below.
+          python3 - <<'PY' | tee counts.env
+          import json
           d = json.load(open("result.json"))
-          fx = {"CRITICAL":0,"HIGH":0,"MEDIUM":0}
-          nf = {"CRITICAL":0,"HIGH":0,"MEDIUM":0}
+          n = 0
           for m in d.get("matches") or []:
               v = m["vulnerability"]
-              s = (v.get("severity") or "").upper()
-              if s not in fx: continue
-              (fx if (v.get("fix") or {}).get("state") == "fixed" else nf)[s] += 1
-          fixable_total = sum(fx.values())
-          ref = sys.argv[1]
-          print(f"FIXABLE_TOTAL={fixable_total}")
-          summary = os.environ["GITHUB_STEP_SUMMARY"]
-          with open(summary, "a") as f:
-              f.write(f"### `{ref}`\n\n")
-              f.write("| | CRITICAL | HIGH | MEDIUM |\n|---|---|---|---|\n")
-              f.write(f"| **fixable** | {fx['CRITICAL']} | {fx['HIGH']} | {fx['MEDIUM']} |\n")
-              f.write(f"| unfixable (no upstream patch) | {nf['CRITICAL']} | {nf['HIGH']} | {nf['MEDIUM']} |\n\n")
+              if (v.get("severity") or "").upper() in ("CRITICAL", "HIGH", "MEDIUM") \
+                      and (v.get("fix") or {}).get("state") == "fixed":
+                  n += 1
+          print(f"FIXABLE_TOTAL={n}")
           PY
 
           # shellcheck disable=SC1091
@@ -274,26 +266,9 @@ jobs:
           set -euo pipefail
           echo "Scanning $IMAGE_REF (report-only — upstream-owned)"
 
+          # Counts are reported by the `summary` job from the uploaded JSON.
           GRYPE_DB_AUTO_UPDATE=false grype "registry:$IMAGE_REF" \
             -o table -o json=result.json
-
-          python3 - "$IMAGE_REF" <<'PY'
-          import json, sys, os
-          d = json.load(open("result.json"))
-          fx = {"CRITICAL":0,"HIGH":0,"MEDIUM":0}
-          nf = {"CRITICAL":0,"HIGH":0,"MEDIUM":0}
-          for m in d.get("matches") or []:
-              v = m["vulnerability"]
-              s = (v.get("severity") or "").upper()
-              if s not in fx: continue
-              (fx if (v.get("fix") or {}).get("state") == "fixed" else nf)[s] += 1
-          ref = sys.argv[1]
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
-              f.write(f"### `{ref}` (report-only)\n\n")
-              f.write("| | CRITICAL | HIGH | MEDIUM |\n|---|---|---|---|\n")
-              f.write(f"| **fixable** | {fx['CRITICAL']} | {fx['HIGH']} | {fx['MEDIUM']} |\n")
-              f.write(f"| unfixable | {nf['CRITICAL']} | {nf['HIGH']} | {nf['MEDIUM']} |\n\n")
-          PY
 
       - name: Sanitize artifact name
         id: an
@@ -306,3 +281,69 @@ jobs:
           name: scan-deployed-${{ steps.an.outputs.name }}
           path: result.json
           retention-days: 14
+
+  # One table for the whole run, so nobody has to scroll ~37 per-image
+  # sections. Built from the per-image JSON artifacts uploaded above; the full
+  # per-CVE tables stay in each scan job's log and in those artifacts.
+  summary:
+    needs: [scan, scan-deployed]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: scan-*
+          path: scans
+
+      - name: Write summary table
+        env:
+          SCAN_RESULT: ${{ needs.scan.result }}
+          DEPLOYED_RESULT: ${{ needs.scan-deployed.result }}
+        run: |
+          python3 - scans <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, os, sys
+          from pathlib import Path
+
+          SEV = ("CRITICAL", "HIGH", "MEDIUM")
+          rows = {"first-party": [], "deployed": []}
+          for f in sorted(Path(sys.argv[1]).glob("*/result.json")):
+              d = json.load(open(f))
+              ref = ((d.get("source") or {}).get("target") or {}).get("userInput") or f.parent.name
+              fx = dict.fromkeys(SEV, 0)
+              nf = dict.fromkeys(SEV, 0)
+              for m in d.get("matches") or []:
+                  v = m["vulnerability"]
+                  s = (v.get("severity") or "").upper()
+                  if s not in fx: continue
+                  (fx if (v.get("fix") or {}).get("state") == "fixed" else nf)[s] += 1
+              kind = "deployed" if f.parent.name.startswith("scan-deployed-") else "first-party"
+              rows[kind].append((ref.removeprefix("registry:"), fx, nf))
+
+          def cell(n, bold):
+              return f"**{n}**" if bold and n else str(n)
+
+          print("## Image scan summary (Grype, CRITICAL/HIGH/MEDIUM)\n")
+          print(f"Gate: `{os.environ['GATE']}`. Sorted by fixable count, worst first. "
+                "Per-CVE detail: each scan job's log, or the `scan-*` JSON artifacts.\n")
+          titles = {"first-party": "First-party images", "deployed": "Deployed third-party / sibling-repo images (report-only)"}
+          for kind, title in titles.items():
+              r = sorted(rows[kind], key=lambda x: (tuple(-x[1][s] for s in SEV), x[0]))
+              print(f"### {title} ({len(r)})\n")
+              print("| Image | Fixable C | Fixable H | Fixable M | Unfixable C | Unfixable H | Unfixable M |")
+              print("|---|--:|--:|--:|--:|--:|--:|")
+              for ref, fx, nf in r:
+                  print(f"| `{ref}` | " + " | ".join(cell(fx[s], True) for s in SEV) + " | "
+                        + " | ".join(cell(nf[s], False) for s in SEV) + " |")
+              tf = {s: sum(x[1][s] for x in r) for s in SEV}
+              tn = {s: sum(x[2][s] for x in r) for s in SEV}
+              print("| **Total** | " + " | ".join(f"**{tf[s]}**" for s in SEV) + " | "
+                    + " | ".join(f"**{tn[s]}**" for s in SEV) + " |\n")
+
+          bad = {k: os.environ[v] for k, v in (("scan", "SCAN_RESULT"), ("scan-deployed", "DEPLOYED_RESULT"))
+                 if os.environ[v] != "success"}
+          if bad:
+              print("> [!WARNING]\n> Not every scan job succeeded ("
+                    + ", ".join(f"`{k}`: {v}" for k, v in bad.items())
+                    + "); images whose scan failed are missing from these tables.\n")
+          PY
