@@ -56,8 +56,8 @@ Offline render (Argo CD, Flux) must set agent.accessKey/accessSecret.
 
      helm upgrade {{ .Release.Name }} ... --set nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED=false
 
-   The default in values.yaml is intentionally `true` for the first-run
-   bootstrap experience; production overlays should disable it explicitly.
+   The default in values.yaml is `false`; enable it explicitly only for a
+   temporary local bootstrap and disable it after configuring real auth.
 {{- end }}
 
 {{- /* Only fires on clusters that DO run the Prometheus Operator: there the
