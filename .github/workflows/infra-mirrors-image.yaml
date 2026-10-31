@@ -98,18 +98,20 @@ jobs:
           # Distroless passthrough of the upstream prometheus-community image
           # (replaces the CVE-heavy bitnamilegacy build: 2C/35H fixable + debian-11
           # floor -> 0/1/1, 0 unfixable). OS_PKG_EPOCH is accepted but unused there.
-          # -nb1 rebuilds the exporter on Go 1.26.5 (clears the 1H/1M Go-stdlib
-          # pair in upstream's 1.26.4 build; v0.20.1 is the newest release, so no
-          # tag bump clears it). Needs a Go build stage — the shared build step
-          # handles it.
-          - { image: postgres-exporter, context: deploy/kubernetes/nudgebee-mirrors/postgres-exporter, tag: v0.20.1-nb1 }
+          # -nb2 rebuilds the exporter on a patched Go and x/text, on a distroless
+          # runtime (v0.20.1 is the newest release, so no tag bump clears these).
+          # Needs a Go build stage — the shared build step handles it.
+          - { image: postgres-exporter, context: deploy/kubernetes/nudgebee-mirrors/postgres-exporter, tag: v0.20.1-nb2 }
           # Alpine re-mirrors of official images (apk upgrade; no version change).
           # postgres also swaps in a gosu rebuilt on a patched Go (the image's
           # prebuilt gosu carries Go-stdlib CVEs); needs a Go build stage.
           - { image: postgres,          context: deploy/kubernetes/nudgebee-mirrors/postgres,          tag: 16.15-alpine-nb1 }
-          - { image: nginx,             context: deploy/kubernetes/nudgebee-mirrors/nginx,             tag: stable-alpine3.20-slim-nb1 }
-          - { image: trivy,             context: deploy/kubernetes/nudgebee-mirrors/trivy,             tag: 0.76.1-nb1 }
-          - { image: kube-bench,        context: deploy/kubernetes/nudgebee-mirrors/kube-bench,        tag: v0.16.0-nb1 }
+          # The chart's database: Debian for glibc collation, with gosu rebuilt.
+          - { image: postgres,          context: deploy/kubernetes/nudgebee-mirrors/postgres-trixie,   tag: 16.15-trixie-nb1 }
+          - { image: nginx,             context: deploy/kubernetes/nudgebee-mirrors/nginx,             tag: stable-alpine3.24-slim-nb1 }
+          # Same upstream versions, with the Go binaries rebuilt from source.
+          - { image: trivy,             context: deploy/kubernetes/nudgebee-mirrors/trivy,             tag: 0.76.1-nb2 }
+          - { image: kube-bench,        context: deploy/kubernetes/nudgebee-mirrors/kube-bench,        tag: v0.16.0-nb2 }
           # kubectl + /bin/sh only, for the rag-server migration hook. Replaces the
           # alpine/k8s toolbox clone; same kubectl source tag, rebuilt on a patched Go.
           - { image: kubectl,           context: deploy/kubernetes/nudgebee-mirrors/kubectl,           tag: 1.32.13-nb1 }
@@ -170,11 +172,12 @@ jobs:
       matrix:
         include:
           - { image: clickhouse,        tag: 24.12.4-debian-12-r0-nb-3 }
-          - { image: postgres-exporter, tag: v0.20.1-nb1 }
+          - { image: postgres-exporter, tag: v0.20.1-nb2 }
           - { image: postgres,          tag: 16.15-alpine-nb1 }
-          - { image: nginx,             tag: stable-alpine3.20-slim-nb1 }
-          - { image: trivy,             tag: 0.76.1-nb1 }
-          - { image: kube-bench,        tag: v0.16.0-nb1 }
+          - { image: postgres,          tag: 16.15-trixie-nb1 }
+          - { image: nginx,             tag: stable-alpine3.24-slim-nb1 }
+          - { image: trivy,             tag: 0.76.1-nb2 }
+          - { image: kube-bench,        tag: v0.16.0-nb2 }
           - { image: kubectl,           tag: 1.32.13-nb1 }
           - { image: temporal-server,      tag: 1.31.4-nb1 }
           - { image: temporal-admin-tools, tag: 1.31.4-nb1 }
