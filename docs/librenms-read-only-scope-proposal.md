@@ -71,8 +71,9 @@ when the required identity or scope is absent.
 
 - [ ] A maintainer approves the supported LibreNMS version range and a live
       API v0 compatibility proof covers devices, interfaces, and active alerts.
-- [ ] A configured integration is resolved only within its tenant and selected
-      account scope; missing or ambiguous identity fails without importing data.
+- [ ] `accountId` is present and non-empty before resolving integration
+      configuration or executing any account-scoped query; a missing or empty
+      `accountId` fails fast without falling back to data from another account.
 - [ ] Repeated reads produce stable graph identities and retain source,
       tenant, and account provenance without cross-tenant mixing.
 - [ ] The connector performs no alert or LibreNMS configuration writes.
