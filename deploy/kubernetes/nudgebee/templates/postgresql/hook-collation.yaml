@@ -35,7 +35,7 @@ spec:
   template:
     spec:
       restartPolicy: Never
-      {{- $pullSecrets := concat (.Values.global.imagePullSecrets | default (list)) ($r.image.pullSecrets | default (list)) }}
+      {{- $pullSecrets := concat ((.Values.global | default (dict)).imagePullSecrets | default (list)) ($r.image.pullSecrets | default (list)) }}
       {{- with $pullSecrets }}
       imagePullSecrets:
         {{- range . | uniq }}
@@ -48,7 +48,7 @@ spec:
       {{- end }}
       containers:
         - name: refresh-collation-version
-          image: {{ include "nudgebee.postgresql.image" (dict "image" .Values.postgresql.image "root" $) }}
+          image: {{ include "nudgebee.postgresql.image" (dict "image" $r.image "root" $) }}
           imagePullPolicy: {{ $r.image.pullPolicy | quote }}
           {{- if $ctrSC.enabled }}
           securityContext:

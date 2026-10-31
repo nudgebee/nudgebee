@@ -52,7 +52,7 @@ spec:
       {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 6 }}
       {{- end }}
       serviceAccountName: {{ include "nudgebee.postgresql.serviceAccountName" . }}
-      {{- $pullSecrets := concat (.Values.global.imagePullSecrets | default (list)) ($r.image.pullSecrets | default (list)) ($m.image.pullSecrets | default (list)) }}
+      {{- $pullSecrets := concat ((.Values.global | default (dict)).imagePullSecrets | default (list)) ($r.image.pullSecrets | default (list)) ($m.image.pullSecrets | default (list)) }}
       {{- with $pullSecrets }}
       imagePullSecrets:
         {{- range . | uniq }}
@@ -148,7 +148,7 @@ spec:
       {{- end }}
       containers:
         - name: postgresql
-          image: {{ include "nudgebee.postgresql.image" (dict "image" .Values.postgresql.image "root" $) }}
+          image: {{ include "nudgebee.postgresql.image" (dict "image" $r.image "root" $) }}
           imagePullPolicy: {{ $r.image.pullPolicy | quote }}
           {{- if $ctrSC.enabled }}
           securityContext:
@@ -275,7 +275,7 @@ spec:
             {{- end }}
         {{- if $m.enabled }}
         - name: metrics
-          image: {{ include "nudgebee.postgresql.image" (dict "image" .Values.postgresql.metrics.image "root" $) }}
+          image: {{ include "nudgebee.postgresql.image" (dict "image" $m.image "root" $) }}
           imagePullPolicy: {{ $m.image.pullPolicy | quote }}
           {{- if $m.containerSecurityContext.enabled }}
           securityContext:
@@ -429,6 +429,6 @@ spec:
         selector:
           {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 10 }}
         {{- end }}
-        {{- include "nudgebee.postgresql.storageClass" (dict "persistence" $pv "global" .Values.global) | nindent 8 }}
+        {{- include "nudgebee.postgresql.storageClass" (dict "persistence" $pv "global" (.Values.global | default (dict))) | nindent 8 }}
   {{- end }}
 {{- end }}

@@ -331,14 +331,14 @@ Use: (dict "custom" <map> "root" $)
 {{- define "nudgebee.postgresql.image" -}}
 {{- $img := .image -}}
 {{- $registry := $img.registry -}}
-{{- if .root.Values.global.imageRegistry -}}{{- $registry = .root.Values.global.imageRegistry -}}{{- end -}}
+{{- with (.root.Values.global | default (dict)).imageRegistry -}}{{- $registry = . -}}{{- end -}}
 {{- $ref := ternary (printf "%s@%s" $img.repository ($img.digest | toString)) (printf "%s:%s" $img.repository ($img.tag | toString)) (not (empty $img.digest)) -}}
 {{- if $registry -}}{{ printf "%s/%s" $registry $ref }}{{- else -}}{{ $ref }}{{- end -}}
 {{- end -}}
 
 {{- define "nudgebee.postgresql.storageClass" -}}
 {{- $sc := .persistence.storageClass -}}
-{{- if .global.storageClass -}}{{- $sc = .global.storageClass -}}{{- end -}}
+{{- with (.global | default (dict)).storageClass -}}{{- $sc = . -}}{{- end -}}
 {{- if $sc -}}
 {{- if eq "-" $sc -}}storageClassName: ""{{- else -}}storageClassName: {{ $sc | quote }}{{- end -}}
 {{- end -}}
