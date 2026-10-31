@@ -50,6 +50,9 @@ func (s *OpenObserveAPMFlowSource) BuildFlowRelationships(
 	if req == nil {
 		return edges, nodes, fmt.Errorf("flow source build request is required")
 	}
+	if req.TenantID == "" {
+		return edges, nodes, fmt.Errorf("tenant ID is required for OpenObserve APM flow source")
+	}
 	s.InitializeNodeMatcher(req.ExistingNodes)
 
 	accountID := resolveCloudAccountID(req)
