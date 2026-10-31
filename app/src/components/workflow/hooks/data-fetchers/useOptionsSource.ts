@@ -209,6 +209,29 @@ const OPTIONS_SOURCE_FETCHERS: Record<string, FetcherFn> = {
     return [];
   },
 
+  ticket_statuses: async (formValues) => {
+    const integrationId = formValues.integration_id;
+    if (!integrationId) return [];
+    const projectKey = formValues.project_key || '';
+    const meta: any = await apiTickets.getTicketTransitionMeta(integrationId, projectKey);
+    const transitionMeta = meta?.data?.tickets_get_transition_meta;
+    const rawOptions = transitionMeta?.data;
+    const warning = transitionMeta?.warning;
+    if (warning) {
+      snackbar.warning(warning);
+    }
+    const options = Array.isArray(rawOptions) ? rawOptions : [];
+    return options
+      .filter((option: any) => option != null && (option.value != null || option.id != null))
+      .map((option: any) => {
+        const selectedValue = option.value ?? option.id;
+        return {
+          label: option.name || String(selectedValue),
+          value: selectedValue,
+        };
+      });
+  },
+
   // Kubernetes workload names scoped by account + namespace (optionally kind).
   // Mirrors the cascading fetch in useTaskFormData.ts so multi-select fields
   // like `vertical_rightsize_generate.workload_names` get the same dropdown

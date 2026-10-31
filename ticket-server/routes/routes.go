@@ -11,6 +11,7 @@ func InitializeRoutes(router *gin.Engine) {
 	{
 		ticketsGroup.POST("/add-configuration", controllers.AddTicketConfiguration)
 		ticketsGroup.POST("/create-meta", controllers.GetIssueCreationTemplate)
+		ticketsGroup.POST("/transition-meta", controllers.GetTransitionMetadata)
 		ticketsGroup.POST("/query", controllers.QueryIssueFieldDetails)
 		ticketsGroup.POST("/rpc/list-configs", controllers.ListTicketConfigs)
 		ticketsGroup.POST("/rpc/create-ticket", controllers.CreateTicketAction)

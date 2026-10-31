@@ -2192,6 +2192,10 @@ type Query {
     integration_id: String!
     project_key: String!
   ): ticket_create_meta_response
+  tickets_get_transition_meta(
+    integration_id: String!
+    project_key: String!
+  ): ticket_transition_meta_response
 }
 
 type Query {
@@ -7420,6 +7424,11 @@ type MonitoringRowResponse {
 
 type ticket_create_meta_response {
   data: jsonb!
+}
+
+type ticket_transition_meta_response {
+  data: jsonb!
+  warning: String
 }
 
 type ticket_field_values_response {

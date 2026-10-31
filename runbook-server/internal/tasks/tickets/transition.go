@@ -107,9 +107,14 @@ func (t *TicketsTransitionTask) InputSchema() *types.Schema {
 			},
 			"status": {
 				Type:        types.PropertyTypeString,
-				Description: "Target status (e.g. 'In Progress', 'Done' for Jira; 'open'/'closed' for GitHub/GitLab)",
+				Description: "Target status (e.g. 'In Progress', 'Done' for Jira; Project Status or 'open'/'closed' for GitHub)",
 				Required:    true,
 				Order:       4,
+				DependsOn:   []string{"integration_id", "project_key"},
+				OptionsSource: &types.OptionsSource{
+					Type:              "ticket_statuses",
+					DependencyMapping: map[string]string{"integration_id": "integration_id", "project_key": "project_key"},
+				},
 			},
 			"project_key": {
 				Type:        types.PropertyTypeString,
