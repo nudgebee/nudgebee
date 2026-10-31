@@ -221,10 +221,15 @@ const OPTIONS_SOURCE_FETCHERS: Record<string, FetcherFn> = {
       snackbar.warning(warning);
     }
     const options = Array.isArray(rawOptions) ? rawOptions : [];
-    return options.map((value: any) => ({
-      label: value.name || value.value || String(value.id),
-      value: value.value || value.id,
-    }));
+    return options
+      .filter((option: any) => option != null && (option.value != null || option.id != null))
+      .map((option: any) => {
+        const selectedValue = option.value ?? option.id;
+        return {
+          label: option.name || String(selectedValue),
+          value: selectedValue,
+        };
+      });
   },
 
   // Kubernetes workload names scoped by account + namespace (optionally kind).

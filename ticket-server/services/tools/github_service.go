@@ -664,7 +664,7 @@ func projectStatusValues(ctx *gin.Context, client *github.Client, owner, repo st
 			return nil, err
 		}
 		for _, field := range fields {
-			if field.Name != "Status" {
+			if !strings.EqualFold(field.Name, "Status") {
 				continue
 			}
 			options, err := fetchFieldOptions(ctx, client, field.ID)
@@ -769,7 +769,7 @@ func (s *GitHubService) updateProjectStatus(ctx *gin.Context, githubClient *gith
 			return err
 		}
 		for _, field := range fields {
-			if field.ID != parts[2] || field.Name != "Status" {
+			if field.ID != parts[2] || !strings.EqualFold(field.Name, "Status") {
 				continue
 			}
 			options, err := fetchFieldOptions(ctx, githubClient, field.ID)
