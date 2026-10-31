@@ -213,12 +213,15 @@ const OPTIONS_SOURCE_FETCHERS: Record<string, FetcherFn> = {
     const integrationId = formValues.integration_id;
     if (!integrationId) return [];
     const projectKey = formValues.project_key || '';
-    const meta: any = await apiTickets.getTicketMeta(integrationId, projectKey);
-    const templates = meta?.data?.tickets_get_create_meta?.data || [];
-    const statusField = templates
-      .map((template: any) => template?.fields?.transition_status)
-      .find((field: any) => field);
-    return (statusField?.allowedValues || []).map((value: any) => ({
+    const meta: any = await apiTickets.getTicketTransitionMeta(integrationId, projectKey);
+    const transitionMeta = meta?.data?.tickets_get_transition_meta;
+    const rawOptions = transitionMeta?.data;
+    const warning = rawOptions?.warning;
+    if (warning) {
+      snackbar.warning(warning);
+    }
+    const options = Array.isArray(rawOptions) ? rawOptions : rawOptions?.options || [];
+    return options.map((value: any) => ({
       label: value.name || value.value || String(value.id),
       value: value.value || value.id,
     }));
