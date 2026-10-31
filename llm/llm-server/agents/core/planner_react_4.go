@@ -1482,6 +1482,12 @@ func (o *NBReActPlanner4) buildMessages(input string, steps []NBAgentPlannerTool
 	// Flush redirects recorded after the last step (the common single-turn case,
 	// where no tool call followed the rejected answer).
 	flushRedirects(len(steps))
+	if metricEvidence := metricNoDataSummary(steps); metricEvidence != "" {
+		messages = append(messages, llms.MessageContent{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextContent{Text: metricEvidence}},
+		})
+	}
 	return messages
 }
 
@@ -1775,7 +1781,7 @@ func (o *NBReActPlanner4) renderObservation(step *NBAgentPlannerToolActionStep, 
 	if ev := strings.TrimSpace(step.SubAgentEvidence); ev != "" {
 		obs = obs + "\n\n" + ev
 	}
-	return withSavedOutputNote(obs, step.Metadata)
+	return withMetricNoDataMarker(*step, withSavedOutputNote(obs, step.Metadata))
 }
 
 // Replayed results for successful update_notebook calls (see renderObservation).
@@ -2014,6 +2020,10 @@ func (o *NBReActPlanner4) flattenTranscript(steps []NBAgentPlannerToolActionStep
 			fmt.Fprintf(&b, "Thought: %s\n", thought)
 		}
 		fmt.Fprintf(&b, "Step %d — %s(%s)\nObservation: %s\n\n", n, s.Action.Tool, s.Action.ToolInput, s.Observation)
+	}
+	if metricEvidence := metricNoDataSummary(steps); metricEvidence != "" {
+		b.WriteString(metricEvidence)
+		b.WriteByte('\n')
 	}
 	return b.String()
 }
