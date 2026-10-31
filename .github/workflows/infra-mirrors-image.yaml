@@ -117,6 +117,10 @@ jobs:
           # kubectl + /bin/sh only, for the rag-server migration hook. Replaces the
           # alpine/k8s toolbox clone; same kubectl source tag, rebuilt on a patched Go.
           - { image: kubectl,           context: deploy/kubernetes/nudgebee-mirrors/kubectl,           tag: 1.32.13-nb1 }
+          # Upstream 1.31.4 images with their Go binaries rebuilt from the same tags on
+          # a patched Go. Drop both once an upstream release carries the fixes.
+          - { image: temporal-server,      context: deploy/kubernetes/nudgebee-mirrors/temporal-server,      tag: 1.31.4-nb1 }
+          - { image: temporal-admin-tools, context: deploy/kubernetes/nudgebee-mirrors/temporal-admin-tools, tag: 1.31.4-nb1 }
           # Debian 12 successors to the debian-11 postgresql / redis mirrors above
           # (Debian 11 LTS ended Aug 2026). Published ahead of any chart change:
           # EE switches its charts to these first, then the switch syncs here.
@@ -165,7 +169,9 @@ jobs:
   # per-arch tag rather than publishing anything wrong.
   merge:
     needs: [prepare, build]
-    if: needs.prepare.outputs.push == 'true'
+    # Runs when a build leg failed, so one failed image cannot hold back the others.
+    # Its own merge row fails loudly on the missing per-arch tag.
+    if: ${{ !cancelled() && needs.prepare.outputs.push == 'true' }}
     permissions:
       contents: read
       packages: write
@@ -185,6 +191,8 @@ jobs:
           - { image: trivy,             tag: 0.76.1-nb1 }
           - { image: kube-bench,        tag: v0.16.0-nb1 }
           - { image: kubectl,           tag: 1.32.13-nb1 }
+          - { image: temporal-server,      tag: 1.31.4-nb1 }
+          - { image: temporal-admin-tools, tag: 1.31.4-nb1 }
           - { image: postgresql,        tag: 16.6.0-debian-12-r2-nb1 }
           - { image: redis,             tag: 7.0.15-debian-12-r20-nb1 }
           - { image: postgres,          tag: 16.15-bookworm-nb1 }
