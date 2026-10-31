@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"errors"
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
@@ -51,6 +52,9 @@ func (OpenObserveTracesExecuteTool) InputSchema() core.ToolSchema {
 
 func (OpenObserveTracesExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
 	nbRequestContext = nbRequestContext.ForTarget()
+	if nbRequestContext.AccountId == "" {
+		return openObserveToolError("traces", "the target account is unavailable; retry with an authenticated account", errors.New("missing target account ID"))
+	}
 	cfg, err := getOpenObserveConfig(nbRequestContext)
 	if err != nil {
 		return openObserveToolError("traces", "could not load the OpenObserve integration. Configure its URL, organization, username, and password", err)

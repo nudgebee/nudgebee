@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"errors"
 	"fmt"
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
@@ -52,6 +53,9 @@ func (OpenObserveLogsExecuteTool) InputSchema() core.ToolSchema {
 
 func (t OpenObserveLogsExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
 	nbRequestContext = nbRequestContext.ForTarget()
+	if nbRequestContext.AccountId == "" {
+		return openObserveToolError("logs", "the target account is unavailable; retry with an authenticated account", errors.New("missing target account ID"))
+	}
 	cfg, err := getOpenObserveConfig(nbRequestContext)
 	if err != nil {
 		return openObserveToolError("logs", "could not load the OpenObserve integration. Configure its URL, organization, username, and password", err)

@@ -56,6 +56,9 @@ func (OpenObserveMetricsExecuteTool) InputSchema() core.ToolSchema {
 
 func (OpenObserveMetricsExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
 	nbRequestContext = nbRequestContext.ForTarget()
+	if nbRequestContext.AccountId == "" {
+		return openObserveToolError("metrics", "the target account is unavailable; retry with an authenticated account", errors.New("missing target account ID"))
+	}
 	if nbRequestContext.Ctx == nil || nbRequestContext.Ctx.GetSecurityContext() == nil {
 		return openObserveToolError("metrics", "the request context is unavailable; retry from an authenticated account", errors.New("missing request or security context"))
 	}

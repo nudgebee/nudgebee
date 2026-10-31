@@ -6,9 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"nudgebee/llm/config"
+	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 
 	"github.com/stretchr/testify/assert"
@@ -37,6 +40,63 @@ func TestGetOpenObserveConfig(t *testing.T) {
 	assert.Equal(t, "openobserve", schema.ConfigType)
 	assert.Contains(t, schema.Required, "openobserve_password")
 	assert.True(t, schema.Properties["openobserve_password"].IsEncrypted)
+}
+
+func TestOpenObserveToolsRejectEmptyAccountBeforeConfigOrQuery(t *testing.T) {
+	var metricRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		metricRequests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	defer server.Close()
+	previousServiceEndpoint := config.Config.ServiceEndpoint
+	config.Config.ServiceEndpoint = server.URL
+	t.Cleanup(func() { config.Config.ServiceEndpoint = previousServiceEndpoint })
+
+	invalidEncryptedConfig := core.ToolConfig{Values: []core.ToolConfigValue{
+		{Name: "openobserve_url", Value: "https://observe.example.test"},
+		{Name: "openobserve_org_id", Value: "default"},
+		{Name: "openobserve_username", Value: "agent"},
+		{Name: "openobserve_password", Value: "not-a-valid-encrypted-value", IsEncrypted: true},
+	}}
+	tests := []struct {
+		name string
+		call func(core.NbToolContext) (core.NBToolResponse, error)
+	}{
+		{
+			name: "logs",
+			call: func(ctx core.NbToolContext) (core.NBToolResponse, error) {
+				return (OpenObserveLogsExecuteTool{}).Call(ctx, core.NBToolCallRequest{Command: "SELECT * FROM default"})
+			},
+		},
+		{
+			name: "metrics",
+			call: func(ctx core.NbToolContext) (core.NBToolResponse, error) {
+				return (OpenObserveMetricsExecuteTool{}).Call(ctx, core.NBToolCallRequest{Command: "sum(rate(http_requests_total[5m]))"})
+			},
+		},
+		{
+			name: "traces",
+			call: func(ctx core.NbToolContext) (core.NBToolResponse, error) {
+				return (OpenObserveTracesExecuteTool{}).Call(ctx, core.NBToolCallRequest{Command: "SELECT * FROM default"})
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := core.NbToolContext{ToolConfig: invalidEncryptedConfig}
+			if tc.name == "metrics" {
+				ctx.Ctx = security.NewRequestContextForTenantAccountAdmin("tenant", "user", []string{"account"})
+			}
+			response, err := tc.call(ctx)
+			require.Error(t, err)
+			assert.Equal(t, core.NBToolResponseStatusError, response.Status)
+			assert.Contains(t, err.Error(), "missing target account ID")
+			assert.Contains(t, response.Data, "target account is unavailable")
+		})
+	}
+	assert.Zero(t, metricRequests.Load(), "empty account ID must prevent the metrics HTTP request")
 }
 
 func TestGetOpenObserveConfigRejectsMissingAndUnsafeValues(t *testing.T) {
