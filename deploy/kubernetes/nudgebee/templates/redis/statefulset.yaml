@@ -41,7 +41,7 @@ spec:
     spec:
       serviceAccountName: {{ $fullname }}
       automountServiceAccountToken: false
-      {{- $pullSecrets := concat (.Values.global.imagePullSecrets | default list) (.Values.redis.image.pullSecrets | default list) }}
+      {{- $pullSecrets := concat (.Values.global.imagePullSecrets | default (list)) (.Values.redis.image.pullSecrets | default (list)) }}
       {{- with $pullSecrets }}
       imagePullSecrets:
         {{- range . | uniq }}
@@ -70,9 +70,9 @@ spec:
       terminationGracePeriodSeconds: {{ $master.terminationGracePeriodSeconds | default 30 }}
       # The uid/fsGroup Bitnami ran as (1001 unless overridden) own the files on
       # the existing PVC, so keep them; the official image runs as any non-root uid.
-      {{- $uid := int (default 1001 (($master.containerSecurityContext | default dict).runAsUser)) }}
+      {{- $uid := int (default 1001 (($master.containerSecurityContext | default (dict)).runAsUser)) }}
       securityContext:
-        fsGroup: {{ int (default 1001 (($master.podSecurityContext | default dict).fsGroup)) }}
+        fsGroup: {{ int (default 1001 (($master.podSecurityContext | default (dict)).fsGroup)) }}
         runAsUser: {{ $uid }}
         runAsGroup: {{ $uid }}
         runAsNonRoot: true

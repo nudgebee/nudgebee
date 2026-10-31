@@ -55,7 +55,7 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | 
 {{- $sc := .Values.redis.master.persistence.storageClass -}}
 {{- if .Values.global.storageClass -}}{{- $sc = .Values.global.storageClass -}}{{- end -}}
 {{- if $sc -}}
-{{- if eq "-" $sc -}}storageClassName: ""{{- else -}}storageClassName: {{ $sc }}{{- end -}}
+{{- if eq "-" $sc -}}storageClassName: ""{{- else -}}storageClassName: {{ $sc | quote }}{{- end -}}
 {{- end -}}
 {{- end -}}
 

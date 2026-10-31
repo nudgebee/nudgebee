@@ -1,9 +1,9 @@
 {{- if .Values.redis.enabled }}
 {{- $fullname := include "nudgebee.redis.fullname" . }}
 {{- /* Every service reaches Redis as `redis-master` (REDIS_SERVER_HOST in secrets-nudgebee.yaml). */}}
-{{- $svc := .Values.redis.master.service | default dict }}
+{{- $svc := .Values.redis.master.service | default (dict) }}
 {{- $type := $svc.type | default "ClusterIP" }}
-{{- $annotations := merge (dict) ($svc.annotations | default dict) (.Values.redis.commonAnnotations | default dict) }}
+{{- $annotations := merge (dict) ($svc.annotations | default (dict)) (.Values.redis.commonAnnotations | default (dict)) }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -42,9 +42,9 @@ spec:
   {{- end }}
   ports:
     - name: tcp-redis
-      port: {{ (($svc.ports | default dict).redis) | default 6379 }}
+      port: {{ (($svc.ports | default (dict)).redis) | default 6379 }}
       targetPort: redis
-      {{- $nodePort := (($svc.nodePorts | default dict).redis) }}
+      {{- $nodePort := (($svc.nodePorts | default (dict)).redis) }}
       {{- if and (or (eq $type "NodePort") (eq $type "LoadBalancer")) $nodePort }}
       nodePort: {{ $nodePort }}
       {{- end }}

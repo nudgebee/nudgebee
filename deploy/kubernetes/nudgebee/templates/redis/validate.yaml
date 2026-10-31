@@ -7,16 +7,16 @@ upgrade that stops and says what to change. A default install sets none of them.
 {{- if .Values.redis.enabled }}
   {{- $r := .Values.redis }}
   {{- $unsupported := list }}
-  {{- if and (eq (toString $r.architecture) "replication") (gt (int (default 0 (($r.replica | default dict).replicaCount))) 0) }}
+  {{- if and (eq (toString $r.architecture) "replication") (gt (int (default 0 (($r.replica | default (dict)).replicaCount))) 0) }}
     {{- $unsupported = append $unsupported "redis.replica.replicaCount > 0 (replication)" }}
   {{- end }}
-  {{- if (($r.sentinel | default dict).enabled) }}
+  {{- if (($r.sentinel | default (dict)).enabled) }}
     {{- $unsupported = append $unsupported "redis.sentinel.enabled" }}
   {{- end }}
-  {{- if (($r.tls | default dict).enabled) }}
+  {{- if (($r.tls | default (dict)).enabled) }}
     {{- $unsupported = append $unsupported "redis.tls.enabled" }}
   {{- end }}
-  {{- if (($r.metrics | default dict).enabled) }}
+  {{- if (($r.metrics | default (dict)).enabled) }}
     {{- $unsupported = append $unsupported "redis.metrics.enabled" }}
   {{- end }}
   {{- if and $r.master.kind (ne (toString $r.master.kind) "StatefulSet") }}
@@ -26,13 +26,13 @@ upgrade that stops and says what to change. A default install sets none of them.
     {{- $unsupported = append $unsupported "redis.master.count > 1" }}
   {{- end }}
   {{- /* Objects or containers Bitnami added that this chart would silently drop. */}}
-  {{- if (($r.networkPolicy | default dict).enabled) }}
+  {{- if (($r.networkPolicy | default (dict)).enabled) }}
     {{- $unsupported = append $unsupported "redis.networkPolicy.enabled" }}
   {{- end }}
-  {{- if (($r.pdb | default dict).create) }}
+  {{- if (($r.pdb | default (dict)).create) }}
     {{- $unsupported = append $unsupported "redis.pdb.create" }}
   {{- end }}
-  {{- $sa := $r.serviceAccount | default dict }}
+  {{- $sa := $r.serviceAccount | default (dict) }}
   {{- if or (and (hasKey $sa "create") (not $sa.create)) $sa.name }}
     {{- $unsupported = append $unsupported "redis.serviceAccount.create/name" }}
   {{- end }}
