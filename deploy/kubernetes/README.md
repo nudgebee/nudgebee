@@ -41,7 +41,7 @@ deploy/kubernetes/
 └── NB_HELM_CHART_GUIDE.md          # Chart architecture for contributors
 ```
 
-The umbrella chart (`nudgebee/`) is what end users install. It declares the per-service charts (under `file://../<service>/`) plus external subcharts (Postgres, ClickHouse, Temporal) as dependencies. Redis and RabbitMQ are rendered by the umbrella chart itself (`templates/redis/`, `templates/rabbitmq/`, official images).
+The umbrella chart (`nudgebee/`) is what end users install. It declares the per-service charts (under `file://../<service>/`) plus external subcharts (ClickHouse, Temporal) as dependencies. Redis, RabbitMQ and PostgreSQL are rendered by the umbrella chart itself (`templates/redis/`, `templates/rabbitmq/`, `templates/postgresql/`, official images).
 
 ## Required configuration
 

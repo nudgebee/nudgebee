@@ -1,0 +1,191 @@
+{{- if .Values.postgresql.enabled }}
+{{- $r := include "nudgebee.postgresql.values" . | fromYaml }}
+{{- $name := include "nudgebee.postgresql.primaryFullname" . }}
+{{- $svc := $r.primary.service }}
+{{- $port := include "nudgebee.postgresql.servicePort" . }}
+{{- $podLabels := merge (dict) ($r.primary.podLabels | default (dict)) ($r.commonLabels | default (dict)) }}
+{{- $selector := merge (include "nudgebee.postgresql.matchLabels" (dict "custom" $podLabels "root" $) | fromYaml) (dict "app.kubernetes.io/component" "primary") }}
+{{- /* Every service reaches PostgreSQL as `postgresql` (the database URLs in secrets-nudgebee.yaml). */}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "nudgebee.postgresql.labels" (dict "custom" $r.commonLabels "root" $) | nindent 4 }}
+    app.kubernetes.io/component: primary
+  {{- with (merge (dict) ($svc.annotations | default (dict)) ($r.commonAnnotations | default (dict))) }}
+  annotations:
+    {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $svc.type }}
+  {{- if or (eq $svc.type "LoadBalancer") (eq $svc.type "NodePort") }}
+  externalTrafficPolicy: {{ $svc.externalTrafficPolicy | quote }}
+  {{- end }}
+  {{- if and (eq $svc.type "LoadBalancer") $svc.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges: {{ $svc.loadBalancerSourceRanges | toJson }}
+  {{- end }}
+  {{- if and (eq $svc.type "LoadBalancer") $svc.loadBalancerIP }}
+  loadBalancerIP: {{ $svc.loadBalancerIP }}
+  {{- end }}
+  {{- if and $svc.clusterIP (eq $svc.type "ClusterIP") }}
+  clusterIP: {{ $svc.clusterIP }}
+  {{- end }}
+  {{- with $svc.sessionAffinity }}
+  sessionAffinity: {{ . }}
+  {{- end }}
+  {{- with $svc.sessionAffinityConfig }}
+  sessionAffinityConfig:
+    {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 4 }}
+  {{- end }}
+  ports:
+    - name: tcp-postgresql
+      port: {{ $port }}
+      targetPort: tcp-postgresql
+      {{- if and (or (eq $svc.type "NodePort") (eq $svc.type "LoadBalancer")) $svc.nodePorts.postgresql }}
+      nodePort: {{ $svc.nodePorts.postgresql }}
+      {{- else if eq $svc.type "ClusterIP" }}
+      nodePort: null
+      {{- end }}
+    {{- with $svc.extraPorts }}
+    {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 4 }}
+    {{- end }}
+  selector:
+    {{- toYaml $selector | nindent 4 }}
+---
+# Governing Service of the StatefulSet (its spec.serviceName).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nudgebee.postgresql.headlessName" . }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "nudgebee.postgresql.labels" (dict "custom" $r.commonLabels "root" $) | nindent 4 }}
+    app.kubernetes.io/component: primary
+  annotations:
+    {{- with (merge (dict) (($svc.headless | default (dict)).annotations | default (dict)) ($r.commonAnnotations | default (dict))) }}
+    {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 4 }}
+    {{- end }}
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: tcp-postgresql
+      port: {{ $port }}
+      targetPort: tcp-postgresql
+  selector:
+    {{- toYaml $selector | nindent 4 }}
+{{- if $r.metrics.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ printf "%s-metrics" $name }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "nudgebee.postgresql.labels" (dict "custom" $r.commonLabels "root" $) | nindent 4 }}
+    app.kubernetes.io/component: metrics
+  {{- with (merge (dict) ($r.metrics.service.annotations | default (dict)) ($r.commonAnnotations | default (dict))) }}
+  annotations:
+    {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 4 }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  sessionAffinity: {{ $r.metrics.service.sessionAffinity }}
+  {{- with $r.metrics.service.clusterIP }}
+  clusterIP: {{ . }}
+  {{- end }}
+  ports:
+    - name: http-metrics
+      port: {{ $r.metrics.service.ports.metrics }}
+      targetPort: http-metrics
+  selector:
+    {{- toYaml $selector | nindent 4 }}
+{{- end }}
+{{- if $r.serviceAccount.create }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "nudgebee.postgresql.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "nudgebee.postgresql.labels" (dict "custom" $r.commonLabels "root" $) | nindent 4 }}
+  {{- with (merge (dict) ($r.serviceAccount.annotations | default (dict)) ($r.commonAnnotations | default (dict))) }}
+  annotations:
+    {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 4 }}
+  {{- end }}
+automountServiceAccountToken: {{ $r.serviceAccount.automountServiceAccountToken }}
+{{- end }}
+{{- $sm := $r.metrics.serviceMonitor }}
+{{- if and $r.metrics.enabled $sm.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ $name }}
+  namespace: {{ default .Release.Namespace $sm.namespace | quote }}
+  labels:
+    {{- include "nudgebee.postgresql.labels" (dict "custom" (merge (dict) ($sm.labels | default (dict)) ($r.commonLabels | default (dict))) "root" $) | nindent 4 }}
+    app.kubernetes.io/component: metrics
+  {{- with $r.commonAnnotations }}
+  annotations:
+    {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with $sm.jobLabel }}
+  jobLabel: {{ . }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "nudgebee.postgresql.matchLabels" (dict "custom" (merge (dict) ($sm.selector | default (dict)) ($r.commonLabels | default (dict))) "root" $) | nindent 6 }}
+      app.kubernetes.io/component: metrics
+  endpoints:
+    - port: http-metrics
+      {{- with $sm.interval }}
+      interval: {{ . }}
+      {{- end }}
+      {{- with $sm.scrapeTimeout }}
+      scrapeTimeout: {{ . }}
+      {{- end }}
+      {{- with $sm.relabelings }}
+      relabelings:
+        {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 6 }}
+      {{- end }}
+      {{- with $sm.metricRelabelings }}
+      metricRelabelings:
+        {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 6 }}
+      {{- end }}
+      {{- if $sm.honorLabels }}
+      honorLabels: {{ $sm.honorLabels }}
+      {{- end }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace | quote }}
+{{- end }}
+{{- $pr := $r.metrics.prometheusRule }}
+{{- if and $r.metrics.enabled $pr.enabled }}
+---
+# Same as Bitnami: only `prometheusRule.rules` is rendered.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "nudgebee.postgresql.fullname" . }}
+  namespace: {{ default .Release.Namespace $pr.namespace | quote }}
+  labels:
+    {{- include "nudgebee.postgresql.labels" (dict "custom" (merge (dict) ($pr.labels | default (dict)) ($r.commonLabels | default (dict))) "root" $) | nindent 4 }}
+    app.kubernetes.io/component: metrics
+  {{- with $r.commonAnnotations }}
+  annotations:
+    {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 4 }}
+  {{- end }}
+spec:
+  groups:
+    - name: {{ include "nudgebee.postgresql.fullname" . }}
+      rules:
+        {{- include "nudgebee.postgresql.tpl" (dict "value" ($pr.rules | default (list)) "root" $) | nindent 8 }}
+{{- end }}
+{{- end }}
