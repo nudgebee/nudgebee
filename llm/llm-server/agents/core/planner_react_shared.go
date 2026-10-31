@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -51,6 +52,107 @@ func generateToolId(tool string, input string) string {
 // timestamp makes every repeat unique and silently disables dedup.
 func resolveToolInputMacros(input string) string {
 	return common.SubstituteDateMacros(input)
+}
+
+const metricNoDataTag = "[METRIC-NO-DATA]"
+
+// shortcut: only known metrics query names and response shapes are recognized; extend when a new metrics tool's output contract is reviewed.
+func metricQueryReturnedNoData(toolName, response string) bool {
+	response = strings.TrimSpace(response)
+	switch toolName {
+	case "prometheus_execute":
+		return response == "" || response == plannerToolNoData || strings.HasPrefix(strings.ToLower(response), "no data found for query:")
+	case "datadog_metrics_execute":
+		if response == "" || response == plannerToolNoData {
+			return true
+		}
+		var payload struct {
+			Series []json.RawMessage `json:"series"`
+		}
+		return json.Unmarshal([]byte(response), &payload) == nil && payload.Series != nil && len(payload.Series) == 0
+	case "es_metrics_query", "splunk_metrics_query":
+		if response == "" || response == plannerToolNoData {
+			return true
+		}
+		var envelope map[string]json.RawMessage
+		if json.Unmarshal([]byte(response), &envelope) != nil {
+			return false
+		}
+		rawResults, ok := envelope["results"]
+		if !ok {
+			return false
+		}
+		var results []json.RawMessage
+		if json.Unmarshal(rawResults, &results) != nil || results == nil {
+			return false
+		}
+		for _, rawResult := range results {
+			var result map[string]json.RawMessage
+			if json.Unmarshal(rawResult, &result) != nil {
+				return false
+			}
+			var totalSeries int
+			if json.Unmarshal(result["total_series"], &totalSeries) != nil || totalSeries != 0 {
+				return false
+			}
+			rawPayload, ok := result["payload"]
+			if !ok {
+				return false
+			}
+			var series []json.RawMessage
+			if json.Unmarshal(rawPayload, &series) != nil || series == nil || len(series) != 0 {
+				return false
+			}
+		}
+		return true
+	case "openobserve_metrics_execute":
+		return response == "" || response == plannerToolNoData || response == "[]"
+	default:
+		return false
+	}
+}
+
+func metricNoDataMarker(step NBAgentPlannerToolActionStep) string {
+	if step.Status == ToolStatusFailure || step.Status == ToolStatusWaiting || step.Status == ToolStatusWaitingForClient {
+		return ""
+	}
+	if !metricQueryReturnedNoData(step.Action.Tool, step.Observation) {
+		return ""
+	}
+	ref := step.Action.DisplayID
+	if ref == "" {
+		ref = step.Action.ToolID
+	}
+	if ref != "" {
+		ref = " (step " + ref + ")"
+	}
+	return fmt.Sprintf("%s %s%s returned no metric series. This is unavailable, not a measured zero, and supports no numeric metric value.", metricNoDataTag, step.Action.Tool, ref)
+}
+
+func withMetricNoDataMarker(step NBAgentPlannerToolActionStep, response string) string {
+	marker := metricNoDataMarker(step)
+	if marker == "" || strings.Contains(response, metricNoDataTag) {
+		return response
+	}
+	return marker + "\n" + response
+}
+
+func metricNoDataSummary(steps []NBAgentPlannerToolActionStep) string {
+	var b strings.Builder
+	for _, step := range steps {
+		if marker := metricNoDataMarker(step); marker != "" {
+			b.WriteString("- ")
+			b.WriteString(marker)
+			b.WriteByte('\n')
+		}
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	return "<metric_data_availability>\n" + b.String() +
+		"Do not turn an empty metric result into zero or infer a value from another metric. " +
+		"Any measured metric number must be supported by a non-empty metric result or an explicit calculation from its returned samples; cite the supporting step. " +
+		"If the relevant reads returned no data, report the metric as unavailable and cite these empty results.\n</metric_data_availability>"
 }
 
 type NBAgentReActPlannerCritiqueSupport interface {

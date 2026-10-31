@@ -571,6 +571,9 @@ func (o *NBReActPlanner3) buildScratchpad(intermediateSteps []NBAgentPlannerTool
 		o.compressionTracker.SetCompressionContext(true)
 		scratchpad = o.compressScratchpad(scratchpad, hardCapChars, intermediateSteps)
 	}
+	if metricEvidence := metricNoDataSummary(intermediateSteps); metricEvidence != "" {
+		scratchpad = strings.TrimSuffix(scratchpad, "</scratchpad>") + "\n" + metricEvidence + "\n</scratchpad>"
+	}
 	return scratchpad
 }
 
@@ -768,9 +771,11 @@ func (o *NBReActPlanner3) resolveObservation(step NBAgentPlannerToolActionStep) 
 			"In your analysis, explicitly state: 'Unable to verify [what you checked]: tool call failed.'\n" +
 			obs
 	}
-	// Mirrors the [TOOL-FAILED] marker above for the empty-but-successful write case
-	// (see #29875) — without it the model misreads empty stdout as failure and retries.
-	if step.Status == ToolStatusEmptyResult {
+	// Empty metric reads are missing evidence; only other empty-success calls get the
+	// mutation marker that prevents a successful write from being retried (#29875).
+	if metricNoDataMarker(step) != "" {
+		obs = withMetricNoDataMarker(step, obs)
+	} else if step.Status == ToolStatusEmptyResult {
 		obs = "[SUCCESS-NO-OUTPUT] This action completed successfully (exit code 0, empty output). " +
 			"For write/mutation commands this IS success, not a failure or missing data. " +
 			"Do NOT retry this exact command and do NOT report it as failed.\n" +
@@ -789,9 +794,9 @@ func (o *NBReActPlanner3) getToolResponse(step *NBAgentPlannerToolActionStep, is
 		if len(toolResponse) > getMaxObservationChars() {
 			toolResponse = TruncateMiddle(toolResponse, 2048, getMaxObservationChars()-2048)
 		}
-		return toolResponse
+		return withMetricNoDataMarker(*step, toolResponse)
 	}
-	return SummarizeObservation(o.ctx, step, o.request, toolResponse)
+	return withMetricNoDataMarker(*step, SummarizeObservation(o.ctx, step, o.request, toolResponse))
 }
 
 // prewarmSummaries fires LLM summarizations in parallel for all non-recent steps
