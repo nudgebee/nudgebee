@@ -1,5 +1,6 @@
 import { clickSidenavRail } from "./helpers";
 import { test, Page, Locator, expect } from "@playwright/test";
+import { postAlertInThread } from "../../notifications/SlackThreads";
 import { waitForGraphQLAndValidate } from "./GraphQLNetworkWatcher";
 
 export const TICKET_TOOLS: Array<{
@@ -31,6 +32,11 @@ export type TicketResult =
 
 async function sendSlackAlert(message: string): Promise<void> {
   const webhookUrl = process.env.SLACK_WEBHOOK_URL;
+  // Into the run's "other alerts" thread when a bot is configured; the webhook otherwise.
+  if (await postAlertInThread("other", { text: message })) {
+    console.log("[createTicket] Slack alert sent in thread");
+    return;
+  }
   if (!webhookUrl) {
     console.warn("[createTicket] SLACK_WEBHOOK_URL not set — skipping Slack alert");
     return;
