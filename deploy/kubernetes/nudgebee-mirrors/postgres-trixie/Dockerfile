@@ -18,6 +18,6 @@ ARG OS_PKG_EPOCH
 
 RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
     && apt-get update \
-    && apt-get upgrade -y --no-install-recommends \
+    && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=gosu /go/bin/gosu /usr/local/bin/gosu
