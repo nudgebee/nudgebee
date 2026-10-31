@@ -50,6 +50,8 @@ func getAlertRuleSource(provider, integrationSource string) (AlertRuleSource, er
 		return &DatadogAlertRuleSource{}, nil
 	case provider == "newrelic" && integrationSource == "user":
 		return &NewRelicAlertRuleSource{}, nil
+	case provider == "openobserve" && integrationSource == "user":
+		return &OpenObserveAlertRuleSource{}, nil
 	case provider == "dynatrace" && integrationSource == "user":
 		return &DynatraceAlertRuleSource{}, nil
 	case provider == "splunk_observability_platform" && integrationSource == "user":
