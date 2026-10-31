@@ -169,8 +169,13 @@ RUN apk add --no-cache --virtual .build-deps \
     /opt/azure-cli-venv/bin/pip install --no-cache-dir --upgrade pip && \
     /opt/azure-cli-venv/bin/pip install --no-cache-dir azure-cli "cryptography>=48.0.1" && \
     ln -s /opt/azure-cli-venv/bin/az /usr/local/bin/az && \
-    pip install --no-cache-dir --break-system-packages --upgrade "cryptography>=48.0.1" && \
+    pip install --no-cache-dir --break-system-packages --upgrade \
+        "cryptography>=48.0.1" "urllib3>=2.8.0" "certifi>=2026.10.18" "jmespath>=1.1.0" \
+        "setuptools==80.10.2" && \
     apk del .build-deps
+# urllib3 2.8.0 warns on the `strict` argument Alpine's botocore still passes, once
+# per aws call. Silence that one warning so it stays out of command output.
+ENV PYTHONWARNINGS=ignore::FutureWarning:urllib3.poolmanager
 
 # Pre-install Azure CLI extensions to a fixed directory.
 # AZURE_EXTENSION_DIR decouples extension storage from AZURE_CONFIG_DIR,
@@ -233,6 +238,17 @@ RUN npm install --no-save --prefix /tmp/tarfix "tar@${TAR_VERSION}" \
          grep -q "\"version\": \"${TAR_VERSION}\"" "$d/package.json" \
            || { echo "ERROR: unpatched pnpm vendored tar at $d"; exit 1; }; \
        done
+
+# Patch npm's bundled undici. npm 11.21.1 is the newest 11.x and bundles undici
+# 6.29.0. undici is pure JS and this is a patch-level bump, the same technique as
+# the pnpm tar fix above. Bump UNDICI_VERSION when a scan flags it again.
+ARG UNDICI_VERSION=6.29.1
+RUN npm install --no-save --prefix /tmp/undicifix "undici@${UNDICI_VERSION}" \
+    && rm -rf /usr/local/lib/node_modules/npm/node_modules/undici \
+    && cp -R /tmp/undicifix/node_modules/undici /usr/local/lib/node_modules/npm/node_modules/undici \
+    && rm -rf /tmp/undicifix \
+    && grep -q "\"version\": \"${UNDICI_VERSION}\"" /usr/local/lib/node_modules/npm/node_modules/undici/package.json \
+    && npm --version
 
 # Copy Go toolchain and golangci-lint from builder.
 # Builder uses golang:1.26-alpine; matching that here keeps build/vet runnable
