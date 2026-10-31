@@ -127,7 +127,7 @@ func isSafeOpenObserveStream(stream string) bool {
 	return true
 }
 
-// shortcut: reject SQL constructs outside the single-stream subset; use a dialect parser if joins or subqueries are needed.
+// shortcut: reject SQL outside the single-stream subset; use a dialect parser if joins, subqueries, or dollar strings are needed.
 func prepareOpenObserveSQL(query, stream string) (string, error) {
 	query = strings.TrimSpace(query)
 	if len(query) >= 2 && query[0] == '`' && query[len(query)-1] == '`' {
@@ -229,6 +229,9 @@ func tokenizeOpenObserveSQL(query string) ([]openObserveSQLToken, error) {
 		}
 		if c == ';' {
 			return nil, fmt.Errorf("openobserve: only one SQL statement is allowed")
+		}
+		if c == '$' && strings.IndexByte(query[i+1:], '$') >= 0 {
+			return nil, fmt.Errorf("openobserve: dollar-quoted strings are not supported")
 		}
 		if c == '\'' || c == '"' || c == '`' {
 			quote := c

@@ -98,13 +98,15 @@ func (OpenObserveMetricsExecuteTool) ConfigSchema(_ *security.RequestContext) co
 	return getOpenObserveConfigSchema()
 }
 
-// OpenObserve's API returns timestamps in milliseconds; the metrics tool contract uses seconds.
+// OpenObserve OSS returns milliseconds; some deployments already use seconds.
 func normalizeOpenObserveMetricTimestamps(response *core.ObservabilityMetricsQueryResponse) {
 	for resultIndex := range response.Results {
 		for seriesIndex := range response.Results[resultIndex].Payload {
 			timestamps := response.Results[resultIndex].Payload[seriesIndex].Timestamps
 			for i := range timestamps {
-				timestamps[i] /= 1000
+				if timestamps[i] > 100_000_000_000 || timestamps[i] < -100_000_000_000 {
+					timestamps[i] /= 1000
+				}
 			}
 		}
 	}

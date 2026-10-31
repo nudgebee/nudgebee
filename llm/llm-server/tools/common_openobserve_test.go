@@ -90,6 +90,7 @@ func TestPrepareOpenObserveSQL(t *testing.T) {
 		{name: "full select", query: "SELECT * FROM default WHERE level = 'error'", stream: "default", want: "SELECT * FROM default WHERE level = 'error'"},
 		{name: "keyword in string literal", query: "SELECT * FROM default WHERE message = 'union select from other'", stream: "default", want: "SELECT * FROM default WHERE message = 'union select from other'"},
 		{name: "escaped apostrophe in E string", query: `SELECT * FROM default WHERE message = E'it\'s fine'`, stream: "default", want: `SELECT * FROM default WHERE message = E'it\'s fine'`},
+		{name: "dollar-quoted strings are rejected", query: `SELECT * FROM default WHERE message = $$it's fine$$`, stream: "default", wantError: true},
 		{name: "predicate", query: "service = 'api'", stream: "app_logs", want: "SELECT * FROM app_logs WHERE service = 'api'"},
 		{name: "where predicate", query: "WHERE service = 'api'", stream: "app_logs", want: "SELECT * FROM app_logs WHERE service = 'api'"},
 		{name: "empty query", query: " ", stream: "default", wantError: true},
@@ -100,6 +101,7 @@ func TestPrepareOpenObserveSQL(t *testing.T) {
 		{name: "predicate union injection", query: "service = 'api' UNION SELECT * FROM private_logs", stream: "default", wantError: true},
 		{name: "predicate subquery injection", query: "service IN (SELECT service FROM private_logs)", stream: "default", wantError: true},
 		{name: "escaped-string stream injection", query: `SELECT * FROM default WHERE x = E'a\'' UNION SELECT * FROM private_logs WHERE y = E'b\''`, stream: "default", wantError: true},
+		{name: "dollar-quoted stream injection", query: `SELECT * FROM default WHERE x = $$'$$ UNION SELECT * FROM private_logs WHERE y = $$'$$`, stream: "default", wantError: true},
 		{name: "comments are rejected", query: "service = 'api' -- UNION SELECT", stream: "default", wantError: true},
 		{name: "unsafe stream", query: "service = 'api'", stream: "logs;drop", wantError: true},
 	}
@@ -228,8 +230,12 @@ func TestOpenObserveClientRejectsMalformedAndProviderErrorResponses(t *testing.T
 
 func TestNormalizeOpenObserveMetricTimestampsUsesSeconds(t *testing.T) {
 	response := core.ObservabilityMetricsQueryResponse{Results: []core.ObservabilityMetricsQueryResult{{
-		Payload: []core.ObservabilityMetricsQuerySeries{{Timestamps: []int64{1793440800000, 1793440860000}}},
+		Payload: []core.ObservabilityMetricsQuerySeries{
+			{Timestamps: []int64{1793440800000, 1793440860000}},
+			{Timestamps: []int64{1793440800}},
+		},
 	}}}
 	normalizeOpenObserveMetricTimestamps(&response)
 	assert.Equal(t, []int64{1793440800, 1793440860}, response.Results[0].Payload[0].Timestamps)
+	assert.Equal(t, []int64{1793440800}, response.Results[0].Payload[1].Timestamps)
 }
