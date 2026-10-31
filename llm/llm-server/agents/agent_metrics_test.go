@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"encoding/json"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
@@ -123,6 +124,148 @@ func TestNormaliseGeneratedMetricsQueryRejectsUnusableAnswers(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
+}
+
+// The {"promql": ...} envelope is a transport, not a trust boundary: prose
+// smuggled into it must fail the same single-expression parse as bare text, while
+// a valid JSON-wrapped query still fills the editor.
+func TestNormaliseGeneratedMetricsQueryRejectsProseInPromqlEnvelope(t *testing.T) {
+	_, err := normaliseGeneratedMetricsQuery("prometheus", `{"promql":"Here is the query: up"}`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a runnable query", "prose in the promql envelope must fail with the same error shape as bare prose")
+
+	got, err := normaliseGeneratedMetricsQuery("prometheus", `{"promql":"up"}`)
+	require.NoError(t, err)
+	assert.Equal(t, "up", got.Query)
+}
+
+func TestNormaliseGeneratedMetricsQueryValidatesQueryEnvelope(t *testing.T) {
+	_, err := normaliseGeneratedMetricsQuery("prometheus", `{"query":"Here is the query: up"}`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a runnable query")
+
+	got, err := normaliseGeneratedMetricsQuery("prometheus", `{"query":"up"}`)
+	require.NoError(t, err)
+	assert.Equal(t, "up", got.Query)
+
+	got, err = normaliseGeneratedMetricsQuery("datadog", `{"query":"avg:system.cpu.user{*}"}`)
+	require.NoError(t, err)
+	assert.Equal(t, "avg:system.cpu.user{*}", got.Query)
+}
+
+func TestNormaliseGeneratedMetricsQueryValidatesDatadogQueries(t *testing.T) {
+	valid := "avg:kubernetes.cpu.usage.total{pod_name:my-pod,kube_namespace:default} by {pod_name}"
+	got, err := normaliseGeneratedMetricsQuery("datadog", valid)
+	require.NoError(t, err)
+	assert.Equal(t, valid, got.Query)
+
+	for _, raw := range []string{
+		"Here is the query: " + valid,
+		"Here are some queries:\n\n### CPU\n```text\n" + valid + "\n```\n\n### Memory\n```text\navg:kubernetes.memory.usage{*}\n```",
+		`{"query":"Here is the query: ` + valid + `"}`,
+	} {
+		_, err := normaliseGeneratedMetricsQuery("datadog", raw)
+		require.Error(t, err, "raw response should not reach the query editor: %q", raw)
+		assert.Contains(t, err.Error(), "not a runnable query")
+	}
+}
+
+// Issue #293: on an ambiguous ask, promql_query answered with a markdown menu of
+// example queries. That must never land in the editor — for a PromQL provider the
+// markdown fails the single-expression parse and surfaces as an error, and a
+// {"note": ...}-only answer is the contract for the clarification and its text
+// becomes the error message the user can act on.
+func TestNormaliseGeneratedMetricsQueryRejectsMarkdownMenuAndSurfacesNote(t *testing.T) {
+	markdownMenu := "Here are some queries you can use:\n\n### CPU Usage\n```promql\nsum(rate(container_cpu_usage_seconds_total[5m])) by (pod)\n```\n\n### Memory Usage\n```promql\ncontainer_memory_usage_bytes{namespace=\"default\"}\n```\n"
+	_, err := normaliseGeneratedMetricsQuery("prometheus", markdownMenu)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a runnable query", "the markdown menu must be rejected, not stored as the query")
+
+	_, err = normaliseGeneratedMetricsQuery("prometheus", `{"note": "Which metric do you want to query — CPU or memory?"}`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Which metric do you want to query — CPU or memory?", "the note itself is the clarification message")
+
+	// The ES writer answers only in the JSON envelope; prose can never run in the
+	// ES editor either, so it must error rather than fill the bar.
+	_, err = normaliseGeneratedMetricsQuery("ES", "some explanatory prose instead of a query")
+	require.Error(t, err)
+}
+
+// Bare text for a PromQL provider is accepted only when it parses as one PromQL
+// expression: a writer regression emitting a bare-but-valid query still fills the
+// editor, while prose becomes an error.
+func TestNormaliseGeneratedMetricsQueryAcceptsBarePromQL(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider string
+		raw      string
+		want     string
+	}{
+		{name: "bare metric selector", provider: "prometheus", raw: "up", want: "up"},
+		{
+			name:     "bare query with __CLUSTER__ placeholder is kept verbatim",
+			provider: "victoria-metrics",
+			raw:      `rate(http_requests_total{__CLUSTER__ job="api"}[5m])`,
+			want:     `rate(http_requests_total{__CLUSTER__ job="api"}[5m])`,
+		},
+		{
+			name:     "single fenced promql block is unwrapped and parsed",
+			provider: "prometheus",
+			raw:      "```promql\nsum(rate(node_cpu_seconds_total[5m]))\n```",
+			want:     "sum(rate(node_cpu_seconds_total[5m]))",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := normaliseGeneratedMetricsQuery(tc.provider, tc.raw)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got.Query)
+			assert.Equal(t, tc.provider, got.Provider)
+		})
+	}
+}
+
+// Regression for issue #293 at the Execute boundary, driven through the injectable
+// executor so no LLM is needed: a "give me a query for X" ask with a well-formed
+// writer answer fills the editor with one clean query, while the issue's markdown
+// writer answer surfaces as a failed response instead of editor garbage.
+func TestMetricsQueryAgentExecuteNormalisesWriterAnswer(t *testing.T) {
+	ctx := security.NewRequestContextForSuperAdmin()
+
+	newAgent := func(writerRaw string) *metricsQueryAgent {
+		return &metricsQueryAgent{
+			accountId: "acct",
+			provider:  "prometheus",
+			agent:     &PromqlAgent{accountId: "acct"},
+			executor: func(_ toolcore.NbToolContext, _ core.NBAgent, _ toolcore.NBToolCallRequest) (core.NBAgentResponse, error) {
+				return core.NBAgentResponse{
+					Response: []string{writerRaw},
+					Status:   core.ConversationStatusCompleted,
+				}, nil
+			},
+		}
+	}
+
+	t.Run("well-formed writer answer yields one clean query", func(t *testing.T) {
+		resp, err := newAgent(`{"promql": "sum(rate(container_cpu_usage_seconds_total{__CLUSTER__ namespace=\"default\"}[5m])) by (pod)"}`).
+			Execute(ctx, core.NBAgentRequest{Query: "give me a query for cpu usage"})
+
+		require.NoError(t, err)
+		require.Equal(t, core.ConversationStatusCompleted, resp.Status)
+
+		var result metricsQueryResult
+		require.NoError(t, json.Unmarshal([]byte(resp.Response[0]), &result))
+		assert.Equal(t, `sum(rate(container_cpu_usage_seconds_total{__CLUSTER__ namespace="default"}[5m])) by (pod)`, result.Query)
+		assert.Equal(t, "prometheus", result.Provider)
+	})
+
+	t.Run("markdown menu writer answer fails instead of filling the editor", func(t *testing.T) {
+		markdownMenu := "Here are some queries:\n### CPU\n```promql\nup\n```\n### Memory\n```promql\nup\n```"
+		resp, err := newAgent(markdownMenu).Execute(ctx, core.NBAgentRequest{Query: "give me a query"})
+
+		require.NoError(t, err)
+		require.Equal(t, core.ConversationStatusFailed, resp.Status)
+		assert.Contains(t, resp.Response[0], "not a runnable query")
+	})
 }
 
 // The router picks the query writer whose language the account's editor speaks. It
