@@ -1,0 +1,434 @@
+{{- if .Values.postgresql.enabled }}
+{{- $r := include "nudgebee.postgresql.values" . | fromYaml }}
+{{- $p := $r.primary }}
+{{- $pv := $p.persistence }}
+{{- $m := $r.metrics }}
+{{- $name := include "nudgebee.postgresql.primaryFullname" . }}
+{{- $podLabels := merge (dict) ($p.podLabels | default (dict)) ($r.commonLabels | default (dict)) }}
+{{- $selector := merge (include "nudgebee.postgresql.matchLabels" (dict "custom" $podLabels "root" $) | fromYaml) (dict "app.kubernetes.io/component" "primary") }}
+{{- $secret := include "nudgebee.postgresql.secretName" . }}
+{{- $adminKey := include "nudgebee.postgresql.adminPasswordKey" . }}
+{{- $database := include "nudgebee.postgresql.database" . }}
+{{- $customUser := $r.auth.username }}
+{{- $podSC := $p.podSecurityContext }}
+{{- $ctrSC := $p.containerSecurityContext }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "nudgebee.postgresql.labels" (dict "custom" (merge (dict) ($p.labels | default (dict)) ($r.commonLabels | default (dict))) "root" $) | nindent 4 }}
+    app.kubernetes.io/component: primary
+  {{- with (merge (dict) ($p.annotations | default (dict)) ($r.commonAnnotations | default (dict))) }}
+  annotations:
+    {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: 1
+  # Frozen by the Bitnami chart this replaces: serviceName, selector and
+  # volumeClaimTemplates must stay identical (see _postgresql.tpl).
+  serviceName: {{ include "nudgebee.postgresql.headlessName" . }}
+  {{- with $p.updateStrategy }}
+  updateStrategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- toYaml $selector | nindent 6 }}
+  template:
+    metadata:
+      name: {{ $name }}
+      labels:
+        {{- include "nudgebee.postgresql.labels" (dict "custom" $podLabels "root" $) | nindent 8 }}
+        app.kubernetes.io/component: primary
+      annotations:
+        checksum/configuration: {{ include (print $.Template.BasePath "/postgresql/config.yaml") . | sha256sum }}
+        {{- with $p.podAnnotations }}
+        {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with $p.extraPodSpec }}
+      {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 6 }}
+      {{- end }}
+      serviceAccountName: {{ include "nudgebee.postgresql.serviceAccountName" . }}
+      {{- $pullSecrets := concat (.Values.global.imagePullSecrets | default (list)) ($r.image.pullSecrets | default (list)) ($m.image.pullSecrets | default (list)) }}
+      {{- with $pullSecrets }}
+      imagePullSecrets:
+        {{- range . | uniq }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      {{- with $p.hostAliases }}
+      hostAliases:
+        {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 8 }}
+      {{- end }}
+      {{- if $p.affinity }}
+      affinity:
+        {{- include "nudgebee.postgresql.tpl" (dict "value" $p.affinity "root" $) | nindent 8 }}
+      {{- else }}
+      {{- /* Bitnami's affinity presets (default: soft pod anti-affinity). */}}
+      {{- $na := $p.nodeAffinityPreset }}
+      affinity:
+        {{- range $kind, $type := dict "podAffinity" $p.podAffinityPreset "podAntiAffinity" $p.podAntiAffinityPreset }}
+        {{- if eq $type "soft" }}
+        {{ $kind }}:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- toYaml $selector | nindent 20 }}
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        {{- else if eq $type "hard" }}
+        {{ $kind }}:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  {{- toYaml $selector | nindent 18 }}
+              topologyKey: kubernetes.io/hostname
+        {{- end }}
+        {{- end }}
+        {{- if $na.type }}
+        nodeAffinity:
+          {{- if eq $na.type "hard" }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: {{ $na.key }}
+                    operator: In
+                    values:
+                      {{- range $na.values }}
+                      - {{ . | quote }}
+                      {{- end }}
+          {{- else }}
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - preference:
+                matchExpressions:
+                  - key: {{ $na.key }}
+                    operator: In
+                    values:
+                      {{- range $na.values }}
+                      - {{ . | quote }}
+                      {{- end }}
+              weight: 1
+          {{- end }}
+        {{- end }}
+      {{- end }}
+      {{- with $p.nodeSelector }}
+      nodeSelector:
+        {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 8 }}
+      {{- end }}
+      {{- with $p.tolerations }}
+      tolerations:
+        {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 8 }}
+      {{- end }}
+      {{- with $p.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 8 }}
+      {{- end }}
+      {{- with $p.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with $p.schedulerName }}
+      schedulerName: {{ . | quote }}
+      {{- end }}
+      {{- with $p.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ . }}
+      {{- end }}
+      {{- if $podSC.enabled }}
+      securityContext:
+        {{- toYaml (omit $podSC "enabled") | nindent 8 }}
+      {{- end }}
+      hostNetwork: {{ $p.hostNetwork }}
+      hostIPC: {{ $p.hostIPC }}
+      {{- with $p.initContainers }}
+      initContainers:
+        {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: postgresql
+          image: {{ include "nudgebee.postgresql.image" (dict "image" .Values.postgresql.image "root" $) }}
+          imagePullPolicy: {{ $r.image.pullPolicy | quote }}
+          {{- if $ctrSC.enabled }}
+          securityContext:
+            {{- toYaml (omit $ctrSC "enabled") | nindent 12 }}
+          {{- end }}
+          # The official entrypoint initialises an empty PGDATA (fresh install)
+          # and otherwise just starts postgres on the existing data. Config
+          # comes from the ConfigMap, as Bitnami kept it outside PGDATA.
+          command: ["docker-entrypoint.sh"]
+          args:
+            - postgres
+            - -c
+            - config_file=/etc/postgresql/postgresql.conf
+            - -c
+            - hba_file=/etc/postgresql/pg_hba.conf
+          env:
+            - name: PGDATA
+              value: {{ $r.postgresqlDataDir | quote }}
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: {{ $adminKey }}
+            {{- with $database }}
+            - name: POSTGRES_DB
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with $p.initdb.args }}
+            - name: POSTGRES_INITDB_ARGS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with $p.initdb.postgresqlWalDir }}
+            - name: POSTGRES_INITDB_WALDIR
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with $p.extraEnvVars }}
+            {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 12 }}
+            {{- end }}
+          {{- if or $p.extraEnvVarsCM $p.extraEnvVarsSecret }}
+          envFrom:
+            {{- with $p.extraEnvVarsCM }}
+            - configMapRef:
+                name: {{ include "nudgebee.postgresql.tpl" (dict "value" . "root" $) }}
+            {{- end }}
+            {{- with $p.extraEnvVarsSecret }}
+            - secretRef:
+                name: {{ include "nudgebee.postgresql.tpl" (dict "value" . "root" $) }}
+            {{- end }}
+          {{- end }}
+          ports:
+            - name: tcp-postgresql
+              containerPort: {{ $r.containerPorts.postgresql }}
+          {{- /* Bitnami's checks: pg_isready against the configured database. */}}
+          {{- $ready := printf "exec pg_isready -U %s -d %s -h 127.0.0.1 -p %v" (squote (default "postgres" $customUser)) (squote (printf "dbname=%s" (default "postgres" $database))) $r.containerPorts.postgresql }}
+          {{- if $p.customStartupProbe }}
+          startupProbe:
+            {{- include "nudgebee.postgresql.tpl" (dict "value" $p.customStartupProbe "root" $) | nindent 12 }}
+          {{- else if $p.startupProbe.enabled }}
+          startupProbe:
+            {{- toYaml (omit $p.startupProbe "enabled") | nindent 12 }}
+            exec:
+              command: ["/bin/sh", "-c", {{ $ready | quote }}]
+          {{- end }}
+          {{- if $p.customLivenessProbe }}
+          livenessProbe:
+            {{- include "nudgebee.postgresql.tpl" (dict "value" $p.customLivenessProbe "root" $) | nindent 12 }}
+          {{- else if $p.livenessProbe.enabled }}
+          livenessProbe:
+            {{- toYaml (omit $p.livenessProbe "enabled") | nindent 12 }}
+            exec:
+              command: ["/bin/sh", "-c", {{ $ready | quote }}]
+          {{- end }}
+          {{- if $p.customReadinessProbe }}
+          readinessProbe:
+            {{- include "nudgebee.postgresql.tpl" (dict "value" $p.customReadinessProbe "root" $) | nindent 12 }}
+          {{- else if $p.readinessProbe.enabled }}
+          readinessProbe:
+            {{- toYaml (omit $p.readinessProbe "enabled") | nindent 12 }}
+            exec:
+              command: ["/bin/sh", "-c", "-e", {{ $ready | quote }}]
+          {{- end }}
+          {{- with $p.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $p.lifecycleHooks }}
+          lifecycle:
+            {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: postgresql-config
+              mountPath: /etc/postgresql
+            {{- if or $p.extendedConfiguration $p.existingExtendedConfigmap }}
+            - name: postgresql-extended-config
+              mountPath: /etc/postgresql/conf.d
+            {{- end }}
+            # Unix socket directory; not writable for the non-root uid otherwise.
+            - name: run
+              mountPath: /var/run/postgresql
+            {{- if or $p.initdb.scriptsConfigMap $p.initdb.scripts }}
+            - name: custom-init-scripts
+              mountPath: /docker-entrypoint-initdb.d/
+            {{- end }}
+            {{- if $p.initdb.scriptsSecret }}
+            - name: custom-init-scripts-secret
+              mountPath: /docker-entrypoint-initdb.d/secret
+            {{- end }}
+            {{- if $r.shmVolume.enabled }}
+            - name: dshm
+              mountPath: /dev/shm
+            {{- end }}
+            {{- /* Bitnami skipped this mount without persistence (its image had a
+                   writable /bitnami); the official image has none, so mount the
+                   emptyDir either way. */}}
+            - name: data
+              mountPath: {{ $pv.mountPath }}
+              {{- if and $pv.enabled $pv.subPath }}
+              subPath: {{ $pv.subPath }}
+              {{- end }}
+            {{- with $p.extraVolumeMounts }}
+            {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 12 }}
+            {{- end }}
+        {{- if $m.enabled }}
+        - name: metrics
+          image: {{ include "nudgebee.postgresql.image" (dict "image" .Values.postgresql.metrics.image "root" $) }}
+          imagePullPolicy: {{ $m.image.pullPolicy | quote }}
+          {{- if $m.containerSecurityContext.enabled }}
+          securityContext:
+            {{- toYaml (omit $m.containerSecurityContext "enabled") | nindent 12 }}
+          {{- end }}
+          {{- if or $m.customMetrics $m.collectors }}
+          args:
+            {{- if $m.customMetrics }}
+            - --extend.query-path
+            - /conf/custom-metrics.yaml
+            {{- end }}
+            {{- range $cname, $enabled := $m.collectors }}
+            - --{{ if not $enabled }}no-{{ end }}collector.{{ $cname }}
+            {{- end }}
+          {{- end }}
+          env:
+            - name: DATA_SOURCE_URI
+              value: {{ printf "127.0.0.1:%d/%s?sslmode=disable" (int (include "nudgebee.postgresql.servicePort" .)) (required "metrics need a database (postgresql.auth.database)" $database) | quote }}
+            - name: DATA_SOURCE_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: {{ ternary $adminKey (coalesce $r.auth.secretKeys.userPasswordKey "password") (or (empty $customUser) (eq $customUser "postgres")) }}
+            - name: DATA_SOURCE_USER
+              value: {{ default "postgres" $customUser | quote }}
+            {{- with $m.extraEnvVars }}
+            {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http-metrics
+              containerPort: {{ $m.containerPorts.metrics }}
+          {{- if $m.customStartupProbe }}
+          startupProbe:
+            {{- include "nudgebee.postgresql.tpl" (dict "value" $m.customStartupProbe "root" $) | nindent 12 }}
+          {{- else if $m.startupProbe.enabled }}
+          startupProbe:
+            {{- toYaml (omit $m.startupProbe "enabled") | nindent 12 }}
+            tcpSocket:
+              port: http-metrics
+          {{- end }}
+          {{- if $m.customLivenessProbe }}
+          livenessProbe:
+            {{- include "nudgebee.postgresql.tpl" (dict "value" $m.customLivenessProbe "root" $) | nindent 12 }}
+          {{- else if $m.livenessProbe.enabled }}
+          livenessProbe:
+            {{- toYaml (omit $m.livenessProbe "enabled") | nindent 12 }}
+            httpGet:
+              path: /
+              port: http-metrics
+          {{- end }}
+          {{- if $m.customReadinessProbe }}
+          readinessProbe:
+            {{- include "nudgebee.postgresql.tpl" (dict "value" $m.customReadinessProbe "root" $) | nindent 12 }}
+          {{- else if $m.readinessProbe.enabled }}
+          readinessProbe:
+            {{- toYaml (omit $m.readinessProbe "enabled") | nindent 12 }}
+            httpGet:
+              path: /
+              port: http-metrics
+          {{- end }}
+          {{- if $m.customMetrics }}
+          volumeMounts:
+            - name: custom-metrics
+              mountPath: /conf
+              readOnly: true
+          {{- end }}
+          {{- with $m.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- end }}
+        {{- with $p.sidecars }}
+        {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 8 }}
+        {{- end }}
+      volumes:
+        - name: postgresql-config
+          configMap:
+            name: {{ printf "%s-configuration" $name }}
+        {{- if or $p.extendedConfiguration $p.existingExtendedConfigmap }}
+        - name: postgresql-extended-config
+          configMap:
+            name: {{ ternary (tpl (toString $p.existingExtendedConfigmap) $) (printf "%s-extended-configuration" $name) (not (empty $p.existingExtendedConfigmap)) }}
+        {{- end }}
+        - name: run
+          emptyDir: {}
+        {{- if or $p.initdb.scriptsConfigMap $p.initdb.scripts }}
+        - name: custom-init-scripts
+          configMap:
+            name: {{ ternary (tpl (toString $p.initdb.scriptsConfigMap) $) (printf "%s-init-scripts" $name) (not (empty $p.initdb.scriptsConfigMap)) }}
+        {{- end }}
+        {{- if $p.initdb.scriptsSecret }}
+        - name: custom-init-scripts-secret
+          secret:
+            secretName: {{ tpl $p.initdb.scriptsSecret $ }}
+        {{- end }}
+        {{- with $p.extraVolumes }}
+        {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 8 }}
+        {{- end }}
+        {{- if and $m.enabled $m.customMetrics }}
+        - name: custom-metrics
+          configMap:
+            name: {{ printf "%s-metrics" $name }}
+        {{- end }}
+        {{- if $r.shmVolume.enabled }}
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            {{- with $r.shmVolume.sizeLimit }}
+            sizeLimit: {{ . }}
+            {{- end }}
+        {{- end }}
+  {{- if and $pv.enabled $pv.existingClaim }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ tpl $pv.existingClaim $ }}
+  {{- else if not $pv.enabled }}
+        - name: data
+          emptyDir: {}
+  {{- else }}
+  {{- if $p.persistentVolumeClaimRetentionPolicy.enabled }}
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: {{ $p.persistentVolumeClaimRetentionPolicy.whenDeleted }}
+    whenScaled: {{ $p.persistentVolumeClaimRetentionPolicy.whenScaled }}
+  {{- end }}
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: data
+        {{- with $pv.annotations }}
+        annotations:
+          {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 10 }}
+        {{- end }}
+        {{- with $pv.labels }}
+        labels:
+          {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 10 }}
+        {{- end }}
+      spec:
+        accessModes:
+        {{- range $pv.accessModes }}
+          - {{ . | quote }}
+        {{- end }}
+        {{- with $pv.dataSource }}
+        dataSource:
+          {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 10 }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $pv.size | quote }}
+        {{- with $pv.selector }}
+        selector:
+          {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 10 }}
+        {{- end }}
+        {{- include "nudgebee.postgresql.storageClass" (dict "persistence" $pv "global" .Values.global) | nindent 8 }}
+  {{- end }}
+{{- end }}

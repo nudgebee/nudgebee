@@ -4,10 +4,6 @@ type: application
 version: '0.2'
 appVersion: 'V0.2'
 dependencies:
-  - name: postgresql
-    repository: oci://registry-1.docker.io/bitnamicharts
-    condition: postgresql.enabled
-    version: '13.2.25'
   - name: clickhouse
     repository: oci://registry-1.docker.io/bitnamicharts
     condition: clickhouse.enabled

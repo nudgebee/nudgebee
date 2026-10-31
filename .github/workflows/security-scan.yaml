@@ -191,7 +191,7 @@ jobs:
       matrix:
         ref:
           # --- ghcr.io/nudgebee infra mirrors (current values.yaml pins) ---
-          - ghcr.io/nudgebee/postgresql:16.1.0-debian-11-r16-nb1
+          - ghcr.io/nudgebee/postgres:16.15-trixie
           - ghcr.io/nudgebee/postgres:16.15-alpine-nb1
           - ghcr.io/nudgebee/redis:7.2.17-alpine
           - ghcr.io/nudgebee/rabbitmq:4.2.9-management-alpine
