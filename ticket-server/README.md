@@ -108,7 +108,7 @@ Configuration is read via [viper](https://github.com/spf13/viper) — environmen
 
 | Variable                          | Default         | Purpose                                                       |
 |-----------------------------------|-----------------|---------------------------------------------------------------|
-| `ACTION_API_SERVER_TOKEN`         | _empty_         | Sent as `X-ACTION-TOKEN` on access checks to services-server   |
+| `ACTION_API_SERVER_TOKEN`         | required        | Sent as `X-ACTION-TOKEN` on access checks to services-server; use the same value as its callers |
 | `SERVICE_API_SERVER_URL`          | `http://services-server:8000` | Upstream services-server URL for callbacks       |
 
 ### Runtime
