@@ -22,7 +22,11 @@ func TestMetricQueryReturnedNoData(t *testing.T) {
 		{"Prometheus no-data message", "prometheus_execute", "No data found for query: up", true, ToolStatusSuccess},
 		{"Datadog empty series", "datadog_metrics_execute", `{"series":[]}`, true, ToolStatusSuccess},
 		{"Elasticsearch zero series", "es_metrics_query", `{"results":[{"total_series":0,"payload":[]}]}`, true, ToolStatusSuccess},
+		{"Elasticsearch missing total series with empty payload", "es_metrics_query", `{"results":[{"payload":[]}]}`, true, ToolStatusSuccess},
+		{"Elasticsearch missing total series with data", "es_metrics_query", `{"results":[{"payload":[{}]}]}`, false, ToolStatusSuccess},
 		{"Splunk zero series", "splunk_metrics_query", `{"results":[{"total_series":0,"payload":[]}]}`, true, ToolStatusSuccess},
+		{"Splunk missing total series with empty payload", "splunk_metrics_query", `{"results":[{"payload":[]}]}`, true, ToolStatusSuccess},
+		{"Splunk missing total series with data", "splunk_metrics_query", `{"results":[{"payload":[{}]}]}`, false, ToolStatusSuccess},
 		{"OpenObserve empty flattened result", "openobserve_metrics_execute", `[]`, true, ToolStatusSuccess},
 		{"zero-valued metric is data", "datadog_metrics_execute", `{"series":[{"pointlist":[[1720000000000,0]]}]}`, false, ToolStatusSuccess},
 		{"kubectl empty mutation success", "kubectl_execute", plannerToolNoData, false, ToolStatusEmptyResult},
@@ -99,6 +103,18 @@ func TestReAct3MetricNoDataSummarySurvivesScratchpadCompression(t *testing.T) {
 	assert.Contains(t, scratchpad, "step E4")
 }
 
+func TestReAct3MetricEvidenceIsInsertedBeforeLastScratchpadClose(t *testing.T) {
+	scratchpad := "<scratchpad>older</scratchpad> recent</scratchpad> \n"
+	evidence := "<metric_data_availability>\n" + metricNoDataTag + "\n</metric_data_availability>"
+
+	got := appendMetricEvidenceToScratchpad(scratchpad, evidence)
+	lastClosingTag := strings.LastIndex(got, "</scratchpad>")
+	evidenceIndex := strings.Index(got, metricNoDataTag)
+	require.Greater(t, lastClosingTag, evidenceIndex)
+	assert.Equal(t, " \n", got[lastClosingTag+len("</scratchpad>"):])
+	assert.Contains(t, got[:lastClosingTag], evidence)
+}
+
 func TestReAct4MetricNoDataMarkerAndSummaryReachModel(t *testing.T) {
 	planner := &NBReActPlanner4{}
 	steps := []NBAgentPlannerToolActionStep{{
@@ -127,6 +143,42 @@ func TestReAct4MetricNoDataMarkerAndSummaryReachModel(t *testing.T) {
 	assert.Contains(t, transcript.String(), metricNoDataTag)
 	assert.Contains(t, transcript.String(), "<metric_data_availability>")
 	assert.Contains(t, transcript.String(), "step E2")
+}
+
+func TestReAct4MetricEvidenceMergesIntoTrailingHumanMessage(t *testing.T) {
+	planner := &NBReActPlanner4{
+		refinementData: []refinementRecord{{
+			Answer:    "An earlier conclusion.",
+			Feedback:  "Recheck the empty metric result.",
+			StepIndex: 1,
+		}},
+	}
+	steps := []NBAgentPlannerToolActionStep{{
+		Action: NBAgentPlannerToolAction{
+			Tool:      "prometheus_execute",
+			ToolID:    "prometheus_execute-1",
+			DisplayID: "E1",
+			ToolInput: "up",
+		},
+		Observation: "No data found for query: up",
+		Status:      ToolStatusSuccess,
+	}}
+
+	messages := planner.buildMessages("show CPU", steps)
+	require.Len(t, messages, 5)
+	require.Equal(t, llms.ChatMessageTypeHuman, messages[len(messages)-1].Role)
+	require.Len(t, messages[len(messages)-1].Parts, 1)
+	var trailingHuman strings.Builder
+	for _, part := range messages[len(messages)-1].Parts {
+		if text, ok := part.(llms.TextContent); ok {
+			trailingHuman.WriteString(text.Text)
+		}
+	}
+	assert.Contains(t, trailingHuman.String(), "Recheck the empty metric result.")
+	assert.Contains(t, trailingHuman.String(), metricNoDataTag)
+	for i := 1; i < len(messages); i++ {
+		assert.False(t, messages[i-1].Role == llms.ChatMessageTypeHuman && messages[i].Role == llms.ChatMessageTypeHuman)
+	}
 }
 
 func TestSummarizeConversationIncludesMetricNoDataEvidence(t *testing.T) {

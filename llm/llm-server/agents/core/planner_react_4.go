@@ -1330,10 +1330,26 @@ func (o *NBReActPlanner4) buildMessages(input string, steps []NBAgentPlannerTool
 	// where no tool call followed the rejected answer).
 	flushRedirects(len(steps))
 	if metricEvidence := metricNoDataSummary(steps); metricEvidence != "" {
-		messages = append(messages, llms.MessageContent{
-			Role:  llms.ChatMessageTypeHuman,
-			Parts: []llms.ContentPart{llms.TextContent{Text: metricEvidence}},
-		})
+		if last := len(messages) - 1; last >= 0 && messages[last].Role == llms.ChatMessageTypeHuman {
+			textPart := -1
+			for i := len(messages[last].Parts) - 1; i >= 0; i-- {
+				if _, ok := messages[last].Parts[i].(llms.TextContent); ok {
+					textPart = i
+					break
+				}
+			}
+			if textPart >= 0 {
+				text := messages[last].Parts[textPart].(llms.TextContent)
+				messages[last].Parts[textPart] = llms.TextContent{Text: text.Text + "\n\n" + metricEvidence}
+			} else {
+				messages[last].Parts = append(messages[last].Parts, llms.TextContent{Text: metricEvidence})
+			}
+		} else {
+			messages = append(messages, llms.MessageContent{
+				Role:  llms.ChatMessageTypeHuman,
+				Parts: []llms.ContentPart{llms.TextContent{Text: metricEvidence}},
+			})
+		}
 	}
 	return messages
 }

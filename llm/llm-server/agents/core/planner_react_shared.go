@@ -91,9 +91,11 @@ func metricQueryReturnedNoData(toolName, response string) bool {
 			if json.Unmarshal(rawResult, &result) != nil {
 				return false
 			}
-			var totalSeries int
-			if json.Unmarshal(result["total_series"], &totalSeries) != nil || totalSeries != 0 {
-				return false
+			if rawTotalSeries, ok := result["total_series"]; ok {
+				var totalSeries *int
+				if json.Unmarshal(rawTotalSeries, &totalSeries) != nil || totalSeries == nil || *totalSeries != 0 {
+					return false
+				}
 			}
 			rawPayload, ok := result["payload"]
 			if !ok {

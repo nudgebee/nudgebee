@@ -572,9 +572,17 @@ func (o *NBReActPlanner3) buildScratchpad(intermediateSteps []NBAgentPlannerTool
 		scratchpad = o.compressScratchpad(scratchpad, hardCapChars, intermediateSteps)
 	}
 	if metricEvidence := metricNoDataSummary(intermediateSteps); metricEvidence != "" {
-		scratchpad = strings.TrimSuffix(scratchpad, "</scratchpad>") + "\n" + metricEvidence + "\n</scratchpad>"
+		scratchpad = appendMetricEvidenceToScratchpad(scratchpad, metricEvidence)
 	}
 	return scratchpad
+}
+
+func appendMetricEvidenceToScratchpad(scratchpad, metricEvidence string) string {
+	closingTag := "</scratchpad>"
+	if closingIndex := strings.LastIndex(scratchpad, closingTag); closingIndex >= 0 {
+		return scratchpad[:closingIndex] + "\n" + metricEvidence + "\n" + scratchpad[closingIndex:]
+	}
+	return scratchpad + "\n" + metricEvidence + "\n" + closingTag
 }
 
 // compressScratchpad reduces a scratchpad that exceeds the budget by splitting it
