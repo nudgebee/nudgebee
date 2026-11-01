@@ -254,22 +254,17 @@ Set `global.imagePullSecrets` and provide credentials via `nudgebee_registry_sec
 `nudgebee_secret.BASE_URL` doesn't match the ingress host. Update + re-run `helm upgrade`.
 
 **Bootstrap admin password**
-Dummy credentials are disabled by default. For a temporary local bootstrap login, enable them explicitly during install:
-```bash
-helm install nudgebee ./nudgebee \
-  --set nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED=true \
-  --set-string "nudgebee_secret.NUDGEBEE_ENCRYPTION_KEY=$(openssl rand -hex 32)" \
-  --set-string 'admin.email=you@example.com'
-```
-Preserve the generated encryption key for future upgrades; regenerating it makes encrypted rows unreadable.
-Retrieve the generated password with:
+The chart enables a bootstrap login pinned to the required `admin.email`; other
+email addresses cannot use it. The password is generated per installation and
+preserved across upgrades. Retrieve it with:
 ```bash
 kubectl -n nudgebee get secret nudgebee \
   -o jsonpath='{.data.NEXTAUTH_DUMMY_CREDS_PASSWORD}' | base64 -d
 ```
-Disable dummy credentials immediately after configuring a real authentication provider:
+After configuring and verifying SSO, LDAP, or magic-link authentication, disable
+the bootstrap login. Keep the deployment's existing values and chart arguments:
 ```bash
-helm upgrade nudgebee ./nudgebee \
+helm upgrade nudgebee ./nudgebee --reuse-values \
   --set nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED=false
 ```
 
