@@ -36,6 +36,11 @@ not expose pinned backend revision or temperature, so repeated results may diffe
 Full benchmark validation against the configured deployment remains outstanding.
 An earlier coached exploratory replay was excluded from these artifacts.
 
+[Runtime validation and provisioning](runtime-validation.md) documents the
+self-contained planner/executor/compression/critique regression and what remains
+necessary for the deployed-model benchmark. Its scripted answers do not measure
+model quality.
+
 The accompanying source change removes the unregistered OpenObserve tool case,
 so this PR has no dependency on #877. Targeted core tests passed:
 
