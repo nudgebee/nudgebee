@@ -1,6 +1,6 @@
 # Nudgebee
 
-Open-source SRE copilot — observability, FinOps, runbook automation, and incident response across Kubernetes and AWS / Azure / GCP.
+The open-source agentic ops platform for cloud, SRE, DevOps, support and FinOps teams: self-hosted, on your own models.
 
 [![License: BSL 1.1](https://img.shields.io/badge/License-BSL_1.1-blue.svg)](./LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://go.dev/dl/)
@@ -11,16 +11,40 @@ Open-source SRE copilot — observability, FinOps, runbook automation, and incid
 
 ## What is Nudgebee?
 
-Nudgebee is an open-source SRE copilot that watches your Kubernetes clusters and AWS / Azure / GCP accounts, turns raw signals into ranked findings, and walks operators through investigation and remediation. It bundles:
+Nudgebee puts AI agents to work on your team's repeatable ops work, across incidents, cost, Kubernetes, cloud and databases, with guardrails that make them safe to run in production.
 
-- **Observability ingestion** — Kubernetes events, metrics, traces, plus cloud-provider scans across AWS, Azure, and GCP.
-- **FinOps & cost optimization** — surfaces unused / underutilized resources (idle workloads, oversized pods, stale snapshots, dangling volumes) and right-sizing recommendations across cloud and Kubernetes.
-- **LLM-powered triage** — agentic planners that reproduce, root-cause, and propose fixes for incidents.
-- **ChatOps** — Slack / Teams chatbot for SRE workflows: query state, run runbooks, ack alerts, and drive investigations from the channel where on-call already lives.
-- **Runbook automation** — codifies recurring fixes as reusable runbooks and triggers them from chat, alert, or schedule.
-- **Ticketing + notifications** — bidirectional sync with Jira, ServiceNow, PagerDuty, Zenduty; alert delivery to Slack, Teams, email.
+- **Investigate incidents** — Nubi, the AI assistant, triages alerts and works to an evidence-backed root cause from logs, metrics, traces, recent changes and the live cluster.
+- **Cut waste** — finds unused and oversized resources across cloud and Kubernetes and recommends right-sizing.
+- **Run Kubernetes and cloud ops** — a Kubernetes agent with kubectl, Helm and Argo CD tools, plus AWS, Azure and GCP agents.
+- **Diagnose databases** — agents for Postgres, MySQL, SQL Server, Oracle and ClickHouse, plus a Redis tool.
+- **Automate runbooks** — turns recurring fixes into durable runbooks on Temporal, triggered by alert, schedule or chat, with approval gates.
+- **Work where your team works** — Slack, Teams and Google Chat, plus bidirectional ticketing with Jira, ServiceNow, PagerDuty and Zenduty.
+
+### Built to run in production
+
+- **Approvals** — remediations and runbook steps can require human approval before they run.
+- **Audit log** — configuration changes, manual runs and approvals are recorded.
+- **Self-hosted, no usage telemetry** — runs in your cluster or VPC, with the LLM provider you choose.
 
 > _Dashboard screenshot — to be added. Track [discussion thread](https://github.com/nudgebee/nudgebee/discussions) or contribute via a PR._
+
+## Related repositories
+
+This repo is the platform. Agents, docs, tooling and content live in their own repos:
+
+| Repo                                                                                                                                   | Purpose                                                                                         |
+| -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| [nudgebee-docs](https://github.com/nudgebee/nudgebee-docs)                                                                             | Public documentation, published at [docs.nudgebee.com](https://docs.nudgebee.com)               |
+| [nbctl](https://github.com/nudgebee/nbctl)                                                                                             | Command-line interface; also runs as an MCP server                                              |
+| [k8s-agent](https://github.com/nudgebee/k8s-agent)                                                                                     | In-cluster Kubernetes agent: state, events, metrics, logs and traces                            |
+| [node-agent](https://github.com/nudgebee/node-agent)                                                                                   | Per-node eBPF agent for container and host metrics, logs and L7 traffic                         |
+| [kubewatch](https://github.com/nudgebee/kubewatch)                                                                                     | Kubernetes resource watcher with workload sync                                                  |
+| [application-profiler](https://github.com/nudgebee/application-profiler)                                                               | On-demand profiling (flamegraphs, heap/thread dumps, pprof) without restarting pods             |
+| [forager](https://github.com/nudgebee/forager)                                                                                         | Lightweight agent that relays data from databases, HTTP APIs and MCP servers                    |
+| [automation-templates](https://github.com/nudgebee/automation-templates)                                                               | System runbook templates synced into the runbook server                                         |
+| [nudgebee-playbooks](https://github.com/nudgebee/nudgebee-playbooks)                                                                   | Workflow definitions for cross-platform service restart and diagnosis                           |
+| [nudgebee-scenario-lab](https://github.com/nudgebee/nudgebee-scenario-lab)                                                             | Disposable AWS lab that injects real incidents for Nudgebee to detect and explain               |
+| [kubepug](https://github.com/nudgebee/kubepug), [nova](https://github.com/nudgebee/nova), [popeye](https://github.com/nudgebee/popeye) | Nudgebee forks of Kubernetes checkers: deprecated APIs, outdated Helm charts, cluster sanitizer |
 
 ## Quick Start (Local Development)
 
@@ -451,6 +475,7 @@ Nudgebee ships with **no telemetry or product analytics**. No data leaves your c
 - **Chat / questions / contributor coordination** — [Discord](https://discord.gg/C5d27ceTEv)
 - **Bugs and feature requests** — [GitHub Issues](https://github.com/nudgebee/nudgebee/issues)
 - **Security reports** — [SECURITY.md](./SECURITY.md)
+- **Commercial license, support or the full platform** — [Nudgebee Enterprise](https://www.nudgebee.com/pricing?utm_source=github&utm_medium=readme&utm_campaign=oss). Please don't open issues for Enterprise features here.
 
 ## License
 
