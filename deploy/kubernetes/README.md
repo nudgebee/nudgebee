@@ -237,7 +237,16 @@ helm upgrade nudgebee oci://ghcr.io/nudgebee/charts/nudgebee \
 
 A post-install / post-upgrade Helm hook runs DB migrations via golang-migrate (see [`api-server/migrations/README.md`](../../api-server/migrations/README.md)). If the migration job fails, the Helm release is marked failed — fix the root cause and retry the upgrade. Pass `--atomic` if you want Helm to automatically roll back on failure.
 
+Don't use `--reuse-values`: it keeps the previous chart's defaults, including the app image tags each release pins, so the release would keep running the old images. The chart stops such an upgrade with an error. Pass your values file (`-f`) as above, or `--reset-then-reuse-values`.
+
 To pin a specific chart version, add `--version <X.Y.Z>`. `helm history nudgebee -n nudgebee` shows past releases for rollback (`helm rollback nudgebee <revision>`).
+
+### Upgrading from 1.12 or older
+
+1.13 deploys the official PostgreSQL, RabbitMQ and Redis images instead of the Bitnami subcharts.
+
+- **There is no rollback to 1.12 once RabbitMQ 4 has started.** RabbitMQ 3.13 can't boot on 4.x data (`timeout_waiting_for_khepri_projections`). Recover by upgrading to 1.13 again; no data is lost. The RabbitMQ pod never becomes ready on 3.13, so the StatefulSet won't replace it on its own: run `kubectl delete pod -n nudgebee rabbitmq-0` after the upgrade starts.
+- The first PostgreSQL start on the new image checks the text indexes and refreshes each database's recorded collation version before it accepts connections. It takes seconds on a typical install; on a very large database it gives up after a few minutes, leaving a harmless warning and the command to run later in its log.
 
 ## Troubleshooting
 

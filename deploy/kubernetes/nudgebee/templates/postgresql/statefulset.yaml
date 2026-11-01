@@ -142,10 +142,136 @@ spec:
       {{- end }}
       hostNetwork: {{ $p.hostNetwork }}
       hostIPC: {{ $p.hostIPC }}
-      {{- with $p.initContainers }}
       initContainers:
+        {{- /* User init containers first: one that fixes volume ownership must run before the collation refresh touches PGDATA. */}}
+        {{- with $p.initContainers }}
         {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 8 }}
-      {{- end }}
+        {{- end }}
+        {{- /*
+        Databases created by the Bitnami image record glibc 2.31 as their
+        collation version; this image's glibc is newer. PostgreSQL then warns on
+        every new connection and refuses CREATE DATABASE from a mismatched
+        template1 (Temporal's schema job does exactly that). The en_US.UTF-8
+        sort order is identical between the two (checked across glibc 2.31, 2.36
+        and 2.41), so before PostgreSQL accepts any client this starts it on the
+        Unix socket only, re-checks the btree indexes on collatable columns of
+        each such database with amcheck's bt_index_check and, only if all pass,
+        runs ALTER DATABASE ... REFRESH COLLATION VERSION.
+
+        A fresh PGDATA, or one with no mismatch, costs one start and stop. It
+        stays inside a ~4 minute budget: a database whose checks would not
+        finish in time is left alone (the warning stays; it is harmless) and
+        listed in the log with the command to run later. It never blocks
+        PostgreSQL from starting, and creates amcheck only where missing,
+        dropping it again afterwards.
+        */}}
+        - name: refresh-collation-version
+          image: {{ include "nudgebee.postgresql.image" (dict "image" $r.image "root" $) }}
+          imagePullPolicy: {{ $r.image.pullPolicy | quote }}
+          {{- if $ctrSC.enabled }}
+          securityContext:
+            {{- toYaml (omit $ctrSC "enabled") | nindent 12 }}
+          {{- end }}
+          env:
+            - name: PGDATA
+              value: {{ $r.postgresqlDataDir | quote }}
+            - name: PGHOST
+              value: /var/run/postgresql
+            - name: PGPORT
+              value: {{ $r.containerPorts.postgresql | quote }}
+            - name: PGUSER
+              value: postgres
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: {{ $adminKey }}
+          command:
+            - sh
+            - -c
+            - |
+              set -u
+              [ -s "$PGDATA/PG_VERSION" ] || { echo "Empty PGDATA; nothing to refresh."; exit 0; }
+              budget=240; start=$(date +%s)
+              left() { echo $(( budget - ($(date +%s) - start) )); }
+              q() { psql -X -q -At -v ON_ERROR_STOP=1 "$@"; }
+              # Nothing else can run PostgreSQL on this volume before the main
+              # container starts, so a lock file is left over from an unclean
+              # stop. Its PID often matches this shell's PID 1, which would make
+              # PostgreSQL refuse to start.
+              rm -f "$PGDATA/postmaster.pid"
+              # Bitnami left PGDATA group-writable; the official entrypoint
+              # tightens it the same way before the main container starts.
+              chmod 700 "$PGDATA"
+              log=/var/run/postgresql/collation-refresh.log
+              if ! pg_ctl -D "$PGDATA" -w -t 120 -l "$log" -o "-c config_file=/etc/postgresql/postgresql.conf -c hba_file=/etc/postgresql/pg_hba.conf -c listen_addresses='' -c unix_socket_directories=/var/run/postgresql -p $PGPORT" start >/dev/null; then
+                cat "$log"; echo "PostgreSQL did not start here; leaving collation versions as they are."; exit 0
+              fi
+              trap 'pg_ctl -D "$PGDATA" -m fast -w stop >/dev/null' EXIT
+              idx="from pg_index i join pg_class c on c.oid=i.indexrelid join pg_am a on a.oid=c.relam where a.amname='btree' and c.relpersistence <> 't' and i.indisvalid and i.indisready and exists (select 1 from pg_attribute att where att.attrelid = c.oid and att.attcollation <> 0)"
+              skipped=""
+              # template1 first: CREATE DATABASE fails while it is mismatched,
+              # and it is small. Then smallest first, so a large database that
+              # runs out the budget leaves as few others behind as possible.
+              dbs=$(q -d postgres -c "select datname from pg_database where datallowconn and datlocprovider = 'c' and datcollversion is distinct from pg_database_collation_actual_version(oid) order by datname <> 'template1', pg_database_size(oid)")
+              [ -n "$dbs" ] || { echo "No collation version mismatch."; exit 0; }
+              while IFS= read -r db; do
+                t=$(left)
+                if [ "$t" -le 15 ]; then skipped="$skipped\n  $db"; continue; fi
+                echo "== $db"
+                had=$(q -d "$db" -c "select count(*) from pg_extension where extname='amcheck'")
+                if ! q -d "$db" -c 'create extension if not exists amcheck' >/dev/null; then
+                  echo "  cannot create amcheck; leaving it unchanged"; continue
+                fi
+                n=$(q -d "$db" -c "select count(*) $idx")
+                if q -d "$db" -c "set statement_timeout = '$((t - 10))s'; select bt_index_check(c.oid) $idx" >/dev/null; then
+                  # psql only substitutes :'db' in input it reads, not in -c; %I quotes the name.
+                  stmt=$(printf "select format('alter database %%I refresh collation version', :'db')\n" | q -d postgres -v db="$db" -f -)
+                  q -d postgres -c "$stmt" >/dev/null 2>&1
+                  ok=$(printf "select datcollversion = pg_database_collation_actual_version(oid) from pg_database where datname = :'db'\n" | q -d postgres -v db="$db" -f -)
+                  if [ "$ok" = "t" ]; then
+                    echo "  $n collatable btree indexes verified; collation version refreshed"
+                  else
+                    echo "  $n collatable btree indexes verified, but the refresh did not apply"; skipped="$skipped\n  $db"
+                  fi
+                else
+                  echo "  index check failed or ran out of time; collation version NOT refreshed"
+                  skipped="$skipped\n  $db"
+                fi
+                [ "$had" = "0" ] && q -d "$db" -c 'drop extension if exists amcheck' >/dev/null
+              done <<EOF
+              $dbs
+              EOF
+              if [ -n "$skipped" ]; then
+                printf "Not refreshed (PostgreSQL keeps logging a harmless collation-version warning for these):%b\n" "$skipped"
+                echo "To clear it later, check indexes with amcheck, then: ALTER DATABASE <name> REFRESH COLLATION VERSION;"
+              fi
+              exit 0
+          {{- with $p.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: postgresql-config
+              mountPath: /etc/postgresql
+            {{- if or $p.extendedConfiguration $p.existingExtendedConfigmap }}
+            - name: postgresql-extended-config
+              mountPath: /etc/postgresql/conf.d
+            {{- end }}
+            - name: run
+              mountPath: /var/run/postgresql
+            {{- if $r.shmVolume.enabled }}
+            - name: dshm
+              mountPath: /dev/shm
+            {{- end }}
+            - name: data
+              mountPath: {{ $pv.mountPath }}
+              {{- if and $pv.enabled $pv.subPath }}
+              subPath: {{ $pv.subPath }}
+              {{- end }}
+            {{- with $p.extraVolumeMounts }}
+            {{- include "nudgebee.postgresql.tpl" (dict "value" . "root" $) | nindent 12 }}
+            {{- end }}
       containers:
         - name: postgresql
           image: {{ include "nudgebee.postgresql.image" (dict "image" $r.image "root" $) }}
