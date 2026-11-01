@@ -35,9 +35,6 @@ IMAGES=(
   # The -management variant: the migration Job's rabbitmq scripts use the
   # management HTTP API.
   "docker.io/library/rabbitmq:4.2.9-management-alpine rabbitmq:4.2.9-management-alpine"
-  # The umbrella chart's own PostgreSQL (templates/postgresql/, postgresql.image).
-  # Debian, not Alpine: existing databases use glibc en_US.UTF-8 collation.
-  "docker.io/library/postgres:16.15-trixie postgres:16.15-trixie"
   # Init container for the service pods (global.initImages.curl).
   "docker.io/curlimages/curl:8.23.0 curl:8.23.0"
   # Consumed by the nudgebee-agent chart (k8s-agent repo), not the chart in this

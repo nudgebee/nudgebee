@@ -151,12 +151,12 @@ postgresql:
   # See docs/security/postgresql-official-image-spec.md.
   image:
     registry: 'ghcr.io/nudgebee'
-    # Mirror of the official postgres:16.15-trixie image
-    # (nudgebee-mirrors/clone-third-party.sh). Debian, not Alpine: existing
+    # Patched mirror of the official postgres:16.15-trixie image
+    # (nudgebee-mirrors/postgres-trixie). Debian, not Alpine: existing
     # databases sort text with glibc's en_US.UTF-8 collation, which musl
     # does not implement, so Alpine would silently mis-order text indexes.
     repository: postgres
-    tag: '16.15-trixie'
+    tag: '16.15-trixie-nb1'
   metrics:
     enabled: true
     # postgres-exporter sidecar: measured 16Mi. Bounded so a scrape storm cannot
@@ -178,7 +178,7 @@ postgresql:
     image:
       registry: 'ghcr.io/nudgebee'
       repository: postgres-exporter
-      tag: 'v0.20.1-nb1'
+      tag: 'v0.20.1-nb2'
     # ServiceMonitor and PrometheusRule are Prometheus Operator CRDs
     # (monitoring.coreos.com/v1). A cluster without the operator installed has
     # no such kinds, and the install fails with `no matches for kind
@@ -565,9 +565,9 @@ services-server:
   extraEnvFromSecret: 'nudgebee-bootstrap'
   env:
     NOVA_IMAGE: 'ghcr.io/nudgebee/nova:2026-05-22T07-15-34_decaacbbf56e1789c3299a89f790b8e824ab741c'
-    TRIVY_IMAGE: 'ghcr.io/nudgebee/trivy:0.76.1-nb1'
-    POPEYE_IMAGE: 'ghcr.io/nudgebee/popeye:v0.11.1-nudgebee.1'
-    KUBE_BENCH_IMAGE: 'ghcr.io/nudgebee/kube-bench:v0.16.0-nb1'
+    TRIVY_IMAGE: 'ghcr.io/nudgebee/trivy:0.76.1-nb2'
+    POPEYE_IMAGE: 'ghcr.io/nudgebee/popeye:v0.11.1-nudgebee.2'
+    KUBE_BENCH_IMAGE: 'ghcr.io/nudgebee/kube-bench:v0.16.0-nb2'
 k8s-collector:
   fullnameOverride: k8s-collector
 relay-server:
