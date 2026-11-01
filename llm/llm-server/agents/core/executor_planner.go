@@ -668,7 +668,8 @@ func shouldCountFailedIteration(steps []NBAgentPlannerToolActionStep, countNonEm
 //   - ToolStatusEmptyResult → "SUCCESS_NO_OUTPUT" (NOT a failure — exit 0
 //     with empty stdout is the normal success signal for write/mutation
 //     CLIs like `gh run rerun`, `kubectl apply`, `helm upgrade`,
-//     `aws s3 cp`. For read commands it means "no rows".)
+//     `aws s3 cp`. A recognized metric read is labeled "NO_METRIC_DATA"
+//     instead, while remaining a successful call.)
 //   - ToolStatusWaiting / ToolStatusWaitingForClient → "WAITING" (the action
 //     is pending user confirmation or client execution, not complete — must
 //     not be reported to the summarizer as SUCCESS, mirroring the WAITING
@@ -691,6 +692,8 @@ func buildToolCallSummary(steps []NBAgentPlannerToolActionStep) (string, bool) {
 		case step.Status == ToolStatusFailure:
 			status = "FAILED"
 			hasAnyFailure = true
+		case step.Status == ToolStatusEmptyResult && metricNoDataMarker(step) != "":
+			status = "NO_METRIC_DATA"
 		case step.Status == ToolStatusEmptyResult:
 			status = "SUCCESS_NO_OUTPUT"
 		case step.Status == ToolStatusWaiting, step.Status == ToolStatusWaitingForClient:
@@ -766,7 +769,10 @@ func (e *plannerExecutor) summarizeConversation() (map[string]any, error) {
 		mclist = append(mclist, mc)
 	}
 
-	summarizationPrompt := fmt.Sprintf("Summarize all the previous conversation and return a response based on the question asked.\nIMPORTANT: Do not include any internal technical data flows, queries, prompts, architecture paths, or execution plans in your summary.\nIMPORTANT: If you ran out of steps before completing an action, clearly state what was NOT completed.\nIMPORTANT: A tool call labeled SUCCESS_NO_OUTPUT means the tool exited with status=success and empty stdout. For write/mutation commands (e.g. gh run rerun, kubectl apply, helm upgrade, aws s3 cp), this is the normal success signal — report the action as completed. Do NOT infer failure from absence of stdout.%s", toolSummaryStr)
+	summarizationPrompt := fmt.Sprintf("Summarize all the previous conversation and return a response based on the question asked.\nIMPORTANT: Do not include any internal technical data flows, queries, prompts, architecture paths, or execution plans in your summary.\nIMPORTANT: If you ran out of steps before completing an action, clearly state what was NOT completed.\nIMPORTANT: A tool call labeled SUCCESS_NO_OUTPUT means the tool exited with status=success and empty stdout. For write/mutation commands (e.g. gh run rerun, kubectl apply, helm upgrade, aws s3 cp), this is the normal success signal — report the action as completed. Do NOT infer failure from absence of stdout.\nIMPORTANT: Any measured metric number must be supported by non-empty metric output or an explicit calculation from its returned samples. An empty metric result means unavailable, never zero.%s", toolSummaryStr)
+	if metricEvidence := metricNoDataSummary(e.steps); metricEvidence != "" {
+		summarizationPrompt += "\n\n" + metricEvidence
+	}
 
 	if hasAnyFailure {
 		summarizationPrompt += "\n\nSome tool calls FAILED. Review the tool call summary above." +

@@ -1,0 +1,25 @@
+{
+  "baseline": "32d898c28",
+  "model": "opencode/beam-free",
+  "prompt_paths": {
+    "critic": "llm/llm-server/prompts/default/v1/planners/react_critiquer.yaml",
+    "qwen3": "llm/llm-server/prompts/models/qwen/v1/planners/react_3_base.yaml",
+    "qwen4": "llm/llm-server/prompts/models/qwen/v1/planners/react_4_base.yaml",
+    "react3": "llm/llm-server/prompts/default/v1/planners/react_3_base.yaml",
+    "react4": "llm/llm-server/prompts/default/v1/planners/react_4_base.yaml"
+  },
+  "rendered_sha256": {
+    "critic-after": "2a39bce3a70a2f0d67674b9aefece6e439843dd4c439a5c03d43e1ae9f39d27c",
+    "critic-before": "a88f4bee85f8762eac5935b9cd413adc2f78474edb4582adfe25334578b5c826",
+    "qwen3-after": "fe33617c62987e7f11a457f06452d9d9fbd772c19c7dd4bbde442a4342cd20b9",
+    "qwen3-before": "da992fb47b9aef8bd58df0abbea591d607ab9dd4f252880359f2cbe76e81683f",
+    "qwen4-after": "d09e23ae9027ee5c6f2ebdc6690857c9d6a02c2a4f30b24cc9a8f1c273c8dc4c",
+    "qwen4-before": "2ce61a577bc4b6dd417b41215c655e5f1931c5d16fb6e2f289035e72976133a6",
+    "react3-after": "e6e0de08b21b097e329c756f43b021e1bd5d05b933d7c4b924f271cf32dd1160",
+    "react3-before": "0f0ad1992d66c018a0556367a3e0e3b1dbad5686a1b642e91ad613d07fd46161",
+    "react4-after": "d9d47622da2c2f8c7a06015da7cc0935216bc447f105fa6ca1397edcad6094f2",
+    "react4-before": "2e03f892f425b8f4f8bee621eab19562962dc4d6fee73ea1ebd0740eb9f681fb"
+  },
+  "runtime_flags": "is_investigation=true,is_top_level=true; other boolean gates=false; empty optional rule fragments",
+  "samples": 6
+}
