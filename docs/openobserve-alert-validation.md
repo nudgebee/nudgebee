@@ -69,9 +69,11 @@ updates, ingest fresh data, observe again, then delete and read back each rule.
 
 ## Captured delivery replay through Nudgebee
 
-The two distinct captured payloads were separately POSTed to the actual
-`genericWebhookHandler("openobserve")` with a disposable PostgreSQL 16 database
-using the existing webhook scenario schema. Both requests returned 200 and
+The two distinct captured payloads were separately POSTed to the production
+`/api/webhooks/openobserve` route registered by `handlePublicWebhooksApis`, with
+`genericWebhookHandler("openobserve_webhook")` and its normal body-limit
+middleware. A disposable PostgreSQL 16 database used the existing webhook
+scenario schema. Both requests returned 200 and
 persisted raw and parsed delivery rows. Assertions checked `openobserve_alert`,
 processed status, the expected tenant/account IDs and the original alert names.
 Missing and wrong tokens returned 400 and created no extra rows.

@@ -56,7 +56,7 @@
     }
   ],
   "nudgebee_captured_payload_replay": {
-    "handler": "actual genericWebhookHandler(openobserve)",
+    "handler": "handlePublicWebhooksApis registration: POST /api/webhooks/openobserve, genericWebhookHandler(openobserve_webhook), normal body-limit middleware",
     "database": "disposable PostgreSQL 16 with existing webhook scenario schema",
     "verified": [
       "two distinct captured rule payloads returned HTTP 200",
