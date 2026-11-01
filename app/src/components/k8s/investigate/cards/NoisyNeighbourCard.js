@@ -2,6 +2,8 @@ import { safeJSONParse } from 'src/utils/common';
 import NoisyNeighbour from './NoisyNeighbour';
 import NoisyNeighbourSummary from './NoisyNeighbourSummary';
 import NoisyNeighbourIcon from '@assets/investigation/noise-neighbours.svg';
+import { parseNoisyNeighbours } from './noisyNeighbourData';
+import { summarizeNoisyNeighbours } from './cardSummaries';
 
 class NoisyNeighbourCard {
   constructor() {
@@ -31,7 +33,11 @@ class NoisyNeighbourCard {
       });
     if (noisyInsight && noisyInsight.length > 0) {
       this.renderContent = true;
-      this.insightData = noisyInsight[0]?.insight;
+      // Blocks written before the server summarised them, or by the in-cluster agent, carry none.
+      this.insightData =
+        noisyInsight[0]?.insight?.length > 0
+          ? noisyInsight[0].insight
+          : summarizeNoisyNeighbours(parseNoisyNeighbours(troubleShootingEvent), troubleShootingEvent?.subject_name);
     }
     this.troubleShootingEvent = troubleShootingEvent;
     return this.renderContent;

@@ -12,6 +12,7 @@ import (
 	integrationsModel "nudgebee/runbook/services/integrations"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -19,8 +20,17 @@ import (
 )
 
 func TestMCPTask_Execute_JSON(t *testing.T) {
+	var mu sync.Mutex
+	var closed []string // Mcp-Session-Id of each DELETE
+
 	// Mock MCP Server
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			mu.Lock()
+			closed = append(closed, r.Header.Get("Mcp-Session-Id"))
+			mu.Unlock()
+			return
+		}
 		assert.Equal(t, "POST", r.Method)
 		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 
@@ -113,6 +123,11 @@ func TestMCPTask_Execute_JSON(t *testing.T) {
 	resMapHeaders, ok := resultHeaders.(map[string]any)
 	assert.True(t, ok)
 	assert.False(t, resMapHeaders["isError"].(bool))
+
+	// Every Execute ends the session it opened.
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []string{"session-123", "session-123", "session-123"}, closed)
 }
 
 func TestMCPTask_Execute_SSE(t *testing.T) {
@@ -581,6 +596,29 @@ func TestMCPTask_ListTools_DirectURL_NoAuth(t *testing.T) {
 	assert.Len(t, tools, 2)
 }
 
+func TestMCPTask_ListTools_ClosesSession(t *testing.T) {
+	var mu sync.Mutex
+	var closedWithAuth []string
+	ts := newMCPListToolsTestServer(t, func(r *http.Request) bool {
+		if r.Method == http.MethodDelete {
+			mu.Lock()
+			closedWithAuth = append(closedWithAuth, r.Header.Get("Mcp-Session-Id")+" "+r.Header.Get("X-Api-Key"))
+			mu.Unlock()
+		}
+		return true
+	})
+	defer ts.Close()
+
+	task := &MCPTask{}
+	ctx := testutils.NewTestTaskContext("", "", "", slog.Default())
+	_, err := task.ListTools(ctx, map[string]any{"url": ts.URL, "headers": map[string]any{"X-Api-Key": "k1"}})
+	assert.NoError(t, err)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []string{"list-session k1"}, closedWithAuth, "ListTools should end its session, sending the same headers")
+}
+
 func TestMCPTask_ListTools_DirectURL_401Surfaces(t *testing.T) {
 	// Server requires auth but caller provided none — error should be clear.
 	ts := newMCPListToolsTestServer(t, func(r *http.Request) bool {
@@ -775,4 +813,39 @@ func TestMCPTask_Execute_IntegrationPathCoercesArgumentsBeforeBranch(t *testing.
 		assert.Equal(t, "value", args["key"])
 		assert.Equal(t, float64(7), args["n"])
 	})
+}
+
+func TestMCPTask_Execute_ClosesSessionWhenToolCallFails(t *testing.T) {
+	var mu sync.Mutex
+	var closed []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			mu.Lock()
+			closed = append(closed, r.Header.Get("Mcp-Session-Id"))
+			mu.Unlock()
+			return
+		}
+		var req JsonRpcRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Mcp-Session-Id", "session-err")
+		switch req.Method {
+		case "initialize":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(JsonRpcResponse{JsonRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{}`)})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer ts.Close()
+
+	task := &MCPTask{}
+	ctx := testutils.NewTestTaskContext("test-tenant", "test-account", "test-user", slog.Default())
+	_, err := task.Execute(ctx, map[string]any{"url": ts.URL, "tool_name": "t"})
+	assert.Error(t, err)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []string{"session-err"}, closed, "a failed tool call must still end the session")
 }

@@ -21,6 +21,14 @@ func TestToolSortKeys_Whitelist(t *testing.T) {
 	assert.False(t, toolSortKeys["; DROP TABLE"])
 }
 
+// The two ListToolUsage scans run concurrently, so tests tell them apart by a
+// fragment only one of them contains. sqlmock collapses whitespace (newlines
+// included) before matching, so .* spans the multi-line SQL as is.
+const (
+	toolOpQueryPattern   = `AS distinct_conversations`
+	toolCostQueryPattern = `INNER JOIN llm_conversation_token_usage`
+)
+
 var toolOpCols = []string{
 	"tool_name", "tool_type", "calls", "success_count", "error_count", "in_progress_count",
 	"avg_duration_seconds", "p90_duration_seconds", "max_duration_seconds",
@@ -37,14 +45,17 @@ func TestListToolUsage_MergeAndCostAttribution(t *testing.T) {
 	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 	now := time.Now()
 
+	// The two scans run concurrently, so match them by content, not order.
+	mock.MatchExpectationsInOrder(false)
+
 	// 1) Operational aggregates (one row per tool).
-	mock.ExpectQuery("GROUP BY tc.tool_name").WillReturnRows(
+	mock.ExpectQuery(toolOpQueryPattern).WillReturnRows(
 		sqlmock.NewRows(toolOpCols).
 			AddRow("kubectl_get", "tool", 100, 95, 5, 0, 0.4, 1.1, 2.0, 8, 60).
 			AddRow("k8s_debug", "agent", 20, 18, 2, 0, 8.2, 22.0, 30.0, 1, 15))
 
 	// 2) Downstream LLM cost — only the agent-spawn tool appears.
-	mock.ExpectQuery("INNER JOIN llm_conversation_token_usage").WillReturnRows(
+	mock.ExpectQuery(toolCostQueryPattern).WillReturnRows(
 		sqlmock.NewRows([]string{"tool_name", "downstream_cost_usd", "downstream_llm_calls"}).
 			AddRow("k8s_debug", 4.10, 40))
 
@@ -79,11 +90,12 @@ func TestListToolUsage_SortByCost(t *testing.T) {
 	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 	now := time.Now()
 
-	mock.ExpectQuery("GROUP BY tc.tool_name").WillReturnRows(
+	mock.MatchExpectationsInOrder(false)
+	mock.ExpectQuery(toolOpQueryPattern).WillReturnRows(
 		sqlmock.NewRows(toolOpCols).
 			AddRow("kubectl_get", "tool", 100, 100, 0, 0, 0.4, 1.1, 2.0, 8, 60).
 			AddRow("k8s_debug", "agent", 20, 20, 0, 0, 8.2, 22.0, 30.0, 1, 15))
-	mock.ExpectQuery("INNER JOIN llm_conversation_token_usage").WillReturnRows(
+	mock.ExpectQuery(toolCostQueryPattern).WillReturnRows(
 		sqlmock.NewRows([]string{"tool_name", "downstream_cost_usd", "downstream_llm_calls"}).
 			AddRow("k8s_debug", 4.10, 40))
 
@@ -108,8 +120,9 @@ func TestListToolUsage_UserFilter(t *testing.T) {
 	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 	now := time.Now()
 
-	mock.ExpectQuery(`c\.user_id = \$4`).WillReturnRows(sqlmock.NewRows(toolOpCols))
-	mock.ExpectQuery(`c\.user_id = \$4`).WillReturnRows(
+	mock.MatchExpectationsInOrder(false)
+	mock.ExpectQuery(toolOpQueryPattern + `.*c\.user_id = \$4`).WillReturnRows(sqlmock.NewRows(toolOpCols))
+	mock.ExpectQuery(toolCostQueryPattern + `.*c\.user_id = \$4`).WillReturnRows(
 		sqlmock.NewRows([]string{"tool_name", "downstream_cost_usd", "downstream_llm_calls"}))
 
 	filter := UsageMetricsFilter{
@@ -122,6 +135,30 @@ func TestListToolUsage_UserFilter(t *testing.T) {
 	_, err = dao.ListToolUsage(filter, "calls", 100)
 	require.NoError(t, err)
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestListToolUsage_ScansRunConcurrently: the operational and downstream-cost scans
+// are independent, so the tab should wait for the slower one, not for both (#39745).
+func TestListToolUsage_ScansRunConcurrently(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	now := time.Now()
+
+	const each = 500 * time.Millisecond
+	mock.MatchExpectationsInOrder(false)
+	mock.ExpectQuery(toolOpQueryPattern).WillDelayFor(each).WillReturnRows(sqlmock.NewRows(toolOpCols))
+	mock.ExpectQuery(toolCostQueryPattern).WillDelayFor(each).WillReturnRows(
+		sqlmock.NewRows([]string{"tool_name", "downstream_cost_usd", "downstream_llm_calls"}))
+
+	filter := UsageMetricsFilter{AccountIDs: []string{"acc-1"}, StartDate: now.Add(-24 * time.Hour), EndDate: now}
+	start := time.Now()
+	_, err = dao.ListToolUsage(filter, "calls", 100)
+	elapsed := time.Since(start)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+	assert.Less(t, elapsed, 2*each, "the two scans ran one after the other")
 }
 
 // TestListToolUsage_NoAccounts short-circuits to an empty list (no query issued).

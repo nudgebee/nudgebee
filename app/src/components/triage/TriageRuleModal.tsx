@@ -490,13 +490,7 @@ const TriageRuleModal: React.FC<TriageRuleModalProps> = ({ open, handleClose, ac
           <Box display='flex' flexDirection='column' gap={ds.space[4]}>
             <Input label='Fingerprint (exact match)' value={matchFingerprint} onChange={setMatchFingerprint} size='sm' />
             <Input label='Alert Name (regex)' value={matchAlertname} onChange={setMatchAlertname} size='sm' placeholder='e.g., KubePodCrashLooping' />
-            <Input
-              label='Namespace (regex)'
-              value={matchNamespace}
-              onChange={setMatchNamespace}
-              size='sm'
-              placeholder='e.g., kube-system|monitoring'
-            />
+            <Input label='Namespace (exact match)' value={matchNamespace} onChange={setMatchNamespace} size='sm' placeholder='e.g., kube-system' />
             <Input label='Service (regex)' value={matchService} onChange={setMatchService} size='sm' />
             <Select
               label='Source'

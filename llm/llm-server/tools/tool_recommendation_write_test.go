@@ -77,7 +77,7 @@ const (
 // stubSafetyRow serves the next recommendation_view lookup the apply
 // precondition makes, with the given stored band (nil = never assessed).
 func stubSafetyRow(mock sqlmock.Sqlmock, band any) {
-	mock.ExpectQuery("(?i)select").WillReturnRows(sqlmock.NewRows(
+	expectToolQuery(mock, "(?i)select").WillReturnRows(sqlmock.NewRows(
 		[]string{"rule_name", "status", "safety_band", "safety_reason", "dependent_count", "production_dependents", "estimated_saving"}).
 		AddRow("pod_right_sizing", "Open", band, "2 production dependent(s) in the blast radius", 3, 2, 41.0))
 }
@@ -154,7 +154,7 @@ func TestRecommendationApplyTool(t *testing.T) {
 			return http.StatusOK, `{}`
 		})
 		defer cleanup()
-		mock.ExpectQuery("(?i)select").WillReturnError(errors.New("connection reset"))
+		expectToolQuery(mock, "(?i)select").WillReturnError(errors.New("connection reset"))
 
 		resp, err := RecommendationApplyTool{}.Call(newTriageToolContext(applyAccountID), core.NBToolCallRequest{
 			Arguments: map[string]any{"recommendation_id": applyRecID, "safety_band": "safe"},

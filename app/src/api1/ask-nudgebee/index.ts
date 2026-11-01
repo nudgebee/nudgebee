@@ -2111,7 +2111,9 @@ const api = {
       const result = response?.data?.data?.ai_update_conversation_queued_message;
       const errors = response?.data?.errors?.length ? response.data.errors : result?.errors;
       if ((Array.isArray(errors) && errors.length > 0) || !result?.data) {
-        throw new Error(errors?.[0]?.message || 'Queued message operation failed. Refresh and try again.');
+        throw Object.assign(new Error(errors?.[0]?.message || 'Queued message operation failed. Refresh and try again.'), {
+          upstreamStatus: response?.data?.errors?.[0]?.extensions?.upstream?.status,
+        });
       }
       return response;
     } catch (error) {

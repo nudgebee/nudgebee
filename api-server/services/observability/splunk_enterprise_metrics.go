@@ -449,6 +449,15 @@ func buildSplunkMetricMatcher(m LabelMatcher) (string, error) {
 		// Appends the trailing wildcard. Used for pod-name prefixes, where the
 		// replica-hash suffix is unknown.
 		return fmt.Sprintf(`%s="%s*"`, label, value), nil
+	case "_in":
+		// Value is a comma-separated list. Only used for Kubernetes object names, which
+		// cannot contain commas (RFC 1123), so the separator is unambiguous there.
+		parts := strings.Split(m.Value, ",")
+		quoted := make([]string, 0, len(parts))
+		for _, p := range parts {
+			quoted = append(quoted, fmt.Sprintf(`"%s"`, escapeSplunkString(p)))
+		}
+		return fmt.Sprintf(`%s IN (%s)`, label, strings.Join(quoted, ", ")), nil
 	case "_like":
 		// SQL LIKE: '%' is the wildcard and the match is anchored, so "api%" is a prefix
 		// and "%check%" a substring. Keeping '%' literally (the old behaviour) searched for

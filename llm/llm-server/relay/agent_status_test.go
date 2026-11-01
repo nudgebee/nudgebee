@@ -236,3 +236,32 @@ func TestExecuteSkipGatesOnlyK8sAgent(t *testing.T) {
 		t.Error("Execute() gated a proxy-agent call on k8s connectivity, want it to proceed")
 	}
 }
+
+// TestExecuteNoAgentSkipsGate: an action the relay serves without any agent
+// (direct-mode MCP) must not be refused because the account's k8s agent is
+// disconnected or absent.
+func TestExecuteNoAgentSkipsGate(t *testing.T) {
+	const accountID = "0d7a6e3b-1c24-4f89-a5b2-9e61c3f8d470" // valid uuid: proves NoAgent, not the uuid guard, decided this
+
+	agentStatusCache.Lock()
+	agentStatusCache.entries[accountID] = agentStatusCacheEntry{
+		connected: false,
+		expiresAt: time.Now().Add(time.Minute),
+	}
+	agentStatusCache.Unlock()
+
+	t.Cleanup(func() {
+		agentStatusCache.Lock()
+		delete(agentStatusCache.entries, accountID)
+		agentStatusCache.Unlock()
+	})
+
+	_, err := Execute(t.Context(), ActionExecuteBody{
+		AccountID:  accountID,
+		ActionName: "mcp_request",
+		NoAgent:    true,
+	})
+	if err != nil && err.Error() == errMsgAgentNotConnected {
+		t.Error("Execute() gated a NoAgent call on k8s connectivity, want it to proceed")
+	}
+}

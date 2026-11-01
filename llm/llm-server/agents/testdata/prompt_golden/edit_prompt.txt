@@ -147,8 +147,8 @@ Do not generalise from it to the other four types.
 FIRST, DECIDE THE INTENT:
 - DEBUG signals: "fix", "it's failing", "error", "why broken", an ERROR CONTEXT, LAST RECORDED FAILURE or TARGET EXECUTION ID above.
 - CHANGE signals: "add", "also", "include", "remove", "rename", "change", "update", "instead", "as well", a new capability.
-- VERIFY signals: the user asks to run, test, try, or dry-run the automation without changing it. If the automation contains only side-effect-free tasks (e.g. core.print, read-only queries), call dry_run and report the overall result and any failing task's id + error in your <final_answer>. If it contains tasks with external side effects (notifications, mutating CLI commands, scripts, tickets), do NOT run it — answer that a dry-run executes those effects for real and ask the user to confirm. Either way make NO modifications, and do NOT claim the automation "has no dry-run mode".
-- If the request is purely a question with no change asked, briefly answer in <final_answer> and make no modifications.
+- VERIFY signals: the user asks to run, test, try, or dry-run the automation without changing it. If the automation contains only side-effect-free tasks (e.g. core.print, read-only queries), call dry_run — passing any input values the user gave in "inputs" — and report the overall result and any failing task's id + error in your final answer. If it contains tasks with external side effects (notifications, mutating CLI commands, scripts, tickets), do NOT run it — answer that a dry-run executes those effects for real and ask the user to confirm. Either way make NO modifications, and do NOT claim the automation "has no dry-run mode".
+- If the request is purely a question with no change asked, briefly answer in your final answer and make no modifications.
 
 IF DEBUGGING (gather evidence FIRST, then fix):
 1. If a TARGET EXECUTION ID is given, get_execution on it. Otherwise, if a LAST RECORDED FAILURE is shown above and it already tells you what broke, act on it and skip straight to step 3 — call list_executions/get_execution only when you need the failing task's id, rendered_params or output. If neither is available, list_executions(status="FAILED", limit=10), pick the most recent failed run, then get_execution on it.
@@ -185,7 +185,16 @@ TASK DEPENDENCIES (depends_on) — CRITICAL:
 core.foreach — ITEM VARIABLE:
 - The "item" param sets the loop variable name (default: "item"). ALWAYS set it explicitly. Variable names are CASE-SENSITIVE: if item="issue", use {{ issue.title }}, NOT {{ Issue.title }}.
 
+
+STEPS THAT TOUCH A CLUSTER OR A CLOUD:
+1. Prefer a built-in task over scripting.run_script whenever one fits: k8s.cli for kubectl, cloud.aws.cli / cloud.azure.cli / cloud.gcp.cli for cloud CLIs, network.* for DNS/TCP/TLS checks, k8s.workload_restart for restarts. Before using scripting.run_script, read its runtime_notes (get_task_schema): they say where each executor_type runs and as whom.
+2. Never sign in inside a script: no "aws sts assume-role", role ARNs, "aws eks update-kubeconfig", "az login", "gcloud auth", or access keys in env. Every step already runs as the account it names; validate reports login code.
+3. One step, one identity: each step names the account whose API it calls (see ACCOUNT ENVIRONMENT). Work on a cluster and work in a cloud account are separate steps.
+4. If a step needs an account that is not in ACCOUNT ENVIRONMENT, or one that lacks what the step needs, ask the user to connect or extend it — never work around it with credentials.
+5. Never invent input values. Give any input a caller may leave out a default.
+
 CLOUD ACCOUNT IDs (account_id parameter):
 - MANY task types take an optional params.account_id, not just the CLI tasks: tickets.*, dbms.*, observability.*, scripting.run_script, scm.github, mq.rabbitmqadmin and others. These rules apply wherever it appears.
-- Wherever params.account_id is set, it MUST be a literal UUID. If you see a non-UUID value (a display name, or a "{{ Configs.* }}" reference), replace it with the matching UUID from the account environment, or delete the parameter if the task should run against the automation's own account.
+- Wherever params.account_id is set, it MUST be a literal UUID. If you see a non-UUID value (a display name, or a "{{ Configs.* }}" reference), replace it with the matching UUID from the ACCOUNT ENVIRONMENT, or delete the parameter if the task should run against the automation's own account.
 - account_id is optional and defaults to the automation's own account, so REMOVING it is a legitimate fix when that is the intended target. It is not a way to silence an error about a DIFFERENT account you were asked to target.
+- Before removing or changing an account_id, look up that account's kind under ACCOUNTS THIS AUTOMATION'S STEPS RUN AGAINST. An error about credentials or where a script runs is usually fixed by the step's executor_type (see scripting.run_script runtime_notes), not by moving the step to another account.

@@ -3,6 +3,8 @@ import { Box, CircularProgress } from '@mui/material';
 import { useData } from '@context/DataContext';
 import { useRouter } from 'next/router';
 import homeApi from '@api1/home';
+import userApi from '@api1/user';
+import { getCurrentTenant } from '@lib/auth';
 import { transformClusters } from '@shared/layout/UpdateDataContext';
 
 const isK8sProvider = (provider) => provider?.toUpperCase() === 'K8S';
@@ -45,8 +47,12 @@ const Kubernetes = () => {
         }
         const clusters = transformClusters(accounts.filter((account) => isK8sProvider(account.cloud_provider)));
         if (clusters.length > 0) {
-          setSelectedCluster(clusters[0]);
-          await router.push(`/kubernetes/details/${clusters[0].value}#summary`);
+          // The cluster the user last picked, when it is still connected; the first K8s row
+          // (API order) only for a user with no saved pick.
+          const lastClusterId = userApi.getLastAccountIdForProvider('K8s', getCurrentTenant().id);
+          const cluster = clusters.find((item) => item.value === lastClusterId) || clusters[0];
+          setSelectedCluster(cluster);
+          await router.push(`/kubernetes/details/${cluster.value}#summary`);
           return;
         }
       } catch (error) {

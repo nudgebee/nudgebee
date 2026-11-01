@@ -83,6 +83,13 @@ func seriesMatchCacheTTL() time.Duration {
 }
 
 func (m MetricsSeriesMatchTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	originAccountID := nbRequestContext.AccountId
+	nbRequestContext = nbRequestContext.ForTarget()
+	if nbRequestContext.AccountId != originAccountID {
+		// The provider was resolved for the conversation's account when the
+		// tool was built; the target may use a different metrics backend.
+		m.Provider = MetricsDiscoveryProvider(nbRequestContext.AccountId)
+	}
 	workload := strings.TrimSpace(argString(input, "workload"))
 	if workload == "" {
 		// Fall back to a bare command (some planners pass the single required arg there).

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"nudgebee/tickets-server/models"
+	"nudgebee/tickets-server/services/ticket"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/go-github/v67/github"
@@ -184,7 +186,9 @@ func TestGetGithubIssueWithClient_MapsMetadata(t *testing.T) {
 	const owner, repo = "nudgebee", "demo"
 
 	handler := http.NewServeMux()
-	handler.HandleFunc("/repos/"+owner+"/"+repo+"/issues/42", func(w http.ResponseWriter, _ *http.Request) {
+	var accept string
+	handler.HandleFunc("/repos/"+owner+"/"+repo+"/issues/42", func(w http.ResponseWriter, r *http.Request) {
+		accept = r.Header.Get("Accept")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
 			"number": 42,
@@ -198,7 +202,8 @@ func TestGetGithubIssueWithClient_MapsMetadata(t *testing.T) {
 			"assignee": {"login": "rohitutekar123"},
 			"assignees": [{"login": "Kankshit-02"}, {"login": "rohitutekar123"}],
 			"labels": [{"name": "bug"}, {"name": "Workflow"}],
-			"milestone": {"title": "v1.0"}
+			"milestone": {"title": "v1.0"},
+			"issue_field_values": [{"issue_field_name": "Linked incident", "data_type": "text", "value": "PD-1234"}]
 		}`))
 	})
 
@@ -240,5 +245,48 @@ func TestGetGithubIssueWithClient_MapsMetadata(t *testing.T) {
 	}
 	if got.Platform != "github" {
 		t.Errorf("Platform = %q, want github", got.Platform)
+	}
+	if accept != "application/vnd.github.squirrel-girl-preview" {
+		t.Errorf("Accept = %q, want the header Issues.Get sends", accept)
+	}
+	fields, _ := got.Raw["issue_field_values"].([]any)
+	var value any
+	if len(fields) == 1 {
+		if field, ok := fields[0].(map[string]any); ok {
+			value = field["value"]
+		}
+	}
+	if value != "PD-1234" {
+		t.Errorf("Raw issue_field_values = %v, want the linked incident value", got.Raw["issue_field_values"])
+	}
+	if got.Raw["title"] != "Issue Title" {
+		t.Errorf("Raw title = %v, want the issue title", got.Raw["title"])
+	}
+}
+
+// A deleted GitHub issue (410 Gone) or one that never existed (404) must
+// surface as ticket.ErrNotFound, not a generic error — the ticket-status
+// sync job relies on that to skip it without aborting the rest of the run
+// (a stale backlog with deleted issues
+// was tripping the sync's consecutive-failure abort guard before it ever
+// reached healthy tickets).
+func TestGetGithubIssueWithClient_NotFoundAndGoneAreErrNotFound(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusGone} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			const owner, repo = "nudgebee", "demo"
+			handler := http.NewServeMux()
+			handler.HandleFunc("/repos/"+owner+"/"+repo+"/issues/99", func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"message": "not found"}`))
+			})
+			client, srv := newTestGithubClient(t, handler)
+			defer srv.Close()
+
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			_, err := getGithubIssueWithClient(ctx, client, owner, repo, 99, owner+"/"+repo)
+			if !errors.Is(err, ticket.ErrNotFound) {
+				t.Fatalf("err = %v, want it to wrap ticket.ErrNotFound", err)
+			}
+		})
 	}
 }

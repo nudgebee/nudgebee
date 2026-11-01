@@ -1,0 +1,20 @@
+{
+ "total_count": 1,
+ "check_runs": [
+  {
+   "id": 3001,
+   "name": "buildkite/nudgebee",
+   "status": "completed",
+   "conclusion": "failure",
+   "started_at": "2026-09-22T10:00:00Z",
+   "completed_at": "2026-09-22T10:05:00Z",
+   "details_url": "https://buildkite.com/nudgebee/pipe/builds/12",
+   "app": {
+    "id": 99
+   },
+   "check_suite": {
+    "id": 60
+   }
+  }
+ ]
+}

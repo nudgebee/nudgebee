@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"nudgebee/llm/common"
+	"nudgebee/llm/config"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -274,4 +276,106 @@ func TestGoogleAICacheProvider_ZeroLatencyHitPath(t *testing.T) {
 	resp := p.ApplyCache(context.Background(), req)
 	assert.True(t, resp.CacheHit)
 	assert.Len(t, resp.Options, 1)
+}
+
+// ReAct4 sends [system, opening human, (assistant, tool results)...] and only
+// appends between steps. Each step must mark its tail (the last tool result) so
+// the next step reads the whole previous prompt from cache, and must also mark
+// where the previous step wrote, so the read survives a wide parallel batch.
+func TestAnthropicCacheProvider_ToolLoopMovingBreakpoint(t *testing.T) {
+	p := NewAnthropicCacheProvider()
+	toolTurn := func(id string) []llms.MessageContent {
+		return []llms.MessageContent{
+			{Role: llms.ChatMessageTypeAI, Parts: []llms.ContentPart{
+				llms.TextContent{Text: "thinking about " + id},
+				llms.ToolCall{ID: id, Type: "function", FunctionCall: &llms.FunctionCall{Name: "kubectl", Arguments: `{}`}},
+			}},
+			{Role: llms.ChatMessageTypeTool, Parts: []llms.ContentPart{
+				llms.ToolCallResponse{ToolCallID: id, Name: "kubectl", Content: "result " + id},
+			}},
+		}
+	}
+	opening := []llms.MessageContent{
+		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextContent{Text: "system + tools"}}},
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: "why is pod-a crashing?"}}},
+	}
+
+	// markedAt returns the indices of messages carrying a marker (the adapter
+	// puts at most one per message here).
+	markedAt := func(msgs []llms.MessageContent) []int {
+		var idx []int
+		for i, m := range msgs {
+			for _, part := range m.Parts {
+				if _, ok := part.(llms.CachedContent); ok {
+					idx = append(idx, i)
+				}
+			}
+		}
+		return idx
+	}
+	apply := func(msgs []llms.MessageContent, scope CacheScope) []llms.MessageContent {
+		resp := p.ApplyCache(context.Background(), &CacheRequest{Provider: "anthropic", ConversationId: "c", Messages: msgs, Scope: scope})
+		require.NoError(t, resp.Error)
+		require.Len(t, resp.Messages, len(msgs))
+		return resp.Messages
+	}
+
+	// Step 1: system + opening human (the tail).
+	step1 := append([]llms.MessageContent{}, opening...)
+	assert.Equal(t, []int{0, 1}, markedAt(apply(step1, CacheScopeConversation)))
+
+	// Step 2: one tool turn. Tail = tool result (3); previous tail = opening (1).
+	step2 := append(append([]llms.MessageContent{}, step1...), toolTurn("t1")...)
+	assert.Equal(t, []int{0, 1, 3}, markedAt(apply(step2, CacheScopeConversation)))
+
+	// Step 3: tail = 5; previous tail = 3, where step 2 wrote. Account scope
+	// (the orchestrators) gets the same layout.
+	step3 := append(append([]llms.MessageContent{}, step2...), toolTurn("t2")...)
+	out := apply(step3, CacheScopeAccount)
+	assert.Equal(t, []int{0, 3, 5}, markedAt(out))
+
+	cached, ok := out[5].Parts[0].(llms.CachedContent)
+	require.True(t, ok)
+	assert.Equal(t, "result t2", cached.ContentPart.(llms.ToolCallResponse).Content)
+	assert.Equal(t, "ephemeral", cached.CacheControl.Type)
+
+	// The caller's messages are not modified in place.
+	_, wrapped := step3[5].Parts[0].(llms.CachedContent)
+	assert.False(t, wrapped)
+}
+
+// Global/Account scope keeps the shared system prompt for an hour; Conversation
+// scope, the tool-loop markers and the "5m" rollback stay on the 5-minute default.
+func TestAnthropicCacheProvider_SystemTTLByScope(t *testing.T) {
+	orig := config.Config.LlmServerAnthropicSystemCacheTTL
+	t.Cleanup(func() { config.Config.LlmServerAnthropicSystemCacheTTL = orig })
+
+	msgs := []llms.MessageContent{
+		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextContent{Text: "system + tools"}}},
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: "question"}}},
+		{Role: llms.ChatMessageTypeAI, Parts: []llms.ContentPart{
+			llms.ToolCall{ID: "t1", Type: "function", FunctionCall: &llms.FunctionCall{Name: "kubectl", Arguments: `{}`}},
+		}},
+		{Role: llms.ChatMessageTypeTool, Parts: []llms.ContentPart{llms.ToolCallResponse{ToolCallID: "t1", Content: "pods"}}},
+	}
+	durations := func(scope CacheScope) map[int]time.Duration {
+		resp := NewAnthropicCacheProvider().ApplyCache(context.Background(), &CacheRequest{Provider: "anthropic", Messages: msgs, Scope: scope})
+		out := map[int]time.Duration{}
+		for i, m := range resp.Messages {
+			for _, p := range m.Parts {
+				if cc, ok := p.(llms.CachedContent); ok {
+					out[i] = cc.CacheControl.Duration
+				}
+			}
+		}
+		return out
+	}
+
+	config.Config.LlmServerAnthropicSystemCacheTTL = "1h"
+	assert.Equal(t, map[int]time.Duration{0: time.Hour, 1: 0, 3: 0}, durations(CacheScopeAccount))
+	assert.Equal(t, map[int]time.Duration{0: time.Hour, 1: 0, 3: 0}, durations(CacheScopeGlobal))
+	assert.Equal(t, map[int]time.Duration{0: 0, 1: 0, 3: 0}, durations(CacheScopeConversation))
+
+	config.Config.LlmServerAnthropicSystemCacheTTL = "5m"
+	assert.Equal(t, map[int]time.Duration{0: 0, 1: 0, 3: 0}, durations(CacheScopeAccount))
 }

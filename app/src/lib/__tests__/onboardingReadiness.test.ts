@@ -472,6 +472,12 @@ describe('catalog drift', () => {
     expect(allRoutes.filter((r) => !catalogProviders.has(r) && !NON_CATALOG_ROUTES.has(r))).toEqual([]);
   });
 
+  it('keeps OpenObserve available in the observability integrations section', () => {
+    const observabilitySection = SECTIONS_CONFIG.find((section: { id: string }) => section.id === 'observability');
+    expect(observabilitySection?.providers).toContain('OPENOBSERVE');
+    expect(DISABLED_PROVIDERS.has('OPENOBSERVE')).toBe(false);
+  });
+
   it('never routes to a provider the catalog has disabled', () => {
     expect(allRoutes.filter((r) => DISABLED_PROVIDERS.has(r))).toEqual([]);
   });

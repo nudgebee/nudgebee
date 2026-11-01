@@ -55,6 +55,15 @@ describe('forwardAction with a client abort signal', () => {
     expect(result).toEqual({ ok: false, error: { kind: 'client_disconnected', method: 'metrics_list', url: 'http://api-server/rpc/metrics' } });
   });
 
+  it('reports a timeout signal as upstream_unreachable, not client_disconnected', async () => {
+    global.fetch = hangingFetch() as unknown as typeof fetch;
+    const result = await forwardAction({ ...base, signal: AbortSignal.timeout(10) });
+    expect(result).toEqual({
+      ok: false,
+      error: { kind: 'upstream_unreachable', method: 'metrics_list', url: 'http://api-server/rpc/metrics', detail: 'timed out' },
+    });
+  });
+
   it('still reports upstream_unreachable when fetch fails without an abort', async () => {
     global.fetch = jest.fn(() => Promise.reject(new Error('ECONNREFUSED'))) as unknown as typeof fetch;
     const result = await forwardAction({ ...base, signal: new AbortController().signal });

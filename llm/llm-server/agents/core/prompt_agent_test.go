@@ -385,3 +385,39 @@ func TestDefaultReactOutputFormat_UsesCanonicalHeader(t *testing.T) {
 	assert.NotContains(t, promptString, "### Causality Chain (Five Whys)",
 		"forbidden variant `(Five Whys)` must not appear either")
 }
+
+func TestGetPromptTemplate_ExamplesWithoutQuestion(t *testing.T) {
+	p := NBAgentPrompt{
+		Role: "Custom Agent",
+		Examples: []NBAgentPromptExample{
+			{
+				Answer: "Here is an example response snippet.",
+			},
+			{
+				Question: "How do I check memory?",
+				Answer:   "Run free -m",
+			},
+		},
+	}
+	req := NBAgentRequest{
+		Query: "help me with memory",
+	}
+
+	// ReAct style
+	promptTemplate := GetPromptTemplate(p, req, AgentPlannerTypeReAct3)
+	promptString, err := promptTemplate.Format(map[string]any{"input": req.Query})
+	assert.NoError(t, err)
+	assert.Contains(t, promptString, "<examples>")
+	assert.Contains(t, promptString, "<content>Here is an example response snippet.</content>")
+	assert.Contains(t, promptString, "<question>How do I check memory?</question>")
+	assert.Contains(t, promptString, "<content>Run free -m</content>")
+
+	// Non-ReAct style
+	promptTemplateNonReact := GetPromptTemplate(p, req, AgentPlannerTypeCustom)
+	promptStringNonReact, err := promptTemplateNonReact.Format(map[string]any{"input": req.Query})
+	assert.NoError(t, err)
+	assert.Contains(t, promptStringNonReact, "Examples:")
+	assert.Contains(t, promptStringNonReact, "answer: Here is an example response snippet.")
+	assert.Contains(t, promptStringNonReact, "question: How do I check memory?")
+	assert.Contains(t, promptStringNonReact, "answer: Run free -m")
+}

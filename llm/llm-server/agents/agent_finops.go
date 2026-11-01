@@ -72,7 +72,7 @@ func init() {
 	// stored history (agent alias) and for tool calls replayed from history
 	// (tool alias); only "finops" is exposed as a tool to parent orchestrators.
 	toolcore.RegisterNBToolAlias(RecommendationsAgentName, FinOpsAgentName)
-	core.RegisterNBAgentFactoryAndToolWithAliases(FinOpsAgentName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAndToolWithAliases(FinOpsAgentName, func(accountId string) (core.NBAgent, error) {
 		return &FinOpsAgent{accountId: accountId}, nil
 	}, toolDescription, toolInput, toolOutput, RecommendationsAgentName)
 }
@@ -98,6 +98,12 @@ func (a *FinOpsAgent) GetDescription() string {
 		"and their resolution history, and provides evidence-backed next steps by orchestrating spend, recommendation, " +
 		"cloud debug, and observability tools."
 }
+
+// AcceptsExecutionTarget: the read tools follow a handed target
+// (tools.targetDataContext) and the account context is built for it. The
+// recommendation write tools cannot take one, so the executor refuses them
+// under another account.
+func (a *FinOpsAgent) AcceptsExecutionTarget() {}
 
 func (a *FinOpsAgent) GetPlannerType() core.AgentPlannerType {
 	// Declared as ReAct; executor always routes ReAct → ReAct3 at runtime.
@@ -125,8 +131,13 @@ func (a *FinOpsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 	// (data protection, time handling, code analysis) are injected once by the
 	// react_3 base prompt — rendering them here again duplicated whole blocks
 	// inside the system prompt.
+	contextAgent := a
+	if target := query.QueryConfig.DelegatedTarget; target != nil && target.AccountID != "" && target.AccountID != a.accountId {
+		// Handed another account: describe that account, validated at handoff.
+		contextAgent = &FinOpsAgent{accountId: target.AccountID}
+	}
 	tmplData := map[string]any{
-		"account_context": a.fetchFinOpsAccountContext(ctx),
+		"account_context": contextAgent.fetchFinOpsAccountContext(ctx),
 	}
 	if t, err := template.New("finops").Option("missingkey=zero").Parse(promptText); err == nil {
 		var buf strings.Builder

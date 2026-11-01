@@ -14,7 +14,7 @@ func init() {
 	toolInput := "Provide ClickHouse issues related question in natural language."
 	toolOutput := "The tool will return the issue response based on user question."
 
-	core.RegisterNBAgentFactoryAndTool(ClickhouseAgentName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAndTool(ClickhouseAgentName, func(accountId string) (core.NBAgent, error) {
 		return newClickhouseAgent(accountId), nil
 	}, toolDescription, toolInput, toolOutput)
 }
@@ -24,6 +24,11 @@ func newClickhouseAgent(accountId string) ClickhouseDebugAgent {
 		accountId: accountId,
 	}
 }
+
+// AcceptsExecutionTarget: clickhouse_query_execute follows a handed target and picks among
+// the target account's own integrations, so the agent can run for another
+// account.
+func (l ClickhouseDebugAgent) AcceptsExecutionTarget() {}
 
 type ClickhouseDebugAgent struct {
 	accountId string

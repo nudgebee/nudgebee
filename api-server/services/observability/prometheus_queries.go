@@ -95,108 +95,108 @@ func buildPrometheusNodeQueries(meta RequestMetadata, metrics []string) map[stri
 	}
 
 	for _, metricKey := range metrics {
-		switch metricKey {
+		switch UtilisationKey(metricKey) {
 		// --- Per-container metrics, narrowed to one node ---
 		//
 		// Same key names and the same {namespace, pod, container} series shape as the
 		// workload builder produces; only the narrowing differs. That is the point of
 		// the family: a caller asks the same question and says where to look.
-		case "container_cpu_usage_by_pod":
+		case KeyContainerCPUUsageByPod:
 			queries[metricKey] = promPerContainerOnNode(
 				promRateSeries("container_cpu_usage_seconds_total", meta.RateWindow), node,
 				`pod!=""`, `container!=""`, `container!="POD"`, `image!=""`)
-		case "container_memory_working_set_by_pod":
+		case KeyContainerMemoryWorkingSetByPod:
 			queries[metricKey] = promPerContainerOnNode(
 				promGaugeSeries("container_memory_working_set_bytes"), node,
 				`pod!=""`, `container!=""`, `container!="POD"`, `image!=""`)
-		case "container_memory_max_usage_by_pod":
+		case KeyContainerMemoryMaxUsageByPod:
 			queries[metricKey] = promPerContainerOnNode(
 				promGaugeSeries("container_memory_max_usage_bytes"), node,
 				`pod!=""`, `container!=""`, `container!="POD"`, `image!=""`)
 
 		// Spec keys come from kube-state-metrics, which labels by `node` only — no
 		// `instance` variant to fall back to, so these do not need the two-armed form.
-		case "container_cpu_request_by_pod":
+		case KeyContainerCPURequestByPod:
 			queries[metricKey] = promSpecOnNode("kube_pod_container_resource_requests", node, "cpu")
-		case "container_cpu_limit_by_pod":
+		case KeyContainerCPULimitByPod:
 			queries[metricKey] = promSpecOnNode("kube_pod_container_resource_limits", node, "cpu")
-		case "container_memory_request_by_pod":
+		case KeyContainerMemoryRequestByPod:
 			queries[metricKey] = promSpecOnNode("kube_pod_container_resource_requests", node, "memory")
-		case "container_memory_limit_by_pod":
+		case KeyContainerMemoryLimitByPod:
 			queries[metricKey] = promSpecOnNode("kube_pod_container_resource_limits", node, "memory")
 
 		// What the node can give out, as opposed to what it is using. The workload
 		// builder answers these cluster-wide; at node scope they are the denominator
 		// a caller needs to turn per-container usage into a percentage.
-		case "cpu_total":
+		case KeyCPUTotal:
 			queries[metricKey] = promNodeAllocatable(node, "cpu")
-		case "mem_total":
+		case KeyMemTotal:
 			queries[metricKey] = promNodeAllocatable(node, "memory")
 
-		case "cpu_usage":
+		case KeyCPUUsage:
 			sel, join := promNodeExporterScope(meta)
 			agent := promNodeAgentScope(meta)
 			queries[metricKey] = fmt.Sprintf(
 				`sum(irate(node_cpu_seconds_total{mode!="idle"%s}[5m])%s) OR sum(irate(node_resources_cpu_usage_seconds_total{mode!="idle", %s}[5m]))`,
 				promPrefixComma(sel), join, agent)
-		case "memory_usage":
+		case KeyMemoryUsage:
 			sel, join := promNodeExporterScope(meta)
 			agent := promNodeAgentScope(meta)
 			queries[metricKey] = fmt.Sprintf(
 				`sum(node_memory_Active_bytes{%s}%s) or sum(node_resources_memory_total_bytes{%s} - node_resources_memory_available_bytes{%s})`,
 				sel, join, agent, agent)
-		case "cpu_request":
-			queries[metricKey] = fmt.Sprintf(`sum(kube_pod_container_resource_requests{resource="cpu", node=~"%s.*"})`, meta.NodeName)
-		case "memory_request":
-			queries[metricKey] = fmt.Sprintf(`sum(kube_pod_container_resource_requests{resource="memory", node=~"%s.*"})`, meta.NodeName)
-		case "cpu_limit":
-			queries[metricKey] = fmt.Sprintf(`sum(kube_pod_container_resource_limits{resource="cpu", node=~"%s.*"})`, meta.NodeName)
-		case "memory_limit":
-			queries[metricKey] = fmt.Sprintf(`sum(kube_pod_container_resource_limits{resource="memory", node=~"%s.*"})`, meta.NodeName)
-		case "disk_total":
+		case KeyCPURequest:
+			queries[metricKey] = promSpecTotal("kube_pod_container_resource_requests", fmt.Sprintf(`resource="cpu", node=~"%s.*"`, meta.NodeName))
+		case KeyMemoryRequest:
+			queries[metricKey] = promSpecTotal("kube_pod_container_resource_requests", fmt.Sprintf(`resource="memory", node=~"%s.*"`, meta.NodeName))
+		case KeyCPULimit:
+			queries[metricKey] = promSpecTotal("kube_pod_container_resource_limits", fmt.Sprintf(`resource="cpu", node=~"%s.*"`, meta.NodeName))
+		case KeyMemoryLimit:
+			queries[metricKey] = promSpecTotal("kube_pod_container_resource_limits", fmt.Sprintf(`resource="memory", node=~"%s.*"`, meta.NodeName))
+		case KeyDiskTotal:
 			queries[metricKey] = fmt.Sprintf(`sum(node_filesystem_size_bytes{mountpoint="/", instance=~"%s.*"}) or sum(kubelet_volume_stats_capacity_bytes{instance=~"%s.*"}) or sum(kubelet_volume_stats_capacity_bytes{instance=~"%s.*"})`, meta.InternalIP, meta.NodeName, meta.NodeIP)
-		case "disk_used":
+		case KeyDiskUsed:
 			queries[metricKey] = fmt.Sprintf(`(sum(node_filesystem_size_bytes{mountpoint="/", instance=~"%s.*"}) - sum(node_filesystem_free_bytes{mountpoint="/", instance=~"%s.*"})) or (sum(kubelet_volume_stats_capacity_bytes{instance=~"%s.*"}) - sum(kubelet_volume_stats_available_bytes{instance=~"%s.*"})) or (sum(kubelet_volume_stats_capacity_bytes{instance=~"%s.*"}) - sum(kubelet_volume_stats_available_bytes{instance=~"%s.*"}))`, meta.InternalIP, meta.InternalIP, meta.NodeName, meta.NodeName, meta.NodeIP, meta.NodeIP)
-		case "cpu_usage_line":
+		case KeyCPUUsageLine:
 			// node-agent labels node_resources_cpu_usage_seconds_total with `instance` (= node name),
 			// not `node`; the last fallback must match on instance or it returns empty when
 			// node-exporter (node_cpu_seconds_total) is absent and CPU renders as 0%.
 			queries[metricKey] = fmt.Sprintf(`sum by (instance) (rate(node_cpu_seconds_total{mode!="idle", instance=~"%s|%s"}[5m])) or (sum by (node) (rate(node_cpu_seconds_total{mode!="idle", node=~"%s"}[5m]))) or (sum by (instance) (rate(node_resources_cpu_usage_seconds_total{mode!="idle", instance=~"%s"}[5m])))`, meta.InternalIP, meta.NodeName, meta.NodeName, meta.NodeName)
-		case "memory_usage_line":
+		case KeyMemoryUsageLine:
 			queries[metricKey] = fmt.Sprintf(`(avg(node_memory_MemTotal_bytes{instance=~"%s|%s"} - node_memory_MemAvailable_bytes{instance=~"%s|%s"}) by (instance)) or (avg(node_resources_memory_total_bytes{instance=~"%s"} - node_resources_memory_available_bytes{instance=~"%s"}) by (instance)) or (avg(node_memory_MemTotal_bytes{node=~"%s"} - node_memory_MemAvailable_bytes{node=~"%s"}) by (node)) or (avg(node_resources_memory_total_bytes{node=~"%s"} - node_resources_memory_available_bytes{node=~"%s"}) by (node))`, meta.InternalIP, meta.NodeName, meta.InternalIP, meta.NodeName, meta.NodeName, meta.NodeName, meta.NodeName, meta.NodeName, meta.NodeName, meta.NodeName)
-		case "pvc_usage":
+		case KeyPVCUsage:
 			queries[metricKey] = fmt.Sprintf(`((1 - node_filesystem_free_bytes{ __CLUSTER__ instance=~"%s.*", fstype !~"tmpfs"} / node_filesystem_size_bytes{ __CLUSTER__ instance=~"%s.*", fstype !~"tmpfs"}) * 100) or (kubelet_volume_stats_used_bytes{ __CLUSTER__ instance=~"%s.*"}  * 100/ kubelet_volume_stats_capacity_bytes{ __CLUSTER__ instance=~"%s.*"})`, meta.NodeIP, meta.NodeIP, meta.NodeName, meta.NodeName)
-		case "node_az":
+		case KeyNodeAZ:
 			queries[metricKey] = `count(karpenter_nodes_total_pod_requests{ __CLUSTER__ provisioner_name="",resource_type="pods"}) by (zone)`
-		case "pod_az":
+		case KeyPodAZ:
 			queries[metricKey] = `sum(karpenter_pods_state{ __CLUSTER__ provisioner=""}) by (zone)`
-		case "no_of_pods":
+		case KeyNoOfPods:
 			queries[metricKey] = `sum(karpenter_pods_state{ __CLUSTER__ provisioner="", name=~".*-[0-9]+.*"})`
-		case "node_pool_pod_trend":
+		case KeyNodePoolPodTrend:
 			queries[metricKey] = `sum by (nodepool)(karpenter_pods_state{__CLUSTER__})`
-		case "nodeclaims_disrupted":
+		case KeyNodeclaimsDisrupted:
 			queries[metricKey] = `round(sum(increase(karpenter_nodeclaims_disrupted_total{__CLUSTER__}[1h])) by (nodepool, capacity_type, reason))`
-		case "node_created_node_pool":
+		case KeyNodeCreatedNodePool:
 			queries[metricKey] = `round(sum(increase(karpenter_nodes_created_total{__CLUSTER__}[1h])) by (nodepool))`
-		case "nodes_terminated_node_pool":
+		case KeyNodesTerminatedNodePool:
 			queries[metricKey] = `round(sum(increase(karpenter_nodes_terminated_total{__CLUSTER__}[1h])) by (nodepool))`
-		case "node_disruption_decisions_reason_decision":
+		case KeyNodeDisruptionDecisionsReasonDecision:
 			queries[metricKey] = `round(sum(increase(karpenter_voluntary_disruption_decisions_total{__CLUSTER__}[1h])) by (decision, reason))`
-		case "nodes_eligible_disruption_reason":
+		case KeyNodesEligibleDisruptionReason:
 			queries[metricKey] = `round(sum(increase(karpenter_voluntary_disruption_eligible_nodes{__CLUSTER__}[1h])) by (reason))`
-		case "active_nodes":
+		case KeyActiveNodes:
 			queries[metricKey] = `kube_node_info{__CLUSTER__}`
-		case "network_receive_packet":
+		case KeyNetworkReceivePacket:
 			queries[metricKey] = fmt.Sprintf(`sum(irate(node_network_receive_packets_total{__CLUSTER__ instance=~"%s.*", device!~"lo|veth.*|docker.*|flannel.*|cali.*|cbr.*"}[5m])) or sum(irate(node_network_receive_packets_total{__CLUSTER__ instance=~"%s.*", device!~"lo|veth.*|docker.*|flannel.*|cali.*|cbr.*"}[5m])) or sum(irate(node_network_receive_packets_total{__CLUSTER__ instance=~"%s.*", device!~"lo|veth.*|docker.*|flannel.*|cali.*|cbr.*"}[5m]))`, meta.InternalIP, meta.NodeName, meta.NodeIP)
-		case "network_transmit_packets":
+		case KeyNetworkTransmitPackets:
 			queries[metricKey] = fmt.Sprintf(`sum(irate(node_network_transmit_packets_total{__CLUSTER__ instance=~"%s.*", device!~"lo|veth.*|docker.*|flannel.*|cali.*|cbr.*"}[5m])) or sum(irate(node_network_transmit_packets_total{__CLUSTER__ instance=~"%s.*", device!~"lo|veth.*|docker.*|flannel.*|cali.*|cbr.*"}[5m])) or sum(irate(node_network_transmit_packets_total{__CLUSTER__ instance=~"%s.*", device!~"lo|veth.*|docker.*|flannel.*|cali.*|cbr.*"}[5m]))`, meta.InternalIP, meta.NodeName, meta.NodeIP)
 		// Disk I/O throughput, from node-exporter. The device filter drops the
 		// virtual block devices (loop/ram/dm) that would otherwise double-count the
 		// physical disk they sit on. Same instance fallback chain as the network
 		// metrics above: internal IP, then node name, then node IP.
-		case "disk_read_bytes":
+		case KeyDiskReadBytes:
 			queries[metricKey] = fmt.Sprintf(`sum(irate(node_disk_read_bytes_total{__CLUSTER__ instance=~"%s.*", device!~"loop.*|ram.*|dm-.*"}[5m])) or sum(irate(node_disk_read_bytes_total{__CLUSTER__ instance=~"%s.*", device!~"loop.*|ram.*|dm-.*"}[5m])) or sum(irate(node_disk_read_bytes_total{__CLUSTER__ instance=~"%s.*", device!~"loop.*|ram.*|dm-.*"}[5m]))`, meta.InternalIP, meta.NodeName, meta.NodeIP)
-		case "disk_write_bytes":
+		case KeyDiskWriteBytes:
 			queries[metricKey] = fmt.Sprintf(`sum(irate(node_disk_written_bytes_total{__CLUSTER__ instance=~"%s.*", device!~"loop.*|ram.*|dm-.*"}[5m])) or sum(irate(node_disk_written_bytes_total{__CLUSTER__ instance=~"%s.*", device!~"loop.*|ram.*|dm-.*"}[5m])) or sum(irate(node_disk_written_bytes_total{__CLUSTER__ instance=~"%s.*", device!~"loop.*|ram.*|dm-.*"}[5m]))`, meta.InternalIP, meta.NodeName, meta.NodeIP)
 		}
 	}
@@ -428,7 +428,7 @@ func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[
 
 	// --- 5. Build Queries ---
 	for _, metricKey := range metrics {
-		switch metricKey {
+		switch UtilisationKey(metricKey) {
 		// --- Per-pod container usage, for rightsizing -----------------------------
 		//
 		// One series per pod and container, unlike cpu_usage/memory_usage which sum
@@ -439,17 +439,17 @@ func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[
 		// meta.Aggregate collapses each series to one point when the caller asks for
 		// it (rightsizing asks for p92/p95/p97/p99, and count for its data floor);
 		// empty leaves a time series, so these keys are chartable too.
-		case "container_cpu_usage_by_pod":
+		case KeyContainerCPUUsageByPod:
 			expr := promKubeletPreferred(
 				`max by (namespace, container, pod) (rate(container_cpu_usage_seconds_total{__CLUSTER__ %s}[`+rateW+`]))`,
 				containerFilter)
 			queries[metricKey] = expr
-		case "container_memory_working_set_by_pod":
+		case KeyContainerMemoryWorkingSetByPod:
 			expr := promKubeletPreferred(
 				`max by (namespace, container, pod) (container_memory_working_set_bytes{__CLUSTER__ %s})`,
 				containerFilter)
 			queries[metricKey] = expr
-		case "container_memory_max_usage_by_pod":
+		case KeyContainerMemoryMaxUsageByPod:
 			// The cgroup high-water mark, the floor for a memory LIMIT recommendation.
 			// No other provider carries it, so they return nothing and say so; the
 			// strategy already treats it as optional.
@@ -458,7 +458,7 @@ func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[
 				containerFilter)
 			queries[metricKey] = expr
 
-		case "container_oomkilled_limit_by_pod":
+		case KeyContainerOOMKilledLimitByPod:
 			// The memory LIMIT a container was holding when the kubelet OOM-killed it.
 			//
 			// Not a usage series: it is a spec value, gated on an event having
@@ -493,19 +493,19 @@ func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[
 		//
 		// No promKubeletPreferred: these come from kube-state-metrics, which is a
 		// single series per container, not a per-scraper cAdvisor series.
-		case "container_cpu_request_by_pod":
+		case KeyContainerCPURequestByPod:
 			queries[metricKey] = fmt.Sprintf(
 				`max by (namespace, container, pod) (kube_pod_container_resource_requests{__CLUSTER__ %s})`,
 				promSelector(containerFilter, `resource="cpu"`))
-		case "container_cpu_limit_by_pod":
+		case KeyContainerCPULimitByPod:
 			queries[metricKey] = fmt.Sprintf(
 				`max by (namespace, container, pod) (kube_pod_container_resource_limits{__CLUSTER__ %s})`,
 				promSelector(containerFilter, `resource="cpu"`))
-		case "container_memory_request_by_pod":
+		case KeyContainerMemoryRequestByPod:
 			queries[metricKey] = fmt.Sprintf(
 				`max by (namespace, container, pod) (kube_pod_container_resource_requests{__CLUSTER__ %s})`,
 				promSelector(containerFilter, `resource="memory"`))
-		case "container_memory_limit_by_pod":
+		case KeyContainerMemoryLimitByPod:
 			queries[metricKey] = fmt.Sprintf(
 				`max by (namespace, container, pod) (kube_pod_container_resource_limits{__CLUSTER__ %s})`,
 				promSelector(containerFilter, `resource="memory"`))
@@ -519,11 +519,11 @@ func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[
 		//
 		// Both labels are on the series deliberately: a claim name is unique only
 		// within its namespace, and the consumer keys on the pair.
-		case "pvc_used_by_claim":
+		case KeyPVCUsedByClaim:
 			queries[metricKey] = fmt.Sprintf(
 				`max by (namespace, persistentvolumeclaim) (kubelet_volume_stats_used_bytes{__CLUSTER__ %s})`,
 				pvcFilter)
-		case "pvc_capacity_by_claim":
+		case KeyPVCCapacityByClaim:
 			// kubelet_volume_stats_capacity_bytes, not the kube-state request: the
 			// request is what was ASKED for and the capacity is what the volume
 			// actually has, which is what a resize decision has to compare usage
@@ -531,36 +531,36 @@ func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[
 			queries[metricKey] = fmt.Sprintf(
 				`max by (namespace, persistentvolumeclaim) (kubelet_volume_stats_capacity_bytes{__CLUSTER__ %s})`,
 				pvcFilter)
-		case "pvc_usage":
+		case KeyPVCUsage:
 			queries[metricKey] = fmt.Sprintf(`sum(kubelet_volume_stats_used_bytes{__CLUSTER__ %s})`, pvcFilter)
-		case "pvc_requests":
+		case KeyPVCRequests:
 			queries[metricKey] = fmt.Sprintf(`sum(kube_persistentvolumeclaim_resource_requests_storage_bytes{__CLUSTER__ %s})`, pvcFilter)
 
 		// --- HTTP / Network ---
-		case "http_status":
+		case KeyHTTPStatus:
 			queries[metricKey] = fmt.Sprintf(`sum by (actual_destination_workload_namespace, status) (rate(container_http_requests_total{__CLUSTER__ %sjob!=""}[5m]))`, actualDestFilter)
-		case "http_max_response_time":
+		case KeyHTTPMaxResponseTime:
 			queries[metricKey] = fmt.Sprintf(`max by (actual_destination_workload_namespace) (max_over_time(container_net_tcp_connection_time_seconds_total{__CLUSTER__ %sjob!=""}[5m]))`, actualDestFilter)
-		case "http_throughput":
+		case KeyHTTPThroughput:
 			queries[metricKey] = fmt.Sprintf(`sort_desc(sum by(method, path, destination_workload_name, destination_workload_namespace)(increase(container_http_requests_total{__CLUSTER__ %sjob!=""}[1h])))`, destFilter)
-		case "http_latency_p95":
+		case KeyHTTPLatencyP95:
 			queries[metricKey] = fmt.Sprintf(`histogram_quantile(0.95, sum by(le, path, method, destination_workload_name, destination_workload_namespace) (increase(container_http_requests_duration_seconds_total_bucket{__CLUSTER__ %sjob!=""}[1h])))`, destFilter)
-		case "http_latency_p99":
+		case KeyHTTPLatencyP99:
 			queries[metricKey] = fmt.Sprintf(`histogram_quantile(0.99, sum by(le, path, method, destination_workload_name, destination_workload_namespace) (increase(container_http_requests_duration_seconds_total_bucket{__CLUSTER__ %sjob!=""}[1h])))`, destFilter)
-		case "http_latency_sum":
+		case KeyHTTPLatencySum:
 			queries[metricKey] = fmt.Sprintf(`sum by (path, method, destination_workload_name, destination_workload_namespace) (increase(container_http_requests_duration_seconds_total_sum{__CLUSTER__ %sjob!=""}[1h]))`, destFilter)
-		case "http_error_rate":
+		case KeyHTTPErrorRate:
 			queries[metricKey] = fmt.Sprintf(`(sum by(method, path, destination_workload_name, destination_workload_namespace)(increase(container_http_requests_total{__CLUSTER__ %sstatus=~"^[45]..$"}[1h])) / sum(increase(container_http_requests_total{__CLUSTER__ %sjob!=""}[1h]))) * 100`, destFilter, destFilter)
 
 		// --- Network Packet Logic ---
 		// Network metrics are pod-scoped: cAdvisor's container_network_*_bytes_total series carry an
 		// empty `container` label, so the container!="" constraint in containerFilter filters them all
 		// out. Use basePodFilter (namespace + pod matcher only) instead.
-		case "network_receive_packet":
+		case KeyNetworkReceivePacket:
 			queries[metricKey] = fmt.Sprintf(`(sum(rate(container_network_receive_bytes_total{__CLUSTER__ %sjob!=""}[5m]))) or (sum(rate(container_net_tcp_bytes_received_total{__CLUSTER__ %sjob!=""}[5m])))`, basePodFilter, containerIDFilter)
-		case "network_transmit_packets":
+		case KeyNetworkTransmitPackets:
 			queries[metricKey] = fmt.Sprintf(`-((sum(rate(container_network_transmit_bytes_total{__CLUSTER__ %sjob!=""}[5m]))) or (sum(rate(container_net_tcp_bytes_sent_total{__CLUSTER__ %sjob!=""}[5m]))))`, basePodFilter, containerIDFilter)
-		case "network_usage":
+		case KeyNetworkUsage:
 			queries[metricKey] = fmt.Sprintf(`sum(container_net_tcp_connection_time_seconds_total{__CLUSTER__ %scontainer!=""}) or sum(kube_network_rx_bytes{__CLUSTER__ %scontainer!=""})`, containerFilter, basePodFilter)
 
 		// --- Disk I/O ---
@@ -570,27 +570,27 @@ func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[
 		// `container` label and is therefore excluded by that filter -- the basePodFilter
 		// fallback catches those. `or` only evaluates the right side when the left
 		// returns no series, so the two forms can never be summed together.
-		case "disk_read_bytes":
+		case KeyDiskReadBytes:
 			queries[metricKey] = fmt.Sprintf(`(sum(rate(container_fs_reads_bytes_total{__CLUSTER__ %s}[5m]))) or (sum(rate(container_fs_reads_bytes_total{__CLUSTER__ %sjob!=""}[5m])))`, containerFilter, basePodFilter)
-		case "disk_write_bytes":
+		case KeyDiskWriteBytes:
 			queries[metricKey] = fmt.Sprintf(`(sum(rate(container_fs_writes_bytes_total{__CLUSTER__ %s}[5m]))) or (sum(rate(container_fs_writes_bytes_total{__CLUSTER__ %sjob!=""}[5m])))`, containerFilter, basePodFilter)
 
 		// --- Resources ---
-		case "cpu_usage":
+		case KeyCPUUsage:
 			queries[metricKey] = fmt.Sprintf(`sum(rate(container_cpu_usage_seconds_total{__CLUSTER__ %s}[5m]))`, containerFilter)
 		// Per-pod forms of the two usage keys, for charts that draw one line per pod
 		// (the anomaly and SLO evidence cards). Same containerFilter as the totals
 		// above, so container!="" keeps the pod-level cgroup series out: summing it
 		// alongside the per-container series counts every pod twice.
-		case "cpu_usage_by_pod":
+		case KeyCPUUsageByPod:
 			queries[metricKey] = fmt.Sprintf(`sum by (pod, namespace) (rate(container_cpu_usage_seconds_total{__CLUSTER__ %s}[5m]))`, containerFilter)
-		case "memory_usage_by_pod":
+		case KeyMemoryUsageByPod:
 			queries[metricKey] = fmt.Sprintf(`sum by (pod, namespace) (container_memory_working_set_bytes{__CLUSTER__ %s})`, containerFilter)
 		// One series for the whole workload. http_latency_p99 above is per path and
 		// method over an hour, shaped for the latency table; an evidence chart needs a
 		// single p99 line at the chart's own resolution. Both this and cpu_throttling
 		// read the node-agent's eBPF metrics, so they answer only where that agent runs.
-		case "workload_http_latency_p99":
+		case KeyWorkloadHTTPLatencyP99:
 			queries[metricKey] = fmt.Sprintf(`histogram_quantile(0.99, sum by (le) (rate(container_http_requests_duration_seconds_total_bucket{__CLUSTER__ %s}[5m])))`, httpWorkloadScope)
 		// Request rate and mean latency for the whole workload, probes excluded.
 		//
@@ -601,11 +601,11 @@ func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[
 		//
 		// The probe exclusion is part of the key's meaning, not a caller's filter; see
 		// metrics_health_endpoints.go for the measurement that forced it.
-		case "workload_http_request_rate":
+		case KeyWorkloadHTTPRequestRate:
 			queries[metricKey] = fmt.Sprintf(
 				`sum(rate(container_http_requests_total{__CLUSTER__ %s, path!~"%s"}[`+rateW+`]))`,
 				httpWorkloadScope, healthCheckPathsRegex())
-		case "workload_http_latency_mean":
+		case KeyWorkloadHTTPLatencyMean:
 			// sum/count, not a quantile: the mean is what a capacity model wants, and
 			// it is the one statistic a histogram gives exactly rather than by
 			// interpolation. Division is guarded by `> 0` on the denominator so an
@@ -615,30 +615,30 @@ func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[
 					` / (sum(rate(container_http_requests_duration_seconds_total_count{__CLUSTER__ %s, path!~"%s"}[`+rateW+`])) > 0)`,
 				httpWorkloadScope, healthCheckPathsRegex(),
 				httpWorkloadScope, healthCheckPathsRegex())
-		case "cpu_throttling":
+		case KeyCPUThrottling:
 			queries[metricKey] = fmt.Sprintf(`sum by (container_id) (rate(container_resources_cpu_throttled_seconds_total{__CLUSTER__ container_id=~".*%s/%s.*"}[5m]))`, safeMeta.Namespace, safeMeta.Name)
-		case "cpu_request":
-			queries[metricKey] = fmt.Sprintf(`sum(kube_pod_container_resource_requests{__CLUSTER__ %sresource="cpu"})`, containerFilter)
-		case "cpu_limit":
-			queries[metricKey] = fmt.Sprintf(`sum(kube_pod_container_resource_limits{__CLUSTER__ %sresource="cpu"})`, containerFilter)
-		case "memory_usage":
+		case KeyCPURequest:
+			queries[metricKey] = promSpecTotal("kube_pod_container_resource_requests", fmt.Sprintf(`__CLUSTER__ %sresource="cpu"`, containerFilter))
+		case KeyCPULimit:
+			queries[metricKey] = promSpecTotal("kube_pod_container_resource_limits", fmt.Sprintf(`__CLUSTER__ %sresource="cpu"`, containerFilter))
+		case KeyMemoryUsage:
 			queries[metricKey] = fmt.Sprintf(`sum(container_memory_working_set_bytes{__CLUSTER__ %s})`, containerFilter)
-		case "memory_request":
-			queries[metricKey] = fmt.Sprintf(`sum(kube_pod_container_resource_requests{__CLUSTER__ %sresource="memory"})`, containerFilter)
-		case "memory_limit":
-			queries[metricKey] = fmt.Sprintf(`sum(kube_pod_container_resource_limits{__CLUSTER__ %sresource="memory"})`, containerFilter)
+		case KeyMemoryRequest:
+			queries[metricKey] = promSpecTotal("kube_pod_container_resource_requests", fmt.Sprintf(`__CLUSTER__ %sresource="memory"`, containerFilter))
+		case KeyMemoryLimit:
+			queries[metricKey] = promSpecTotal("kube_pod_container_resource_limits", fmt.Sprintf(`__CLUSTER__ %sresource="memory"`, containerFilter))
 		// Per-pod companions to the summed resource metrics: the running pod count
 		// turns a workload total into an average per pod, and the busiest pod shows
 		// what the average hides. Same filter as the totals so they divide cleanly.
-		case "pod_count":
+		case KeyPodCount:
 			queries[metricKey] = fmt.Sprintf(`count(count by (pod) (container_memory_working_set_bytes{__CLUSTER__ %s}))`, containerFilter)
-		case "cpu_usage_max_pod":
+		case KeyCPUUsageMaxPod:
 			queries[metricKey] = fmt.Sprintf(`max(sum by (pod) (rate(container_cpu_usage_seconds_total{__CLUSTER__ %s}[5m])))`, containerFilter)
-		case "memory_usage_max_pod":
+		case KeyMemoryUsageMaxPod:
 			queries[metricKey] = fmt.Sprintf(`max(sum by (pod) (container_memory_working_set_bytes{__CLUSTER__ %s}))`, containerFilter)
-		case "disk_total":
+		case KeyDiskTotal:
 			queries[metricKey] = fmt.Sprintf(`sum(node_filesystem_size_bytes{ __CLUSTER__ mountpoint="/", instance=~"%s.*"}) or sum(kubelet_volume_stats_capacity_bytes{ __CLUSTER__ instance=~"%s.*"}) or sum(kubelet_volume_stats_capacity_bytes{ __CLUSTER__ instance=~"%s.*"})`, safeMeta.InternalIP, safeMeta.NodeName, safeMeta.NodeIP)
-		case "disk_used":
+		case KeyDiskUsed:
 			queries[metricKey] = fmt.Sprintf(`(sum(node_filesystem_size_bytes{ __CLUSTER__ mountpoint="/", instance=~"%s.*"}) - sum(node_filesystem_free_bytes{ __CLUSTER__ mountpoint="/", instance=~"%s.*"})) or (sum(kubelet_volume_stats_capacity_bytes{ __CLUSTER__ instance=~"%s.*"}) - sum(kubelet_volume_stats_available_bytes{ __CLUSTER__ instance=~"%s.*"})) or (sum(kubelet_volume_stats_capacity_bytes{ __CLUSTER__ instance=~"%s.*"}) - sum(kubelet_volume_stats_available_bytes{ __CLUSTER__ instance=~"%s.*"}))`, safeMeta.InternalIP, safeMeta.InternalIP, safeMeta.NodeName, safeMeta.NodeName, safeMeta.NodeIP, safeMeta.NodeIP)
 
 		// --- Node/Cluster Aggregations ---
@@ -648,13 +648,13 @@ func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[
 		// Summing each series' own time-percentile instead (the old form) added peaks that occur
 		// at different instants and produced values above physical capacity (P50/P90/Max >100%).
 		// Valid in both PromQL (prod) and VictoriaMetrics MetricsQL (dev).
-		case "cpu_real":
+		case KeyCPUReal:
 			queries[metricKey] = fmt.Sprintf(`sum(rate(node_cpu_seconds_total{__CLUSTER__ mode!="idle"}[%s])) or sum(rate(node_resources_cpu_usage_seconds_total{__CLUSTER__ mode!="idle"}[%s]))`, rangeW, rangeW)
-		case "cpu_total":
+		case KeyCPUTotal:
 			queries[metricKey] = `sum(machine_cpu_cores{__CLUSTER__}) or sum(node_resources_cpu_logical_cores{__CLUSTER__})`
-		case "mem_real":
+		case KeyMemReal:
 			queries[metricKey] = `sum(node_memory_MemTotal_bytes{__CLUSTER__} - node_memory_MemAvailable_bytes{__CLUSTER__}) or sum(node_resources_memory_total_bytes{__CLUSTER__} - node_resources_memory_available_bytes{__CLUSTER__})`
-		case "mem_total":
+		case KeyMemTotal:
 			queries[metricKey] = `sum(node_memory_MemTotal_bytes{__CLUSTER__}) or sum(node_resources_memory_total_bytes{__CLUSTER__})`
 		// Cluster network, as BYTES PER BUCKET rather than a rate.
 		//
@@ -667,53 +667,53 @@ func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[
 		// meta.Step is that bucket, which a caller sets explicitly; the default
 		// derived from the range would make each point cover a different span than
 		// the one being charted.
-		case "network_receive_bytes_increase":
+		case KeyNetworkReceiveBytesIncrease:
 			queries[metricKey] = fmt.Sprintf(`sum(increase(container_network_receive_bytes_total{__CLUSTER__}[%s]))`, stepW)
-		case "network_transmit_bytes_increase":
+		case KeyNetworkTransmitBytesIncrease:
 			queries[metricKey] = fmt.Sprintf(`sum(increase(container_network_transmit_bytes_total{__CLUSTER__}[%s]))`, stepW)
 
 		// cpu_usage_trend / mem_usage_trend feed the utilisation sparkline: fetched as a RANGE
 		// query so the relay evaluates them at each step across the picker window. CPU uses a
 		// short rate window (rateW) so spikes register instead of being averaged away.
-		case "cpu_usage_trend":
+		case KeyCPUUsageTrend:
 			queries[metricKey] = fmt.Sprintf(`sum(rate(node_cpu_seconds_total{__CLUSTER__ mode!="idle"}[%s])) or sum(rate(node_resources_cpu_usage_seconds_total{__CLUSTER__ mode!="idle"}[%s]))`, rateW, rateW)
-		case "mem_usage_trend":
+		case KeyMemUsageTrend:
 			queries[metricKey] = `sum(node_memory_MemTotal_bytes{__CLUSTER__} - node_memory_MemAvailable_bytes{__CLUSTER__}) or sum(node_resources_memory_total_bytes{__CLUSTER__} - node_resources_memory_available_bytes{__CLUSTER__})`
-		case "p90_mem":
+		case KeyP90Mem:
 			queries[metricKey] = `quantile(0.9, node_memory_MemTotal_bytes{__CLUSTER__} - node_memory_MemAvailable_bytes{__CLUSTER__}) or quantile(0.9, node_resources_memory_total_bytes{__CLUSTER__} - node_resources_memory_available_bytes{__CLUSTER__})`
-		case "p90_cpu":
+		case KeyP90CPU:
 			queries[metricKey] = fmt.Sprintf(`quantile_over_time(0.90, sum(rate(node_cpu_seconds_total{__CLUSTER__ mode!="idle"}[%s]))[%s:%s]) or quantile_over_time(0.90, sum(rate(node_resources_cpu_usage_seconds_total{__CLUSTER__ mode!="idle"}[%s]))[%s:%s])`, rateW, rangeW, stepW, rateW, rangeW, stepW)
-		case "p50_mem":
+		case KeyP50Mem:
 			queries[metricKey] = `quantile(0.5, node_memory_MemTotal_bytes{__CLUSTER__} - node_memory_MemAvailable_bytes{__CLUSTER__}) or quantile(0.5, node_resources_memory_total_bytes{__CLUSTER__} - node_resources_memory_available_bytes{__CLUSTER__})`
-		case "p50_cpu":
+		case KeyP50CPU:
 			queries[metricKey] = fmt.Sprintf(`quantile_over_time(0.50, sum(rate(node_cpu_seconds_total{__CLUSTER__ mode!="idle"}[%s]))[%s:%s]) or quantile_over_time(0.50, sum(rate(node_resources_cpu_usage_seconds_total{__CLUSTER__ mode!="idle"}[%s]))[%s:%s])`, rateW, rangeW, stepW, rateW, rangeW, stepW)
-		case "max_usage_mem":
+		case KeyMaxUsageMem:
 			queries[metricKey] = fmt.Sprintf(`max_over_time(sum(node_memory_MemTotal_bytes{__CLUSTER__} - node_memory_MemFree_bytes{__CLUSTER__} - node_memory_Buffers_bytes{__CLUSTER__} - node_memory_Cached_bytes{__CLUSTER__})[%s:%s])`, rangeW, stepW)
-		case "max_usage_cpu":
+		case KeyMaxUsageCPU:
 			queries[metricKey] = fmt.Sprintf(`max_over_time(sum(rate(node_cpu_seconds_total{__CLUSTER__ mode!="idle"}[%s]))[%s:%s]) or max_over_time(sum(rate(node_resources_cpu_usage_seconds_total{__CLUSTER__ mode!="idle"}[%s]))[%s:%s])`, rateW, rangeW, stepW, rateW, rangeW, stepW)
-		case "replica_defined":
+		case KeyReplicaDefined:
 			queries[metricKey] = promWorkloadReplicaQuery(safeMeta, false)
-		case "replica_ready":
+		case KeyReplicaReady:
 			queries[metricKey] = promWorkloadReplicaQuery(safeMeta, true)
 
 		// others
-		case "container_application_type_with_pod":
+		case KeyContainerApplicationTypeWithPod:
 			queries[metricKey] = fmt.Sprintf(`container_application_type{ __CLUSTER__ container_id=~"/k8s/%s/%s.*"}`, safeMeta.Namespace, safeMeta.Name)
-		case "container_application_type_with_workload":
+		case KeyContainerApplicationTypeWithWorkload:
 			queries[metricKey] = fmt.Sprintf(`container_application_type{ __CLUSTER__ container_id=~"/k8s/%s/%s-.*"}`, safeMeta.Namespace, safeMeta.Name)
-		case "jvm_memory_metric_count":
+		case KeyJVMMemoryMetricCount:
 			queries[metricKey] = fmt.Sprintf(`count by (namespace, pod) ({ __CLUSTER__ __name__=~"process.runtime.jvm.memory.usage|process_runtime_jvm_memory_usage_bytes", namespace=~"%s"})`, safeMeta.Namespace)
-		case "cpython_memory_metric_count":
+		case KeyCPythonMemoryMetricCount:
 			queries[metricKey] = fmt.Sprintf(`count by (pod, namespace) ({ __CLUSTER__ __name__=~"process.runtime.cpython.memory|process_runtime_cpython_memory_bytes", namespace=~"%s"})`, safeMeta.Namespace)
-		case "go_heap_memory_metric_count":
+		case KeyGoHeapMemoryMetricCount:
 			queries[metricKey] = fmt.Sprintf(`count by (pod, namespace) ({ __CLUSTER__ __name__=~"process.runtime.go.mem.heap_sys|process_runtime_go_mem_heap_sys_bytes|go.memory.used|go_memory_used_bytes", namespace=~"%s"})`, safeMeta.Namespace)
-		case "service_info_by_cluster_ip":
+		case KeyServiceInfoByClusterIP:
 			queries[metricKey] = fmt.Sprintf(`kube_service_info{ __CLUSTER__ cluster_ip="%s"}`, safeMeta.InternalIP)
-		case "sensitive_log_messages":
+		case KeySensitiveLogMessages:
 			queries[metricKey] = "sum(increase(container_sensitive_log_messages_total{__CLUSTER__}[5m])) by (pattern, container_id, regex, name, pattern_hash)"
-		case "container_error_log_count_with_pod":
+		case KeyContainerErrorLogCountWithPod:
 			queries[metricKey] = fmt.Sprintf(`sum(increase(container_log_messages_total{ __CLUSTER__ %s, level=~"critical|error|exception"}[5m])) by (container_id)`, promContainerIDPath(safeMeta.Kind, safeMeta.Namespace, safeMeta.Name, ""))
-		case "container_error_log_count_with_workload":
+		case KeyContainerErrorLogCountWithWorkload:
 			queries[metricKey] = fmt.Sprintf(`sum(increase(container_log_messages_total{ __CLUSTER__ %s, level=~"critical|error"}[5m])) by (container_id)`, promContainerIDPath(safeMeta.Kind, safeMeta.Namespace, safeMeta.Name, ""))
 		// Error and request counts as separate series, so a consumer can apply its own
 		// smoothing to the ratio instead of inheriting whatever this layer chose. The
@@ -725,45 +725,48 @@ func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[
 		// (such as that K) must pin its step. Scoped on destination_workload_name, which
 		// carries the workload name and is matched exactly; the actual_destination_*
 		// labels carry pod names and would need a prefix, which over-matches siblings.
-		case "workload_http_request_count":
+		case KeyWorkloadHTTPRequestCount:
 			queries[metricKey] = fmt.Sprintf(
 				`sum(increase(container_http_requests_total{ __CLUSTER__ destination_workload_name="%s", destination_workload_namespace="%s"}[%s]))`,
 				safeMeta.Name, safeMeta.Namespace, stepW)
-		case "workload_http_error_count":
+		case KeyWorkloadHTTPErrorCount:
 			queries[metricKey] = fmt.Sprintf(
 				`sum(increase(container_http_requests_total{ __CLUSTER__ destination_workload_name="%s", destination_workload_namespace="%s", status=~"^[45][0-9][0-9]$"}[%s]))`,
 				safeMeta.Name, safeMeta.Namespace, stepW)
-		case "workload_http_error_rate":
+		case KeyWorkloadHTTPErrorRate:
 			queries[metricKey] = fmt.Sprintf(`sum by(destination_workload_name, destination_workload_namespace)(rate(container_http_requests_total{ __CLUSTER__ status=~"5..|4..", destination_workload_name=~"%s", destination_workload_namespace=~"%s"}[1h])) / sum by(destination_workload_name, destination_workload_namespace)(rate(container_http_requests_total{ __CLUSTER__ destination_workload_name=~"%s", destination_workload_namespace=~"%s"}[1h]))`, safeMeta.Name, safeMeta.Namespace, safeMeta.Name, safeMeta.Namespace)
-		case "container_http_latency_p90":
+		case KeyContainerHTTPLatencyP90:
 			queries[metricKey] = fmt.Sprintf(`histogram_quantile(0.90, sum(rate(container_http_requests_duration_seconds_total_bucket{ __CLUSTER__ %s, destination_workload_namespace!="external", destination_workload_namespace!=""}[1h])) by (le))`, promContainerIDPath(safeMeta.Kind, safeMeta.Namespace, safeMeta.Name, safeMeta.ContainerName))
-		case "container_http_latency_p99":
+		case KeyContainerHTTPLatencyP99:
 			queries[metricKey] = fmt.Sprintf(`histogram_quantile(0.99, sum(rate(container_http_requests_duration_seconds_total_bucket{ __CLUSTER__ %s, destination_workload_namespace!="external", destination_workload_namespace!=""}[1h])) by (le))`, promContainerIDPath(safeMeta.Kind, safeMeta.Namespace, safeMeta.Name, safeMeta.ContainerName))
-		case "container_http_latency_p95":
+		case KeyContainerHTTPLatencyP95:
 			queries[metricKey] = fmt.Sprintf(`histogram_quantile(0.95, sum(rate(container_http_requests_duration_seconds_total_bucket{ __CLUSTER__ %s, destination_workload_namespace!="external", destination_workload_namespace!=""}[1h])) by (le))`, promContainerIDPath(safeMeta.Kind, safeMeta.Namespace, safeMeta.Name, safeMeta.ContainerName))
-		case "container_http_latency_p50":
+		case KeyContainerHTTPLatencyP50:
 			queries[metricKey] = fmt.Sprintf(`histogram_quantile(0.50, sum(rate(container_http_requests_duration_seconds_total_bucket{ __CLUSTER__ %s, destination_workload_namespace!="external", destination_workload_namespace!=""}[1h])) by (le))`, promContainerIDPath(safeMeta.Kind, safeMeta.Namespace, safeMeta.Name, safeMeta.ContainerName))
-		case "container_http_latency_mean":
-			queries[metricKey] = fmt.Sprintf(`sum(rate(container_http_requests_duration_seconds_total_sum{ __CLUSTER__ %s, destination_workload_namespace!="external", destination_workload_namespace!=""}[1h])) / sum(rate(container_http_requests_duration_seconds_total_count{ __CLUSTER__ %s, destination_workload_namespace!="external", destination_workload_namespace!=""}[1h]))`, promContainerIDPath(safeMeta.Kind, safeMeta.Namespace, safeMeta.Name, safeMeta.ContainerName), promContainerIDPath(safeMeta.Kind, safeMeta.Namespace, safeMeta.Name, safeMeta.ContainerName))
-		case "container_http_request_count":
+		case KeyContainerHTTPLatencyMean:
+			// Divide only where requests were counted: with none, the count's
+			// rate is 0 while a stored float _sum can wobble by an ulp, and
+			// the ratio comes out +Inf instead of empty.
+			queries[metricKey] = fmt.Sprintf(`sum(rate(container_http_requests_duration_seconds_total_sum{ __CLUSTER__ %s, destination_workload_namespace!="external", destination_workload_namespace!=""}[1h])) / (sum(rate(container_http_requests_duration_seconds_total_count{ __CLUSTER__ %s, destination_workload_namespace!="external", destination_workload_namespace!=""}[1h])) > 0)`, promContainerIDPath(safeMeta.Kind, safeMeta.Namespace, safeMeta.Name, safeMeta.ContainerName), promContainerIDPath(safeMeta.Kind, safeMeta.Namespace, safeMeta.Name, safeMeta.ContainerName))
+		case KeyContainerHTTPRequestCount:
 			queries[metricKey] = fmt.Sprintf(`sum(increase(container_http_requests_total{ __CLUSTER__ %s}[1h]))`, promContainerIDPath(safeMeta.Kind, safeMeta.Namespace, safeMeta.Name, safeMeta.ContainerName))
-		case "container_http_error_status_count":
+		case KeyContainerHTTPErrorStatusCount:
 			queries[metricKey] = fmt.Sprintf(`sum by(status) (increase(container_http_requests_total{ __CLUSTER__ status=~"4..|5..",%s}[1h]))`, promContainerIDPath(safeMeta.Kind, safeMeta.Namespace, safeMeta.Name, safeMeta.ContainerName))
-		case "container_top_destination_services":
+		case KeyContainerTopDestinationServices:
 			queries[metricKey] = fmt.Sprintf(`topk(5, sum by (destination_workload_name, destination_workload_namespace) (rate(container_http_requests_total{ __CLUSTER__ %s}[1h])))`, promContainerIDPath(safeMeta.Kind, safeMeta.Namespace, safeMeta.Name, safeMeta.ContainerName))
-		case "cpu_usage_pod":
+		case KeyCPUUsagePod:
 			queries[metricKey] = fmt.Sprintf(`sum(irate(container_cpu_usage_seconds_total{namespace="%s", pod=~"%s"}[1m]))`, safeMeta.Namespace, safeMeta.Name)
-		case "cpu_request_pod":
-			queries[metricKey] = fmt.Sprintf(`kube_pod_container_resource_requests{resource = "cpu", namespace="%s", pod=~"%s"}`, safeMeta.Namespace, safeMeta.Name)
-		case "cpu_limit_pod":
-			queries[metricKey] = fmt.Sprintf(`kube_pod_container_resource_limits{resource = "cpu", namespace="%s", pod=~"%s"}`, safeMeta.Namespace, safeMeta.Name)
-		case "container_top_http_requests":
+		case KeyCPURequestPod:
+			queries[metricKey] = fmt.Sprintf(`%s (kube_pod_container_resource_requests{resource = "cpu", namespace="%s", pod=~"%s"})`, promSpecPerContainer, safeMeta.Namespace, safeMeta.Name)
+		case KeyCPULimitPod:
+			queries[metricKey] = fmt.Sprintf(`%s (kube_pod_container_resource_limits{resource = "cpu", namespace="%s", pod=~"%s"})`, promSpecPerContainer, safeMeta.Namespace, safeMeta.Name)
+		case KeyContainerTopHTTPRequests:
 			queries[metricKey] = fmt.Sprintf(`topk(5, sum by (destination_workload_name, destination_workload_namespace) (rate(container_http_requests_total{ __CLUSTER__ %s}[1h])))`, promContainerIDPath(safeMeta.Kind, safeMeta.Namespace, safeMeta.Name, safeMeta.ContainerName))
-		case "container_top_cpu_usage":
+		case KeyContainerTopCPUUsage:
 			queries[metricKey] = fmt.Sprintf(`topk(5, sum by (pod, namespace) (rate(container_cpu_usage_seconds_total{ __CLUSTER__ pod=~"%s", namespace=~"%s"}[1h])))`, safeMeta.Name, safeMeta.Namespace)
-		case "container_top_memory_usage":
+		case KeyContainerTopMemoryUsage:
 			queries[metricKey] = fmt.Sprintf(`topk(5, sum by (pod, namespace) (rate(container_memory_working_set_bytes{ __CLUSTER__ pod=~"%s", namespace=~"%s"}[1h])))`, safeMeta.Name, safeMeta.Namespace)
-		case "container_top_http_error_calls":
+		case KeyContainerTopHTTPErrorCalls:
 			queries[metricKey] = fmt.Sprintf(`topk(5, sum by (destination_workload_name, destination_workload_namespace) (increase(container_http_requests_total{ __CLUSTER__ status=~"4..|5..",%s}[1h])))`, promContainerIDPath(safeMeta.Kind, safeMeta.Namespace, safeMeta.Name, safeMeta.ContainerName))
 		}
 	}
@@ -877,10 +880,26 @@ func promNodeAllocatable(nodeName, resource string) string {
 		promSelector("", fmt.Sprintf(`resource="%s"`, resource), fmt.Sprintf(`node="%s"`, nodeName)))
 }
 
+// promSpecPerContainer collapses request/limit series to one per container.
+//
+// kube-state-metrics is not the only exporter of these series: OpenCost re-exports
+// kube_pod_container_resource_requests (but not _limits) and kube_node_status_allocatable,
+// and a cluster may run more than one kube-state-metrics. Each copy carries its own
+// job/instance labels, so anything that adds series up must collapse them first — on
+// the dev cluster a bare sum reported every request at twice its real value, and the
+// resize screen then proposed a request above the container's own limit.
+const promSpecPerContainer = `max by (namespace, pod, container)`
+
 // promSpecOnNode is the kube-state-metrics request/limit series for one node.
 func promSpecOnNode(metric, nodeName, resource string) string {
-	return fmt.Sprintf(`max by (namespace, pod, container) (%s{__CLUSTER__ %s})`,
-		metric, promSelector("", fmt.Sprintf(`resource="%s"`, resource), fmt.Sprintf(`node="%s"`, nodeName)))
+	return fmt.Sprintf(`%s (%s{__CLUSTER__ %s})`,
+		promSpecPerContainer, metric, promSelector("", fmt.Sprintf(`resource="%s"`, resource), fmt.Sprintf(`node="%s"`, nodeName)))
+}
+
+// promSpecTotal is a request/limit metric summed over the containers the selector
+// matches, each container counted once whichever exporters publish it.
+func promSpecTotal(metric, selector string) string {
+	return fmt.Sprintf(`sum(%s (%s{%s}))`, promSpecPerContainer, metric, selector)
 }
 
 // promContainerIDPath matches the eBPF metrics' container_id, which is a PATH and not a

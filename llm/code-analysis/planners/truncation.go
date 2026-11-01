@@ -8,6 +8,28 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
+// maxObservationChars is the most one tool result may occupy in the
+// conversation. formatObservation trims to it, keeping head and tail and stating
+// the gap, and the conversation append applies it again to whatever did not come
+// through formatObservation. It is one number on purpose: when the first trimmed
+// to 30,000 and the second cut at 15,000, the second dropped the tail the first
+// had kept — the end of a test run, a tool's own "narrow your search" note — and
+// left only "[truncated]".
+const maxObservationChars = 15000
+
+// observationNoteReserve is what formatObservation leaves free under
+// maxObservationChars for the notes the planner puts around a result after
+// formatting it: cachedResultNote in front, repeatCallWarning behind. Without
+// it a result trimmed to the limit went over it again once a note was added,
+// and was trimmed a second time — through the note.
+const observationNoteReserve = 500
+
+const repeatCallWarning = "\n\nWARNING: This is the 2nd identical call. A 3rd will be blocked. Try a different approach."
+
+func cachedResultNote(action string, firstStep int) string {
+	return fmt.Sprintf("[cached: identical %s call already executed at step %d this run; result unchanged]\n", action, firstStep)
+}
+
 // proportionalTruncate keeps the head and tail of content, omitting the middle.
 // Head gets 70% of maxLen, tail gets 30%. A marker is inserted showing how much was omitted.
 func proportionalTruncate(content string, maxLen int) string {

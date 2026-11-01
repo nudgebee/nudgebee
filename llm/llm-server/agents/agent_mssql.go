@@ -14,12 +14,17 @@ func init() {
 	toolInput := "Provide a question in natural language to investigate, query, or troubleshoot MSSQL."
 	toolOutput := "Returns query results and summaries for MSSQL operations."
 
-	core.RegisterNBAgentFactoryAndTool(MSSQLAgentName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAndTool(MSSQLAgentName, func(accountId string) (core.NBAgent, error) {
 		return MSSQLDebugAgent{
 			accountId: accountId,
 		}, nil
 	}, toolDescription, toolInput, toolOutput)
 }
+
+// AcceptsExecutionTarget: mssql_query_execute follows a handed target and picks among
+// the target account's own integrations, so the agent can run for another
+// account.
+func (l MSSQLDebugAgent) AcceptsExecutionTarget() {}
 
 type MSSQLDebugAgent struct {
 	accountId string

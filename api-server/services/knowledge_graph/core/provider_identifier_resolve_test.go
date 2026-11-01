@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"nudgebee/services/internal/database"
@@ -94,6 +95,14 @@ func TestFindNodesByProviderIdentifier_DB(t *testing.T) {
 		got, err := findNodesByProviderIdentifierInTable(dbms, table, tenant, account, arn)
 		require.NoError(t, err)
 		require.Equal(t, []string{"node-order"}, got)
+	})
+
+	t.Run("arn match stays exact", func(t *testing.T) {
+		// The lookup reaches the arn through an index on its lowercased form;
+		// that must not turn it into a case-insensitive match.
+		got, err := findNodesByProviderIdentifierInTable(dbms, table, tenant, account, strings.ToUpper(arn))
+		require.NoError(t, err)
+		require.Empty(t, got)
 	})
 
 	t.Run("empty identifier returns nothing rather than every node", func(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 	"nudgebee/llm/security"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/google/uuid"
@@ -93,6 +94,40 @@ type gcCacheEntry struct {
 	expiresAt time.Time
 }
 
+const CacheChannelGlobalContextInvalidation = "llm_global_context_invalidation"
+
+func init() {
+	// Don't open Redis subscriptions during unit tests — avoid goroutine leaks
+	// and external dependencies during test runs.
+	if testing.Testing() {
+		return
+	}
+	common.CacheSubscribe(CacheChannelGlobalContextInvalidation, handleCrossReplicaGCInvalidation)
+}
+
+func handleCrossReplicaGCInvalidation(payload string) {
+	if payload == "" {
+		return
+	}
+	var sender, cacheKey string
+	if parts := strings.SplitN(payload, "|", 2); len(parts) == 2 {
+		sender = parts[0]
+		cacheKey = parts[1]
+	} else {
+		cacheKey = payload
+	}
+
+	// Ignore self-invalidation to avoid race where the originating pod receives
+	// its own message and evicts newly cached data after an immediate turn.
+	if sender != "" && config.Config.ServerName != "" && sender == config.Config.ServerName {
+		return
+	}
+	if cacheKey != "" {
+		slog.Info("gc: received cross-replica active-GC cache invalidation", "cache_key", cacheKey, "sender", sender)
+		gcActiveCache.Delete(cacheKey)
+	}
+}
+
 var gcActiveCache sync.Map // cacheKey (string, tenantId:accountId) -> gcCacheEntry
 
 // gcCacheKey returns the composite key used by the active-GC cache. Keying on
@@ -104,10 +139,24 @@ func gcCacheKey(tenantId, accountId string) string {
 }
 
 // InvalidateActiveGCCache drops the cached active-GC entry for an account
-// under a specific tenant. Called from Create/Update/Delete so the next chat
+// under a specific tenant on the local replica and broadcasts an invalidation
+// message across all llm-server replicas via Redis Pub/Sub so peer pods do
+// not serve stale prompt data. Called from Create/Update/Delete so the next chat
 // turn sees fresh data.
 func InvalidateActiveGCCache(tenantId, accountId string) {
-	gcActiveCache.Delete(gcCacheKey(tenantId, accountId))
+	if tenantId == "" || accountId == "" {
+		return
+	}
+	key := gcCacheKey(tenantId, accountId)
+	gcActiveCache.Delete(key)
+
+	payload := key
+	if config.Config.ServerName != "" {
+		payload = config.Config.ServerName + "|" + key
+	}
+	if err := common.CachePublish(CacheChannelGlobalContextInvalidation, payload); err != nil {
+		slog.Warn("gc: failed to broadcast active-GC cache invalidation", "error", err, "cache_key", key)
+	}
 }
 
 // LoadActiveGlobalContext returns the data string of the active global context

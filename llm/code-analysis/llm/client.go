@@ -470,11 +470,15 @@ func (c *Client) GenerateContentNoRetry(ctx context.Context, messages []llms.Mes
 		llms.WithTemperature(0.1),
 	}
 	opts = append(opts, options...)
+	ctx, call := c.withBridgeCall(ctx)
 	callStart := time.Now()
 	resp, err := c.llm.GenerateContent(ctx, messages, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("LLM generation (no-retry) failed (provider=%s, model=%s): %w",
 			c.config.LLM.Provider, c.config.LLM.Model, err)
+	}
+	if call.usageLinked {
+		return resp, nil
 	}
 	prompt, completion := estimateUsage(messages, resp)
 	c.RecordCallUsage(TokenUsageCall{
@@ -511,6 +515,7 @@ func (c *Client) GenerateContent(ctx context.Context, messages []llms.MessageCon
 	var response *llms.ContentResponse
 	var err error
 	var attemptStart time.Time
+	ctx, call := c.withBridgeCall(ctx)
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		attemptStart = time.Now()
@@ -575,6 +580,10 @@ func (c *Client) GenerateContent(ctx context.Context, messages []llms.MessageCon
 	if err != nil {
 		// Should not reach here, but handle just in case
 		return nil, fmt.Errorf("LLM generation failed: %w", err)
+	}
+
+	if call.usageLinked {
+		return response, nil
 	}
 
 	// Track comprehensive usage (langchaingo doesn't expose detailed token usage yet)

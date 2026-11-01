@@ -182,6 +182,12 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 			return
 		}
 
+		if err := core.CheckMsTeamsGenericWrite(ctx.GetSecurityContext().GetTenantId(), request.IntegrationName,
+			request.IntegrationId, request.IntegrationConfigName); err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
 		// Capture the accounts linked BEFORE the save. CreateIntegrationConfig doubles
 		// as the update path and unlinks every account absent from request.AccountIds,
 		// so those accounts' cached provider/tool state goes stale — and they are, by
@@ -359,7 +365,7 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 			return
 		}
 
-		err = core.UpdateIntegrationConfigStatus(ctx, request.IntegrationName, request.IntegrationConfigName, request.IntegrationConfigStatus)
+		err = core.UpdateIntegrationConfigStatus(ctx, request.IntegrationName, request.IntegrationConfigName, request.IntegrationConfigStatus, request.Source)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return

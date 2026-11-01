@@ -75,3 +75,56 @@ func TestMergeLatestMessageConfig_ResumeKeepsSkipHistory(t *testing.T) {
 	assert.True(t, merged.SkipConversationHistory)
 	assert.Equal(t, "nudgebee", merged.Namespace)
 }
+
+// historyRowsDao returns fixed history rows, newest first, like the real query.
+type historyRowsDao struct {
+	IConversationDao
+	rows []map[string]string
+}
+
+func (d *historyRowsDao) LoadConversationMessages(_, _, _ string, _ MessageType, _ int) ([]map[string]string, error) {
+	out := make([]map[string]string, len(d.rows))
+	for i, r := range d.rows {
+		out[len(d.rows)-1-i] = r
+	}
+	return out, nil
+}
+
+// This turn's approval exchange must not be replayed as history: it changed
+// the opening human message after every approval and lost its prompt cache
+// (#40085). Earlier turns' approvals and this turn's other followups stay.
+func TestGetExistingHistory_SkipsThisTurnsApproval(t *testing.T) {
+	original := GetConversationDao()
+	defer SetConversationDao(original)
+	const approval = `{"followupType":"tool_confirmation","toolName":"kubectl"}`
+	SetConversationDao(&historyRowsDao{rows: []map[string]string{ // oldest first
+		{"id": "g0", "role": "human", "message_type": "generation", "content": "earlier question", "response": "earlier answer"},
+		{"id": "f0", "role": "ai", "message_type": "followup", "content": "Approve restart in an earlier turn?", "response": "yes", "message_config": approval},
+		{"id": "g1", "role": "human", "message_type": "generation", "content": "why is vmsingle restarting? fix it"},
+		{"id": "f1", "role": "ai", "message_type": "followup", "content": "Approve rollout restart of vmsingle?", "response": "yes", "message_config": approval},
+		{"id": "f2", "role": "ai", "message_type": "followup", "content": "Which namespace?", "response": "monitoring", "message_config": `{"followupType":"text"}`},
+	}})
+
+	history, err := getExistingHistory(NBAgentRequest{ConversationId: "conv", MessageId: "g1"}, security.NewRequestContextForSuperAdmin())
+	require.NoError(t, err)
+
+	var texts []string
+	for _, f := range history {
+		msgs, err := f.FormatMessages(map[string]any{})
+		require.NoError(t, err)
+		for _, m := range msgs {
+			texts = append(texts, m.GetContent())
+		}
+	}
+	assert.Equal(t, []string{
+		"earlier question", "earlier answer",
+		"Approve restart in an earlier turn?", "yes",
+		"Which namespace?", "monitoring",
+	}, texts)
+}
+
+func TestFollowupTypeOf(t *testing.T) {
+	assert.Equal(t, FollowupTypeToolConfirmation, followupTypeOf(`{"followupType":"tool_confirmation"}`))
+	assert.Equal(t, FollowupType(""), followupTypeOf(""))
+	assert.Equal(t, FollowupType(""), followupTypeOf("not json"))
+}

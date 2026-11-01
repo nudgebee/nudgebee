@@ -3,6 +3,7 @@ package agents
 import (
 	"encoding/json"
 	"fmt"
+	"nudgebee/llm/agents/aws"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
@@ -37,7 +38,7 @@ func init() {
 	toolInput := "Provide a log question in natural language, preserving the user's wording verbatim: investigation wording (why/root cause/diagnose/troubleshoot), enumeration wording (list/summarize errors), or routine wording (recent/tail logs) — the agent's mode classifier routes off this wording."
 	toolOutput := "Markdown answer with cited log evidence (timestamps, error signatures). Investigations include a 5-Why causality chain and a time-window callout when errors cluster."
 
-	core.RegisterNBAgentFactoryAndTool(LogsAgentName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAndTool(LogsAgentName, func(accountId string) (core.NBAgent, error) {
 		return getLogAgent(security.NewRequestContextForSuperAdmin(), accountId)
 	}, toolDescription, toolInput, toolOutput)
 	toolcore.RegisterNBToolFactory(FetchLogsDirectToolName, func(accountId string) (toolcore.NBTool, error) {
@@ -47,7 +48,7 @@ func init() {
 	toolcore.RegisterNBToolAlias("fetch_logs_v3", FetchLogsDirectToolName)
 }
 
-// getLogAgent resolves the account's observability provider: GCP/Azure
+// getLogAgent resolves the account's observability provider: GCP/Azure/AWS
 // cloud-only accounts route to their dedicated agents, "k8s" collapses to the
 // empty (kubectl-only) provider, everything else gets the generic ReAct
 // investigator.
@@ -62,6 +63,8 @@ func getLogAgent(ctx *security.RequestContext, accountId string) (core.NBAgent, 
 		return newGcpLogsAgent(accountId), nil
 	case "azure":
 		return newAzureLogsAgent(accountId), nil
+	case "aws":
+		return aws.NewAwsLogsAgent(accountId), nil
 	}
 	if provider.Provider == "k8s" {
 		provider = services_server.ObservabilityProvider{}
@@ -78,6 +81,8 @@ type LogAgent struct {
 	toolsOnce sync.Once
 	tools     []toolcore.NBTool
 }
+
+func (l *LogAgent) AcceptsExecutionTarget() {}
 
 func newLogAgent(accountId string, provider services_server.ObservabilityProvider) *LogAgent {
 	return &LogAgent{accountId: accountId, provider: provider}
@@ -419,9 +424,14 @@ func (t *fetchLogsDirectTool) InputSchema() toolcore.ToolSchema {
 				Description: "Optional verbatim excerpt from loaded user knowledge relevant to this request. " +
 					"Forward query examples, templates, field/index conventions, and mandatory scope constraints without classifying them; fetch_logs_direct decides whether they are native or canonical.",
 			},
+			"target": toolcore.AgentTargetSchemaProperty(),
 		},
 		Required: []string{"command"},
 	}
+}
+
+func (t *fetchLogsDirectTool) PrepareDelegatedTargetInput(target *toolcore.ExecutionTarget, input string) (string, error) {
+	return tools.AddDelegatedTargetObject(input, target)
 }
 
 // buildFetchLogsDirectRequest constructs the core.NBAgentRequest for Call.
@@ -439,20 +449,23 @@ func buildFetchLogsDirectRequest(nbCtx toolcore.NbToolContext, input toolcore.NB
 		}
 	}
 	request := core.NBAgentRequest{
-		Query:            input.Command,
-		AccountId:        nbCtx.AccountId,
-		ConversationId:   nbCtx.ConversationId,
-		AgentId:          nbCtx.ParentAgentId,
-		ParentAgentId:    nbCtx.ParentAgentId,
-		MessageId:        nbCtx.MessageId,
-		UserId:           nbCtx.UserId,
-		QueryContext:     nbCtx.QueryContext,
-		QueryConfig:      nbCtx.QueryConfig,
-		SessionId:        nbCtx.SessionId,
-		OriginalQuery:    nbCtx.OriginalQuery,
-		AccountContext:   nbCtx.AccountContext,
-		AccountPrompt:    nbCtx.AccountPrompt,
-		KBPrestepContent: knowledge,
+		Query:          input.Command,
+		AccountId:      nbCtx.AccountId,
+		ConversationId: nbCtx.ConversationId,
+		AgentId:        nbCtx.ParentAgentId,
+		ParentAgentId:  nbCtx.ParentAgentId,
+		MessageId:      nbCtx.MessageId,
+		UserId:         nbCtx.UserId,
+		QueryContext:   nbCtx.QueryContext,
+		QueryConfig:    nbCtx.QueryConfig,
+		SessionId:      nbCtx.SessionId,
+		OriginalQuery:  nbCtx.OriginalQuery,
+		// Carried with OriginalQuery so the query plan knows whether the
+		// constraints in it are a person's.
+		OriginalQueryFromUser: nbCtx.OriginalQueryFromUser,
+		AccountContext:        nbCtx.AccountContext,
+		AccountPrompt:         nbCtx.AccountPrompt,
+		KBPrestepContent:      knowledge,
 	}
 	// Translators (including kubectl fallback) consume ConversationContext;
 	// retain QueryContext as well for downstream tool execution.
@@ -464,16 +477,48 @@ func buildFetchLogsDirectRequest(nbCtx toolcore.NbToolContext, input toolcore.NB
 // buildFetchLogsDirectRequest, and logs its own wall-clock duration
 // (wall_clock_seconds) on both paths.
 func (t *fetchLogsDirectTool) Call(nbCtx toolcore.NbToolContext, input toolcore.NBToolCallRequest) (toolcore.NBToolResponse, error) {
+	target, queryAccountId, err := tools.ResolveObservabilityTarget(nbCtx, input)
+	if err != nil {
+		return toolcore.NBToolResponse{
+			Status: toolcore.NBToolResponseStatusError,
+			Data:   err.Error(),
+		}, nil
+	}
+	if target != nil {
+		nbCtx.QueryConfig.DelegatedTarget = target
+		// Every log query writer reads QueryContext; the request text may still
+		// name the target, so say once that it is already the scope.
+		nbCtx.QueryContext = strings.TrimSpace(nbCtx.QueryContext + "\n" + target.ScopeNote())
+		if tools.IsCloudObservabilityProvider(target.Provider) {
+			return toolcore.NBToolResponse{
+				Status: toolcore.NBToolResponseStatusError,
+				Data:   fmt.Sprintf("fetch_logs_direct does not query %s cloud logging directly; use %s_logs or %s_execute", target.Provider, target.Provider, target.Provider),
+			}, nil
+		}
+	}
+
+	provider, err := tools.GetLogProvider(queryAccountId)
+	if target != nil {
+		if err != nil || (provider.Provider == "" && !tools.HasConnectedK8sAgent(queryAccountId)) {
+			return toolcore.NBToolResponse{
+				Status: toolcore.NBToolResponseStatusError,
+				Data:   fmt.Sprintf("no log provider configured for target %s %q (account %s); will not fall back to conversation origin account", target.Provider, target.Name, queryAccountId),
+			}, nil
+		}
+	}
+
 	if nbCtx.Ctx == nil {
-		return toolcore.NBToolResponse{Status: toolcore.NBToolResponseStatusError}, fmt.Errorf("fetch_logs_direct: nil request context")
+		return toolcore.NBToolResponse{
+			Status: toolcore.NBToolResponseStatusError,
+			Data:   "fetch_logs_direct: nil request context",
+		}, nil
 	}
 
 	start := time.Now()
 	request := buildFetchLogsDirectRequest(nbCtx, input)
 
-	fetchAgent := newFetchLogsAgent(t.accountId)
+	fetchAgent := newFetchLogsAgent(queryAccountId)
 	var resp core.NBAgentResponse
-	var err error
 	resp, err = fetchAgent.ExecuteDirect(nbCtx.Ctx, request)
 	wallClockSeconds := time.Since(start).Seconds()
 	if err != nil {
@@ -564,12 +609,17 @@ func (a *FetchLogsAgent) executeCanonicalQueryDirect(ctx *security.RequestContex
 		ctx.GetLogger().Info("fetch_logs_direct: step unwrapLokiInnerTimestamps done", "duration", time.Since(stepStart).String())
 	}
 
+	workspaceAccount := request.AccountId
+	if workspaceAccount == "" {
+		workspaceAccount = a.accountId
+	}
 	stepStart = time.Now()
-	fileRef, flattened, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, provider.Provider, logs)
+	fileRef, flattened, fileRefs := saveLogsToWorkspace(ctx, workspaceAccount, request.ConversationId, provider.Provider, logs)
 	ctx.GetLogger().Info("fetch_logs_direct: step saveLogsToWorkspace done", "duration", time.Since(stepStart).String(), "file_ref", fileRef)
 
 	stepStart = time.Now()
-	bundleSignal, err := runAutoDiagnosticBundle(ctx, a.accountId, request, fileRef)
+	bundleSignal, err := runAutoDiagnosticBundle(ctx, workspaceAccount, request, fileRef)
+
 	ctx.GetLogger().Info("fetch_logs_direct: step runAutoDiagnosticBundle done", "duration", time.Since(stepStart).String(), "has_error", err != nil, "bundle_signal_empty", bundleSignal == "")
 	if err != nil {
 		return core.NBAgentResponse{}, jsonQuery, err

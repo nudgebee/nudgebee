@@ -24,6 +24,18 @@ type ZenDutyClient struct {
 	httpClient *http.Client
 }
 
+// ZenDutyStatusError is a non-2xx response from the ZenDuty API. Exported so
+// callers can distinguish, for example, a 404 (incident deleted upstream)
+// from a transient failure.
+type ZenDutyStatusError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e ZenDutyStatusError) Error() string {
+	return fmt.Sprintf("request failed with status %d: %s", e.StatusCode, e.Body)
+}
+
 // CreateZenDutyClient creates a new ZenDuty API client.
 func CreateZenDutyClient(apiKey string) *ZenDutyClient {
 	return &ZenDutyClient{
@@ -65,7 +77,7 @@ func (c *ZenDutyClient) doRequest(ctx context.Context, method, endpoint string, 
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(respBody))
+		return nil, ZenDutyStatusError{StatusCode: resp.StatusCode, Body: string(respBody)}
 	}
 
 	return respBody, nil
@@ -345,14 +357,23 @@ func (c *ZenDutyClient) CreateIncident(ctx context.Context, req *CreateIncidentR
 	return &incident, nil
 }
 
-// GetIncident fetches an incident by ID from ZenDuty.
-func (c *ZenDutyClient) GetIncident(ctx context.Context, incidentID string) (*ZenDutyIncident, error) {
-	var incident ZenDutyIncident
-	endpoint := fmt.Sprintf("/incidents/%s/", incidentID)
-	if err := c.getJSON(ctx, endpoint, &incident); err != nil {
-		return nil, fmt.Errorf("failed to get incident: %w", err)
+// GetIncidentWithBody fetches an incident by ID from ZenDuty and also returns
+// the response as ZenDuty sent it, including the keys ZenDutyIncident does not
+// model.
+func (c *ZenDutyClient) GetIncidentWithBody(ctx context.Context, incidentID string) (*ZenDutyIncident, map[string]any, error) {
+	body, err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/incidents/%s/", incidentID), nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get incident: %w", err)
 	}
-	return &incident, nil
+	var incident ZenDutyIncident
+	if err := json.Unmarshal(body, &incident); err != nil {
+		return nil, nil, fmt.Errorf("failed to get incident: %w", err)
+	}
+	var full map[string]any
+	if err := json.Unmarshal(body, &full); err != nil {
+		return nil, nil, fmt.Errorf("failed to get incident: %w", err)
+	}
+	return &incident, full, nil
 }
 
 // UpdateIncident partially updates an incident in ZenDuty using PATCH.

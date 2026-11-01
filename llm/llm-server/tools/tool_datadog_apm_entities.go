@@ -33,7 +33,8 @@ func (m DatadogAPMEntitiesExecuteTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
 		Properties: map[string]core.ToolSchemaProperty{
-			"command": {Type: core.ToolSchemaTypeString, Description: "The Datadog APM entities query to execute"},
+			"instance": instanceProperty,
+			"command":  {Type: core.ToolSchemaTypeString, Description: "The Datadog APM entities query to execute"},
 		},
 		Required: []string{"command"},
 	}

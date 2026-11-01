@@ -33,7 +33,8 @@ func (m DatadogIncidentExecuteTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
 		Properties: map[string]core.ToolSchemaProperty{
-			"command": {Type: core.ToolSchemaTypeString, Description: "The Datadog incident query to execute (e.g., 'severity:critical')."},
+			"instance": instanceProperty,
+			"command":  {Type: core.ToolSchemaTypeString, Description: "The Datadog incident query to execute (e.g., 'severity:critical')."},
 		},
 		Required: []string{"command"},
 	}

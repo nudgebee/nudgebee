@@ -31,9 +31,10 @@ def failed_response(platform: str, reason: Optional[str] = None, **extra: Any) -
     ).model_dump(exclude_none=True)
 
 
-def system_response(status: str, reason: Optional[str] = None) -> dict[str, Any]:
+def system_response(status: str, reason: Optional[str] = None, **extra: Any) -> dict[str, Any]:
     return PlatformResponse(
         platform="system",
         status=status,
         reason=reason,
+        **extra,
     ).model_dump(exclude_none=True)

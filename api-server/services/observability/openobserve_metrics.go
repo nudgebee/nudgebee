@@ -112,27 +112,62 @@ func (s *OpenObserveMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 			}
 		}
 
+		// Drop OTel "no recorded value" announcements, which OpenObserve stores as real
+		// samples carrying a meaningless number. Applied here because this is the one
+		// place every OpenObserve PromQL query passes through -- the cluster, per-pod,
+		// workload and fallback builders all execute via FetchMetricsQuery -- and it must
+		// run AFTER the aggregator wrap so the exclusion reaches the selectors inside it.
+		// See openobserve_stale_markers.go.
+		query = excludeOpenObserveNoRecordedValue(query)
+
+		// OpenObserve does not evaluate an `*_over_time` wrapper whose inner expression
+		// collapses to a single series -- it answers with the value at the evaluation
+		// instant and discards the window, so max, min and avg all return the same
+		// number. Where that wrapper is recognised, the inner expression is fetched as a
+		// RANGE and the statistic computed below instead. See
+		// openobserve_local_aggregate.go.
+		// Gated on Instant, not on the query's shape. `Instant` is set exactly when the
+		// caller asked for an Aggregate, and a wrapper can be present without one having
+		// been asked for: the self-windowed keys (promSelfWindowedKeys) carry their own
+		// `*_over_time` by definition, and this source also runs raw user PromQL. Keying
+		// off the shape alone collapsed a plain range fetch to a single point and handed
+		// a chart one sample where it asked for the series.
+		localAgg, hasWrapper := parseOpenObserveOverTime(query)
+		reduceLocally := req.Instant && hasWrapper
+		queryToSend := query
+		if reduceLocally {
+			queryToSend = localAgg.Inner
+		}
+
 		// An instant query is a different endpoint, not a parameter. `Instant` is set
 		// whenever the caller asked for an Aggregate (service.go: "a collapse answers
 		// with one point per series"), and the builders have already wrapped the
-		// expression in max_over_time(...[range:step]). Running that through
-		// query_range evaluates the wrapper once per step and answers with a whole
-		// series -- 101 points where the contract promises one, which ~30 UI call
-		// sites read as payload[0] and plot as the workload.
+		// expression in max_over_time(...[range:step]). Running that wrapper through
+		// query_range evaluates it once per step and answers with a whole series -- 101
+		// points where the contract promises one, which ~30 UI call sites read as
+		// payload[0] and plot as the workload.
 		//
 		// Prometheus's own source has always branched here; this one did not, so every
-		// aggregated key on an OpenObserve account came back uncollapsed.
+		// aggregated key on an OpenObserve account came back uncollapsed. When the
+		// wrapper is being reduced locally the range fetch is required, so `Instant`
+		// does not apply -- the collapse happens in Go once the samples are in.
 		endpoint := fmt.Sprintf("%s/api/%s/prometheus/api/v1/query_range", cfg.URL, cfg.OrgID)
 
 		form := neturl.Values{}
-		form.Add("query", query)
-		if req.Instant {
+		form.Add("query", queryToSend)
+		if req.Instant && !reduceLocally {
 			endpoint = fmt.Sprintf("%s/api/%s/prometheus/api/v1/query", cfg.URL, cfg.OrgID)
 			form.Add("time", end)
 		} else {
 			form.Add("start", start)
 			form.Add("end", end)
-			form.Add("step", strconv.Itoa(step))
+			// Sample on the grid the wrapper itself named, so the statistic is taken
+			// over the same points Prometheus would have used for it.
+			rangeStep := step
+			if reduceLocally && localAgg.StepSecs > 0 {
+				rangeStep = localAgg.StepSecs
+			}
+			form.Add("step", strconv.Itoa(rangeStep))
 		}
 
 		authHeader := openObserveAuthHeader(cfg.Username, cfg.Password)
@@ -217,10 +252,17 @@ func (s *OpenObserveMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 			})
 		}
 
+		if reduceLocally {
+			payloadResults = reduceOpenObserveSeries(payloadResults, localAgg)
+		}
+
 		results.Results = append(results.Results, QueryResult{
 			QueryKey: queryKey,
-			Query:    query,
-			Payload:  payloadResults,
+			// The expression the CALLER asked for, not the unwrapped one that was sent:
+			// a reader comparing this against another provider's query needs the
+			// statistic to still be visible in it.
+			Query:   query,
+			Payload: payloadResults,
 		})
 	}
 

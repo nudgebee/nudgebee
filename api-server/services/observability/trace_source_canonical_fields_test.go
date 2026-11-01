@@ -143,6 +143,11 @@ var traceSourceCanonicalCases = []struct {
 		expected: []string{"destination_workload_name", "http_status_code", "resource", "span_name", "status_code", "trace_id", "workload_name", "workload_namespace"},
 	},
 	{
+		name: "grafana tempo advertises mapped fields", provider: "grafana_tempo", source: "user", declared: true,
+		expected: []string{"destination_workload_name", "duration_ns", "http_status_code", "resource", "service_name",
+			"span_name", "status_code", "trace_id", "workload_name", "workload_namespace"},
+	},
+	{
 		name: "splunk advertises what its mapping declares", provider: "splunk_observability_platform", source: "user",
 		declared: true, expected: []string{"trace_id"},
 	},
@@ -188,7 +193,7 @@ func TestTraceSources_EveryRegisteredSourceIsPinned(t *testing.T) {
 		"datadog/user", "azure_app_insights/user", "chronosphere/user", "chronosphere/agent",
 		"otel_clickhouse/agent", "jaeger/agent", "jaeger/user", "newrelic/user",
 		"splunk_observability_platform/user", "ES/user", "dynatrace/user", "solarwinds/user",
-		"gcp/agent", "openobserve/user", "cubeapm/user", "splunk_enterprise/user",
+		"gcp/agent", "openobserve/user", "cubeapm/user", "splunk_enterprise/user", "grafana_tempo/user",
 	}
 	pinned := make(map[string]struct{}, len(traceSourceCanonicalCases))
 	for _, tc := range traceSourceCanonicalCases {

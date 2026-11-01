@@ -209,6 +209,13 @@ func TestParseRelayExecResult(t *testing.T) {
 	assert.Equal(t, 0, code)
 	assert.Equal(t, "deployment.apps/api scaled", stdout)
 
+	// Seen on a read-only agent: the command never ran, so it must not read as success.
+	stdout, stderr, code, parsed = parseRelayExecResult(`{"error":"kubectl: verb \"set\" not in read-only allowlist; enable runner.enableWritePermissions for writes, or route mutating actions through pkg/mutate"}`)
+	assert.True(t, parsed)
+	assert.Equal(t, 1, code)
+	assert.Empty(t, stdout)
+	assert.Contains(t, stderr, "read-only allowlist")
+
 	// Plain (non-envelope) output: treated as success, passed through untouched.
 	stdout, _, code, parsed = parseRelayExecResult("pod/foo   1/1   Running")
 	assert.False(t, parsed)
@@ -707,4 +714,72 @@ func TestPlanOlderThanAnalysis(t *testing.T) {
 	assert.True(t, planOlderThanAnalysis(saved, earlier, rerun), "investigation re-run after the plan")
 	assert.False(t, planOlderThanAnalysis(saved, earlier), "plan built from the current analysis")
 	assert.False(t, planOlderThanAnalysis(saved, running, nil), "a run still in progress keeps the plan until it completes")
+}
+
+// D01 on dev: the restart that makes a ConfigMap change take effect was ranked as a separate low
+// mitigation, so the "fix" was applied alone and the pod stayed unready. After keeps it behind its change.
+func TestKeepDependentsAfter(t *testing.T) {
+	plan := RemediationPlan{Actions: []RemediationAction{
+		{Action: "Restart web", Kind: RemediationKindMitigation, Confidence: 25, After: "Patch web config", ExecuteCommand: "kubectl rollout restart deployment web -n demo"},
+		{Action: "Raise web limit", Kind: RemediationKindMitigation, Confidence: 40, ExecuteCommand: "kubectl set resources deployment web -n demo --limits=memory=512Mi"},
+		{Action: "Patch web config", Kind: RemediationKindFix, Confidence: 90, ExecuteCommand: "kubectl patch configmap web -n demo -p '{\"data\":{\"A\":\"b\"}}'"},
+	}}
+	notes := normalizePlan(&plan, nil, nil)
+	names := []string{}
+	for _, a := range plan.Actions {
+		names = append(names, a.Action)
+	}
+	assert.Equal(t, []string{"Patch web config", "Restart web", "Raise web limit"}, names)
+	assert.Equal(t, "Patch web config", plan.Actions[1].After)
+	for _, n := range notes {
+		assert.NotEqual(t, "after_cleared", n.Rule)
+	}
+}
+
+// An After that names nothing kept, or loops, is cleared rather than hiding the action.
+func TestKeepDependentsAfterClearsBrokenReferences(t *testing.T) {
+	plan := RemediationPlan{Actions: []RemediationAction{
+		{Action: "A", Kind: RemediationKindFix, Confidence: 90, After: "B"},
+		{Action: "B", Kind: RemediationKindFix, Confidence: 80, After: "A"},
+		{Action: "C", Kind: RemediationKindFix, Confidence: 70, After: "no such action"},
+		{Action: "D", Kind: RemediationKindFix, Confidence: 60, After: "D"},
+	}}
+	notes := keepDependentsAfter(&plan)
+	assert.Len(t, plan.Actions, 4)
+	cleared := 0
+	for _, n := range notes {
+		if n.Rule == "after_cleared" {
+			cleared++
+		}
+	}
+	assert.Equal(t, 3, cleared, "one end of the A/B loop, C and D")
+	assert.Empty(t, plan.Actions[2].After)
+}
+
+// An action that follows a loop is not itself in it and keeps its order; a differently cased name
+// is stored as the parent's exact name, which is what the card matches.
+func TestKeepDependentsAfterClearsOnlyTheLoop(t *testing.T) {
+	plan := RemediationPlan{Actions: []RemediationAction{
+		{Action: "A", After: "b"},
+		{Action: "B", After: "C"},
+		{Action: "C", After: "B"},
+	}}
+	keepDependentsAfter(&plan)
+	after := map[string]string{}
+	for _, a := range plan.Actions {
+		after[a.Action] = a.After
+	}
+	assert.Equal(t, "B", after["A"])
+	assert.True(t, (after["B"] == "") != (after["C"] == ""), "exactly one end of the B/C loop is cleared")
+}
+
+// A required change applied by the operator can precede a command (D12: fix the Secret, then restart).
+func TestAfterMayFollowARequiredChange(t *testing.T) {
+	plan := RemediationPlan{Actions: []RemediationAction{
+		{Action: "Restart api", Kind: RemediationKindFix, Confidence: 85, After: "Add API_TOKEN key", ExecuteCommand: "kubectl rollout restart deployment api -n demo"},
+		{Action: "Add API_TOKEN key", Kind: RemediationKindFix, Confidence: 80, RequiredChange: &RequiredChange{Where: "runtime", Target: "Secret demo/api", Change: "add key API_TOKEN"}},
+	}}
+	normalizePlan(&plan, nil, nil)
+	assert.Equal(t, "Add API_TOKEN key", plan.Actions[0].Action)
+	assert.Equal(t, "Restart api", plan.Actions[1].Action)
 }

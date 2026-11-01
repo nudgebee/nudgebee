@@ -37,6 +37,7 @@ func TestClaimFeedbackDecision(t *testing.T) {
 }
 
 func TestClaimFeedbackBothPlanners(t *testing.T) {
+	pinClaimAuditOnly(t)
 	previousFeedback := config.Config.ClaimCritiqueFeedbackEnabled
 	t.Cleanup(func() {
 		config.Config.ClaimCritiqueFeedbackEnabled = previousFeedback
@@ -56,7 +57,7 @@ func TestClaimFeedbackBothPlanners(t *testing.T) {
 				var d, f string
 				if planner == "react4" {
 					p := &NBReActPlanner4{ctx: ctx, request: req, nbAgent: notebookOptOutAgent{}}
-					d, f = p.runCritique(req.Query, "metrics", "answer", steps)
+					d, f = p.runCritique(req.Query, "metrics", "answer", steps, nil)
 				} else {
 					p := &NBReActPlanner3{ctx: ctx, request: req, nbAgent: notebookOptOutAgent{}}
 					d, f = p.runCritique(req.Query, "metrics", "answer", steps, ctx.GetLogger())
@@ -82,6 +83,7 @@ func TestClaimFeedbackBothPlanners(t *testing.T) {
 }
 
 func TestClaimFeedbackReAct4UsesExistingBudget(t *testing.T) {
+	pinClaimAuditOnly(t)
 	previous := config.Config.ClaimCritiqueFeedbackEnabled
 	config.Config.ClaimCritiqueFeedbackEnabled = true
 	t.Cleanup(func() { config.Config.ClaimCritiqueFeedbackEnabled = previous })
@@ -142,7 +144,7 @@ func TestClaimFeedbackSkipsChildAgent(t *testing.T) {
 	installClaimCaptureDAO(t, dao)
 	fake := &fakeLLMModel{}
 	withFakeLLMModel(t, fake)
-	d, f := runClaimCritiqueShadow(llmOverrideContext(), NBAgentRequest{AgentId: "child", ParentAgentId: "parent"}, "react4", "test", "accept", "legacy", "why", "answer", "", nil)
+	d, f := runClaimCritiqueShadow(llmOverrideContext(), NBAgentRequest{AgentId: "child", ParentAgentId: "parent"}, "react4", "test", "accept", "legacy", "why", "answer", "", nil, false, nil)
 	require.Equal(t, "accept", d)
 	require.Equal(t, "legacy", f)
 	require.Zero(t, fake.callCount())
@@ -150,6 +152,7 @@ func TestClaimFeedbackSkipsChildAgent(t *testing.T) {
 }
 
 func TestClaimFeedbackReAct3ToolContinuation(t *testing.T) {
+	pinClaimAuditOnly(t)
 	previous := config.Config.ClaimCritiqueFeedbackEnabled
 	config.Config.ClaimCritiqueFeedbackEnabled = true
 	t.Cleanup(func() { config.Config.ClaimCritiqueFeedbackEnabled = previous })

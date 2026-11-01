@@ -1,11 +1,14 @@
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,6 +25,7 @@ import (
 	"nudgebee/llm/workspace"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
@@ -144,8 +148,8 @@ type RemediationHypothesis struct {
 	Confidence Confidence `json:"confidence"`
 }
 
-// RemediationAction is one candidate recovery strategy — a self-contained execution plan, not a
-// sequential step. The name and confidence are model-generated (never a fixed vocabulary): action
+// RemediationAction is one candidate recovery strategy, or one change of a strategy whose changes must
+// be applied in order (After). The name and confidence are model-generated (never a fixed vocabulary): action
 // is a short specific name for the strategy, confidence is the model's 0-100 estimate that it
 // durably resolves the root cause. Kind separates a real fix from a mitigation that only restores
 // service while the cause survives — investigations routinely label the latter an "Immediate Fix",
@@ -160,9 +164,40 @@ type RemediationAction struct {
 	ExecuteCommand  string     `json:"execute_command"`
 	VerifyCommand   string     `json:"verify_command"`
 	RollbackCommand string     `json:"rollback_command"`
+	// Commands as argument lists; the server builds the strings above (commandFromArgv). As strings,
+	// a JSON payload came back cut at its first inner quote.
+	ExecuteArgv  []string `json:"execute_argv,omitempty"`
+	VerifyArgv   []string `json:"verify_argv,omitempty"`
+	RollbackArgv []string `json:"rollback_argv,omitempty"`
 	// AlertRuleChange, when set, is a change to the alert rule itself, applied from
 	// the card rather than by a command.
 	AlertRuleChange *AlertRuleChange `json:"alert_rule_change,omitempty"`
+	// RequiredChange, when set, is a fix no command applies durably - a code, chart-values,
+	// infrastructure, dependency or process change - stated so the operator can make it.
+	RequiredChange *RequiredChange `json:"required_change,omitempty"`
+	// After names the action that must be applied before this one, when the change only works in that
+	// order (a restart after the config it reloads, a redrive after the permission it needs). Actions
+	// without it are alternative strategies.
+	After string `json:"after,omitempty"`
+}
+
+// HardeningItem is an improvement the incident does not require; kept apart from actions so it never reads as the fix.
+type HardeningItem struct {
+	Target string `json:"target"`
+	Change string `json:"change"`
+	Reason string `json:"reason"`
+}
+
+// RequiredChange says where a durable fix is made and what it is.
+type RequiredChange struct {
+	Where  string `json:"where"`
+	Target string `json:"target"`
+	Change string `json:"change"`
+}
+
+// actionable reports whether a required change names both what to change and how.
+func (r *RequiredChange) actionable() bool {
+	return r != nil && strings.TrimSpace(r.Target) != "" && strings.TrimSpace(r.Change) != ""
 }
 
 // Action kinds. A fix removes the root cause; a mitigation restores service with the cause still
@@ -182,7 +217,8 @@ const maxMitigationConfidence = 50
 // free text from the LLM, so anything that isn't recognizably a fix is treated as a mitigation:
 // the safe default is to under-claim, since presenting a mitigation as a fix is the failure mode
 // that misleads an operator.
-func normalizePlan(plan *RemediationPlan, availableArtifacts []string, alertRule *RemediationAlertRule) {
+// It returns every correction made, which the generation trace records.
+func normalizePlan(plan *RemediationPlan, availableArtifacts []string, alertRule *RemediationAlertRule) []planValidationNote {
 	// An action inherits the uncertainty of the hypothesis it addresses: if the cause is only 95%
 	// likely, no action against it can be more than 95% likely to resolve the incident. The model
 	// scores the two independently and routinely emits a 100% action under a 95% hypothesis, which
@@ -203,6 +239,10 @@ func normalizePlan(plan *RemediationPlan, availableArtifacts []string, alertRule
 		}
 	}
 
+	notes := []planValidationNote{}
+	for i := range plan.Actions {
+		notes = append(notes, applyArgv(&plan.Actions[i])...)
+	}
 	kept := plan.Actions[:0]
 	for i := range plan.Actions {
 		a := &plan.Actions[i]
@@ -242,11 +282,10 @@ func normalizePlan(plan *RemediationPlan, availableArtifacts []string, alertRule
 		}
 
 		if strings.TrimSpace(a.ExecuteCommand) == "" {
-			// An action with no command is carried out on another surface, so it is only real if that
-			// surface actually holds something to apply. With no artifact the card becomes a dead end:
-			// it tells the operator a fix exists and points at a panel with nothing in it. Drop it —
-			// the summary still describes the durable fix, which is where an unactionable one belongs.
-			if !hasArtifact {
+			// Command-less -> kept only with an artifact or a stated required change (code / chart / process
+			// fixes are still the fix); otherwise it points at nothing.
+			if !hasArtifact && !a.RequiredChange.actionable() {
+				notes = append(notes, planValidationNote{Action: a.Action, Rule: "no_command_and_no_artifact_dropped", Detail: a.Title})
 				continue
 			}
 			// Verify and rollback describe checking and undoing a command that ran. Nothing ran here,
@@ -261,7 +300,7 @@ func normalizePlan(plan *RemediationPlan, availableArtifacts []string, alertRule
 	// Deterministic command contract. Runs after kind and confidence are canonical (so a demotion
 	// here is not undone) and before ranking (so a demoted action also moves down the list). See
 	// remediation_validate.go for why these are checks rather than additional prompt rules.
-	validatePlanCommands(plan)
+	notes = append(notes, validatePlanCommands(plan)...)
 
 	// Rank by what the action is worth, not by how confident the model felt: anything that removes
 	// the cause outranks anything that merely restores service, however reliable the latter is. The
@@ -275,6 +314,119 @@ func normalizePlan(plan *RemediationPlan, availableArtifacts []string, alertRule
 		}
 		return plan.Actions[i].Confidence > plan.Actions[j].Confidence
 	})
+	return append(notes, keepDependentsAfter(plan)...)
+}
+
+// keepDependentsAfter places each action directly after the one its After names, so ranking never
+// moves the second half of a change ahead of, or away from, its first. After naming no kept action
+// (dropped, misspelt, itself, or a cycle) is cleared: the action is then an alternative like any other.
+func keepDependentsAfter(plan *RemediationPlan) []planValidationNote {
+	notes := []planValidationNote{}
+	index := map[string]int{}
+	for i, a := range plan.Actions {
+		index[strings.ToLower(strings.TrimSpace(a.Action))] = i
+	}
+	parent := func(i int) (int, bool) {
+		p, ok := index[strings.ToLower(strings.TrimSpace(plan.Actions[i].After))]
+		return p, ok && p != i
+	}
+	for i := range plan.Actions {
+		if strings.TrimSpace(plan.Actions[i].After) == "" {
+			continue
+		}
+		// Walk up: a name that is not kept, or a loop back to i, means there is no order to keep. A loop
+		// further up is cleared when its own members are visited, so i keeps its order.
+		ok := true
+		seen := map[int]bool{i: true}
+		for j := i; ; {
+			p, found := parent(j)
+			if !found || p == i {
+				ok = false
+				break
+			}
+			if seen[p] || strings.TrimSpace(plan.Actions[p].After) == "" {
+				break
+			}
+			seen[p] = true
+			j = p
+		}
+		if !ok {
+			notes = append(notes, planValidationNote{Action: plan.Actions[i].Action, Rule: "after_cleared", Detail: plan.Actions[i].After})
+			plan.Actions[i].After = ""
+		}
+	}
+	// The card matches After against the name as written, so store the parent's exact name.
+	for i := range plan.Actions {
+		if p, ok := parent(i); ok && strings.TrimSpace(plan.Actions[i].After) != "" {
+			plan.Actions[i].After = plan.Actions[p].Action
+		}
+	}
+	children := map[int][]int{}
+	roots := []int{}
+	for i := range plan.Actions {
+		if p, ok := parent(i); ok && strings.TrimSpace(plan.Actions[i].After) != "" {
+			children[p] = append(children[p], i)
+		} else {
+			roots = append(roots, i)
+		}
+	}
+	ordered := make([]RemediationAction, 0, len(plan.Actions))
+	var visit func(int)
+	visit = func(i int) {
+		ordered = append(ordered, plan.Actions[i])
+		for _, c := range children[i] {
+			visit(c)
+		}
+	}
+	for _, r := range roots {
+		visit(r)
+	}
+	plan.Actions = ordered
+	return notes
+}
+
+// shellSafeArg matches an argument that needs no quoting.
+var shellSafeArg = regexp.MustCompile(`^[A-Za-z0-9_./:=,@%+-]+$`)
+
+// commandFromArgv joins an argument list for the executor: plain args as-is, others single-quoted, or
+// double-quoted if they hold a '. ok=false when neither quoting carries the arg literally.
+func commandFromArgv(argv []string) (string, bool) {
+	parts := make([]string, 0, len(argv))
+	for _, arg := range argv {
+		switch {
+		case shellSafeArg.MatchString(arg):
+			parts = append(parts, arg)
+		case !strings.Contains(arg, "'"):
+			parts = append(parts, "'"+arg+"'")
+		case !strings.ContainsAny(arg, "\"$`\\"):
+			parts = append(parts, `"`+arg+`"`)
+		default:
+			return "", false
+		}
+	}
+	return strings.Join(parts, " "), true
+}
+
+// applyArgv sets each command of an action from its argument list, when the model gave one. An
+// argument list that cannot be expressed is reported, and leaves the command as the model wrote it (usually empty).
+func applyArgv(a *RemediationAction) []planValidationNote {
+	notes := []planValidationNote{}
+	for _, slot := range []struct {
+		argv []string
+		cmd  *string
+	}{{a.ExecuteArgv, &a.ExecuteCommand}, {a.VerifyArgv, &a.VerifyCommand}, {a.RollbackArgv, &a.RollbackCommand}} {
+		if len(slot.argv) == 0 {
+			continue
+		}
+		cmd, ok := commandFromArgv(slot.argv)
+		if !ok {
+			// Keep any command the model also wrote; with none, the slot stays empty.
+			notes = append(notes, planValidationNote{Action: a.Action, Rule: "argv_not_representable", Detail: strings.Join(slot.argv, " ")})
+			continue
+		}
+		*slot.cmd = cmd
+	}
+	return notes
 }
 
 // RemediationPlan is the structured plan returned to the UI: the root cause, the candidate hypotheses
@@ -285,6 +437,8 @@ type RemediationPlan struct {
 	Summary    string                  `json:"summary"`
 	Hypotheses []RemediationHypothesis `json:"hypotheses"`
 	Actions    []RemediationAction     `json:"actions"`
+	// OptionalHardening lists improvements the incident does not require. Never ranked with actions.
+	OptionalHardening []HardeningItem `json:"optional_hardening,omitempty"`
 	// Dropped lists alert-rule actions the server removed and why. Not rendered.
 	Dropped []DroppedAction `json:"dropped,omitempty"`
 }
@@ -309,8 +463,9 @@ type RemediationExecuteRequest struct {
 
 // Command slots within one action.
 const (
-	RemediationSlotExecute = "execute"
-	RemediationSlotVerify  = "verify"
+	RemediationSlotExecute  = "execute"
+	RemediationSlotVerify   = "verify"
+	RemediationSlotRollback = "rollback"
 )
 
 // processRemediationGenerate turns the completed investigation into a structured remediation plan
@@ -348,25 +503,162 @@ func processRemediationGenerate(c *gin.Context, tracer trace.Tracer, meter metri
 		return
 	}
 
-	investigationContext := strings.TrimSpace(request.Context)
-	if investigationContext == "" {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "investigation context is required"}}))
+	conversationId := remediationConversationID(ctx, request.AccountId, request.EventId)
+	plan, trace, err := generateRemediationPlan(ctx, request, remediationLLM(ctx, sc.GetUserId(), request.AccountId, conversationId))
+	if err != nil {
+		var input errRemediationInput
+		if errors.As(err, &input) {
+			c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			return
+		}
+		ctx.GetLogger().Error("remediation_generate: failed", "error", err)
+		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: "failed to generate remediation plan"}}))
 		return
 	}
 
-	systemPrompt, promptErr := prompts.GetPromptStrict(c.Request.Context(), prompts.PromptRemediationGenerateJson, request.AccountId)
-	if promptErr != nil {
-		ctx.GetLogger().Error("processRemediationGenerate: loading prompt failed", "error", promptErr)
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: "failed to load remediation prompt"}}))
+	respondWithStoredPlan(c, ctx.GetLogger(), plan, func() error {
+		return persistRemediationPlan(ctx, request.AccountId, request.EventId, plan, trace)
+	})
+}
+
+// respondWithStoredPlan returns the plan only once it is stored. The stored plan is what Run is checked
+// against (planCommandRejection), so a plan that could not be saved has commands that cannot run.
+func respondWithStoredPlan(c *gin.Context, logger *slog.Logger, plan RemediationPlan, save func() error) {
+	if err := save(); err != nil {
+		logger.Error("remediation_generate: failed to persist plan", "error", err)
+		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: "failed to save remediation plan"}}))
 		return
 	}
+	c.JSON(200, buildApiResponse(plan, nil))
+}
+
+// remediationPlannerAgent names the plan-generation call in token usage, which
+// otherwise records it with an empty agent name.
+const remediationPlannerAgent = "remediation_planner"
+
+// remediationEventFingerprint and remediationConversationBySession are the
+// lookups remediationConversationID needs; vars so tests can stub them.
+var remediationEventFingerprint = func(ctx *security.RequestContext, accountId, eventId string) (string, bool, error) {
+	dbManager, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return "", false, fmt.Errorf("database: %w", err)
+	}
+	info, err := events.NewEventAnalysisRepository(dbManager).GetEventInfo(ctx, eventId, accountId)
+	if err != nil {
+		return "", false, fmt.Errorf("event: %w", err)
+	}
+	if info == nil {
+		return "", false, nil
+	}
+	return info.Fingerprint, true, nil
+}
+
+var remediationConversationBySession = func(accountId, sessionId string) (agentcore.Conversation, error) {
+	dao := agentcore.GetConversationDao()
+	if dao == nil {
+		return agentcore.Conversation{}, errors.New("conversation dao unavailable")
+	}
+	return dao.GetConversationBySession(accountId, sessionId)
+}
+
+// remediationConversationID returns the event's investigation conversation, so
+// plan generation counts against the same budget as the investigation it
+// builds on. The investigation's session is keyed on the event fingerprint (see
+// event_analyzer.go), falling back to the event id when there is none. Best
+// effort: on any miss the call is recorded unattributed, as before.
+func remediationConversationID(ctx *security.RequestContext, accountId, eventId string) string {
+	if eventId == "" {
+		return ""
+	}
+	logMiss := func(err error) string {
+		ctx.GetLogger().Warn("remediation_generate: usage not attributed to a conversation",
+			"event_id", eventId, "account_id", accountId, "error", err)
+		return ""
+	}
+	fingerprint, found, err := remediationEventFingerprint(ctx, accountId, eventId)
+	if err != nil {
+		return logMiss(err)
+	}
+	if !found {
+		return ""
+	}
+	if fingerprint == "" {
+		fingerprint = eventId
+	}
+	conversation, err := remediationConversationBySession(accountId, events.SessionIdPrefixEvent+fingerprint)
+	if err != nil {
+		return logMiss(fmt.Errorf("conversation: %w", err))
+	}
+	if conversation.ID == uuid.Nil {
+		return "" // no investigation conversation for this event
+	}
+	return conversation.ID.String()
+}
+
+// remediationLLM is the production model call for plan generation.
+func remediationLLM(ctx *security.RequestContext, userId, accountId, conversationId string) func(system, human string) (string, error) {
+	return func(system, human string) (string, error) {
+		// conversationId only bills the call; a one-shot plan prompt must not
+		// create a conversation cache entry.
+		resp, err := agentcore.GenerateAndTrackLLMContent(toolcore.WithPromptCachingDisabled(ctx), userId, accountId, conversationId, "", remediationPlannerAgent, false, []llms.MessageContent{
+			{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextContent{Text: system}}},
+			{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: human}}},
+		}, true)
+		if err != nil {
+			return "", err
+		}
+		if resp == nil || len(resp.Choices) == 0 {
+			return "", errors.New("llm returned no choices")
+		}
+		return resp.Choices[0].Content, nil
+	}
+}
+
+// errRemediationInput is a request the caller has to fix; everything else is a server failure.
+type errRemediationInput struct{ msg string }
+
+func (e errRemediationInput) Error() string { return e.msg }
+
+// RemediationTrace records exactly what produced a plan, stored beside it. Without it a wrong plan
+// cannot be explained: the audit could not recover the input of two of its six failed plans.
+type RemediationTrace struct {
+	EvidenceSource string               `json:"evidence_source"`
+	Prompt         string               `json:"prompt"`
+	PromptSHA256   string               `json:"prompt_sha256"`
+	HumanMessage   string               `json:"human_message"`
+	RawOutput      string               `json:"raw_output"`
+	ModelPlan      *RemediationPlan     `json:"model_plan,omitempty"`
+	Validation     []planValidationNote `json:"validation"`
+	GeneratedAt    time.Time            `json:"generated_at"`
+}
+
+// generateRemediationPlan turns this event's investigation into a validated plan. llm is the model
+// call, injected so the replay harness exercises this exact path with the real model and no writes.
+func generateRemediationPlan(ctx *security.RequestContext, request RemediationGenerateRequest, llm func(system, human string) (string, error)) (RemediationPlan, RemediationTrace, error) {
+	trace := RemediationTrace{Prompt: string(prompts.PromptRemediationGenerateJson), GeneratedAt: time.Now().UTC()}
+	evidence, hasCodeFix, err := remediationEvidence(ctx, request.AccountId, request.EventId, strings.TrimSpace(request.Context))
+	if err != nil {
+		return RemediationPlan{}, trace, err
+	}
+	trace.EvidenceSource = evidenceFromStoredAnalysis
+	artifacts := remediationArtifacts(request.AvailableArtifacts, hasCodeFix)
+	if strings.TrimSpace(evidence) == "" {
+		return RemediationPlan{}, trace, errRemediationInput{"investigation context is required"}
+	}
+
+	systemPrompt, err := prompts.GetPromptStrict(ctx.GetContext(), prompts.PromptRemediationGenerateJson, request.AccountId)
+	if err != nil {
+		return RemediationPlan{}, trace, fmt.Errorf("loading prompt: %w", err)
+	}
+	sum := sha256.Sum256([]byte(systemPrompt))
+	trace.PromptSHA256 = hex.EncodeToString(sum[:])
+
 	// The prompt asks the model to match the CLI to what the action targets and to put the event's
 	// region on every cloud command, but the only thing it can infer either from is the investigation
 	// prose — which names the provider rarely and the region inconsistently. Stating both outright
 	// makes them facts rather than guesses: it is what stops a kubectl command being proposed against
 	// an EC2 instance, and what stops an `aws` command going out without --region and failing with
 	// "You must specify a region" having done nothing.
-	humanContent := investigationContext
 	var preamble []string
 	if account := describeRemediationAccount(request.AccountId, request.EventId); account != "" {
 		preamble = append(preamble, account)
@@ -377,41 +669,26 @@ func processRemediationGenerate(c *gin.Context, tracer trace.Tracer, meter metri
 	if facts := buildRemediationFacts(ctx, request.AccountId, request.EventId); facts != "" {
 		preamble = append(preamble, facts)
 	}
-	if len(preamble) > 0 {
-		humanContent = strings.Join(preamble, "\n\n") + "\n\n" + investigationContext
-	}
+	trace.HumanMessage = strings.Join(append(preamble, evidence), "\n\n")
 
-	resp, err := agentcore.GenerateAndTrackLLMContent(ctx, sc.GetUserId(), request.AccountId, "", "", "", false, []llms.MessageContent{
-		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextContent{Text: systemPrompt}}},
-		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: humanContent}}},
-	}, true)
+	raw, err := llm(systemPrompt, trace.HumanMessage)
+	trace.RawOutput = raw
 	if err != nil {
-		ctx.GetLogger().Error("remediation_generate: llm generation failed", "error", err)
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: "failed to generate remediation plan"}}))
-		return
+		return RemediationPlan{}, trace, fmt.Errorf("llm generation: %w", err)
 	}
-	if resp == nil || len(resp.Choices) == 0 {
-		ctx.GetLogger().Error("remediation_generate: llm returned no choices")
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: "failed to generate remediation plan"}}))
-		return
-	}
-
 	var plan RemediationPlan
-	if err := common.ExtractAndUnmarshalJSON([]byte(resp.Choices[0].Content), &plan); err != nil {
-		ctx.GetLogger().Error("remediation_generate: failed to parse plan json", "error", err)
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: "failed to parse remediation plan"}}))
-		return
+	if err := common.ExtractAndUnmarshalJSON([]byte(raw), &plan); err != nil {
+		return RemediationPlan{}, trace, fmt.Errorf("parsing plan json: %w", err)
 	}
+	modelPlan := plan
+	modelPlan.Actions = append([]RemediationAction(nil), plan.Actions...)
+	trace.ModelPlan = &modelPlan
 
-	normalizePlan(&plan, request.AvailableArtifacts, request.AlertRule)
+	trace.Validation = normalizePlan(&plan, artifacts, request.AlertRule)
 	for _, d := range plan.Dropped {
 		ctx.GetLogger().Info("remediation_generate: dropped alert-rule action", "action", d.Action, "reason", d.Reason)
 	}
-
-	// Persist the plan so it survives reload (best-effort — a DB hiccup must not fail generation).
-	persistRemediationPlan(ctx, request.AccountId, request.EventId, plan)
-
-	c.JSON(200, buildApiResponse(plan, nil))
+	return plan, trace, nil
 }
 
 // processRemediationGet returns the saved remediation plan for an event (or an empty plan when none
@@ -501,6 +778,74 @@ func processRemediationGet(c *gin.Context, tracer trace.Tracer, meter metric.Met
 	c.JSON(200, buildApiResponse(plan, nil))
 }
 
+// planCommandRejection returns why a command may not run, or "" when it is the stored plan's command for
+// its slot. A verify must name its own action's execute, so its result lands on the right attempt.
+func planCommandRejection(ctx *security.RequestContext, request RemediationExecuteRequest) string {
+	return planCommandRejectionFor(request, func() (RemediationPlan, bool) {
+		return loadSavedPlan(ctx, request.AccountId, request.EventId)
+	})
+}
+
+// planCommandRejectionFor is planCommandRejection with the stored-plan read passed in.
+func planCommandRejectionFor(request RemediationExecuteRequest, loadPlan func() (RemediationPlan, bool)) string {
+	if strings.TrimSpace(request.EventId) == "" {
+		return "a remediation command runs only as part of an event's plan"
+	}
+	plan, ok := loadPlan()
+	if !ok {
+		return "this event has no remediation plan to run commands from"
+	}
+	if planHasCommand(plan, request.Slot, request.Command, request.ExecuteCommand) {
+		return ""
+	}
+	return "this command is not part of the event's remediation plan"
+}
+
+// planHasCommand reports whether command is the plan's command for that slot.
+func planHasCommand(plan RemediationPlan, slot, command, executeCommand string) bool {
+	command, executeCommand = strings.TrimSpace(command), strings.TrimSpace(executeCommand)
+	for _, a := range plan.Actions {
+		switch strings.ToLower(strings.TrimSpace(slot)) {
+		case "", RemediationSlotExecute:
+			if strings.TrimSpace(a.ExecuteCommand) == command {
+				return true
+			}
+		case RemediationSlotVerify:
+			if strings.TrimSpace(a.VerifyCommand) == command && strings.TrimSpace(a.ExecuteCommand) == executeCommand {
+				return true
+			}
+		case RemediationSlotRollback:
+			if strings.TrimSpace(a.RollbackCommand) == command {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// loadSavedPlan returns the plan stored for this event itself (not one inherited from an earlier
+// firing of the same alert).
+func loadSavedPlan(ctx *security.RequestContext, accountId, eventId string) (RemediationPlan, bool) {
+	var plan RemediationPlan
+	dbManager, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return plan, false
+	}
+	repo := events.NewEventAnalysisRepository(dbManager)
+	info, err := repo.GetEventInfo(ctx, eventId, accountId)
+	if err != nil || info == nil {
+		return plan, false
+	}
+	saved, err := repo.GetEventAnalysis(ctx, eventId, info.Fingerprint, info.AggregationKey, accountId, events.AnalysisTypeRemediation)
+	if err != nil || saved == nil || !planSavedForEvent(saved, eventId) {
+		return plan, false
+	}
+	if err := json.Unmarshal([]byte(saved.Analysis), &plan); err != nil {
+		return plan, false
+	}
+	return plan, true
+}
+
 // planSavedForEvent reports whether a stored plan was generated for eventId. A row with no event id
 // cannot be attributed to any incident, so it is not restored either.
 func planSavedForEvent(saved *events.EventAnalysis, eventId string) bool {
@@ -521,28 +866,31 @@ func planOlderThanAnalysis(plan *events.EventAnalysis, inputs ...*events.EventAn
 
 // persistRemediationPlan upserts the plan into event_log_analysis under the `remediation` analysis
 // type (a sibling of rca_analysis), keyed by the event's fingerprint + aggregation key.
-func persistRemediationPlan(ctx *security.RequestContext, accountId, eventId string, plan RemediationPlan) {
+func persistRemediationPlan(ctx *security.RequestContext, accountId, eventId string, plan RemediationPlan, trace RemediationTrace) error {
 	if eventId == "" {
-		return
+		return errors.New("event id is required")
 	}
 	dbManager, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
-		ctx.GetLogger().Warn("remediation: database unavailable, plan not persisted", "error", err)
-		return
+		return fmt.Errorf("database unavailable: %w", err)
 	}
 	repo := events.NewEventAnalysisRepository(dbManager)
 	info, err := repo.GetEventInfo(ctx, eventId, accountId)
-	if err != nil || info == nil {
-		ctx.GetLogger().Warn("remediation: event info unavailable, plan not persisted", "error", err)
-		return
-	}
-	data, err := json.Marshal(plan)
 	if err != nil {
-		return
+		return fmt.Errorf("event info unavailable: %w", err)
 	}
-	if err := repo.UpsertEventAnalysis(ctx, eventId, string(data), plan.Summary, string(events.AnalysisStatusCompleted), info.Fingerprint, accountId, info.AggregationKey, events.AnalysisTypeRemediation); err != nil {
-		ctx.GetLogger().Warn("remediation: failed to persist plan", "error", err)
+	if info == nil {
+		return errors.New("event info unavailable: event not found")
 	}
+	// The trace rides in the same row; processRemediationGet unmarshals into RemediationPlan and ignores it.
+	data, err := json.Marshal(struct {
+		RemediationPlan
+		Generation RemediationTrace `json:"generation"`
+	}{plan, trace})
+	if err != nil {
+		return err
+	}
+	return repo.UpsertEventAnalysis(ctx, eventId, string(data), plan.Summary, string(events.AnalysisStatusCompleted), info.Fingerprint, accountId, info.AggregationKey, events.AnalysisTypeRemediation)
 }
 
 // processRemediationExecute runs a single remediation command against the account's cluster via relay.
@@ -592,6 +940,14 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 	if sc == nil || (!sc.HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) &&
 		!grantedRun(sc, request.AccountId, moduleAiMisc)) {
 		c.JSON(403, buildApiResponse(nil, []error{errors.New("remediation: write access is required to run remediation commands")}))
+		return
+	}
+
+	// Only a command from this event's stored plan runs. Generation is grounded server-side; accepting
+	// any command string here would let execution drift from what was generated and reviewed.
+	if reason := planCommandRejection(ctx, request); reason != "" {
+		ctx.GetLogger().Warn("remediation_execute: command is not in the event's plan", "command", command, "reason", reason)
+		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "remediation: " + reason}}))
 		return
 	}
 
@@ -910,6 +1266,9 @@ type relayExecEnvelope struct {
 	Stderr   *string `json:"stderr"`
 	Output   *string `json:"output"`
 	ExitCode *int    `json:"exit_code"`
+	// Error is how the agent refuses a command without running it, e.g. a write verb on an agent
+	// whose kubectl is read-only: {"error":"kubectl: verb \"set\" not in read-only allowlist; ..."}.
+	Error *string `json:"error"`
 }
 
 // parseRelayExecResult extracts stdout/stderr/exit_code from a relay result string. It returns
@@ -920,7 +1279,13 @@ func parseRelayExecResult(raw string) (stdout, stderr string, exitCode int, pars
 	trimmed := strings.TrimSpace(raw)
 	if strings.HasPrefix(trimmed, "{") {
 		var env relayExecEnvelope
-		if err := json.Unmarshal([]byte(trimmed), &env); err == nil && env.ExitCode != nil {
+		err := json.Unmarshal([]byte(trimmed), &env)
+		// A refusal carries no exit code; without this it read as plain output and was recorded as a
+		// successful remediation although nothing ran.
+		if err == nil && env.ExitCode == nil && env.Stdout == nil && env.Output == nil && env.Error != nil && strings.TrimSpace(*env.Error) != "" {
+			return "", strings.TrimSpace(*env.Error), 1, true
+		}
+		if err == nil && env.ExitCode != nil {
 			out := ""
 			if env.Stdout != nil {
 				out = *env.Stdout
@@ -999,10 +1364,31 @@ func containsShellMetacharacters(command string) bool {
 // the operator gets an opaque failure from the relay instead of an explanation. Counting delimiters
 // is enough to catch it: a truncated command is always left with an unclosed quote or brace.
 func isStructurallyTruncated(command string) bool {
-	return strings.Count(command, "'")%2 != 0 ||
-		strings.Count(command, `"`)%2 != 0 ||
+	return quoteLeftOpen(command) ||
 		strings.Count(command, "{") != strings.Count(command, "}") ||
 		strings.Count(command, "[") != strings.Count(command, "]")
+}
+
+// quoteLeftOpen reports a quote still open at the end, read as a shell reads it. Counting each quote
+// char alone rejected "it's done" as truncated.
+func quoteLeftOpen(command string) bool {
+	var quote rune
+	escaped := false
+	for _, r := range command {
+		switch {
+		case escaped:
+			escaped = false
+		case quote != '\'' && r == '\\':
+			escaped = true
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			}
+		case r == '\'' || r == '"':
+			quote = r
+		}
+	}
+	return quote != 0
 }
 
 // workspaceOutcome interprets a workspace-run command's result: stdout, stderr, exit code, whether

@@ -618,7 +618,7 @@ func (s *NewRelicTraceSource) convertNRSpansToOTelTraces(results []map[string]an
 		var startTimeMs int64
 		if ts, ok := r["timestamp"].(float64); ok {
 			startTimeMs = int64(ts)
-			t := time.UnixMilli(startTimeMs)
+			t := time.UnixMilli(startTimeMs).UTC()
 			trace.Timestamp = t.Format(time.RFC3339Nano)
 			trace.StartTime = trace.Timestamp
 			trace.StartTimeUnixNano = fmt.Sprintf("%d", startTimeMs*1_000_000)
@@ -627,7 +627,7 @@ func (s *NewRelicTraceSource) convertNRSpansToOTelTraces(results []map[string]an
 			if durationNs > 0 {
 				endTimeNs := (startTimeMs * 1_000_000) + durationNs
 				endTimeMs := endTimeNs / 1_000_000
-				endTime := time.UnixMilli(endTimeMs)
+				endTime := time.UnixMilli(endTimeMs).UTC()
 				trace.EndTime = endTime.Format(time.RFC3339Nano)
 				trace.EndTimeUnixNano = fmt.Sprintf("%d", endTimeNs)
 			}
@@ -1185,7 +1185,7 @@ func (s *NewRelicTraceSource) convertNRSpansToOTelHeatmap(results []map[string]a
 
 		// Map timestamp
 		if ts, ok := r["timestamp"].(float64); ok {
-			hm.Timestamp = time.UnixMilli(int64(ts)).Format(time.RFC3339Nano)
+			hm.Timestamp = time.UnixMilli(int64(ts)).UTC().Format(time.RFC3339Nano)
 		}
 
 		// Map status

@@ -79,6 +79,22 @@ ingress:
   # @default -- See [values.yaml](values.yaml).
   tls: []
 
+# -- Health checks for the app container. The defaults are what the chart has
+# always shipped (Kubernetes' own timings: every 10 s, 1 s timeout, 3 failures).
+# An environment whose pods start slowly can add a startupProbe, which holds the
+# other two off until the server answers once, and give them more time.
+livenessProbe:
+  httpGet:
+    path: /api/public/health
+    port: http
+readinessProbe:
+  httpGet:
+    path: /api/public/health
+    port: http
+# -- Off by default. Set it with its own httpGet, for example
+# `{httpGet: {path: /api/public/health, port: http}, periodSeconds: 2, failureThreshold: 30}`.
+startupProbe: {}
+
 # -- Container resource [requests and limits](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/).
 # See the [API reference](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#resources) for details.
 # @default -- No requests or limits.
@@ -213,7 +229,7 @@ nginx:
     # `registry: registry.nudgebee.com`). Community default is GHCR.
     registry: 'ghcr.io/nudgebee'
     repository: nginx
-    tag: stable-alpine3.20-slim-nb1
+    tag: stable-alpine3.24-slim-nb1
     pullPolicy: IfNotPresent
   # The sidecar was BestEffort (no requests, no limits), so it was first in line
   # for eviction under node pressure — and it fronts the whole UI. Measured

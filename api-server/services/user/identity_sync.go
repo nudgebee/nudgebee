@@ -12,7 +12,9 @@ import (
 )
 
 // syncTypes is the fixed set of integration types we pull identities from. Each is
-// expected to implement core.UserLister.
+// expected to implement core.UserLister, except ms_teams, which has no user list
+// without Graph; it is listed only so disabled Teams integrations still have
+// their accounts swept.
 var syncTypes = []string{
 	IdentityTypePagerDuty,
 	IdentityTypeZenDuty,

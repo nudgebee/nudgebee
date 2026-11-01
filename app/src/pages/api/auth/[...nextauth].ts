@@ -98,6 +98,12 @@ export interface NudgebeeSession extends Session {
 /** Deployment-level UI toggles read from the pod environment at request time. */
 export interface UiFeatureFlags {
   llmGateway: boolean;
+  /** UI_ENABLE_SETUP_CENTER — whether a tenant with no connected account gets
+   * walled onto /setup at all. Off: SetupGateContext never locks, the Home
+   * progress banner never renders, /setup redirects away if visited directly
+   * — the feature is inert, as if it had never shipped. On for `test` while
+   * it's still being validated; left off on `prod` until that's done. */
+  setupCenter: boolean;
 }
 
 const _userAccessUpdateCache = new Map<string, number>();
@@ -1452,6 +1458,7 @@ export const authOptions: NextAuthOptions = {
         // re-login. Mirrors how /optimise reads the same var.
         nudgeBeeSession.uiFeatures = {
           llmGateway: process.env.UI_ENABLE_LLM_GATEWAY === 'true',
+          setupCenter: process.env.UI_ENABLE_SETUP_CENTER === 'true',
         };
         nudgeBeeSession.isSuperAdmin = !!token.isSuperAdmin;
         nudgeBeeSession.isSuperAdminReadonly = !!token.isSuperAdminReadonly;

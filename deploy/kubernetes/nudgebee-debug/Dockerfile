@@ -3,7 +3,7 @@
 # "Segmentation fault (core dumped)" on musl (gcompat / alpine-pkg-glibc are
 # insufficient for ClickHouse). Every other client we install is glibc-friendly
 # on this base too.
-FROM public.ecr.aws/docker/library/python:3.13-slim
+FROM ghcr.io/nudgebee/python:3.13-slim
 
 
 ENV DEBIAN_FRONTEND=noninteractive

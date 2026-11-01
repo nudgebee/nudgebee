@@ -15,6 +15,7 @@
 #}
 {%- set _brand_name     = branding.name           | default("Nudgebee", true) -%}
 {%- set _primary_color  = branding.primary_color   | default("#3470e9", true) -%}
+{%- set _primary_tint   = branding.primary_tint_color | default("#DCE7FB", true) -%}
 {%- set _support_email  = branding.support_email   | default("", true) -%}
 {%- set _brand_logo_url = images.logo_url           | default("/branding/default/logo.png", true) -%}
 {%- set _copyright      = texts.copyright          | default("Copyright © 2022-2025", true) -%}
@@ -79,7 +80,7 @@
                 <tr>
                   <td style="text-align:left; vertical-align:middle;">
                     <p style="font-family:'DM Sans',Arial,sans-serif; font-size:11.5px; color:#999999; line-height:1.7; margin:0; font-weight:300;">
-                      &copy; {{ _copyright }} {{ _brand_name }}
+                      {{ _copyright }} {{ _brand_name }}
                       {% if _support_email %}
                       &nbsp;&middot;&nbsp;
                       <a href="mailto:{{ _support_email }}" style="color:#888888; text-decoration:none;">{{ _support_email }}</a>

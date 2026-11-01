@@ -16,7 +16,27 @@ import (
 const (
 	MetadataResolvedTarget = "nb_resolved_target"
 	MetadataResolvedBy     = "nb_resolved_by"
+	// MetadataExecutedTarget records the cluster or account a call actually ran
+	// on, as {provider, name, account_id}, when that is not the conversation's
+	// own default. The conversation view shows it per step.
+	MetadataExecutedTarget = "nb_executed_target"
 )
+
+// WithExecutedTarget records where a call ran in its response details.
+func WithExecutedTarget(details map[string]any, target *ExecutionTarget) map[string]any {
+	if target == nil || target.Name == "" {
+		return details
+	}
+	if details == nil {
+		details = map[string]any{}
+	}
+	ran := map[string]any{"provider": target.Provider, "name": target.Name}
+	if target.AccountID != "" {
+		ran["account_id"] = target.AccountID
+	}
+	details[MetadataExecutedTarget] = ran
+	return details
+}
 
 // ErrNoMatchingConfig means configs exist for this tool but none of them is the
 // system the question is about. Distinct from having no configuration at all:
@@ -51,6 +71,43 @@ type NBTool interface {
 	Call(ctx NbToolContext, input NBToolCallRequest) (NBToolResponse, error)
 	GetType() NBToolType
 	InputSchema() ToolSchema
+}
+
+// DelegatedTargetInputPreparer lets a tool apply a child agent's default
+// target to its own input before write authorization and confirmation. Tools
+// own the parsing and precedence of their explicit per-call selectors.
+type DelegatedTargetInputPreparer interface {
+	PrepareDelegatedTargetInput(target *ExecutionTarget, input string) (string, error)
+}
+
+// DelegatedTargetSupport lets an agent-tool say whether the agent behind it
+// accepts a target; every other tool's support comes from its declared
+// AccountScope (agents/tool_account_scopes.go).
+type DelegatedTargetSupport interface {
+	SupportsDelegatedTarget() bool
+}
+
+// IsTargetNeutral reports whether a tool uses no account-level data, so it
+// may run whichever account a call is about.
+func IsTargetNeutral(name string) bool {
+	d, ok := AccountScopeOf(name)
+	return ok && d.Scope == AccountScopeIndependent
+}
+
+// SupportsDelegatedTarget reports whether a tool can run for another account:
+// it follows the call's target or routes one through its own selector.
+func SupportsDelegatedTarget(tool NBTool) bool {
+	if support, ok := tool.(DelegatedTargetSupport); ok {
+		return support.SupportsDelegatedTarget()
+	}
+	d, ok := AccountScopeOf(tool.Name())
+	return ok && (d.Scope == AccountScopeFollowsTarget || d.Scope == AccountScopeOwnSelector)
+}
+
+// WriteTargetInputValidator lets a tool refuse a write whose concrete target
+// cannot be established before user approval.
+type WriteTargetInputValidator interface {
+	ValidateWriteTargetInput(input string) error
 }
 
 type NBToolCallRequest struct {
@@ -404,6 +461,13 @@ type ToolConfigValue struct {
 	Value       string `json:"value"`
 	IsEncrypted bool   `json:"is_encrypted"`
 }
+
+// Placeholder config names. They stand for "no config" and "this account's
+// agent" and name no integration, so they are never recorded as one.
+const (
+	ToolConfigNameNone         = "NoConfigToolsFound"
+	ToolConfigNameAccountAgent = "Agent"
+)
 
 type ToolConfig struct {
 	Id     string            `json:"id"`

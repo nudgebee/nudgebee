@@ -13,17 +13,17 @@ metadata:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: orders-api
+  name: order-email-api
   namespace: benchmark-scenarios
-  labels: {app: orders-api, scenario: event-code-fix-003-n-plus-one-latency}
+  labels: {app: order-email-api, scenario: event-code-fix-003-n-plus-one-latency}
   annotations:
     workloads.nudgebee.com/git.repo: https://github.com/nudgebee-org/nb-benchmark-fixtures
     workloads.nudgebee.com/git.hash: REPLACE_WITH_BUG_COMMIT_SHA  # must match scenario.yaml's fixture_repo.bug_commit
 spec:
   replicas: 1
-  selector: {matchLabels: {app: orders-api}}
+  selector: {matchLabels: {app: order-email-api}}
   template:
-    metadata: {labels: {app: orders-api}}
+    metadata: {labels: {app: order-email-api}}
     spec:
       containers:
       - name: api

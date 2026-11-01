@@ -99,7 +99,8 @@ func (m DatadogTracesExecuteTool) ConfigSchema(ctx *security.RequestContext) cor
 }
 
 func (m DatadogTracesExecuteTool) executeDatadogTraces(ctx core.NbToolContext, query string, configs map[string]any) (core.ObservabilityTraceResponse, error) {
-	return executeFetchTrace(ctx, "datadog", "user", query, core.TraceQueryBuilder{}, configs)
+	// Read through the account the call is about (one Datadog integration per account).
+	return executeFetchTrace(ctx.ForTarget(), "datadog", "user", query, core.TraceQueryBuilder{}, configs)
 }
 
 type IntOrString int
@@ -125,3 +126,7 @@ func (i *IntOrString) UnmarshalJSON(b []byte) error {
 	*i = IntOrString(intVal)
 	return nil
 }
+
+// queriesIntegrationByAccount: services-server answers from the account's
+// Datadog integration, so the call follows the account, not a connection.
+func (DatadogTracesExecuteTool) queriesIntegrationByAccount() {}

@@ -838,7 +838,9 @@ func (m PagerDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settin
 	// name (covers titles with no "pod=" structure for reNamespace/rePod to
 	// anchor on, e.g. Alertmanager's default title).
 	if parsedPayload.EventSubjectName == "" {
-		core.ResolveSubjectFromTitlePodName(sc, &parsedPayload, accountId)
+		if !core.ResolveSubjectFromTitlePodName(sc, &parsedPayload, accountId) {
+			core.ResolveSubjectFromTitleNodeName(sc, &parsedPayload, accountId)
+		}
 	}
 
 	// LLM fallback: if no subject found after deterministic parsing, use LLM

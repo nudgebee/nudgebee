@@ -143,6 +143,10 @@ func (f *fakeEnsurer) EnsureTenantForAgentType(ctx context.Context, id, agentTyp
 // --- tests ---
 
 func setupRouter(store db.AgentStore, rpcClient fakeRPCClient) *gin.Engine {
+	return setupRouterWithLogs(store, rpcClient, io.Discard)
+}
+
+func setupRouterWithLogs(store db.AgentStore, rpcClient fakeRPCClient, logs io.Writer) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	// no auth middleware
@@ -151,7 +155,7 @@ func setupRouter(store db.AgentStore, rpcClient fakeRPCClient) *gin.Engine {
 	cfg.RabbitMQ.ExchangeName = "exch"
 	tracer := tracer.NewTracerProvider().Tracer("test")
 	meter := noop.NewMeterProvider().Meter("test")
-	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	fakeTopo := &fakeEnsurer{}
 
 	if err := metrics.Init(meter); err != nil {
@@ -265,6 +269,75 @@ func TestRequestHandler_RPCError(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	require.Equal(t, float64(504), body["errors"][0]["code"])
 	require.Equal(t, "timeout waiting for agent", body["errors"][0]["message"])
+}
+
+// A failed call must not write credential-bearing params to the logs: a shell
+// command can embed a password, and MCP calls carry auth_credentials.
+func TestRequestHandler_FailedCallDoesNotLogCredentials(t *testing.T) {
+	cases := []struct {
+		name   string
+		action string
+		params map[string]interface{}
+		rpcErr error
+		msg    string
+	}{
+		{
+			name:   "command on timeout",
+			action: "pod_script_run_enricher",
+			params: map[string]interface{}{"command": "psql postgresql://app:s3cr3t-pw@db.example.com:5432/app -c 'select 1'", "pod_name": "p1"},
+			rpcErr: context.DeadlineExceeded,
+			msg:    "RPC timeout",
+		},
+		{
+			name:   "mcp credentials on error",
+			action: "mcp_request",
+			params: map[string]interface{}{"url": "https://mcp.example.com", "auth_credentials": map[string]interface{}{"bearer_token": "s3cr3t-pw"}},
+			rpcErr: fmt.Errorf("broker unavailable"),
+			msg:    "RPC error",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			router := setupRouterWithLogs(&fakeStore{allowed: true}, fakeRPCClient{err: tc.rpcErr}, &logs)
+
+			input := models.ExternalActionRequest{
+				Body:      models.ActionRequestBody{AccountID: "acct1", ActionName: tc.action, ActionParams: tc.params},
+				RequestID: "rid123",
+			}
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest("POST", "/request", bytes.NewBuffer(jsonMust(input)))
+			req.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(w, req)
+
+			require.Contains(t, logs.String(), tc.msg)
+			require.Contains(t, logs.String(), "action_name="+tc.action)
+			require.NotContains(t, logs.String(), "s3cr3t-pw")
+		})
+	}
+}
+
+// Read-only lookups keep their params in the log: they say which query or
+// resource the agent failed to answer.
+func TestRequestHandler_FailedLookupLogsParams(t *testing.T) {
+	var logs bytes.Buffer
+	router := setupRouterWithLogs(&fakeStore{allowed: true}, fakeRPCClient{err: context.DeadlineExceeded}, &logs)
+
+	input := models.ExternalActionRequest{
+		Body: models.ActionRequestBody{
+			AccountID:    "acct1",
+			ActionName:   "get_resource",
+			ActionParams: map[string]interface{}{"resource_type": "configmaps"},
+		},
+		RequestID: "rid123",
+	}
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/request", bytes.NewBuffer(jsonMust(input)))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, 504, w.Code)
+	require.Contains(t, logs.String(), "configmaps")
 }
 
 func TestRequestHandler_Success(t *testing.T) {

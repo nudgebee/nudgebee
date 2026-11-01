@@ -11,10 +11,12 @@ import (
 	"nudgebee/collector/cloud/providers"
 	"nudgebee/collector/cloud/security"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/samber/lo"
 )
 
 type CloudAccountCostReportJob struct {
@@ -320,9 +322,18 @@ func runHistoricalBackfill(ctx *security.RequestContext, accountId, tenantId str
 // Neither can be fixed by retrying, so the queue must ACK rather than
 // dead-letter, and the agent must not be reported disconnected for it.
 //
-// This is the single definition of "benign" — both decisions call it. Keeping
-// two copies is how the sts:ExternalId drift happened (#37513): one caller was
-// updated and the other silently kept the old behaviour.
+// A spend sync answers two different questions, and this function and
+// agentStatusForUsageSync below are the only places that answer them:
+//
+//   - isBenignCostOutcome: is this a steady state the queue should ACK without
+//     a dead-letter entry?
+//   - agentStatusForUsageSync: does the account's credential still work?
+//
+// Every benign outcome also keeps the account connected. The reverse is not
+// true: ErrCostFetchFailedCredentialOK is a real failure for the queue, but the
+// credential was confirmed to work, so the account stays connected. Keep both
+// answers here, side by side — two copies of the same answer is how the
+// sts:ExternalId drift happened (#37513).
 func isBenignCostOutcome(err error) bool {
 	return errors.Is(err, errors.ErrUnsupported) || errors.Is(err, providers.ErrCostNotConfigured)
 }
@@ -337,10 +348,14 @@ func isBenignCostOutcome(err error) bool {
 // row reads Connected, and trips agent-health alerting for a supported
 // configuration.
 //
+// A failure after which the provider confirmed the credential still works
+// (ErrCostFetchFailedCredentialOK) does not disconnect either: the account's
+// other syncs keep working, and only its spend is missing this run.
+//
 // The error is still recorded either way, so the reason reaches the Spends
 // error column.
 func agentStatusForUsageSync(err error) AgentStatus {
-	if err != nil && !isBenignCostOutcome(err) {
+	if err != nil && !isBenignCostOutcome(err) && !errors.Is(err, providers.ErrCostFetchFailedCredentialOK) {
 		return AgentStatusDisconnected
 	}
 	return AgentStatusConnected
@@ -672,6 +687,9 @@ func storeAccountRecommendations(ctx *security.RequestContext, accountId string)
 		ctx.GetLogger().Error("usagereport: unable to fetch resources", "error", err)
 		return data, err
 	}
+	// StoreRecommendations matches service names case-insensitively, so two
+	// spellings of one service ("awswaf", "AWSWAF") would sync it twice.
+	services = lo.UniqBy(services, strings.ToLower)
 
 	// sync resource-based recommendations
 	for _, serviceName := range services {
@@ -691,10 +709,20 @@ func storeAccountRecommendations(ctx *security.RequestContext, accountId string)
 		}
 	}
 
-	// sync native cloud provider recommendations (account-level, not in cloud_resourses)
-	// AWS: costoptimizationhub, costexplorer, computeoptimizer, trustedadvisor
-	// GCP: recommender
-	// Azure: advisor
+	ctx.GetLogger().Info("usagereport: synced recommendations after usage report", "time", time.Since(t0).String())
+	return data, nil
+}
+
+// storeNativeAccountRecommendations syncs the cloud provider's own recommendations
+// (account-level, not in cloud_resourses). The post-report job runs it before
+// resource discovery: it needs only a few account-level calls, and run after a
+// slow discovery it was the step left with no time budget.
+// AWS: costoptimizationhub, costexplorer, computeoptimizer, trustedadvisor
+// GCP: recommender
+// Azure: advisor
+func storeNativeAccountRecommendations(ctx *security.RequestContext, accountId string) map[string]StoreUsageRecommendationResponse {
+	t0 := time.Now()
+	data := map[string]StoreUsageRecommendationResponse{}
 	nativeServices := []string{"costoptimizationhub", "costexplorer", "computeoptimizer", "trustedadvisor", "recommender", "advisor"}
 	for _, svc := range nativeServices {
 		r, err := StoreRecommendations(ctx, accountId, providers.ListRecommendationsRequest{
@@ -713,8 +741,8 @@ func storeAccountRecommendations(ctx *security.RequestContext, accountId string)
 		}
 	}
 
-	ctx.GetLogger().Info("usagereport: synced recommendations after usage report", "time", time.Since(t0).String())
-	return data, nil
+	ctx.GetLogger().Info("usagereport: synced native recommendations", "time", time.Since(t0).String())
+	return data
 }
 
 func discoverAndStoreAccountResources(ctx *security.RequestContext, accountId string) (data map[string]StoreUsageResourceResponse, err error) {
@@ -750,35 +778,20 @@ func discoverAndStoreAccountResources(ctx *security.RequestContext, accountId st
 		return data, nil
 	}
 
-	serviceRegionsMaps := map[string][]string{}
-	for _, r := range serviceAndRegions {
-		serviceName := r["service_name"].(string)
-		// Normalize Azure service names - some resources may have full type paths
-		// For microsoft.insights/actiongroups, microsoft.insights/metricalerts etc, use base service name
-		if strings.HasPrefix(strings.ToLower(serviceName), "microsoft.insights/") {
-			serviceName = "microsoft.insights"
-		}
-
-		if _, ok := serviceRegionsMaps[serviceName]; !ok {
-			serviceRegionsMaps[serviceName] = []string{}
-		}
-		serviceRegionsMaps[serviceName] = append(serviceRegionsMaps[serviceName], r["region"].(string))
-	}
-
 	// Ensure provider default services are always synced, even if they have no
 	// rows in cloud_resourses yet. This covers services like GCP Persistent Disks
 	// and NICs that never appear in billing data under their own service name.
+	var defaultServices []string
 	account, _, accErr := getAccount(ctx, accountId)
 	if accErr != nil {
 		ctx.GetLogger().Error("usagereport: unable to fetch account for default services check", "error", accErr, "accountId", accountId)
 	} else {
-		providerKey := strings.ToLower(account.CloudProvider)
-		for _, defaultSvc := range providerDefaultServices[providerKey] {
-			if _, exists := serviceRegionsMaps[defaultSvc]; !exists {
-				ctx.GetLogger().Info("usagereport: adding missing default service for discovery", "service", defaultSvc, "provider", account.CloudProvider, "accountId", accountId)
-				serviceRegionsMaps[defaultSvc] = []string{}
-			}
-		}
+		defaultServices = providerDefaultServices[strings.ToLower(account.CloudProvider)]
+	}
+
+	serviceRegionsMaps, addedDefaults := groupServiceRegions(serviceAndRegions, defaultServices)
+	for _, defaultSvc := range addedDefaults {
+		ctx.GetLogger().Info("usagereport: adding missing default service for discovery", "service", defaultSvc, "provider", account.CloudProvider, "accountId", accountId)
 	}
 
 	// sync resources
@@ -798,6 +811,56 @@ func discoverAndStoreAccountResources(ctx *security.RequestContext, accountId st
 	ctx.GetLogger().Info("usagereport: synced resources after usage report", "time", time.Since(t0).String())
 
 	return data, nil
+}
+
+// groupServiceRegions groups an account's stored (service_name, region) rows into
+// the region list to scan per service, and adds the default services that have no
+// rows. Names are matched case-insensitively: the cost report stores a service under
+// one spelling ("awswaf") and its lister under another ("AWSWAF"), and grouped
+// apart each spelling ran its own full scan of the same service. StoreResources
+// archives by lower(service_name), so one scan under either spelling covers the rows
+// of both. A spelling that matches a default is preferred, so the service is scanned
+// under the name its lister stores. addedDefaults lists the defaults that had no rows.
+func groupServiceRegions(rows []map[string]any, defaults []string) (serviceRegions map[string][]string, addedDefaults []string) {
+	defaultByFold := make(map[string]string, len(defaults))
+	for _, d := range defaults {
+		defaultByFold[strings.ToLower(d)] = d
+	}
+
+	serviceRegions = map[string][]string{}
+	nameByFold := map[string]string{}
+	for _, r := range rows {
+		serviceName := r["service_name"].(string)
+		// Normalize Azure service names - some resources may have full type paths
+		// For microsoft.insights/actiongroups, microsoft.insights/metricalerts etc, use base service name
+		if strings.HasPrefix(strings.ToLower(serviceName), "microsoft.insights/") {
+			serviceName = "microsoft.insights"
+		}
+
+		fold := strings.ToLower(serviceName)
+		name, ok := nameByFold[fold]
+		if !ok {
+			name = serviceName
+			if d, isDefault := defaultByFold[fold]; isDefault {
+				name = d
+			}
+			nameByFold[fold] = name
+			serviceRegions[name] = []string{}
+		}
+		if region := r["region"].(string); !slices.Contains(serviceRegions[name], region) {
+			serviceRegions[name] = append(serviceRegions[name], region)
+		}
+	}
+
+	for _, d := range defaults {
+		fold := strings.ToLower(d)
+		if _, exists := nameByFold[fold]; !exists {
+			nameByFold[fold] = d
+			serviceRegions[d] = []string{}
+			addedDefaults = append(addedDefaults, d)
+		}
+	}
+	return serviceRegions, addedDefaults
 }
 
 // CloudAccountPostReportJob represents an async job for post-report processing
@@ -880,23 +943,28 @@ func ConsumeCloudAccountPostReportJobs(ctx *security.RequestContext, concurrency
 
 		logger.Info("postreport: processing post-report job")
 
-		// Step 1: Discover and store resources from cloud provider APIs
+		// Step 1: Sync the cloud provider's own recommendations. They don't depend on
+		// this run's resource discovery, so they go first and a slow discovery can't
+		// use up their share of the time budget.
+		storeNativeAccountRecommendations(jobCtx, job.AccountId)
+
+		// Step 2: Discover and store resources from cloud provider APIs
 		_, err = discoverAndStoreAccountResources(jobCtx, job.AccountId)
 		if err != nil {
 			logger.Error("postreport: failed to discover resources", "error", err)
 			// Continue - don't fail the entire job for one step
 		}
 
-		// Step 2: Sync recommendations
+		// Step 3: Sync resource-based recommendations over the refreshed inventory
 		_, err = storeAccountRecommendations(jobCtx, job.AccountId)
 		if err != nil {
 			logger.Error("postreport: failed to sync recommendations", "error", err)
 		}
 
-		// Step 3: Trigger metrics sync (publishes to metrics queue)
+		// Step 4: Trigger metrics sync (publishes to metrics queue)
 		StoreMetricesForAllAccounts(jobCtx, job.AccountId)
 
-		// Step 4: Sync event rules from cloud provider
+		// Step 5: Sync event rules from cloud provider
 		_, err = StoreEventRules(jobCtx, job.AccountId)
 		if err != nil {
 			logger.Error("postreport: failed to sync event rules", "error", err)

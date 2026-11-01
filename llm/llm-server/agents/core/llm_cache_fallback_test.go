@@ -171,10 +171,10 @@ func TestIdentifyCacheableMessages(t *testing.T) {
 }
 
 // TestAnthropicCacheProvider_ToolCallPartsNotWrapped verifies that the Anthropic cache provider:
-// 1. Never wraps ToolCall/ToolCallResponse parts (would crash with "unsupported cached content part type")
-// 2. Never wraps parts in AI/Tool messages (handleAIMessage doesn't support CachedContent)
-// 3. Always places exactly ONE cache_control marker on a TextContent/BinaryContent part
-// 4. Only places the marker in Human or System messages (the only handlers that support CachedContent)
+// 1. Never wraps ToolCall parts and never marks assistant messages
+// 2. Only wraps parts the llms/anthropic adapter can mark (text, binary, tool result)
+// 3. Stays within Anthropic's 4-breakpoint limit
+// 4. Marks the expected part (the previous step's tail)
 func TestAnthropicCacheProvider_ToolCallPartsNotWrapped(t *testing.T) {
 	provider := NewAnthropicCacheProvider()
 
@@ -338,27 +338,26 @@ func TestAnthropicCacheProvider_ToolCallPartsNotWrapped(t *testing.T) {
 					case llms.CachedContent:
 						markerCount++
 
-						// Verify marker is only on Human or System messages
-						assert.True(t, msg.Role == llms.ChatMessageTypeHuman || msg.Role == llms.ChatMessageTypeSystem,
-							"message[%d]: CachedContent found in %s message — only Human/System handlers support it",
-							msgIdx, msg.Role)
+						assert.NotEqual(t, llms.ChatMessageTypeAI, msg.Role,
+							"message[%d]: assistant messages must never carry a cache marker", msgIdx)
 
 						switch inner := cached.ContentPart.(type) {
 						case llms.TextContent:
 							markedTexts = append(markedTexts, inner.Text)
 						case llms.BinaryContent:
 							markedTexts = append(markedTexts, "(binary)")
+						case llms.ToolCallResponse:
+							markedTexts = append(markedTexts, inner.Content)
 						default:
-							t.Errorf("message[%d].part[%d]: CachedContent wraps unsupported type %T — "+
-								"this will crash the Anthropic API with 'unsupported cached content part type'",
+							t.Errorf("message[%d].part[%d]: CachedContent wraps unsupported type %T",
 								msgIdx, partIdx, cached.ContentPart)
 						}
 					}
 				}
 			}
 
-			// Between 1 and 3 cache markers must exist for Anthropic multi-breakpoint caching
-			assert.True(t, markerCount >= 1 && markerCount <= 3, "Expected 1-3 cache_control markers, got %d", markerCount)
+			// Anthropic rejects more than 4 cache_control markers
+			assert.True(t, markerCount >= 1 && markerCount <= 4, "Expected 1-4 cache_control markers, got %d", markerCount)
 
 			// The expected marker should be included among the marked text parts
 			foundExpected := false

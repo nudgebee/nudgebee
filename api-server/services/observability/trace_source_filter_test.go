@@ -15,7 +15,7 @@ import (
 // switch, so this list is hand-maintained: add a provider here when you add a case there.
 var traceProviders = []string{
 	"datadog", "azure_app_insights", "chronosphere", "otel_clickhouse", "jaeger", "newrelic",
-	"splunk_observability_platform", "splunk_enterprise", "cubeapm", "ES",
+	"splunk_observability_platform", "splunk_enterprise", "grafana_tempo", "cubeapm", "ES",
 	"dynatrace", "solarwinds", "gcp", "openobserve",
 }
 
@@ -78,7 +78,7 @@ func TestResolveTraceSourceFilter_Predicates(t *testing.T) {
 		{query.In: []any{"ebpf"}},
 		{query.NotIn: []any{"otel"}},
 	}
-	for _, provider := range []string{"ES", "datadog", "newrelic", "openobserve", "splunk_enterprise", "cubeapm"} {
+	for _, provider := range []string{"ES", "datadog", "newrelic", "openobserve", "grafana_tempo", "splunk_enterprise", "cubeapm"} {
 		for _, ops := range holds {
 			where := query.QueryWhereClause{Binary: query.BinaryWhereClause{"trace_source": ops, "workload_name": {query.Eq: "cart"}}}
 			got, matchesNothing, err := resolveTraceSourceFilter(provider, where)

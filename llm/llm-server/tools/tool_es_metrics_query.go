@@ -128,6 +128,7 @@ func parseESMetricsQueryInput(command string) (indexPattern string, queryObj any
 }
 
 func (m ESMetricsQueryTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	nbRequestContext = nbRequestContext.ForTarget()
 	nbRequestContext.Ctx.GetLogger().Info("es_metrics_query: executing metrics query", "input", input.Command)
 
 	indexPattern, queryObj, userMsg, err := parseESMetricsQueryInput(input.Command)

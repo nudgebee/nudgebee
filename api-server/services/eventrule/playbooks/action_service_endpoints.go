@@ -1,10 +1,16 @@
 package playbooks
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
+	"nudgebee/services/internal/database"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/jmoiron/sqlx"
 )
 
 // service_endpoints_enricher adds LIVE state to service_no_endpoints
@@ -17,6 +23,15 @@ import (
 //  3. every Deployment/StatefulSet/DaemonSet pod template in the namespace,
 //     so the selector-vs-template mismatch (and the closest candidate) is
 //     visible on the card.
+//
+// and adds how old the problem is: the Service's creation time, and the first
+// alert for it still on record. "No endpoints" alone reads as a live outage;
+// these two facts tell a long-standing leftover apart from a fresh break.
+//
+// The pod inventory is deliberately not used for this: it drops a removed pod
+// once the pod is more than 30 days old (by creation time), so a long-lived
+// pod removed yesterday can already be gone, and "last matching pod" would
+// make a fresh break look old.
 //
 // Output is a markdown block routed to the existing TextEnricherDynamicCard
 // via additional_info.actual_action_name="text_enricher" — deliberately no
@@ -89,10 +104,24 @@ func (a *serviceEndpointsAction) Execute(ctx PlaybookActionContext, rawParams ma
 		"all_namespaces": false,
 	})
 	if err == nil {
-		workloads = workloadTemplatesFromList(wlData)
+		workloads = workloadTemplatesFromList(wlData, namespace)
 	}
 
-	text, insights := buildServiceEndpointsReport(namespace, serviceName, selector, addressCount, workloads)
+	facts := serviceAgeFacts{now: time.Now().UTC()}
+	facts.createdAt, facts.hasCreatedAt = serviceCreatedAt(svc)
+	// Alert history only matters while the Service is still without endpoints,
+	// and only for the alert's own Service (Execute can be called for another).
+	// Non-fatal: without it the card still shows the live state.
+	if fingerprint := ownAlertFingerprint(ctx.GetEvent(), serviceName, namespace); fingerprint != "" && addressCount <= 0 {
+		if hist, err := lookupAlertHistory(ctx.GetAccountId(), fingerprint); err == nil {
+			facts.alerts = &hist
+		} else {
+			slog.Warn("service_endpoints_enricher: alert history lookup failed",
+				"error", err, "namespace", namespace, "service", serviceName)
+		}
+	}
+
+	text, insights := buildServiceEndpointsReport(namespace, serviceName, selector, addressCount, workloads, facts)
 
 	return serviceEndpointsMarkdownResponse{
 		Title: "Service endpoint status (live)",
@@ -113,7 +142,7 @@ func (a *serviceEndpointsAction) Execute(ctx PlaybookActionContext, rawParams ma
 // buildServiceEndpointsReport renders the markdown body + insights. Split out
 // (pure) so tests can cover the broken / recovered / selector-removed states
 // without a relay.
-func buildServiceEndpointsReport(namespace, serviceName string, selector map[string]string, addressCount int, workloads []workloadTemplate) (string, []PlaybookActionResponseInsight) {
+func buildServiceEndpointsReport(namespace, serviceName string, selector map[string]string, addressCount int, workloads []workloadTemplate, facts serviceAgeFacts) (string, []PlaybookActionResponseInsight) {
 	var b strings.Builder
 	insights := []PlaybookActionResponseInsight{}
 	selStr := formatLabelMap(selector)
@@ -132,6 +161,12 @@ func buildServiceEndpointsReport(namespace, serviceName string, selector map[str
 		b.WriteString("- Endpoints: **0 addresses — still not routing traffic**\n")
 	default:
 		fmt.Fprintf(&b, "- Endpoints: **%d address(es) — appears recovered**\n", addressCount)
+	}
+	if facts.hasCreatedAt {
+		fmt.Fprintf(&b, "- Service created: %s (%s ago)\n", formatDay(facts.createdAt), humanAge(facts.now, facts.createdAt))
+	}
+	if line := facts.alertHistoryLine(); line != "" {
+		fmt.Fprintf(&b, "- %s\n", line)
 	}
 
 	anyMatch := false
@@ -160,16 +195,149 @@ func buildServiceEndpointsReport(namespace, serviceName string, selector map[str
 		insights = append(insights, PlaybookActionResponseInsight{
 			Severity: "Critical",
 			Message: fmt.Sprintf("Service %s/%s still has no endpoints: selector (%s) matches none of the %d workload pod template(s) in the namespace",
-				namespace, serviceName, selStr, len(workloads)),
+				namespace, serviceName, selStr, len(workloads)) + facts.summary(),
 		})
 	case len(selector) > 0 && anyMatch && addressCount == 0:
 		insights = append(insights, PlaybookActionResponseInsight{
 			Severity: "High",
 			Message: fmt.Sprintf("Service %s/%s selector now matches a workload template but there are still 0 endpoint addresses — the workload may be scaled to zero or its pods not ready",
-				namespace, serviceName),
+				namespace, serviceName) + facts.summary(),
 		})
 	}
 	return b.String(), insights
+}
+
+// serviceAgeFacts say how old the problem is. The insight carries them because
+// it is what the investigation reads: without them a Service broken for months
+// reads the same as one that broke a minute ago.
+type serviceAgeFacts struct {
+	now          time.Time
+	createdAt    time.Time
+	hasCreatedAt bool
+	alerts       *alertHistory // nil when the alert history was not read
+}
+
+// alertHistory is what the event store says about earlier alerts for the same
+// problem (same fingerprint). High-priority events are kept 90 days, so the
+// first one on record is a lower bound on how long the problem has existed.
+type alertHistory struct {
+	first time.Time // zero when no alert with this fingerprint is on record
+}
+
+func (f serviceAgeFacts) alertHistoryLine() string {
+	switch {
+	case f.alerts == nil:
+		return ""
+	case f.alerts.first.IsZero():
+		return "No earlier alert for this Service on record"
+	default:
+		return fmt.Sprintf("First alert for this Service on record: %s (%s ago)",
+			formatDay(f.alerts.first), humanAge(f.now, f.alerts.first))
+	}
+}
+
+// summary renders the facts as sentences appended to the insight message,
+// e.g. ". The Service was created Oct 25, 2023 (2 years ago). The first alert
+// for it on record fired Jul 30, 2026 (2 months ago)."
+func (f serviceAgeFacts) summary() string {
+	var parts []string
+	if f.hasCreatedAt {
+		parts = append(parts, fmt.Sprintf("The Service was created %s (%s ago)",
+			formatDay(f.createdAt), humanAge(f.now, f.createdAt)))
+	}
+	if f.alerts != nil {
+		if f.alerts.first.IsZero() {
+			parts = append(parts, "No earlier alert for it is on record")
+		} else {
+			parts = append(parts, fmt.Sprintf("The first alert for it on record fired %s (%s ago)",
+				formatDay(f.alerts.first), humanAge(f.now, f.alerts.first)))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return ". " + strings.Join(parts, ". ") + "."
+}
+
+// ownAlertFingerprint returns the event's fingerprint when the event is the
+// service_no_endpoints alert for exactly this Service, else "".
+func ownAlertFingerprint(ev PlaybookEvent, serviceName, namespace string) string {
+	if ev.AggregationKey != "service_no_endpoints" {
+		return ""
+	}
+	if name, ns := subjectServiceNamespace(ev); name != serviceName || ns != namespace {
+		return ""
+	}
+	return ev.Fingerprint
+}
+
+// lookupAlertHistory is a variable so tests can replace the database read.
+var lookupAlertHistory = func(accountId, fingerprint string) (alertHistory, error) {
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return alertHistory{}, fmt.Errorf("service_endpoints_enricher: database: %w", err)
+	}
+	return queryAlertHistory(dbms.Db, accountId, fingerprint)
+}
+
+// queryAlertHistory finds the first alert on record with this fingerprint.
+// Covered by the (fingerprint, cloud_account_id, ...) event indexes.
+func queryAlertHistory(db *sqlx.DB, accountId, fingerprint string) (alertHistory, error) {
+	var first sql.NullTime
+	if err := db.QueryRowx(`SELECT min(created_at) FROM events WHERE fingerprint = $1 AND cloud_account_id = $2`,
+		fingerprint, accountId).Scan(&first); err != nil {
+		return alertHistory{}, fmt.Errorf("service_endpoints_enricher: query alert history: %w", err)
+	}
+	var hist alertHistory
+	if first.Valid {
+		hist.first = first.Time.UTC()
+	}
+	return hist, nil
+}
+
+// serviceCreatedAt reads metadata.creationTimestamp. Relay payloads may be
+// snake-cased, so both spellings are accepted.
+func serviceCreatedAt(svc map[string]any) (time.Time, bool) {
+	meta := getMapField(svc, "metadata")
+	for _, key := range []string{"creationTimestamp", "creation_timestamp"} {
+		s, _ := meta[key].(string)
+		if s == "" {
+			continue
+		}
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			return t.UTC(), true
+		}
+	}
+	return time.Time{}, false
+}
+
+func formatDay(t time.Time) string {
+	return t.UTC().Format("Jan 2, 2006")
+}
+
+// humanAge is a coarse "how long ago": hours, then days, months, years.
+func humanAge(now, then time.Time) string {
+	d := now.Sub(then)
+	day := 24 * time.Hour
+	switch {
+	case d < time.Hour:
+		return "less than an hour"
+	case d < 2*day:
+		return plural(int(d/time.Hour), "hour")
+	case d < 60*day:
+		return plural(int(d/day), "day")
+	case d < 730*day:
+		return plural(int(d/(30*day)), "month")
+	default:
+		return plural(int(d/(365*day)), "year")
+	}
+}
+
+func plural(n int, unit string) string {
+	if n == 1 {
+		return "1 " + unit
+	}
+	return fmt.Sprintf("%d %ss", n, unit)
 }
 
 // serviceEndpointsMarkdownResponse is a markdown evidence payload with a
@@ -238,8 +406,11 @@ func endpointsAddressCount(ep map[string]any) int {
 }
 
 // workloadTemplatesFromList extracts (name, spec.template.metadata.labels)
-// from a flat get_resource list of workloads.
-func workloadTemplatesFromList(data any) []workloadTemplate {
+// from a flat get_resource list of workloads, keeping only the given
+// namespace. Agents before nudgebee-agent 0.1.26-rc-2 ignore the namespace on
+// this call and return every workload in the cluster, so filter here too.
+// Items that carry no namespace are kept.
+func workloadTemplatesFromList(data any, namespace string) []workloadTemplate {
 	items, _ := data.([]any)
 	out := make([]workloadTemplate, 0, len(items))
 	for _, it := range items {
@@ -250,6 +421,9 @@ func workloadTemplatesFromList(data any) []workloadTemplate {
 		meta, _ := m["metadata"].(map[string]any)
 		name, _ := meta["name"].(string)
 		if name == "" {
+			continue
+		}
+		if ns, _ := meta["namespace"].(string); ns != "" && ns != namespace {
 			continue
 		}
 		spec := getMapField(m, "spec")

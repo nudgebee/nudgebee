@@ -277,21 +277,23 @@ class PrometheusMetricsService(MetricsService):
         batch_size = OWNER_BATCH_SIZE
         for owner_group in batched(pod_owners, batch_size):
             owners_regex = "|".join(owner_group)
-            related_pods_result_item = await self.query_range(
-                f"""
-                    last_over_time(
-                        kube_pod_owner{{
-                            owner_name=~"{owners_regex}",
-                            owner_kind="{pod_owner_kind}",
-                            namespace="{object.namespace}",
-                            {cluster_label}
-                        }}[{period_literal}]
+            # One INSTANT query, one row per pod. Only the pod names are read below, and
+            # last_over_time already reaches back over the whole window, so evaluating it
+            # at every hour of that window as well returned each pod up to 337 times.
+            # For a DaemonSet on a cluster with churning nodes (9,688 pod series in
+            # 14 days) that was a 146 MB answer, which OOM-killed api-server (#39991).
+            related_pods_result_item = await self.query(f"""
+                    count by (pod) (
+                        last_over_time(
+                            kube_pod_owner{{
+                                owner_name=~"{owners_regex}",
+                                owner_kind="{pod_owner_kind}",
+                                namespace="{object.namespace}",
+                                {cluster_label}
+                            }}[{period_literal}]
+                        )
                     )
-                """,
-                start=datetime.now() - period,
-                end=datetime.now(),
-                step=timedelta(hours=1),
-            )
+                """)
             related_pods_result.extend(related_pods_result_item)
         if related_pods_result == []:
             return []

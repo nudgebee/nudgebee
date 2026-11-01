@@ -290,6 +290,38 @@ describe('CloudLogsViewer (integration)', () => {
     expect(payload.request.resource_id).toBeUndefined();
   });
 
+  // Regression for #38368: a failed query comes back as HTTP 200 with a top-level
+  // `errors` array; the viewer must surface it instead of rendering "No log entries".
+  it('surfaces a top-level query error (200-body errors) instead of "No log entries"', async () => {
+    observability.fetchLogs.mockResolvedValue({
+      data: { data: null, errors: [{ message: 'failed to start logs query: MalformedQueryException: syntax error' }] },
+    });
+
+    render(<CloudLogsViewer accountId='acc-1' provider='AWS' />);
+    await waitFor(() => expect(screen.getByTestId('qp-emit-valid')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('qp-emit-valid'));
+    fireEvent.click(screen.getByTestId('btn-Run Query'));
+
+    await waitFor(() => expect(screen.getByTestId('banner')).toHaveTextContent(/MalformedQueryException/));
+    expect(screen.queryByText('No log entries')).not.toBeInTheDocument();
+  });
+
+  // A non-GraphQL failure (502/504, network) returns no data and no errors[] to
+  // throw on; it must still show an error, not the empty "No log entries" state.
+  it('surfaces a non-GraphQL failure (no data, no errors) instead of "No log entries"', async () => {
+    observability.fetchLogs.mockResolvedValue({ data: {} });
+
+    render(<CloudLogsViewer accountId='acc-1' provider='AWS' />);
+    await waitFor(() => expect(screen.getByTestId('qp-emit-valid')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('qp-emit-valid'));
+    fireEvent.click(screen.getByTestId('btn-Run Query'));
+
+    await waitFor(() => expect(screen.getByTestId('banner')).toHaveTextContent(/Failed to fetch logs/));
+    expect(screen.queryByText('No log entries')).not.toBeInTheDocument();
+  });
+
   it('renders Timestamp + Message columns when logs have messages', async () => {
     render(<CloudLogsViewer accountId='acc-1' provider='AWS' />);
     await waitFor(() => expect(screen.getByTestId('qp-emit-valid')).toBeInTheDocument());

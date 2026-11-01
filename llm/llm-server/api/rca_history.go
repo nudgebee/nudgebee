@@ -43,7 +43,7 @@ func executeEventRCAAnalysis(ctx *security.RequestContext, request EventRCAAnaly
 		c.JSON(500, buildApiResponse(nil, []error{err}))
 		return
 	}
-	repo := events.NewEventAnalysisRepository(db)
+	repo := events.NewEventAnalysisRepositoryForAccount(ctx, db, request.AccountId)
 	info, err := repo.GetEventInfo(ctx, request.EventId, request.AccountId)
 	if err != nil {
 		c.JSON(404, buildApiResponse(nil, []error{errors.New("event not found")}))

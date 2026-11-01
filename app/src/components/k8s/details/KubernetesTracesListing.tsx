@@ -899,7 +899,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
     statusCodes.length > 0
       ? statusCodes.map((v: string) => ({ label: normalizeStatusCodeLabel(v), value: v }))
       : [
-          { label: 'Ok', value: 'STATUS_CODE_UNSET' },
+          { label: 'Unset', value: 'STATUS_CODE_UNSET' },
           { label: 'Error', value: 'STATUS_CODE_ERROR' },
         ];
 
@@ -1337,11 +1337,11 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
                       size='sm'
                     />
                     {/* Cloud Trace has no status/error facet in its filter grammar, so the
-                        Ok/Error filter can't be pushed to the source — hide it for GCP
+                        Error/Unset filter can't be pushed to the source — hide it for GCP
                         rather than present a control that does nothing. */}
                     {traceProvider !== 'gcp' && (
                       <FilterDropdown
-                        label='Ok/Error'
+                        label='Error/Unset'
                         options={okErrorOptions}
                         value={selectedStatusCode}
                         onSelect={(e: any) => {
@@ -1522,7 +1522,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
                       size='sm'
                     />
                     <FilterDropdown
-                      label='Ok/Error'
+                      label='Error/Unset'
                       options={okErrorOptions}
                       value={selectedStatusCode}
                       onSelect={(e: any) => {

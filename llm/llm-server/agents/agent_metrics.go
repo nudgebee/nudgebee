@@ -88,7 +88,10 @@ func (f *metricsAgent) GetNameAliases() []string {
 	return []string{"Metrics Analyst", "Metrics"}
 }
 
+func (f *metricsAgent) AcceptsExecutionTarget() {}
+
 func (f *metricsAgent) GetDescription() string {
+
 	return `Retrieves, analyzes, and visualizes metrics from various sources (Kubernetes, Prometheus, Datadog) by translating natural language questions into metrics queries. Use this for: CPU/memory/network utilization, performance trends, SLO/SLA data, threshold breaches, custom metric queries, and generating charts or graphs. Do NOT use for: log analysis (use ` + "`" + `logs` + "`" + ` agent instead), Kubernetes resource state inspection (use ` + "`" + `kubectl` + "`" + ` or ` + "`" + `kubectl_execute` + "`" + `), or querying Kubernetes events (use ` + "`" + `events` + "`" + ` agent).`
 }
 
@@ -123,6 +126,7 @@ func (f *metricsAgent) Execute(ctx *security.RequestContext, query core.NBAgentR
 		// <skill-lists> + load_skills flow.
 		InheritSkillsFromAgents: append(query.InheritSkillsFromAgents, f.GetName()),
 		OriginalQuery:           query.OriginalQuery,
+		OriginalQueryFromUser:   query.OriginalQueryFromUser,
 		SelectedSkillIds:        query.SelectedSkillIds,
 		KnowledgePolicy:         string(query.KnowledgePolicy),
 		KnowledgePolicyResolved: query.KnowledgePolicyResolved,
@@ -269,6 +273,7 @@ func (m *metricsQueryAgent) Execute(ctx *security.RequestContext, query core.NBA
 		UserId:                  query.UserId,
 		InheritSkillsFromAgents: append(query.InheritSkillsFromAgents, m.GetName()),
 		OriginalQuery:           query.OriginalQuery,
+		OriginalQueryFromUser:   query.OriginalQueryFromUser,
 		SelectedSkillIds:        query.SelectedSkillIds,
 		KnowledgePolicy:         string(query.KnowledgePolicy),
 		KnowledgePolicyResolved: query.KnowledgePolicyResolved,
@@ -434,19 +439,57 @@ func (m MetricsAgentTool) InputSchema() toolcore.ToolSchema {
 				Type:        toolcore.ToolSchemaTypeString,
 				Description: "Optional: Path in the workspace to save the raw metrics data (e.g., 'metrics.json'). Relative paths are saved in the conversation directory.",
 			},
+			"target": toolcore.AgentTargetSchemaProperty(),
 		},
 		Required: []string{"command"},
 	}
 }
 
+func (m MetricsAgentTool) PrepareDelegatedTargetInput(target *toolcore.ExecutionTarget, input string) (string, error) {
+	return tools.AddDelegatedTargetObject(input, target)
+}
+
 func (m MetricsAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolcore.NBToolCallRequest) (toolcore.NBToolResponse, error) {
-	agent, err := getMetricsAgent(nbRequestContext.Ctx, nbRequestContext.AccountId)
+	target, queryAccountId, err := tools.ResolveObservabilityTarget(nbRequestContext, input)
+	if err != nil {
+		return toolcore.NBToolResponse{
+			Status: toolcore.NBToolResponseStatusError,
+			Data:   err.Error(),
+		}, nil
+	}
+	if target != nil {
+		nbRequestContext.QueryConfig.DelegatedTarget = target
+		// The sub-agent writes its own query from the command text, which may
+		// still name the target; tell it the target is already the scope.
+		input.Context = strings.TrimSpace(input.Context + "\n" + target.ScopeNote())
+	}
+
+	provider, err := tools.GetMetricsProvider(queryAccountId)
+	if target != nil {
+		if err != nil || provider.Provider == "" {
+			return toolcore.NBToolResponse{
+				Status: toolcore.NBToolResponseStatusError,
+				Data:   fmt.Sprintf("no metrics provider configured for target %s %q (account %s); will not fall back to conversation origin account", target.Provider, target.Name, queryAccountId),
+			}, nil
+		}
+		if tools.IsCloudObservabilityProvider(target.Provider) {
+			if !strings.EqualFold(provider.Provider, target.Provider) && !tools.HasActiveCloudProvider(queryAccountId, target.Provider) {
+				return toolcore.NBToolResponse{
+					Status: toolcore.NBToolResponseStatusError,
+					Data:   fmt.Sprintf("target %s %q requires a %s metrics provider, but found %q; will not fall back to conversation origin account", target.Provider, target.Name, target.Provider, provider.Provider),
+				}, nil
+			}
+		}
+	}
+
+	agent, err := getMetricsAgent(nbRequestContext.Ctx, queryAccountId)
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Info("metrics: unable to get metricsAgent", "error", err.Error())
 		return toolcore.NBToolResponse{}, err
 	}
 
 	resp, err := core.ExecuteAgentToolCall(nbRequestContext, agent, input)
+
 	preambleResponse, preambleErr, handled := handleNestedAgentCallPreamble(nbRequestContext, resp, err, MetricsAgentName)
 	if preambleErr != nil {
 		nbRequestContext.Ctx.GetLogger().Error("metrics: unable to process events request", "error", err, "input", input)

@@ -113,3 +113,18 @@ func TestGetIntegrationByTypePreferringDefault(t *testing.T) {
 		assert.False(t, defaultProviderColumns["tenant_id"], "only the default_* flags may be ordered on")
 	})
 }
+
+func TestHasAccountSourceIntegration(t *testing.T) {
+	matchPlainQuery := regexp.MustCompile(`(?s)SELECT EXISTS\s*\(.*FROM integrations i.*WHERE ica\.cloud_account_id = \$1.*AND i\.tenant_id = \$2.*AND i\.type = \$3.*AND i\.source = \$4\s*\)`)
+
+	t.Run("HasAccountSourceIntegration returns true when any integration exists", func(t *testing.T) {
+		pkgMock.ExpectQuery(matchPlainQuery.String()).
+			WithArgs("acc-3", testTenant, "prometheus", "agent").
+			WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+
+		exists, err := HasAccountSourceIntegration(ctxForTenant(t, testTenant), "acc-3", "prometheus", "agent")
+		require.NoError(t, err)
+		assert.True(t, exists)
+		assert.NoError(t, pkgMock.ExpectationsWereMet())
+	})
+}

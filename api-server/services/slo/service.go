@@ -301,9 +301,9 @@ func executeSlo(config DBSLOConfig, accountId string) ([]SLOReport, error) {
 		slog.Error("slo: failed to execute slo task", "error", err, "accountId", accountId)
 		return nil, err
 	}
-	if resp["status_code"] == 500 {
-		slog.Error("slo: failed to execute slo task", "error", resp["response"], "accountId", accountId)
-		return nil, fmt.Errorf("slo: failed to execute slo task error %s accountId %s ", resp["response"], accountId)
+	if replyErr := sloAgentReplyError(resp); replyErr != nil {
+		slog.Error("slo: failed to execute slo task", "error", replyErr, "accountId", accountId)
+		return nil, fmt.Errorf("slo: failed to execute slo task for account %s: %w", accountId, replyErr)
 	}
 	if resp["data"] == nil {
 		return nil, nil
@@ -322,6 +322,33 @@ func executeSlo(config DBSLOConfig, accountId string) ([]SLOReport, error) {
 		return nil, fmt.Errorf("slo: failed to unmarshal relay reports: %w", err)
 	}
 	return reports, nil
+}
+
+// sloAgentReplyError returns the failure an agent reported, or nil. The Go
+// k8s-agent answers a failed action with {"status_code": 5xx, "data": {"error":
+// "..."}} and a failed SLO run with {"data": {"success": false, "msg": "..."}}.
+// JSON numbers decode as float64, so the old `resp["status_code"] == 500` never
+// matched, and every agent failure was stored as "no reports" (#39800).
+func sloAgentReplyError(resp map[string]any) error {
+	data, _ := resp["data"].(map[string]any)
+	code, hasCode := resp["status_code"].(float64)
+	if msg, _ := data["error"].(string); msg != "" {
+		if hasCode {
+			return fmt.Errorf("agent returned an error (status %d): %s", int(code), msg)
+		}
+		return fmt.Errorf("agent returned an error: %s", msg)
+	}
+	if ok, isBool := data["success"].(bool); isBool && !ok {
+		msg, _ := data["msg"].(string)
+		if msg == "" {
+			msg = "no reason given"
+		}
+		return fmt.Errorf("agent could not run the SLO: %s", msg)
+	}
+	if hasCode && code >= 400 {
+		return fmt.Errorf("agent returned status %d", int(code))
+	}
+	return nil
 }
 
 func CreateOrUpdateSLOConfig(context *security.RequestContext, sloConfigRequest SLORequest) (map[string]bool, error) {

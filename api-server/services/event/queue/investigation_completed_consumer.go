@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +13,8 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/config"
 	"nudgebee/services/event/lifecycle"
+
+	"github.com/google/uuid"
 )
 
 // InvestigationCompletedEnvelope mirrors the shape llm-server's
@@ -116,6 +119,17 @@ func processInvestigationCompleted(msgCtx context.Context, data []byte) error {
 		return nil
 	}
 
+	// events.id is a uuid column, so any other value fails the lookup below the
+	// same way on every delivery. Reject it before the query rather than requeue
+	// it forever. Trimmed first, as loadEventMap trims the id it queries with, so
+	// the id validated here is the one the dedup key and the lookup use.
+	env.EventID = strings.TrimSpace(env.EventID)
+	if _, err := uuid.Parse(env.EventID); err != nil {
+		slog.Warn("investigation_completed_queue: envelope event_id is not a valid UUID, dropping",
+			"event_id", env.EventID, "account_id", env.AccountID)
+		return nil
+	}
+
 	logger := slog.Default().With("event_id", env.EventID, "account_id", env.AccountID)
 
 	// Idempotency: run the deferred processors at most once per event. The
@@ -138,13 +152,17 @@ func processInvestigationCompleted(msgCtx context.Context, data []byte) error {
 	ctx, eventMap, err := loadEventMapFn(msgCtx, env.EventID, logger)
 	if err != nil {
 		// Distinguish permanent from transient failures. A missing event
-		// (sql.ErrNoRows) is permanent — ACK so we don't requeue forever. Any
-		// other error (DB / network blip) is transient — return it so RabbitMQ
+		// (sql.ErrNoRows) or one that loaded but cannot be converted
+		// (errEventNotConvertible) is permanent — ACK so we don't requeue forever.
+		// Any other error (DB / network blip) is transient — return it so RabbitMQ
 		// redelivers and the lifecycle phase still fires once the event loads.
 		// Safe to requeue: the dedup marker is set only AFTER a successful emit
 		// below, so a retry here can never suppress the eventual successful run.
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil // Already logged; event does not exist
+		}
+		if errors.Is(err, errEventNotConvertible) {
+			return nil // Already logged; a retry would convert the same row
 		}
 		return err // Transient — requeue for retry
 	}

@@ -2416,12 +2416,14 @@ const apiRecommendations = {
     status = ['Open', 'InProgress'],
     limit = 10,
     offset = 0,
+    fetchTicket = false,
   }: {
     accountId: string | string[];
     ruleName: string;
     status?: string[];
     limit?: number;
     offset?: number;
+    fetchTicket?: boolean;
   }) {
     if (!ruleName || !accountId || accountId === 'demo') {
       return { rows: [], total: 0 };
@@ -2436,8 +2438,20 @@ const apiRecommendations = {
       limit,
       offset,
     });
+    const rows = response?.data?.data?.recommendation?.rows || [];
+    if (fetchTicket && rows.length > 0) {
+      const resourceIds = rows.map((item: any) => item.id);
+      const tickets: any = await ticketsApi.listTicketsSummary({ reference_id: resourceIds });
+      const ticketReferenceMap = new Map();
+      tickets?.data?.tickets?.forEach((element: any) => {
+        ticketReferenceMap.set(element.reference_id, element);
+      });
+      rows.forEach((item: any) => {
+        item.ticket = ticketReferenceMap.get(item.id);
+      });
+    }
     return {
-      rows: response?.data?.data?.recommendation?.rows || [],
+      rows,
       total: response?.data?.data?.recommendation_aggregate?.rows?.[0]?.count || 0,
     };
   },

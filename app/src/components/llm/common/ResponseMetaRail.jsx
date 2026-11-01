@@ -83,6 +83,8 @@ const COUNT_LABELS = {
   memories: ['memory', 'memories'],
   channels: ['channel', 'channels'],
   watches: ['watch', 'watches'],
+  approvals: ['approval', 'approvals'],
+  clarifications: ['clarification', 'clarifications'],
 };
 
 const countItem = (key, tone, count, onClick) => {
@@ -471,6 +473,17 @@ const buildItems = (props) => {
   if (props.contextCount > 0 && props.onOpenContexts) {
     items.push(countItem('contexts', 'agent', props.contextCount, props.onOpenContexts));
   }
+  // Approvals and clarifications the assistant asked for. Amber when one of them was
+  // denied, dismissed or left unanswered, so a reviewer sees that something did not
+  // go ahead without opening the drawer.
+  if (props.onOpenFollowups) {
+    ['approvals', 'clarifications'].forEach((key) => {
+      const kind = props.followups?.[key];
+      if (kind?.count > 0) {
+        items.push(countItem(key, kind.needsAttention ? 'warning' : 'neutral', kind.count, props.onOpenFollowups));
+      }
+    });
+  }
   if (props.memoryCount > 0 && props.onOpenMemories) {
     items.push(countItem('memories', 'savings', props.memoryCount, props.onOpenMemories));
   }
@@ -561,11 +574,13 @@ const ResponseMetaRail = ({
   memoryCount = 0,
   channelCount = 0,
   watchCount = 0,
+  followups,
   onOpenTasks,
   onOpenContexts,
   onOpenMemories,
   onOpenChannels,
   onOpenWatches,
+  onOpenFollowups,
   messageTokenData,
   onTokenUsageHover,
   isFetchingTokenData,
@@ -587,11 +602,13 @@ const ResponseMetaRail = ({
     memoryCount,
     channelCount,
     watchCount,
+    followups,
     onOpenTasks,
     onOpenContexts,
     onOpenMemories,
     onOpenChannels,
     onOpenWatches,
+    onOpenFollowups,
     messageTokenData,
     onTokenUsageHover,
     isFetchingTokenData,
@@ -648,11 +665,18 @@ ResponseMetaRail.propTypes = {
   memoryCount: PropTypes.number,
   channelCount: PropTypes.number,
   watchCount: PropTypes.number,
+  // Per-kind followup summary (summarizeFollowups): { approvals, clarifications },
+  // each { count, needsAttention }.
+  followups: PropTypes.shape({
+    approvals: PropTypes.shape({ count: PropTypes.number, needsAttention: PropTypes.bool }),
+    clarifications: PropTypes.shape({ count: PropTypes.number, needsAttention: PropTypes.bool }),
+  }),
   onOpenTasks: PropTypes.func,
   onOpenContexts: PropTypes.func,
   onOpenMemories: PropTypes.func,
   onOpenChannels: PropTypes.func,
   onOpenWatches: PropTypes.func,
+  onOpenFollowups: PropTypes.func,
   messageTokenData: PropTypes.any,
   onTokenUsageHover: PropTypes.func,
   isFetchingTokenData: PropTypes.bool,

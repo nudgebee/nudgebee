@@ -5,10 +5,12 @@ import (
 	"nudgebee/collector/cloud/providers"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	monitoring "cloud.google.com/go/monitoring/apiv3/v2"
 	"cloud.google.com/go/monitoring/apiv3/v2/monitoringpb"
+	"golang.org/x/sync/semaphore"
 	"google.golang.org/api/iterator"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -18,6 +20,13 @@ import (
 // like request_count can fan out across response-code classes and revisions; this keeps
 // one query from producing an oversized metrics evidence.
 const maxSeriesPerMetric = 40
+
+// metricQueryConcurrency bounds how many per-metric ListTimeSeries calls run in
+// parallel. A service like Cloud SQL can expose 200+ metric descriptors, and
+// querying them serially blows past the caller's 30s deadline. The monitoring
+// client is safe for concurrent use; this bound keeps the fan-out from opening
+// an unbounded number of gRPC streams.
+const metricQueryConcurrency = 10
 
 // gcloudServiceMetricsMap defines default metrics for each GCP service
 // This is used for auto-detection when MetricNames are not explicitly provided
@@ -333,45 +342,70 @@ func getGcloudMonitoringMetrics(ctx providers.CloudProviderContext, account prov
 		}
 	}
 
-	// If specific metric names are provided (or auto-detected), query each one
+	// If specific metric names are provided (or auto-detected), query each one.
+	// The per-metric ListTimeSeries calls run in parallel (bounded) rather than
+	// serially: a service like Cloud SQL can select 200+ metrics, and querying
+	// them one at a time blows past the caller's 30s deadline. Per-metric errors
+	// stay swallowed (logged + recorded), matching the previous behaviour.
 	if len(metricNames) > 0 {
+		var (
+			mu sync.Mutex
+			wg sync.WaitGroup
+		)
+		sem := semaphore.NewWeighted(metricQueryConcurrency)
+
 		for _, metricName := range metricNames {
-			// If the metric name is already a full metric type (e.g. from a GCP alert policy filter),
-			// use it directly instead of prepending the service prefix again.
-			metricType := metricName
-			if metricTypePrefix != "" && !strings.Contains(metricName, ".googleapis.com") {
-				metricType = fmt.Sprintf("%s/%s", metricTypePrefix, metricName)
+			if err := sem.Acquire(ctx.GetContext(), 1); err != nil {
+				// Context cancelled/timed out — stop scheduling and let in-flight
+				// queries drain via wg.Wait below.
+				ctx.GetLogger().Warn("failed to acquire metric query semaphore", "error", err)
+				break
 			}
+			wg.Add(1)
+			go func(metricName string) {
+				defer wg.Done()
+				defer sem.Release(1)
 
-			// Determine statistic to use for this metric
-			var statistic string
-			if len(filter.Statistics) > 0 {
-				statistic = filter.Statistics[0]
-			} else if defaultStat, ok := gcloudMetricsStatsMap[metricName]; ok {
-				statistic = defaultStat
-			} else {
-				statistic = "Average"
-			}
-
-			items, err := queryMetric(ctx, client, session.ProjectId, metricType, filter, startTime, endTime, step, statistic)
-			if err != nil {
-				errStr := err.Error()
-				_, _, _, isPermErr := IsGCPPermissionError(err)
-				// "code = NotFound" — metric type doesn't exist in this project (e.g. workload
-				// hasn't emitted it yet, or our default-metrics list is wider than what the
-				// project supports). "code = InvalidArgument" — filter+resource pair invalid
-				// for this metric. Both are project-config / data-shape conditions, not faults.
-				isMissingMetric := strings.Contains(errStr, "code = NotFound") || strings.Contains(errStr, "code = InvalidArgument")
-				if isPermErr || isMissingMetric || strings.Contains(errStr, "could not find default credentials") {
-					ctx.GetLogger().Warn("failed to query metric", "error", err, "metric", metricName)
-				} else {
-					ctx.GetLogger().Error("failed to query metric", "error", err, "metric", metricName)
+				// If the metric name is already a full metric type (e.g. from a GCP alert policy filter),
+				// use it directly instead of prepending the service prefix again.
+				metricType := metricName
+				if metricTypePrefix != "" && !strings.Contains(metricName, ".googleapis.com") {
+					metricType = fmt.Sprintf("%s/%s", metricTypePrefix, metricName)
 				}
-				RecordGCPPermissionError(ctx, err)
-				continue
-			}
-			metricItems = append(metricItems, items...)
+
+				// Determine statistic to use for this metric
+				var statistic string
+				if len(filter.Statistics) > 0 {
+					statistic = filter.Statistics[0]
+				} else if defaultStat, ok := gcloudMetricsStatsMap[metricName]; ok {
+					statistic = defaultStat
+				} else {
+					statistic = "Average"
+				}
+
+				items, err := queryMetric(ctx, client, session.ProjectId, metricType, filter, startTime, endTime, step, statistic)
+				if err != nil {
+					errStr := err.Error()
+					_, _, _, isPermErr := IsGCPPermissionError(err)
+					// "code = NotFound" — metric type doesn't exist in this project (e.g. workload
+					// hasn't emitted it yet, or our default-metrics list is wider than what the
+					// project supports). "code = InvalidArgument" — filter+resource pair invalid
+					// for this metric. Both are project-config / data-shape conditions, not faults.
+					isMissingMetric := strings.Contains(errStr, "code = NotFound") || strings.Contains(errStr, "code = InvalidArgument")
+					if isPermErr || isMissingMetric || strings.Contains(errStr, "could not find default credentials") {
+						ctx.GetLogger().Warn("failed to query metric", "error", err, "metric", metricName)
+					} else {
+						ctx.GetLogger().Error("failed to query metric", "error", err, "metric", metricName)
+					}
+					RecordGCPPermissionError(ctx, err)
+					return
+				}
+				mu.Lock()
+				metricItems = append(metricItems, items...)
+				mu.Unlock()
+			}(metricName)
 		}
+		wg.Wait()
 	} else {
 		// No metrics could be auto-detected, log warning
 		ctx.GetLogger().Warn("gcp:QueryMetrics no metrics available",

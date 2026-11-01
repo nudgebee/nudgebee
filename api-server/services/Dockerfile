@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM golang:1.26.6-alpine AS build-stage
+FROM ghcr.io/nudgebee/golang:1.26.10-alpine AS build-stage
 
 # Use the builder image's bundled Go toolchain, never an auto-downloaded one.
 # Pins the compile to the base's Go and gives the build layer a distinct cache
@@ -28,14 +28,16 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 EXPOSE 8000
 CMD ["/app/services"]
 
-FROM ghcr.io/nudgebee/alpine:3.22 AS release-stage
+FROM ghcr.io/nudgebee/alpine:3.23 AS release-stage
 # OS-package cache-bust: bumping OS_PKG_EPOCH (ISO week) changes this layer's
 # cache key so BuildKit re-runs the apk install and pulls current Alpine security
 # patches — its registry cache (mode=max) otherwise serves a stale package layer
 # forever. Committed here (not a build-arg) so each refresh is a reviewable,
 # revertable diff; bump it when the Trivy scan flags a stale package (e.g. c-ares
-# CVE-2026-33630); currently W36 pulls patched packages (libcrypto3 3.5.8-r0).
-ARG OS_PKG_EPOCH=2026-W36
+# CVE-2026-33630).
+# Currently W44 pulls ca-certificates 20261020, which drops the distrusted
+# emSign ECC Root CA - G3.
+ARG OS_PKG_EPOCH=2026-W44
 RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
     && apk upgrade --no-cache \
     && apk add --no-cache git graphviz ca-certificates \

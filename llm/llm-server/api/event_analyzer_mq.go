@@ -254,6 +254,13 @@ func processTroubleshootingEventFromMqWithRegister(msgCtx context.Context, data 
 		skipPublish = true
 		return fmt.Errorf("eventasync: security context initialization failed for account %s", eventAnalysisRequest.AccountId)
 	}
+	// Set on the request itself so the pipeline's per-stage caches below skip
+	// the related event's results too, not just the claim.
+	settingsRepo := events.NewEventAnalysisRepositoryForAccount(ctx, dbManager, eventAnalysisRequest.AccountId)
+	forcedFresh := !eventAnalysisRequest.Regenerate && shouldForceFreshAnalysis(ctx, settingsRepo, eventAnalysisRequest.EventId, eventAnalysisRequest.AccountId)
+	if forcedFresh {
+		eventAnalysisRequest.Regenerate = true
+	}
 	response, err = getOrCreateEventAnalysisStatus(ctx, eventAnalysisRequest, dbManager, true)
 	if err != nil {
 		ctx.GetLogger().Error("eventasync: unable to get or create event analysis status", "error", err)
@@ -268,6 +275,9 @@ func processTroubleshootingEventFromMqWithRegister(msgCtx context.Context, data 
 		// Requeue so transient failures cannot acknowledge away the request.
 		skipPublish = true
 		return fmt.Errorf("eventasync: analysis status init failed: %w", err)
+	}
+	if forcedFresh && strings.EqualFold(response.Status, string(events.AnalysisStatusCreated)) {
+		bindStagesToEvent(ctx, settingsRepo, eventAnalysisRequest.EventId, response.EventFingerprint, eventAnalysisRequest.AccountId, response.EventAggregationKey)
 	}
 
 	if strings.EqualFold(response.Status, string(events.AnalysisStatusCompleted)) {

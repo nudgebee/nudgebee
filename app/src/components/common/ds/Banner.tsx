@@ -26,16 +26,19 @@
 import * as React from 'react';
 import { Box, ButtonBase } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
+import { Button } from './Button';
 import { FEEDBACK_TONES, feedbackRole, resolveFeedbackTone, type FeedbackTone } from './internal/feedbackTones';
 
 export type BannerTone = FeedbackTone;
 export type BannerSurface = 'page' | 'section';
 
 export interface BannerAction {
+  /** Rendered as the button's `id` and `data-testid`, for automation. */
+  id?: string;
   label: React.ReactNode;
   onClick: () => void;
-  /** `link` renders as a borderless text button. Default is secondary-style button. */
-  tone?: 'secondary' | 'link';
+  /** `link` renders as a borderless text button; `primary` is for the banner's one main CTA. Default is a secondary DS `Button`. */
+  tone?: 'primary' | 'secondary' | 'link';
 }
 
 export type BannerActionsPlacement = 'inline' | 'below';
@@ -109,40 +112,16 @@ export function Banner({
         }}
       >
         {actions.map((a, i) => (
-          <ButtonBase
-            key={i}
-            type='button'
-            onClick={a.onClick}
-            sx={
-              a.tone === 'link'
-                ? {
-                    fontSize: 'var(--ds-text-small)',
-                    fontWeight: 'var(--ds-font-weight-medium)',
-                    color: TITLE_COLOR,
-                    textDecoration: 'underline',
-                    padding: 0,
-                    '&:hover': { textDecoration: 'none' },
-                    '&.Mui-focusVisible': { outline: '2px solid var(--ds-blue-500)', outlineOffset: '2px' },
-                  }
-                : {
-                    height: '24px',
-                    padding: '0 10px',
-                    fontSize: 'var(--ds-text-caption)',
-                    fontWeight: 'var(--ds-font-weight-medium)',
-                    color: TITLE_COLOR,
-                    backgroundColor: 'var(--ds-background-100)',
-                    border: `1px solid ${cfg.border}`,
-                    borderRadius: 'var(--ds-radius-sm)',
-                    '&:hover': { backgroundColor: 'var(--ds-background-200)' },
-                    '&.Mui-focusVisible': { outline: '2px solid var(--ds-blue-500)', outlineOffset: '1px' },
-                  }
-            }
-          >
+          <Button key={i} id={a.id} data-testid={a.id} size='xs' tone={a.tone ?? 'secondary'} onClick={a.onClick}>
             {a.label}
-          </ButtonBase>
+          </Button>
         ))}
       </Box>
     ) : null;
+
+  // Inline actions must not crush the message on a narrow bar: give the content a
+  // basis and let the row wrap, so the actions drop to their own line instead.
+  const wrapsInlineActions = !!actionsNode && actionsPlacement === 'inline';
 
   return (
     <Box
@@ -151,6 +130,7 @@ export function Banner({
       role={role}
       sx={{
         display: 'flex',
+        ...(wrapsInlineActions ? { flexWrap: 'wrap' } : null),
         gap: 'var(--ds-space-3)',
         padding: surf.padding,
         backgroundColor: cfg.bg,
@@ -160,7 +140,7 @@ export function Banner({
       }}
     >
       <Box component={Icon as React.ElementType} aria-hidden='true' sx={{ fontSize: 18, color: cfg.iconColor, flexShrink: 0 }} />
-      <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
+      <Box sx={{ flex: wrapsInlineActions ? '1 1 240px' : 1, display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
         {title && (
           <Box
             component='div'

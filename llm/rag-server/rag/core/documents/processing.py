@@ -8,10 +8,12 @@ import asyncio
 import copy
 import gc
 import hashlib
+import json
 import logging
 import os
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
 
 from botocore.exceptions import ClientError
@@ -511,6 +513,509 @@ def _split_on_paragraphs(text, limit, overlap):
     return chunks or [text[:limit]]
 
 
+_KB_CHUNK_SHAPES = frozenset(
+    {
+        "deterministic_procedure",
+        "decision_tree",
+        "narrative_reference",
+        "ui_walkthrough_business_app",
+        "credential_access_procedure",
+    }
+)
+
+# Every shape except narrative_reference has steps to follow — that's the
+# sop/knowledge split the KB capability catalog is keyed on (see the
+# llm_kb_capability_entries migration comment). Coarser than `shape`, but
+# it's the field worth filtering RAG search results on directly.
+_PROCEDURAL_KB_SHAPES = _KB_CHUNK_SHAPES - {"narrative_reference"}
+
+_KB_METADATA_EXTRACTION_PROMPT = """Classify the overall shape of the following document, and identify which \
+capabilities (if any) it references. A long document is shown as excerpts separated by "[...]"; classify \
+the document as a whole.
+
+Shape must be exactly one of:
+- deterministic_procedure: numbered/ordered steps, each with a clear action verb and object
+- decision_tree: explicit branches or conditions ("if X, do A; if Y, do B")
+- narrative_reference: prose or background information with no imperative steps to follow
+- ui_walkthrough_business_app: steps that involve logging into a named business application (CRM, \
+billing, ticketing UI) to view customer-specific data
+- credential_access_procedure: steps that exist only to establish an interactive, credentialed session \
+(VPN+SSH, a web-app login, a DB client connection) rather than to diagnose or decide anything
+{capability_section}
+Respond with ONLY a JSON object of this exact shape, nothing else:
+{{"shape": "<one of the shapes above>", "capabilities": [<capability names, or empty list>]}}
+
+Document:
+{content}"""
+
+_CAPABILITY_SECTION_TEMPLATE = """
+Capabilities referenced must be copied EXACTLY, verbatim, from this list — never invent a name that isn't here. \
+If none of these apply, use an empty list:
+{capability_names}
+"""
+
+# Bounds how many documents are classified concurrently per process_documents
+# call — keeps ingestion off the sequential-call path without opening an
+# unbounded number of provider connections at once.
+_KB_METADATA_MAX_WORKERS = 5
+
+# What the classifier is shown of one document. Over the cap, the document is
+# represented by evenly spaced windows across its whole length (see
+# _sample_for_classification) rather than its head.
+_KB_CLASSIFY_MAX_CHARS = 12000
+_KB_CLASSIFY_WINDOWS = 4
+_KB_EXCERPT_SEPARATOR = "\n[...]\n"
+
+
+def _extract_json_object(text):
+    """Extract a JSON object from a response that may carry junk around it.
+
+    Despite being told to respond with "ONLY a JSON object", real responses
+    observed from this exact prompt have included a ```json fence and, in a
+    separate case, a leading "---\\n\\n" separator before the object — two
+    different quirks, so this takes the fully general approach (first '{' to
+    last '}') rather than pattern-matching each preamble style as it's found.
+    """
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        return text
+    return text[start : end + 1]
+
+
+def _sample_for_classification(text):
+    """The text a document is classified by. Anything over
+    _KB_CLASSIFY_MAX_CHARS is represented by evenly spaced windows across its
+    whole length instead of its head: a long runbook often opens with an
+    overview or table of contents, and classifying from the head alone would
+    label the procedural pages after it as reference material.
+    """
+    if len(text) <= _KB_CLASSIFY_MAX_CHARS:
+        return text
+    window = _KB_CLASSIFY_MAX_CHARS // _KB_CLASSIFY_WINDOWS
+    last_start = len(text) - window
+    starts = [i * last_start // (_KB_CLASSIFY_WINDOWS - 1) for i in range(_KB_CLASSIFY_WINDOWS)]
+    return _KB_EXCERPT_SEPARATOR.join(text[s : s + window] for s in starts)
+
+
+def _document_text(group):
+    return "\n\n".join(doc.page_content or "" for doc in group)
+
+
+def _content_id(doc):
+    """The id _generate_document_ids gives (or already gave) this document."""
+    return getattr(doc, "id", None) or hashlib.md5(doc.page_content.encode()).hexdigest()
+
+
+def _group_chunk_ids(group):
+    """Normalised ids of every chunk a source document will be split into."""
+    return {_normalize_point_id(_content_id(chunk)) for doc in group for chunk in _chunk_long_documents([doc])}
+
+
+def _unclassified_groups(groups, classified_ids):
+    """The groups still worth an LLM call: those with at least one chunk whose
+    stored point carries no classification. A source document whose every chunk
+    is already labelled is unchanged content on a re-sync — its chunks are
+    skipped by the existence probe in process_all_batches, so reclassifying it
+    would only spend money on a fresh, non-deterministic answer.
+    """
+    return [group for group in groups if not _group_chunk_ids(group) <= classified_ids]
+
+
+def _classify_source_documents(groups, account_id, collection_name):
+    """Classify each source document once and stamp the result onto every
+    Document in its group — the labels then reach every chunk, because
+    _chunk_long_documents copies a document's metadata onto its chunks. Per the
+    SOP/runbook agentification design ("sop runbook agentification overview.md"
+    §5, L0: doc -> shape) the unit is the source document, not the ~400-char
+    fragment a chunk is: a fragment can't reveal whether a procedure is a
+    decision tree or a narrative.
+
+    `groups` is a list of lists: each inner list is ONE source document, given
+    as the Documents that make up its text (usually one; a manual upload that
+    was pre-split into lines or PDF chunks arrives as several).
+
+    Classification is the derived sop/knowledge `kind` plus the real platform
+    capabilities the document references, grounded against
+    get_capability_catalog() (utils/db_query.py) — the shared table llm-server
+    keeps in sync with its real tool/task registries. Every name the model
+    returns is checked against that real list; anything not found is dropped,
+    never trusted. An empty/unreachable catalog means capability extraction is
+    skipped entirely (the prompt omits the capability section) rather than
+    asking the model to guess against nothing.
+
+    Best-effort, all-or-nothing per document: a classification failure, an
+    unresolvable LLM provider, or a malformed/out-of-enum response leaves that
+    document's chunks unclassified rather than storing anything unvalidated or
+    failing the whole ingest. Nothing here retries; the next ingest or the
+    startup backfill (kb_capability_backfill.py) picks the document up again.
+
+    Callers decide what a source document is and whether the account may be
+    classified at all (see _classify_kb_source_documents). A falsy account_id
+    skips everything: there is no LLM provider to resolve without one.
+
+    Returns how many documents were actually sent to the LLM (0 when nothing
+    was: no account, no groups, or no resolvable provider), so a caller that
+    budgets LLM calls only charges for ones that were made.
+    """
+    if not account_id:
+        return 0
+    # A document with no text has nothing to classify; a blank page would only
+    # spend a call to be told so, on every sync.
+    groups = [group for group in groups if _document_text(group).strip()]
+    if not groups:
+        return 0
+    try:
+        from rag.core.embeddings.generator import get_llm
+
+        llm = get_llm(account_id)
+    except Exception:
+        logger.exception(f"kb_metadata: failed to resolve LLM provider for account {account_id}, skipping")
+        return 0
+
+    from rag.core.utils.db_query import get_capability_catalog
+
+    valid_capabilities = {entry["name"] for entry in get_capability_catalog()}
+    capability_section = ""
+    if valid_capabilities:
+        capability_section = _CAPABILITY_SECTION_TEMPLATE.format(
+            capability_names="\n".join(f"- {name}" for name in sorted(valid_capabilities))
+        )
+
+    # Each call is one independent, I/O-bound LLM round-trip. Bounded
+    # concurrency keeps this off any single request path while capping how many
+    # calls hit the provider at once.
+    batch_start = time.monotonic()
+    with ThreadPoolExecutor(max_workers=_KB_METADATA_MAX_WORKERS) as executor:
+        futures = [
+            executor.submit(_classify_document_group, group, llm, capability_section, valid_capabilities)
+            for group in groups
+        ]
+        results = [future.result() for future in futures]
+    batch_duration = time.monotonic() - batch_start
+
+    total_input_tokens = sum(r["input_tokens"] for r in results)
+    total_output_tokens = sum(r["output_tokens"] for r in results)
+    total_tokens = total_input_tokens + total_output_tokens
+    succeeded = sum(1 for r in results if r["success"])
+    failed = len(results) - succeeded
+    logger.info(
+        f"kb_metadata: classified {succeeded}/{len(results)} document(s) in {batch_duration:.2f}s wall-clock "
+        f"({_KB_METADATA_MAX_WORKERS} workers) — tokens: input={total_input_tokens} output={total_output_tokens} "
+        f"total={total_tokens}"
+    )
+
+    from rag.core.embeddings.tracker import persist_kb_classification_usage
+    from utils.shared import get_provider_name
+
+    persist_kb_classification_usage(
+        account_id=account_id,
+        collection_name=collection_name,
+        provider=get_provider_name(type(llm).__name__),
+        model=getattr(llm, "model", "") or "",
+        total_tokens=total_tokens,
+        document_count=len(results),
+        duration_seconds=batch_duration,
+        status="success" if failed == 0 else "partial",
+        error_message=None if failed == 0 else f"{failed} of {len(results)} document(s) failed to classify",
+    )
+    return len(results)
+
+
+def _classify_document_group(group, llm, capability_section, valid_capabilities):
+    """Classify one source document and stamp its labels onto every Document in
+    the group. Split out of _classify_source_documents so each document's LLM
+    call can run on its own worker thread; errors are caught here so one
+    failure never cancels the others' already-submitted work.
+
+    Returns a per-call stats dict (duration_seconds, input_tokens,
+    output_tokens, success) rather than persisting anything itself — the
+    caller aggregates every document's stats into one usage row per call.
+    """
+    raw = None
+    call_start = time.monotonic()
+    stats = {"duration_seconds": 0.0, "input_tokens": 0, "output_tokens": 0, "success": False}
+    try:
+        prompt = _KB_METADATA_EXTRACTION_PROMPT.format(
+            capability_section=capability_section, content=_sample_for_classification(_document_text(group))
+        )
+        result = llm.generate(prompt)
+        stats["input_tokens"] = result.input_tokens or 0
+        stats["output_tokens"] = result.output_tokens or 0
+        raw = result.text.strip()
+        parsed = json.loads(_extract_json_object(raw))
+        shape = str(parsed.get("shape", "")).strip().lower()
+        capabilities = parsed.get("capabilities", [])
+    except Exception:
+        stats["duration_seconds"] = time.monotonic() - call_start
+        # Log the raw response, not just the traceback: a JSONDecodeError
+        # alone doesn't say whether the model returned nothing, prose, or
+        # markdown-fenced JSON — without this a parse failure is a black
+        # box with no way to tell which.
+        logger.exception(
+            f"kb_metadata: document classification call failed after {stats['duration_seconds']:.2f}s, "
+            f"leaving document unclassified; raw response: {raw!r:.500}"
+        )
+        return stats
+
+    stats["duration_seconds"] = time.monotonic() - call_start
+    stats["success"] = True
+
+    labels = {}
+    if shape in _KB_CHUNK_SHAPES:
+        labels["shape"] = shape
+        labels["kind"] = "sop" if shape in _PROCEDURAL_KB_SHAPES else "knowledge"
+    else:
+        logger.warning(f"kb_metadata: model returned an unrecognized shape {shape!r}, leaving document unclassified")
+
+    if labels:
+        confirmed = []
+        if isinstance(capabilities, list):
+            confirmed = [c for c in capabilities if c in valid_capabilities]
+            dropped = [c for c in capabilities if c not in valid_capabilities]
+            if dropped:
+                logger.warning(
+                    f"kb_metadata: dropped {len(dropped)} capability name(s) not in the real catalog: {dropped}"
+                )
+        labels["capabilities"] = confirmed
+        for doc in group:
+            if doc.metadata is None:
+                doc.metadata = {}
+            doc.metadata.update(copy.deepcopy(labels))
+
+    logger.info(
+        f"kb_metadata: classified document in {stats['duration_seconds']:.2f}s "
+        f"(input_tokens={stats['input_tokens']}, output_tokens={stats['output_tokens']}, shape={shape!r}, "
+        f"pieces={len(group)})"
+    )
+    return stats
+
+
+# The labels a classified chunk carries under its vector payload's `metadata`
+# (what RAG's metadata_filter matches at query time), and the kinds that make a
+# chunk count as classified.
+KB_LABEL_KEYS = ("kind", "shape", "capabilities")
+_KB_KINDS = ("sop", "knowledge")
+_LABEL_PAYLOAD_KEYS = [f"metadata.{key}" for key in KB_LABEL_KEYS]
+_LABEL_WRITE_BATCH = 500
+_SUMMARY_SCROLL_BATCH = 1000
+
+
+def _point_id(chunk_id):
+    """The canonical UUID form Qdrant returns for a chunk's bare-hex id."""
+    try:
+        return str(uuid.UUID(str(chunk_id)))
+    except ValueError:
+        return str(chunk_id)
+
+
+def _classified_labels(collection_name, ids):
+    """{normalised chunk id: labels} for the chunks of `ids` that are stored in
+    the collection WITH a classification. This is the one and only "already
+    classified" marker: the labels live on the chunk's own vector payload, so a
+    chunk that was never stored, or was re-upserted without its labels, is
+    simply not in the answer and gets classified again. A missing collection is
+    an empty answer; any other error is raised for the caller to decide.
+    """
+    if not ids:
+        return {}
+    client = get_qdrant_client()
+    if not client.collection_exists(collection_name):
+        return {}
+    ids = list(ids)
+    labels = {}
+    for start in range(0, len(ids), _EXISTENCE_PROBE_CHUNK):
+        found = client.retrieve(
+            collection_name=collection_name,
+            ids=ids[start : start + _EXISTENCE_PROBE_CHUNK],
+            with_payload=_LABEL_PAYLOAD_KEYS,
+            with_vectors=False,
+        )
+        for point in found:
+            metadata = (point.payload or {}).get("metadata") or {}
+            if metadata.get("kind") in _KB_KINDS:
+                labels[_normalize_point_id(point.id)] = {k: metadata[k] for k in KB_LABEL_KEYS if k in metadata}
+    return labels
+
+
+def _classify_kb_source_documents(documents, module, account_id, collection_name, whole_call_is_one_document):
+    """Run the document-level classification for one process_documents call and
+    return the labels the collection already stores for these chunks
+    ({normalised chunk id: labels}), so the caller can carry them onto chunks
+    this run did not classify.
+
+    Only knowledge-base ingests are classified: process_documents is also the
+    entry point for unrelated loaders (observability, database, account) that
+    pass a real account_id, and classifying their content would spend LLM calls
+    on things that are not knowledge-base documents.
+
+    A manual upload (`whole_call_is_one_document`, i.e. it carries a
+    knowledgebase_id) is ONE document however its loader split it — into lines,
+    records or PDF chunks — so the whole list is classified together. Anything
+    else (Confluence pages, ServiceNow articles) is a list of independent
+    documents, each classified on its own.
+
+    Known gap: the Confluence and ServiceNow scrapers pass a tenant_id and no
+    account_id, and an LLM provider cannot be resolved without one, so nothing
+    is classified for them here — integration KBs are labelled only by the
+    startup backfill until the scrapers resolve an account to classify with. The
+    stored labels are still read, so a sync never strips the backfill's labels.
+    """
+    if module != "knowledge_base":
+        return {}
+    groups = [documents] if whole_call_is_one_document else [[doc] for doc in documents]
+    ids = set().union(*(_group_chunk_ids(group) for group in groups)) if groups else set()
+    try:
+        stored_labels = _classified_labels(collection_name, ids)
+    except Exception:
+        # Fail open: at worst everything is classified again.
+        logger.exception(f"kb_metadata: could not read the stored classifications of {collection_name}")
+        stored_labels = {}
+    if account_id:
+        _classify_source_documents(_unclassified_groups(groups, stored_labels.keys()), account_id, collection_name)
+    return stored_labels
+
+
+def _carry_over_labels(documents, stored_labels):
+    """Put a chunk's stored labels back on it when this run did not classify it.
+
+    An upsert replaces a point's whole payload with the document's metadata, so
+    any path that re-embeds an already-classified chunk (the existence probe
+    failing open, a metadata-cache miss turning verification off, an integration
+    sync that classifies nothing) would silently strip its labels. Re-stamping
+    them makes every upsert label-preserving.
+    """
+    if not stored_labels:
+        return
+    for doc in documents:
+        if doc.metadata and "kind" in doc.metadata:
+            continue
+        stored = stored_labels.get(_normalize_point_id(_content_id(doc)))
+        if stored:
+            if doc.metadata is None:
+                doc.metadata = {}
+            doc.metadata.update(copy.deepcopy(stored))
+
+
+def _stored_point_ids(collection_name, ids):
+    """Normalised ids of `ids` already stored in the collection. Empty when the
+    collection does not exist yet (a first load creates it later) or when the
+    probe fails: the caller only uses this to decide which chunks need their
+    payload updated in place, and updating nothing is always safe — an unlabelled
+    chunk is classified again on the next run."""
+    if not ids:
+        return frozenset()
+    try:
+        if not get_qdrant_client().collection_exists(collection_name):
+            return frozenset()
+        return frozenset(_existing_point_ids(collection_name, list(ids)))
+    except Exception:
+        logger.exception(f"kb_metadata: could not tell which chunks are already stored in {collection_name}")
+        return frozenset()
+
+
+def _write_label_batch(client, collection_name, labels, point_ids):
+    """Label one batch of already-stored chunks in place. Each batch is its own
+    unit: a request Qdrant rejects (one id in it was pruned in the meantime makes
+    the whole request a 404) must not stop the batches after it. If the write
+    fails, the chunks would still carry whatever label they had before and count
+    as classified, so a document that was just re-classified would keep a mix of
+    old and new labels for good; dropping their `kind` makes them unclassified
+    again, which is what gets their document classified on the next run.
+    """
+    try:
+        client.set_payload(collection_name=collection_name, payload=labels, points=point_ids, key="metadata", wait=True)
+    except Exception:
+        logger.exception(f"kb_metadata: could not label {len(point_ids)} already-stored chunk(s) of {collection_name}")
+        try:
+            client.delete_payload(collection_name=collection_name, keys=["metadata.kind"], points=point_ids, wait=True)
+        except Exception:
+            logger.exception(f"kb_metadata: could not clear the stale kind of those chunks in {collection_name}")
+
+
+def _publish_kb_labels(fresh, collection_name, stored_before):
+    """After the embed step: make the labels this run computed real, then refresh
+    the collection's rollup.
+
+    The embed step skips a chunk that is already stored, so the payload of one
+    that pre-dates this run — embedded unlabelled after an earlier classification
+    failure, or carrying the labels of an older version of its document — never
+    receives the labels just computed for it. They are written in place here, so
+    a re-classified document ends up with one consistent classification on all of
+    its chunks. Chunks embedded by this run already carry theirs.
+
+    Best-effort, and a failure never leaves a stale label counted as classified
+    (see _write_label_batch).
+    """
+    if not fresh:
+        return
+    by_labels = {}
+    for doc in fresh:
+        chunk_id = _normalize_point_id(_content_id(doc))
+        if chunk_id in stored_before:
+            labels = {key: doc.metadata[key] for key in KB_LABEL_KEYS if key in doc.metadata}
+            by_labels.setdefault(json.dumps(labels, sort_keys=True), (labels, []))[1].append(_point_id(chunk_id))
+    if by_labels:
+        try:
+            client = get_qdrant_client()
+            for labels, point_ids in by_labels.values():
+                for start in range(0, len(point_ids), _LABEL_WRITE_BATCH):
+                    _write_label_batch(client, collection_name, labels, point_ids[start : start + _LABEL_WRITE_BATCH])
+        except Exception:
+            logger.exception(f"kb_metadata: could not label the already-stored chunks of {collection_name}")
+    refresh_kb_collection_summary(collection_name)
+
+
+def refresh_kb_collection_summary(collection_name):
+    """Recompute a collection's rollup row of llm_kb_capability_entries — every
+    kind, shape and capability its labelled chunks carry — from the labels in its
+    vector payload, which is the source of truth. The row is only what the
+    Knowledge Base tab reads; nothing decides from it whether a chunk is
+    classified.
+
+    Called after ingest labels chunks, after a prune removes some, and by the
+    backfill. Best-effort: a failure is logged and leaves the previous row, which
+    is stale, never wrong about what is classified.
+    """
+    try:
+        client = get_qdrant_client()
+        kinds, shapes, capabilities = set(), set(), set()
+        offset = None
+        while True:
+            batch, offset = client.scroll(
+                collection_name=collection_name,
+                limit=_SUMMARY_SCROLL_BATCH,
+                offset=offset,
+                with_payload=_LABEL_PAYLOAD_KEYS,
+                with_vectors=False,
+            )
+            for point in batch:
+                metadata = (point.payload or {}).get("metadata") or {}
+                if metadata.get("kind") not in _KB_KINDS:
+                    continue
+                kinds.add(metadata["kind"])
+                shape = metadata.get("shape")
+                if isinstance(shape, str) and shape in _KB_CHUNK_SHAPES:
+                    shapes.add(shape)
+                if isinstance(metadata.get("capabilities"), list):
+                    capabilities.update(c for c in metadata["capabilities"] if isinstance(c, str))
+            if offset is None or not batch:
+                break
+
+        from rag.core.utils.db_query import set_kb_collection_summary
+
+        set_kb_collection_summary(collection_name, sorted(kinds), sorted(shapes), sorted(capabilities))
+    except Exception:
+        logger.exception(f"kb_metadata: could not refresh the classification summary of {collection_name}")
+
+
+def _forget_kb_collection_summary(collection_name):
+    """Drop a deleted collection's rollup row (best-effort, like every write to it)."""
+    from rag.core.utils.db_query import delete_kb_capabilities
+
+    delete_kb_capabilities(collection_name)
+
+
 def _stamp_provenance(documents, source=None, tenant_id=None):
     """Stamp provenance tags onto each document's metadata so per-source and
     per-tenant filters work at query time. Respects caller overrides.
@@ -572,11 +1077,13 @@ def _setup_collection(account_id, module, collection_name, source=None, tenant_i
                 else:
                     client = get_qdrant_client()
                     client.delete_collection(collection_name)
+                    _forget_kb_collection_summary(collection_name)
                     logger.info(f"Deleted collection: {collection_name}")
             else:
                 logger.info("Collection metadata is empty. Deleting the existing collection before proceeding.")
                 client = get_qdrant_client()
                 client.delete_collection(collection_name)
+                _forget_kb_collection_summary(collection_name)
                 logger.info(f"Deleted collection: {collection_name}")
         else:
             # Collection doesn't exist in cache
@@ -688,7 +1195,28 @@ def process_documents(
     # was submitted for embedding — mixing a source count into that pair makes the
     # history render "8 / 1" and claim a completed load dropped seven documents.
     submitted_document_count = len(documents)
+    # Classification runs on the source documents, BEFORE chunking, so a
+    # document's labels ride onto each of its chunks through the metadata copy
+    # _chunk_long_documents makes. Only a manual upload passes a
+    # knowledgebase_id, and it is one document however its loader split it
+    # (lines, records, PDF chunks); everything else is a list of independent
+    # documents.
+    stored_labels = _classify_kb_source_documents(
+        documents, module, account_id, collection_name, whole_call_is_one_document=bool(knowledgebase_id)
+    )
+    # Chunk ids hash page_content only, so the labels stamped above cannot
+    # change them.
     documents = _chunk_long_documents(documents)
+    # The chunks this run classified, before stored labels are carried onto the
+    # rest (see _carry_over_labels).
+    # Knowledge-base ingests only: other loaders stamp their own `kind` (memory records do), and
+    # publishing those would scroll a whole collection to refresh a rollup for every write.
+    fresh_labels = (
+        [doc for doc in documents if doc.metadata and doc.metadata.get("kind") in _KB_KINDS]
+        if module == "knowledge_base"
+        else []
+    )
+    _carry_over_labels(documents, stored_labels)
 
     # Initialize tracker with load metadata
     tracker = EmbeddingTracker(
@@ -705,6 +1233,9 @@ def process_documents(
 
     # Generate document IDs
     documents_id = _generate_document_ids(documents)
+    # Which freshly labelled chunks are already stored, before the embed step
+    # runs: it skips those, so their payload has to be labelled in place after.
+    stored_before = _stored_point_ids(collection_name, [_content_id(doc) for doc in fresh_labels])
 
     # Process documents
     logger.info(f"Processing documents for account id {account_id}, module {module}, collection {collection_name}")
@@ -731,6 +1262,7 @@ def process_documents(
 
         process_duration = time.time() - process_start_time
         logger.info(f"Document processing completed successfully in {process_duration:.2f}s")
+        _publish_kb_labels(fresh_labels, collection_name, stored_before)
     except RuntimeError as e:
         logger.error(f"Error running event loop: {e}")
         tracker.persist(status="failure", error_message=str(e))
@@ -941,6 +1473,14 @@ def handle_updated_documents(collection_name, documents_id) -> bool:
         for missing_id in missing_ids:
             if _delete_document(client, missing_id, collection_name):
                 is_documents_updated = True
+
+        if is_documents_updated:
+            # A prune only ever removes chunks, so a collection with no rollup
+            # row has nothing to correct.
+            from rag.core.utils.db_query import has_kb_collection_summary
+
+            if has_kb_collection_summary(collection_name):
+                refresh_kb_collection_summary(collection_name)
 
         gc.collect()
 

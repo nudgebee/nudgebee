@@ -1,5 +1,6 @@
 import KnowledgeGraphMap from '@components/k8s/details/KnowledgeGraphMap';
 import ServiceMapIcon from '@assets/kubernetes/monitoring/service-map-icon.icon.svg';
+import { summarizeDependencies } from './cardSummaries';
 
 class KnowledgeGraphCard {
   constructor(evidenceData, event, index) {
@@ -30,7 +31,9 @@ class KnowledgeGraphCard {
       this.kgNodes = nodes;
       this.kgEdges = Array.isArray(edges) ? edges : [];
       this.targetService = ev?.target_service || this.event?.subject_owner || '';
-      this.insightData = ev?.insight || [];
+      // The server's own summary of the graph is not stored with this evidence, so it is read off
+      // the graph here.
+      this.insightData = ev?.insight?.length > 0 ? ev.insight : summarizeDependencies(this.kgNodes, this.kgEdges, this.targetService);
       this.renderContent = true;
       return true;
     } catch (error) {

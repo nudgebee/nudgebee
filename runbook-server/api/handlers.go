@@ -942,7 +942,10 @@ func (s *Server) validateWorkflow(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "workflow is valid"})
+	// Warnings do not fail validation: they flag steps that save and may even
+	// run, but not as the author expects. The automation builder fixes every
+	// code it knows before finishing.
+	c.JSON(http.StatusOK, gin.H{"message": "workflow is valid", "warnings": workflow.LintDefinition(wf.Definition.Tasks)})
 }
 
 func (s *Server) dryRunWorkflow(c *gin.Context) {

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -931,4 +932,43 @@ func TestProcessMessages_SystemPromptShape(t *testing.T) {
 	system, _, err = processMessages([]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "hi")})
 	require.NoError(t, err)
 	assert.Nil(t, system)
+}
+
+// A 1-hour cache marker goes out as ttl "1h"; the default marker has no ttl.
+// Anthropic's per-TTL write split comes back in GenerationInfo for pricing.
+func TestAnthropicLLM_GenerateContent_CacheTTL(t *testing.T) {
+	var capturedBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{"id":"m","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],
+			"usage":{"input_tokens":2,"output_tokens":1,"cache_creation_input_tokens":700,
+			"cache_creation":{"ephemeral_5m_input_tokens":100,"ephemeral_1h_input_tokens":600}}}`))
+	}))
+	defer server.Close()
+
+	llm, err := New(WithToken("t"), WithModel("claude-sonnet-5-5"), WithBaseURL(server.URL), WithHTTPClient(server.Client()))
+	require.NoError(t, err)
+
+	resp, err := llm.GenerateContent(context.Background(), []llms.MessageContent{
+		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{
+			llms.WithCacheControl(llms.TextContent{Text: "system"}, &llms.CacheControl{Type: "ephemeral", Duration: time.Hour}),
+		}},
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{
+			llms.WithCacheControl(llms.TextContent{Text: "question"}, &llms.CacheControl{Type: "ephemeral"}),
+		}},
+	})
+	require.NoError(t, err)
+
+	var body struct {
+		System   []map[string]any `json:"system"`
+		Messages []struct {
+			Content []map[string]any `json:"content"`
+		} `json:"messages"`
+	}
+	require.NoError(t, json.Unmarshal(capturedBody, &body), string(capturedBody))
+	assert.Equal(t, map[string]any{"type": "ephemeral", "ttl": "1h"}, body.System[0]["cache_control"])
+	assert.Equal(t, map[string]any{"type": "ephemeral"}, body.Messages[0].Content[0]["cache_control"])
+
+	assert.Equal(t, 700, resp.Choices[0].GenerationInfo["CacheCreationInputTokens"])
+	assert.Equal(t, 600, resp.Choices[0].GenerationInfo["CacheCreation1hInputTokens"])
 }

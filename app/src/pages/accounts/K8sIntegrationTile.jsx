@@ -25,6 +25,7 @@ import {
 } from '@shared/settings/labelMapperFields';
 import { Divider } from '@ui/Divider';
 import K8sAccountModal from '@components/integrations/modal/K8sAccountModal';
+import { buildK8sInstallCommand } from '@components/integrations/k8sInstallCommand';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import SearchInput from '@ui/SearchInput';
@@ -35,6 +36,13 @@ import { action } from 'src/utils/actionStyles';
 import { ds } from 'src/utils/colors';
 import { getFeatures, updateFeatureFlagForAccount } from '@lib/UserService';
 import { Checkbox } from '@ui/Checkbox';
+import EventAnalysisSettingsFields from '@components/accounts/EventAnalysisSettingsFields';
+import {
+  DEFAULT_EVENT_ANALYSIS_FORM,
+  EVENT_ANALYSIS_ATTR,
+  buildEventAnalysisValue,
+  parseEventAnalysisForm,
+} from '@api1/account/eventAnalysisSettings';
 import { parseHttpResponseBodyMessage, safeJSONParse } from 'src/utils/common';
 import apiUser from '@api1/user';
 import CopyButton from '@shared/buttons/CopyButton';
@@ -83,6 +91,7 @@ const K8sIntegrationTile = () => {
   // Image scanning is on for every account until someone turns it off here.
   const [imageScanEnabled, setImageScanEnabled] = useState(true);
   const [imageScanExcludedNamespaces, setImageScanExcludedNamespaces] = useState('');
+  const [eventAnalysisForm, setEventAnalysisForm] = useState(DEFAULT_EVENT_ANALYSIS_FORM);
   const [updateAccountStatus, setUpdateAccountStatus] = useState({});
   const [isStatusUpdating, setIsStatusUpdating] = useState(false);
   const [k8sCurlCommand, setK8sCurlCommand] = useState('');
@@ -198,8 +207,7 @@ const K8sIntegrationTile = () => {
     } else if (menuItem.id === 'renew-token') {
       apiAccount.generateAgentToken(data.id).then((res) => {
         if (res?.data?.data?.agents_create_token?.access_secret) {
-          const k8CurlCmd = `wget https://raw.githubusercontent.com/nudgebee/k8s-agent/main/installation.sh && bash installation.sh -a "${res?.data?.data?.agents_create_token?.access_key}:${res?.data?.data?.agents_create_token?.access_secret}"`;
-          setK8sCurlCommand(k8CurlCmd);
+          setK8sCurlCommand(buildK8sInstallCommand(res.data.data.agents_create_token.access_key, res.data.data.agents_create_token.access_secret));
         }
       });
     } else if (menuItem.id === 'toggle-enabled') {
@@ -321,13 +329,14 @@ const K8sIntegrationTile = () => {
   }, [cloudAccountAttributes]);
 
   const fetchFeatureFlags = async (accountId) => {
+    // Clear first, so neither a load in flight nor a failed load shows (or saves against) the previous account's flags.
+    setSelectedFeatures([]);
+    setInitialFeatures([]);
     try {
       const accountFeatureFlags = await fetchFeatureFlagsForAccount(accountId);
-      if (accountFeatureFlags?.length > 0) {
-        const enabled = accountFeatureFlags.filter((g) => g.status === 'enabled').map((g) => g.feature_id);
-        setSelectedFeatures(enabled);
-        setInitialFeatures(enabled); // <-- save original state
-      }
+      const enabled = (accountFeatureFlags || []).filter((g) => g.status === 'enabled').map((g) => g.feature_id);
+      setSelectedFeatures(enabled);
+      setInitialFeatures(enabled); // <-- save original state
     } catch (error) {
       console.log('Failed to fetch Account Feature Flags', error);
       snackbar.error('Failed to fetch Account Feature Flags');
@@ -348,6 +357,7 @@ const K8sIntegrationTile = () => {
       const imageScan = safeJSONParse(accountAttrs.find((l) => l.name === 'image_scan')?.value) || {};
       setImageScanEnabled(imageScan.enabled !== false);
       setImageScanExcludedNamespaces((imageScan.excluded_namespaces || []).join(', '));
+      setEventAnalysisForm(parseEventAnalysisForm(accountAttrs.find((l) => l.name === EVENT_ANALYSIS_ATTR)?.value));
       if (
         selectedAccountId in cloudAccountAttributes &&
         cloudAccountAttributes[selectedAccountId] &&
@@ -481,6 +491,11 @@ const K8sIntegrationTile = () => {
   };
 
   const handleSubmitAccountSetting = async () => {
+    const eventAnalysisValue = buildEventAnalysisValue(eventAnalysisForm);
+    if (eventAnalysisValue.error) {
+      snackbar.error(eventAnalysisValue.error);
+      return;
+    }
     setUpdating(true);
     const data = [
       {
@@ -511,6 +526,13 @@ const K8sIntegrationTile = () => {
             .map((ns) => ns.trim())
             .filter(Boolean),
         }),
+        cloud_account_id: selectedAccountId,
+      },
+      // Unconditional, like image_scan: turning reuse back on or clearing a list
+      // has to overwrite the stored value.
+      {
+        name: EVENT_ANALYSIS_ATTR,
+        value: eventAnalysisValue.value,
         cloud_account_id: selectedAccountId,
       },
     ];
@@ -844,6 +866,13 @@ const K8sIntegrationTile = () => {
 
           <Divider color={ds.background[200]} sx={{ marginTop: ds.space[5], marginBottom: ds.space[5] }} />
 
+          <Heading value='AI Event Analysis' borderWidth='md' />
+          <Box sx={{ mt: ds.space[3] }}>
+            <EventAnalysisSettingsFields form={eventAnalysisForm} onChange={setEventAnalysisForm} showNamespaces disabled={!hasWriteAccess()} />
+          </Box>
+
+          <Divider color={ds.background[200]} sx={{ marginTop: ds.space[5], marginBottom: ds.space[5] }} />
+
           {selectedAnomalyConfigs.length > 0 && <Heading value='Anomaly Configuration' borderWidth='md' />}
           {selectedAnomalyConfigs.length > 0
             ? selectedAnomalyConfigs.map((ac) => (
@@ -892,7 +921,8 @@ const K8sIntegrationTile = () => {
               <Checkbox
                 key={f.value}
                 size='sm'
-                checked={selectedFeatures.includes(f.value)}
+                // selectedFeatures holds stored status='enabled'; a few flags store the opposite of their label (stored_value_inverted).
+                checked={f.stored_value_inverted ? !selectedFeatures.includes(f.value) : selectedFeatures.includes(f.value)}
                 label={f.description || f.value}
                 onChange={() => handleCheckBoxChange(f.value)}
               />

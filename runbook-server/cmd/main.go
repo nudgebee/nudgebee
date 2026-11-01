@@ -230,17 +230,22 @@ func main() {
 	// Create workflow service now
 	workflowService := workflow.NewService(temporalClient, dbStore, dc, taskRegistry, executor, configService, templateStore)
 
+	// MQ consumers only register a supervisor here: connecting, and rebuilding after
+	// any broker restart, happens in the background ("rbmq: consumer running"), so a
+	// broker that is down at boot is picked up once it answers. Registration fails
+	// only if the queue already has a consumer (e.g. both configured to one queue).
+
 	// Initialize and start Event Consumer
 	eventConsumer := events.NewConsumer(eventRegistry, workflowService, logger)
 	if err := eventConsumer.Start(config.Config.RabbitMqRunbookEventExchange, config.Config.RabbitMqRunbookEventRoutingKey, config.Config.RabbitMqRunbookEventQueue); err != nil {
-		slog.Error("failed to start event consumer, continuing without it", "error", err)
+		slog.Error("failed to register event consumer, continuing without it", "error", err)
 	}
 
 	// Resume llm.event_investigate activities when llm-server signals completion.
-	// Failure to start is non-fatal — workflows fall back to activity timeout.
+	// Failure to register is non-fatal — workflows fall back to activity timeout.
 	investigationCompletionConsumer := events.NewInvestigationCompletionConsumer(temporalClient, logger)
 	if err := investigationCompletionConsumer.Start(); err != nil {
-		slog.Error("failed to start investigation completion consumer, continuing without it", "error", err)
+		slog.Error("failed to register investigation completion consumer, continuing without it", "error", err)
 	}
 
 	// Register tasks with the worker

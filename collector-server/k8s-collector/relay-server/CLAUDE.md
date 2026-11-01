@@ -100,6 +100,9 @@ Each request publishes to exchange `nudgebee-relay` with routing key `relay_requ
 - **utils.go**: Serialization functions, fallback routing, secret decryption, Prometheus enrichment
 - **prometheus_step.go**: Intelligent step calculation based on time range
 
+#### **Direct-mode MCP** (`pkg/server/handlers/mcp_direct.go`)
+The relay serves direct-mode MCP calls itself, before any agent check, and owns the upstream MCP sessions for them. Session keys, lifecycle and the multi-pod design: [`docs/mcp-sessions.md`](../../../docs/mcp-sessions.md). Update that doc in the same PR as any change to MCP session handling.
+
 #### **Data Access** (`pkg/db/`)
 - **db_store.go**: Agent validation and WS permission checking with dual caching (30min TTL)
 - Uses PostgreSQL `sqlx` with connection pooling (25 max open, 25 idle)
@@ -164,6 +167,9 @@ RABBITMQ_MESSAGE_TTL=1m                 # Message TTL in queue
 # Security
 RELAY_SERVER_SECRET_KEY=<32-char-string> # Static key for X-SECRET-KEY auth header
 NUDGEBEE_ENCRYPTION_KEY=<base64>         # AES key for decrypting agent secrets
+
+# Direct-mode MCP sessions (docs/mcp-sessions.md)
+MCP_SESSION_STORE=redis|memory           # default redis (shared across relay pods; uses REDIS_SERVER_*); memory only without Redis, single pod
 
 # OpenTelemetry
 OTEL_EXPORTER=noop|console|otlp          # Exporter type

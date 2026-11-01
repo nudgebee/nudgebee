@@ -8,7 +8,8 @@ async function selectFromFilterDropdown(
   dropdownLocator: import("@playwright/test").Locator,
   optionText: string
 ): Promise<boolean> {
-  const searchInput = page.locator('input[placeholder^="Search"]');
+  const locators = new NotificationLocators(page);
+  const searchInput = locators.dropdownSearchInput;
   const isAlreadyOpen = await searchInput.isVisible().catch(() => false);
   if (!isAlreadyOpen) {
     await dropdownLocator.click();
@@ -17,22 +18,31 @@ async function selectFromFilterDropdown(
     .then(() => true)
     .catch(() => false);
   if (isSearchVisible) {
-    await searchInput.fill(optionText);
+    // A re-mount while channels load can drop the fill; the option lookup below then skips as usual.
+    await searchInput.fill(optionText, { timeout: 3000 }).catch(() => {});
   }
   const option = page
     .locator('[role="option"]')
     .filter({ has: page.getByText(optionText, { exact: true }) })
     .first();
   await option.waitFor({ state: "visible" }).catch(() => {});
-  const found = await option.isVisible().catch(() => false);
+  let found = await option.isVisible().catch(() => false);
+  if (!found && !isSearchVisible) {
+    // Grouped lists start collapsed and only auto-expand while searching, which a short list has no box for.
+    const headerCount = await locators.dropdownGroupHeaders.count();
+    for (let i = 0; i < headerCount && !found; i++) {
+      await locators.dropdownGroupHeaders.nth(i).click();
+      // A group that does not hold the option is the normal case, so absence reads as false.
+      found = await option.waitFor({ state: "visible", timeout: 1000 }).then(() => true).catch(() => false);
+    }
+  }
   if (!found) {
     console.warn(`Option "${optionText}" not found in dropdown — skipping.`);
-    await dropdownLocator.click({ force: true }).catch(() => {});
-
-    const stillOpen = await searchInput.isVisible().catch(() => false);
-    if (stillOpen) {
-      await page.keyboard.press("Escape").catch(() => {});
+    // Only Escape an open picker: with none open it would close the whole editor, and a stuck one blocks Save.
+    if (await locators.dropdownListbox.isVisible()) {
+      await page.keyboard.press("Escape");
     }
+    await expect(locators.dropdownListbox).toHaveCount(0);
     return false;
   }
   await page.mouse.move(0, 0);
@@ -167,6 +177,15 @@ export async function submitAndVerify(
   }
 
   await locators.notificationNameInput.fill(ruleName);
+
+  // A taken name is refused client-side with no GraphQL call, so the watcher would fail on an empty capture.
+  if ((await locators.ruleNameText(ruleName).count()) > 0) {
+    await locators.ruleSaveBtn.click();
+    await expect(locators.getDuplicateError()).toBeVisible();
+    // The editor may already be closed by the time Cancel is clicked.
+    await locators.ruleCancelEditorBtn.click().catch(() => {});
+    return;
+  }
 
   const backendErrorMsg = page.getByText("Upstream unreachable", { exact: false })
     .or(page.getByText("fetch failed", { exact: false }));

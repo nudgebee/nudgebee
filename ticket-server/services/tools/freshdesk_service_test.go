@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"nudgebee/tickets-server/models"
+	"nudgebee/tickets-server/services/ticket"
 
 	"github.com/gin-gonic/gin"
 )
@@ -182,6 +184,23 @@ func TestFreshdeskService_Get_Unauthorized(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "authentication failed") {
 		t.Errorf("error = %v, want authentication failed", err)
+	}
+}
+
+// A deleted Freshdesk ticket (404) must surface as ticket.ErrNotFound so the
+// ticket-status sync job can skip it without counting toward its
+// consecutive-failure abort guard.
+func TestFreshdeskService_Get_NotFoundIsErrNotFound(t *testing.T) {
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"Ticket not found"}`))
+	}))
+	defer stub.Close()
+
+	svc := &FreshdeskService{}
+	_, err := svc.Get(freshdeskTestCtx(), freshdeskTestConfig(stub.URL), "42")
+	if !errors.Is(err, ticket.ErrNotFound) {
+		t.Fatalf("err = %v, want it to wrap ticket.ErrNotFound", err)
 	}
 }
 

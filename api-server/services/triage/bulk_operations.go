@@ -104,8 +104,23 @@ func queueBulkClassification(ctx context.Context, db *sqlx.DB, job BulkClassific
 func ProcessBulkClassification(ctx context.Context, db *sqlx.DB, jobData []byte) error {
 	var job BulkClassificationJob
 	if err := json.Unmarshal(jobData, &job); err != nil {
-		slog.ErrorContext(ctx, "Failed to unmarshal bulk classification job", "error", err)
-		return err
+		slog.ErrorContext(ctx, "Failed to unmarshal bulk classification job, dropping", "error", err)
+		return nil // Don't requeue malformed messages
+	}
+
+	// account_id and exclude_event_id are compared against uuid columns, so a
+	// missing or malformed one fails the batch query the same way on every
+	// delivery. Drop the job instead: the consumer takes one message at a time
+	// and requeues forever on error, so it would block every job behind it.
+	_, accountErr := uuid.Parse(job.AccountID)
+	_, excludeErr := uuid.Parse(job.ExcludeEventID)
+	if accountErr != nil || excludeErr != nil {
+		slog.ErrorContext(ctx, "Bulk classification job has a missing or malformed account_id/exclude_event_id, dropping",
+			"job_id", job.JobID,
+			"account_id", job.AccountID,
+			"exclude_event_id", job.ExcludeEventID,
+		)
+		return nil
 	}
 
 	slog.InfoContext(ctx, "Processing bulk classification job",

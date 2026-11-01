@@ -40,6 +40,9 @@ func Execute(ctx context.Context, body ActionExecuteBody) (map[string]any, error
 	// defaults the missing X-NB-Agent-Type header); other agent types are
 	// separate registrations this lookup says nothing about.
 	//
+	// NoAgent actions (direct-mode MCP) are never gated: the relay serves them
+	// itself before it checks for any agent.
+	//
 	// EqualFold because AgentType is not a constant here — callers read it from
 	// tool config (`getConfigValue(..., "agent_type")` in tools/common_relay.go
 	// and tool_mongodb.go), so a config written "K8s" must still gate. Note the
@@ -47,7 +50,7 @@ func Execute(ctx context.Context, body ActionExecuteBody) (map[string]any, error
 	// X-NB-Agent-Type header verbatim, and trimming only here would let the
 	// guard classify a padded value as k8s while the relay routed it as a
 	// different agent type.
-	if body.AgentType == "" || strings.EqualFold(body.AgentType, k8sAgentType) {
+	if !body.NoAgent && (body.AgentType == "" || strings.EqualFold(body.AgentType, k8sAgentType)) {
 		if !AgentConnected(body.AccountID) {
 			slog.Debug("relay: skipping request, k8s agent not connected",
 				"account_id", body.AccountID, "action", body.ActionName)

@@ -3,7 +3,9 @@ package aws
 import (
 	"context"
 	"errors"
+	"fmt"
 	"nudgebee/collector/cloud/providers"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"github.com/samber/lo"
 )
 
 type awsQueueService struct {
@@ -42,7 +45,7 @@ func (a *awsQueueService) GetResources(ctx providers.CloudProviderContext, accou
 
 	paginator := sqs.NewListQueuesPaginator(svc, &sqs.ListQueuesInput{})
 	for paginator.HasMorePages() {
-		queuesOutput, err := paginator.NextPage(context.TODO())
+		queuesOutput, err := paginator.NextPage(ctx.GetContext())
 		if err != nil {
 			ctx.GetLogger().Error("failed to list sqs queues", "error", err, "accountNumber", account.AccountNumber, "region", regionName)
 			return resources, err // Return partial or fail completely
@@ -56,74 +59,171 @@ func (a *awsQueueService) GetResources(ctx providers.CloudProviderContext, accou
 			if queueURL == "" {
 				continue
 			}
-			tags := make(map[string][]string)
-			meta := make(map[string]any)
-			createdAt := time.Now() // Default, will be updated if attribute exists
-
-			// Get Queue Attributes (includes ARN, creation time, policy, encryption, DLQ etc.)
-			// Request all attributes for comprehensive metadata
-			attrsOutput, err := svc.GetQueueAttributes(context.TODO(), &sqs.GetQueueAttributesInput{
-				QueueUrl:       &queueURL,
-				AttributeNames: []types.QueueAttributeName{types.QueueAttributeNameAll},
-			})
+			resource, err := buildSqsQueueResource(ctx, svc, queueURL, account, regionName)
 			if err != nil {
-				ctx.GetLogger().Warn("failed to get sqs queue attributes", "error", err, "queueUrl", queueURL, "accountNumber", account.AccountNumber, "region", regionName)
-				// Continue with basic info? Or skip? Let's skip if attributes fail.
+				// Already logged. Let's skip if attributes fail.
 				continue
 			}
+			resources = append(resources, resource)
+		}
+	}
+	return resources, nil
+}
 
-			// Populate Meta map from attributes
-			for k, v := range attrsOutput.Attributes {
-				meta[k] = v // Store the string value
-			}
+// buildSqsQueueResource enriches one queue URL into a providers.Resource.
+// Shared by GetResources and GetResourcesByIds so the full-scan and targeted paths
+// produce identical rows. Returns the error when the queue's attributes cannot be
+// read or carry no ARN — there is no row to build without them.
+func buildSqsQueueResource(
+	ctx providers.CloudProviderContext,
+	svc *sqs.Client,
+	queueURL string,
+	account providers.Account,
+	regionName string,
+) (providers.Resource, error) {
+	tags := make(map[string][]string)
+	meta := make(map[string]any)
+	createdAt := time.Now() // Default, will be updated if attribute exists
 
-			// Extract specific fields for the Resource struct
-			queueArn := ""
-			if arn, ok := meta["QueueArn"].(string); ok {
-				queueArn = arn
-			} else {
-				ctx.GetLogger().Warn("QueueArn attribute missing or not string", "queueUrl", queueURL)
-				continue // ARN is crucial, skip if missing
-			}
+	// Get Queue Attributes (includes ARN, creation time, policy, encryption, DLQ etc.)
+	// Request all attributes for comprehensive metadata
+	attrsOutput, err := svc.GetQueueAttributes(ctx.GetContext(), &sqs.GetQueueAttributesInput{
+		QueueUrl:       &queueURL,
+		AttributeNames: []types.QueueAttributeName{types.QueueAttributeNameAll},
+	})
+	if err != nil {
+		ctx.GetLogger().Warn("failed to get sqs queue attributes", "error", err, "queueUrl", queueURL, "accountNumber", account.AccountNumber, "region", regionName)
+		return providers.Resource{}, err
+	}
 
-			if createdTimestampStr, ok := meta["CreatedTimestamp"].(string); ok {
-				if createdTimestampUnix, err := strconv.ParseInt(createdTimestampStr, 10, 64); err == nil {
-					createdAt = time.Unix(createdTimestampUnix, 0)
-				} else {
-					ctx.GetLogger().Warn("failed to parse CreatedTimestamp for queue", "error", err, "queueArn", queueArn)
-				}
-			}
+	// Populate Meta map from attributes
+	for k, v := range attrsOutput.Attributes {
+		meta[k] = v // Store the string value
+	}
 
-			// Extract queue name from URL
-			queueName := queueURL
-			if lastSlash := strings.LastIndex(queueURL, "/"); lastSlash != -1 {
-				queueName = (queueURL)[lastSlash+1:]
-			}
+	// Extract specific fields for the Resource struct
+	queueArn := ""
+	if arn, ok := meta["QueueArn"].(string); ok {
+		queueArn = arn
+	} else {
+		ctx.GetLogger().Warn("QueueArn attribute missing or not string", "queueUrl", queueURL)
+		return providers.Resource{}, fmt.Errorf("QueueArn attribute missing for queue %s", queueURL) // ARN is crucial, skip if missing
+	}
 
-			// Get Tags for the queue
-			tagsOutput, err := svc.ListQueueTags(context.TODO(), &sqs.ListQueueTagsInput{
-				QueueUrl: &queueURL,
-			})
-			if err != nil {
-				ctx.GetLogger().Warn("failed to fetch tags for sqs queue", "error", err, "queueUrl", queueURL, "accountNumber", account.AccountNumber, "region", regionName)
-			} else {
-				for k, v := range tagsOutput.Tags {
-					tags[k] = append(tags[k], v)
-				}
-			}
+	if createdTimestampStr, ok := meta["CreatedTimestamp"].(string); ok {
+		if createdTimestampUnix, err := strconv.ParseInt(createdTimestampStr, 10, 64); err == nil {
+			createdAt = time.Unix(createdTimestampUnix, 0)
+		} else {
+			ctx.GetLogger().Warn("failed to parse CreatedTimestamp for queue", "error", err, "queueArn", queueArn)
+		}
+	}
 
-			resource := providers.Resource{
-				Id:          queueName, // Use queue name as ID
-				ServiceName: ServiceNameSQS,
-				Name:        queueName,
-				Status:      providers.ResourceStatusActive, // Assume active if listed and attributes fetched
-				Region:      regionName,
-				Tags:        tags,
-				Meta:        meta, // Contains all attributes like RedrivePolicy, KmsMasterKeyId etc.
-				Arn:         queueArn,
-				CreatedAt:   createdAt,
-				Type:        getAwsServiceResourceType(ServiceNameSQS, "queue"),
+	// Extract queue name from URL
+	queueName := queueURL
+	if lastSlash := strings.LastIndex(queueURL, "/"); lastSlash != -1 {
+		queueName = (queueURL)[lastSlash+1:]
+	}
+
+	// Get Tags for the queue
+	tagsOutput, err := svc.ListQueueTags(ctx.GetContext(), &sqs.ListQueueTagsInput{
+		QueueUrl: &queueURL,
+	})
+	if err != nil {
+		ctx.GetLogger().Warn("failed to fetch tags for sqs queue", "error", err, "queueUrl", queueURL, "accountNumber", account.AccountNumber, "region", regionName)
+	} else {
+		for k, v := range tagsOutput.Tags {
+			tags[k] = append(tags[k], v)
+		}
+	}
+
+	return providers.Resource{
+		Id:          queueName, // Use queue name as ID
+		ServiceName: ServiceNameSQS,
+		Name:        queueName,
+		Status:      providers.ResourceStatusActive, // Assume active if listed and attributes fetched
+		Region:      regionName,
+		Tags:        tags,
+		Meta:        meta, // Contains all attributes like RedrivePolicy, KmsMasterKeyId etc.
+		Arn:         queueArn,
+		CreatedAt:   createdAt,
+		Type:        getAwsServiceResourceType(ServiceNameSQS, "queue"),
+	}, nil
+}
+
+// sqsQueueNamePattern is the SQS queue-name alphabet; a FIFO queue adds ".fifo".
+var sqsQueueNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,80}$`)
+
+// sqsQueueNamesForLookupKeys resolves ListResources lookup keys to queue names.
+// A key is the queue name (the stored Id) or the queue ARN. Any other shape
+// reports ErrUnsupported, which sends ListResources back to the region scan and
+// its own filter, exactly as before this service had a targeted fetch.
+func sqsQueueNamesForLookupKeys(keys []string) ([]string, error) {
+	names := make([]string, 0, len(keys))
+	for _, key := range keys {
+		name := key
+		if strings.HasPrefix(key, "arn:") {
+			parts := strings.Split(key, ":")
+			if len(parts) != 6 || parts[2] != "sqs" {
+				return nil, errors.ErrUnsupported
 			}
+			name = parts[5]
+		}
+		if len(name) > 80 || !sqsQueueNamePattern.MatchString(strings.TrimSuffix(name, ".fifo")) {
+			return nil, errors.ErrUnsupported
+		}
+		names = append(names, name)
+	}
+	return lo.Uniq(names), nil
+}
+
+// GetResourcesByIds fetches specific queues by name or ARN without listing the region.
+//
+// Without this, ListResources falls back to a full ListQueues sweep plus two API
+// calls per queue. On the EventBridge path that is one whole-region inventory scan
+// per delivered CreateQueue/DeleteQueue event — see the Lambda implementation for
+// what that did to the consumer during a bulk delete.
+func (a *awsQueueService) GetResourcesByIds(ctx providers.CloudProviderContext, account providers.Account, region string, resourceIds []string) ([]providers.Resource, error) {
+	resourceIds = lo.Uniq(resourceIds)
+	if len(resourceIds) == 0 {
+		// Nothing to look up. Deliberately not ErrUnsupported: that word means
+		// "this service has no targeted fetch" and sends ListResources back to a
+		// full region scan.
+		return []providers.Resource{}, nil
+	}
+	queueNames, err := sqsQueueNamesForLookupKeys(resourceIds)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg, err := getAwsConfigFromAccount(ctx.GetContext(), account)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Region = region
+	svc := sqs.NewFromConfig(cfg)
+
+	resources := []providers.Resource{}
+	for _, queueName := range queueNames {
+		// A queue deleted before this lookup is the normal case on DeleteQueue and
+		// is genuinely gone: skip it. Any other failure is returned so ListResources
+		// falls back to the full scan — callers read an empty, no-error result as
+		// "gone", and a denied or throttled call must not look like that.
+		var resource providers.Resource
+		urlOutput, err := svc.GetQueueUrl(ctx.GetContext(), &sqs.GetQueueUrlInput{QueueName: aws.String(queueName)})
+		if err == nil {
+			resource, err = buildSqsQueueResource(ctx, svc, aws.ToString(urlOutput.QueueUrl), account, region)
+		}
+		if err != nil {
+			var notFound *types.QueueDoesNotExist
+			if errors.As(err, &notFound) {
+				ctx.GetLogger().Info("GetResourcesByIds: sqs queue not found, skipping", "queueName", queueName, "accountNumber", account.AccountNumber, "region", region)
+				continue
+			}
+			ctx.GetLogger().Error("GetResourcesByIds: failed to get sqs queue, falling back to full scan", "error", err, "queueName", queueName, "accountNumber", account.AccountNumber, "region", region)
+			return nil, fmt.Errorf("failed to get sqs queue %s: %w", queueName, err)
+		}
+		// An ARN key names one queue; a same-named queue under another ARN is not it.
+		if lo.Contains(resourceIds, resource.Id) || lo.Contains(resourceIds, resource.Arn) {
 			resources = append(resources, resource)
 		}
 	}

@@ -715,3 +715,597 @@ func TestAwsEventBridge_ECS_CloudTrail_DeleteService(t *testing.T) {
 	assert.Equal(t, 1, dummyHandler.getAccountFromCloudProviderIdCallCount, "account should have been resolved for the matched rule")
 	assert.Empty(t, processedEvent.EventId, "actions_only rule must not emit a downstream event")
 }
+
+func TestAwsEventBridge_ELB_CloudTrail_DeleteLoadBalancer(t *testing.T) {
+	seedAccountTenantForTest(t)
+	lbArn := "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/50dc6c495c0c9188"
+	sqsMessageBody := `{
+		"version": "0",
+		"id": "elb-delete-lb-001",
+		"detail-type": "AWS API Call via CloudTrail",
+		"source": "aws.elasticloadbalancing",
+		"account": "123456789012",
+		"time": "2026-04-08T18:00:00Z",
+		"region": "us-east-1",
+		"resources": [],
+		"detail": {
+			"eventSource": "elasticloadbalancing.amazonaws.com",
+			"eventName": "DeleteLoadBalancer",
+			"awsRegion": "us-east-1",
+			"requestParameters": {
+				"loadBalancerArn": "` + lbArn + `"
+			},
+			"userIdentity": {
+				"type": "IAMUser",
+				"principalId": "AIDAEXAMPLE:admin"
+			}
+		}
+	}`
+
+	rules, err := GetEventRules("")
+	require.NoError(t, err)
+
+	dummyAPI := &dummyAwsProvider{}
+	processor := NewTemplatedEventBridgeProcessor(rules, dummyAPI)
+	dummyHandler := &dummyProcessedEventHandler{}
+	pCtx := providers.NewCloudProviderContext(context.Background())
+
+	processedEvent, _, err := processSQSMessageBodyForEventBridgeEvent(pCtx, sqsMessageBody, processor, dummyHandler)
+	require.NoError(t, err)
+
+	// A load balancer disappearing is the incident-worthy case: it must still
+	// raise a visible event, unlike routine ELB activity (see the
+	// ResourceSync_* tests below), even though both rules match this same
+	// delivery independently.
+	require.NotEmpty(t, processedEvent.EventId, "ELB_CloudTrail_Events should have matched and emitted an event")
+	assert.Equal(t, lbArn+":us-east-1:123456789012", processedEvent.EventId)
+	assert.Equal(t, "ELB DeleteLoadBalancer: "+lbArn, processedEvent.Title)
+	assert.Equal(t, providers.EventSeverityInfo, processedEvent.EventSeverity)
+	assert.Equal(t, providers.EventStatusClosed, processedEvent.EventStatus)
+	assert.Equal(t, "AWSELB", processedEvent.ResourceServiceName)
+	assert.Equal(t, lbArn, processedEvent.ResourceId)
+	assert.Equal(t, "loadbalancer", processedEvent.ResourceType)
+}
+
+func TestAwsEventBridge_ELB_CloudTrail_ResourceSync_CreateLoadBalancer(t *testing.T) {
+	seedAccountTenantForTest(t)
+	lbArn := "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/50dc6c495c0c9188"
+	sqsMessageBody := `{
+		"version": "0",
+		"id": "elb-create-lb-001",
+		"detail-type": "AWS API Call via CloudTrail",
+		"source": "aws.elasticloadbalancing",
+		"account": "123456789012",
+		"time": "2026-04-08T18:00:00Z",
+		"region": "us-east-1",
+		"resources": [],
+		"detail": {
+			"eventSource": "elasticloadbalancing.amazonaws.com",
+			"eventName": "CreateLoadBalancer",
+			"awsRegion": "us-east-1",
+			"requestParameters": {
+				"name": "my-alb",
+				"type": "application"
+			},
+			"responseElements": {
+				"loadBalancers": [
+					{"loadBalancerArn": "` + lbArn + `", "dNSName": "my-alb-123.us-east-1.elb.amazonaws.com", "type": "application"}
+				]
+			},
+			"userIdentity": {
+				"type": "IAMUser",
+				"principalId": "AIDAEXAMPLE:admin"
+			}
+		}
+	}`
+
+	rules, err := GetEventRules("")
+	require.NoError(t, err)
+
+	dummyAPI := &dummyAwsProvider{}
+	processor := NewTemplatedEventBridgeProcessor(rules, dummyAPI)
+	dummyHandler := &dummyProcessedEventHandler{}
+	pCtx := providers.NewCloudProviderContext(context.Background())
+
+	processedEvent, _, err := processSQSMessageBodyForEventBridgeEvent(pCtx, sqsMessageBody, processor, dummyHandler)
+	require.NoError(t, err)
+
+	// ELB_CloudTrail_Resource_Sync is an actions_only bookkeeping rule:
+	// creating a load balancer is routine, not an incident, so it runs
+	// update_cloud_resource for its side effect and emits NO downstream event.
+	assert.Equal(t, 1, dummyHandler.getAccountFromCloudProviderIdCallCount, "account should have been resolved for the matched rule")
+	assert.Empty(t, processedEvent.EventId, "actions_only rule must not emit a downstream event")
+}
+
+func TestAwsEventBridge_SQS_CloudTrail_ResourceSync_CreateQueue(t *testing.T) {
+	seedAccountTenantForTest(t)
+	queueUrl := "https://sqs.us-east-1.amazonaws.com/123456789012/my-queue"
+	sqsMessageBody := `{
+		"version": "0",
+		"id": "sqs-create-queue-001",
+		"detail-type": "AWS API Call via CloudTrail",
+		"source": "aws.sqs",
+		"account": "123456789012",
+		"time": "2026-04-08T18:15:00Z",
+		"region": "us-east-1",
+		"resources": [],
+		"detail": {
+			"eventSource": "sqs.amazonaws.com",
+			"eventName": "CreateQueue",
+			"awsRegion": "us-east-1",
+			"requestParameters": {
+				"queueName": "my-queue"
+			},
+			"responseElements": {
+				"queueUrl": "` + queueUrl + `"
+			},
+			"userIdentity": {
+				"type": "IAMUser",
+				"principalId": "AIDAEXAMPLE:admin"
+			}
+		}
+	}`
+
+	rules, err := GetEventRules("")
+	require.NoError(t, err)
+
+	dummyAPI := &dummyAwsProvider{}
+	processor := NewTemplatedEventBridgeProcessor(rules, dummyAPI)
+	dummyHandler := &dummyProcessedEventHandler{}
+	pCtx := providers.NewCloudProviderContext(context.Background())
+
+	processedEvent, _, err := processSQSMessageBodyForEventBridgeEvent(pCtx, sqsMessageBody, processor, dummyHandler)
+	require.NoError(t, err)
+
+	// SQS_CloudTrail_Resource_Sync is an actions_only bookkeeping rule:
+	// creating a queue is routine, not an incident, so it runs
+	// update_cloud_resource for its side effect and emits NO downstream event.
+	assert.Equal(t, 1, dummyHandler.getAccountFromCloudProviderIdCallCount, "account should have been resolved for the matched rule")
+	assert.Empty(t, processedEvent.EventId, "actions_only rule must not emit a downstream event")
+}
+
+func TestAwsEventBridge_SQS_CloudTrail_DeleteQueue(t *testing.T) {
+	seedAccountTenantForTest(t)
+	queueUrl := "https://sqs.us-east-1.amazonaws.com/123456789012/my-queue"
+	sqsMessageBody := `{
+		"version": "0",
+		"id": "sqs-delete-queue-001",
+		"detail-type": "AWS API Call via CloudTrail",
+		"source": "aws.sqs",
+		"account": "123456789012",
+		"time": "2026-04-08T18:20:00Z",
+		"region": "us-east-1",
+		"resources": [],
+		"detail": {
+			"eventSource": "sqs.amazonaws.com",
+			"eventName": "DeleteQueue",
+			"awsRegion": "us-east-1",
+			"requestParameters": {
+				"queueUrl": "` + queueUrl + `"
+			},
+			"userIdentity": {
+				"type": "IAMUser",
+				"principalId": "AIDAEXAMPLE:admin"
+			}
+		}
+	}`
+
+	rules, err := GetEventRules("")
+	require.NoError(t, err)
+
+	dummyAPI := &dummyAwsProvider{}
+	processor := NewTemplatedEventBridgeProcessor(rules, dummyAPI)
+	dummyHandler := &dummyProcessedEventHandler{}
+	pCtx := providers.NewCloudProviderContext(context.Background())
+
+	processedEvent, _, err := processSQSMessageBodyForEventBridgeEvent(pCtx, sqsMessageBody, processor, dummyHandler)
+	require.NoError(t, err)
+
+	require.NotEmpty(t, processedEvent.EventId, "SQS_CloudTrail_Events should have matched and emitted an event")
+	// resource_id/fingerprint/title derive the queue name (last path segment
+	// of queueUrl) rather than the raw URL, so this matches the row the
+	// bulk inventory sync stores it under (Id=queueName, not queueUrl).
+	assert.Equal(t, "my-queue:us-east-1:123456789012", processedEvent.EventId)
+	assert.Equal(t, "SQS DeleteQueue: my-queue", processedEvent.Title)
+	assert.Equal(t, "my-queue", processedEvent.ResourceId)
+	assert.Equal(t, "queue", processedEvent.ResourceType)
+}
+
+func TestAwsEventBridge_SNS_CloudTrail_DeleteTopic(t *testing.T) {
+	seedAccountTenantForTest(t)
+	topicArn := "arn:aws:sns:us-east-1:123456789012:my-topic"
+	sqsMessageBody := `{
+		"version": "0",
+		"id": "sns-delete-topic-001",
+		"detail-type": "AWS API Call via CloudTrail",
+		"source": "aws.sns",
+		"account": "123456789012",
+		"time": "2026-04-08T18:25:00Z",
+		"region": "us-east-1",
+		"resources": [],
+		"detail": {
+			"eventSource": "sns.amazonaws.com",
+			"eventName": "DeleteTopic",
+			"awsRegion": "us-east-1",
+			"requestParameters": {
+				"topicArn": "` + topicArn + `"
+			},
+			"userIdentity": {
+				"type": "IAMUser",
+				"principalId": "AIDAEXAMPLE:admin"
+			}
+		}
+	}`
+
+	rules, err := GetEventRules("")
+	require.NoError(t, err)
+
+	dummyAPI := &dummyAwsProvider{}
+	processor := NewTemplatedEventBridgeProcessor(rules, dummyAPI)
+	dummyHandler := &dummyProcessedEventHandler{}
+	pCtx := providers.NewCloudProviderContext(context.Background())
+
+	processedEvent, _, err := processSQSMessageBodyForEventBridgeEvent(pCtx, sqsMessageBody, processor, dummyHandler)
+	require.NoError(t, err)
+
+	// A topic disappearing is the incident-worthy case: it must still raise a
+	// visible event, unlike routine SNS activity (see the ResourceSync_*
+	// tests below), even though both rules match this same delivery
+	// independently.
+	require.NotEmpty(t, processedEvent.EventId, "SNS_CloudTrail_Events should have matched and emitted an event")
+	assert.Equal(t, topicArn+":us-east-1:123456789012", processedEvent.EventId)
+	assert.Equal(t, "SNS DeleteTopic: "+topicArn, processedEvent.Title)
+	assert.Equal(t, providers.EventSeverityInfo, processedEvent.EventSeverity)
+	assert.Equal(t, providers.EventStatusClosed, processedEvent.EventStatus)
+	assert.Equal(t, "AmazonSNS", processedEvent.ResourceServiceName)
+	// Inventory (aws_sns.go) stores topics by name, not ARN — ResourceId must
+	// match that so "view resource" linking resolves to the real row.
+	assert.Equal(t, "my-topic", processedEvent.ResourceId)
+	assert.Equal(t, "topic", processedEvent.ResourceType)
+}
+
+func TestAwsEventBridge_SNS_CloudTrail_ResourceSync_CreateTopic(t *testing.T) {
+	seedAccountTenantForTest(t)
+	topicArn := "arn:aws:sns:us-east-1:123456789012:my-topic"
+	sqsMessageBody := `{
+		"version": "0",
+		"id": "sns-create-topic-001",
+		"detail-type": "AWS API Call via CloudTrail",
+		"source": "aws.sns",
+		"account": "123456789012",
+		"time": "2026-04-08T18:25:00Z",
+		"region": "us-east-1",
+		"resources": [],
+		"detail": {
+			"eventSource": "sns.amazonaws.com",
+			"eventName": "CreateTopic",
+			"awsRegion": "us-east-1",
+			"requestParameters": {
+				"name": "my-topic"
+			},
+			"responseElements": {
+				"topicArn": "` + topicArn + `"
+			},
+			"userIdentity": {
+				"type": "IAMUser",
+				"principalId": "AIDAEXAMPLE:admin"
+			}
+		}
+	}`
+
+	rules, err := GetEventRules("")
+	require.NoError(t, err)
+
+	dummyAPI := &dummyAwsProvider{}
+	processor := NewTemplatedEventBridgeProcessor(rules, dummyAPI)
+	dummyHandler := &dummyProcessedEventHandler{}
+	pCtx := providers.NewCloudProviderContext(context.Background())
+
+	processedEvent, _, err := processSQSMessageBodyForEventBridgeEvent(pCtx, sqsMessageBody, processor, dummyHandler)
+	require.NoError(t, err)
+
+	// SNS_CloudTrail_Resource_Sync is an actions_only bookkeeping rule:
+	// creating a topic is routine, not an incident, so it runs
+	// update_cloud_resource for its side effect and emits NO downstream event.
+	assert.Equal(t, 1, dummyHandler.getAccountFromCloudProviderIdCallCount, "account should have been resolved for the matched rule")
+	assert.Empty(t, processedEvent.EventId, "actions_only rule must not emit a downstream event")
+}
+
+// renderActionParams renders a named rule's single action params directly,
+// exercising the same param-rendering path executeAction uses, without
+// going through update_cloud_resource's DB call. This lets tests assert on
+// resource_id/resource_type/new_status directly — the values responsible
+// for every ID-mapping bug fixed in this file's rules — instead of only
+// checking whether a rule matched and stayed silent.
+func renderActionParams(t *testing.T, ruleName string, sqsMessageBody string) map[string]any {
+	t.Helper()
+
+	rules, err := GetEventRules("")
+	require.NoError(t, err)
+
+	var rule *EventProcessingRule
+	for i := range rules.Rules {
+		if rules.Rules[i].Name == ruleName {
+			rule = &rules.Rules[i]
+			break
+		}
+	}
+	require.NotNil(t, rule, "rule %q not found", ruleName)
+	require.Len(t, rule.Actions, 1, "expected exactly one action on rule %q", ruleName)
+
+	ebEvent, err := parseEventBridgeEvent([]byte(sqsMessageBody))
+	require.NoError(t, err)
+
+	p := &TemplatedEventBridgeProcessor{}
+	pCtx := providers.NewCloudProviderContext(context.Background())
+	templateData := p.prepareTemplateData(pCtx, ebEvent, providers.Account{})
+
+	rendered := make(map[string]any)
+	for k, v := range rule.Actions[0].Params {
+		rendered[k] = p.renderParamValue(pCtx, k, v, templateData)
+	}
+	return rendered
+}
+
+func TestAwsEventBridge_ELB_CloudTrail_ResourceSync_CreateLoadBalancer_Params(t *testing.T) {
+	lbArn := "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/50dc6c495c0c9188"
+	sqsMessageBody := `{
+		"detail-type": "AWS API Call via CloudTrail",
+		"source": "aws.elasticloadbalancing",
+		"account": "123456789012",
+		"time": "2026-04-08T18:00:00Z",
+		"region": "us-east-1",
+		"detail": {
+			"eventSource": "elasticloadbalancing.amazonaws.com",
+			"eventName": "CreateLoadBalancer",
+			"requestParameters": {"name": "my-alb", "type": "application"},
+			"responseElements": {
+				"loadBalancers": [{"loadBalancerArn": "` + lbArn + `", "type": "application"}]
+			}
+		}
+	}`
+
+	params := renderActionParams(t, "ELB_CloudTrail_Resource_Sync", sqsMessageBody)
+	assert.Equal(t, lbArn, params["resource_id"])
+	// aws_elb.go stores ALBs as "application_loadbalancer", not the Classic-only "loadbalancer".
+	assert.Equal(t, "application_loadbalancer", params["resource_type"])
+	assert.Equal(t, "Active", params["new_status"])
+}
+
+func TestAwsEventBridge_ELB_CloudTrail_ResourceSync_DeleteLoadBalancer_Modern_Params(t *testing.T) {
+	lbArn := "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/50dc6c495c0c9188"
+	sqsMessageBody := `{
+		"detail-type": "AWS API Call via CloudTrail",
+		"source": "aws.elasticloadbalancing",
+		"account": "123456789012",
+		"time": "2026-04-08T18:00:00Z",
+		"region": "us-east-1",
+		"detail": {
+			"eventSource": "elasticloadbalancing.amazonaws.com",
+			"eventName": "DeleteLoadBalancer",
+			"requestParameters": {"loadBalancerArn": "` + lbArn + `"}
+		}
+	}`
+
+	params := renderActionParams(t, "ELB_CloudTrail_Resource_Sync", sqsMessageBody)
+	assert.Equal(t, lbArn, params["resource_id"])
+	// aws_elb.go stores ALBs as "application_loadbalancer", not the Classic-only "loadbalancer" —
+	// a hardcoded "loadbalancer" here would miss the row on the pre-reconcile's type match.
+	assert.Equal(t, "application_loadbalancer", params["resource_type"])
+	assert.Equal(t, "Deleted", params["new_status"])
+}
+
+func TestAwsEventBridge_ELB_CloudTrail_ResourceSync_DeleteLoadBalancer_Classic_Params(t *testing.T) {
+	// Classic ELB's DeleteLoadBalancer has no loadBalancerArn, only
+	// loadBalancerName. aws_elb.go stores Classic rows with Id = name, so the
+	// key must be the bare name: a constructed ARN misses that row when the
+	// live lookup finds nothing (the LB is gone) and inserts an orphan.
+	sqsMessageBody := `{
+		"detail-type": "AWS API Call via CloudTrail",
+		"source": "aws.elasticloadbalancing",
+		"account": "123456789012",
+		"time": "2026-04-08T18:00:00Z",
+		"region": "us-east-1",
+		"detail": {
+			"eventSource": "elasticloadbalancing.amazonaws.com",
+			"eventName": "DeleteLoadBalancer",
+			"requestParameters": {"loadBalancerName": "my-classic-elb"}
+		}
+	}`
+
+	params := renderActionParams(t, "ELB_CloudTrail_Resource_Sync", sqsMessageBody)
+	assert.Equal(t, "my-classic-elb", params["resource_id"])
+	assert.Equal(t, "loadbalancer", params["resource_type"])
+	assert.Equal(t, "Deleted", params["new_status"])
+}
+
+func TestAwsEventBridge_ELB_CloudTrail_ResourceSync_CreateLoadBalancer_Classic_Params(t *testing.T) {
+	// Classic CreateLoadBalancer's response is just dNSName; the name is only in
+	// requestParameters. Reading it from responseElements used to render a bare
+	// "...:loadbalancer/" prefix, which matched every LB in the region.
+	sqsMessageBody := `{
+		"detail-type": "AWS API Call via CloudTrail",
+		"source": "aws.elasticloadbalancing",
+		"account": "123456789012",
+		"time": "2026-04-08T18:00:00Z",
+		"region": "us-east-1",
+		"detail": {
+			"eventSource": "elasticloadbalancing.amazonaws.com",
+			"eventName": "CreateLoadBalancer",
+			"requestParameters": {"loadBalancerName": "my-classic-elb", "availabilityZones": ["us-east-1a"]},
+			"responseElements": {"dNSName": "my-classic-elb-1234.us-east-1.elb.amazonaws.com"}
+		}
+	}`
+
+	params := renderActionParams(t, "ELB_CloudTrail_Resource_Sync", sqsMessageBody)
+	assert.Equal(t, "my-classic-elb", params["resource_id"])
+	assert.Equal(t, "loadbalancer", params["resource_type"])
+	assert.Equal(t, "Active", params["new_status"])
+}
+
+func TestAwsEventBridge_ELB_CloudTrail_ResourceSync_NoIdentifier_RendersBlank(t *testing.T) {
+	// A failed CreateLoadBalancer carries neither an ARN nor a Classic name. The
+	// key must render blank (which updateCloudResource skips), never an ARN prefix.
+	sqsMessageBody := `{
+		"detail-type": "AWS API Call via CloudTrail",
+		"source": "aws.elasticloadbalancing",
+		"account": "123456789012",
+		"time": "2026-04-08T18:00:00Z",
+		"region": "us-east-1",
+		"detail": {
+			"eventSource": "elasticloadbalancing.amazonaws.com",
+			"eventName": "CreateLoadBalancer",
+			"errorCode": "ValidationError",
+			"requestParameters": {"name": "my-alb", "type": "application"}
+		}
+	}`
+
+	params := renderActionParams(t, "ELB_CloudTrail_Resource_Sync", sqsMessageBody)
+	assert.Equal(t, "", strings.TrimSpace(fmt.Sprint(params["resource_id"])))
+}
+
+func TestFindLookupMatch(t *testing.T) {
+	web2 := providers.Resource{Id: "web-2", Name: "web-2", Arn: "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/web-2"}
+	web := providers.Resource{Id: "web", Name: "web", Arn: "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/web"}
+	orders := providers.Resource{Id: "orders", Name: "orders", Arn: "arn:aws:lambda:us-east-1:123456789012:function:orders"}
+
+	// Deleted "web" is gone; the Contains fallback still returns "web-2". It must not be used.
+	_, found := findLookupMatch([]providers.Resource{web2}, "web")
+	assert.False(t, found)
+
+	// When both come back, pick the exact one regardless of order.
+	got, found := findLookupMatch([]providers.Resource{web2, web}, "web")
+	assert.True(t, found)
+	assert.Equal(t, "web", got.Id)
+
+	// Exact ARN key.
+	got, found = findLookupMatch([]providers.Resource{orders}, orders.Arn)
+	assert.True(t, found)
+	assert.Equal(t, "orders", got.Id)
+
+	// Qualified Lambda ARN resolved by GetFunction to the base function.
+	got, found = findLookupMatch([]providers.Resource{orders}, orders.Arn+":PROD")
+	assert.True(t, found)
+	assert.Equal(t, "orders", got.Id)
+
+	// A longer function name sharing the prefix is not a qualifier.
+	_, found = findLookupMatch([]providers.Resource{orders}, orders.Arn+"-v2")
+	assert.False(t, found)
+
+	// DeleteQueue "orders": the queue is gone, but the region scan's
+	// strings.Contains filter still returns "orders-dlq". It must not be
+	// adopted, or the DLQ is marked Deleted and "orders" stays Active.
+	ordersDlq := providers.Resource{Id: "orders-dlq", Name: "orders-dlq", Arn: "arn:aws:sqs:us-east-1:123456789012:orders-dlq"}
+	_, found = findLookupMatch([]providers.Resource{ordersDlq}, "orders")
+	assert.False(t, found)
+
+	// Same for SNS: DeleteTopic "alerts" with "alerts-critical" still present.
+	alertsCritical := providers.Resource{Id: "alerts-critical", Name: "alerts-critical", Arn: "arn:aws:sns:us-east-1:123456789012:alerts-critical"}
+	_, found = findLookupMatch([]providers.Resource{alertsCritical}, "alerts")
+	assert.False(t, found)
+}
+
+func TestAwsEventBridge_ELB_CloudTrail_ResourceSync_SetSecurityGroups_Params(t *testing.T) {
+	lbArn := "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/50dc6c495c0c9188"
+	sqsMessageBody := `{
+		"detail-type": "AWS API Call via CloudTrail",
+		"source": "aws.elasticloadbalancing",
+		"account": "123456789012",
+		"time": "2026-04-08T18:00:00Z",
+		"region": "us-east-1",
+		"detail": {
+			"eventSource": "elasticloadbalancing.amazonaws.com",
+			"eventName": "SetSecurityGroups",
+			"requestParameters": {"loadBalancerArn": "` + lbArn + `", "securityGroups": ["sg-0123456789"]}
+		}
+	}`
+
+	params := renderActionParams(t, "ELB_CloudTrail_Resource_Sync", sqsMessageBody)
+	assert.Equal(t, lbArn, params["resource_id"])
+	// aws_elb.go stores ALBs as "application_loadbalancer", not the Classic-only "loadbalancer".
+	assert.Equal(t, "application_loadbalancer", params["resource_type"])
+	assert.Equal(t, "", params["new_status"], "SetSecurityGroups doesn't change the LB's lifecycle status")
+}
+
+func TestAwsEventBridge_SQS_CloudTrail_ResourceSync_CreateQueue_Params(t *testing.T) {
+	queueUrl := "https://sqs.us-east-1.amazonaws.com/123456789012/my-queue"
+	sqsMessageBody := `{
+		"detail-type": "AWS API Call via CloudTrail",
+		"source": "aws.sqs",
+		"account": "123456789012",
+		"time": "2026-04-08T18:15:00Z",
+		"region": "us-east-1",
+		"detail": {
+			"eventSource": "sqs.amazonaws.com",
+			"eventName": "CreateQueue",
+			"requestParameters": {"queueName": "my-queue"},
+			"responseElements": {"queueUrl": "` + queueUrl + `"}
+		}
+	}`
+
+	params := renderActionParams(t, "SQS_CloudTrail_Resource_Sync", sqsMessageBody)
+	assert.Equal(t, "my-queue", params["resource_id"], "must match the bulk inventory sync's Id (queue name), not the raw queueUrl")
+	assert.Equal(t, "Active", params["new_status"])
+}
+
+func TestAwsEventBridge_SQS_CloudTrail_ResourceSync_DeleteQueue_Params(t *testing.T) {
+	queueUrl := "https://sqs.us-east-1.amazonaws.com/123456789012/my-queue"
+	sqsMessageBody := `{
+		"detail-type": "AWS API Call via CloudTrail",
+		"source": "aws.sqs",
+		"account": "123456789012",
+		"time": "2026-04-08T18:20:00Z",
+		"region": "us-east-1",
+		"detail": {
+			"eventSource": "sqs.amazonaws.com",
+			"eventName": "DeleteQueue",
+			"requestParameters": {"queueUrl": "` + queueUrl + `"}
+		}
+	}`
+
+	params := renderActionParams(t, "SQS_CloudTrail_Resource_Sync", sqsMessageBody)
+	assert.Equal(t, "my-queue", params["resource_id"], "must match the bulk inventory sync's Id (queue name), not the raw queueUrl")
+	assert.Equal(t, "Deleted", params["new_status"])
+}
+
+func TestAwsEventBridge_SNS_CloudTrail_ResourceSync_CreateTopic_Params(t *testing.T) {
+	topicArn := "arn:aws:sns:us-east-1:123456789012:my-topic"
+	sqsMessageBody := `{
+		"detail-type": "AWS API Call via CloudTrail",
+		"source": "aws.sns",
+		"account": "123456789012",
+		"time": "2026-04-08T18:25:00Z",
+		"region": "us-east-1",
+		"detail": {
+			"eventSource": "sns.amazonaws.com",
+			"eventName": "CreateTopic",
+			"requestParameters": {"name": "my-topic"},
+			"responseElements": {"topicArn": "` + topicArn + `"}
+		}
+	}`
+
+	params := renderActionParams(t, "SNS_CloudTrail_Resource_Sync", sqsMessageBody)
+	assert.Equal(t, "my-topic", params["resource_id"], "must match the bulk inventory sync's Id (topic name), not the raw topicArn")
+	assert.Equal(t, "topic", params["resource_type"])
+	assert.Equal(t, "Active", params["new_status"])
+}
+
+func TestAwsEventBridge_SNS_CloudTrail_ResourceSync_DeleteTopic_Params(t *testing.T) {
+	topicArn := "arn:aws:sns:us-east-1:123456789012:my-topic"
+	sqsMessageBody := `{
+		"detail-type": "AWS API Call via CloudTrail",
+		"source": "aws.sns",
+		"account": "123456789012",
+		"time": "2026-04-08T18:26:00Z",
+		"region": "us-east-1",
+		"detail": {
+			"eventSource": "sns.amazonaws.com",
+			"eventName": "DeleteTopic",
+			"requestParameters": {"topicArn": "` + topicArn + `"}
+		}
+	}`
+
+	params := renderActionParams(t, "SNS_CloudTrail_Resource_Sync", sqsMessageBody)
+	assert.Equal(t, "my-topic", params["resource_id"], "must match the bulk inventory sync's Id (topic name), not the raw topicArn")
+	assert.Equal(t, "Deleted", params["new_status"])
+}

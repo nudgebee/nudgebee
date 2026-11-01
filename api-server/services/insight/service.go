@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lib/pq"
 	"github.com/samber/lo"
 )
 
@@ -25,7 +26,32 @@ func readJSONFile() ([]InsightRule, error) {
 	return rules, err
 }
 
-func tryProcessRule(ctx *security.RequestContext, rule InsightRule, accountIdAndTenantIds map[string]tenantAndProvider) error {
+// The two statements below take the table as a parameter so a DB test can run
+// them against a throwaway table. Production always passes insightTable.
+const insightTable = "insight"
+
+// upsertInsightQuery writes an insight only when something about it changed.
+// The refresh runs every 10 minutes and most insights are the same from one run
+// to the next, so without the WHERE every run rewrote every row.
+func upsertInsightQuery(table string) string {
+	return `INSERT INTO ` + table + ` AS i (tenant, account_id, resource_id, unique_id, title, status, rule, type, source, applications, severity)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		ON CONFLICT (tenant, account_id, unique_id)
+			DO UPDATE SET title = EXCLUDED.title, status = EXCLUDED.status, rule = EXCLUDED.rule, applications = EXCLUDED.applications, updated_at = now(), type = EXCLUDED.type, source = EXCLUDED.source, severity = EXCLUDED.severity
+			WHERE (i.title, i.status, i.rule, i.applications, i.type, i.source, i.severity)
+				IS DISTINCT FROM (EXCLUDED.title, EXCLUDED.status, EXCLUDED.rule, EXCLUDED.applications, EXCLUDED.type, EXCLUDED.source, EXCLUDED.severity)`
+}
+
+// closeUnreportedInsightsQuery closes a rule's insights for every account the
+// run did not report, and leaves rows that are already closed alone. The
+// COALESCE matters: a nil Go slice binds as NULL, and `<> ALL(NULL)` matches no
+// row, so a run that reported nothing would close nothing.
+func closeUnreportedInsightsQuery(table string) string {
+	return `UPDATE ` + table + ` SET status = 'CLOSED'
+		WHERE unique_id = $1 AND status <> 'CLOSED' AND account_id <> ALL(COALESCE($2::uuid[], '{}'))`
+}
+
+func tryProcessRule(ctx *security.RequestContext, rule InsightRule, accountIdAndTenantIds map[string]tenantAndProvider) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("Failed to process rule", "rule", rule.UniqueID, "recover", r)
@@ -50,16 +76,21 @@ func tryProcessRule(ctx *security.RequestContext, rule InsightRule, accountIdAnd
 		}
 	}
 
-	ctx.GetLogger().Info(fmt.Sprintf("Closing existing insights for %s", rule.UniqueID))
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return err
 	}
 
-	_, err = dbms.Db.Exec("UPDATE insight SET status = 'CLOSED' WHERE unique_id = $1", rule.UniqueID)
-	if err != nil {
-		return err
-	}
+	// Runs last, on every exit including a failed or panicking run: whatever the
+	// rule did not report this time is closed. A rule that fails reports nothing,
+	// so its insights close, as they did when every run began by closing them all.
+	reportedAccounts := make([]string, 0, len(accountIdAndTenantIds))
+	defer func() {
+		ctx.GetLogger().Info(fmt.Sprintf("Closing insights no longer reported for %s", rule.UniqueID))
+		if _, closeErr := dbms.Db.Exec(closeUnreportedInsightsQuery(insightTable), rule.UniqueID, pq.Array(reportedAccounts)); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 
 	executor, err := newRuleExecutor(ctx, rule)
 	if err != nil {
@@ -90,14 +121,11 @@ func tryProcessRule(ctx *security.RequestContext, rule InsightRule, accountIdAnd
 		if err != nil {
 			return fmt.Errorf("failed to serialize applications: %w", err)
 		}
-		query := `INSERT INTO insight (tenant, account_id, resource_id, unique_id, title, status, rule, type, source, applications, severity) 
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) 
-			ON CONFLICT (tenant, account_id, unique_id) 
-				DO UPDATE SET title = EXCLUDED.title, status = EXCLUDED.status, rule = EXCLUDED.rule, applications = EXCLUDED.applications, updated_at = now(), type = EXCLUDED.type, source = EXCLUDED.source, severity= EXCLUDED.severity`
-		_, err = dbms.Db.Exec(query, accountIdAndTenantIds[insight.AccountID].tenant, insight.AccountID, sql.NullString{String: insight.ResourceID, Valid: (insight.ResourceID != "")}, insight.UniqueID, insight.Title, insight.Status, string(jsonRule), insight.Type, insight.Source, applicationsJSON, insight.Severity)
+		_, err = dbms.Db.Exec(upsertInsightQuery(insightTable), accountIdAndTenantIds[insight.AccountID].tenant, insight.AccountID, sql.NullString{String: insight.ResourceID, Valid: (insight.ResourceID != "")}, insight.UniqueID, insight.Title, insight.Status, string(jsonRule), insight.Type, insight.Source, applicationsJSON, insight.Severity)
 		if err != nil {
 			return err
 		}
+		reportedAccounts = append(reportedAccounts, insight.AccountID)
 	}
 
 	return nil
@@ -171,7 +199,7 @@ func Process(ctx *security.RequestContext, accountIds ...string) error {
 		return rule.UniqueID
 	})
 
-	query := "UPDATE insight SET status = 'CLOSED' WHERE unique_id NOT IN (?)"
+	query := "UPDATE insight SET status = 'CLOSED' WHERE status <> 'CLOSED' AND unique_id NOT IN (?)"
 	var args []any
 	args = append(args, ruleIds)
 

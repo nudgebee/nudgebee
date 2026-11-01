@@ -18,7 +18,7 @@ func (t *AddChannelMembersTask) GetName() string {
 
 // GetDescription returns a brief description of the task.
 func (t *AddChannelMembersTask) GetDescription() string {
-	return "Add users to a Slack channel, MS Teams team/channel, or Google Chat space."
+	return "Add users to a Slack channel or Google Chat space."
 }
 
 // GetDisplayName returns a human-readable name for the task.
@@ -127,35 +127,21 @@ func (t *AddChannelMembersTask) InputSchema() *types.Schema {
 				Type:        "string",
 				Description: "Notification Provider",
 				Required:    true,
-				Options:     []string{"slack", "ms_teams", "google_chat"},
+				Options:     []string{"slack", "google_chat"},
 				Order:       1,
 			},
 			"channel_id": {
 				Type:        "string",
-				Description: "Channel/space ID to add users to. For MS Teams this is the channel in the team identified by team_id.",
+				Description: "Channel/space ID to add users to.",
 				Required:    true,
 				Order:       2,
 			},
 			"user_ids": {
 				Type:        "array",
 				SubType:     "string",
-				Description: "User IDs to add. For MS Teams these are Azure AD object IDs; for Google Chat, people IDs.",
+				Description: "User IDs to add: Slack user IDs, or Google Chat people IDs.",
 				Required:    true,
 				Order:       3,
-			},
-			"team_id": {
-				Type:        "string",
-				Description: "MS Teams TeamId (required for ms_teams). Members are added at the team level, which grants access to its standard channels.",
-				Required:    false,
-				RequiredWhen: &types.RequiredWhen{
-					Field: "provider",
-					Value: []string{"ms_teams"},
-				},
-				VisibleWhen: &types.VisibleWhen{
-					Field: "provider",
-					Value: []string{"ms_teams"},
-				},
-				Order: 4,
 			},
 		},
 	}
@@ -172,12 +158,12 @@ func (t *AddChannelMembersTask) OutputSchema() *types.Schema {
 			},
 			"channel": {
 				Type:        "string",
-				Description: "Channel/space ID (team ID for MS Teams).",
+				Description: "Channel/space ID.",
 				Required:    true,
 			},
 			"team": {
 				Type:        "string",
-				Description: "MS Teams TeamId.",
+				Description: "Team ID, when the platform returns one.",
 				Required:    false,
 			},
 			"added": {

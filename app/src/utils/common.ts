@@ -267,6 +267,9 @@ export const getCloudProviderLabel = (cloudProvider: string) => {
     case 'CUBEAPM_WEBHOOK':
       label = 'CubeAPM Webhook';
       break;
+    case 'SIGNOZ_WEBHOOK':
+      label = 'SigNoz Webhook';
+      break;
     case 'OBSERVE':
       label = 'Observe';
       break;
@@ -312,13 +315,16 @@ export const getCloudProviderLabel = (cloudProvider: string) => {
     case 'WORKFLOW_WEBHOOK':
       label = 'Automation Webhook';
       break;
+    case 'EVENT_WEBHOOK':
+      label = 'Event Webhook';
+      break;
     case 'BITBUCKET':
       label = 'Bitbucket';
       break;
     case 'GITLAB':
       label = 'Gitlab';
       break;
-    case 'GRAFANA-TEMPO':
+    case 'GRAFANA_TEMPO':
       label = 'Grafana Tempo';
       break;
     case 'ES':
@@ -758,6 +764,19 @@ export const formatCurrency = (amount: number | null | undefined) => {
 };
 
 export const formatCount = (n: number | null | undefined) => (n != null ? n.toLocaleString() : '0');
+
+// formatServiceMapRequests renders a service-map link's RequestCount. The
+// eBPF map reports requests per second; the OTel map reports the number of
+// calls in the selected window.
+export const formatServiceMapRequests = (value: number | null | undefined, perSecond: boolean) => {
+  if (!value || isNaN(value)) {
+    return '-';
+  }
+  if (perSecond) {
+    return `${value.toLocaleString(undefined, { maximumSignificantDigits: 3 })} req/s`;
+  }
+  return `${Math.round(value).toLocaleString()} req`;
+};
 
 export const formatActionNameForAuditMessage = (actionName: string) => {
   if (!actionName) return '';

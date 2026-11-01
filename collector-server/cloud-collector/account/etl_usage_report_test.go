@@ -99,6 +99,20 @@ func TestAgentStatusForUsageSync(t *testing.T) {
 			err:  errors.New("failed to fetch cost report manifest: AccessDenied on the CUR bucket"),
 			want: AgentStatusDisconnected,
 		},
+		{
+			// Azure: throttled, or failed for an unrecognised reason, after the
+			// provider confirmed the credential can still read the subscription.
+			name: "cost fetch failed with a working credential stays connected",
+			err:  fmt.Errorf("%w: rate limited: %w", providers.ErrCostFetchFailedCredentialOK, errors.New("RESPONSE 429")),
+			want: AgentStatusConnected,
+		},
+		{
+			// Azure: the credential can no longer read the subscription. This is
+			// returned unwrapped, so it must still disconnect.
+			name: "broken credential disconnects",
+			err:  errors.New("The service principal can no longer read subscription X: RESPONSE 403"),
+			want: AgentStatusDisconnected,
+		},
 	}
 
 	for _, tt := range tests {
@@ -107,5 +121,19 @@ func TestAgentStatusForUsageSync(t *testing.T) {
 				t.Fatalf("agentStatusForUsageSync() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestCostFetchFailedCredentialOKIsNotBenign pins that a cost failure with a
+// working credential keeps the account connected but is still a failure for
+// the queue: the job is dead-lettered and "Sync now" reports the error, so a
+// month that fails outside the daily window leaves a trace.
+func TestCostFetchFailedCredentialOKIsNotBenign(t *testing.T) {
+	err := fmt.Errorf("%w: throttled", providers.ErrCostFetchFailedCredentialOK)
+	if isBenignCostOutcome(err) {
+		t.Fatal("isBenignCostOutcome() = true, want false: the job must still fail and dead-letter")
+	}
+	if got := agentStatusForUsageSync(err); got != AgentStatusConnected {
+		t.Fatalf("agentStatusForUsageSync() = %q, want %q", got, AgentStatusConnected)
 	}
 }

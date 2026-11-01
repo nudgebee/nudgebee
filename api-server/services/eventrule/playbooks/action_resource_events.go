@@ -3,12 +3,15 @@ package playbooks
 import (
 	"errors"
 	"fmt"
+	"regexp"
+	"sort"
 	"strings"
+	"time"
 )
 
-// resource_events_enricher fetches K8s Events for the subject resource and
-// renders them as a kubectl-style table (LastSeen / Type / Reason / Object /
-// Message).
+// resource_events_enricher fetches K8s Events for the subject resource — and,
+// for a workload, the ReplicaSets / Jobs / Pods it owns — and renders them as a
+// kubectl-style table (LastSeen / Type / Reason / Object / Message).
 //
 // Fires for any pod / workload / node subject the trigger engine produced.
 // Skipped when the agent already provided this block.
@@ -62,8 +65,8 @@ func (a *resourceEventsAction) Execute(ctx PlaybookActionContext, rawParams map[
 
 	// The agent's get_resource doesn't honor field_selector (kube/Handlers
 	// only accepts resource_type/group/version/namespace/name). Pull the
-	// namespace's events and filter client-side on involvedObject.name +
-	// involvedObject.namespace. Namespace scope keeps the round-trip bounded
+	// namespace's events and filter client-side on the involvedObject (see
+	// filterEventsForSubject). Namespace scope keeps the round-trip bounded
 	// even for clusters with thousands of cluster-wide events.
 	params := map[string]any{
 		"resource_type":  "events",
@@ -78,7 +81,7 @@ func (a *resourceEventsAction) Execute(ctx PlaybookActionContext, rawParams map[
 		return nil, fmt.Errorf("resource_events_enricher: %w", err)
 	}
 
-	matched := filterEventsByInvolvedObject(data, kind, name, namespace)
+	matched := filterEventsForSubject(data, kind, name, namespace)
 
 	// Node Events are recorded in the "default" namespace, so the namespace
 	// fetch above cannot see them however the filter is written. A second,
@@ -100,19 +103,7 @@ func (a *resourceEventsAction) Execute(ctx PlaybookActionContext, rawParams map[
 	} else {
 		matched = append(matched, nodeScopedFailureEvents(data, nodeName)...)
 	}
-	rows, headers := eventListToTable(matched)
-
-	insight := []PlaybookActionResponseInsight{}
-	if len(rows) == 0 {
-		// Kubernetes garbage collects Events an hour after they are emitted
-		// (kube-apiserver --event-ttl, default 1h). A re-reported occurrence
-		// firing hours after the underlying restart finds nothing, and an
-		// empty table reads as "the object was healthy". Say which it is.
-		insight = append(insight, PlaybookActionResponseInsight{
-			Message:  fmt.Sprintf("No Kubernetes Events found for %s/%s. Events older than the cluster's event TTL (1h by default) have already been garbage collected, so this is expected when the finding is a re-report of an earlier failure.", kind, name),
-			Severity: "info",
-		})
-	}
+	rows, headers, insight := resourceEventsCard(matched, kind, name, ctx.GetEvent().AlertStart(), time.Now())
 
 	if additionalInfo == nil {
 		additionalInfo = map[string]any{}
@@ -237,14 +228,167 @@ func filterEventsByInvolvedObject(data any, kind, name, namespace string) []any 
 	return out
 }
 
+// k8sGeneratedChars is the alphabet Kubernetes draws generated name parts from
+// (k8s.io/apimachinery/pkg/util/rand): both the 5-character suffix of a
+// generateName object and the pod-template-hash a Deployment names its
+// ReplicaSets with.
+const k8sGeneratedChars = `[bcdfghjklmnpqrstvwxz2456789]`
+
+// ownedObject is one kind of object a workload's controllers create, and the
+// name they give it.
+type ownedObject struct {
+	kind string
+	name *regexp.Regexp
+}
+
+// ownedObjects returns the objects a workload's controllers create. Kubernetes
+// records the Events that explain a workload failure (FailedScheduling, image
+// pull errors, BackOff) on these, not on the workload: keeping only the
+// workload's own Events left almost every Deployment and StatefulSet card
+// empty.
+//
+// An Event's involvedObject carries the object's own uid, not its owner's, so
+// ownership is read from the exact name each controller generates. The patterns
+// are anchored and shape-specific so that workload "api" does not swallow the
+// objects of a sibling "api-worker". The pod-template-hash is the decimal fnv32
+// hash re-encoded one character per digit (1-10 characters); requiring at least
+// 6 misses 1 hash in ~40,000 but stops a Job "api-v2" passing for "api"'s pods.
+func ownedObjects(kind, name string) []ownedObject {
+	suffix := k8sGeneratedChars + `{5}`
+	owned := func(kind, rest string) ownedObject {
+		return ownedObject{kind: kind, name: regexp.MustCompile(`^` + regexp.QuoteMeta(name) + `-` + rest + `$`)}
+	}
+	switch strings.ToLower(kind) {
+	case "deployment", "rollout":
+		hash := k8sGeneratedChars + `{6,10}`
+		return []ownedObject{owned("ReplicaSet", hash), owned("Pod", hash+`-`+suffix)}
+	case "statefulset":
+		return []ownedObject{owned("Pod", `\d+`)}
+	case "daemonset", "replicaset":
+		return []ownedObject{owned("Pod", suffix)}
+	case "job":
+		// Indexed Jobs name their pods <job>-<index>-<suffix>.
+		return []ownedObject{owned("Pod", `(\d+-)?`+suffix)}
+	case "cronjob":
+		// Each Job is named after its scheduled time in minutes.
+		return []ownedObject{owned("Job", `\d+`), owned("Pod", `\d+-(\d+-)?`+suffix)}
+	}
+	return nil
+}
+
+// filterEventsForSubject keeps the Events about the subject itself and, for a
+// workload, about the objects its controllers created (see ownedObjects).
+func filterEventsForSubject(data any, kind, name, namespace string) []any {
+	owned := ownedObjects(kind, name)
+	out := []any{}
+	for _, item := range filterEventsByInvolvedObject(data, "", "", namespace) {
+		io := getMapField(item.(map[string]any), "involved_object", "involvedObject")
+		ioKind, _ := io["kind"].(string)
+		ioName, _ := io["name"].(string)
+		if ioName == name && strings.EqualFold(ioKind, kind) {
+			out = append(out, item)
+			continue
+		}
+		for _, o := range owned {
+			if strings.EqualFold(ioKind, o.kind) && o.name.MatchString(ioName) {
+				out = append(out, item)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// maxResourceEventRows bounds the card: a crash-looping workload with many
+// replicas repeats the same few Events per pod.
+const maxResourceEventRows = 50
+
+// eventTTL is kube-apiserver's default --event-ttl, after which Events are
+// garbage collected.
+const eventTTL = time.Hour
+
+// resourceEventsCard renders the matched Events, Warnings first and newest
+// first, capped at maxResourceEventRows, and says why when there are none.
+func resourceEventsCard(events []any, kind, name string, alertStart *time.Time, now time.Time) ([][]any, []string, []PlaybookActionResponseInsight) {
+	insight := []PlaybookActionResponseInsight{}
+	shown := mostRelevantEvents(events, maxResourceEventRows)
+	rows, headers := eventListToTable(shown)
+	if len(shown) < len(events) {
+		insight = append(insight, PlaybookActionResponseInsight{
+			Message:  fmt.Sprintf("Showing %d of %d Events, Warnings first and newest first.", len(shown), len(events)),
+			Severity: "info",
+		})
+	}
+	if len(rows) == 0 {
+		insight = append(insight, PlaybookActionResponseInsight{
+			Message:  noEventsMessage(kind, name, alertStart, now),
+			Severity: "info",
+		})
+	}
+	return rows, headers, insight
+}
+
+// noEventsMessage explains an empty card. Blaming the event TTL is only right
+// when the alert is older than it: most empty cards are for alerts minutes old,
+// and an empty table there means nothing was recorded.
+func noEventsMessage(kind, name string, alertStart *time.Time, now time.Time) string {
+	subject := fmt.Sprintf("%s/%s", kind, name)
+	if owned := ownedObjects(kind, name); len(owned) > 0 {
+		kinds := make([]string, len(owned))
+		for i, o := range owned {
+			kinds[i] = o.kind + "s"
+		}
+		subject += " or its " + strings.Join(kinds, " and ")
+	}
+	switch {
+	case alertStart == nil || alertStart.IsZero():
+		return fmt.Sprintf("No Kubernetes Events found for %s.", subject)
+	case now.Sub(*alertStart) > eventTTL:
+		return fmt.Sprintf("No Kubernetes Events found for %s. The alert started %s ago, longer than the cluster's event TTL (1h by default), so Events from around the alert have likely been garbage collected.", subject, formatDuration(now.Sub(*alertStart)))
+	default:
+		return fmt.Sprintf("No Kubernetes Events were recorded for %s.", subject)
+	}
+}
+
+// mostRelevantEvents orders Warnings before Normal Events, newest first within
+// each, and keeps at most limit of them.
+func mostRelevantEvents(events []any, limit int) []any {
+	sorted := append([]any(nil), events...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		a, _ := sorted[i].(map[string]any)
+		b, _ := sorted[j].(map[string]any)
+		aType, _ := a["type"].(string)
+		bType, _ := b["type"].(string)
+		if aWarn, bWarn := aType == "Warning", bType == "Warning"; aWarn != bWarn {
+			return aWarn
+		}
+		return eventLastSeenTime(a).After(eventLastSeenTime(b))
+	})
+	if len(sorted) > limit {
+		sorted = sorted[:limit]
+	}
+	return sorted
+}
+
+func eventLastSeen(item map[string]any) string {
+	if last := firstStringField(item, "last_timestamp", "lastTimestamp"); last != "" {
+		return last
+	}
+	return firstStringField(item, "event_time", "eventTime")
+}
+
+// eventLastSeenTime is the zero time when the Event carries no parseable
+// timestamp, which sorts it last.
+func eventLastSeenTime(item map[string]any) time.Time {
+	t, _ := time.Parse(time.RFC3339Nano, eventLastSeen(item))
+	return t
+}
+
 func eventListToTable(data any) ([][]any, []string) {
 	headers := []string{"LastSeen", "Type", "Reason", "Object", "Message"}
 	rows := [][]any{}
 	walk := func(item map[string]any) {
-		last := firstStringField(item, "last_timestamp", "lastTimestamp")
-		if last == "" {
-			last = firstStringField(item, "event_time", "eventTime")
-		}
+		last := eventLastSeen(item)
 		eventType, _ := item["type"].(string)
 		reason, _ := item["reason"].(string)
 		obj := ""

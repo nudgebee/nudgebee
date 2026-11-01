@@ -69,3 +69,26 @@ func TestValidateContainerResources(t *testing.T) {
 	// Absurd inflation.
 	assert.Error(t, validateContainerResources(container(map[string]any{"memory_request": "5Ti"})))
 }
+
+// Kubernetes refuses a request above its limit. The OOM tune screen proposed
+// exactly that (1126.4Mi against 563.2Mi) when the request it started from had
+// been double-counted; the apply must refuse it rather than hand the agent a
+// patch that cannot land.
+func TestValidateContainerResourcesRequestAboveLimit(t *testing.T) {
+	err := validateContainerResources(container(map[string]any{
+		"memory_request": "1126.4Mi", "memory_limit": "563.2Mi",
+	}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "memory_request \"1126.4Mi\" is above memory_limit \"563.2Mi\"")
+
+	err = validateContainerResources(container(map[string]any{"cpu_request": "500m", "cpu_limit": 0.25}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cpu_request")
+
+	// Equal is allowed, units may differ, and a missing side leaves the running
+	// value in place, which this check cannot see.
+	require.NoError(t, validateContainerResources(container(map[string]any{
+		"memory_request": "1Gi", "memory_limit": "1024Mi", "cpu_request": 0.5, "cpu_limit": "500m",
+	})))
+	require.NoError(t, validateContainerResources(container(map[string]any{"memory_request": "2Gi", "cpu_request": "2"})))
+}

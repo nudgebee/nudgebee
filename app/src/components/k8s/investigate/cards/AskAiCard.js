@@ -5,11 +5,13 @@ import { Typography, Box, CircularProgress } from '@mui/material';
 import { Link } from '@ui/Link';
 import { Chip } from '@ui/Chip';
 import { Input } from '@ui/Input';
+import { Select } from '@ui/Select';
 import { Button as DsButton } from '@ui/Button';
 import DOMPurify from 'dompurify';
 import KubernetesRightSizingUpdateForm from '@components/recommendations/KubernetesRightSizingUpdateForm';
 import { useEffect, useState, useCallback, useRef } from 'react';
 import ConversationLoader from '@shared/ConversationLoader';
+import { describeAnalysisStage } from '@components/k8s/investigate/analysisStage';
 import { ds } from 'src/utils/colors';
 import { ANNOTATIONS } from '@lib/annotationKeys';
 import { getNubiIconUrl } from '@hooks/useTenantBranding';
@@ -19,6 +21,7 @@ import { FiArrowRight } from 'react-icons/fi';
 import { useConversationSuggestions } from '@hooks/useConversationSuggestions';
 import { safeJSONParse } from '@utils/common';
 import { reportContainsInvestigation } from '@utils/investigationReport';
+import { formatClockCompact } from '@shared/format/Datetime';
 
 // The model returns prose with single newlines between paragraphs, which markdown
 // collapses into one run-on paragraph, so a blank line is inserted between them.
@@ -272,6 +275,7 @@ class AskAiCard {
       // currently shown. Chip click sets this; falls back to first available
       // section (see effectiveActiveSectionId below).
       const [activeSectionId, setActiveSectionId] = useState(null);
+      const [selectedAnalysisVersion, setSelectedAnalysisVersion] = useState('live');
       const lastFetchedConvIdRef = useRef(null);
       const isMountedRef = useRef(true);
       // One fetcher for the follow-up poll loop. Holds cursor + merged Maps,
@@ -287,6 +291,10 @@ class AskAiCard {
           isMountedRef.current = false;
         };
       }, []);
+
+      useEffect(() => {
+        setSelectedAnalysisVersion('live');
+      }, [event?.id]);
 
       const checkWaitingConversation = () => {
         if (!event?.fingerprint || !event?.cloud_account_id) return;
@@ -608,16 +616,35 @@ class AskAiCard {
       );
 
       if (!localAiData) {
-        return <ConversationLoader />;
+        return <ConversationLoader label='Loading the analysis' />;
       }
 
-      let { analysis, summary, investigation, detailed_response, source_updates, task_statuses, code_analysis_enabled } = localAiData || {};
+      const currentGeneratedAt = localAiData?.generated_at ? new Date(localAiData.generated_at).getTime() : null;
+      const historicalVersions = (localAiData?.analysis_versions || []).filter((version) => {
+        if (!version?.id || !version?.event_id || !version?.generated_at || !version?.data || !localAiData?.event_id) {
+          return false;
+        }
+        const versionGeneratedAt = version.generated_at ? new Date(version.generated_at).getTime() : null;
+        return !(
+          localAiData?.status?.toLowerCase() === 'completed' &&
+          version.event_id === localAiData?.event_id &&
+          versionGeneratedAt === currentGeneratedAt
+        );
+      });
+      const isShowingFallback =
+        selectedAnalysisVersion === 'live' && localAiData?.status?.toLowerCase() !== 'completed' && historicalVersions.length > 0;
+      const effectiveVersionId = isShowingFallback ? historicalVersions[0].id : selectedAnalysisVersion;
+      const selectedVersion = historicalVersions.find((version) => version.id === effectiveVersionId);
+      const displayedAiData = selectedVersion?.data || (selectedVersion ? null : localAiData);
+      const isViewingHistory = !!selectedVersion;
+
+      let { analysis, summary, investigation, detailed_response, source_updates, task_statuses, code_analysis_enabled } = displayedAiData || {};
 
       // While a Refresh Investigation run is in flight, ignore the previous run's
       // retained content (the backend keeps the old summary/investigation text
       // until the new run lands) so every section renders the same in-progress
       // loader as a first-time investigation instead of a stale, completed result.
-      const isRegenerating = cardInstance.isRefreshing && localAiData?.status?.toLowerCase() === 'in_progress';
+      const isRegenerating = !isViewingHistory && cardInstance.isRefreshing && localAiData?.status?.toLowerCase() === 'in_progress';
       if (isRegenerating) {
         analysis = '';
         summary = '';
@@ -642,7 +669,15 @@ class AskAiCard {
       const investigationIsInReport = reportContainsInvestigation(summaryContent, investigation);
 
       let sections = [];
-      const isTerminal = ['completed', 'failed', 'killed'].includes(localAiData?.status?.toLowerCase());
+      const isTerminal = ['completed', 'failed', 'killed'].includes(displayedAiData?.status?.toLowerCase());
+
+      // The step still running while the shown run is live. It is the wait line, and it also sits
+      // above a first summary: the summary lands in about half a minute and the report that
+      // replaces it takes minutes more, with nothing on the first screen saying so.
+      const runningStage = isTerminal || isViewingHistory ? '' : describeAnalysisStage(task_statuses);
+      // The same for the new run, when an older completed version is shown in its place.
+      const liveStage =
+        isShowingFallback && localAiData?.status?.toLowerCase() === 'in_progress' ? describeAnalysisStage(localAiData?.task_statuses) : '';
 
       const fallbackStatus = (taskStatus, content) => {
         const normalizedStatus = taskStatus?.toUpperCase();
@@ -721,15 +756,15 @@ class AskAiCard {
       const renderExtras = () => {
         let extrasContent = '';
 
-        if (localAiData?.pr_list?.length > 0) {
-          localAiData.pr_list.forEach((pr) => {
+        if (displayedAiData?.pr_list?.length > 0) {
+          displayedAiData.pr_list.forEach((pr) => {
             let component = '';
-            if (localAiData?.file_details?.files?.length > 0) {
-              const filePath = localAiData?.file_details?.files[0]?.file_path;
+            if (displayedAiData?.file_details?.files?.length > 0) {
+              const filePath = displayedAiData?.file_details?.files[0]?.file_path;
               component = filePath?.split('/')?.[0] ?? '';
             }
-            if (localAiData?.root_cause_analysis) {
-              extrasContent += `\n\n**Root Cause Analysis**\n\n${localAiData?.root_cause_analysis}`;
+            if (displayedAiData?.root_cause_analysis) {
+              extrasContent += `\n\n**Root Cause Analysis**\n\n${displayedAiData?.root_cause_analysis}`;
             }
             extrasContent += `\n\n**The issue was introduced by the following PRs:**\n 🔀 **\`PR #${pr.number.toString()} ${pr.state.toUpperCase()}\`**${
               component ? ` \`${component}\`` : ''
@@ -737,7 +772,7 @@ class AskAiCard {
           });
         }
 
-        const fileName = localAiData?.file_details?.files?.[0]?.file_path?.split('/').pop() || 'code';
+        const fileName = displayedAiData?.file_details?.files?.[0]?.file_path?.split('/').pop() || 'code';
 
         return (
           <Box>
@@ -777,7 +812,7 @@ class AskAiCard {
                 >
                   {source_updates?.gitDiff
                     ? 'Reasoning behind the proposed code changes'
-                    : localAiData?.file_details?.files?.[0]?.file_path
+                    : displayedAiData?.file_details?.files?.[0]?.file_path
                     ? 'Code-level root cause identified'
                     : source_updates?.outcome === 'failed'
                     ? "Code check couldn't finish"
@@ -787,14 +822,14 @@ class AskAiCard {
               </Box>
             )}
 
-            {code_analysis_enabled !== false && source_updates?.gitDiff && localAiData?.source_details?.[ANNOTATIONS.WORKLOAD_GIT_REPO] && (
+            {code_analysis_enabled !== false && source_updates?.gitDiff && displayedAiData?.source_details?.[ANNOTATIONS.WORKLOAD_GIT_REPO] && (
               /* No gitDiff prop on purpose: the diff is rendered immediately above this button, so
                  repeating it inside the confirmation would show the same patch twice. The
                  remediation row, which has no diff on screen, does pass it. */
               <EventRaisePrPanel
                 data={cardInstance.buildResolveData()}
-                repoUrl={localAiData?.source_details?.[ANNOTATIONS.WORKLOAD_GIT_REPO]}
-                filePath={source_updates?.file_path || localAiData?.file_details?.files?.[0]?.file_path}
+                repoUrl={displayedAiData?.source_details?.[ANNOTATIONS.WORKLOAD_GIT_REPO]}
+                filePath={source_updates?.file_path || displayedAiData?.file_details?.files?.[0]?.file_path}
               />
             )}
           </Box>
@@ -804,7 +839,7 @@ class AskAiCard {
       return (
         <div style={{ width: '100%' }}>
           {/* Inline follow-up questions with options or text input */}
-          {!isRegenerating && waitingFollowUpItems.length > 0 && (
+          {!isRegenerating && !isViewingHistory && waitingFollowUpItems.length > 0 && (
             <Box sx={{ mb: 'var(--ds-space-4)', display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
               {waitingFollowUpItems.map((item, idx) => {
                 const hasOptions = item.followupOptions && item.followupOptions.length > 0;
@@ -940,43 +975,91 @@ class AskAiCard {
             const effectiveActiveSectionId = activeSectionId && sections.some((s) => s.id === activeSectionId) ? activeSectionId : sections[0]?.id;
             return (
               <>
-                {sections.length > 0 && (
+                {isShowingFallback && (
+                  <Box
+                    sx={{
+                      padding: 'var(--ds-space-3)',
+                      marginBottom: 'var(--ds-space-3)',
+                      backgroundColor: localAiData?.status?.toLowerCase() === 'failed' ? 'var(--ds-red-100)' : 'var(--ds-blue-100)',
+                      borderRadius: 'var(--ds-radius-md)',
+                    }}
+                  >
+                    <Typography sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-800)' }}>
+                      {localAiData?.status?.toLowerCase() === 'failed'
+                        ? `${localAiData?.status_reason || 'The latest analysis failed.'} Showing the most recent completed version.`
+                        : `A new analysis is in progress${liveStage ? ` (${liveStage})` : ''}. Showing the most recent completed version.`}
+                    </Typography>
+                  </Box>
+                )}
+                {(sections.length > 0 || historicalVersions.length > 0) && (
                   <Box
                     sx={{
                       display: 'flex',
-                      gap: 'var(--ds-space-2)',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      gap: 'var(--ds-space-3)',
                       padding: 'var(--ds-space-2) 0',
                       marginBottom: 'var(--ds-space-4)',
                       borderBottom: '1px solid var(--ds-gray-300)',
                       flexWrap: 'wrap',
                     }}
                   >
-                    {sections.map((sec) => {
-                      const isInProgress = sec.status === 'IN_PROGRESS' || sec.status === 'PENDING';
-                      return (
-                        <Chip
-                          key={sec.id}
-                          size='sm'
-                          variant='filter'
-                          selected={sec.id === effectiveActiveSectionId}
-                          loading={isInProgress}
-                          onClick={() => setActiveSectionId(sec.id)}
-                        >
-                          {sec.label}
-                        </Chip>
-                      );
-                    })}
+                    <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)', flexWrap: 'wrap' }}>
+                      {sections.map((sec) => {
+                        const isInProgress = sec.status === 'IN_PROGRESS' || sec.status === 'PENDING';
+                        return (
+                          <Chip
+                            key={sec.id}
+                            size='sm'
+                            variant='filter'
+                            selected={sec.id === effectiveActiveSectionId}
+                            loading={isInProgress}
+                            onClick={() => setActiveSectionId(sec.id)}
+                          >
+                            {sec.label}
+                          </Chip>
+                        );
+                      })}
+                    </Box>
+                    {historicalVersions.length > 0 && (
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
+                        <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', whiteSpace: 'nowrap' }}>
+                          Analysis version
+                        </Typography>
+                        <Box sx={{ width: '280px' }}>
+                          <Select
+                            id='analysis-version-select'
+                            value={selectedAnalysisVersion}
+                            onChange={setSelectedAnalysisVersion}
+                            clearable={false}
+                            options={[
+                              {
+                                value: 'live',
+                                label:
+                                  localAiData?.status?.toLowerCase() === 'in_progress'
+                                    ? 'Latest · In progress'
+                                    : `Latest${localAiData?.generated_at ? ` · ${formatClockCompact(localAiData.generated_at)}` : ''}`,
+                              },
+                              ...historicalVersions.map((version) => ({
+                                value: version.id,
+                                label: `${formatClockCompact(version.generated_at)}${version.event_id !== event.id ? ' · Recurring event' : ''}`,
+                              })),
+                            ]}
+                          />
+                        </Box>
+                      </Box>
+                    )}
                   </Box>
                 )}
 
-                {event.id !== localAiData?.related_event_id && localAiData?.related_event_id && (
+                {event.id !== displayedAiData?.related_event_id && displayedAiData?.related_event_id && (
                   <Box sx={{ mt: 'var(--ds-space-4)', mb: 'var(--ds-space-2)', display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
                     <Typography sx={{ fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.blue[500] }}>
                       Related Event:
                     </Typography>
                     <Link
                       target='_blank'
-                      href={`/investigate?id=${encodeURIComponent(localAiData.related_event_id)}&accountId=${event?.cloud_account_id}`}
+                      href={`/investigate?id=${encodeURIComponent(displayedAiData.related_event_id)}&accountId=${event?.cloud_account_id}`}
                       style={{
                         fontSize: 'var(--ds-text-body-lg)',
                         color: 'var(--ds-blue-500)',
@@ -984,7 +1067,7 @@ class AskAiCard {
                         fontWeight: 'var(--ds-font-weight-medium)',
                       }}
                     >
-                      {localAiData.related_event_id.replace(/[^a-zA-Z0-9-]/g, '')}
+                      {displayedAiData.related_event_id.replace(/[^a-zA-Z0-9-]/g, '')}
                     </Link>
                   </Box>
                 )}
@@ -995,12 +1078,19 @@ class AskAiCard {
                   return (
                     <Box sx={{ marginTop: 'var(--ds-space-4)' }}>
                       {activeSection.status === 'IN_PROGRESS' || activeSection.status === 'PENDING' ? (
-                        <ConversationLoader />
+                        <ConversationLoader label={runningStage || 'Analysing the alert'} />
                       ) : activeSection.content && activeSection.content.trim() !== '' ? (
-                        <MarkDowns
-                          data={cleanContent(activeSection.content)}
-                          sx={{ width: '100%', padding: noPadding ? '0px' : undefined, maxHeight: 'none', overflowY: 'visible' }}
-                        />
+                        <>
+                          {runningStage && (
+                            <Box sx={{ marginBottom: 'var(--ds-space-3)' }}>
+                              <ConversationLoader label={runningStage} />
+                            </Box>
+                          )}
+                          <MarkDowns
+                            data={cleanContent(activeSection.content)}
+                            sx={{ width: '100%', padding: noPadding ? '0px' : undefined, maxHeight: 'none', overflowY: 'visible' }}
+                          />
+                        </>
                       ) : (
                         <Box
                           sx={{
@@ -1026,7 +1116,7 @@ class AskAiCard {
           {!isRegenerating && renderExtras()}
 
           {/* Follow-up conversation messages */}
-          {!isRegenerating && followUpMessages.length > 0 && (
+          {!isRegenerating && !isViewingHistory && followUpMessages.length > 0 && (
             <Box sx={{ mt: 'var(--ds-space-5)' }}>
               {followUpMessages.map((msg, idx) =>
                 msg.type === 'question' ? (
@@ -1054,7 +1144,7 @@ class AskAiCard {
           )}
 
           {/* Follow-up Questions */}
-          {!followUpLoading && followUpQuestions.length > 0 && localAiData?.status?.toLowerCase() === 'completed' && (
+          {!isViewingHistory && !followUpLoading && followUpQuestions.length > 0 && localAiData?.status?.toLowerCase() === 'completed' && (
             <Box sx={{ mt: 'var(--ds-space-5)', mb: 'var(--ds-space-2)' }}>
               <Typography
                 sx={{

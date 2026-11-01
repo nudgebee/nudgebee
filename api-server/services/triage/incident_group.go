@@ -74,10 +74,25 @@ const (
 	// no position in the graph at all. Defaults on like the other two, so the
 	// narrowness has to come from the rule rather than from the switch: it fires
 	// only when nothing else matched, only into an existing incident in the
-	// seed's own scope (namespace, or AWS as a whole), and only when exactly one
-	// such incident is open. This is the flag to pull first if grouping ever
-	// looks too eager.
+	// seed's own scope (namespace, or AWS as a whole) that began with the seed,
+	// and only when exactly one such incident exists. This is the flag to pull
+	// first if grouping ever looks too eager.
 	unlocatedGroupingEnvFlag = "INCIDENT_UNLOCATED_GROUPING"
+	// timingOnlyReasonPrefix starts the reason on every link written on timing
+	// alone. The path is counted and audited by it, and a firing that was linked
+	// this way is told apart by it (groupLinks.timing).
+	timingOnlyReasonPrefix = "no topology position; sole "
+	// timingOnlyCloudWindow is how far from an incident's earliest alert a cloud
+	// alarm may have started and still join it on timing alone. A cloud account
+	// is the widest scope this path has — any alarm of the account against any
+	// alarm-led incident in it — so it gets the tightest bound. Reviewing stored
+	// timing-only links on cloud accounts, the ones a person would call right
+	// started within a few minutes of their incident's earliest alert, while the
+	// wrong ones were spread evenly over the quarter hour. Namespace and node
+	// scopes keep IncidentAttachWindow: there, many links between five and
+	// fifteen minutes looked right — typically one alert type failing on sibling
+	// workloads a few minutes apart.
+	timingOnlyCloudWindow = 5 * time.Minute
 	// leaderTakeoverEnvFlag kills only the replacement of an existing head: with
 	// it off the arriving alert is always filed under the head already there.
 	// Links already moved stay moved.
@@ -533,6 +548,16 @@ func decideAndLink(ctx context.Context, tx *sqlx.Tx, event *models.Event, g grou
 	if err != nil {
 		return false, err
 	}
+	// A related alert that is in its group only on timing is not evidence for
+	// the seed (groupLinks.timing). It is left out; the seed is placed by what
+	// remains, or goes through the timing test itself.
+	related := make([]relatedMember, 0, len(in.Related))
+	for _, m := range in.Related {
+		if !links.filedOnTiming(m.Rows) {
+			related = append(related, m)
+		}
+	}
+	in.Related = related
 	// The head an own row is filed under may be an earlier firing of the same
 	// alert from before the window; which alert that row belongs to decides
 	// whether the seed is its symptom or one more row of it.
@@ -551,13 +576,27 @@ func decideAndLink(ctx context.Context, tx *sqlx.Tx, event *models.Event, g grou
 	if seedFiled {
 		return seedIsChild, nil
 	}
+	// The seed follows another row of its own firing. If that row was filed on
+	// timing alone, so is this one: it is the same firing on the same evidence,
+	// and its link must say so, or this row would place the alert's next firing
+	// where the first row may not (groupLinks.timing).
+	followsTiming := false
+	if in.OwnHead != "" {
+		for _, r := range g.own.rows {
+			if _, filed := links.parent[r]; filed {
+				followsTiming = links.timing[r]
+				break
+			}
+		}
+	}
 	if in.OwnHead == "" && in.OwnLeads == "" {
-		if groups := links.groupsOf(g.own.others); len(groups) > 0 {
+		placing := links.placingFirings(g.own.others)
+		if groups := links.groupsOf(placing); len(groups) > 0 {
 			live, err := loadLiveGroups(ctx, tx, event, groups, start)
 			if err != nil {
 				return false, err
 			}
-			in.OwnHead, in.OwnLeads = earlierFiringPlacement(links, g.own.others, live, sameAlert)
+			in.OwnHead, in.OwnLeads = earlierFiringPlacement(links, placing, live, sameAlert)
 		}
 	}
 	in.OwnRep = g.own.repBefore(g.seedCreated, event.Id)
@@ -601,6 +640,9 @@ func decideAndLink(ctx context.Context, tx *sqlx.Tx, event *models.Event, g grou
 	}
 
 	d := decideGroup(in)
+	if followsTiming && d.Outcome == outcomeJoin && d.HeadRow == in.OwnHead {
+		d.Reason = timingOnlyReason(unlocatedScopeFor(event))
+	}
 	slog.InfoContext(ctx, "Incident group decision",
 		"event_id", event.Id,
 		"outcome", d.Outcome.String(),
@@ -776,7 +818,10 @@ func collapseActiveRows(rows []activeRow, start time.Time, seedFingerprint strin
 
 // relateMembers keeps the active alerts the seed has evidence for. Pure.
 //
-//   - Same subject, started inside the attach window.
+//   - Same subject, started inside the attach window. (One exception is applied
+//     later, once the links are read: an alert that is in its group only on
+//     timing does not carry a neighbour on its own subject in with it — see
+//     groupLinks.timing.)
 //   - On a service within maxIncidentHops of the seed's in either direction,
 //     started inside the attach window. If a, b and c are connected and all three
 //     are alerting, they are one incident.
@@ -910,6 +955,44 @@ func mergeNodeMembers(related []relatedMember, members []*alertMember, nodes nod
 type groupLinks struct {
 	parent map[string]string // child row -> leader row
 	leads  map[string]bool   // rows that have children
+	// timing is the child rows filed on timing alone. Such a link says that
+	// firing started with the incident, and nothing else: not that the alert's
+	// next firing belongs there, and not that another alert on the same subject
+	// does. So nothing is placed THROUGH it — not a later firing of the same
+	// alert (placingFirings), not a related alert (filedOnTiming). Whatever else
+	// belongs to the incident on timing has to pass the timing test itself.
+	// Otherwise an alarm that fails every ten minutes, once in, follows itself
+	// into the group for as long as anything else in it keeps firing, and an
+	// alert that started a quarter of an hour into an incident is filed under it
+	// because a neighbour of its own happened to start with it.
+	timing map[string]bool
+}
+
+// filedOnTiming reports whether the alert these rows belong to is in its group
+// on timing alone: the row that places it (the first filed, as in groupOf) has
+// a timing link.
+func (l groupLinks) filedOnTiming(rows []string) bool {
+	for _, r := range rows {
+		if _, ok := l.parent[r]; ok {
+			return l.timing[r]
+		}
+	}
+	return false
+}
+
+// placingFirings returns, of an alert's other firings, the ones whose place can
+// place a new firing of it: all but those filed on timing alone. Order kept.
+func (l groupLinks) placingFirings(others []string) []string {
+	if len(l.timing) == 0 {
+		return others
+	}
+	kept := make([]string, 0, len(others))
+	for _, r := range others {
+		if !l.timing[r] {
+			kept = append(kept, r)
+		}
+	}
+	return kept
 }
 
 // groupOf reports the group an alert is in, from any of its rows: the head row
@@ -1050,16 +1133,18 @@ func (l groupLinks) root(row string) string {
 // answer with a root. A child with two parents (links written before the lock
 // existed) resolves to the lower id, as the inbox query does.
 func loadGroupLinks(ctx context.Context, tx *sqlx.Tx, accountID string, rows []string) (groupLinks, error) {
-	links := groupLinks{parent: map[string]string{}, leads: map[string]bool{}}
+	links := groupLinks{parent: map[string]string{}, leads: map[string]bool{}, timing: map[string]bool{}}
 	type linkRow struct {
 		Child  string `db:"event_id"`
 		Leader string `db:"related_event_id"`
+		Reason string `db:"correlation_reason"`
 	}
 	add := func(got []linkRow) []string {
 		var leaders []string
 		for _, g := range got {
 			if cur, ok := links.parent[g.Child]; !ok || g.Leader < cur {
 				links.parent[g.Child] = g.Leader
+				links.timing[g.Child] = strings.HasPrefix(g.Reason, timingOnlyReasonPrefix)
 			}
 			links.leads[g.Leader] = true
 			leaders = append(leaders, g.Leader)
@@ -1071,7 +1156,7 @@ func loadGroupLinks(ctx context.Context, tx *sqlx.Tx, accountID string, rows []s
 	}
 	var got []linkRow
 	if err := sqlx.SelectContext(ctx, tx, &got, `
-		SELECT event_id, related_event_id
+		SELECT event_id, related_event_id, coalesce(correlation_reason, '') AS correlation_reason
 		FROM event_correlations
 		WHERE correlation_type = $1
 		  AND cloud_account_id = $2
@@ -1097,7 +1182,7 @@ func loadGroupLinks(ctx context.Context, tx *sqlx.Tx, accountID string, rows []s
 		}
 		got = nil
 		if err := sqlx.SelectContext(ctx, tx, &got, `
-			SELECT event_id, related_event_id
+			SELECT event_id, related_event_id, coalesce(correlation_reason, '') AS correlation_reason
 			FROM event_correlations
 			WHERE correlation_type = $1
 			  AND cloud_account_id = $2
@@ -1347,10 +1432,23 @@ func unlocatedGroupingEnabled() bool {
 //     ImagePullBackOff group reaching 1,854 members across 29 namespaces.
 //     Cross-namespace grouping is still reachable — through a service-map edge,
 //     in relateMembers, where there is evidence for it.
-//   - Exactly one open incident in that scope, or it declines. Two incidents
+//   - The incident must have STARTED with the seed: its earliest alert — the
+//     head or anything filed under it — started within the scope's window of the
+//     seed, before or after. "Fired together" is evidence about how an incident
+//     began. It used to be enough that any member had fired in the last fifteen
+//     minutes, which every new member renewed: one alarm failing every ten
+//     minutes kept a group open for hours, the group stayed the only one open,
+//     and every unplaced alert in the account was filed under it, whatever
+//     resource it was on. An incident that began earlier is not a candidate at
+//     all, so it neither attracts the seed nor stops it joining one that has
+//     just begun.
+//   - Exactly one such incident in that scope, or it declines. Two incidents
 //     means co-timing does not identify which one, and picking either would
 //     attach the alert to a story it may have no part in — the same reason
 //     resourceDimensionIndex drops a dimension its namespaces disagree about.
+//
+// A link written here places the firing it was written for and no other: see
+// groupLinks.timing.
 //
 // Returns the leader to attach to, the reason to record, and whether to attach.
 func attachUnlocatedIncident(ctx context.Context, db sqlx.ExtContext, event *models.Event, start time.Time) (string, time.Duration, string, bool, error) {
@@ -1364,23 +1462,25 @@ func attachUnlocatedIncident(ctx context.Context, db sqlx.ExtContext, event *mod
 		return "", 0, "", false, nil
 	}
 
-	// Leaders of groups that had any member firing inside the attach window, whose
-	// own subject is in the seed's scope. Restricted to the seed's own account too:
-	// co-timing across accounts is not even weak evidence, it is coincidence.
+	// Leaders of the groups an alert that started near the seed belongs to, as a
+	// member or as the head, kept when the whole group is that young: the head
+	// started no earlier than the window, and nothing filed under it did either.
+	// The near alert is what bounds the read — a group is only ever looked at
+	// through the few alerts of the account that started around the seed, never
+	// through its whole history. Restricted to the seed's own account: co-timing
+	// across accounts is not even weak evidence, it is coincidence.
 	//
-	// The scope is matched on the LEADER, not on the firing member that keeps the
-	// group open. The leader is the story this alert would be filed under, and it
-	// is the row the operator reads; a group held open by a member elsewhere is
-	// still that leader's incident.
+	// The scope is matched on the LEADER. The leader is the story this alert
+	// would be filed under, and it is the row the operator reads.
 	//
-	// LIMIT 2 is the whole question. The rule below attaches on exactly one open
+	// LIMIT 2 is the whole question. The rule below attaches on exactly one
 	// incident and declines otherwise, so "two" and "two hundred" are the same
 	// answer and there is no reason to fetch the difference.
 	//
-	// A leader that has been replaced (moveGroup) is not an open incident, even
-	// if an attach that raced the takeover left an alert filed under it. Counting it
-	// would make one incident look like two and decline every unlocated alert until
-	// the window closed.
+	// A leader that has been replaced (moveGroup) is not an incident of its own,
+	// even if an attach that raced the takeover left an alert filed under it.
+	// Counting it would make one incident look like two and decline every
+	// unlocated alert until the window closed.
 	scope := unlocatedScopeFor(event)
 	type leaderRow struct {
 		ID       string    `db:"id"`
@@ -1388,14 +1488,29 @@ func attachUnlocatedIncident(ctx context.Context, db sqlx.ExtContext, event *mod
 	}
 	var leaders []leaderRow
 	err := sqlx.SelectContext(ctx, db, &leaders, `
-		SELECT DISTINCT l.id, l.starts_at
-		FROM event_correlations ec
-		JOIN events m ON m.id = ec.event_id
-		JOIN events l ON l.id = ec.related_event_id
-		WHERE ec.correlation_type = $1
-		  AND ec.cloud_account_id = $2
-		  AND m.starts_at >= $3
-		  AND m.starts_at <= $4
+		WITH near AS (
+			SELECT n.id
+			FROM events n
+			WHERE n.cloud_account_id = $2
+			  AND n.starts_at >= $3
+			  AND n.starts_at <= $4
+		), heads AS (
+			SELECT ec.related_event_id AS id
+			FROM event_correlations ec
+			JOIN near ON near.id = ec.event_id
+			WHERE ec.correlation_type = $1
+			  AND ec.cloud_account_id = $2
+			UNION
+			SELECT ec.related_event_id
+			FROM event_correlations ec
+			JOIN near ON near.id = ec.related_event_id
+			WHERE ec.correlation_type = $1
+			  AND ec.cloud_account_id = $2
+		)
+		SELECT l.id, l.starts_at
+		FROM heads h
+		JOIN events l ON l.id = h.id
+		WHERE l.starts_at >= $3
 		  AND `+scope.leaderPredicate+`
 		  AND NOT EXISTS (SELECT 1
 		                  FROM event_correlations r
@@ -1403,26 +1518,38 @@ func attachUnlocatedIncident(ctx context.Context, db sqlx.ExtContext, event *mod
 		                    AND r.cloud_account_id = $2
 		                    AND r.event_id = l.id
 		                    AND r.correlation_reason LIKE $6)
+		  AND NOT EXISTS (SELECT 1
+		                  FROM event_correlations o
+		                  JOIN events om ON om.id = o.event_id
+		                  WHERE o.correlation_type = $1
+		                    AND o.cloud_account_id = $2
+		                    AND o.related_event_id = l.id
+		                    AND om.starts_at < $3)
 		LIMIT 2`,
 		SameIncidentCorrelationType, *event.CloudAccountId,
-		start.Add(-IncidentAttachWindow), start, scope.arg, leaderTakeoverReasonPrefix+"%",
+		start.Add(-scope.window), start.Add(scope.window), scope.arg, leaderTakeoverReasonPrefix+"%",
 	)
 	if err != nil {
-		return "", 0, "", false, fmt.Errorf("failed to load open incidents for unlocated attach: %w", err)
+		return "", 0, "", false, fmt.Errorf("failed to load young incidents for unlocated attach: %w", err)
 	}
 
 	if len(leaders) != 1 {
-		// 0: nothing open to join in this scope. >1: co-timing cannot choose
-		// between them.
+		// 0: nothing began with the seed in this scope. >1: co-timing cannot
+		// choose between them.
 		if len(leaders) > 1 {
-			slog.InfoContext(ctx, "Unlocated alert not grouped: several open incidents in window",
+			slog.InfoContext(ctx, "Unlocated alert not grouped: several incidents began in the window",
 				"event_id", event.Id, "scope", scope.label, "incidents", len(leaders))
 		}
 		return "", 0, "", false, nil
 	}
 
-	reason := fmt.Sprintf("no topology position; sole %s incident open in the attach window", scope.label)
-	return leaders[0].ID, start.Sub(leaders[0].StartsAt), reason, true, nil
+	return leaders[0].ID, start.Sub(leaders[0].StartsAt), timingOnlyReason(scope), true, nil
+}
+
+// timingOnlyReason is the reason recorded on a link made on timing alone.
+func timingOnlyReason(scope unlocatedScope) string {
+	return fmt.Sprintf("%s%s incident that began within %d minutes of this alert",
+		timingOnlyReasonPrefix, scope.label, int(scope.window.Minutes()))
 }
 
 // timingFallbackAllowed decides whether an alert that found no subject or
@@ -1475,11 +1602,14 @@ func isAWSAlarmSource(source *string) bool {
 }
 
 // unlocatedScope is the boundary co-timing may not cross: a SQL predicate on the
-// leader row `l`, bound to $5, and a label for logs and link reasons.
+// leader row `l`, bound to $5, a label for logs and link reasons, and how far
+// from an incident's earliest alert the seed may have started. The wider the
+// boundary, the shorter that is.
 type unlocatedScope struct {
 	leaderPredicate string
 	arg             any
 	label           string
+	window          time.Duration
 }
 
 // unlocatedScopeFor picks the boundary for an alert the graph could not place.
@@ -1506,6 +1636,7 @@ func unlocatedScopeFor(event *models.Event) unlocatedScope {
 			leaderPredicate: "l.source = ANY($5)",
 			arg:             pq.Array(awsAlarmSources),
 			label:           "AWS",
+			window:          timingOnlyCloudWindow,
 		}
 	}
 	// A node alert has no namespace, so the namespace predicate below would put
@@ -1516,6 +1647,7 @@ func unlocatedScopeFor(event *models.Event) unlocatedScope {
 			leaderPredicate: "lower(coalesce(btrim(l.subject_node), '')) = $5",
 			arg:             strings.ToLower(node),
 			label:           fmt.Sprintf("node %q", node),
+			window:          IncidentAttachWindow,
 		}
 	}
 	ns, _ := chronicSubjectIdentity(event)
@@ -1523,6 +1655,7 @@ func unlocatedScopeFor(event *models.Event) unlocatedScope {
 		leaderPredicate: "lower(coalesce(btrim(l.subject_namespace), '')) = $5",
 		arg:             ns,
 		label:           fmt.Sprintf("namespace %q", ns),
+		window:          IncidentAttachWindow,
 	}
 }
 

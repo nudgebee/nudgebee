@@ -141,3 +141,41 @@ func TestDoIterationSequential_ActionFailureRecordsFailedStep(t *testing.T) {
 	assert.Equal(t, ToolStatusSuccess, steps[1].Status)
 	assert.Equal(t, "ok-output", steps[1].Observation)
 }
+
+// A sequential batch that pauses on its second action must not keep the first
+// (already-run) action in the resume state: resume re-runs currentAction, and
+// replaying a completed sibling put its tool_use id twice in one assistant
+// message ("tool_use ids must be unique" on Anthropic).
+func TestDoIterationSequential_PauseKeepsOnlyUnrunActions(t *testing.T) {
+	prevDao := conversationDao
+	SetConversationDao(fakeConversationDao{})
+	t.Cleanup(func() { conversationDao = prevDao })
+
+	toolOk := &MockContextCapturingTool{NameVal: "TOOL_OK", ReturnOutput: "ok-output", ReturnStatus: toolcore.NBToolResponseStatusSuccess}
+	nameToTool := map[string]toolcore.NBTool{"TOOL_OK": toolOk}
+
+	executor := newActionFailureTestExecutor(&MockAgent{SupportedTools: []toolcore.NBTool{toolOk}})
+	// shell_client resolves via the client-tool fallback and pauses the run
+	// waiting for the client, like an approval does.
+	executor.agentRequest.ClientTools = []toolcore.NBToolCommand{{Name: "shell_client", Description: "client shell"}}
+
+	actions := []NBAgentPlannerToolAction{
+		{ToolID: "A", Tool: "TOOL_OK", ToolInput: "input-a"},
+		{ToolID: "B", Tool: "shell_client", ToolInput: `{"command":"ls"}`},
+		{ToolID: "C", Tool: "TOOL_OK", ToolInput: "input-c"},
+	}
+
+	steps, finish, err := executor.doIterationSequential(nil, nameToTool, actions)
+
+	require.NoError(t, err)
+	require.NotNil(t, finish)
+	assert.Equal(t, ConversationStatusWaitingForClientTool, finish.Status)
+	require.Len(t, steps, 2, "A ran; B is waiting")
+	assert.Equal(t, ToolStatusSuccess, steps[0].Status)
+
+	resumeIDs := []string{}
+	for _, a := range executor.currentAction {
+		resumeIDs = append(resumeIDs, a.ToolID)
+	}
+	assert.Equal(t, []string{"B", "C"}, resumeIDs, "resume state holds the paused action and those after it, not the completed A")
+}

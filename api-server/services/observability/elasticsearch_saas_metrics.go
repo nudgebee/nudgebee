@@ -2,6 +2,7 @@ package observability
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"nudgebee/services/query"
@@ -2196,7 +2197,7 @@ func fetchESMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTr
 		sig := string(rendered)
 		g, seen := groups[sig]
 		if !seen {
-			g = &esUtilQueryGroup{body: body, rendered: sig}
+			g = &esUtilQueryGroup{rendered: sig}
 			groups[sig] = g
 			groupOrder = append(groupOrder, sig)
 		}
@@ -2216,23 +2217,27 @@ func fetchESMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTr
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			queryBody, renderedQuery := group.body, group.rendered
+			renderedQuery := group.rendered
 
 			esURL := fmt.Sprintf("%s/%s/_search", cfg.Url, index)
 			slog.Info("ES utilisation query", "index", index, "url", esURL,
 				"metric", metricKey, "scope", scope, "sources", len(plan.Sources), "step_sec", stepSec,
 				"start_ms", req.StartTime, "end_ms", req.EndTime)
 
-			resp, reqErr := esRequestJSON("POST", esURL, queryBody, cfg) //nolint:bodyclose
-			if reqErr != nil {
-				errStr := fmt.Sprintf("failed to query metric %s: %v", metricKey, reqErr)
-				esUtilAssignError(results, meta.RequestedMetrics, members, renderedQuery, errStr)
-				return
+			spec := esUtilSearchSpec{cfg: cfg, esURL: esURL, index: index, plan: plan, meta: meta, scope: scope,
+				startMs: req.StartTime, endMs: req.EndTime}
+			bodyBytes, sentQuery, searchErr := spec.search(stepSec)
+			if sentQuery != "" {
+				renderedQuery = sentQuery
 			}
-
-			bodyBytes, readErr := readResponse(resp, "utilisation query")
-			if readErr != nil {
-				errStr := readErr.Error()
+			if searchErr != nil {
+				// An Elasticsearch error response reads as it always has; only a failure
+				// to reach Elasticsearch at all names the metric.
+				errStr := fmt.Sprintf("failed to query metric %s: %v", metricKey, searchErr)
+				var statusErr *esStatusError
+				if errors.As(searchErr, &statusErr) {
+					errStr = searchErr.Error()
+				}
 				esUtilAssignError(results, meta.RequestedMetrics, members, renderedQuery, errStr)
 				return
 			}

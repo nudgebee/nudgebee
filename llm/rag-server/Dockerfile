@@ -31,6 +31,10 @@ COPY uv.lock pyproject.toml ./
 # local rag-server package itself, matching the deps-only install this
 # replaced. --inexact keeps uv from removing the base image's preinstalled
 # conda/ML packages that aren't tracked in uv.lock.
+# Drop pip from the conda envs. Dependencies are installed with uv and
+# nothing calls pip at runtime, but pip vendors its own msgpack, urllib3 and
+# setuptools copies that Trivy flags (still unpatched in pip 26.2.2). Its
+# extracted copies in the conda package cache carry the same manifest.
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=cache,target=/root/.cache/pip \
     set -e; \
@@ -48,6 +52,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         fi; \
     done; \
     [ "$success" -eq 1 ] || exit 1; \
+    for env in myenv base; do \
+        if conda list -n "$env" --json | grep -q '"name": "pip"'; then conda remove -y --force -n "$env" pip || exit 1; fi; \
+    done && \
+    rm -rf /opt/conda/pkgs/pip-* && \
     conda clean --yes --all
 
 # `production` image used for runtime

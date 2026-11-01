@@ -70,7 +70,7 @@ data:
 {{- if .Values.webhookRouting.servicesServer }}
 
       # services-server. Mirrors the group in api/public_webhooks.go.
-      location ~ ^/api/webhooks/(pagerduty|newrelic|zenduty|prometheus-alertmanager|datadog|azure-monitor|servicenow|grafana|splunk|gcp-monitoring|dynatrace|solarwinds|elasticsearch|openobserve|cubeapm|workflow|azure-eventgrid|github)/?$ {
+      location ~ ^/api/webhooks/(pagerduty|newrelic|zenduty|prometheus-alertmanager|datadog|azure-monitor|servicenow|grafana|splunk|gcp-monitoring|dynatrace|solarwinds|elasticsearch|openobserve|cubeapm|signoz|workflow|event|azure-eventgrid|github)/?$ {
         include /etc/nginx/conf.d/webhook_proxy_params;
         proxy_pass http://services-server:8000;
       }
@@ -92,6 +92,7 @@ data:
   # The filename has no .conf suffix, so nginx's `include conf.d/*.conf` skips
   # it and it is pulled in only by the explicit include in each location.
   webhook_proxy_params: |
+    access_log off;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

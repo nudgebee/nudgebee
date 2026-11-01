@@ -1,52 +1,50 @@
 package core
 
 import (
-	"nudgebee/llm/security"
-	"os"
 	"testing"
 
+	"nudgebee/llm/security"
+
 	"github.com/stretchr/testify/assert"
+	"github.com/tmc/langchaingo/llms"
 )
 
-// Test basic suggestion request with real conversation data
-func TestHandleConversationSuggestionRequest(t *testing.T) {
-	// Skip if database is not available
-	if GetConversationDao() == nil {
-		t.Skip("Skipping test: database not available")
+// Follow-up suggestions are a short JSON list; without an explicit level the model
+// spent 520-608 thinking tokens on 66 output tokens (#39745).
+func TestConversationSuggestionCallOptions_UseFastThinking(t *testing.T) {
+	combined := llms.CallOptions{}
+	for _, opt := range conversationSuggestionCallOptions() {
+		opt(&combined)
 	}
+	assert.Equal(t, ThinkingLevelFastTask, combined.Metadata["ThinkingLevel"])
+	assert.True(t, combined.JSONMode, "the response is parsed as JSON")
+	assert.InDelta(t, 0.7, combined.Temperature, 1e-9)
+}
 
-	// Skip if environment variables are not set
-	if os.Getenv("TEST_TENANT") == "" || os.Getenv("TEST_ACCOUNT") == "" || os.Getenv("TEST_USER") == "" {
-		t.Skip("Skipping test: TEST_TENANT, TEST_ACCOUNT, or TEST_USER environment variables not set")
-	}
+func TestStoredConversationSuggestions(t *testing.T) {
+	ctx := security.NewRequestContextForSuperAdmin()
+	request := ConversationSuggestionRequest{ConversationId: "c1", AccountId: "a1", MessageId: "m1"}
+	str := func(s string) *string { return &s }
 
-	ctx := security.NewRequestContextForTenantAccountAdmin(
-		os.Getenv("TEST_TENANT"),
-		os.Getenv("TEST_USER"),
-		[]string{os.Getenv("TEST_ACCOUNT")},
-	)
+	t.Run("stored suggestions are returned", func(t *testing.T) {
+		got, ok := StoredConversationSuggestions(ctx, request, ConversationMessage{Suggestions: str(`[{"message":"Why is the pod restarting?"}]`)})
+		assert.True(t, ok)
+		assert.Equal(t, ConversationSuggestionResponse{
+			ConversationId: "c1",
+			AccountId:      "a1",
+			MessageId:      "m1",
+			Suggestions:    []ConversationSuggestionMessageResponse{{Message: "Why is the pod restarting?"}},
+		}, got)
+	})
 
-	// Use the conversation from the issue: octocat-conversation-t88DON8j
-	conversationId := "38a02773-7b17-441f-9105-68950a4846d7"
-	messageId := "aafd82a5-60b7-4da4-9556-50d3fc4b80c7"
-
-	request := ConversationSuggestionRequest{
-		ConversationId: conversationId,
-		AccountId:      os.Getenv("TEST_ACCOUNT"),
-		UserId:         os.Getenv("TEST_USER"),
-		MessageId:      messageId,
-	}
-
-	response, err := HandleConversationSuggestionRequest(ctx, request)
-
-	// Basic assertions
-	assert.NoError(t, err)
-	assert.NotNil(t, response)
-	assert.Equal(t, conversationId, response.ConversationId)
-	assert.Equal(t, messageId, response.MessageId)
-
-	t.Logf("Generated %d suggestions", len(response.Suggestions))
-	for i, suggestion := range response.Suggestions {
-		t.Logf("  Suggestion %d: %s", i+1, suggestion.Message)
+	for name, stored := range map[string]*string{
+		"no stored suggestions": nil,
+		"empty list":            str(`[]`),
+		"unparseable":           str(`not json`),
+	} {
+		t.Run(name+" falls through to generation", func(t *testing.T) {
+			_, ok := StoredConversationSuggestions(ctx, request, ConversationMessage{Suggestions: stored})
+			assert.False(t, ok)
+		})
 	}
 }

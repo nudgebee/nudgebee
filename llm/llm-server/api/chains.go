@@ -18,6 +18,7 @@ import (
 	"nudgebee/llm/security"
 	"nudgebee/llm/security/egressfilter"
 	toolcore "nudgebee/llm/tools/core"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -124,6 +125,32 @@ func isAsync(async *bool) bool {
 		return true
 	}
 	return *async
+}
+
+// acceptTimer records how long each step before a chat turn is accepted takes, so
+// the accept path's latency can be broken down from one log line per request.
+type acceptTimer struct {
+	start, last time.Time
+	steps       []any
+}
+
+func newAcceptTimer() *acceptTimer {
+	now := time.Now()
+	return &acceptTimer{start: now, last: now}
+}
+
+// mark attributes the time since the previous mark to step.
+func (t *acceptTimer) mark(step string) {
+	now := time.Now()
+	t.steps = append(t.steps, step+"_ms", now.Sub(t.last).Milliseconds())
+	t.last = now
+}
+
+// log reports every marked step and the total, including time spent after the
+// last mark (submitting the turn, or an early exit such as queueing a message).
+func (t *acceptTimer) log(logger *slog.Logger, endpoint string) {
+	args := append([]any{"endpoint", endpoint, "total_ms", time.Since(t.start).Milliseconds()}, t.steps...)
+	logger.Info("api: chat accept timing", args...)
 }
 
 func handleRequestExecution(
@@ -306,6 +333,16 @@ func queueConversationMessage(
 	return queuedMessageId, nil
 }
 
+// queueAdmits reports whether a chat request should wait in the queue. A
+// request naming a message on a WAITING conversation is that turn's own retry
+// or resume, not a new message, so it is left to run.
+func queueAdmits(conversation core.Conversation, request *ConversationApiRequest) bool {
+	if conversation.Status == core.ConversationStatusInProgress {
+		return true
+	}
+	return request.MessageId == "" && core.QueueAcceptsStatus(conversation.Status)
+}
+
 // Called after authorized queue admission: a queue-only request must never
 // become an independent asynchronous foreground request when status changes.
 func rejectUnfulfilledQueueRequest(c *gin.Context, request *ConversationApiRequest) bool {
@@ -377,11 +414,46 @@ func tryQueueConversationMessage(
 // dispatchQueuedMessage is shared by FIFO completion and explicit Send Now.
 // Persist failures as terminal messages so a live worker never strands a claim.
 func dispatchQueuedMessage(parent *security.RequestContext, conversation core.Conversation, msg core.ConversationMessage) error {
+	// Callers may hand over a request-scoped context; queued work outlives the
+	// request, so detach it once here. The turn itself runs on a fresh context below.
+	parent = security.NewRequestContext(context.WithoutCancel(parent.GetContext()), parent.GetSecurityContext(), parent.GetLogger(), parent.GetTracer(), parent.GetMeter())
 	fail := func(err error) {
 		parent.GetLogger().Error("chains: queued execution failed", "error", err, "message_id", msg.ID)
-		if _, saveErr := core.GetConversationDao().FinalizeConversationMessage(msg.ConversationID.String(), msg.ID.String(), "Queued message could not be executed. Please retry this message.", core.ConversationStatusFailed); saveErr != nil {
+		applied, saveErr := core.GetConversationDao().FinalizeConversationMessage(msg.ConversationID.String(), msg.ID.String(), "Queued message could not be executed. Please retry this message.", core.ConversationStatusFailed)
+		if saveErr != nil {
 			parent.GetLogger().Error("chains: failed to persist queue failure", "error", saveErr)
+			return
 		}
+		if !applied {
+			return
+		}
+		// A failed dispatch may never reach the turn-completion path that claims the
+		// next message, so claim here too or the rest of the queue is stranded. If that
+		// path already claimed, this claim finds a turn in progress and returns nil.
+		// Each failure consumes one queued message, bounded by the queue capacity.
+		claimCtx, cancelClaim := context.WithTimeout(parent.GetContext(), 10*time.Second)
+		defer cancelClaim()
+		next, claimErr := core.GetConversationDao().ClaimNextQueuedMessage(claimCtx, msg.ConversationID.String())
+		if claimErr != nil {
+			parent.GetLogger().Error("chains: failed to claim next queued message", "error", claimErr, "conversation_id", msg.ConversationID)
+			return
+		}
+		if next == nil {
+			return
+		}
+		// Dispatch on its own goroutine so a run of failures neither nests calls nor
+		// holds this worker while the next submission waits for a pool slot.
+		logger := parent.GetLogger()
+		go func(next core.ConversationMessage) {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					logger.Error("chains: panic dispatching next queued message", "panic", recovered, "message_id", next.ID, "stack", string(debug.Stack()))
+				}
+			}()
+			if dispatchErr := dispatchQueuedMessage(parent, conversation, next); dispatchErr != nil {
+				logger.Error("chains: failed to dispatch next queued message", "error", dispatchErr, "message_id", next.ID)
+			}
+		}(*next)
 	}
 	submissionCtx, cancel := context.WithTimeout(context.Background(), time.Duration(config.Config.AsyncApiTimeoutSeconds)*time.Second)
 	defer cancel()
@@ -478,6 +550,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 	groupV2.POST("/chat", func(c *gin.Context) {
 		common.MetricsApiRequestsTotal("chains_chat")
+		timer := newAcceptTimer()
 		requestMap := make(map[string]any)
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
@@ -621,11 +694,15 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		if request.ConversationId != "" {
 			logger = logger.With("conversation_id", request.ConversationId)
 		}
+		timer.mark("prepare")
+		// A closure, so the log uses logger as it is when the handler returns.
+		defer func() { timer.log(logger, "/v1/completions/chat") }()
 		ctx := context.WithoutCancel(c.Request.Context())
 		// Optimization: Add a thread-safe resolution cache to the context to prevent redundant DB calls for LLM config
 		ctx = context.WithValue(ctx, core.ContextKeyLLMResolution, core.NewLLMResolutionCache())
 
 		agentContext, err := buildContextFromPayload(ctx, c, &actionRequest, tracer, meter, logger)
+		timer.mark("security_context")
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{
 				common.Error{
@@ -723,7 +800,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			module = budget.ModuleInvestigation
 		}
 
-		if budget.CheckBudgetAndRespond(c, agentContext.GetSecurityContext().GetTenantId(), request.AccountId, module, logger) {
+		timer.mark("session_and_access")
+		budgetExceeded := budget.CheckBudgetAndRespond(c, agentContext.GetSecurityContext().GetTenantId(), request.AccountId, module, logger)
+		timer.mark("budget")
+		if budgetExceeded {
 			return
 		}
 
@@ -735,7 +815,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 					c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 					return
 				}
-				if config.Config.QueuedMessagesEnabled && conversation.Status == core.ConversationStatusInProgress {
+				if config.Config.QueuedMessagesEnabled && queueAdmits(conversation, &request) {
 					if tryQueueConversationMessage(c, conversation, &request, "") {
 						return
 					}
@@ -837,6 +917,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		if request.Source != "" {
 			source = request.Source
 		}
+		timer.mark("queue_check")
 		// Handle user conversation question to add context to the original question
 		if agent == nil {
 			agent, err = agents.InferAgentOrHelp(agentContext, request.UserId, request.AccountId, request.ConversationId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithIsNewConversation(isNewConversation), core.ConversationSessionRequestWithConfig(request.Config))
@@ -914,6 +995,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}
 		}
 
+		timer.mark("routing")
 		// Execute the agent
 		handleRequestExecution(c, agentContext, request.Async, request.UserId, "chains_chat", logger, func(ctx *security.RequestContext) (core.NBAgentResponse, error) {
 			return core.HandleConversationSessionRequest(ctx, agent, request.UserId, request.AccountId, request.SessionId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithConversationId(conversationId), core.ConversationSessionRequestWithMessageId(messageId), core.ConversationSessionRequestWithAgentId(agentId), core.ConversationSessionRequestWithConfig(request.Config), core.ConversationSessionRequestWithClientTools(request.ClientTools), core.ConversationSessionRequestWithCapabilities(request.Capabilities), core.ConversationSessionRequestWithIsNewConversation(isNewConversation), core.ConversationSessionRequestWithImages(request.Images), core.ConversationSessionRequestWithChannelContext(request.ChannelContext), core.ConversationSessionRequestWithChannelContextRefs(request.ChannelContextRefs), core.ConversationSessionRequestWithReplyRef(request.ReplyRef))
@@ -1178,7 +1260,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 					c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 					return
 				}
-				if config.Config.QueuedMessagesEnabled && conversation.Status == core.ConversationStatusInProgress {
+				if config.Config.QueuedMessagesEnabled && queueAdmits(conversation, &request) {
 					if tryQueueConversationMessage(c, conversation, &request, "") {
 						return
 					}
@@ -1468,6 +1550,14 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 					Message: "api: invalid message_id",
 				},
 			}))
+			return
+		}
+
+		// Suggestions already stored on the message cost no LLM call, so serve them
+		// before the budget check — a tenant-month spend aggregate (~0.8 s) that
+		// every repeat request used to pay for nothing.
+		if stored, ok := core.StoredConversationSuggestions(agentContext, request, message); ok {
+			c.JSON(http.StatusOK, buildApiResponse(stored, nil))
 			return
 		}
 

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"nudgebee/llm/security"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,26 @@ type LLMClient interface {
 		cleanupMarkdown bool,
 		options ...llms.CallOption,
 	) (*llms.ContentResponse, error)
+}
+
+// promptCachingContextKey types ContextKeyDisableCaching. It lives here, not in
+// agents/core, so tools can set it without importing agents/core.
+type promptCachingContextKey string
+
+// ContextKeyDisableCaching disables provider-level prompt caching for the current
+// request subtree (agents/core re-exports it). Set to true for
+// AgentPlannerTypeCustom agents whose LLM calls embed dynamic content (query
+// text, log data) directly in the system message, making caching wasteful.
+// Individual custom agents that know a specific call has a stable system prompt
+// can create a sub-context that overrides this to false.
+const ContextKeyDisableCaching promptCachingContextKey = "disable_caching"
+
+// WithPromptCachingDisabled returns ctx with conversation-keyed prompt caching
+// turned off. For one-shot calls (a single filter or planning prompt) that pass
+// a conversation id only so their token usage is billed to it: the id must not
+// also create a conversation cache entry that nothing will reuse.
+func WithPromptCachingDisabled(ctx *security.RequestContext) *security.RequestContext {
+	return ctx.WithContext(context.WithValue(ctx.GetContext(), ContextKeyDisableCaching, true))
 }
 
 var (

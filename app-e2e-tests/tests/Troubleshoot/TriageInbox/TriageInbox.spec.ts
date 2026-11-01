@@ -8,6 +8,7 @@ import {
   ISSUE_TYPE_ALL,
   ISSUE_TYPE_NEW,
   ISSUE_TYPE_RECURRING,
+  SEVERITY_COLUMN_SHAPES,
   SEVERITY_HIGH_LABEL,
   SEVERITY_HIGH_VALUE,
   SORT_BY_EVENT_COUNT,
@@ -15,7 +16,7 @@ import {
 } from "./triageInboxConstants";
 
 test(
-  "Triage Inbox sanity - open Troubleshoot from the sidebar, verify Triage Inbox is the selected sub-tab and its Severity, Status, Triage Priority, Issue Type, Sort By and Triage Status filters and download control render",
+  "Triage Inbox sanity - open Troubleshoot from the sidebar, verify Triage Inbox is the selected sub-tab and its Source Severity, Status, Triage Priority, Issue Type, Sort By and Triage Status filters and download control render",
   { tag: ["@dev", "@test", "@sanity", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
@@ -45,7 +46,7 @@ test(
 );
 
 test(
-  "Triage Inbox sanity - open the tab, verify the table exposes the Severity, Application, Event Type, Count, Triage Score, Triage Status, Alert Status and Action columns",
+  "Triage Inbox sanity - open the tab, verify the table exposes the Triage Score, Source Severity, Application, Event Type, Count, Triage Status, Alert Status and Action columns",
   { tag: ["@dev", "@test", "@sanity", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
@@ -55,7 +56,15 @@ test(
 
     const headers = await locators.headerNames();
     for (const column of INBOX_COLUMNS) {
-      expect(headers, `The Triage Inbox table is missing its "${column}" column`).toContain(column);
+      if (column === "Source Severity") {
+        // Either shape passes until the rename deploys to dev — see SEVERITY_COLUMN_SHAPES.
+        expect(
+          headers.some((h) => (SEVERITY_COLUMN_SHAPES as readonly string[]).includes(h)),
+          `The Triage Inbox table is missing its severity column (either of: ${SEVERITY_COLUMN_SHAPES.join(", ")})`
+        ).toBe(true);
+      } else {
+        expect(headers, `The Triage Inbox table is missing its "${column}" column`).toContain(column);
+      }
     }
   }
 );
@@ -122,7 +131,7 @@ test(
 );
 
 test(
-  "Triage Inbox - filter Severity by High, verify every listed row's severity marker reads HIGH, reload the page, verify the unfiltered listing returns",
+  "Triage Inbox - filter Source Severity by High, verify every listed row's severity marker reads HIGH, reload the page, verify the unfiltered listing returns",
   { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
@@ -135,7 +144,7 @@ test(
     });
 
     const rowCount = await locators.rows.count();
-    expect(rowCount, "Filtering Severity by High returned no rows, so there is nothing to check the marker on").toBeGreaterThan(0);
+    expect(rowCount, "Filtering Source Severity by High returned no rows, so there is nothing to check the marker on").toBeGreaterThan(0);
     expect(rowCount, "High is a subset of the unfiltered listing").toBeLessThanOrEqual(baseline);
 
     // Every returned group matched priority=HIGH, and HIGH takes top precedence in the

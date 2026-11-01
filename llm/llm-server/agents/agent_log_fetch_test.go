@@ -451,6 +451,23 @@ func TestFlattenLogsToTabSeparated(t *testing.T) {
 		assert.Equal(t, "\tjust a message\n", got)
 	})
 
+	t.Run("line breaks inside a message stay on one line", func(t *testing.T) {
+		input := `{"logs":[` +
+			`{"timestamp":"2026-05-06T03:00:10Z","message":"panic: boom\ngoroutine 1 [running]:\r\n\tmain.go:12"},` +
+			`{"timestamp":"2026-05-06T03:00:11Z","message":"progress 10%\rprogress 100%"},` +
+			`{"timestamp":"2026-05-06T03:00:12Z","message":"{\"level\":\"ERROR\",\"path\":\"C:\\\\tmp\"}"}` +
+			`]}`
+		got := flattenLogsToTabSeparated(input)
+		lines := strings.Split(strings.TrimRight(got, "\n"), "\n")
+		require.Len(t, lines, 3, "one line per record: %q", got)
+		assert.Equal(t, "2026-05-06T03:00:10Z\tpanic: boom\\ngoroutine 1 [running]:\\n\tmain.go:12", lines[0])
+		assert.Equal(t, "2026-05-06T03:00:11Z\tprogress 10%\\rprogress 100%", lines[1])
+		// JSON messages keep their own escapes, so the message still decodes.
+		var msg map[string]string
+		require.NoError(t, json.Unmarshal([]byte(strings.SplitN(lines[2], "\t", 2)[1]), &msg))
+		assert.Equal(t, `C:\tmp`, msg["path"])
+	})
+
 	t.Run("grep shape — head -N means N entries", func(t *testing.T) {
 		// Build an envelope with 50 entries; verify the result has exactly
 		// 50 newline-terminated lines so `head -N` semantics work.
@@ -614,6 +631,80 @@ func TestLooksLikeFetchError(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A backend read that stopped at its line limit says so in the envelope and at
+// the end of the inline logs, and is never marked complete. Before this the
+// response gave no sign of it, and 5,000 lines that covered the last four
+// minutes of a seventeen-minute window were reported as the whole window.
+func TestMakeFetchResponse_ReadCoverage(t *testing.T) {
+	decode := func(resp core.NBAgentResponse) map[string]any {
+		t.Helper()
+		var env map[string]any
+		if err := json.Unmarshal([]byte(resp.Response[0]), &env); err != nil {
+			t.Fatalf("envelope is not JSON: %v", err)
+		}
+		return env
+	}
+	logsWith := func(coverage string) string {
+		return `{"logs":[{"timestamp":"2026-01-15T05:30:48Z","message":"a"},{"timestamp":"2026-01-15T05:34:42Z","message":"b"}],"metadata":{"limit":2,"query":"{pod=\"api\"}","provider":"loki"}` + coverage + `}`
+	}
+	const coverage = `,"coverage":{"limit":2,"returned":2,"oldest":"2026-01-15T05:30:48Z","newest":"2026-01-15T05:34:42Z","requested_start":"2026-01-15T05:19:26Z","requested_end":"2026-01-15T05:36:00Z"}`
+	const wantNote = "partial read: the read stopped at its limit of 2 lines, so the window may hold more lines than were read; " +
+		"the lines returned span 2026-01-15T05:30:48Z to 2026-01-15T05:34:42Z; " +
+		"the window asked for was 2026-01-15T05:19:26Z to 2026-01-15T05:36:00Z; " +
+		"lines in the window outside the returned span were not read, and nothing can be concluded about them; " +
+		"reading them takes a narrower window or filter"
+
+	t.Run("limit reached: stated in the envelope and in-band, not marked complete", func(t *testing.T) {
+		logs := logsWith(coverage)
+		env := decode(makeFetchResponse("fetch_logs", "q", logs, flattenLogsToTabSeparated(logs), "logs_loki_1.txt", "", nil))
+		assert.Equal(t, wantNote, env["read_coverage"])
+		inline, _ := env["logs"].(string)
+		assert.True(t, strings.HasSuffix(inline, "[... "+wantNote+" ...]"), "the marker closes the inline logs: %q", inline)
+		assert.NotContains(t, inline, "complete —")
+		assert.Equal(t, true, env["logs_complete"],
+			"on purpose: logs_complete says the inline text is the whole saved file, not that the read got the whole window")
+	})
+
+	t.Run("limit reached with a long preview: both markers", func(t *testing.T) {
+		long := `{"logs":[{"timestamp":"2026-01-15T05:30:48Z","message":"` + strings.Repeat("x", logInlinePreviewBytes*2) + `"}],"metadata":{"limit":1}` + strings.Replace(coverage, `"limit":2,"returned":2`, `"limit":1,"returned":1`, 1) + `}`
+		env := decode(makeFetchResponse("fetch_logs", "q", long, flattenLogsToTabSeparated(long), "logs_loki_2.txt", "", nil))
+		inline, _ := env["logs"].(string)
+		assert.Contains(t, inline, "more bytes truncated")
+		assert.Contains(t, inline, "partial read: the read stopped at its limit of 1 lines")
+		assert.Equal(t, false, env["logs_complete"])
+	})
+
+	t.Run("limit not reached: no coverage field, and the marker claims only what was fetched", func(t *testing.T) {
+		logs := logsWith("")
+		env := decode(makeFetchResponse("fetch_logs", "q", logs, flattenLogsToTabSeparated(logs), "logs_loki_3.txt", "", nil))
+		_, has := env["read_coverage"]
+		assert.False(t, has)
+		inline, _ := env["logs"].(string)
+		assert.Contains(t, inline, "complete — all fetched lines are shown above")
+		assert.NotContains(t, inline, "all matching lines")
+	})
+
+	t.Run("a payload that is not the backend envelope has no coverage", func(t *testing.T) {
+		assert.Empty(t, logReadCoverageNote("2026-01-15T05:30:48Z plain kubectl line"))
+		assert.Empty(t, logReadCoverageNote(`{"stdout":"line"}`))
+	})
+
+	t.Run("a span that could not be read is left out of the note", func(t *testing.T) {
+		note := logReadCoverageNote(`{"logs":[],"coverage":{"limit":5000,"returned":5000}}`)
+		assert.Equal(t, "partial read: the read stopped at its limit of 5000 lines, so the window may hold more lines than were read; "+
+			"lines in the window outside the returned span were not read, and nothing can be concluded about them; "+
+			"reading them takes a narrower window or filter", note)
+	})
+}
+
+// The Loki path rewrites each entry's timestamp before the envelope is built;
+// the coverage the backend read reported must come through that rewrite.
+func TestUnwrapLokiInnerTimestamps_KeepsCoverage(t *testing.T) {
+	logs := `{"logs":[{"timestamp":"2026-01-15T05:30:48Z","message":"{\"timestamp\":\"2026-01-15T05:30:47Z\",\"level\":\"ERROR\"}"}],"metadata":{"limit":1},"coverage":{"limit":1,"returned":1,"oldest":"2026-01-15T05:30:48Z","newest":"2026-01-15T05:30:48Z"}}`
+	out := unwrapLokiInnerTimestamps(security.NewRequestContextForSuperAdmin(), logs)
+	assert.Contains(t, logReadCoverageNote(out), "partial read: the read stopped at its limit of 1 lines")
 }
 
 // TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent guards the fix that

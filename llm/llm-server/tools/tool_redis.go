@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"fmt"
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
@@ -99,7 +98,9 @@ func (m RedisExecuteTool) Call(nbRequestContext core.NbToolContext, input core.N
 	nbRequestContext.Ctx.GetLogger().Info("RedisExecuteTool: executing redis command", "query", input.Command)
 
 	var command string
-	if strings.HasPrefix(input.Command, "{") {
+	// Trimmed as JSON decoding trims, so the classifier, which decodes the
+	// same input, reads the command this runs.
+	if strings.HasPrefix(strings.TrimSpace(input.Command), "{") {
 		jsonCommand := make(map[string]any)
 		err := common.UnmarshalJson([]byte(input.Command), &jsonCommand)
 		if err != nil {
@@ -116,14 +117,9 @@ func (m RedisExecuteTool) Call(nbRequestContext core.NbToolContext, input core.N
 		return core.NBToolResponse{}, errors.New("command is empty")
 	}
 
-	command = strings.TrimSpace(command)
-	if !strings.Contains(command, "redis-cli") {
-		command = fmt.Sprintf("redis-cli %s", command)
-	}
+	command = redisCommandAsRun(command)
 	wm := workspace.NewWorkspaceManager()
-	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, map[string]string{
-		workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
-	})
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, IntegrationWorkspaceEnv(nbRequestContext, nil))
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("redis: unable to execute shell script", "error", err.Error(), "command", command)
 		if response == "" {

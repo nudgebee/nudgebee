@@ -589,3 +589,37 @@ func TestValidateGCPCredentialsInternal_ResourceManagerFailed(t *testing.T) {
 // The service-level ValidateCloudCredentials function handles unsupported providers,
 // but requires *security.RequestContext. For unit testing, we focus on the internal
 // validation functions that are called by the service layer.
+
+// TestAzureCostWarning pins that the onboarding warning carries the collector's
+// reason for missing cost access, rather than a fixed "grant Cost Management
+// Reader" line that is wrong when the cause is a billing setting.
+func TestAzureCostWarning(t *testing.T) {
+	t.Run("cost readable gives no warning", func(t *testing.T) {
+		got := azureCostWarning(ValidateCloudCredentialsResponse{PermissionDetails: []PermissionStatus{
+			{Permission: "Resource API", HasAccess: true},
+			{Permission: "Cost Management", HasAccess: true},
+		}})
+		assert.Empty(t, got)
+	})
+
+	t.Run("warning carries the collector's reason", func(t *testing.T) {
+		reason := "Cost data for subscription X is turned off in the Enterprise Agreement billing settings."
+		got := azureCostWarning(ValidateCloudCredentialsResponse{PermissionDetails: []PermissionStatus{
+			{Permission: "Cost Management", HasAccess: false, ErrorDetail: reason},
+		}})
+		assert.Contains(t, got, reason)
+		assert.NotContains(t, got, azureCostWarningFallback)
+	})
+
+	t.Run("missing reason falls back to the role hint", func(t *testing.T) {
+		got := azureCostWarning(ValidateCloudCredentialsResponse{PermissionDetails: []PermissionStatus{
+			{Permission: "Cost Management", HasAccess: false},
+		}})
+		assert.Contains(t, got, azureCostWarningFallback)
+	})
+
+	t.Run("no cost check result still warns", func(t *testing.T) {
+		got := azureCostWarning(ValidateCloudCredentialsResponse{})
+		assert.Contains(t, got, azureCostWarningFallback)
+	})
+}

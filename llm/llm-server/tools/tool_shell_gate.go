@@ -95,6 +95,33 @@ func (m ShellTool) InferToolRequestType(ctx *security.RequestContext, toolName, 
 // Any wrapper, substitution, prompt-only tool, or unknown external operation
 // leaves the whole expression incomplete so the shell prompt can classify it.
 func (m ShellTool) classifyKnownShellCompound(ctx *security.RequestContext, input string) (core.ToolRequestType, bool, error) {
+	return classifyShellCompound(ctx, input, func(ctx *security.RequestContext, lead, cleaned string) (core.ToolRequestType, bool, error) {
+		ownerName := core.LookupShellWrappable(filepath.Base(lead))
+		if ownerName == "" {
+			return "", false, nil
+		}
+		tool, ok := core.GetNBTool(m.AccountId, ownerName)
+		if !ok {
+			return "", true, nil
+		}
+		classifier, ok := tool.(core.ToolRequestInference)
+		if !ok {
+			return "", true, nil
+		}
+		requestType, err := classifier.InferToolRequestType(ctx, tool.Name(), cleaned)
+		return requestType, true, err
+	})
+}
+
+// shellLeadClassifier classifies one pipeline stage by its leading command.
+// owned reports that the command belongs to a CLI tool; an owned stage with an
+// empty or unknown request type makes the whole expression incomplete.
+type shellLeadClassifier func(ctx *security.RequestContext, lead, cleaned string) (requestType core.ToolRequestType, owned bool, err error)
+
+// classifyShellCompound classifies every stage of a compound shell expression
+// and returns the strongest result. complete is false when any stage cannot
+// be classified statically.
+func classifyShellCompound(ctx *security.RequestContext, input string, classifyLead shellLeadClassifier) (core.ToolRequestType, bool, error) {
 	result := core.ToolRequestTypeRead
 	for _, segment := range splitShellCommandSegments(input) {
 		for _, stage := range splitShellPipeline(segment) {
@@ -124,8 +151,11 @@ func (m ShellTool) classifyKnownShellCompound(ctx *security.RequestContext, inpu
 				}
 				return "", false, nil
 			}
-			ownerName := core.LookupShellWrappable(leadBase)
-			if ownerName == "" {
+			requestType, owned, err := classifyLead(ctx, lead, cleaned)
+			if err != nil {
+				return "", false, err
+			}
+			if !owned {
 				if leadBase == "curl" {
 					if isKnownReadOnlyCurlCommand(cleaned) {
 						continue
@@ -138,29 +168,183 @@ func (m ShellTool) classifyKnownShellCompound(ctx *security.RequestContext, inpu
 				}
 				continue
 			}
-			tool, ok := core.GetNBTool(m.AccountId, ownerName)
-			if !ok {
+			if requestType != core.ToolRequestTypeRead && requestType != core.ToolRequestTypeCreate &&
+				requestType != core.ToolRequestTypeUpdate && requestType != core.ToolRequestTypeDelete {
 				return "", false, nil
 			}
-			if classifier, ok := tool.(core.ToolRequestInference); ok {
-				requestType, err := classifier.InferToolRequestType(ctx, tool.Name(), cleaned)
-				if err != nil {
-					return "", false, err
-				}
-				if requestType == "" {
-					return "", false, nil
-				}
-				if requestType != core.ToolRequestTypeRead && requestType != core.ToolRequestTypeCreate &&
-					requestType != core.ToolRequestTypeUpdate && requestType != core.ToolRequestTypeDelete {
-					return "", false, nil
-				}
-				result = strongerShellRequestType(result, requestType)
-				continue
-			}
-			return "", false, nil
+			result = strongerShellRequestType(result, requestType)
 		}
 	}
 	return result, true, nil
+}
+
+// classifyOwnCLIChain classifies a chained or piped command sent to a CLI tool
+// (`aws ... | grep`, `kubectl get ... && kubectl describe ...`) by classifying
+// each stage: the tool's own CLI by its static classifier, and a few text
+// filters that only read their input as reads. Any other stage (another CLI,
+// another program, a substitution, a wrapper) or any redirection to or from a
+// file leaves it to the LLM classifier (""). The strongest stage wins, so one
+// write makes the chain a write.
+//
+// This is deliberately narrower than the shell tool's compound classifier:
+// redirections and utilities such as sort -o or jq can write or read files.
+func classifyOwnCLIChain(ctx *security.RequestContext, command string, static func(string) core.ToolRequestType, executables ...string) core.ToolRequestType {
+	command = stripShellComments(command)
+	if hasFileRedirection(command) {
+		return ""
+	}
+	if !hasUnquotedShellSyntax(command) {
+		// Only a comment was in the way; what runs is this one command.
+		return static(strings.TrimSpace(command))
+	}
+	if !everyStageStartsWith(command, executables) {
+		return ""
+	}
+	requestType, complete, err := classifyShellCompound(ctx, command, func(_ *security.RequestContext, lead, cleaned string) (core.ToolRequestType, bool, error) {
+		for _, executable := range executables {
+			// Exact name, not the base name: /tmp/x/aws is not the aws CLI.
+			if lead == executable {
+				return static(cleaned), true, nil
+			}
+		}
+		if isReadOnlyChainFilter(lead, cleaned) {
+			return core.ToolRequestTypeRead, true, nil
+		}
+		// Owned with no answer: the stage makes the chain incomplete.
+		return "", true, nil
+	})
+	if err != nil || !complete {
+		return ""
+	}
+	return requestType
+}
+
+// everyStageStartsWith reports that every pipeline stage begins with one of
+// the tool's executables or a chain filter, as written. The shell compound
+// classifier unwraps `VAR=value cmd`, `env` and `sudo` before classifying,
+// but for a CLI tool such a prefix changes what the command does
+// (GH_HOST=other gh api ..., KUBECONFIG=/tmp/x kubectl ...), so a chain that
+// uses one is left to the LLM classifier, as the same single command is.
+func everyStageStartsWith(command string, executables []string) bool {
+	for _, segment := range splitShellCommandSegments(command) {
+		for _, stage := range splitShellPipeline(segment) {
+			stage = strings.TrimSpace(stage)
+			if stage == "" {
+				continue
+			}
+			tokens, err := shlex.Split(stripShellRedirections(stage))
+			if err != nil || len(tokens) == 0 {
+				return false
+			}
+			first := tokens[0]
+			known := false
+			for _, executable := range executables {
+				if first == executable {
+					known = true
+					break
+				}
+			}
+			if !known && !isReadOnlyChainFilter(first, stage) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// isReadOnlyChainFilter reports a pipeline stage that only filters text it is
+// given: no flag or argument that writes a file or runs a program.
+func isReadOnlyChainFilter(lead, cleaned string) bool {
+	tokens, err := shlex.Split(cleaned)
+	if err != nil || len(tokens) == 0 {
+		return false
+	}
+	args := tokens[1:]
+	switch lead {
+	case "grep", "egrep", "fgrep", "head", "tail", "wc", "cut", "tr", "true", "false":
+		return true
+	case "base64":
+		// Decoding stdin only: a file argument would be read from the workspace.
+		for _, arg := range args {
+			if !strings.HasPrefix(arg, "-") {
+				return false
+			}
+		}
+		return true
+	case "uniq":
+		// `uniq IN OUT` writes OUT: only flags are accepted.
+		for _, arg := range args {
+			if !strings.HasPrefix(arg, "-") {
+				return false
+			}
+		}
+		return true
+	case "sort":
+		// -o/--output writes a file; --compress-program runs one.
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "--output") || strings.HasPrefix(arg, "--compress-program") ||
+				(strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") && strings.Contains(arg, "o")) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// hasFileRedirection reports an unquoted redirection that reads or writes a
+// file. Only duplicating a descriptor (2>&1, >&2) and discarding output
+// (>/dev/null) are allowed.
+func hasFileRedirection(command string) bool {
+	var singleQuoted, doubleQuoted, escaped bool
+	for i := 0; i < len(command); i++ {
+		char := command[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if char == '\\' && !singleQuoted {
+			escaped = true
+			continue
+		}
+		if char == '\'' && !doubleQuoted {
+			singleQuoted = !singleQuoted
+			continue
+		}
+		if char == '"' && !singleQuoted {
+			doubleQuoted = !doubleQuoted
+			continue
+		}
+		if singleQuoted || doubleQuoted {
+			continue
+		}
+		if char == '<' {
+			return true
+		}
+		if char != '>' {
+			continue
+		}
+		j := i + 1
+		if j < len(command) && command[j] == '>' {
+			j++
+		}
+		if j+1 < len(command) && command[j] == '&' && command[j+1] >= '0' && command[j+1] <= '9' {
+			i = j + 1
+			continue
+		}
+		for j < len(command) && (command[j] == ' ' || command[j] == '\t') {
+			j++
+		}
+		end := j
+		for end < len(command) && !strings.ContainsRune(" \t;|&<>", rune(command[end])) {
+			end++
+		}
+		if command[j:end] != "/dev/null" {
+			return true
+		}
+		i = end - 1
+	}
+	return false
 }
 
 func strongerShellRequestType(current, candidate core.ToolRequestType) core.ToolRequestType {
@@ -718,6 +902,11 @@ func shellScanBasename(token string) string {
 	return filepath.Base(strings.ReplaceAll(token, `\`, ""))
 }
 
+// isKnownReadOnlyCurlCommand and isCurlMutationToken delegate to tools/core
+// so this shell-local classification and the kubectl-exec/SSM payload
+// classification (tools/core/readonly_remote.go) share one definition of
+// "read-only curl" instead of drifting into two independently-maintained
+// copies.
 func isKnownReadOnlyCurlCommand(input string) bool {
 	tokens, err := shlex.Split(input)
 	if err != nil || len(tokens) == 0 {
@@ -735,44 +924,7 @@ func isKnownReadOnlyCurlCommand(input string) bool {
 }
 
 func isCurlMutationToken(token string) bool {
-	if hasShellMutationFlag(token, "-d", "--data", "--data-raw", "--data-binary",
-		"--data-ascii", "--data-urlencode", "--json", "--form-string",
-		"-F", "--form", "-T", "--upload-file", "-X", "--request", "-K", "--config",
-		"-Q", "--quote") {
-		return true
-	}
-	return hasMutatingCurlShortOption(token)
-}
-
-// hasMutatingCurlShortOption understands curl's bundled short-option syntax.
-// Once it reaches an option that consumes an attached value, the remaining
-// bytes are data rather than more options: -o/tmp/data and -HHeader:data must
-// not be mistaken for -d/-T/-X. Flag-only prefixes still expose a later
-// mutation, so -sSXPOST and -sK- remain gated.
-func hasMutatingCurlShortOption(token string) bool {
-	if len(token) < 2 || token[0] != '-' || strings.HasPrefix(token, "--") {
-		return false
-	}
-	for i := 1; i < len(token); i++ {
-		switch token[i] {
-		case 'd', 'F', 'T', 'X', 'K', 'Q':
-			return true
-		case 'A', 'b', 'c', 'C', 'D', 'e', 'E', 'h', 'H', 'm', 'o', 'P',
-			'r', 't', 'u', 'U', 'w', 'x', 'y', 'Y', 'z':
-			return false
-		}
-	}
-	return false
-}
-
-func hasShellMutationFlag(token string, flags ...string) bool {
-	for _, flag := range flags {
-		if token == flag || strings.HasPrefix(token, flag+"=") ||
-			(len(flag) == 2 && strings.HasPrefix(token, flag) && len(token) > len(flag)) {
-			return true
-		}
-	}
-	return false
+	return core.IsCurlMutationToken(token)
 }
 
 // splitShellPipeline separates unquoted pipeline stages. Unlike compound

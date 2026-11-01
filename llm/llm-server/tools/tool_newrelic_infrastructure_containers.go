@@ -32,6 +32,7 @@ func (t NewRelicInfrastructureContainersTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
 		Properties: map[string]core.ToolSchemaProperty{
+			"instance": instanceProperty,
 			"command": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Search query for containers (e.g., 'name:nginx', 'tags.k8s.namespaceName:production')",

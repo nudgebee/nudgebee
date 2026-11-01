@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -138,12 +139,12 @@ var lokiHTTPClient = &http.Client{Timeout: 60 * time.Second}
 
 // lokiRequest executes an authenticated HTTP request against a user-configured Loki.
 // Extra headers are applied first so the explicit credential fields win on conflict.
-func lokiRequest(method, rawURL, body, contentType string, cfg *LokiConfig) (*http.Response, error) {
+func lokiRequest(ctx context.Context, method, rawURL, body, contentType string, cfg *LokiConfig) (*http.Response, error) {
 	var bodyReader io.Reader
 	if body != "" {
 		bodyReader = strings.NewReader(body)
 	}
-	req, err := http.NewRequest(method, rawURL, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create loki request: %w", err)
 	}
@@ -216,7 +217,13 @@ func (s *LokiSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest
 		return nil, err
 	}
 
-	resp, err := lokiRequest(http.MethodGet, cfg.Url+"/loki/api/v1/query_range?"+params, "", "", cfg)
+	reqCtx := context.Background()
+	if fetchLogRequest.Timeout > 0 {
+		var cancel context.CancelFunc
+		reqCtx, cancel = context.WithTimeout(reqCtx, fetchLogRequest.Timeout)
+		defer cancel()
+	}
+	resp, err := lokiRequest(reqCtx, http.MethodGet, cfg.Url+"/loki/api/v1/query_range?"+params, "", "", cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute loki query: %w", err)
 	}
@@ -335,7 +342,7 @@ func (s *LokiSaasSource) QueryLabelValues(ctx *security.RequestContext, fetchLog
 // fetchLokiStrings GETs an endpoint whose success payload is a string array
 // (labels, label values) and returns it, treating a null payload as empty.
 func (s *LokiSaasSource) fetchLokiStrings(cfg *LokiConfig, path, operation string) ([]string, error) {
-	resp, err := lokiRequest(http.MethodGet, cfg.Url+path, "", "", cfg)
+	resp, err := lokiRequest(context.Background(), http.MethodGet, cfg.Url+path, "", "", cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute loki %s query: %w", operation, err)
 	}
@@ -398,4 +405,8 @@ func (s *LokiSaasSource) CanGenerateQuery(ctx playbooks.PlaybookActionContext) b
 
 func (s *LokiSaasSource) GenerateQuery(ctx playbooks.PlaybookActionContext) (string, map[string]any, error) {
 	return s.shared.GenerateQuery(ctx)
+}
+
+func (s *LokiSaasSource) withLineFilter(query, pattern string) (string, bool) {
+	return s.shared.withLineFilter(query, pattern)
 }

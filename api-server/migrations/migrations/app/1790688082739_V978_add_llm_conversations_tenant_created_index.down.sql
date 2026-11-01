@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS public.idx_llm_conversations_tenant_created_at;

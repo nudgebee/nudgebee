@@ -254,7 +254,7 @@ func prepareEventForDB(ctx *security.RequestContext, event providers.Event, orig
 		subjectName = event.EventName
 	}
 
-	return map[string]any{
+	eventMap := map[string]any{
 		"updated_at":        eventDateFormatted,
 		"title":             event.Title,
 		"tenant":            ctx.GetSecurityContext().GetTenantId(),
@@ -284,7 +284,20 @@ func prepareEventForDB(ctx *security.RequestContext, event providers.Event, orig
 		"aggregation_key":   event.EventName,
 		"principal":         event.Username,
 		"labels":            event.Labels,
-	}, nil
+	}
+	// Every event is sent with ends_at = starts_at, which the event service
+	// stores as a moment that has already passed. A condition a poll can end is
+	// sent with no end time instead, so it is stored firing until it is resolved.
+	if event.OngoingScope != "" && event.EventStatus == providers.EventStatusFiring {
+		delete(eventMap, "ends_at")
+	}
+	if len(event.ResourceLookupIds) > 0 {
+		eventMap[resourceLookupIdsKey] = event.ResourceLookupIds
+	}
+	if event.EndsAt != nil {
+		eventMap["ends_at"] = event.EndsAt.Format(time.RFC3339)
+	}
+	return eventMap, nil
 }
 
 // processEventsInternal is a centralized function to handle event preparation,
@@ -361,21 +374,44 @@ func StoreEvents(ctx *security.RequestContext, accountId string) (StoreEventResp
 
 	// update agent status
 	endDate := time.Now().UTC()
+	// What this poll listed is recorded with the rest of the events status: the
+	// push path reads it to decide whether a pushed firing may be stored open.
+	// The write is not awaited. If it fails, the recorded listing goes stale and
+	// the push path falls back to storing moments.
+	coverage := ongoingCoverageStatus(events.Ongoing)
+	// The recorded end is this poll's time. endDate is reassigned below to the
+	// newest event time, which for an alarm is when it last changed state and can
+	// be hours old; read through the closure, a late write could record that
+	// instead and pull the next poll's window (and its history read) back.
+	recordedEnd := endDate
 	go func() {
+		eventsStatus := map[string]any{
+			"count":    len(events.Items),
+			"duration": time.Since(t0).String(),
+			"start":    startDate.Format(time.RFC3339),
+			"end":      recordedEnd.Format(time.RFC3339),
+			"err":      "",
+		}
+		for key, value := range coverage {
+			eventsStatus[key] = value
+		}
 		err := updateOrCreateAgentStatus(ctx, accountId, AgentStatusConnected, "", true, map[string]any{
 			"account_number": acc.AccountNumber,
-			"events": map[string]any{
-				"count":    len(events.Items),
-				"duration": time.Since(t0).String(),
-				"start":    startDate.Format(time.RFC3339),
-				"end":      endDate.Format(time.RFC3339),
-				"err":      "",
-			},
+			"events":         eventsStatus,
 		})
 		if err != nil {
 			ctx.GetLogger().Error("Failed to update agent status", "error", err.Error())
 		}
 	}()
+
+	// Before the empty-batch return: a poll that finds nothing on is exactly the
+	// one that has to end what was on.
+	keepOngoingWhereListed(events.Items, listedScopes(events.Ongoing))
+	if events.Ongoing != nil {
+		if err := endFiringsNoLongerOn(ctx, dbms, accountId, *events.Ongoing); err != nil {
+			ctx.GetLogger().Error("unable to end firings that are no longer on", "error", err, "accountId", accountId)
+		}
+	}
 
 	if len(events.Items) == 0 {
 		ctx.GetLogger().Info("no events to process")
@@ -411,7 +447,7 @@ func StoreEvents(ctx *security.RequestContext, accountId string) (StoreEventResp
 
 	// Mark previous events as closed, but skip events still present in the current batch
 	// and events whose fingerprint matches a RESOLVED event (they'll be resolved, not closed).
-	sources := lo.Keys(distinctSources)
+	sources := batchClosableSources(events)
 	if len(sources) > 0 {
 		closeQuery := `UPDATE events SET status = 'CLOSED'
 			 WHERE cloud_account_id = $1 AND source = ANY($2) AND status != 'CLOSED'
@@ -606,7 +642,7 @@ func insertNewEvents(ctx *security.RequestContext, dbms *common.DatabaseManager,
 		eventsToStoreInDB = append(eventsToStoreInDB, eventMap)
 	}
 
-	// Link events to cloud_resourses by matching subject_name to resourse_id or name
+	// Link events to the cloud_resourses row of their resource
 	linkCloudResourceIds(ctx, dbms, eventsToStoreInDB, internalDBAccountID)
 
 	_, err = services.InvestigateEvent(ctx.GetSecurityContext().GetTenantId(), eventsToStoreInDB)
@@ -632,12 +668,6 @@ func resolveExistingEvents(ctx *security.RequestContext, dbms *common.DatabaseMa
 	fps := lo.Keys(fpToEvent)
 
 	// Update existing FIRING events to RESOLVED per fingerprint (each may have a different resolution timestamp)
-	type resolvedRow struct {
-		ID             string `db:"id"`
-		Tenant         string `db:"tenant"`
-		CloudAccountID string `db:"cloud_account_id"`
-		Fingerprint    string `db:"fingerprint"`
-	}
 	var allResolved []resolvedRow
 
 	// A failed fingerprint must not abandon the ones already updated: their rows
@@ -661,10 +691,16 @@ func resolveExistingEvents(ctx *security.RequestContext, dbms *common.DatabaseMa
 		// which hid it from the Triage Inbox (it excludes DEBUG/INFO) and made the
 		// briefing's Nubi-vs-source severity comparison measure this UPDATE rather than
 		// the source.
+		// starts_at <= the resolve's own time: a resolve cannot end a firing that
+		// began after it. Pushes arrive unordered and more than once, so a resolve
+		// from an earlier cycle can land after the next firing is stored; without
+		// the bound it would close that firing while it still breaches, and
+		// nothing stores it again because its finding_id already exists.
 		err := dbms.QueryAndScan(&rows,
 			`UPDATE events SET status = 'RESOLVED', updated_at = $3, ends_at = $3
 			 WHERE cloud_account_id = $1 AND fingerprint = $2
 			 AND status NOT IN ('CLOSED', 'RESOLVED')
+			 AND starts_at <= $3
 			 RETURNING id::text, tenant::text, cloud_account_id::text, fingerprint`,
 			accountID, fp, resolvedAt)
 		if err != nil {
@@ -679,11 +715,43 @@ func resolveExistingEvents(ctx *security.RequestContext, dbms *common.DatabaseMa
 		ctx.GetLogger().Info("resolved existing events by fingerprint", "component", funcName, "count", len(allResolved))
 	}
 
-	// Only a genuine open->resolved transition reaches here (the UPDATE excludes
+	announceResolved(ctx, dbms, allResolved, func(row resolvedRow) map[string]any {
+		re, ok := fpToEvent[row.Fingerprint]
+		if !ok {
+			return nil
+		}
+		return map[string]any{
+			"resolved_title":       re.Title,
+			"resolved_description": re.Description,
+			"resolved_labels":      re.Labels,
+			"resolved_date":        re.Date.Format(time.RFC3339),
+		}
+	})
+
+	return errors.Join(updateErrs...)
+}
+
+// resolvedRow is an event a resolve has just moved from open to RESOLVED.
+type resolvedRow struct {
+	ID             string `db:"id"`
+	Tenant         string `db:"tenant"`
+	CloudAccountID string `db:"cloud_account_id"`
+	Fingerprint    string `db:"fingerprint"`
+}
+
+// announceResolved publishes the resolved notification and records the history
+// row for each event a resolve has just closed. Every resolve in this package
+// ends here, so an alarm is announced and recorded the same way whether a
+// pushed resolve or a poll saw it clear. metadataFor supplies what the history
+// row says about the resolve; a nil map skips the history row.
+func announceResolved(ctx *security.RequestContext, dbms *common.DatabaseManager, resolved []resolvedRow, metadataFor func(resolvedRow) map[string]any) {
+	funcName := "etl.events.announceResolved"
+
+	// Only a genuine open->resolved transition reaches here (the UPDATEs exclude
 	// rows already CLOSED/RESOLVED), so repeat syncs of the same resolved alarm
 	// publish nothing. api-server routes this to the resolved reply, threaded
 	// under the original alert message.
-	for _, row := range allResolved {
+	for _, row := range resolved {
 		if err := common.MqPublish(
 			config.Config.RabbitMqEventPostProcessExchange,
 			config.Config.RabbitMqEventPostProcessQueue,
@@ -696,16 +764,10 @@ func resolveExistingEvents(ctx *security.RequestContext, dbms *common.DatabaseMa
 	}
 
 	// Record event_history for each resolved event
-	for _, row := range allResolved {
-		re, ok := fpToEvent[row.Fingerprint]
-		if !ok {
+	for _, row := range resolved {
+		metadata := metadataFor(row)
+		if metadata == nil {
 			continue
-		}
-		metadata := map[string]any{
-			"resolved_title":       re.Title,
-			"resolved_description": re.Description,
-			"resolved_labels":      re.Labels,
-			"resolved_date":        re.Date.Format(time.RFC3339),
 		}
 		metaJSON, err := json.Marshal(metadata)
 		if err != nil {
@@ -724,8 +786,6 @@ func resolveExistingEvents(ctx *security.RequestContext, dbms *common.DatabaseMa
 			ctx.GetLogger().Error("failed to insert event history for resolution", "error", err, "eventId", row.ID)
 		}
 	}
-
-	return errors.Join(updateErrs...)
 }
 
 // hasCloudResourceId checks whether an event already has a non-nil cloud_resource_id.
@@ -742,81 +802,203 @@ func hasCloudResourceId(e map[string]any) bool {
 	return true
 }
 
-// linkCloudResourceIds performs a batch lookup of cloud_resourses to set cloud_resource_id
-// on events that have a subject_name matching a known resource.
+// resourceLookupIdsKey carries providers.Event.ResourceLookupIds from
+// prepareEventForDB to linkCloudResourceIds inside the event map. It is not an
+// events column: linkCloudResourceIds removes it before the map leaves the
+// collector.
+const resourceLookupIdsKey = "_resource_lookup_ids"
+
+// linkCloudResourceIds sets cloud_resource_id on each event to the
+// cloud_resourses row that is the event's resource, or leaves it empty.
+//
+// One resource id is often stored on several rows: an EC2 instance id is the id
+// of its EC2 row, its Systems Manager and Compute Optimizer rows, and of
+// cost-report rows per usage type; a Lambda function can have a row per region.
+// Matching the id alone and keeping whichever row came last attached alarms to
+// those other rows. The row is now chosen by chooseEventResource. The link is
+// decided here, once, before the event is sent for investigation: what is
+// correlated and analysed is computed from it and is not recomputed later.
 func linkCloudResourceIds(ctx *security.RequestContext, dbms *common.DatabaseManager, events []map[string]any, accountID string) {
-	// Collect unique subject names that don't already have a cloud_resource_id
-	subjectNames := map[string]bool{}
-	for _, e := range events {
+	keys := make([]eventResourceKey, len(events))
+	for i, e := range events {
+		keys[i] = eventResourceKeyFromMap(e)
+		delete(e, resourceLookupIdsKey)
+	}
+
+	externalIds := map[string]bool{}
+	ids := map[string]bool{}
+	for i, e := range events {
 		if hasCloudResourceId(e) {
 			continue
 		}
-		if name, ok := e["subject_name"].(string); ok && name != "" {
-			subjectNames[name] = true
+		for _, id := range keys[i].ids {
+			ids[id] = true
+		}
+		if len(keys[i].ids) > 0 && keys[i].externalId != "" {
+			externalIds[keys[i].externalId] = true
 		}
 	}
-	if len(subjectNames) == 0 {
+	if len(ids) == 0 {
 		return
 	}
 
-	names := make([]string, 0, len(subjectNames))
-	for name := range subjectNames {
-		names = append(names, name)
-	}
-
-	type resourceMatch struct {
-		ID         string `db:"id"`
-		ResourceId string `db:"resourse_id"`
-		Name       string `db:"name"`
-	}
-
-	var matches []resourceMatch
-	err := dbms.QueryAndScan(&matches,
-		`SELECT id, resourse_id, name FROM cloud_resourses
+	var candidates []resourceCandidate
+	err := dbms.QueryAndScan(&candidates,
+		`SELECT id, resourse_id, COALESCE(name, '') AS name,
+		        COALESCE(external_resource_id, '') AS external_resource_id,
+		        COALESCE(service_name, '') AS service_name, COALESCE(type, '') AS type,
+		        COALESCE(region, '') AS region, COALESCE(meta->>'nb_source', '') AS nb_source
+		 FROM cloud_resourses
 		 WHERE account = $1 AND is_active = true
-		   AND (resourse_id = ANY($2) OR name = ANY($2))`,
-		accountID, pq.Array(names))
+		   AND (external_resource_id = ANY($2) OR resourse_id = ANY($3) OR name = ANY($3))`,
+		accountID, pq.Array(lo.Keys(externalIds)), pq.Array(lo.Keys(ids)))
 	if err != nil {
 		ctx.GetLogger().Warn("linkCloudResourceIds: failed to query cloud_resourses", "error", err)
 		return
 	}
-
-	if len(matches) == 0 {
+	if len(candidates) == 0 {
 		return
 	}
 
-	// Build lookup maps: resourse_id → UUID, name → UUID
-	resourceIdMap := map[string]string{}
-	nameMap := map[string]string{}
-	for _, m := range matches {
-		resourceIdMap[m.ResourceId] = m.ID
-		if m.Name != "" {
-			nameMap[m.Name] = m.ID
-		}
-	}
-
-	linked := 0
-	for _, e := range events {
-		if hasCloudResourceId(e) {
+	linked, tied := 0, 0
+	for i, e := range events {
+		if hasCloudResourceId(e) || len(keys[i].ids) == 0 {
 			continue
 		}
-		name, _ := e["subject_name"].(string)
-		if name == "" {
-			continue
+		id, ok, isTie := chooseEventResource(keys[i], candidates)
+		if isTie {
+			tied++
+			ctx.GetLogger().Info("linkCloudResourceIds: several rows fit the event equally well, leaving it unlinked",
+				"subject", keys[i].ids[0], "serviceName", keys[i].serviceName, "subjectType", keys[i].resourceType)
 		}
-		// Prefer resourse_id match over name match
-		if id, ok := resourceIdMap[name]; ok {
-			e["cloud_resource_id"] = &id
-			linked++
-		} else if id, ok := nameMap[name]; ok {
+		if ok {
 			e["cloud_resource_id"] = &id
 			linked++
 		}
 	}
 
-	if linked > 0 {
-		ctx.GetLogger().Info("linkCloudResourceIds: linked events to cloud resources", "linked", linked, "total", len(events))
+	if linked > 0 || tied > 0 {
+		ctx.GetLogger().Info("linkCloudResourceIds: linked events to cloud resources", "linked", linked, "tied", tied, "total", len(events))
 	}
+}
+
+// eventResourceKey is what an event says about its resource.
+type eventResourceKey struct {
+	externalId   string   // service_key, built like cloud_resourses.external_resource_id
+	ids          []string // subject_name, then the provider's lookup ids
+	serviceName  string   // subject_namespace
+	resourceType string   // subject_type
+	region       string   // subject_node
+}
+
+func eventResourceKeyFromMap(e map[string]any) eventResourceKey {
+	str := func(k string) string { v, _ := e[k].(string); return v }
+	key := eventResourceKey{
+		externalId:   str("service_key"),
+		serviceName:  str("subject_namespace"),
+		resourceType: str("subject_type"),
+		region:       str("subject_node"),
+	}
+	if name := str("subject_name"); name != "" {
+		key.ids = append(key.ids, name)
+	}
+	if extra, ok := e[resourceLookupIdsKey].([]string); ok {
+		for _, id := range extra {
+			if id != "" && !lo.Contains(key.ids, id) {
+				key.ids = append(key.ids, id)
+			}
+		}
+	}
+	return key
+}
+
+// resourceCandidate is a cloud_resourses row that may be an event's resource.
+type resourceCandidate struct {
+	ID          string `db:"id"`
+	ResourceId  string `db:"resourse_id"`
+	Name        string `db:"name"`
+	ExternalId  string `db:"external_resource_id"`
+	ServiceName string `db:"service_name"`
+	Type        string `db:"type"`
+	Region      string `db:"region"`
+	Source      string `db:"nb_source"`
+}
+
+// Match tiers, best first. A row of another service is used only when no row of
+// the event's own service matches: alarms on custom metrics, and events whose
+// service name the inventory spells differently, have nothing better, and
+// linking them by id is what they got before.
+const (
+	tierExactKey = iota
+	tierServiceId
+	tierServiceName
+	tierOtherId
+	tierOtherName
+	tierNone
+)
+
+func candidateTier(key eventResourceKey, c resourceCandidate) int {
+	if key.externalId != "" && c.ExternalId == key.externalId {
+		return tierExactKey
+	}
+	sameService := key.serviceName != "" && c.ServiceName == key.serviceName
+	switch {
+	case sameService && lo.Contains(key.ids, c.ResourceId):
+		return tierServiceId
+	case sameService && c.Name != "" && lo.Contains(key.ids, c.Name):
+		return tierServiceName
+	case lo.Contains(key.ids, c.ResourceId):
+		return tierOtherId
+	case c.Name != "" && lo.Contains(key.ids, c.Name):
+		return tierOtherName
+	}
+	return tierNone
+}
+
+// candidateScore breaks ties inside a tier: the event's region first (a
+// function has a row per region it was ever seen in), then its resource type
+// (an instance's EC2 row over its cost rows per usage type), then a row read
+// from the provider's API over one derived from the bill.
+func candidateScore(key eventResourceKey, c resourceCandidate) int {
+	score := 0
+	if key.region != "" && c.Region == key.region {
+		score += 4
+	}
+	if key.resourceType != "" && c.Type == key.resourceType {
+		score += 2
+	}
+	if c.Source != "billing" {
+		score++
+	}
+	return score
+}
+
+// chooseEventResource returns the id of the row that is the event's resource.
+// When the best rows of the best tier are different rows with the same score,
+// it returns none and reports the tie: no link is better than a wrong one.
+func chooseEventResource(key eventResourceKey, candidates []resourceCandidate) (id string, ok bool, tie bool) {
+	bestTier, bestScore := tierNone, -1
+	var best []string
+	for _, c := range candidates {
+		tier := candidateTier(key, c)
+		if tier == tierNone {
+			continue
+		}
+		score := candidateScore(key, c)
+		switch {
+		case tier < bestTier || (tier == bestTier && score > bestScore):
+			bestTier, bestScore, best = tier, score, []string{c.ID}
+		case tier == bestTier && score == bestScore && !lo.Contains(best, c.ID):
+			best = append(best, c.ID)
+		}
+	}
+	switch len(best) {
+	case 0:
+		return "", false, false
+	case 1:
+		return best[0], true, false
+	}
+	return "", false, true
 }
 
 func getEventsInternal(ctx *security.RequestContext, accountId string, filter providers.ListEventRequest) (providers.ListEventResponse, providers.Account, error) {

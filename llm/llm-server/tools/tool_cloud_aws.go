@@ -70,6 +70,13 @@ func (t AwsCliTool) ConfirmationKey(toolInput string) string {
 	return targetConfirmationKey(t.Name(), RequestedAwsAccount(req.Arguments))
 }
 
+func (t AwsCliTool) PrepareDelegatedTargetInput(target *core.ExecutionTarget, input string) (string, error) {
+	if target == nil || target.Provider != "aws" || RequestedAwsAccount(core.ParseNBToolCallRequestFromInput(input).Arguments) != "" {
+		return input, nil
+	}
+	return addDelegatedTargetArgument(input, "account", target.Name)
+}
+
 // RequestedTarget returns the AWS account a call explicitly names, for the
 // executor's write-access check on that account.
 func (t AwsCliTool) RequestedTarget(toolInput string) (string, error) {
@@ -144,6 +151,9 @@ func (t AwsCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 	}
 	target, err := ResolveRequestedTarget(nbRequestContext.Ctx, nbRequestContext.AccountId, t.Name(), nbRequestContext.ToolConfig, requested)
 	if err != nil {
+		return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
+	}
+	if err := VerifyDelegatedTargetIdentity(nbRequestContext, "aws", target, requested); err != nil {
 		return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
 	}
 	provenance := awsTargetProvenance(target)
@@ -310,6 +320,11 @@ func classifyAwsVerb(verb string) core.ToolRequestType {
 // inferAwsVerbType classifies an AWS CLI command by its verb prefix.
 // Returns empty string if the verb is not recognized (caller should fall back to LLM).
 func inferAwsVerbType(command string) core.ToolRequestType {
+	// The command runs through a shell, so one verb cannot speak for a chain,
+	// a substitution or a comment.
+	if hasUnquotedShellSyntax(command) {
+		return ""
+	}
 	parts := strings.Fields(strings.TrimSpace(command))
 
 	if result := isCloudCLIInfoFlag(parts); result != "" {
@@ -355,7 +370,11 @@ func inferAwsVerbType(command string) core.ToolRequestType {
 }
 
 func (t AwsCliTool) InferToolRequestType(ctx *security.RequestContext, toolName, input string) (core.ToolRequestType, error) {
-	requestType := inferAwsVerbType(extractCommandFromToolInput(input))
+	command := extractCommandFromToolInput(input)
+	requestType := inferAwsVerbType(command)
+	if requestType == "" {
+		requestType = classifyOwnCLIChain(ctx, command, inferAwsVerbType, "aws")
+	}
 	if requestType != "" {
 		return requestType, nil
 	}

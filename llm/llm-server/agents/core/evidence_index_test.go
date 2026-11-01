@@ -4,9 +4,13 @@ import (
 	"strings"
 	"testing"
 
+	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBuildEvidenceIndex(t *testing.T) {
@@ -69,6 +73,28 @@ func TestFetchEvidenceIndex_CrossMessage(t *testing.T) {
 	config.Config.LlmServerFsEvidenceRecallEnabled = true
 	assert.Empty(t, fetchEvidenceIndex(nil, NBAgentRequest{AccountId: "acc-1"}),
 		"first message (no conversation id) has no prior evidence")
+}
+
+// TestListConversationFileRefs_BoundedByAge verifies the index only draws on
+// references recent enough for their files to still be on disk: the query
+// carries an age clause and is given fsEvidenceIndexMaxAgeHours.
+func TestListConversationFileRefs_BoundedByAge(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+
+	const conversationID = "11111111-1111-1111-1111-111111111111"
+	mock.ExpectQuery(`t\.created_at > NOW\(\) - \(\$4 \|\| ' hours'\)::interval`).
+		WithArgs(conversationID, "acc-1", fsEvidenceIndexMaxFiles, fsEvidenceIndexMaxAgeHours).
+		WillReturnRows(sqlmock.NewRows([]string{"message_id", "tool_name", "file", "descr"}).
+			AddRow("msg-1", "fetch_logs", "logs_kubectl_1.txt", "Raw log data from kubectl"))
+
+	refs, err := dao.ListConversationFileRefs("acc-1", conversationID, fsEvidenceIndexMaxFiles)
+	require.NoError(t, err)
+	require.Len(t, refs, 1)
+	assert.Equal(t, "logs_kubectl_1.txt", refs[0].File)
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 // sanity: the index block is compact enough to ride the uncached human message.

@@ -59,7 +59,7 @@ func (t GetEventEvidenceTool) Description() string {
 - summary: aggregated stats — metrics: min/max/avg per series; traces: span count, errors, slow spans; logs: line count, top error patterns
 - filter: for logs, returns lines matching pattern with context lines. For array types, applies offset/limit pagination.
 Use offset/limit for pagination on large evidence sets.
-Evidence types: logs, pod_metrics, node_metrics, container_metrics, traces, deployment, pod_events, node_events, pod_data, alert_labels, noisy_neighbours, related_events, api_failures, metrics_data, job_information, job_events, user_actions, rdbms_query_response, alert_data, markdowns, all`
+Evidence types: logs, pod_metrics, node_metrics, container_metrics, traces, deployment, pod_events, node_events, pod_data, alert_labels, noisy_neighbours, related_events, api_failures, metrics_data, job_information, job_events, user_actions, rdbms_query_response, alert_data, markdowns, log_pattern_breakdown, all`
 }
 
 func (t GetEventEvidenceTool) InputSchema() core.ToolSchema {
@@ -72,7 +72,7 @@ func (t GetEventEvidenceTool) InputSchema() core.ToolSchema {
 			},
 			"evidence_type": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Optional evidence type filter: logs, pod_metrics, node_metrics, container_metrics, traces, deployment, pod_events, node_events, pod_data, alert_labels, noisy_neighbours, related_events, api_failures, metrics_data, job_information, job_events, user_actions, rdbms_query_response, alert_data, markdowns, all. If omitted, returns all evidence.",
+				Description: "Optional evidence type filter: logs, pod_metrics, node_metrics, container_metrics, traces, deployment, pod_events, node_events, pod_data, alert_labels, noisy_neighbours, related_events, api_failures, metrics_data, job_information, job_events, user_actions, rdbms_query_response, alert_data, markdowns, log_pattern_breakdown, all. If omitted, returns all evidence.",
 			},
 			"query_mode": {
 				Type:        core.ToolSchemaTypeString,
@@ -183,9 +183,13 @@ func (t GetEventEvidenceTool) Call(nbRequestContext core.NbToolContext, input co
 	// mining) must operate on the complete log body, not the scratchpad-lean
 	// truncation; raw mode is bounded by the per-observation scratchpad cap.
 	eventTool := EventsExecuteTool{FullEvidence: true}
+	// The event lives in the delegated target's account; evidence files stay
+	// in this conversation's workspace (nbRequestContext.AccountId).
+	dataCtx := nbRequestContext.ForTarget()
+	dataAccountID := dataCtx.AccountId
 	toolCtx := core.NewNbToolContext(
 		nbRequestContext.Ctx, eventTool,
-		nbRequestContext.AccountId, nbRequestContext.UserId,
+		dataAccountID, nbRequestContext.UserId,
 		nbRequestContext.ConversationId, nbRequestContext.MessageId,
 		nbRequestContext.ParentAgentId, eventId,
 		nil, "", core.NBQueryConfig{}, "",
@@ -404,6 +408,11 @@ func extractEvidenceByType(data events.InvestigateData, evidenceType string) any
 			return nil
 		}
 		return data.Markdowns
+	case "log_pattern_breakdown":
+		if data.LogPatternBreakdown.Data == nil {
+			return nil
+		}
+		return data.LogPatternBreakdown
 	default:
 		return nil
 	}
@@ -635,6 +644,11 @@ func (t GetEventEvidenceTool) summarizePrometheusMetrics(evidence any) (core.NBT
 			if len(timestamps) > 0 {
 				summary["first_timestamp"] = timestamps[0]
 				summary["last_timestamp"] = timestamps[len(timestamps)-1]
+			}
+			// The prometheus_enricher flags the series of the object the alert fired
+			// for; the rule's other objects share the list.
+			if alerting, _ := seriesMap["alerting"].(bool); alerting {
+				summary["alerting"] = true
 			}
 
 			summaries = append(summaries, summary)

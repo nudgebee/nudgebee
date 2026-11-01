@@ -221,7 +221,7 @@ export interface NotificationRouteCheckRequest {
 
 export interface NotificationRouteCheck {
   result: 'sent' | 'not_sent' | 'held' | 'paused';
-  reason: 'rule' | 'default_policy' | 'severity';
+  reason: 'rule' | 'default_policy' | 'severity' | 'always_sent';
   stopped_by: { id: string; name?: string } | null;
   rules: { id: string; name?: string }[];
   channels: { platform: string; channels: any; rule_id: string | null }[];

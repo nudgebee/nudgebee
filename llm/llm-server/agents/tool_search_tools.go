@@ -145,6 +145,9 @@ func (t *searchToolsTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTool
 		Status: toolcore.NBToolResponseStatusSuccess,
 		Data:   renderSearchToolsOutput(matched),
 		Type:   toolcore.NBToolResponseTypeText,
+		AdditionalDetails: map[string]any{
+			"discovered_tools": discovered,
+		},
 	}, nil
 }
 
@@ -222,7 +225,7 @@ func collectSearchToolCandidates(agentDtos []core.AgentDto, enabledTools []toolc
 			name:        tool.Name(),
 			kind:        "tool",
 			description: tool.Description(),
-			inputUsage:  summarizeToolInputSchema(tool.InputSchema()),
+			inputUsage:  summarizeToolInputSchema(toolcore.ModelInputSchema(tool)),
 		})
 	}
 

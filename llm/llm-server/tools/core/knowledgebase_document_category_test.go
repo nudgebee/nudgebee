@@ -76,7 +76,7 @@ func TestKnowledgeDocumentPurposeHonoursDocumentMark(t *testing.T) {
 
 func TestResolveDocumentCategoriesStampsMarkedDocuments(t *testing.T) {
 	mock := mockKBDatabase(t)
-	mock.ExpectQuery(`SELECT document_key, note_category FROM llm_kb_document_categories`).
+	mock.ExpectQuery(`SELECT document_key, note_category FROM llm_kb_capability_entries`).
 		WithArgs("account-a", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"document_key", "note_category"}).
 			AddRow(confluenceCollection+"|101", "sop"))
@@ -101,7 +101,7 @@ func TestResolveDocumentCategoriesStampsMarkedDocuments(t *testing.T) {
 // applies — the case a URL key orphaned.
 func TestResolveDocumentCategoriesSurvivesRename(t *testing.T) {
 	mock := mockKBDatabase(t)
-	mock.ExpectQuery(`SELECT document_key, note_category FROM llm_kb_document_categories`).
+	mock.ExpectQuery(`SELECT document_key, note_category FROM llm_kb_capability_entries`).
 		WithArgs("account-a", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"document_key", "note_category"}).AddRow(confluenceCollection+"|101", "sop"))
 
@@ -117,7 +117,7 @@ func TestResolveDocumentCategoriesSurvivesRename(t *testing.T) {
 // answerable, they just carry their knowledge base's default treatment.
 func TestResolveDocumentCategoriesSurvivesQueryFailure(t *testing.T) {
 	mock := mockKBDatabase(t)
-	mock.ExpectQuery(`SELECT document_key, note_category FROM llm_kb_document_categories`).
+	mock.ExpectQuery(`SELECT document_key, note_category FROM llm_kb_capability_entries`).
 		WillReturnError(assert.AnError)
 
 	docs := RAGSearchResults{{Document: "steps", Metadata: map[string]any{"collection": confluenceCollection, "page_id": "101"}}}
@@ -156,14 +156,14 @@ func TestSetKBDocumentCategoryUpsertsAndClears(t *testing.T) {
 
 	mock.ExpectQuery(`SELECT tenant_id, kb_type, integration_id FROM llm_knowledgebases`).WithArgs("kb-1", "account-a").
 		WillReturnRows(markableKBRow())
-	mock.ExpectExec(`INSERT INTO llm_kb_document_categories`).
+	mock.ExpectExec(`INSERT INTO llm_kb_capability_entries`).
 		WithArgs("tenant-1", "account-a", "kb-1", key, "sop", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	require.NoError(t, SetKBDocumentCategory(sc, "account-a", "kb-1", " "+key+" ", "sop"))
 
 	mock.ExpectQuery(`SELECT tenant_id, kb_type, integration_id FROM llm_knowledgebases`).WithArgs("kb-1", "account-a").
 		WillReturnRows(markableKBRow())
-	mock.ExpectExec(`DELETE FROM llm_kb_document_categories`).
+	mock.ExpectExec(`DELETE FROM llm_kb_capability_entries`).
 		WithArgs("account-a", key).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	require.NoError(t, SetKBDocumentCategory(sc, "account-a", "kb-1", key, ""))
@@ -199,7 +199,7 @@ func TestDocumentMarksAreAccountWideOnBothReadPaths(t *testing.T) {
 	mock := mockKBDatabase(t)
 	key := confluenceCollection + "|101"
 
-	mock.ExpectQuery(`SELECT document_key, note_category FROM llm_kb_document_categories\s+WHERE account_id = \$1 AND document_key = ANY`).
+	mock.ExpectQuery(`SELECT document_key, note_category FROM llm_kb_capability_entries\s+WHERE entry_type = 'kb_document_mark' AND account_id = \$1 AND document_key = ANY`).
 		WithArgs("account-a", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"document_key", "note_category"}).AddRow(key, "sop"))
 
@@ -209,7 +209,7 @@ func TestDocumentMarksAreAccountWideOnBothReadPaths(t *testing.T) {
 	got := ResolveDocumentCategories(security.NewRequestContextForSuperAdmin(), "account-a", docs)
 	assert.Equal(t, KnowledgePurposeProcedure, KnowledgeDocumentPurpose(got[0]))
 
-	mock.ExpectQuery(`SELECT document_key, note_category FROM llm_kb_document_categories\s+WHERE account_id = \$1 AND document_key = ANY`).
+	mock.ExpectQuery(`SELECT document_key, note_category FROM llm_kb_capability_entries\s+WHERE entry_type = 'kb_document_mark' AND account_id = \$1 AND document_key = ANY`).
 		WithArgs("account-a", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"document_key", "note_category"}).AddRow(key, "sop"))
 
@@ -251,7 +251,7 @@ func TestAnIntegrationListingCarriesKeysAndMarks(t *testing.T) {
 	mock.ExpectQuery(`SELECT name, kb_type, integration_id FROM llm_knowledgebases`).WithArgs("kb-1", "account-a").
 		WillReturnRows(sqlmock.NewRows([]string{"name", "kb_type", "integration_id"}).AddRow("Confluence", KBTypeIntegration, "integration-a"))
 	mock.ExpectQuery(`SELECT name, `).WithArgs("kb-1", "account-a").WillReturnError(sql.ErrNoRows)
-	mock.ExpectQuery(`SELECT document_key, note_category FROM llm_kb_document_categories`).
+	mock.ExpectQuery(`SELECT document_key, note_category FROM llm_kb_capability_entries`).
 		WithArgs("account-a", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"document_key", "note_category"}).AddRow(confluenceCollection+"|101", "sop"))
 

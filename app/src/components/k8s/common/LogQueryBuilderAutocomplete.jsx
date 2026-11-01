@@ -608,7 +608,8 @@ const LogQueryBuilderAutocomplete = ({
         logProvider == 'dynatrace' ||
         logProvider == 'solarwinds' ||
         logProvider == 'openobserve' ||
-        logProvider == 'cubeapm') &&
+        logProvider == 'cubeapm' ||
+        logProvider == 'signoz') &&
       providerType == 'metrics'
     ) {
       const fetchMetrics = async () => {
@@ -716,7 +717,8 @@ const LogQueryBuilderAutocomplete = ({
           logProvider == 'dynatrace' ||
           logProvider == 'solarwinds' ||
           logProvider == 'openobserve' ||
-          logProvider == 'cubeapm') &&
+          logProvider == 'cubeapm' ||
+          logProvider == 'signoz') &&
         providerType == 'metrics'
       ) {
         try {
@@ -950,7 +952,8 @@ const LogQueryBuilderAutocomplete = ({
             logProvider == 'dynatrace' ||
             logProvider == 'solarwinds' ||
             logProvider == 'openobserve' ||
-            logProvider == 'cubeapm') &&
+            logProvider == 'cubeapm' ||
+            logProvider == 'signoz') &&
           providerType == 'metrics'
         ) {
           const activeBlock = getActiveBlock();
@@ -1621,7 +1624,8 @@ const LogQueryBuilderAutocomplete = ({
                   logProvider === 'dynatrace' ||
                   logProvider === 'solarwinds' ||
                   logProvider === 'openobserve' ||
-                  logProvider === 'cubeapm') &&
+                  logProvider === 'cubeapm' ||
+                  logProvider === 'signoz') &&
                   providerType === 'metrics') ||
                   logProvider === 'ES') && (
                   <FilterDropdown
@@ -1673,11 +1677,15 @@ const LogQueryBuilderAutocomplete = ({
                         ((logProvider === 'prometheus' ||
                           logProvider == 'datadog' ||
                           logProvider == 'ES' ||
-                          // openobserve and cubeapm are scoped to metrics here on purpose:
-                          // both are also logs providers, where there is no metric selector to
+                          // openobserve, cubeapm and signoz are scoped to metrics here on purpose:
+                          // all are also logs providers, where there is no metric selector to
                           // satisfy and an unconditional gate would disable the logs builder
                           // outright.
-                          ((logProvider == 'dynatrace' || logProvider == 'solarwinds' || logProvider == 'openobserve' || logProvider == 'cubeapm') &&
+                          ((logProvider == 'dynatrace' ||
+                            logProvider == 'solarwinds' ||
+                            logProvider == 'openobserve' ||
+                            logProvider == 'cubeapm' ||
+                            logProvider == 'signoz') &&
                             providerType === 'metrics')) &&
                           !block.selectedMetric)
                       }

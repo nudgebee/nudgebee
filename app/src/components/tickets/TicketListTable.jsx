@@ -64,8 +64,15 @@ const PRIORITY_TO_DS_LEVEL = {
 
 const toDsSeverityLevel = (priority) => PRIORITY_TO_DS_LEVEL[String(priority || '').toLowerCase()] || 'info';
 
+// Platforms whose ticket detail panel shows an inline comment thread/composer.
+// Other platforms (PagerDuty, GitHub, GitLab, Zendesk, ...) fall through to the
+// "Comments are managed in {tool}" link-out, even though the backend already
+// implements GetComments/AddComment for several of them.
+const INLINE_COMMENT_PLATFORMS = ['jira', 'servicenow'];
+
 const TicketDetailsComponent = ({ ticketData, accountsData }) => {
-  const isJiraTicket = ticketData?.platform?.toLowerCase() === 'jira';
+  const platform = ticketData?.platform?.toLowerCase();
+  const supportsInlineComments = INLINE_COMMENT_PLATFORMS.includes(platform);
   const [newComment, setNewComment] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [comments, setComments] = useState([]);
@@ -85,7 +92,7 @@ const TicketDetailsComponent = ({ ticketData, accountsData }) => {
   };
 
   const fetchComments = async () => {
-    if (!isJiraTicket || !ticketData?.ticket_id) {
+    if (!supportsInlineComments || !ticketData?.ticket_id) {
       return;
     }
 
@@ -94,7 +101,7 @@ const TicketDetailsComponent = ({ ticketData, accountsData }) => {
 
     setLoadingComments(true);
     try {
-      const response = await ticketsApi.getTicketComments(accountId, configId, 'jira', ticketData.ticket_id);
+      const response = await ticketsApi.getTicketComments(accountId, configId, platform, ticketData.ticket_id);
 
       if (response?.data?.error) {
         setComments([]);
@@ -116,7 +123,7 @@ const TicketDetailsComponent = ({ ticketData, accountsData }) => {
     setIsSubmitting(true);
     try {
       const accountId = ticketData.account_id;
-      const response = await ticketsApi.addTicketComment(accountId, ticketData.integration_id, 'jira', ticketData.ticket_id, newComment.trim());
+      const response = await ticketsApi.addTicketComment(accountId, ticketData.integration_id, platform, ticketData.ticket_id, newComment.trim());
 
       if (response?.data?.success) {
         setNewComment('');
@@ -146,14 +153,14 @@ const TicketDetailsComponent = ({ ticketData, accountsData }) => {
   };
 
   useEffect(() => {
-    if (isJiraTicket && ticketData?.ticket_id) {
+    if (supportsInlineComments && ticketData?.ticket_id) {
       setComments([]); // Clear previous comments
       setLoadingComments(false); // Reset loading state
       fetchComments();
     } else {
-      setComments([]); // Clear comments for non-Jira tickets
+      setComments([]); // Clear comments for platforms without an inline thread
     }
-  }, [ticketData?.ticket_id, ticketData?.account_id, isJiraTicket]);
+  }, [ticketData?.ticket_id, ticketData?.account_id, ticketData?.integration_id, platform, supportsInlineComments]);
 
   const toolDisplayName = TOOL_DISPLAY_NAMES[ticketData?.platform?.toLowerCase()] || ticketData?.platform || 'External Tool';
 
@@ -310,8 +317,8 @@ const TicketDetailsComponent = ({ ticketData, accountsData }) => {
           </Box>
         </Grid>
 
-        {/* Jira Comments Section */}
-        {isJiraTicket && (
+        {/* Inline Comments Section */}
+        {supportsInlineComments && (
           <Grid item xs={12}>
             <Typography
               variant='subtitle2'
@@ -505,8 +512,8 @@ const TicketDetailsComponent = ({ ticketData, accountsData }) => {
           </Grid>
         )}
 
-        {/* Non-Jira: comments managed externally */}
-        {!isJiraTicket && ticketData?.url && (
+        {/* Platforms without an inline thread: comments managed externally */}
+        {!supportsInlineComments && ticketData?.url && (
           <Grid item xs={12}>
             <Box sx={{ textAlign: 'center', py: 'var(--ds-space-4)' }}>
               <Typography variant='body2' sx={{ color: 'var(--ds-gray-600)' }}>

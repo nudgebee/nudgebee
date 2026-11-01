@@ -10,6 +10,7 @@ import { ds } from '@utils/colors';
 import { Button } from '@ui/Button';
 import { Chip } from '@ui/Chip';
 import { toast as snackbar } from '@ui/Toast';
+import { formatClockCompact } from '@shared/format/Datetime';
 
 dayjs.extend(relativeTime);
 
@@ -378,7 +379,7 @@ export const RCAReport = ({ data = {}, onRegenerate, eventId }) => {
                   { value: 'live', label: 'Latest report' },
                   ...historicalVersions.map((version) => ({
                     value: version.id,
-                    label: version.generated_at ? new Date(version.generated_at).toLocaleString() : 'Previous report · Date unavailable',
+                    label: formatClockCompact(version.generated_at) || 'Previous report · Date unavailable',
                   })),
                 ]}
               />

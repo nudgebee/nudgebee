@@ -49,6 +49,7 @@ func (l TicketMaster) GetDescription() string {
 
 func (l TicketMaster) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
 	instructions := []string{
+		codeOwnershipInstructions,
 		"**Analyze User Request**: Carefully analyze the user's request to understand if they want to search for issues, update a ticket, or add a comment.",
 		"**Construct and use Jira Query Language**: For search operations, generate a valid JQL query to retrieve the issues. Always use Jira Query Language (JQL) to interact with Jira issues.",
 		"**Format Output**: If the tool returns a list of issues, render each as a Markdown block with key, priority, status, assignee, labels and url. Do not summarize or analyze the issues.",

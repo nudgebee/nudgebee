@@ -23,8 +23,8 @@ func TestAssemblyHarness(t *testing.T) {
 	intended := ScoreAssembly(set, IntendedAssembler{})
 
 	for _, s := range []AssemblyScore{baseline, intended} {
-		t.Logf("%-9s core=%.2f cause=%.2f impact=%.2f chronic_fold=%.2f false_includes=%d",
-			s.Assembler, s.CoreRecall, s.CauseRecall, s.ImpactRecall, s.ChronicFoldRate, s.FalseIncludes)
+		t.Logf("%-9s core=%.2f cause=%.2f impact=%.2f chronic_fold=%.2f same_node=%.2f false_includes=%d",
+			s.Assembler, s.CoreRecall, s.CauseRecall, s.ImpactRecall, s.ChronicFoldRate, s.SameNodeRecall, s.FalseIncludes)
 	}
 
 	// Baseline reproduces the audit: raw same-name grouping recovers only some core
@@ -51,6 +51,18 @@ func TestAssemblyHarness(t *testing.T) {
 	}
 	if intended.ChronicFoldRate < 0.99 {
 		t.Errorf("intended chronic fold rate < 0.99: %.2f", intended.ChronicFoldRate)
+	}
+	// A node that ran out of memory: the other pods it killed and its own
+	// MemoryPressure are recovered, across namespaces and with no topology edge,
+	// and same-name grouping sees none of them.
+	if intended.SameNodeTot == 0 {
+		t.Error("corpus has no same_node members; the node rule is not being scored")
+	}
+	if intended.SameNodeRecall < 0.99 {
+		t.Errorf("intended same_node recall < 0.99: %.2f", intended.SameNodeRecall)
+	}
+	if baseline.SameNodeHit != 0 {
+		t.Errorf("expected baseline blind to same_node, got %d hit(s)", baseline.SameNodeHit)
 	}
 	if intended.FalseIncludes != 0 {
 		t.Errorf("intended pulled %d distractor(s) into an incident; want 0", intended.FalseIncludes)

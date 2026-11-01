@@ -1,0 +1,83 @@
+{{- if .Values.rabbitmq.enabled }}
+{{- $r := include "nudgebee.rabbitmq.values" . | fromYaml }}
+{{- $fullname := include "nudgebee.rabbitmq.fullname" . }}
+{{- $saName := include "nudgebee.rabbitmq.serviceAccountName" . }}
+{{- if $r.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $saName }}
+  namespace: {{ include "nudgebee.rabbitmq.namespace" . | quote }}
+  labels:
+    {{- include "nudgebee.rabbitmq.labels" (dict "custom" $r.commonLabels "root" $) | nindent 4 }}
+  {{- with (merge (dict) ($r.serviceAccount.annotations | default (dict)) ($r.commonAnnotations | default (dict))) }}
+  annotations:
+    {{- include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) | nindent 4 }}
+  {{- end }}
+automountServiceAccountToken: {{ $r.serviceAccount.automountServiceAccountToken }}
+secrets:
+  - name: {{ $fullname }}
+{{- end }}
+{{- if $r.rbac.create }}
+---
+# Peer discovery (rabbitmq_peer_discovery_k8s) reads the headless Service's
+# endpoints to find cluster members.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ printf "%s-endpoint-reader" $fullname }}
+  namespace: {{ include "nudgebee.rabbitmq.namespace" . | quote }}
+  labels:
+    {{- include "nudgebee.rabbitmq.labels" (dict "custom" $r.commonLabels "root" $) | nindent 4 }}
+  {{- with $r.commonAnnotations }}
+  annotations:
+    {{- include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) | nindent 4 }}
+  {{- end }}
+rules:
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ printf "%s-endpoint-reader" $fullname }}
+  namespace: {{ include "nudgebee.rabbitmq.namespace" . | quote }}
+  labels:
+    {{- include "nudgebee.rabbitmq.labels" (dict "custom" $r.commonLabels "root" $) | nindent 4 }}
+  {{- with $r.commonAnnotations }}
+  annotations:
+    {{- include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) | nindent 4 }}
+  {{- end }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $saName }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ printf "%s-endpoint-reader" $fullname }}
+{{- end }}
+{{- if $r.pdb.create }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ include "nudgebee.rabbitmq.namespace" . | quote }}
+  labels:
+    {{- include "nudgebee.rabbitmq.labels" (dict "custom" $r.commonLabels "root" $) | nindent 4 }}
+spec:
+  {{- with $r.pdb.minAvailable }}
+  minAvailable: {{ . }}
+  {{- end }}
+  {{- with $r.pdb.maxUnavailable }}
+  maxUnavailable: {{ . }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "nudgebee.rabbitmq.matchLabels" (dict "custom" (merge (dict) ($r.podLabels | default (dict)) ($r.commonLabels | default (dict))) "root" $) | nindent 6 }}
+{{- end }}
+{{- end }}

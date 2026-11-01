@@ -33,6 +33,7 @@ const TIERS = {
   cause: { color: 'var(--ds-amber-500)', label: 'What probably caused it' },
   impact: { color: 'var(--ds-green-500)', label: 'What it affected' },
   chronic: { color: 'var(--ds-gray-400)', label: 'Background noise' },
+  same_node: { color: 'var(--ds-red-500)', label: 'Same node ran out of memory' },
 };
 
 // The backend assembles from a 4-hour window ([root-2h, root+2h]). We use that to turn
@@ -335,14 +336,20 @@ const ImpactPanel = ({ eventId, prefetched }) => {
   const causeCfg = (a && a.cause && a.cause.config_changes) || [];
   const causeUp = (a && a.cause && a.cause.upstream) || [];
   const hasAssembly =
-    a && ((a.same_incident || []).length || causeCfg.length || causeUp.length || (a.impact || []).length || (a.chronic || []).length) > 0;
+    a &&
+    ((a.same_incident || []).length ||
+      (a.same_node || []).length ||
+      causeCfg.length ||
+      causeUp.length ||
+      (a.impact || []).length ||
+      (a.chronic || []).length) > 0;
 
   if (hasAssembly) {
     const goTo = (evId) => evId && router.push(`/investigate?id=${evId}&accountId=${accountId}`);
     // "No impact found" is only meaningful when we actually have a service map to look
     // at. Unresolved subject or none/low coverage => we cannot tell, and must say so.
     const noCoverage = !data.resolved || data.coverage_confidence === 'none' || data.coverage_confidence === 'low';
-    const incidentCount = (a.same_incident || []).length + causeCfg.length + causeUp.length + (a.impact || []).length;
+    const incidentCount = (a.same_incident || []).length + (a.same_node || []).length + causeCfg.length + causeUp.length + (a.impact || []).length;
     // The impact tier is alert-derived, so a dependent with no alert rule can never enter
     // it. Those dependents are already in this response — showing them as possible impact
     // is the difference between "nothing alerted" and "nothing was affected".
@@ -406,6 +413,20 @@ const ImpactPanel = ({ eventId, prefetched }) => {
           unit='alert'
           note='All of these are about the same service you’re looking at — one problem, reported several times.'
           items={a.same_incident}
+          seedName={seed.name}
+          goTo={goTo}
+          showRarity
+        />
+
+        {/* Other things the same Kubernetes node took down when it ran out of memory:
+            pods it killed, and the node's own memory-pressure alert. They share no
+            service-map edge with this one and usually sit in other namespaces, so
+            without this section each looks like a separate problem. */}
+        <TierSection
+          tierKey='same_node'
+          unit='alert'
+          note='These were on the same node as this one, and that node ran out of memory. It is one problem — the node — not several separate ones.'
+          items={a.same_node}
           seedName={seed.name}
           goTo={goTo}
           showRarity

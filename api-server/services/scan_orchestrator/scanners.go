@@ -240,6 +240,10 @@ func buildImageScanSpec(account ScanAccount, _ map[string]any) JobSpec {
 		Args: []string{
 			"fs",
 			"--scanners", "vuln",
+			// trivy >= 0.6x lists every installed package in the JSON by
+			// default; the parser only reads vulnerabilities, so keep the
+			// job log the size it was.
+			"--list-all-pkgs=false",
 			"--cache-dir", "/tmp/trivy-cache",
 			"--format", "json", "--quiet", "--skip-java-db-update",
 			"--skip-dirs", imageScanVolumePath,

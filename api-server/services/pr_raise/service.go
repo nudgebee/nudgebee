@@ -358,8 +358,27 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 			status = models.RecommendationResolutionStatus(string(resp.Status))
 			statusMsg = resp.StatusMessage
 		}
+		// A check that could not reach the provider keeps the pull request in
+		// progress and leaves last_pr_check_at alone, up to the limit — see
+		// adapter.PRStatusUnverifiedLimit.
+		lastCheck := "last_pr_check_at" // an adapter error is not a sighting either
+		if err == nil && !resp.Unverified {
+			lastCheck = "(now() AT TIME ZONE 'UTC')"
+		}
+		if err == nil && resp.Unverified {
+			if adapter.PRStatusCheckExpired(resolution.LastPRCheckAt, time.Now().UTC()) {
+				status = models.RecommendationResolutionStatusFailed
+				statusMsg = adapter.PRStatusGaveUpMessage(resp.StatusMessage)
+			} else {
+				lastCheck = "COALESCE(last_pr_check_at, (now() AT TIME ZONE 'UTC'))"
+			}
+		}
 
-		_, err = dbms.Db.Exec("UPDATE event_resolution SET status = $2, updated_at = $3, status_message = $4 WHERE id = $1", resolution.Id, status, time.Now().UTC().Format(time.RFC3339), statusMsg)
+		// Guarded on the row still being InProgress, as the recommendation poller
+		// is: a webhook that settled it between our read and this write wins. An
+		// unverified check writes InProgress, and without the guard it would
+		// reopen a pull request the webhook had just recorded as merged.
+		_, err = dbms.Db.Exec("UPDATE event_resolution SET status = $2, updated_at = $3, status_message = $4, last_pr_check_at = "+lastCheck+" WHERE id = $1 AND status = $5", resolution.Id, status, time.Now().UTC().Format(time.RFC3339), statusMsg, models.RecommendationResolutionStatusInProgress)
 		if err != nil {
 			ctx.GetLogger().Error("error updating event resolution", "error", err)
 			return err

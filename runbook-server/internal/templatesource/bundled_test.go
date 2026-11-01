@@ -3,6 +3,7 @@ package templatesource
 import (
 	"context"
 	"encoding/json"
+	"os/exec"
 	"regexp"
 	"strings"
 	"testing"
@@ -102,6 +103,50 @@ func TestBundledAWSCommandsPassRegion(t *testing.T) {
 	}
 	if checked == 0 {
 		t.Fatal("no cloud.aws.cli commands found; definition shape changed and this guard checks nothing")
+	}
+}
+
+// TestBundledKubectlJSONArgsSurviveShell: the agent runs kubectl commands through
+// /bin/sh, so an unquoted JSON patch loses its quotes and kubectl rejects it (#33449).
+func TestBundledKubectlJSONArgsSurviveShell(t *testing.T) {
+	bundle, err := NewBundledSource().Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("bundled fetch failed: %v", err)
+	}
+	inputRef := regexp.MustCompile(`{{\s*Inputs\.\w+\s*}}`)
+	checked := 0
+	for _, tmpl := range bundle.Templates {
+		var def struct {
+			Tasks []struct {
+				ID     string         `json:"id"`
+				Type   string         `json:"type"`
+				Params map[string]any `json:"params"`
+			} `json:"tasks"`
+		}
+		if err := json.Unmarshal([]byte(tmpl.DefinitionJSON), &def); err != nil {
+			t.Fatalf("%s: definition is not valid JSON: %v", tmpl.Slug, err)
+		}
+		for _, task := range def.Tasks {
+			command, _ := task.Params["command"].(string)
+			if task.Type != "cloud.k8s.cli" || !strings.Contains(command, "{\"") {
+				continue
+			}
+			checked++
+			rendered := inputRef.ReplaceAllString(command, "x1")
+			// Print each argv word the shell would hand to kubectl, one per line.
+			out, err := exec.Command("/bin/sh", "-c", `kubectl() { printf '%s\n' "$@"; }; `+rendered).Output()
+			if err != nil {
+				t.Fatalf("%s/%s: shell failed on %q: %v", tmpl.Slug, task.ID, rendered, err)
+			}
+			for _, arg := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+				if strings.HasPrefix(arg, "{") && !json.Valid([]byte(arg)) {
+					t.Errorf("%s/%s: kubectl receives invalid JSON %q; quote it for the shell", tmpl.Slug, task.ID, arg)
+				}
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no kubectl commands with a JSON argument found; this guard checks nothing")
 	}
 }
 

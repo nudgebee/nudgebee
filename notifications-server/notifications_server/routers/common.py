@@ -1,10 +1,11 @@
 import logging
 import secrets
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Literal, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from notifications_server import engine, sync_engine, slack_app, teams_app
 from notifications_server.configs.settings import settings
@@ -20,6 +21,16 @@ from notifications_server.services.message import MessageService
 from notifications_server.services.rules import NotificationRulesService
 from notifications_server.services.route_check import RouteCheckService
 from notifications_server.clients.google_chat_app_client import GoogleChatAppClient
+
+
+class PlatformInput(BaseModel):
+    platform: Literal["slack", "ms_teams", "google_chat", "discord"] = Field(..., description="Target platform")
+
+
+class HasuraActionPayload(BaseModel):
+    input: PlatformInput
+    session_variables: Dict[str, Any] = Field(default_factory=dict)
+
 
 LOG = logging.getLogger(__name__)
 
@@ -107,14 +118,13 @@ def _list_channels_sync(platform, tenant):
 
 
 @router.post("/channels/list", dependencies=[Depends(verify_action_token)])
-async def list_channels(request: Request, body: Dict[Any, Any]):
+async def list_channels(request: Request, body: HasuraActionPayload):
     try:
-        session_variables = body.get("session_variables", {})
-        tenant = session_variables.get("tenant_id") or request.headers.get("tenant")
+        tenant = body.session_variables.get("tenant_id") or request.headers.get("tenant")
         if not tenant:
             return JSONResponse({"error": {"message": ERROR_TENANT_NOT_FOUND}})
 
-        platform = body.get("input", {}).get("platform")
+        platform = body.input.platform
 
         # CommonService is synchronous and can make blocking HTTP calls (Discord lists
         # channels across every guild) — run it off the event loop so a slow provider
@@ -127,14 +137,13 @@ async def list_channels(request: Request, body: Dict[Any, Any]):
 
 
 @router.post("/users/list", dependencies=[Depends(verify_action_token)])
-async def list_users(request: Request, body: Dict[Any, Any]):
+async def list_users(request: Request, body: HasuraActionPayload):
     try:
-        session_variables = body.get("session_variables", {})
-        tenant = session_variables.get("tenant_id") or request.headers.get("tenant")
+        tenant = body.session_variables.get("tenant_id") or request.headers.get("tenant")
         if not tenant:
             return JSONResponse({"error": {"message": ERROR_TENANT_NOT_FOUND}})
 
-        platform = body.get("input", {}).get("platform")
+        platform = body.input.platform
 
         with CommonService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app) as controller:
             users = controller.list_users(platform, tenant)
@@ -314,13 +323,13 @@ async def create_channel(request: Request, payload: Dict[Any, Any]):
                 status_code=400,
             )
 
-        if platform.lower() not in ["slack", "ms_teams", "google_chat"]:
+        if platform.lower() not in ["slack", "google_chat"]:
             return JSONResponse(
                 {
                     "error": {
                         "message": (
                             f"Platform {platform} is not supported for channel creation. "
-                            "Supported platforms: slack, ms_teams, google_chat"
+                            "Supported platforms: slack, google_chat"
                         )
                     }
                 },
@@ -377,13 +386,13 @@ async def add_channel_members(request: Request, payload: Dict[Any, Any]):
                 status_code=400,
             )
 
-        if platform.lower() not in ["slack", "ms_teams", "google_chat"]:
+        if platform.lower() not in ["slack", "google_chat"]:
             return JSONResponse(
                 {
                     "error": {
                         "message": (
                             f"Platform {platform} is not supported for adding members. "
-                            "Supported platforms: slack, ms_teams, google_chat"
+                            "Supported platforms: slack, google_chat"
                         )
                     }
                 },
@@ -475,13 +484,13 @@ async def send_direct_message(request: Request, payload: Dict[Any, Any]):
                 status_code=400,
             )
 
-        if platform.lower() not in ["slack", "ms_teams", "google_chat"]:
+        if platform.lower() not in ["slack", "google_chat"]:
             return JSONResponse(
                 {
                     "error": {
                         "message": (
                             f"Platform {platform} is not supported for direct messages. "
-                            "Supported platforms: slack, ms_teams, google_chat"
+                            "Supported platforms: slack, google_chat"
                         )
                     }
                 },
@@ -506,6 +515,14 @@ async def send_direct_message(request: Request, payload: Dict[Any, Any]):
         return JSONResponse({"error": {"message": "Unable to send direct message"}}, status_code=500)
 
 
+# The test send does blocking network I/O, so it runs off the event loop.
+def _send_test_notification_sync(platform, tenant_id, channel_id, team_id):
+    with CommonService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app) as controller:
+        return controller.send_test_notification(
+            platform=platform, tenant_id=tenant_id, channel_id=channel_id, team_id=team_id
+        )
+
+
 @router.post("/notifications/test", dependencies=[Depends(verify_action_token)])
 async def send_test_notification(request: Request, body: Dict[Any, Any]):
     try:
@@ -522,14 +539,8 @@ async def send_test_notification(request: Request, body: Dict[Any, Any]):
         if not platform or not channel_id:
             return JSONResponse({"success": False, "error": "Missing required fields: platform, channel_id"})
 
-        with CommonService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app) as controller:
-            result = controller.send_test_notification(
-                platform=platform,
-                tenant_id=tenant,
-                channel_id=channel_id,
-                team_id=team_id,
-            )
-            return JSONResponse(content=result)
+        result = await run_in_threadpool(_send_test_notification_sync, platform, tenant, channel_id, team_id)
+        return JSONResponse(content=result)
     except Exception:
         LOG.exception("Error in send_test_notification endpoint")
         return JSONResponse({"success": False, "error": "Unexpected error"})

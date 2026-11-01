@@ -27,6 +27,10 @@ func promBuilderKeys(t *testing.T, funcName string) []string {
 	file, err := parser.ParseFile(fset, "prometheus_queries.go", nil, 0)
 	require.NoError(t, err)
 
+	// Keys are named by constant (see metrics_utilisation_keys.go); resolve each to the
+	// string a request sends. Any other string literal in a case is collected as before.
+	values := registryConstantValues(t)
+
 	var keys []string
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
@@ -39,13 +43,19 @@ func promBuilderKeys(t *testing.T, funcName string) []string {
 				return true
 			}
 			for _, expr := range clause.List {
-				lit, ok := expr.(*ast.BasicLit)
-				if !ok || lit.Kind != token.STRING {
-					continue
+				switch e := expr.(type) {
+				case *ast.Ident:
+					if key, ok := values[e.Name]; ok {
+						keys = append(keys, key)
+					}
+				case *ast.BasicLit:
+					if e.Kind != token.STRING {
+						continue
+					}
+					key, err := strconv.Unquote(e.Value)
+					require.NoError(t, err)
+					keys = append(keys, key)
 				}
-				key, err := strconv.Unquote(lit.Value)
-				require.NoError(t, err)
-				keys = append(keys, key)
 			}
 			return true
 		})
@@ -105,7 +115,7 @@ func TestEveryPrometheusKeyAppliesTheRequestedAggregate(t *testing.T) {
 				}
 				got := aggregated[key]
 
-				if promSelfWindowedKeys[key] {
+				if promSelfWindowedKeys[UtilisationKey(key)] {
 					assert.Equalf(t, expr, got,
 						"%s already collapses the window itself, so the aggregate must leave it alone", key)
 					continue
@@ -163,7 +173,7 @@ func TestSelfWindowedCarveOutMatchesTheQueriesThatCollapseTheWindow(t *testing.T
 	queries := buildPrometheusWorkloadQueries(meta, keys)
 
 	for key := range promSelfWindowedKeys {
-		query, built := queries[key]
+		query, built := queries[string(key)]
 		require.Truef(t, built, "%s is carved out but the builder does not answer it", key)
 		assert.Truef(t,
 			strings.Contains(query, "[14d:75s]") || strings.Contains(query, "[14d]"),
@@ -172,7 +182,7 @@ func TestSelfWindowedCarveOutMatchesTheQueriesThatCollapseTheWindow(t *testing.T
 
 	for key, query := range queries {
 		if strings.Contains(query, "[14d:75s]") {
-			assert.Truef(t, promSelfWindowedKeys[key],
+			assert.Truef(t, promSelfWindowedKeys[UtilisationKey(key)],
 				"%s already aggregates over the range window but is not carved out, so an aggregated request takes a statistic of a statistic:\n%s",
 				key, query)
 		}

@@ -6,7 +6,9 @@ import (
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
+	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/google/shlex"
@@ -321,6 +323,138 @@ func kubectlBlockedKind(command string) string {
 	return ""
 }
 
+// secretPathRoots are the mounted-secret directories that a glob must not be
+// able to reach (kubectlSecretFilesystemPatterns holds the literal markers).
+var secretPathRoots = []string{"/var/run/secrets", "/var/lib/kubelet/pods", "/run/secrets"}
+
+// globCanReachSecretPath reports a glob in tokens (quote-stripped shell words)
+// that could expand to a mounted-secret path:
+//   - an absolute path whose fixed part before the glob leads to, or is inside,
+//     a secret root or /proc (`/var/r*`, `/*`, `/proc/*/root/...`);
+//   - a glob with `..`, braces or a variable in it, which can climb out of or
+//     rewrite any prefix (`/tmp/*/../../var/run/s*`, `/var/run/se{c,}rets/*`,
+//     `$d/s*`);
+//   - a glob naming the secret or service-account mounts (`*/secrets/*`);
+//   - a relative glob whose first part could name a top-level directory on the
+//     way to a secret root (`v*/run/s*` from a workdir of /);
+//   - any relative glob when the command changes into such a directory, or
+//     into a relative one (`cd /var/run && cat s*/token`, `tar -C / ...`).
+//
+// URLs are skipped: `?` and `*` there are query text, not paths.
+func globCanReachSecretPath(tokens []string) bool {
+	var words []string
+	for _, tok := range tokens {
+		// A URL argument (curl/wget) is query text, not a path, and PromQL in
+		// it has parentheses, so it is kept whole and only checked for `..`.
+		// A word that also holds shell operators or `$` is not just a URL
+		// (`http://x;cat${IFS}/var/run/se*rets/t`) and is checked as words.
+		if urlWord.MatchString(tok) && !strings.ContainsAny(tok, ";&|<>$`\n") {
+			if strings.Contains(tok, "..") {
+				return true
+			}
+			continue
+		}
+		words = append(words, strings.FieldsFunc(tok, func(r rune) bool { return strings.ContainsRune(";&|()<>`", r) })...)
+	}
+	relativeRisk, recursive := false, readsRecursively(words)
+	for i, w := range words {
+		var dir string
+		switch {
+		case (w == "cd" || w == "pushd" || w == "chroot" || w == "-C" || w == "-w" || w == "--workdir") && i+1 < len(words):
+			dir = words[i+1]
+		case strings.HasPrefix(w, "--workdir="):
+			dir = strings.TrimPrefix(w, "--workdir=")
+		case strings.HasPrefix(w, "-C") && len(w) > 2:
+			dir = w[2:]
+		default:
+			continue
+		}
+		if !strings.HasPrefix(dir, "/") || pathCanLeadToSecret(dir) {
+			relativeRisk = true
+		}
+	}
+	for _, w := range words {
+		g := strings.IndexAny(w, "*?[")
+		if g < 0 {
+			continue
+		}
+		lower := strings.ToLower(w)
+		// `..` climbs out of any prefix; braces and variables build paths the
+		// fixed prefix does not show (`/var/run/se{c,}rets/*`, `$d/s*`).
+		if strings.ContainsAny(w, "{}$") || strings.Contains(w, "..") || strings.Contains(lower, "secret") || strings.Contains(lower, "serviceacc") || strings.Contains(lower, "kubernetes.io") {
+			return true
+		}
+		// An absolute path starts the word, follows `pod:` or `--flag=`, or is
+		// glued to a short flag (`-f/var/run/...`).
+		if slash := strings.IndexByte(w, '/'); slash >= 0 && slash < g && (slash == 0 || w[slash-1] == ':' || w[slash-1] == '=' || w[0] == '-') {
+			if pathCanLeadToSecret(w[slash:g]) {
+				return true
+			}
+			continue
+		}
+		if relativeRisk || relativeGlobCanNameTopDir(w, recursive) {
+			return true
+		}
+	}
+	return false
+}
+
+// relativeGlobCanNameTopDir reports a relative glob whose first part could
+// match a top-level directory on the way to a secret root. The pod's workdir
+// is unknown and may be /, so `v*/run/s*` must be treated as `/v*/run/s*`;
+// `s*/token`, `*.log` and `mcp:sess:*` cannot name one. A glob with no `/`
+// (`CONFIG GET *`) names only top-level entries, which hold no secret file,
+// so it matters only when the command reads directories recursively.
+func relativeGlobCanNameTopDir(word string, recursive bool) bool {
+	for strings.HasPrefix(word, "./") {
+		word = word[2:]
+	}
+	first, _, hasSlash := strings.Cut(word, "/")
+	if !hasSlash && !recursive {
+		return false
+	}
+	// ".." too: some shells let `.?` or `.*` match it.
+	for _, dir := range []string{"var", "run", "proc", ".."} {
+		if matched, _ := path.Match(first, dir); matched {
+			return true
+		}
+	}
+	return false
+}
+
+// urlWord matches an http(s) URL argument.
+var urlWord = regexp.MustCompile(`^(?i)https?://`)
+
+// readsRecursively reports a command that can read whole directory trees: a
+// recursive flag (-r, -R, -lR, --recursive) or a tool that walks trees.
+func readsRecursively(words []string) bool {
+	for _, w := range words {
+		switch w {
+		case "--recursive", "find", "tar", "rsync", "zip", "xargs":
+			return true
+		}
+		if len(w) > 1 && w[0] == '-' && w[1] != '-' && strings.ContainsAny(w, "rR") && strings.Trim(w[1:], "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// pathCanLeadToSecret reports whether an absolute path, or the fixed start of
+// one, is a secret root, inside one, or on the way to one.
+func pathCanLeadToSecret(prefix string) bool {
+	p := path.Clean(prefix)
+	if strings.HasPrefix(p, "/proc") {
+		return true
+	}
+	for _, root := range secretPathRoots {
+		if strings.HasPrefix(root, p) || strings.HasPrefix(p, root) {
+			return true
+		}
+	}
+	return false
+}
+
 // kubectlReadsSecretFilesystemPath returns true if the command uses a
 // pod-filesystem verb (exec / cp / attach) and references one of the
 // well-known kubelet-mounted secret paths. Catches commands like
@@ -351,10 +485,11 @@ func kubectlReadsSecretFilesystemPath(command string) bool {
 	if !hasFilesystemVerb {
 		return false
 	}
-	// Globs are resolved inside the target pod, where the validator cannot
-	// know which path they select. Fail closed for filesystem-capable verbs so
-	// `/var/run/se*rets` cannot hide a mounted-secret path.
-	if strings.ContainsAny(cmd, "*?[") {
+	// Globs are resolved inside the target pod, so one that could expand to a
+	// mounted-secret path fails closed (`/var/run/se*rets`). A glob that cannot
+	// reach one is ordinary: `du -sh /data/*`, a redis pattern `mcp:sess:*`,
+	// a `?` in a URL query.
+	if globCanReachSecretPath(tokens) {
 		return true
 	}
 	// Clean every path-shaped token before matching. This covers normal shell
@@ -430,18 +565,18 @@ func kubectlResourceKind(command string) string {
 func kubectlUIRef(ctx core.NbToolContext, command string) core.NBToolResponseReference {
 	modules, label := kubectlUIReference(command)
 	var queryParams map[string]string
-	if ns := kubectlNamespace(command); ns != "" {
+	if ns := KubectlNamespace(command); ns != "" {
 		queryParams = map[string]string{"namespace": ns}
 	}
 	return core.GetNudgebeeUIReferenceForClusterDetails(ctx, modules, label, queryParams, "")
 }
 
-// kubectlNamespace extracts the namespace a kubectl command targets. It
+// KubectlNamespace extracts the namespace a kubectl command targets. It
 // recognises `-n <ns>`, `-n=<ns>`, `--namespace <ns>` and `--namespace=<ns>`.
 // It returns "" when no namespace is specified or when the command spans all
 // namespaces (`-A` / `--all-namespaces`) — in both cases the UI tab should
 // stay unfiltered rather than guess.
-func kubectlNamespace(command string) string {
+func KubectlNamespace(command string) string {
 	tokens := strings.Fields(command)
 	for i, tok := range tokens {
 		if tok == "-A" || tok == "--all-namespaces" {
@@ -505,6 +640,18 @@ func (m KubectlExecuteTool) ConfirmationKey(toolInput string) string {
 		return m.Name() + "@" + toolInput
 	}
 	return targetConfirmationKey(m.Name(), requested)
+}
+
+func (m KubectlExecuteTool) PrepareDelegatedTargetInput(target *core.ExecutionTarget, input string) (string, error) {
+	if target == nil || target.Provider != "kubernetes" {
+		return input, nil
+	}
+	req := core.ParseNBToolCallRequestFromInput(input)
+	requested, err := RequestedKubernetesCluster(req.Command, req.Arguments)
+	if err != nil || requested != "" {
+		return input, err
+	}
+	return addDelegatedTargetArgument(input, "cluster", target.Name)
 }
 
 // RequestedTarget returns the cluster a call explicitly names, for the
@@ -927,6 +1074,9 @@ func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core
 	if err != nil {
 		return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
 	}
+	if err := VerifyDelegatedTargetIdentity(nbRequestContext, "kubernetes", target, requested); err != nil {
+		return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
+	}
 	// crossCluster marks a call that runs somewhere other than the
 	// conversation's saved cluster; its output names the cluster it came from.
 	crossCluster := !strings.EqualFold(target.Name, nbRequestContext.ToolConfig.Name)
@@ -1220,6 +1370,14 @@ func (m KubectlExecuteTool) InferToolRequestTypePrompt(ctx *security.RequestCont
 	answer - write
 	reason - command is updating node details
 
+	command - kubectl exec pod1 -n ns -- cat /var/log/app.log
+	answer - read
+	reason - command only reads a file inside the container, nothing is changed
+
+	command - kubectl exec pod1 -n ns -- sh -c 'kill -HUP 1'
+	answer - write
+	reason - command sends a signal to a process inside the container, changing its state
+
 	`
 	return prompt, nil
 }
@@ -1246,15 +1404,8 @@ func InferKubectlVerbType(command string) core.ToolRequestType {
 	if len(parts) == 0 {
 		return ""
 	}
-	// Help/version flags before a `--` separator describe kubectl itself and
-	// cannot mutate the cluster. Anything after `--` belongs to an exec payload.
-	for _, part := range parts {
-		if part == "--" {
-			break
-		}
-		if part == "--help" || part == "-h" || part == "--version" {
-			return core.ToolRequestTypeRead
-		}
+	if isHelpRequest(parts) {
+		return core.ToolRequestTypeRead
 	}
 
 	// Global flags can precede the verb. Only skip forms whose boundary is
@@ -1262,7 +1413,7 @@ func InferKubectlVerbType(command string) core.ToolRequestType {
 	for len(parts) > 0 && strings.HasPrefix(parts[0], "-") {
 		flag := parts[0]
 		parts = parts[1:]
-		if strings.Contains(flag, "=") || flag == "--help" || flag == "-h" || flag == "--version" {
+		if strings.Contains(flag, "=") {
 			continue
 		}
 		if !kubectlGlobalFlagsWithValue[flag] || len(parts) == 0 {
@@ -1298,6 +1449,20 @@ func InferKubectlVerbType(command string) core.ToolRequestType {
 	}
 	if verb == "delete" {
 		return core.ToolRequestTypeDelete
+	}
+
+	// `exec` is a write-capable channel (it can run anything inside the pod),
+	// so it stays out of kubectlReadVerbs above. But the remote command after
+	// `--` is frequently a plain diagnostic read (nc -z, curl GET, df, grep on
+	// a log file already on disk) that the codebase's own remediation-plan
+	// scorer already knows how to recognize (core.ExecRemoteCommandIsReadOnly).
+	// Reuse that here instead of sending every exec to the LLM fallback with
+	// no static anchor. Anything not on that allowlist still falls through to
+	// "" below — fail-closed, unchanged.
+	if verb == "exec" {
+		if core.ExecRemoteCommandIsReadOnly(parts) {
+			return core.ToolRequestTypeRead
+		}
 	}
 
 	return ""
@@ -1336,12 +1501,24 @@ func hasUnquotedShellSyntax(command string) bool {
 		if !doubleQuoted && strings.ContainsRune("|&;<>\n\r(){}", rune(char)) {
 			return true
 		}
+		// An unquoted '#' that starts a word comments out the rest of the line,
+		// so the CLI never sees what the classifier read after it.
+		if !doubleQuoted && char == '#' && (i == 0 || command[i-1] == ' ' || command[i-1] == '\t') {
+			return true
+		}
 	}
 	return singleQuoted || doubleQuoted || escaped
 }
 
 func (m KubectlExecuteTool) InferToolRequestType(ctx *security.RequestContext, toolName, input string) (core.ToolRequestType, error) {
-	requestType := InferKubectlVerbType(extractCommandFromToolInput(input))
+	command := extractCommandFromToolInput(input)
+	requestType := InferKubectlVerbType(command)
+	// Only this tool's approval check classifies chains; InferKubectlVerbType
+	// itself stays single-command, because the workspace proxy uses it to
+	// decide the access a command needs.
+	if requestType == "" {
+		requestType = classifyOwnCLIChain(ctx, command, InferKubectlVerbType, "kubectl")
+	}
 	if requestType != "" {
 		return requestType, nil
 	}

@@ -242,13 +242,6 @@ export const AGENT_USAGE_GUIDANCE: Record<string, AgentUsageGuidance> = {
     why: 'Direct line to Datadog APM when that is where your traces live.',
     notFor: 'Non-Datadog trace backends.',
   },
-  events_v2: {
-    brief:
-      'Same coverage as the Event & Alert Investigator, but answers through deterministic structured tools instead of asking a model to write SQL.',
-    whenToUse: 'Anything you would ask the Event & Alert Investigator. Prefer this one where it is available.',
-    why: 'Model-generated SQL is the least predictable part of the original agent. v2 uses fixed, tested tools for the common questions and only falls back to raw SQL for filters those tools genuinely cannot express - so the same question gives the same answer.',
-    notFor: 'Nothing in particular - this is a strict improvement in reliability over v1.',
-  },
   events: {
     brief:
       'Answers "what happened, and when?" - alerts, config changes, deployments, Kubernetes events, anomalies, SLO violations and incident investigations.',

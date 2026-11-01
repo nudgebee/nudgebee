@@ -48,7 +48,7 @@ func TestFormatRequestedValuesForPrompt_KiString(t *testing.T) {
 			},
 		},
 	}
-	out := formatRequestedValuesForPrompt(data)
+	out := FormatRequestedValuesForPrompt(data)
 	mem := out["notifications"].(map[string]any)["memory"].(map[string]any)
 	assert.Equal(t, "331Mi", mem["request"])
 	assert.Equal(t, "331Mi", mem["limit"])

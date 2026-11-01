@@ -40,6 +40,7 @@ const RECOMMENDATION_LABELS = {
 const CLASSIFICATION_LABELS = {
   false_positive: { label: 'False Positive', hue: 'red' },
   noisy_but_real: { label: 'Noisy but Real', hue: 'amber' },
+  noisy_ignored: { label: 'Noisy, Not Acted On', hue: 'amber' },
   broken: { label: 'Broken', hue: 'red' },
   healthy: { label: 'Healthy', hue: 'green' },
 };

@@ -20,6 +20,7 @@ import {
   type SavingsSplit,
 } from '../rightSizingData';
 import { summarizeConfigIssues } from '../evidence/configIssues';
+import { isUnestimatedNativeCostFinding } from '../utils';
 
 interface BuildArgs {
   category: string;
@@ -383,7 +384,11 @@ export function buildInterpretation({
     };
   }
 
-  const { impact, impactIsCost } = deriveImpact(category, savings || 0);
+  // The provider called it a cost finding but attached no figure; the generic
+  // $0 RightSizing line would claim "no direct cost change", which is false.
+  const { impact, impactIsCost } = isUnestimatedNativeCostFinding(category, ruleName, savings || 0)
+    ? { impact: 'Cost — the cloud provider flags a saving here but gives no figure.', impactIsCost: false }
+    : deriveImpact(category, savings || 0);
   return {
     verdict: deriveVerdict(category, ruleName, title),
     serviceName: serviceName || undefined,

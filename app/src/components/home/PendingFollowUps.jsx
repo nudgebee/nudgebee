@@ -175,7 +175,9 @@ const PendingFollowUps = ({ accountId }) => {
     return null;
   }
 
-  const viewAllHref = `/ask-nudgebee?accountId=${accountId}&status=WAITING${activeTab === 'yours' ? '&filter=Mine' : ''}`;
+  // The conversation list opens on "Mine" unless told otherwise, so the Team
+  // tab has to ask for "Everyone" explicitly.
+  const viewAllHref = `/ask-nudgebee?accountId=${accountId}&status=WAITING&filter=${activeTab === 'yours' ? 'Mine' : 'Everyone'}`;
 
   const header = (
     <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--ds-space-3)' }}>

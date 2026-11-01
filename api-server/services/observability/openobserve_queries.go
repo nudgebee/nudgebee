@@ -130,22 +130,22 @@ var OpenObserveClusterCandidates = map[openObserveClusterRole][]openObserveClust
 //
 // Memory usage names all three memory roles because it is satisfied either by a direct
 // usage family or by Total - Available.
-var openObserveClusterKeys = map[string][]openObserveClusterRole{
-	"cpu_total":       {ooRoleCPUCapacity},
-	"cpu_real":        {ooRoleCPUUsage},
-	"cpu_usage_trend": {ooRoleCPUUsage},
-	"p50_cpu":         {ooRoleCPUUsage},
-	"p90_cpu":         {ooRoleCPUUsage},
-	"max_usage_cpu":   {ooRoleCPUUsage},
-	"mem_total":       {ooRoleMemTotal},
-	"mem_real":        {ooRoleMemUsed, ooRoleMemTotal, ooRoleMemAvail},
-	"mem_usage_trend": {ooRoleMemUsed, ooRoleMemTotal, ooRoleMemAvail},
-	"p50_mem":         {ooRoleMemUsed, ooRoleMemTotal, ooRoleMemAvail},
-	"p90_mem":         {ooRoleMemUsed, ooRoleMemTotal, ooRoleMemAvail},
-	"max_usage_mem":   {ooRoleMemUsed, ooRoleMemTotal, ooRoleMemAvail},
+var openObserveClusterKeys = map[UtilisationKey][]openObserveClusterRole{
+	KeyCPUTotal:      {ooRoleCPUCapacity},
+	KeyCPUReal:       {ooRoleCPUUsage},
+	KeyCPUUsageTrend: {ooRoleCPUUsage},
+	KeyP50CPU:        {ooRoleCPUUsage},
+	KeyP90CPU:        {ooRoleCPUUsage},
+	KeyMaxUsageCPU:   {ooRoleCPUUsage},
+	KeyMemTotal:      {ooRoleMemTotal},
+	KeyMemReal:       {ooRoleMemUsed, ooRoleMemTotal, ooRoleMemAvail},
+	KeyMemUsageTrend: {ooRoleMemUsed, ooRoleMemTotal, ooRoleMemAvail},
+	KeyP50Mem:        {ooRoleMemUsed, ooRoleMemTotal, ooRoleMemAvail},
+	KeyP90Mem:        {ooRoleMemUsed, ooRoleMemTotal, ooRoleMemAvail},
+	KeyMaxUsageMem:   {ooRoleMemUsed, ooRoleMemTotal, ooRoleMemAvail},
 	// Bytes per bucket, so they are trends rather than scalars.
-	"network_receive_bytes_increase":  {ooRoleNetRx},
-	"network_transmit_bytes_increase": {ooRoleNetTx},
+	KeyNetworkReceiveBytesIncrease:  {ooRoleNetRx},
+	KeyNetworkTransmitBytesIncrease: {ooRoleNetTx},
 }
 
 // ooBaseQueryKey namespaces the internal probe keys so they cannot collide with a caller's
@@ -179,7 +179,7 @@ func fetchOpenObserveUtilisation(ctx *security.RequestContext, req GetUtilisatio
 	var clusterKeys, perPodKeys, passthrough []string
 	for _, m := range meta.RequestedMetrics {
 		switch {
-		case openObserveClusterKeys[m] != nil:
+		case openObserveClusterKeys[UtilisationKey(m)] != nil:
 			clusterKeys = append(clusterKeys, m)
 		// Served natively because the METRIC is absent under the name the Prometheus
 		// builders use, not because the engine cannot evaluate their query.
@@ -239,7 +239,7 @@ func fetchOpenObserveClusterAggregates(ctx *security.RequestContext, req GetUtil
 	// than an error.
 	needed := map[openObserveClusterRole]bool{}
 	for _, key := range keys {
-		for _, role := range openObserveClusterKeys[key] {
+		for _, role := range openObserveClusterKeys[UtilisationKey(key)] {
 			needed[role] = true
 		}
 	}
@@ -313,39 +313,39 @@ func fetchOpenObserveClusterAggregates(ctx *security.RequestContext, req GetUtil
 
 	results := make([]QueryResult, 0, len(keys))
 	for _, key := range keys {
-		switch key {
-		case "cpu_total":
+		switch UtilisationKey(key) {
+		case KeyCPUTotal:
 			results = append(results, ooScalar(key, cpuCap, haveCPUCap, ooLast, probed[ooRoleCPUCapacity]))
-		case "cpu_real":
+		case KeyCPUReal:
 			// Prometheus renders this as rate() over the whole picker range, i.e. the
 			// window's mean usage. The mean of the per-step rate series is the same figure.
 			results = append(results, ooScalar(key, cpuUsage, haveCPUUsage, ooMean, probed[ooRoleCPUUsage]))
-		case "p50_cpu":
+		case KeyP50CPU:
 			results = append(results, ooScalar(key, cpuUsage, haveCPUUsage, ooPercentile(0.50), probed[ooRoleCPUUsage]))
-		case "p90_cpu":
+		case KeyP90CPU:
 			results = append(results, ooScalar(key, cpuUsage, haveCPUUsage, ooPercentile(0.90), probed[ooRoleCPUUsage]))
-		case "max_usage_cpu":
+		case KeyMaxUsageCPU:
 			results = append(results, ooScalar(key, cpuUsage, haveCPUUsage, ooMax, probed[ooRoleCPUUsage]))
-		case "network_receive_bytes_increase":
+		case KeyNetworkReceiveBytesIncrease:
 			results = append(results, ooTrend(key, netRx, haveNetRx, probed[ooRoleNetRx]))
-		case "network_transmit_bytes_increase":
+		case KeyNetworkTransmitBytesIncrease:
 			results = append(results, ooTrend(key, netTx, haveNetTx, probed[ooRoleNetTx]))
-		case "cpu_usage_trend":
+		case KeyCPUUsageTrend:
 			results = append(results, ooTrend(key, cpuUsage, haveCPUUsage, probed[ooRoleCPUUsage]))
-		case "mem_total":
+		case KeyMemTotal:
 			results = append(results, ooScalar(key, memTotal, haveMemTotal, ooLast, probed[ooRoleMemTotal]))
-		case "mem_real":
+		case KeyMemReal:
 			results = append(results, ooScalar(key, memUsed, haveMemUsed, ooLast, ooMemUsedProbed(probed)))
 		// The Prometheus form asks quantile() ACROSS NODES at a single instant, which is not
 		// what the card's "P50 Usage" label means and is unsupported here besides. These are
 		// percentiles OVER TIME of cluster usage -- the same thing the CPU keys compute.
-		case "p50_mem":
+		case KeyP50Mem:
 			results = append(results, ooScalar(key, memUsed, haveMemUsed, ooPercentile(0.50), ooMemUsedProbed(probed)))
-		case "p90_mem":
+		case KeyP90Mem:
 			results = append(results, ooScalar(key, memUsed, haveMemUsed, ooPercentile(0.90), ooMemUsedProbed(probed)))
-		case "max_usage_mem":
+		case KeyMaxUsageMem:
 			results = append(results, ooScalar(key, memUsed, haveMemUsed, ooMax, ooMemUsedProbed(probed)))
-		case "mem_usage_trend":
+		case KeyMemUsageTrend:
 			results = append(results, ooTrend(key, memUsed, haveMemUsed, ooMemUsedProbed(probed)))
 		}
 	}

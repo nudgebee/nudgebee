@@ -1,5 +1,5 @@
 import { useSession } from 'next-auth/react';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { queryGraphQL } from '@lib/HttpService';
 import Loader from '@shared/Loader';
 
@@ -18,92 +18,153 @@ import Loader from '@shared/Loader';
 // (`hasReadAccess`, `hasWriteAccess`, `isTenantAdmin`, `hasFeatureAccess`).
 let userData: any = {};
 
-// A signed-in user can briefly get an HTML 404 from /api/auth/session instead of
-// JSON when the NextAuth API route (or the backend it calls) is still coming up
-// — most often in local dev when the frontend and API server start together.
-// NextAuth's client reads that parse failure (CLIENT_FETCH_ERROR) as
-// "unauthenticated" and bounces to /api/auth/signin, which (when it is also
-// still compiling) 404s too — producing the redirect loop in issue #394.
-// To ride out that window we re-check the session a few times before concluding
-// the user is actually logged out. AUTH_RETRY_LIMIT * AUTH_RETRY_DELAY_MS bounds
-// the wait so a genuinely-down backend still falls through to sign-in.
-const AUTH_RETRY_LIMIT = 5;
-const AUTH_RETRY_DELAY_MS = 1000;
+// Set for the lifetime of the tab once we've already spent our one in-place
+// recovery reload. If we land back on the unauthenticated branch with this set,
+// the session really is gone and we sign the user out for real.
+const SESSION_RECOVERY_FLAG = 'nb.session-recovery';
 
-type AuthProbe = 'authenticated' | 'unauthenticated' | 'unavailable';
+// Back-off between session reads that failed to reach the server: three
+// retries, ~17s in all — enough for a Wi-Fi / VPN switch to settle — before we
+// give up and sign the user out.
+const SESSION_READ_RETRY_DELAYS_MS = [2_000, 5_000, 10_000];
 
-// useSession()'s status can't tell "logged out" from "endpoint down" — both
-// collapse to "unauthenticated". Inspect /api/auth/session directly: a JSON body
-// means the endpoint is healthy (empty object => logged out, populated =>
-// signed in), while a non-OK / non-JSON / network failure means it's transiently
-// unavailable and worth retrying.
-async function probeSession(): Promise<AuthProbe> {
+// Caps a single read, so a request stranded on the old network can't hold the
+// user on <Loader /> indefinitely.
+const SESSION_READ_TIMEOUT_MS = 10_000;
+
+type SessionRead = 'present' | 'absent' | 'unreachable';
+
+// Reads /api/auth/session directly rather than through next-auth's getSession(),
+// which swallows every failure and returns null — a request that never reached
+// the server would look exactly like a signed-out user. 'absent' is the server
+// answering 200 `{}`: a real answer. Anything else that isn't a session (fetch
+// threw or timed out, non-2xx, a non-JSON body from a captive portal) is
+// 'unreachable'.
+async function readSession(): Promise<SessionRead> {
+  // Not AbortSignal.timeout(): Safari < 16 lacks it, and there every read would
+  // throw and end in a sign-out.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SESSION_READ_TIMEOUT_MS);
   try {
-    const res = await fetch('/api/auth/session', { headers: { Accept: 'application/json' }, cache: 'no-store' });
-    if (!res.ok) return 'unavailable';
-    if (!(res.headers.get('content-type') || '').includes('application/json')) return 'unavailable';
-    const session = await res.json();
-    return session && Object.keys(session).length > 0 ? 'authenticated' : 'unauthenticated';
+    const res = await fetch('/api/auth/session', { cache: 'no-store', signal: controller.signal });
+    if (!res.ok) {
+      return 'unreachable';
+    }
+    const body = await res.json();
+    return Object.keys(body ?? {}).length > 0 ? 'present' : 'absent';
   } catch {
-    return 'unavailable';
+    return 'unreachable';
+  } finally {
+    clearTimeout(timer);
   }
 }
 
-function redirectToSignIn() {
-  if (window.location.pathname === '/signin') return;
-  // Use the current path only (never the full href, which may already carry a
-  // callbackUrl) so repeated bounces can never nest callbackUrls into each other.
-  const callbackUrl = window.location.pathname + window.location.search;
-  window.location.href = `/signin?${new URLSearchParams({ callbackUrl })}`;
+// Waits out a retry delay and then, if the browser knows it's offline, for the
+// connection to come back. Being offline says nothing about the session, so
+// that wait has no deadline and doesn't use up a retry.
+function waitBeforeRetry(delayMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      if (navigator.onLine) {
+        resolve();
+      } else {
+        window.addEventListener('online', () => resolve(), { once: true });
+      }
+    }, delayMs);
+  });
+}
+
+async function readSessionWithRetry(): Promise<SessionRead> {
+  let result = await readSession();
+  for (const delayMs of SESSION_READ_RETRY_DELAYS_MS) {
+    if (result !== 'unreachable') {
+      break;
+    }
+    await waitBeforeRetry(delayMs);
+    result = await readSession();
+  }
+  return result;
+}
+
+// What to do when next-auth reports the session as unauthenticated.
+//
+// next-auth's default `required: true` handler bounces to /signin on the FIRST
+// unauthenticated render, and <SessionProvider> can never recover on its own
+// afterwards: once `__NEXTAUTH._session === null`, both the poll timer and the
+// visibilitychange handler early-return. So a single /api/auth/session response
+// that came back empty — prod logs show these 12-49 min after login, well
+// inside the 1h `maxAge`, because the browser occasionally sends no session
+// cookie at all — costs the user a full re-login.
+//
+// The same dead end is hit when the poll never reaches the server at all:
+// next-auth turns a failed fetch into `null` too, so switching networks
+// (Chrome's ERR_NETWORK_CHANGED) or waking a laptop offline signed users out.
+//
+// Re-read the session before giving up. If it's really gone the server says so
+// and we sign out exactly as before; if it was a blip we reload in place so the
+// user keeps the page they were on. A read that can't reach the server proves
+// nothing, so it is retried (see readSessionWithRetry) and we only sign out
+// once every retry has failed. One recovery reload per tab, so a genuinely dead
+// session can't loop.
+//
+// Never rejects. The caller has no catch, so an unhandled rejection would
+// strand the user on <Loader /> forever — worse than the sign-out this is
+// trying to avoid. `window.sessionStorage` itself throws a SecurityError where
+// the browser blocks site data, and that case must fall through to 'signin'
+// specifically: with no storage we can't record that the recovery reload was
+// spent, so returning 'reload' would loop.
+export async function resolveUnauthenticatedSession(): Promise<'reload' | 'signin'> {
+  try {
+    if (window.sessionStorage.getItem(SESSION_RECOVERY_FLAG)) {
+      return 'signin';
+    }
+    if ((await readSessionWithRetry()) !== 'present') {
+      return 'signin';
+    }
+    window.sessionStorage.setItem(SESSION_RECOVERY_FLAG, '1');
+    return 'reload';
+  } catch {
+    return 'signin';
+  }
+}
+
+function signInRedirect() {
+  window.location.href = `/api/auth/signin?${new URLSearchParams({
+    error: 'SessionRequired',
+    callbackUrl: window.location.href,
+  })}`;
 }
 
 export function withAuth(Component: React.ComponentType<any | string>) {
   const WithAuthComponent = (props: any) => {
-    const { data, status } = useSession();
-    const retriesRef = useRef(0);
-    const [retryTick, setRetryTick] = useState(0);
+    const handlingRef = useRef(false);
+
+    const onUnauthenticated = useCallback(() => {
+      if (handlingRef.current) return;
+      handlingRef.current = true;
+
+      resolveUnauthenticatedSession().then((action) => {
+        if (action === 'reload') {
+          window.location.reload();
+        } else {
+          signInRedirect();
+        }
+      });
+    }, []);
+
+    const { data, status } = useSession({ required: true, onUnauthenticated });
 
     useEffect(() => {
-      if (status !== 'unauthenticated') {
-        retriesRef.current = 0;
-        return;
+      if (status !== 'authenticated') return;
+      try {
+        window.sessionStorage.removeItem(SESSION_RECOVERY_FLAG);
+      } catch {
+        // Site data blocked — nothing was ever written, so nothing to clear.
+        // Throwing here would take down the whole page on commit.
       }
-      let cancelled = false;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      void (async () => {
-        const probe = await probeSession();
-        if (cancelled) return;
-        if (probe === 'authenticated') {
-          // The endpoint is healthy and a session exists, but NextAuth's client
-          // state is stuck "unauthenticated" from the earlier failed fetch. Its
-          // broadcast channel uses storage events that don't fire in the same
-          // tab, and update() no-ops without an existing session, so neither can
-          // refresh us here — reload to let NextAuth re-read the session cleanly.
-          window.location.reload();
-          return;
-        }
-        if (probe === 'unauthenticated') {
-          redirectToSignIn();
-          return;
-        }
-        // 'unavailable' => transient. Retry a bounded number of times before
-        // giving up and sending the user to sign-in.
-        if (retriesRef.current < AUTH_RETRY_LIMIT) {
-          retriesRef.current += 1;
-          timer = setTimeout(() => {
-            if (!cancelled) setRetryTick((n) => n + 1);
-          }, AUTH_RETRY_DELAY_MS);
-        } else {
-          redirectToSignIn();
-        }
-      })();
-      return () => {
-        cancelled = true;
-        if (timer) clearTimeout(timer);
-      };
-    }, [status, retryTick]);
+    }, [status]);
 
-    if (status !== 'authenticated') {
+    if (status === 'loading') {
       return <Loader />;
     }
 

@@ -452,3 +452,54 @@ func TestEbpfFlowSource_ParseServiceMapFromRelay_Success(t *testing.T) {
 		t.Errorf("expected application name 'web', got %q", serviceMap.Applications[0].Id.Name)
 	}
 }
+
+// The agent's service map reports link Latency in seconds; the latency_ms edge
+// property must hold milliseconds, like every other flow source. Covers both
+// property builders and the ebpf_latency_ms copy made when eBPF loses dedup.
+func TestEbpfFlowSource_EdgeLatencyIsMilliseconds(t *testing.T) {
+	source := NewEbpfFlowSource(slog.Default())
+	caller := &core.ServiceApplication{Id: core.ServiceApplicationId{Name: "web", Kind: "Deployment", Namespace: "default"}}
+	callee := &core.ServiceApplication{Id: core.ServiceApplicationId{Name: "db", Kind: "Deployment", Namespace: "default"}}
+
+	upstream := source.buildUpstreamEdgeProperties(
+		&core.UpstreamLink{Id: "default:Deployment:db", Latency: 0.25}, callee, caller)
+	if got := upstream["latency_ms"]; got != 250.0 {
+		t.Errorf("upstream latency_ms = %v, want 250 (0.25 s)", got)
+	}
+
+	downstream := source.buildEdgeProperties(
+		&core.DownstreamLink{Id: caller.Id, Latency: 0.25}, callee, caller)
+	if got := downstream["latency_ms"]; got != 250.0 {
+		t.Errorf("downstream latency_ms = %v, want 250 (0.25 s)", got)
+	}
+
+	for name, props := range map[string]map[string]interface{}{
+		"upstream":   source.buildUpstreamEdgeProperties(&core.UpstreamLink{Id: "default:Deployment:db"}, callee, caller),
+		"downstream": source.buildEdgeProperties(&core.DownstreamLink{Id: caller.Id}, callee, caller),
+	} {
+		if _, ok := props["latency_ms"]; ok {
+			t.Errorf("%s: latency_ms set for a link with no latency: %v", name, props["latency_ms"])
+		}
+	}
+
+	edge := func(src string, props map[string]interface{}) *core.DbEdge {
+		return &core.DbEdge{
+			SourceNodeID:      "caller",
+			DestinationNodeID: "callee",
+			RelationshipType:  core.RelationshipCalls,
+			TenantID:          "tenant-1",
+			Source:            src,
+			Properties:        props,
+		}
+	}
+	merged := core.DeduplicateEdgesWithPriority([]*core.DbEdge{
+		edge("k8s", map[string]interface{}{}),
+		edge("ebpf", upstream),
+	})
+	if len(merged) != 1 {
+		t.Fatalf("expected 1 merged edge, got %d", len(merged))
+	}
+	if got := merged[0].Properties["ebpf_latency_ms"]; got != 250.0 {
+		t.Errorf("ebpf_latency_ms = %v, want 250", got)
+	}
+}

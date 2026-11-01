@@ -1,5 +1,9 @@
+import re
+
 from notifications_server.configs.settings import settings
 from notifications_server.utils.datetime_utils import utc_now
+
+_HEX_COLOR = re.compile(r"#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})")
 
 
 def generate_event_template_params(event):
@@ -30,6 +34,23 @@ def _relevant_image_name():
     return {}
 
 
+def _tint(color):
+    """Pale background for a pill whose text is `color`: the colour mixed 83% toward white.
+
+    Only 3- and 6-digit hex colours are mixed. The branding row also accepts hex
+    with alpha, rgb() and named colours; those get a neutral grey, which sits
+    under any text colour.
+    """
+    match = _HEX_COLOR.fullmatch(color or "")
+    if not match:
+        return "#F3F4F6"
+    digits = match.group(1)
+    if len(digits) == 3:
+        digits = "".join(c * 2 for c in digits)
+    channels = (int(digits[i : i + 2], 16) for i in (0, 2, 4))
+    return "#" + "".join(f"{round(c + (255 - c) * 0.83):02X}" for c in channels)
+
+
 def get_default_template():
     """Return default template parameters for all emails."""
     current_year = utc_now().year
@@ -57,6 +78,7 @@ def get_default_template():
             "footer_bg_color": settings.urls.branding_footer_bg_color,
             "footer_link_color": settings.urls.branding_footer_link_color,
             "primary_color": settings.urls.branding_primary_color,
+            "primary_tint_color": _tint(settings.urls.branding_primary_color),
             "header_bg_color": settings.urls.branding_header_bg_color,
         },
     }

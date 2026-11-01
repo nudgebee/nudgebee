@@ -4,7 +4,7 @@ import { CollapsableCard } from '@ui/CollapsableCard';
 import { Stepper } from '@ui/Stepper';
 import { Checkbox } from '@ui/Checkbox';
 import { Input } from '@ui/Input';
-import { Visibility, VisibilityOff, HelpOutline, SearchOutlined, CheckCircleOutline, ErrorOutline } from '@mui/icons-material';
+import { Visibility, VisibilityOff, HelpOutline, SearchOutlined, CheckCircleOutline, ErrorOutline, WarningAmber } from '@mui/icons-material';
 import { useState, useEffect, useRef } from 'react';
 import { Banner } from '@ui/Banner';
 import { useTour } from '@components/common/tour';
@@ -20,7 +20,9 @@ import { getIntegrationDescription } from '@lib/integrationDescriptions';
 
 const SETUP_GUIDE_CONTENT = `### Prerequisites
 
-Your Azure service principal needs **Reader** role access to the subscriptions you want to monitor.
+Your Azure service principal needs **Reader** role access to the subscriptions you want to monitor. Reader also covers cost data; no billing role is needed.
+
+On an Enterprise Agreement, cost data is visible only if an enterprise admin has turned on **Account owners can view charges** in the billing settings.
 
 ### Option 1: Azure CLI
 
@@ -192,7 +194,7 @@ const AddAzureAccountModal = ({ open, onClose }) => {
     try {
       const subscriptions = await apiAccount.listAzureSubscriptions(tenantId, clientId, clientSecret);
       if (!subscriptions || subscriptions.length === 0) {
-        setDiscoveryError('No subscriptions found. Ensure the service principal has Reader role on at least one subscription.');
+        setDiscoveryError('No enabled subscriptions are visible to this service principal. Assign it the Reader role on at least one subscription.');
         return;
       }
       setDiscoveredSubscriptions(subscriptions);
@@ -284,7 +286,12 @@ const AddAzureAccountModal = ({ open, onClose }) => {
         setOnboardResults(result);
         const successCount = result.accounts?.filter((a) => a.status === 'created').length || 0;
         const errorCount = result.accounts?.filter((a) => a.status === 'error').length || 0;
-        if (errorCount === 0) {
+        const warningCount = result.accounts?.filter((a) => a.status === 'created' && a.warning).length || 0;
+        if (errorCount === 0 && warningCount > 0) {
+          snackbar.warning(
+            `Onboarded ${successCount} subscription${successCount > 1 ? 's' : ''}; ${warningCount} can't read cost data yet. See the details below.`
+          );
+        } else if (errorCount === 0) {
           snackbar.success(`Successfully onboarded ${successCount} subscription${successCount > 1 ? 's' : ''}.`);
         } else {
           snackbar.warning(`Onboarded ${successCount} subscription${successCount > 1 ? 's' : ''}, ${errorCount} failed.`);
@@ -641,18 +648,24 @@ const AddAzureAccountModal = ({ open, onClose }) => {
                     '&:last-child': { borderBottom: 'none' },
                   }}
                 >
-                  {result.status === 'created' ? (
-                    <CheckCircleOutline sx={{ color: ds.green[500], fontSize: 18, mr: ds.space[2] }} />
-                  ) : (
+                  {result.status !== 'created' ? (
                     <ErrorOutline sx={{ color: ds.red[600], fontSize: 18, mr: ds.space[2] }} />
+                  ) : result.warning ? (
+                    <WarningAmber sx={{ color: ds.amber[600], fontSize: 18, mr: ds.space[2] }} />
+                  ) : (
+                    <CheckCircleOutline sx={{ color: ds.green[500], fontSize: 18, mr: ds.space[2] }} />
                   )}
                   <Box sx={{ flex: 1 }}>
                     <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.medium }}>
                       {discoveredSubscriptions.find((s) => s.subscription_id === result.subscription_id)?.display_name || result.subscription_id}
                     </Typography>
-                    <Typography sx={{ fontSize: ds.text.caption, color: result.status === 'created' ? ds.green[500] : ds.red[600] }}>
-                      {result.status === 'created' ? 'Onboarded successfully' : result.error}
-                    </Typography>
+                    {result.status !== 'created' ? (
+                      <Typography sx={{ fontSize: ds.text.caption, color: ds.red[600] }}>{result.error}</Typography>
+                    ) : result.warning ? (
+                      <Typography sx={{ fontSize: ds.text.caption, color: ds.amber[700] }}>{result.warning}</Typography>
+                    ) : (
+                      <Typography sx={{ fontSize: ds.text.caption, color: ds.green[500] }}>Onboarded successfully</Typography>
+                    )}
                   </Box>
                 </Box>
               ))}

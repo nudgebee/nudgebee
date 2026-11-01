@@ -214,6 +214,7 @@ export const ECSTasks = (props: {
                   <DsDropdownMenu
                     align='end'
                     size='sm'
+                    disablePortal={false}
                     items={MENU_ITEMS.map((m) => ({
                       id: `ecs-task-action-${item.resourse_id}-${m.id}`,
                       label: m.label,
@@ -280,7 +281,7 @@ export const ECSTasks = (props: {
         />
         <FilterDropdown
           id='ecs-tasks-filter-state'
-          label='State'
+          label='Status'
           value={selectedState}
           options={stateOptions}
           onSelect={(e: any) => {
@@ -460,6 +461,7 @@ export const ECSServices = (props: {
                   <DsDropdownMenu
                     align='end'
                     size='sm'
+                    disablePortal={false}
                     items={menuItems.map((m: any) => ({
                       id: `ecs-service-action-${item.resourse_id}-${m.id}`,
                       label: m.label,
@@ -554,7 +556,7 @@ export const ECSServices = (props: {
         />
         <FilterDropdown
           id='ecs-services-filter-state'
-          label='State'
+          label='Status'
           value={selectedState}
           options={stateOptions}
           onSelect={(e: any) => {
@@ -677,7 +679,10 @@ export const ECSServices = (props: {
 };
 
 const SERVICE_EVENT_TABLE_ID = 'ECS_SERVICE_EVENT_TABLE_ID';
-const SERVICE_EVENT_HEADERS = ['Event Message', 'Timestamp'];
+const SERVICE_EVENT_HEADERS = [
+  { name: 'Event Message', width: '85%' },
+  { name: 'Timestamp', width: '15%' },
+];
 
 interface ECSEvent {
   Id: string;
@@ -1093,6 +1098,7 @@ export const ECSClusters = (props: {
                   <DsDropdownMenu
                     align='end'
                     size='sm'
+                    disablePortal={false}
                     items={MENU_ITEMS.map((m) => ({
                       id: `ecs-cluster-action-${item.resourse_id}-${m.id}`,
                       label: m.label,
@@ -1167,7 +1173,7 @@ export const ECSClusters = (props: {
         />
         <FilterDropdown
           id='ecs-clusters-filter-state'
-          label='State'
+          label='Status'
           value={selectedState}
           options={stateOptions}
           onSelect={(e: any) => {

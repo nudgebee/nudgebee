@@ -1,0 +1,196 @@
+name: CodeQL
+
+# Advanced setup replacing GitHub's CodeQL default setup.
+#
+# Default setup analyzes every Go module in ONE job (autobuild walks all
+# go.mod files in sequence). The runner was killed every time it reached
+# collector-server/cloud-collector (AWS/Azure/GCP SDKs), so Go was never
+# analyzed. Here each Go module is its own matrix job with a manual
+# `go build ./...`, uploaded under its own category.
+#
+# The other languages keep default setup's behaviour: build-mode none,
+# default query suite, category /language:<lang>. Go has no build-mode none.
+#
+# Requires default setup to be OFF (Settings → Code security → CodeQL
+# analysis → Switch to advanced); the two cannot upload side by side.
+#
+# Pull requests analyze only what they touch (see the `changes` job): a Go
+# module when a file under its directory changes, `actions` for .github/**,
+# javascript-typescript for app/** or any JS/TS file, python for any Python
+# file. Push to main, the weekly schedule and workflow_dispatch analyze
+# everything, so main's code-scanning results stay complete.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '23 4 * * 1'   # weekly, Monday 04:23 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: codeql-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: Select CodeQL targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      # Every Go module (one per go.mod). Also the full matrix for
+      # push/schedule/dispatch.
+      GO_MODULES: |
+        [
+          "api-server/services",
+          "collector-server/cloud-collector",
+          "collector-server/cost-server",
+          "collector-server/k8s-collector/relay-server",
+          "llm/code-analysis",
+          "llm/gateway",
+          "llm/gateway/scripts/matrix",
+          "llm/llm-server",
+          "runbook-server",
+          "ticket-server",
+          "vulnerability-server"
+        ]
+      LANGUAGES: '["actions", "javascript-typescript", "python"]'
+    outputs:
+      go: ${{ steps.select.outputs.go }}
+      languages: ${{ steps.select.outputs.languages }}
+    steps:
+      - name: Build path filters
+        id: filters
+        if: github.event_name == 'pull_request'
+        run: |
+          {
+            echo 'filters<<EOF'
+            for m in $(jq -r '.[]' <<<"$GO_MODULES"); do
+              printf '%s:\n  - "%s/**"\n' "$m" "$m"
+            done
+            cat <<'YAML'
+          actions:
+            - ".github/**"
+          javascript-typescript:
+            - "app/**"
+            - "**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}"
+          python:
+            - "**/*.py"
+            - "**/pyproject.toml"
+            - "**/poetry.lock"
+          YAML
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      # On pull_request this lists the PR's files through the API; no checkout.
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: ${{ steps.filters.outputs.filters }}
+
+      - name: Select targets
+        id: select
+        env:
+          EVENT: ${{ github.event_name }}
+          CHANGED: ${{ steps.filter.outputs.changes || '[]' }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            go=$(jq -c --argjson all "$GO_MODULES" '[.[] | select(IN($all[]))]' <<<"$CHANGED")
+            languages=$(jq -c --argjson all "$LANGUAGES" '[.[] | select(IN($all[]))]' <<<"$CHANGED")
+          else
+            go=$(jq -c . <<<"$GO_MODULES")
+            languages=$(jq -c . <<<"$LANGUAGES")
+          fi
+          echo "go=$go" >> "$GITHUB_OUTPUT"
+          echo "languages=$languages" >> "$GITHUB_OUTPUT"
+          echo "Go modules: $go"
+          echo "Languages:  $languages"
+
+  analyze-go:
+    name: Analyze (go, ${{ matrix.module }})
+    needs: changes
+    if: needs.changes.outputs.go != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        module: ${{ fromJSON(needs.changes.outputs.go) }}
+    env:
+      # The Go extractor processes up to 32 files concurrently by default;
+      # with the AWS/Azure/GCP SDK types loaded that exhausts the runner's
+      # 16 GB and the runner is killed mid-build (cloud-collector).
+      CODEQL_EXTRACTOR_GO_MAX_GOROUTINES: 4
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add swap
+        run: |
+          sudo swapoff -a
+          sudo fallocate -l 16G /mnt/codeql-swap
+          sudo chmod 600 /mnt/codeql-swap
+          sudo mkswap /mnt/codeql-swap
+          sudo swapon /mnt/codeql-swap
+          free -h
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+          # A warm build cache lets `go build` skip packages, which the
+          # CodeQL tracer would then not extract.
+          cache: false
+
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: go
+          build-mode: manual
+
+      - name: Build
+        working-directory: ${{ matrix.module }}
+        run: |
+          go build ./...
+          free -h
+
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:go/${{ matrix.module }}
+
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    needs: changes
+    if: needs.changes.outputs.languages != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ${{ fromJSON(needs.changes.outputs.languages) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:${{ matrix.language }}

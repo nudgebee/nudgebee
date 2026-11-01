@@ -1,6 +1,6 @@
 import React from 'react';
 import { BaseEdge, EdgeLabelRenderer, getBezierPath } from 'reactflow';
-import { formatBytes } from 'src/utils/common';
+import { formatBytes, formatServiceMapRequests } from 'src/utils/common';
 import { ds } from 'src/utils/colors';
 
 const CustomEdge = ({ _id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, style = {}, data, markerEnd, selected, animated }) => {
@@ -111,7 +111,7 @@ const CustomEdge = ({ _id, sourceX, sourceY, targetX, targetY, sourcePosition, t
           >
             {networkMetrics.rps > 0 && (
               <div style={{ display: 'flex', alignItems: 'center', marginBottom: 'var(--ds-space-1)' }}>
-                <span style={{ fontWeight: 'bold' }}>{networkMetrics.rps} req</span>
+                <span style={{ fontWeight: 'bold' }}>{formatServiceMapRequests(networkMetrics.rps, data?.requestsPerSecond)}</span>
               </div>
             )}
             <div>

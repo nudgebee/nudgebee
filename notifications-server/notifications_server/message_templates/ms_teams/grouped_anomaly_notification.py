@@ -4,7 +4,14 @@ from datetime import datetime
 
 from notifications_server.configs.settings import public_ip
 from notifications_server.message_templates.base import Emojis
-from notifications_server.message_templates.slack.grouped_anomaly_notification import AnomalyAlertParams
+from notifications_server.message_templates.slack.grouped_anomaly_notification import (
+    MAX_RESOLVED_ITEMS,
+    AnomalyAlertParams,
+    counts_phrase,
+    resolved_line,
+    returned_label,
+    split_resolved,
+)
 
 MAX_CARD_TEXT_LENGTH = 3800
 
@@ -29,14 +36,19 @@ def get_grouped_anomaly_alerts_ms_teams_template(input_data: Any) -> Dict[str, A
     else:
         raise TypeError("Expected AnomalyAlertSummaryParams or list[AnomalyAlertParams]")
 
+    firing, resolved = split_resolved(alerts)
     grouped: Dict[str, List[AnomalyAlertParams]] = defaultdict(list)
-    for alert in alerts:
+    for alert in firing:
         grouped[alert.cloud_account_id].append(alert)
 
+    resolved_only = bool(resolved) and not firing
+    emoji = Emojis.Resolved.value if resolved_only else Emojis.Alert.value
+    counts = counts_phrase(len(firing), len(resolved), "Anomalies")
+    total_accounts = len({alert.cloud_account_id for alert in alerts})
     body: List[Dict[str, Any]] = [
         {
             "type": "TextBlock",
-            "text": f"{Emojis.Alert.value} **{len(alerts)} Anomalies detected across {len(grouped)} accounts**",
+            "text": f"{emoji} **{counts} across {total_accounts} accounts**",
             "size": "Large",
             "weight": "Bolder",
             "wrap": True,
@@ -71,7 +83,7 @@ def get_grouped_anomaly_alerts_ms_teams_template(input_data: Any) -> Dict[str, A
                 [
                     {
                         "type": "TextBlock",
-                        "text": f"- **{title}**",
+                        "text": f"- **{title}**{returned_label(alert, '**')}",
                         "wrap": True,
                     },
                     {
@@ -93,16 +105,35 @@ def get_grouped_anomaly_alerts_ms_teams_template(input_data: Any) -> Dict[str, A
             )
         body.append({"type": "TextBlock", "text": " ", "separator": True})
 
-    body.append(
-        {
-            "type": "TextBlock",
-            "text": (
-                f"{Emojis.Event.value} Review detected anomalies and investigate impacted workloads in your clusters."
-            ),
-            "wrap": True,
-            "spacing": "Medium",
-        }
-    )
+    if not resolved_only:
+        body.append(
+            {
+                "type": "TextBlock",
+                "text": (
+                    f"{Emojis.Event.value} Review detected anomalies and investigate impacted workloads "
+                    "in your clusters."
+                ),
+                "wrap": True,
+                "spacing": "Medium",
+            }
+        )
+
+    if resolved:
+        body.append(
+            {
+                "type": "TextBlock",
+                "text": f"{Emojis.Resolved.value} **Resolved**",
+                "weight": "Bolder",
+                "wrap": True,
+                "spacing": "Medium",
+            }
+        )
+        for alert in resolved[:MAX_RESOLVED_ITEMS]:
+            body.append({"type": "TextBlock", "text": f"- {resolved_line(alert, '**')}", "wrap": True})
+        if len(resolved) > MAX_RESOLVED_ITEMS:
+            body.append(
+                {"type": "TextBlock", "text": f"+{len(resolved) - MAX_RESOLVED_ITEMS} more resolved", "wrap": True}
+            )
 
     card_payload: Dict[str, Any] = {
         "$schema": "https://adaptivecards.io/schemas/adaptive-card.json",

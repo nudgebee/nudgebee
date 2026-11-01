@@ -8,6 +8,27 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestFoldLegacySeverity(t *testing.T) {
+	t.Run("explicit severity wins over additional_fields", func(t *testing.T) {
+		got := foldLegacySeverity(map[string]any{"priority": "High"}, "Low")
+		assert.Equal(t, "Low", got)
+	})
+
+	t.Run("falls back to legacy priority when severity is empty", func(t *testing.T) {
+		got := foldLegacySeverity(map[string]any{"priority": "High"}, "")
+		assert.Equal(t, "High", got)
+	})
+
+	t.Run("does not fold urgency in: ServiceNow's Impact/Urgency are not a severity alias (#39810)", func(t *testing.T) {
+		got := foldLegacySeverity(map[string]any{"impact": "Medium", "urgency": "Medium"}, "")
+		assert.Equal(t, "", got)
+	})
+
+	t.Run("nil additional_fields", func(t *testing.T) {
+		assert.Equal(t, "", foldLegacySeverity(nil, ""))
+	})
+}
+
 func TestResolveReferenceID(t *testing.T) {
 	cases := []struct {
 		name     string

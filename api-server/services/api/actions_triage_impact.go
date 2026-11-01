@@ -14,6 +14,7 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/event"
 	"nudgebee/services/internal/database"
+	"nudgebee/services/internal/database/models"
 	"nudgebee/services/knowledge_graph/core"
 	"nudgebee/services/security"
 	"nudgebee/services/triage"
@@ -425,6 +426,8 @@ func handleEventGetImpact(h *ActionRequest, c *gin.Context, ctx *security.Reques
 		SubjectNamespace: namespace,
 		SubjectOwner:     derefStr(ev.SubjectOwner),
 		AggregationKey:   derefStr(ev.AggregationKey),
+		NodeMemory: triage.NodeMemoryNode(derefStr(ev.AggregationKey), derefStr(ev.SubjectType),
+			name, derefStr(ev.SubjectNode), ev.Evidences),
 	}
 	dependsOnMap := map[string][]string{}
 
@@ -671,6 +674,7 @@ func buildIncidentAssembly(log *slog.Logger, db *sqlx.DB, accountID, rootEventID
 		"cause":            gin.H{"config_changes": []tierItem{}, "upstream": []tierItem{}},
 		"impact":           []tierItem{},
 		"chronic":          []tierItem{},
+		"same_node":        []tierItem{},
 		"co_firing":        []tierItem{},
 		"window":           windowMeta,
 		"truncated":        false,
@@ -681,6 +685,9 @@ func buildIncidentAssembly(log *slog.Logger, db *sqlx.DB, accountID, rootEventID
 	}
 
 	wr, truncated := fetchWindowRows(log, db, accountID, rootEventID, rootTime, namespaceBlind)
+	if seed.NodeMemory != "" {
+		wr = mergeNodeMemoryPeers(wr, fetchNodeMemoryPeers(log, db, accountID, rootEventID, rootTime, seed.NodeMemory, namespaceBlind))
+	}
 	if len(wr) == 0 {
 		return empty
 	}
@@ -744,6 +751,7 @@ func buildIncidentAssembly(log *slog.Logger, db *sqlx.DB, accountID, rootEventID
 	}
 
 	sameIncident, configChanges, upstream, impact, chronic := []tierItem{}, []tierItem{}, []tierItem{}, []tierItem{}, []tierItem{}
+	sameNode := []tierItem{}
 	for _, ci := range items {
 		item := toTierItem(ci.rep, rates)
 		item.OccurrenceCount = ci.count
@@ -765,6 +773,11 @@ func buildIncidentAssembly(log *slog.Logger, db *sqlx.DB, accountID, rootEventID
 			impact = append(impact, item)
 		case triage.TierChronic:
 			chronic = append(chronic, item)
+		case triage.TierSameNode:
+			if item.Relation == "" {
+				item.Relation = triage.RelationSameNode
+			}
+			sameNode = append(sameNode, item)
 		}
 	}
 
@@ -774,6 +787,7 @@ func buildIncidentAssembly(log *slog.Logger, db *sqlx.DB, accountID, rootEventID
 		"cause":            gin.H{"config_changes": configChanges, "upstream": upstream},
 		"impact":           impact,
 		"chronic":          chronic,
+		"same_node":        sameNode,
 		"co_firing":        collapseCoFiring(wr, triage.CoFiring(seed, cands, tiers, rates), rates),
 		"window":           windowMeta,
 		"truncated":        truncated,
@@ -923,6 +937,107 @@ func fetchWindowRows(log *slog.Logger, db *sqlx.DB, accountID, rootEventID strin
 		return nil, false
 	}
 	return wr, len(wr) >= windowFetchLimit
+}
+
+// fetchNodeMemoryPeers returns the other memory failures of the node the seed ran
+// out of memory on, within triage.NodeMemoryWindowSeconds of the root.
+//
+// They are fetched on their own rather than picked out of the window rows. That
+// fetch keeps only the newest windowFetchLimit rows of a four-hour window, and a
+// node running out of memory is exactly when a window overflows — the peers
+// nearest the root would be the ones cut, with nothing to say they were missing.
+// The evidence each peer is judged on comes with the row, so only alerts that
+// pass the same rule as the seed (triage.NodeMemoryNode) are returned. The LIMIT
+// only stops a pathological node from flooding the lane: one node kills a
+// handful of pods at a time.
+func fetchNodeMemoryPeers(log *slog.Logger, db *sqlx.DB, accountID, rootEventID string, rootTime time.Time, node string, namespaceBlind bool) []windowRow {
+	const peerQ = `
+		SELECT id::text, COALESCE(fingerprint,''), COALESCE(subject_name,''), COALESCE(subject_namespace,''),
+		       COALESCE(subject_owner,''), COALESCE(subject_type,''), COALESCE(aggregation_key,''),
+		       COALESCE(title,''), COALESCE(NULLIF(computed_priority,''), priority, ''), COALESCE(source,''),
+		       starts_at, COALESCE(finding_type,''), COALESCE(subject_node,''), evidences
+		FROM events
+		WHERE cloud_account_id = $1::uuid
+		  AND starts_at >= $2 AND starts_at <= $3
+		  AND id <> $4::uuid
+		  AND aggregation_key = ANY($5)
+		  AND (lower(btrim(subject_node)) = $6
+		       OR (lower(btrim(subject_type)) = 'node' AND lower(btrim(subject_name)) = $6))
+		ORDER BY starts_at DESC
+		LIMIT 200`
+	window := time.Duration(triage.NodeMemoryWindowSeconds) * time.Second
+	rows, err := db.Query(peerQ, accountID, rootTime.Add(-window), rootTime.Add(window), rootEventID,
+		pq.Array(triage.NodeMemoryAggregationKeys()), node)
+	if err != nil {
+		if log != nil {
+			log.Warn("incident assembly: node peer query failed", "error", err, "account", accountID)
+		}
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+
+	var peers []windowRow
+	for rows.Next() {
+		var id, fp, sname, sns, sowner, stype, aggk, title, prio, source, ftype, snode string
+		var startsAt sql.NullTime
+		var evidences models.Json
+		if err := rows.Scan(&id, &fp, &sname, &sns, &sowner, &stype, &aggk, &title, &prio, &source, &startsAt, &ftype, &snode, &evidences); err != nil {
+			if log != nil {
+				log.Warn("incident assembly: node peer row scan failed", "error", err, "account", accountID)
+			}
+			continue
+		}
+		if triage.NodeMemoryNode(aggk, stype, sname, snode, &evidences) != node {
+			continue
+		}
+		var sa time.Time
+		dt := 0
+		if startsAt.Valid {
+			sa = startsAt.Time
+			dt = int(sa.Sub(rootTime).Seconds())
+		}
+		if namespaceBlind {
+			sns = ""
+		}
+		peers = append(peers, windowRow{
+			id: triage.AlertIdentity{
+				ID: id, SubjectType: stype, SubjectName: sname, SubjectNamespace: sns,
+				SubjectOwner: sowner, AggregationKey: aggk, TsOffsetS: dt,
+				FindingType: ftype, NodeMemory: node,
+			},
+			title: title, priority: prio, source: source, startsAt: sa, fp: fp,
+		})
+	}
+	if err := rows.Err(); err != nil && log != nil {
+		log.Warn("incident assembly: node peer scan failed", "error", err, "account", accountID)
+	}
+	return peers
+}
+
+// mergeNodeMemoryPeers marks the window rows that are node memory peers and adds
+// the peers the window fetch did not return, keeping the rows newest-first as the
+// collapse below expects.
+func mergeNodeMemoryPeers(wr, peers []windowRow) []windowRow {
+	if len(peers) == 0 {
+		return wr
+	}
+	index := make(map[string]int, len(wr))
+	for i, r := range wr {
+		index[r.id.ID] = i
+	}
+	added := false
+	for _, p := range peers {
+		if i, ok := index[p.id.ID]; ok {
+			wr[i].id.NodeMemory = p.id.NodeMemory
+			continue
+		}
+		wr = append(wr, p)
+		added = true
+	}
+	if added {
+		sort.SliceStable(wr, func(i, j int) bool { return wr[i].startsAt.After(wr[j].startsAt) })
+	}
+	return wr
 }
 
 // computeCandidateRates returns each candidate's trailing firing rate keyed by

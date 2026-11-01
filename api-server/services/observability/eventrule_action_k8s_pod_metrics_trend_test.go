@@ -47,8 +47,8 @@ func onlyInsight(t *testing.T, entry podMetricEntry) playbooks.PlaybookActionRes
 // only moves the deadline.
 func TestMemoryTrend_UnboundedGrowth(t *testing.T) {
 	got := onlyInsight(t, memorySeries("api", 192, 30, 30, 5))
-	if !strings.Contains(got.Message, "without ever falling back") {
-		t.Errorf("monotonic growth must be called out; got %q", got.Message)
+	if !strings.Contains(got.Message, "rose 483% and never fell more than 10% below its running peak") {
+		t.Errorf("monotonic growth must be called out with what was measured; got %q", got.Message)
 	}
 	if !strings.Contains(got.Message, "192MiB limit") {
 		t.Errorf("the limit belongs in the summary; got %q", got.Message)
@@ -68,7 +68,7 @@ func TestMemoryTrend_SawtoothIsNotUnbounded(t *testing.T) {
 	// Rises, gives memory back, rises again — a workload that does release.
 	entry := appendSamples(memorySeries("api", 192, 10, 40, 5), 45, 50, 55, 60, 65)
 	got := onlyInsight(t, entry)
-	if strings.Contains(got.Message, "without ever falling back") {
+	if strings.Contains(got.Message, "running peak") {
 		t.Errorf("a series that falls back must not read as unbounded; got %q", got.Message)
 	}
 	if !strings.Contains(got.Message, "cannot tell apart") {
@@ -130,7 +130,7 @@ func TestMemoryTrend_GradualDeclineIsAFallBack(t *testing.T) {
 	entry := memorySeries("api", 512, 12, 200, 0) // flat at the peak
 	entry = appendSamples(entry, 195, 190, 185, 180, 175, 170, 165, 160)
 	got := onlyInsight(t, entry)
-	if strings.Contains(got.Message, "without ever falling back") {
+	if strings.Contains(got.Message, "running peak") {
 		t.Errorf("a steady decline is a release, not unbounded growth; got %q", got.Message)
 	}
 	if !strings.Contains(got.Message, "fell back within the window") {
@@ -148,6 +148,82 @@ func TestMemoryTrend_ClimbingBackAfterRestartIsNotARelease(t *testing.T) {
 	got := onlyInsight(t, entry)
 	if strings.Contains(got.Message, "does release memory") {
 		t.Errorf("recovery after an OOM restart must not read as a release; got %q", got.Message)
+	}
+}
+
+// A restart drops below the floor that keeps it out of "dropped", but it is
+// still a fall: what climbs afterwards is the container starting up, and the
+// series never held near its peak. Reading that climb as retention claimed
+// "without ever falling back" on a series that had just fallen to near zero.
+func TestMemoryTrend_StartupAfterRestartIsNotRetention(t *testing.T) {
+	entry := memorySeries("api", 192, 20, 30, 8) // climbs to ~182MiB
+	entry = appendSamples(entry, 4, 12, 20, 28, 36, 44, 52, 60)
+	got := onlyInsight(t, entry)
+	if got.Severity == "High" || strings.Contains(got.Message, "running peak") {
+		t.Errorf("growth after a restart must not read as retention; got %q", got.Message)
+	}
+}
+
+// memoryValues builds a one-minute series from explicit MiB readings.
+func memoryValues(limitMiB float64, valuesMiB ...float64) podMetricEntry {
+	return appendSamples(memorySeries("api", limitMiB, 1, valuesMiB[0], 0), valuesMiB[1:]...)
+}
+
+// Real series from dev over a ~10-minute window, each of which got the High
+// "grew without ever falling back … retained" reading because it ended above
+// its first sample — by a single MiB, or after dips, or not at all. None grew
+// materially; the flat ones must say so.
+func TestMemoryTrend_NoMaterialGrowthIsNotRetention(t *testing.T) {
+	cases := []struct {
+		name     string
+		entry    podMetricEntry
+		wantFlat string
+	}{
+		{"flat", memorySeries("api", 0, 11, 207, 0), "between 207MiB and 207MiB"},
+		{"one MiB up after dips", memoryValues(0, 193, 195, 191, 198, 204, 200, 196, 194, 192, 193, 194), "between 191MiB and 204MiB"},
+		{"dip then back", memoryValues(0, 52.8, 53.0, 52.5, 50.1, 51.7, 52.9, 53.3, 52.6, 53.0, 53.1), "between 50MiB and 53MiB"},
+		{"bump and settle", memoryValues(0, 197, 203, 212, 208, 201, 198, 199, 200, 198, 200), "between 197MiB and 212MiB"},
+		{"flat under the limit", memoryValues(300, 229, 229, 230, 229, 228, 229, 229, 230, 229, 229, 229), "between 228MiB and 230MiB"},
+		// Dips 9% and recovers: neither a fall-back nor flat nor growth.
+		{"vmagent dip and recover", memoryValues(0, 1373, 1380, 1352, 1300, 1249, 1275, 1320, 1356, 1371, 1388), ""},
+		// 40%, but 8MiB: allocator noise on a small container, not retention.
+		{"small container", memoryValues(64, 20, 21, 22, 23, 24, 25, 26, 27, 28), ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := onlyInsight(t, tc.entry)
+			if got.Severity != "Info" || strings.Contains(got.Message, "running peak") {
+				t.Errorf("no material growth must not read as retention; got %s %q", got.Severity, got.Message)
+			}
+			if tc.wantFlat != "" && !strings.Contains(got.Message, "held flat, "+tc.wantFlat) {
+				t.Errorf("a series inside a 10%% band must say it held flat (%s); got %q", tc.wantFlat, got.Message)
+			}
+			if tc.wantFlat == "" && strings.Contains(got.Message, "held flat") {
+				t.Errorf("a series outside the 10%% band is not flat; got %q", got.Message)
+			}
+		})
+	}
+}
+
+// The case this insight exists for must survive the growth threshold: a
+// container climbing towards its limit, with the small dips a real series has,
+// still reads as held — and the message states only what the series did.
+func TestMemoryTrend_ClimbToLimitWithSmallDipsIsStillRetention(t *testing.T) {
+	got := onlyInsight(t, memoryValues(192, 150, 155, 159, 157, 164, 170, 168, 176, 182, 186, 190))
+	if got.Severity != "High" {
+		t.Errorf("severity = %q; a 27%% climb to the limit is the case this insight exists for", got.Severity)
+	}
+	if !strings.Contains(got.Message, "rose 27% and never fell more than 10% below its running peak") {
+		t.Errorf("the message must state the measured rise; got %q", got.Message)
+	}
+}
+
+// A series whose first sample is zero has no ratio to report; it must not
+// render "+Inf%" or fire on the division.
+func TestMemoryTrend_ZeroFirstSampleIsNotRetention(t *testing.T) {
+	got := onlyInsight(t, memoryValues(192, 0, 0, 20, 40, 60, 80, 100))
+	if got.Severity == "High" || strings.Contains(got.Message, "Inf") {
+		t.Errorf("a zero start has no growth ratio; got %s %q", got.Severity, got.Message)
 	}
 }
 
@@ -190,7 +266,7 @@ func TestMemoryTrend_NaNAndInfAreDropped(t *testing.T) {
 		t.Errorf("NaN/Inf must never reach the summary; got %q", got.Message)
 	}
 	// The remaining samples still describe a curve that only grows.
-	if !strings.Contains(got.Message, "without ever falling back") {
+	if got.Severity != "High" || !strings.Contains(got.Message, "running peak") {
 		t.Errorf("dropping NaN/Inf must not change the reading; got %q", got.Message)
 	}
 }
@@ -224,5 +300,15 @@ func TestMemoryTrend_OneInsightPerContainer(t *testing.T) {
 	}
 	if !strings.Contains(insights[0].Message, "api") || !strings.Contains(insights[1].Message, "sidecar") {
 		t.Errorf("insights should name their containers; got %v", insights)
+	}
+}
+
+// A series that is zero throughout (a container that never allocated, or a
+// scrape that reports 0) still reads as flat rather than falling through to the
+// bare summary.
+func TestMemoryTrend_AllZeroSeriesIsFlat(t *testing.T) {
+	got := onlyInsight(t, memoryValues(192, 0, 0, 0, 0, 0, 0))
+	if got.Severity != "Info" || !strings.Contains(got.Message, "held flat") {
+		t.Errorf("an all-zero series is flat; got %s %q", got.Severity, got.Message)
 	}
 }

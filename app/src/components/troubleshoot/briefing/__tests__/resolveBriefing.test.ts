@@ -37,8 +37,9 @@ const prototypePayload = (): BriefingPayload => ({
   thresholdSuggestions: [
     {
       alert_name: 'OtelDemoHighLatency',
-      firing_analysis: { total_firings: 1656 },
-      alert_quality: { verdict: 'false_positive' },
+      firing_analysis: { total_occurrences: 1656 },
+      alert_quality: { classification: 'false_positive' },
+      recommendation_type: 'tune_threshold',
       apply_status: 'pending',
     },
   ],
@@ -324,7 +325,13 @@ describe('resolveBriefing — findings cap and omissions', () => {
 
   it('ignores threshold suggestions that are already applied', () => {
     const payload = prototypePayload();
-    payload.thresholdSuggestions = [{ alert_name: 'Applied', apply_status: 'applied' }];
+    payload.thresholdSuggestions = [{ alert_name: 'Applied', recommendation_type: 'tune_threshold', apply_status: 'applied' }];
+    expect(resolveBriefing(payload).findings.map((finding) => finding.kind)).not.toContain('TUNING AVAILABLE');
+  });
+
+  it('ignores threshold suggestions that only ask for a review', () => {
+    const payload = prototypePayload();
+    payload.thresholdSuggestions = [{ alert_name: 'ReviewOnly', recommendation_type: 'review_alert' }];
     expect(resolveBriefing(payload).findings.map((finding) => finding.kind)).not.toContain('TUNING AVAILABLE');
   });
 

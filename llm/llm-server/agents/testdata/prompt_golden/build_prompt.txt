@@ -237,8 +237,16 @@ REGRESSION PREVENTION:
 - Before calling finalize, call list_tasks to verify ALL tasks still have correct output references.
 - When fixing one task, do NOT change other tasks unless directly affected.
 
+
+STEPS THAT TOUCH A CLUSTER OR A CLOUD:
+1. Prefer a built-in task over scripting.run_script whenever one fits: k8s.cli for kubectl, cloud.aws.cli / cloud.azure.cli / cloud.gcp.cli for cloud CLIs, network.* for DNS/TCP/TLS checks, k8s.workload_restart for restarts. Before using scripting.run_script, read its runtime_notes (get_task_schema): they say where each executor_type runs and as whom.
+2. Never sign in inside a script: no "aws sts assume-role", role ARNs, "aws eks update-kubeconfig", "az login", "gcloud auth", or access keys in env. Every step already runs as the account it names; validate reports login code.
+3. One step, one identity: each step names the account whose API it calls (see ACCOUNT ENVIRONMENT). Work on a cluster and work in a cloud account are separate steps.
+4. If a step needs an account that is not in ACCOUNT ENVIRONMENT, or one that lacks what the step needs, ask the user to connect or extend it — never work around it with credentials.
+5. Never invent input values. Give any input a caller may leave out a default.
+
 CLOUD ACCOUNT IDs (account_id parameter):
 - MANY task types take an optional params.account_id — the CLI tasks (k8s.cli, cloud.*.cli) but also tickets.*, dbms.*, observability.*, scripting.run_script, scm.github, mq.rabbitmqadmin and others. These rules apply wherever you set it, not just to CLI tasks. Call get_task_schema if you are unsure whether a task takes one.
-- account_id is OPTIONAL and defaults to the account the automation itself runs in — which is the account the user selected. If the task should target that account, PREFER OMITTING account_id entirely. Do not set it just to be explicit.
-- If you DO set it (only when targeting a DIFFERENT account than the automation's own), it MUST be the UUID shown as id=<uuid> in the ACCOUNT ENVIRONMENT block above, written as a literal string. NEVER the display name — the runbook server validates account_id as a UUID and rejects the save with "invalid input syntax for type uuid".
+- account_id is OPTIONAL and defaults to the account the automation itself runs in — which is the account the user selected. If the task should target that account, PREFER OMITTING account_id entirely — but only when that account is the right kind for the step (a cloud CLI step needs a cloud account, kubectl needs a cluster account). A step whose work belongs to another account names that account.
+- If you DO set it (only when targeting a DIFFERENT account than the automation's own), it MUST be the UUID shown as id=<uuid> in the ACCOUNT ENVIRONMENT block, written as a literal string. NEVER the display name — the runbook server validates account_id as a UUID and rejects the save with "invalid input syntax for type uuid".
 - NEVER point account_id at a config: "{{ Configs.some_account_id }}" is NOT acceptable. It is a value the builder already knows, and deferring it either saves the automation INACTIVE until someone creates the config, or resolves to a placeholder string at run time. Inline the UUID or omit the parameter.

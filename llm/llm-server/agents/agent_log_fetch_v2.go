@@ -583,8 +583,12 @@ func (a *FetchLogsAgent) generateCanonicalLogQueryAndExecute(ctx *security.Reque
 	if strings.EqualFold(provider.Provider, "loki") {
 		logs = unwrapLokiInnerTimestamps(ctx, logs)
 	}
-	fileRef, flattened, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, provider.Provider, logs)
-	bundleSignal, err := runAutoDiagnosticBundle(ctx, a.accountId, request, fileRef)
+	workspaceAccount := request.AccountId
+	if workspaceAccount == "" {
+		workspaceAccount = a.accountId
+	}
+	fileRef, flattened, fileRefs := saveLogsToWorkspace(ctx, workspaceAccount, request.ConversationId, provider.Provider, logs)
+	bundleSignal, err := runAutoDiagnosticBundle(ctx, workspaceAccount, request, fileRef)
 	if err != nil {
 		return core.NBAgentResponse{}, jsonQuery, err
 	}

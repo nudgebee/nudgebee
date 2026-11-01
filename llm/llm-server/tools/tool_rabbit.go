@@ -206,7 +206,7 @@ func (m RabbitExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 	// RelayJobRabbitmq rewrite injects basic-auth against the customer's
 	// broker.
 	if strings.Contains(commandStr, "curl") && strings.Contains(commandStr, "/api/") {
-		response, err := ExecuteContainerJob(nbRequestContext, RelayJobRabbitmq, commandStr, nbRequestContext.AccountId, map[string]any{}, false)
+		response, err := ExecuteContainerJob(nbRequestContext, RelayJobRabbitmq, commandStr, nbRequestContext.DataAccountID(), map[string]any{}, false)
 		if err != nil {
 			nbRequestContext.Ctx.GetLogger().Error("rabbit: unable to execute curl command via relay", "error", err.Error())
 			responseData := ""
@@ -229,9 +229,7 @@ func (m RabbitExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 	}
 
 	wm := workspace.NewWorkspaceManager()
-	wsResponse, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, commandStr, map[string]string{
-		workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
-	})
+	wsResponse, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, commandStr, IntegrationWorkspaceEnv(nbRequestContext, nil))
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("rabbit: unable to execute shell script", "error", err.Error(), "command", commandStr)
 		if wsResponse == "" {

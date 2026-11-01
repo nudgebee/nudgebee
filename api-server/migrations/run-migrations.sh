@@ -307,11 +307,11 @@ else
 
         if [ "$playbook_ready" = "1" ]; then
             echo "Loading Agent Playbook..."
-            curl -X POST "$SERVICE_API_SERVER_URL/rpc-cron" -d '{
+            curl -f -X POST "$SERVICE_API_SERVER_URL/rpc-cron" -d '{
                     "comment": "Load Agent Playbook",
                     "name": "Load Agent Playbook",
                     "payload": {}
-                }' -v -H "X-ACTION-TOKEN: $ACTION_API_SERVER_TOKEN" \
+                }' -H "X-ACTION-TOKEN: $ACTION_API_SERVER_TOKEN" \
                 || echo "WARN: Agent Playbook trigger failed; cron self-registers on services-server boot, continuing."
         else
             echo "WARN: services-server not healthy after $((max_attempts * interval))s; skipping Agent Playbook trigger (cron self-registers on services-server boot)."

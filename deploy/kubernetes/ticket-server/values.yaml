@@ -15,8 +15,8 @@ global:
     registry: 'ghcr.io/nudgebee'
   imagePullSecrets: []
   initImages:
-    postgres: 'ghcr.io/nudgebee/postgres:16.10-alpine'
-    curl: 'ghcr.io/nudgebee/curl:8.10.1'
+    postgres: 'ghcr.io/nudgebee/postgres:16.15-alpine-nb1'
+    curl: 'ghcr.io/nudgebee/curl:8.23.0'
   # `helm test` connection pod (templates/tests/test-connection.yaml). Full ref,
   # like initImages above: a third-party image a private-registry install has to
   # mirror under whatever name that registry uses.
@@ -53,6 +53,15 @@ securityContext: {}
 service:
   type: ClusterIP
   port: 8080
+
+# Delays SIGTERM so kube-proxy has time to stop routing new traffic here first.
+lifecycle:
+  preStop:
+    exec:
+      command: ['sleep', '10']
+
+# Must cover the preStop sleep (10s) + shutdownTimeout in main.go (35s).
+terminationGracePeriodSeconds: 45
 
 ingress:
   enabled: false

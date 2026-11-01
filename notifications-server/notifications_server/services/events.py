@@ -3,6 +3,7 @@ import html
 import json
 import logging
 import re
+import uuid
 from typing import Any, List, Optional
 
 import aiohttp
@@ -10,7 +11,7 @@ import requests
 from datetime import datetime
 
 from botbuilder.core import TurnContext
-from botbuilder.schema import Activity
+from botbuilder.schema import Activity, ActivityTypes
 
 from sqlalchemy.orm import Session
 
@@ -22,7 +23,11 @@ from notifications_server.services.cache import Cache
 from notifications_server.services import channel_analysis
 from notifications_server.services.channel_context import ChannelContextService
 from notifications_server.services.common import THREAD_CONTEXT_MARKER
-from notifications_server.services.messaging_installations import load_installation_by_team
+from notifications_server.services.messaging_installations import load_installation_by_team, ms_teams_aad_tenant_owner
+from notifications_server.services.ms_teams import card_actions
+from notifications_server.services.ms_teams import thinking as teams_thinking
+from notifications_server.services.ms_teams.answer_card import answer_card
+from notifications_server.services.ms_teams.bot_sender import TeamsBotError, card_activity, get_sender
 from notifications_server.services.slack_images import collect_slack_images
 from notifications_server.services import slack_progress
 from notifications_server.services.actions import (
@@ -83,6 +88,8 @@ SLACK_STATIC_SELECT_MAX_OPTIONS = 100
 # per group. Kept a power of two so a rejected message can be evenly bisected
 # down to the single offending block (see utils.rich_text_blocks.send_blocks_with_fallback).
 SLACK_MAX_BLOCKS_PER_MESSAGE = 32
+# How much of an alert card goes to Nubi as context for a question in its thread.
+TEAMS_ALERT_CONTEXT_LIMIT = 4000
 # How an inbound Google Chat space interaction is dispatched (see
 # Events._resolve_gchat_disposition). The join and message paths render each
 # disposition differently, but the bound-vs-unbound decision is identical.
@@ -1764,9 +1771,10 @@ class Events:
                 LOG.error("No conversation reference found in cached entry for Teams response")
                 return
 
-            await self.common_service.teams_reply_from_conversation_reference(
-                conversation_ref, response_text, teams_account_id
-            )
+            if not await self._deliver_teams_answer(cached_entry, conversation_id, response_text):
+                await self.common_service.teams_reply_from_conversation_reference(
+                    conversation_ref, response_text, teams_account_id
+                )
 
             event_cache.update_event_entry(conversation_id, status="COMPLETED")
             LOG.debug("Teams conversation marked as COMPLETED.")
@@ -1798,10 +1806,13 @@ class Events:
             if followup_options:
                 # Create Adaptive Card with clickable buttons for follow-up options
                 adaptive_card = self.common_service.create_teams_followup_card(followup_question, followup_options)
-                await self.common_service.teams_reply_with_card_from_conversation_reference(
-                    conversation_ref, adaptive_card, teams_account_id
-                )
-            else:
+                if not await teams_thinking.replace(conversation_id, conversation_ref, card_activity(adaptive_card)):
+                    await self.common_service.teams_reply_with_card_from_conversation_reference(
+                        conversation_ref, adaptive_card, teams_account_id
+                    )
+            elif not await teams_thinking.replace(
+                conversation_id, conversation_ref, Activity(type=ActivityTypes.message, text=followup_question)
+            ):
                 # No options, just send the question as text
                 await self.common_service.teams_reply_from_conversation_reference(
                     conversation_ref, followup_question, teams_account_id
@@ -1812,9 +1823,12 @@ class Events:
 
         except (json.JSONDecodeError, KeyError) as e:
             LOG.warning(f"Failed to parse Teams follow-up response as JSON: {e}. Using raw response.")
-            if cached_entry.get("conversation_reference"):
+            conversation_ref = cached_entry.get("conversation_reference")
+            if conversation_ref and not await teams_thinking.replace(
+                conversation_id, conversation_ref, Activity(type=ActivityTypes.message, text=payload.response)
+            ):
                 await self.common_service.teams_reply_from_conversation_reference(
-                    cached_entry.get("conversation_reference"), payload.response, cached_entry.get("teams_id")
+                    conversation_ref, payload.response, cached_entry.get("teams_id")
                 )
 
     async def handle_teams_error_response(self, payload, cached_entry, conversation_id: str):
@@ -1826,12 +1840,79 @@ class Events:
             return
 
         try:
-            await self.common_service.teams_reply_from_conversation_reference(
-                conversation_ref, get_generic_error_message(), cached_entry.get("teams_id")
-            )
+            message = get_generic_error_message()
+            if not await teams_thinking.replace(
+                conversation_id, conversation_ref, Activity(type=ActivityTypes.message, text=message)
+            ):
+                await self.common_service.teams_reply_from_conversation_reference(
+                    conversation_ref, message, cached_entry.get("teams_id")
+                )
             event_cache.update_event_entry(conversation_id, status="FAILED")
         except Exception as e:
             LOG.error("Failed to send Teams error reply: %s", e)
+
+    async def _deliver_teams_answer(self, cached_entry, thread_ts, text) -> bool:
+        """Send Nubi's answer as a card, in place of the Thinking card when there
+        is one. False when it wasn't sent, so the caller sends it as text."""
+        ref = cached_entry.get("conversation_reference") or {}
+        card = answer_id = None
+        if settings.ms_teams.answer_cards_enabled:
+            try:
+                card, answer_id = self._teams_answer_card(cached_entry, text)
+            except Exception as e:
+                LOG.warning("Rendering a Teams answer card failed, sending text: %s", e)
+        activity = card_activity(card) if card else Activity(type=ActivityTypes.message, text=text)
+        message_id = await teams_thinking.replace(thread_ts, ref, activity)
+        if not message_id and not card:
+            return False
+        if not message_id:
+            try:
+                message_id = await asyncio.to_thread(
+                    get_sender().send, ref.get("service_url"), ref.get("conversation_id"), activity
+                )
+            except TeamsBotError as e:
+                LOG.warning("Sending a Teams answer card in %s failed: %s", thread_ts, e)
+                return False
+        if card and answer_id:
+            self._store_teams_answer(cached_entry, ref, message_id, card)
+        return True
+
+    @staticmethod
+    def _teams_answer_card(cached_entry, text):
+        """(card, answer_id) for an answer, or (None, None) when it's too big for one.
+        answer_id is None when the card has no feedback buttons."""
+        account_id, session_id = cached_entry.get("account_id"), cached_entry.get("session_id")
+        url = f"{settings.base_url}/ask-nudgebee?accountId={account_id}&session_id={session_id}"
+        view = [{"type": "Action.OpenUrl", "title": f"View in {settings.urls.branding_name}", "url": url}]
+        answer_id = uuid.uuid4().hex
+        feedback = []
+        if account_id and session_id and cached_entry.get("tenant_id"):
+            feedback = card_actions.feedback_actions(cached_entry["tenant_id"], account_id, answer_id, session_id)
+        card = answer_card(text, view + feedback)
+        if feedback and not card_actions.fits(card):
+            card, feedback = answer_card(text, view), []
+        if not card_actions.fits(card):
+            return None, None
+        return card, (answer_id if feedback else None)
+
+    @staticmethod
+    def _store_teams_answer(cached_entry, ref, message_id, card) -> None:
+        """Store an answer card with feedback buttons, so a click can update it."""
+        row = card_actions.card_row(
+            cached_entry.get("tenant_id"),
+            cached_entry.get("account_id"),
+            None,
+            ref.get("conversation_id"),
+            message_id,
+            card,
+            "answer",
+        )
+        if row is None:
+            return
+        try:
+            card_actions.store(row)
+        except Exception as e:
+            LOG.warning("Storing Teams answer card %s failed; its feedback buttons won't update: %s", message_id, e)
 
     # ==================== Teams Bot Messaging Methods ====================
 
@@ -1902,7 +1983,7 @@ class Events:
                 LOG.debug("Skipping bot's own message")
                 return
 
-            user_email = await self.common_service.get_teams_user_info(aad_user_id, teams_account_id)
+            user_email = await self.common_service.get_teams_user_info(aad_user_id, teams_account_id, activity)
             if not user_email:
                 await self._reply_unidentified_user(activity, aad_user_id, teams_account_id)
                 return
@@ -1923,6 +2004,10 @@ class Events:
                     )
                 else:
                     LOG.warning("Follow-up selection activity received without a followup_option value.")
+                return
+
+            if card_actions.is_card_action(activity):
+                await card_actions.handle(self.common_service, activity, user_email, teams_account_id)
                 return
 
             cleaned_text = message_text.strip()
@@ -1985,7 +2070,21 @@ class Events:
         }
         self.cache.cache_event_entry(thread_ts, event_entry)
 
-        mapped_account = await self._resolve_mapped_account_async("ms_teams", conversation_id, user_id, tenants)
+        alert = self._teams_alert_of_thread(conversation_id, teams_account_id, tenants)
+        if alert:
+            self.cache.update_event_entry(thread_ts, alert_context=alert["context"])
+            account_id = alert["account_id"]
+            if account_id and await self._validate_user_access_to_account_async(
+                user_id, alert["tenant_id"], account_id
+            ):
+                await self._handle_mapped_account_teams(
+                    {"id": account_id}, thread_ts, activity, cleaned_text, teams_account_id
+                )
+                return
+
+        mapped_account = await self._resolve_mapped_account_async(
+            "ms_teams", card_actions.channel_of(conversation_id), user_id, tenants
+        )
         if mapped_account:
             await self._handle_mapped_account_teams(mapped_account, thread_ts, activity, cleaned_text, teams_account_id)
             return
@@ -2002,6 +2101,29 @@ class Events:
                 get_account_not_accessible_message(),
                 teams_account_id,
             )
+
+    def _teams_alert_of_thread(self, conversation_id, aad_tenant_id, tenants):
+        """The alert card a Teams thread hangs off, as {tenant_id, account_id,
+        context}, or None outside an alert's thread. Never fatal."""
+        root = card_actions.thread_root_of(conversation_id)
+        if not root:
+            return None
+        try:
+            with Session(self.session.get_bind()) as session:
+                tenant_id = ms_teams_aad_tenant_owner(session, aad_tenant_id, enabled_only=True)
+            if not tenant_id or tenant_id not in {str(t) for t in tenants}:
+                return None
+            stored = card_actions.stored_card(tenant_id, card_actions.channel_of(conversation_id), root)
+        except Exception as e:
+            LOG.warning("Looking up the Teams card under thread %s failed: %s", conversation_id, e)
+            return None
+        if not stored or stored["kind"] != "finding":
+            return None
+        return {
+            "tenant_id": tenant_id,
+            "account_id": stored["account_id"],
+            "context": card_actions.card_text(stored["card"])[:TEAMS_ALERT_CONTEXT_LIMIT],
+        }
 
     @staticmethod
     def _extract_conversation_reference(activity):
@@ -2056,7 +2178,8 @@ class Events:
                 return
 
             if cached_entry.get("account_id"):
-                await self.common_service.teams_reply(activity, get_account_already_selected(), teams_account_id)
+                if not await self._show_teams_account_picked(activity, cached_entry, cached_entry["account_id"]):
+                    await self.common_service.teams_reply(activity, get_account_already_selected(), teams_account_id)
                 return
 
             # Fetch and update account details
@@ -2077,12 +2200,12 @@ class Events:
             updated_entry = self.cache.get_event_entry(thread_ts)
             session_id = updated_entry.get("session_id", thread_ts)
 
-            # Create UI link similar to Slack
             url = f"{settings.base_url}/ask-nudgebee?accountId={account_id}&session_id={session_id}"
-            confirmation = get_account_selected_confirmation(account_name)
-            message_with_link = f"{confirmation}\n\n[View in {settings.urls.branding_name}]({url})"
-
-            await self.common_service.teams_reply(activity, message_with_link, teams_account_id)
+            picked = self.common_service.create_teams_account_picked_card(account_name, url)
+            if not await self.common_service.teams_update_clicked_card(activity, picked):
+                confirmation = get_account_selected_confirmation(account_name)
+                message_with_link = f"{confirmation}\n\n[View in {settings.urls.branding_name}]({url})"
+                await self.common_service.teams_reply(activity, message_with_link, teams_account_id)
             original_text = updated_entry.get("text", "")
 
             if original_text:
@@ -2096,9 +2219,21 @@ class Events:
                 activity, "Hmm, couldn't connect to the account. Try again in a bit?", teams_account_id
             )
 
+    async def _show_teams_account_picked(self, activity, cached_entry, account_id) -> bool:
+        """Turn the clicked picker into "Working with <account>"."""
+        with Session(self.session.get_bind()) as session:
+            account = get_account_by_id(session, account_id)
+        if not account:
+            return False
+        session_id = cached_entry.get("session_id", "")
+        url = f"{settings.base_url}/ask-nudgebee?accountId={account_id}&session_id={session_id}"
+        card = self.common_service.create_teams_account_picked_card(account.get("account_name"), url)
+        return await self.common_service.teams_update_clicked_card(activity, card)
+
     async def _handle_teams_followup_selection_and_query_llm(
         self, activity, followup_option, thread_ts, teams_account_id
     ):
+        cached_entry, thinking = None, False
         try:
             cached_entry = self.cache.get_event_entry(thread_ts)
 
@@ -2127,22 +2262,39 @@ class Events:
             await self.common_service.teams_reply(
                 activity, get_followup_confirmation(followup_option).replace("*", "**"), teams_account_id
             )
+            thinking = await teams_thinking.begin(thread_ts, cached_entry.get("conversation_reference"))
 
             # Query LLM server with selected option
             await self.async_query_llm_server(payload, headers)
+            if thinking:
+                teams_thinking.start_poller(thread_ts)
 
         except Exception as e:
             LOG.error(f"Failed to handle Teams followup selection: {e}")
-            await self.common_service.teams_reply(
-                activity, "Hmm, I couldn't process that. Mind trying again?", teams_account_id
+            await self._teams_reply_in_thinking(
+                activity,
+                cached_entry or {},
+                "Hmm, I couldn't process that. Mind trying again?",
+                teams_account_id,
+                thinking,
             )
 
     async def _process_teams_message(
         self, activity, cached_entry, message_text, teams_account_id, skip_confirmation_message=False
     ):
+        thinking = False
         try:
+            # The alert a thread hangs off goes with the first question in it.
+            alert_context = None
+            if cached_entry.get("alert_context") and not cached_entry.get("alert_context_sent"):
+                alert_context = cached_entry["alert_context"]
+            query = (
+                f"{message_text}\n\n{THREAD_CONTEXT_MARKER}\nassistant:\n{alert_context}\n"
+                if alert_context
+                else message_text
+            )
             payload = {
-                "query": message_text,
+                "query": query,
                 "account_id": cached_entry["account_id"],
                 "user_id": cached_entry["user_id"],
                 "session_id": cached_entry["session_id"],
@@ -2154,21 +2306,38 @@ class Events:
                 "x-user-id": cached_entry["user_id"],
             }
 
-            if not skip_confirmation_message:
+            thread_ts = cached_entry["conversation_id"]
+            thinking = await teams_thinking.begin(thread_ts, cached_entry.get("conversation_reference"))
+            if not thinking and not skip_confirmation_message:
                 await self.common_service.teams_reply(activity, get_processing_confirmation(), teams_account_id)
 
             await self.async_query_llm_server(payload, headers)
+            if thinking:
+                teams_thinking.start_poller(thread_ts)
+            if alert_context:
+                self.cache.update_event_entry(thread_ts, alert_context_sent=True)
 
         except aiohttp.ClientError as e:
             LOG.error(f"Failed to process Teams message: {e}")
             status = getattr(e, "status", None)
             error_response = getattr(e, "error_response", None)
-            await self.common_service.teams_reply(
-                activity, self._llm_error_reply(status, error_response), teams_account_id
+            await self._teams_reply_in_thinking(
+                activity, cached_entry, self._llm_error_reply(status, error_response), teams_account_id, thinking
             )
         except Exception as e:
             LOG.error(f"Failed to process Teams message: {e}")
-            await self.common_service.teams_reply(activity, get_llm_offline_message(), teams_account_id)
+            await self._teams_reply_in_thinking(
+                activity, cached_entry, get_llm_offline_message(), teams_account_id, thinking
+            )
+
+    async def _teams_reply_in_thinking(self, activity, cached_entry, text, teams_account_id, thinking):
+        """Reply in place of the Thinking card this turn posted, or as a new message."""
+        if not thinking or not await teams_thinking.replace(
+            cached_entry.get("conversation_id"),
+            cached_entry.get("conversation_reference"),
+            Activity(type=ActivityTypes.message, text=text),
+        ):
+            await self.common_service.teams_reply(activity, text, teams_account_id)
 
     async def handle_conversation_update(self, activity: Activity):
         try:

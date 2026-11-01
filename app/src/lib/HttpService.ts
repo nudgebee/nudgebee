@@ -41,6 +41,7 @@ type ServerGateway = (opts: {
   // — NEVER from a client-supplied header or request-derived field, since
   // the bypass sidesteps the cookie-JWT tenant binding.
   tenantOverride?: string;
+  signal?: AbortSignal;
 }) => Promise<{ handled: true; status: number; body: any } | { handled: false; reason: string }>;
 
 export function getRelayServerEndpoint() {
@@ -133,6 +134,7 @@ export const queryGraphQL = async (
         traceparent: traceHdrs.traceparent,
         requestId: traceHdrs['X-Request-ID'],
         tenantOverride: serverTenantOverride,
+        signal,
       });
       if (result.handled) {
         if (result.body?.errors?.length) {

@@ -3,6 +3,7 @@ package ai
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -111,6 +112,33 @@ func parseMCPSSEResponse(body io.Reader, reqId any) (*JsonRpcResponse, error) {
 		mcpErrTypeBadResponse,
 		nil,
 	)
+}
+
+// mcpSessionCloseTimeout bounds the best-effort DELETE that ends a session.
+const mcpSessionCloseTimeout = 5 * time.Second
+
+// closeMCPSession ends an MCP session (MCP spec: HTTP DELETE with the
+// Mcp-Session-Id header). Best-effort: servers may answer 404 (already gone) or
+// 405 (client termination unsupported), and errors are ignored because the
+// server's own timeout is the backstop. No-op when the server issued no session.
+func closeMCPSession(client *http.Client, url, sessionID string, setHeaders func(*http.Request)) {
+	if sessionID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), mcpSessionCloseTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Mcp-Session-Id", sessionID)
+	setHeaders(req)
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, mcpMaxErrorBodyBytes))
+	_ = resp.Body.Close()
 }
 
 // MCPTask implements the Task interface for invoking MCP tools.
@@ -337,6 +365,18 @@ func (t *MCPTask) Execute(taskCtx types.TaskContext, params map[string]any) (any
 
 	// Session state
 	var sessionId string
+	setCustomHeaders := func(req *http.Request) {
+		for k, v := range headers {
+			if strVal, ok := v.(string); ok {
+				req.Header.Set(k, strVal)
+			} else {
+				req.Header.Set(k, fmt.Sprintf("%v", v))
+			}
+		}
+	}
+	// Each task opens its own session; end it when the task is done so the
+	// server doesn't keep it (e.g. a browser) until its own timeout.
+	defer func() { closeMCPSession(client, urlStr, sessionId, setCustomHeaders) }()
 
 	// Helper to send JSON-RPC request
 	sendRequest := func(method string, params any, isNotification bool) (*JsonRpcResponse, error) {
@@ -364,15 +404,7 @@ func (t *MCPTask) Execute(taskCtx types.TaskContext, params map[string]any) (any
 		if sessionId != "" {
 			req.Header.Set("Mcp-Session-Id", sessionId)
 		}
-
-		// Inject custom headers
-		for k, v := range headers {
-			if strVal, ok := v.(string); ok {
-				req.Header.Set(k, strVal)
-			} else {
-				req.Header.Set(k, fmt.Sprintf("%v", v))
-			}
-		}
+		setCustomHeaders(req)
 
 		resp, err := client.Do(req)
 		if err != nil {
@@ -578,6 +610,17 @@ func (t *MCPTask) ListTools(taskCtx types.TaskContext, params map[string]any) ([
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	var sessionId string
+	setAuthHeaders := func(req *http.Request) {
+		if bearerToken != "" {
+			req.Header.Set("Authorization", "Bearer "+bearerToken)
+		}
+		for k, v := range headers {
+			if strVal, ok := v.(string); ok {
+				req.Header.Set(k, strVal)
+			}
+		}
+	}
+	defer func() { closeMCPSession(client, mcpURL, sessionId, setAuthHeaders) }()
 
 	sendRequest := func(method string, reqParams any, isNotification bool) (*JsonRpcResponse, error) {
 		reqId := uuid.New().String()
@@ -600,14 +643,7 @@ func (t *MCPTask) ListTools(taskCtx types.TaskContext, params map[string]any) ([
 		if sessionId != "" {
 			req.Header.Set("Mcp-Session-Id", sessionId)
 		}
-		if bearerToken != "" {
-			req.Header.Set("Authorization", "Bearer "+bearerToken)
-		}
-		for k, v := range headers {
-			if strVal, ok := v.(string); ok {
-				req.Header.Set(k, strVal)
-			}
-		}
+		setAuthHeaders(req)
 
 		resp, err := client.Do(req)
 		if err != nil {
@@ -727,11 +763,19 @@ func (t *MCPTask) executeViaIntegration(taskCtx types.TaskContext, integrationID
 			"arguments": toolArgs,
 		},
 	}
+	// Scope the upstream MCP session to this workflow run so stateful servers
+	// (browser, shell, DB session) don't share state with concurrent runs or chats.
+	if runID := taskCtx.GetWorkflowRunID(); runID != "" {
+		actionParams["session_id"] = runID
+	}
 
 	var agentType string
 
 	if connectionMode == "direct" {
 		actionParams["connection_mode"] = "direct"
+		// Lets any relay pod reload credentials to end this session later
+		// (docs/mcp-sessions.md).
+		actionParams["integration_id"] = integrationID
 		actionParams["url"] = configMap["url"]
 		actionParams["auth_type"] = configMap["auth_type"]
 

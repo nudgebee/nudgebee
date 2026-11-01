@@ -26,7 +26,7 @@ jest.mock('@api1/user', () => ({
   },
 }));
 
-let gateState: { loading: boolean; locked: boolean; canManageSetup: boolean };
+let gateState: { loading: boolean; locked: boolean; canManageSetup: boolean; setupCenterEnabled: boolean };
 jest.mock('@context/SetupGateContext', () => ({ useSetupGate: () => gateState }));
 
 // `readiness` comes from the same hook SetupCenter itself uses (that's the
@@ -36,11 +36,12 @@ jest.mock('@context/SetupGateContext', () => ({ useSetupGate: () => gateState })
 let readinessState: {
   readiness: { done: number; total: number; percent: number; outstandingRequired: Array<{ id: string; name: string }> } | null;
 };
-jest.mock('@hooks/useOnboardingReadiness', () => ({ useOnboardingReadiness: () => readinessState }));
+const mockUseOnboardingReadiness = jest.fn(() => readinessState);
+jest.mock('@hooks/useOnboardingReadiness', () => ({ useOnboardingReadiness: () => mockUseOnboardingReadiness() }));
 
 const item = (name: string, id = name) => ({ id, name });
 
-const eligibleGate = () => ({ loading: false, locked: false, canManageSetup: true });
+const eligibleGate = () => ({ loading: false, locked: false, canManageSetup: true, setupCenterEnabled: true });
 const eligibleReadiness = () => ({
   readiness: {
     done: 3,
@@ -64,6 +65,16 @@ describe('who sees it', () => {
     gateState = { ...eligibleGate(), loading: true };
     const { container } = render(<SetupProgressBanner />);
     expect(container).toBeEmptyDOMElement();
+  });
+
+  // `UI_ENABLE_SETUP_CENTER` off: inert along with the rest of the gate, see
+  // `SetupGateContext.tsx`'s own doc comment. Inert means the readiness
+  // lookups never fire either, not just that nothing renders.
+  it('renders nothing and never reads readiness while the UI_ENABLE_SETUP_CENTER flag is off', () => {
+    gateState = { ...eligibleGate(), setupCenterEnabled: false };
+    const { container } = render(<SetupProgressBanner />);
+    expect(container).toBeEmptyDOMElement();
+    expect(mockUseOnboardingReadiness).not.toHaveBeenCalled();
   });
 
   it('renders nothing without a readiness snapshot yet', () => {

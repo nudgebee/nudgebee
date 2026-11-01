@@ -25,16 +25,23 @@ type llmServerModel struct {
 }
 
 type llmServerRequest struct {
-	AccountID string             `json:"account_id"`
-	Messages  []llmServerMessage `json:"messages"`
-	Tools     []llms.Tool        `json:"tools,omitempty"`
+	AccountID string `json:"account_id"`
+	// AgentRunID, ModelTier and TaskType attribute the usage llm-server records
+	// for this call; none of them changes how the call is generated.
+	AgentRunID string             `json:"agent_run_id,omitempty"`
+	ModelTier  string             `json:"model_tier,omitempty"`
+	TaskType   string             `json:"task_type,omitempty"`
+	Messages   []llmServerMessage `json:"messages"`
+	Tools      []llms.Tool        `json:"tools,omitempty"`
 }
 
-// llmServerResponse is llm-server's generation result. llm-server writes it as
-// langchaingo marshals it; it is decoded into these types rather than
-// langchaingo's, whose ToolCall decoder drops the function name and arguments.
+// llmServerResponse is the generation result plus llm-server's receipt for the
+// call's usage. llm-server writes the result as langchaingo marshals it; it is
+// decoded into these types rather than langchaingo's, whose ToolCall decoder
+// drops the function name and arguments.
 type llmServerResponse struct {
-	Choices []llmServerChoice `json:"Choices"`
+	Choices     []llmServerChoice `json:"Choices"`
+	UsageLinked bool              `json:"usage_linked"`
 }
 
 type llmServerChoice struct {
@@ -78,6 +85,47 @@ func (r llmServerResponse) contentResponse() *llms.ContentResponse {
 	return response
 }
 
+// agentRunIDKey types the context value carrying the llm-server agent run an
+// analysis was dispatched for.
+type agentRunIDKey struct{}
+
+// WithAgentRunID tags ctx with the llm-server agent run an analysis was
+// dispatched for. Model calls made through llm-server on this context return
+// it, so llm-server records their usage against that run's conversation.
+func WithAgentRunID(ctx context.Context, id string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, agentRunIDKey{}, id)
+}
+
+// bridgeCall is what a Client tells the llm-server bridge about one call, and
+// what the bridge reports back about it.
+type bridgeCall struct {
+	// tier is the calling client's model tier, for the usage row.
+	tier string
+	// usageLinked is set when llm-server recorded this call's usage against the
+	// run's conversation; the client then records nothing for the call itself.
+	usageLinked bool
+}
+
+type bridgeCallKey struct{}
+
+// withBridgeCall tags ctx for one call of c, so that when the llm-server bridge
+// is the model behind c it can label the call and report whether it recorded
+// the usage. A linked call must not also be recorded here: llm-server holds the
+// provider's real counts, and a second record would count the call twice.
+func (c *Client) withBridgeCall(ctx context.Context) (context.Context, *bridgeCall) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	call := &bridgeCall{tier: c.tier}
+	return context.WithValue(ctx, bridgeCallKey{}, call), call
+}
+
 type llmServerMessage struct {
 	Role  string          `json:"role"`
 	Parts []llmServerPart `json:"parts"`
@@ -101,7 +149,12 @@ func newLLMServerModel() (*llmServerModel, error) {
 }
 
 func (m *llmServerModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
-	request := llmServerRequest{AccountID: m.accountID, Messages: make([]llmServerMessage, 0, len(messages))}
+	request := llmServerRequest{AccountID: m.accountID, TaskType: callPhaseFromContext(ctx), Messages: make([]llmServerMessage, 0, len(messages))}
+	request.AgentRunID, _ = ctx.Value(agentRunIDKey{}).(string)
+	call, _ := ctx.Value(bridgeCallKey{}).(*bridgeCall)
+	if call != nil {
+		request.ModelTier = call.tier
+	}
 	for _, message := range messages {
 		wire := llmServerMessage{Role: string(message.Role), Parts: make([]llmServerPart, 0, len(message.Parts))}
 		for _, part := range message.Parts {
@@ -152,6 +205,9 @@ func (m *llmServerModel) GenerateContent(ctx context.Context, messages []llms.Me
 	var response llmServerResponse
 	if err := json.Unmarshal(responseBody, &response); err != nil {
 		return nil, fmt.Errorf("decode llm-server response: %w", err)
+	}
+	if call != nil {
+		call.usageLinked = response.UsageLinked
 	}
 	return response.contentResponse(), nil
 }

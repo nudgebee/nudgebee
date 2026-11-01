@@ -77,6 +77,28 @@ export class NotificationLocators extends CommonLocators {
     this.excludeUsersSelector = page.locator("#exclude-users");
   }
 
+  get dropdownListbox(): Locator {
+    return this.page.locator('[role="listbox"]');
+  }
+
+  // Scoped to the open listbox: the rules table has its own "Search rules" box that is always visible.
+  get dropdownSearchInput(): Locator {
+    return this.dropdownListbox.locator('input[placeholder^="Search"]');
+  }
+
+  get dropdownGroupHeaders(): Locator {
+    return this.dropdownListbox.locator('[role="button"]');
+  }
+
+  ruleNameText(name: string): Locator {
+    return this.page.getByText(name, { exact: true });
+  }
+
+  // A disabled chip is a plain span with no disabled attribute, so only pointer-events gives it away.
+  async isTypeChipDisabled(chip: Locator): Promise<boolean> {
+    return chip.evaluate((el) => getComputedStyle(el).pointerEvents === "none");
+  }
+
   // Selecting a type chip replaces the default Troubleshooting when it is the
   // only one picked; a chip is a toggle, so this clicks only when it is off.
   async selectOnlyType(chip: Locator): Promise<void> {

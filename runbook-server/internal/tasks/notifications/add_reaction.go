@@ -15,7 +15,7 @@ func (t *AddReactionTask) GetName() string {
 
 // GetDescription returns a brief description of the task.
 func (t *AddReactionTask) GetDescription() string {
-	return "Adds a reaction (emoji) to a message on Slack, MS Teams, or Google Chat."
+	return "Adds a reaction (emoji) to a message on Slack or Google Chat."
 }
 
 // GetDisplayName returns a human-readable name for the task.
@@ -89,12 +89,12 @@ func (t *AddReactionTask) InputSchema() *types.Schema {
 				Type:        "string",
 				Description: "Notification Provider",
 				Required:    true,
-				Options:     []string{"slack", "ms_teams", "google_chat"},
+				Options:     []string{"slack", "google_chat"},
 				Order:       1,
 			},
 			"team_id": {
 				Type:        "string",
-				Description: "Team ID (required for MS Teams)",
+				Description: "Slack workspace (team) ID, when the tenant has more than one workspace",
 				Required:    false,
 				Order:       2,
 			},
@@ -106,13 +106,13 @@ func (t *AddReactionTask) InputSchema() *types.Schema {
 			},
 			"message_id": {
 				Type:        "string",
-				Description: "Message timestamp (Slack) or message ID (Teams/Google Chat)",
+				Description: "Message timestamp (Slack) or message ID (Google Chat)",
 				Required:    true,
 				Order:       4,
 			},
 			"emoji": {
 				Type:        "string",
-				Description: "Emoji to add (name without colons for Slack e.g. 'thumbsup', unicode for Teams/Google Chat e.g. '👍')",
+				Description: "Emoji to add (name without colons for Slack e.g. 'thumbsup', unicode for Google Chat e.g. '👍')",
 				Required:    true,
 				Order:       5,
 			},

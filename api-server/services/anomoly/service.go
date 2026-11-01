@@ -800,11 +800,73 @@ func GenerateAnomalyEvent(dbms *database.DatabaseManager, anomaly *Anomaly) erro
 		Cluster:          accountName,
 		Labels:           metricStatLabels(anomaly),
 	}
-	_, err = event.InsertEvent(eventObj, "")
+	err = upsertAnomalyEvent(dbms, eventObj)
 	if err != nil {
 		slog.Error("anomaly: error inserting event", "error", err, "account_id", anomaly.AccountId, "anomaly_id", anomaly.Id, "anomaly_type", anomaly.AnomalyType, "name", anomaly.Name, "namespace", anomaly.Namespace)
 	}
 	return err
+}
+
+// upsertAnomalyEvent stores the anomaly's event. With
+// FeatureAnomalyReturnedDigestEnabled on it also announces an anomaly that had
+// cleared and fired again (issue #40007): InsertEvent's upsert reopens the
+// stored row but, for a row that already exists, runs no notification, and it
+// cannot tell a return from the hourly re-detection of an anomaly that is still
+// open. The stored status, read before the upsert overwrites it, can.
+func upsertAnomalyEvent(dbms *database.DatabaseManager, eventObj event.Event) error {
+	returnedEventId := ""
+	if config.Config.FeatureAnomalyReturnedDigestEnabled {
+		returnedEventId = clearedAnomalyEventId(dbms, eventObj)
+	}
+
+	if _, err := event.InsertEvent(eventObj, ""); err != nil {
+		return err
+	}
+
+	if returnedEventId != "" {
+		// phase is queue.EventPostProcessPhaseReturned, spelled out the way
+		// InsertEvent spells out workflow_only: this package does not import the
+		// consumer. workflow_only is for a consumer that predates phase: it
+		// ignores the unknown field, and without workflow_only would run the
+		// whole pipeline (triage, investigation, event.created) again.
+		publishEventPostProcess(map[string]any{"event_id": returnedEventId, "workflow_only": true, "phase": "returned"})
+	}
+	return nil
+}
+
+// clearedAnomalyEventId returns the id of the event stored for this finding if
+// it is RESOLVED or CLOSED, and "" otherwise: no row (a first firing), a FIRING
+// row (re-detection of an open anomaly), or a failed lookup, which must not
+// cost the event its upsert. The id comes from the row because InsertEvent
+// returns the one it generated, which an update does not store.
+func clearedAnomalyEventId(dbms *database.DatabaseManager, eventObj event.Event) string {
+	var id, status string
+	err := dbms.Db.QueryRowx(
+		`SELECT id, status FROM events WHERE tenant = $1 AND cloud_account_id = $2 AND finding_id = $3`,
+		eventObj.Tenant, eventObj.AccountId, eventObj.FindingId,
+	).Scan(&id, &status)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			slog.Error("anomaly: failed to read stored anomaly event status", "error", err, "fingerprint", eventObj.FindingId)
+		}
+		return ""
+	}
+	if strings.EqualFold(status, string(event.EventStatusResolved)) || strings.EqualFold(status, string(event.EventStatusClosed)) {
+		return id
+	}
+	return ""
+}
+
+// publishEventPostProcess sends one message to the event post-process queue. A
+// variable so tests can read the message without a broker.
+var publishEventPostProcess = func(message map[string]any) {
+	_ = common.MqPublish(
+		config.Config.RabbitMqEventPostProcessExchange,
+		config.Config.RabbitMqEventPostProcessQueue,
+		message,
+		common.MqPublishWithExpiration(1*time.Hour),
+		common.MqPublishWithBackgroundRetry(),
+	)
 }
 
 func collectEvidences(anomaly *Anomaly, workloadKind string) ([]any, error) {

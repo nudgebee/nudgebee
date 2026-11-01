@@ -10,6 +10,7 @@ import (
 	"nudgebee/llm/security"
 
 	"github.com/lib/pq"
+	"golang.org/x/sync/errgroup"
 )
 
 // tool_usage.go backs ai_aggregate_tool_usage — the Cost Analyser "Tools" tab: a
@@ -146,12 +147,6 @@ func (chat *ConversationDao) ListToolUsage(filter UsageMetricsFilter, sortBy str
 		WHERE %s AND tc.metadata->>'parent_tool_call_id' IS NULL AND NULLIF(tc.tool_name, '') IS NOT NULL
 		GROUP BY tc.tool_name`, toolDurationExpr, where)
 
-	var opScans []toolUsageScan
-	if err := chat.dbManager.Db.Select(&opScans, opQuery, args...); err != nil {
-		slog.Error("ListToolUsage: operational query failed", "error", err)
-		return ToolUsageList{}, fmt.Errorf("ListToolUsage: %w", err)
-	}
-
 	// Downstream LLM cost: for sub-agent-spawn tools only (child_agent_id set),
 	// sum the spawned child agent's model-call cost. perCallCostExpr is the exact
 	// expression every other analyser screen uses, so these costs reconcile. The
@@ -176,10 +171,28 @@ func (chat *ConversationDao) ListToolUsage(filter UsageMetricsFilter, sortBy str
 		WHERE %s AND tc.metadata->>'parent_tool_call_id' IS NULL AND NULLIF(tc.child_agent_id, '') IS NOT NULL AND NULLIF(tc.tool_name, '') IS NOT NULL
 		GROUP BY tc.tool_name`, perCallCostExpr, where)
 
+	// The two scans are independent (merged by tool name below), so run them at
+	// the same time: each reads llm_conversation_tool_calls cold, and one after
+	// the other the tab waited for both.
+	var opScans []toolUsageScan
 	var costScans []toolCostScan
-	if err := chat.dbManager.Db.Select(&costScans, costQuery, args...); err != nil {
-		slog.Error("ListToolUsage: downstream-cost query failed", "error", err)
-		return ToolUsageList{}, fmt.Errorf("ListToolUsage cost: %w", err)
+	var g errgroup.Group
+	g.Go(func() error {
+		if err := chat.dbManager.Db.Select(&opScans, opQuery, args...); err != nil {
+			slog.Error("ListToolUsage: operational query failed", "error", err)
+			return fmt.Errorf("ListToolUsage: %w", err)
+		}
+		return nil
+	})
+	g.Go(func() error {
+		if err := chat.dbManager.Db.Select(&costScans, costQuery, args...); err != nil {
+			slog.Error("ListToolUsage: downstream-cost query failed", "error", err)
+			return fmt.Errorf("ListToolUsage cost: %w", err)
+		}
+		return nil
+	})
+	if err := g.Wait(); err != nil {
+		return ToolUsageList{}, err
 	}
 
 	costByTool := make(map[string]toolCostScan, len(costScans))

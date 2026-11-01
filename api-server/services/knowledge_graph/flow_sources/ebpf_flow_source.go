@@ -1403,6 +1403,19 @@ func (s *EbpfFlowSource) nodeTypesToTryFor(kind string) []core.NodeType {
 	return []core.NodeType{inferred}
 }
 
+// ebpfLatencyToMs converts a service-map link latency to milliseconds.
+//
+// The in-cluster agent reports link Latency in SECONDS: it is computed as
+// rate(container_*_duration_seconds_total_sum[$RANGE]) /
+// rate(container_*_duration_seconds_total_count[$RANGE])
+// (k8s-agent runner/pkg/servicemap/queries.go). Every other flow source writes
+// the latency_ms edge property in milliseconds, so the value is converted here,
+// where it becomes a KG property, and nowhere else. The raw service map keeps
+// seconds — the service-map UI reads it as seconds.
+func ebpfLatencyToMs(seconds float64) float64 {
+	return seconds * 1000
+}
+
 // buildEdgeProperties builds edge properties from downstream link
 func (s *EbpfFlowSource) buildEdgeProperties(
 	downstream *core.DownstreamLink,
@@ -1413,7 +1426,7 @@ func (s *EbpfFlowSource) buildEdgeProperties(
 
 	// Add performance metrics
 	if downstream.Latency > 0 {
-		properties["latency_ms"] = downstream.Latency
+		properties["latency_ms"] = ebpfLatencyToMs(downstream.Latency)
 	}
 
 	// Add protocol information
@@ -1476,7 +1489,7 @@ func (s *EbpfFlowSource) buildUpstreamEdgeProperties(
 
 	// Add performance metrics
 	if upstream.Latency > 0 {
-		properties["latency_ms"] = upstream.Latency
+		properties["latency_ms"] = ebpfLatencyToMs(upstream.Latency)
 	}
 
 	if upstream.Weight > 0 {

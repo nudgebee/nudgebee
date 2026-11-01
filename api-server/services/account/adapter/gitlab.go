@@ -615,7 +615,7 @@ func (g *gitlabAdapter) GetRecommendationResolutionStatus(ctx AccountAdapterCont
 
 	gitLabURL, _, password, err := getGitLabCredentials(ctx, providerName)
 	if err != nil {
-		return GetRecommendationResolutionStatusResponse{}, err
+		return unverifiedPRStatus("GitLab integration: " + err.Error()), nil
 	}
 
 	// Parse MR URL to extract project path and MR IID
@@ -643,28 +643,32 @@ func (g *gitlabAdapter) GetRecommendationResolutionStatus(ctx AccountAdapterCont
 	)
 	if err != nil {
 		ctx.GetLogger().Error("Error getting MR status", "error", err)
-		return GetRecommendationResolutionStatusResponse{}, err
+		return unverifiedPRStatus("GitLab request failed: " + err.Error()), nil
 	}
 
 	defer func() { _ = resp.Body.Close() }()
 
 	jsonBodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return GetRecommendationResolutionStatusResponse{}, err
-	}
-
-	jsonBody := map[string]any{}
-	err = common.UnmarshalJson(jsonBodyBytes, &jsonBody)
-	if err != nil {
-		return GetRecommendationResolutionStatusResponse{}, err
+		return unverifiedPRStatus("reading GitLab's response: " + err.Error()), nil
 	}
 
 	if resp.StatusCode != 200 {
 		ctx.GetLogger().Error("Error getting MR status", "status", resp.StatusCode, "data", string(jsonBodyBytes))
-		return GetRecommendationResolutionStatusResponse{
-			Status:        RecommendationResolutionStatusFailed,
-			StatusMessage: string(jsonBodyBytes),
-		}, nil
+	}
+	return gitlabMRStatusFromResponse(resp.StatusCode, jsonBodyBytes), nil
+}
+
+// gitlabMRStatusFromResponse maps GitLab's answer for a merge request onto a
+// resolution status. Only a 200 carrying the merge request is an answer; any
+// other response says nothing about whether the merge request is still open.
+func gitlabMRStatusFromResponse(statusCode int, body []byte) GetRecommendationResolutionStatusResponse {
+	if statusCode != 200 {
+		return unverifiedPRStatus(fmt.Sprintf("GitLab returned %d: %s", statusCode, body))
+	}
+	jsonBody := map[string]any{}
+	if err := common.UnmarshalJson(body, &jsonBody); err != nil {
+		return unverifiedPRStatus("reading GitLab's response: " + err.Error())
 	}
 
 	mrStatus := RecommendationResolutionStatusInProgress
@@ -690,7 +694,7 @@ func (g *gitlabAdapter) GetRecommendationResolutionStatus(ctx AccountAdapterCont
 	return GetRecommendationResolutionStatusResponse{
 		Status:        mrStatus,
 		StatusMessage: mrMessage,
-	}, nil
+	}
 }
 
 // parseGitLabMRURL extracts the project path and MR IID from a GitLab MR URL

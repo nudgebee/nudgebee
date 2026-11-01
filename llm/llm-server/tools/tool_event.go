@@ -188,6 +188,46 @@ var errorLogSeverities = map[string]bool{
 	"WARN":     true,
 }
 
+// isLogPatternBreakdownCard reports whether an evidence block is the
+// error-log-spike card carrying a breakdown. The action that writes it also
+// runs for alerts it only enriches labels for; those cards have no breakdown
+// and stay with the generic json evidence.
+func isLogPatternBreakdownCard(evidence events.Evidence) bool {
+	if evidence.Type != "json" {
+		return false
+	}
+	if actionName, _ := evidence.AdditionalInfo["action_name"].(string); actionName != events.LogPatternBreakdownAction {
+		return false
+	}
+	_, ok := events.DecodeLogPatternBreakdown(evidence.Data)
+	return ok
+}
+
+// appendLogCoverageNote adds what a log card says about its own coverage to
+// note: the span its lines actually cover, and what it kept when the window
+// held more lines than the card can. The card states both in additional_info;
+// until this read them, a card that was full read as the whole window.
+func appendLogCoverageNote(note string, additionalInfo map[string]any) string {
+	var parts []string
+	start, _ := additionalInfo["log_window_start"].(string)
+	end, _ := additionalInfo["log_window_end"].(string)
+	if strings.TrimSpace(start) != "" && strings.TrimSpace(end) != "" {
+		parts = append(parts, fmt.Sprintf("The collected log lines span %s to %s.", strings.TrimSpace(start), strings.TrimSpace(end)))
+	}
+	if truncated, _ := additionalInfo["log_truncated"].(bool); truncated {
+		if truncationNote, _ := additionalInfo["log_truncation_note"].(string); strings.TrimSpace(truncationNote) != "" {
+			parts = append(parts, strings.TrimSpace(truncationNote))
+		}
+	}
+	if len(parts) == 0 {
+		return note
+	}
+	if note == "" {
+		return strings.Join(parts, " ")
+	}
+	return note + " " + strings.Join(parts, " ")
+}
+
 // formatErrorLogLine renders a log-evidence entry as
 // "<timestamp>\t<SEVERITY>\t<message>" when its severity marks it as an
 // error/warning line; the bool reports whether it did.
@@ -494,6 +534,7 @@ func (m EventsExecuteTool) processRowWithMessages(data map[string]any, i, c int,
 				if summary, ok := evidence.AdditionalInfo["log_summary"]; ok && summary != nil {
 					investigateData.LogSummary = summary
 				}
+				investigateData.LogCoverageNote = appendLogCoverageNote(investigateData.LogCoverageNote, evidence.AdditionalInfo)
 
 			} else if evidence.Type == "api_traces_enricher_v2" || (evidence.Type == "json" && evidence.AdditionalInfo != nil && evidence.AdditionalInfo["action_name"] == "traces") {
 				investigateData.Traces.Data = evidence.Data
@@ -525,6 +566,28 @@ func (m EventsExecuteTool) processRowWithMessages(data map[string]any, i, c int,
 				investigateData.PodData.Insight = evidence.Insights
 				investigateData.PodData.AdditionalInfo = evidence.AdditionalInfo
 				investigateData.PodData.Title = evidence.Type
+			} else if isLogPatternBreakdownCard(evidence) {
+				// The error-log-spike card gets its own field rather than a slot
+				// in Others: the investigation prompt renders it, and Others can
+				// be dropped wholesale when the evidence is over budget.
+				var cardData any
+				if stringData, ok := evidence.Data.(string); ok {
+					parsed, err := common.UnmarshalJsonAsMap([]byte(stringData))
+					if err != nil {
+						slog.Error("unmarshaling log pattern breakdown JSON", "error", err)
+					} else {
+						cardData = parsed
+					}
+				} else {
+					cardData = evidence.Data
+				}
+				investigateData.LogPatternBreakdown = events.InvestigateDataInsight{
+					Data:           cardData,
+					Insight:        evidence.Insights,
+					Type:           evidence.Type,
+					AdditionalInfo: evidence.AdditionalInfo,
+					Title:          evidence.Type,
+				}
 			} else if evidence.Type == "json" {
 				evidenceDataJson := map[string]any{}
 				additionalInfo := evidence.AdditionalInfo
@@ -572,11 +635,14 @@ func (m EventsExecuteTool) processRowWithMessages(data map[string]any, i, c int,
 						Title:          evidence.Type,
 					})
 				} else if evidenceDataJson["name"] == "pod_metric" {
+					query, _ := metricCardQuery(evidence.Metadata)
 					investigateData.PodMetrics = append(investigateData.PodMetrics, events.InvestigateDataInsight{
 						Data:           evidenceDataJson,
 						Insight:        evidence.Insights,
 						AdditionalInfo: evidence.AdditionalInfo,
 						Title:          evidence.Type,
+						Query:          query,
+						Unit:           utilisationUnit(evidence.Metadata),
 					})
 				} else if evidenceDataJson["name"] == "container_metric" {
 					investigateData.ContainerMetrics.Data = evidenceDataJson
@@ -616,20 +682,29 @@ func (m EventsExecuteTool) processRowWithMessages(data map[string]any, i, c int,
 						Title:          evidence.Type,
 					}
 				} else {
-					investigateData.Others = append(investigateData.Others, events.InvestigateDataInsight{
+					other := events.InvestigateDataInsight{
 						Data:           evidenceDataJson,
 						Insight:        evidence.Insights,
 						Type:           evidence.Type,
 						AdditionalInfo: evidence.AdditionalInfo,
 						Title:          evidence.Type,
-					})
+					}
+					// The workload `metrics` action's card has no section of its own.
+					if additionalInfo["action_name"] == "metrics" {
+						other.Query, _ = metricCardQuery(evidence.Metadata)
+						other.Unit = utilisationUnit(evidence.Metadata)
+					}
+					investigateData.Others = append(investigateData.Others, other)
 				}
 			} else if evidence.Type == "prometheus" {
+				query, unit := metricCardQuery(evidence.Metadata)
 				investigateData.MetricsData = append(investigateData.MetricsData, events.InvestigateDataInsight{
 					Data:           evidence.Data,
 					Insight:        evidence.Insights,
 					AdditionalInfo: evidence.AdditionalInfo,
 					Title:          evidence.Type,
+					Query:          query,
+					Unit:           unit,
 				})
 			} else if evidence.Type == "service_map" {
 				investigateData.ServiceMap = events.InvestigateDataInsight{
@@ -648,6 +723,7 @@ func (m EventsExecuteTool) processRowWithMessages(data map[string]any, i, c int,
 					Title:          "metric-anomaly",
 				})
 			} else if evidence.Type == "file" {
+				investigateData.LogCoverageNote = appendLogCoverageNote(investigateData.LogCoverageNote, evidence.AdditionalInfo)
 				// Base64 gzipped data — decode like gz type
 				if dataStr, ok := evidence.Data.(string); ok {
 					encodedString := strings.TrimSpace(dataStr)
@@ -831,6 +907,7 @@ func castIsoTimestampLiterals(sql string) string {
 }
 
 func (m EventsExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	nbRequestContext = nbRequestContext.ForTarget()
 	// Validate that the input is actually SQL, not descriptive text
 	if isDescriptiveText(input.Command) {
 		return core.NBToolResponse{
@@ -1043,6 +1120,8 @@ func (m EventsExecuteTool) buildEvidenceManifest(data map[string]any, evidences 
 				availableTypes = append(availableTypes, "rdbms_query_response")
 			case actionName == "pod_script_run_enricher":
 				availableTypes = append(availableTypes, "user_actions")
+			case isLogPatternBreakdownCard(ev):
+				availableTypes = append(availableTypes, "log_pattern_breakdown")
 			default:
 				title, _ := ev.AdditionalInfo["title"].(string)
 				switch title {

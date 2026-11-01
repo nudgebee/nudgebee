@@ -18,6 +18,9 @@ type Evidence struct {
 	StartAt        string         `json:"start_at,omitempty"`
 	AdditionalInfo map[string]any `json:"additional_info,omitempty"`
 	LLMResponse    map[string]any `json:"llm_response,omitempty"`
+	// Metadata carries metadata.query — the PromQL a metric card ran, or the
+	// request of a provider-neutral one — which is what says what its series measure.
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 type Insight struct {
@@ -143,6 +146,11 @@ type InvestigateDataInsight struct {
 	Type           string         `json:"type,omitempty"`
 	AdditionalInfo map[string]any `json:"additional_info,omitempty"`
 	Title          string         `json:"title,omitempty"`
+	// Query and Unit say what a metric card's series measure. Series from rate()
+	// or sum() carry no __name__, so without them the model gets bare numbers.
+	// Unit is set only when the query settles it; empty means unknown.
+	Query string `json:"query,omitempty"`
+	Unit  string `json:"unit,omitempty"`
 }
 
 type InvestigateData struct {
@@ -178,6 +186,14 @@ type InvestigateData struct {
 	MetricsData      []InvestigateDataInsight `json:"metrics_queries_data"`
 	ServiceMap       InvestigateDataInsight   `json:"service_map_data"`
 	Others           []InvestigateDataInsight `json:"others"`
+
+	// LogCoverageNote says what span the collected logs cover and, when the
+	// log card could not hold its whole window, what it kept instead. Without
+	// it a full card reads as the whole window.
+	LogCoverageNote string `json:"log_coverage_note,omitempty"`
+	// LogPatternBreakdown is the error-log-spike alert's card: which log
+	// patterns rose against normal (Data decodes with DecodeLogPatternBreakdown).
+	LogPatternBreakdown InvestigateDataInsight `json:"log_pattern_breakdown"`
 }
 
 // UnmarshalJSON on InvestigateData exists to tolerate upstream producers

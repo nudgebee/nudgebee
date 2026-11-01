@@ -195,6 +195,40 @@ func TestFollowupRequestForMultipleToolConfigs_DiscoveredTool(t *testing.T) {
 		assert.NotEmpty(t, followupRequest.Question, "casing mismatch on a preloaded tool must not suppress the disambiguation follow-up")
 		assert.Equal(t, canonicalName, followupRequest.ToolName)
 	})
+
+	t.Run("discovered via QueryConfig DiscoveredTools when in-memory cache is empty", func(t *testing.T) {
+		const toolName = "fake_discovered_configurable_tool"
+		const accountId = "acct-qc-discovered-1"
+		const conversationId = "conv-qc-discovered-1"
+
+		mock.ExpectQuery(`FROM integrations i`).
+			WithArgs(accountId, "fake_discovered_type").
+			WillReturnRows(sqlmock.NewRows(cols).
+				AddRow("cfg-1", "ConfigA", "{}", "url", "https://a", false).
+				AddRow("cfg-2", "ConfigB", "{}", "url", "https://b", false))
+
+		// Deliberately NOT calling RecordDiscoveredTools for this conversationId.
+		// Discovery is carried in QueryConfig.DiscoveredTools instead.
+		agent := &MockAgent{SupportedTools: []toolcore.NBTool{}}
+		action := NBAgentPlannerToolAction{Tool: toolName, ToolID: "step-1"}
+		query := NBAgentRequest{
+			AccountId:      accountId,
+			ConversationId: conversationId,
+			AgentId:        "55555555-5555-5555-5555-555555555555",
+			QueryConfig: toolcore.NBQueryConfig{
+				DiscoveredTools: []string{toolName},
+			},
+		}
+
+		ctx := &security.RequestContext{}
+		followupRequest, err := FollowupRequestForMultipleToolConfigs(ctx, query, agent, action)
+		require.NoError(t, err)
+		require.NoError(t, mock.ExpectationsWereMet())
+
+		assert.NotEmpty(t, followupRequest.Question, "must ask which config to use when discovered via QueryConfig")
+		assert.Equal(t, FollowupTypeToolConfig, followupRequest.FollowupType)
+		assert.ElementsMatch(t, []string{"ConfigA", "ConfigB"}, followupRequest.FollowupOptions)
+	})
 }
 
 // TestFollowupRequestForMultipleToolConfigs_UndiscoveredToolStillIgnored: a tool

@@ -166,15 +166,16 @@ func ValidateAzureCredentials(ctx context.Context, creds AzureCredentials) Valid
 	}
 
 	// Check each required permission
+	var costErr, resourceErr error
 	permissions := GetRequiredPermissions(CloudProviderAzure)
 	for _, permission := range permissions {
 		status := PermissionStatus{Permission: permission}
 
 		switch permission {
 		case PermissionAzureCostManagement:
-			status.HasAccess = checkAzureCostManagementAccess(ctx, cred, creds.SubscriptionID, &status)
+			status.HasAccess, costErr = checkAzureCostManagementAccess(ctx, cred, creds.SubscriptionID, &status)
 		case PermissionAzureResourceAPI:
-			status.HasAccess = checkAzureResourceAPIAccess(ctx, cred, creds.SubscriptionID, &status)
+			status.HasAccess, resourceErr = checkAzureResourceAPIAccess(ctx, cred, creds.SubscriptionID, &status)
 		case PermissionAzureRecommendations:
 			status.HasAccess = checkAzureRecommendationsAccess(ctx, cred, creds.SubscriptionID, &status)
 		}
@@ -182,6 +183,17 @@ func ValidateAzureCredentials(ctx context.Context, creds AzureCredentials) Valid
 		result.PermissionDetails = append(result.PermissionDetails, status)
 		if !status.HasAccess {
 			result.MissingPermissions = append(result.MissingPermissions, permission)
+		}
+	}
+
+	// Explain a cost failure the same way the daily spend sync will, reusing the
+	// Resource API result above as the access probe rather than calling it again.
+	if costErr != nil {
+		failure := ClassifyAzureCostError(costErr, creds.SubscriptionID, func() error { return resourceErr })
+		for i := range result.PermissionDetails {
+			if result.PermissionDetails[i].Permission == PermissionAzureCostManagement {
+				result.PermissionDetails[i].ErrorDetail = failure.Message
+			}
 		}
 	}
 
@@ -204,11 +216,12 @@ func ValidateAzureCredentials(ctx context.Context, creds AzureCredentials) Valid
 }
 
 // checkAzureCostManagementAccess validates access to Azure Cost Management API
-func checkAzureCostManagementAccess(ctx context.Context, cred *azidentity.ClientSecretCredential, subscriptionID string, status *PermissionStatus) bool {
+// It returns the raw error as well, so the caller can classify a failure.
+func checkAzureCostManagementAccess(ctx context.Context, cred *azidentity.ClientSecretCredential, subscriptionID string, status *PermissionStatus) (bool, error) {
 	costClient, err := armcostmanagement.NewQueryClient(cred, nil)
 	if err != nil {
 		status.ErrorDetail = fmt.Sprintf("failed to create cost management client: %v", err)
-		return false
+		return false, err
 	}
 
 	// Use a minimal query with 1-day custom timeframe for lightweight permission check
@@ -248,23 +261,25 @@ func checkAzureCostManagementAccess(ctx context.Context, cred *azidentity.Client
 		if errors.As(err, &respErr) {
 			if respErr.StatusCode == 403 || respErr.StatusCode == 401 {
 				status.ErrorDetail = fmt.Sprintf("authorization failed: %s (status: %d)", respErr.ErrorCode, respErr.StatusCode)
-				return false
+				return false, err
 			}
 		}
 		// For other errors, log but treat as access denied
 		status.ErrorDetail = fmt.Sprintf("cost management API check failed: %v", err)
-		return false
+		return false, err
 	}
 
-	return true
+	return true, nil
 }
 
 // checkAzureResourceAPIAccess validates access to Azure Resource Management API
-func checkAzureResourceAPIAccess(ctx context.Context, cred *azidentity.ClientSecretCredential, subscriptionID string, status *PermissionStatus) bool {
+// It returns the raw error as well, so it can serve as the access probe when
+// classifying a cost failure.
+func checkAzureResourceAPIAccess(ctx context.Context, cred *azidentity.ClientSecretCredential, subscriptionID string, status *PermissionStatus) (bool, error) {
 	rgClient, err := armresources.NewResourceGroupsClient(subscriptionID, cred, nil)
 	if err != nil {
 		status.ErrorDetail = fmt.Sprintf("failed to create resource groups client: %v", err)
-		return false
+		return false, err
 	}
 
 	// Attempt to list resource groups (lightweight operation)
@@ -278,14 +293,14 @@ func checkAzureResourceAPIAccess(ctx context.Context, cred *azidentity.ClientSec
 		if errors.As(err, &respErr) {
 			if respErr.StatusCode == 403 || respErr.StatusCode == 401 {
 				status.ErrorDetail = fmt.Sprintf("authorization failed: %s (status: %d)", respErr.ErrorCode, respErr.StatusCode)
-				return false
+				return false, err
 			}
 		}
 		status.ErrorDetail = fmt.Sprintf("resource API check failed: %v", err)
-		return false
+		return false, err
 	}
 
-	return true
+	return true, nil
 }
 
 // checkAzureRecommendationsAccess validates access to Azure Advisor Recommendations API

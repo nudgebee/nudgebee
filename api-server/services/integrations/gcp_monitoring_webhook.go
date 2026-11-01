@@ -1,9 +1,14 @@
 package integrations
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"nudgebee/services/common"
+	"nudgebee/services/config"
 	"nudgebee/services/event"
 	"nudgebee/services/eventrule"
 	"nudgebee/services/integrations/core"
@@ -18,8 +23,8 @@ func init() {
 
 type GCPMonitoringWebhook struct{}
 
-// GCP Cloud Monitoring webhook payload structs
-// See: https://cloud.google.com/monitoring/support/notification-options#webhooks
+// GCP Cloud Monitoring webhook payload — only the fields read here. The collector parses
+// the full payload. See: https://cloud.google.com/monitoring/support/notification-options#webhooks
 
 type GCPMonitoringWebhookPayload struct {
 	Incident GCPMonitoringIncident `json:"incident"`
@@ -27,54 +32,39 @@ type GCPMonitoringWebhookPayload struct {
 }
 
 type GCPMonitoringIncident struct {
-	IncidentID              string                 `json:"incident_id"`
-	ScopingProjectID        string                 `json:"scoping_project_id"`
-	URL                     string                 `json:"url"`
-	StartedAt               int64                  `json:"started_at"`
-	EndedAt                 int64                  `json:"ended_at"`
-	State                   string                 `json:"state"` // "open" or "closed"
-	Summary                 string                 `json:"summary"`
-	ObservedValue           string                 `json:"observed_value"`
-	Resource                GCPMonitoringResource  `json:"resource"`
-	ResourceTypeDisplayName string                 `json:"resource_type_display_name"`
-	ResourceID              string                 `json:"resource_id"`
-	ResourceDisplayName     string                 `json:"resource_display_name"`
-	Metric                  GCPMonitoringMetric    `json:"metric"`
-	Metadata                GCPMonitoringMetadata  `json:"metadata"`
-	PolicyName              string                 `json:"policy_name"`
-	Severity                string                 `json:"severity"` // GCP policy severity: CRITICAL / ERROR / WARNING (may be empty)
-	PolicyUserLabels        map[string]string      `json:"policy_user_labels"`
-	ConditionName           string                 `json:"condition_name"`
-	Condition               GCPMonitoringCondition `json:"condition"`
-	Documentation           GCPMonitoringDoc       `json:"documentation"`
-	ThresholdValue          string                 `json:"threshold_value"`
+	IncidentID     string                `json:"incident_id"`
+	URL            string                `json:"url"`
+	StartedAt      int64                 `json:"started_at"`
+	State          string                `json:"state"` // "open" or "closed"
+	Resource       GCPMonitoringResource `json:"resource"`
+	Metric         GCPMonitoringMetric   `json:"metric"`
+	ThresholdValue string                `json:"threshold_value"`
 }
 
 type GCPMonitoringResource struct {
-	Type   string            `json:"type"`
-	Labels map[string]string `json:"labels"`
+	Type string `json:"type"`
 }
 
 type GCPMonitoringMetric struct {
-	Type        string            `json:"type"`
-	DisplayName string            `json:"displayName"`
-	Labels      map[string]string `json:"labels"`
+	Type string `json:"type"`
 }
 
-type GCPMonitoringMetadata struct {
-	SystemLabels map[string]string `json:"system_labels"`
-	UserLabels   map[string]string `json:"user_labels"`
-}
-
-type GCPMonitoringCondition struct {
-	Name               string      `json:"name"`
-	DisplayName        string      `json:"displayName"`
-	ConditionThreshold interface{} `json:"conditionThreshold,omitempty"`
-}
-
-type GCPMonitoringDoc struct {
-	Content  string `json:"content"`
-	MimeType string `json:"mime_type"`
+// gcpNormalizedEvent is the event row the polling path would store for the incident, as
+// returned by the collector's normalize_gcp_monitoring_webhook endpoint.
+type gcpNormalizedEvent struct {
+	Title            string            `json:"title"`
+	Description      string            `json:"description"`
+	AggregationKey   string            `json:"aggregation_key"`
+	SubjectName      string            `json:"subject_name"`
+	SubjectType      string            `json:"subject_type"`
+	SubjectNamespace string            `json:"subject_namespace"`
+	ServiceKey       string            `json:"service_key"`
+	Fingerprint      string            `json:"fingerprint"`
+	FindingId        string            `json:"finding_id"`
+	CloudResourceId  string            `json:"cloud_resource_id"`
+	Priority         string            `json:"priority"`
+	Status           string            `json:"status"`
+	Labels           map[string]string `json:"labels"`
 }
 
 const IntegrationGCPMonitoringWebhook = "gcp_monitoring_webhook"
@@ -119,10 +109,20 @@ func (m GCPMonitoringWebhook) MergeEventWebhooks(sc *security.RequestContext, pr
 	return new, nil
 }
 
+// ProcessEventWebook takes the incident's identity — subject, fingerprint, finding_id,
+// service key, labels — from the collector, which derives it with the same code it polls
+// incidents with. This package used to normalize the payload itself; that copy drifted
+// from polling several times, last by naming a Cloud SQL instance "sample-db" instead
+// of "project:sample-db", which left the traces enricher with no spans (#34377).
 func (m GCPMonitoringWebhook) ProcessEventWebook(sc *security.RequestContext, settings []core.IntegrationConfigValue, accountId, webhookPayloadString string) ([]core.EventIncomingWebhook, error) {
 	var payload GCPMonitoringWebhookPayload
 	err := common.UnmarshalJson([]byte(webhookPayloadString), &payload)
 	if err != nil {
+		return nil, fmt.Errorf("failed to parse GCP Monitoring payload: %w", err)
+	}
+	// The evidence keeps the whole delivery, not just the fields read here.
+	var rawPayload map[string]any
+	if err := common.UnmarshalJson([]byte(webhookPayloadString), &rawPayload); err != nil {
 		return nil, fmt.Errorf("failed to parse GCP Monitoring payload: %w", err)
 	}
 
@@ -130,20 +130,78 @@ func (m GCPMonitoringWebhook) ProcessEventWebook(sc *security.RequestContext, se
 	if strings.TrimSpace(inc.IncidentID) == "" {
 		return nil, fmt.Errorf("invalid GCP Monitoring payload: incident_id is missing or empty")
 	}
-
-	// Extract fields
-	policyName := inc.PolicyName
-	if strings.TrimSpace(policyName) == "" {
-		policyName = "GCP Monitoring Alert"
+	if accountId == "" {
+		return nil, fmt.Errorf("GCP Monitoring webhook for incident %s has no cloud account", inc.IncidentID)
 	}
 
-	conditionName := inc.ConditionName
-	projectID := inc.Resource.Labels["project_id"]
-	if projectID == "" {
-		projectID = inc.ScopingProjectID
+	normalized, err := normalizeGCPIncident(sc, accountId, webhookPayloadString)
+	if err != nil {
+		return nil, fmt.Errorf("failed to normalize GCP Monitoring incident %s: %w", inc.IncidentID, err)
 	}
 
-	// Parse event time
+	webhook := buildGCPMonitoringWebhookEvent(inc, rawPayload, normalized)
+
+	// Async create event rule (same pattern as Azure Monitor)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				sc.GetLogger().Error("Panic recovered in GCP Monitoring event rule creation goroutine",
+					"panic", r, "incidentId", inc.IncidentID, "policyName", normalized.AggregationKey)
+			}
+		}()
+
+		// Build query from metric info
+		alertQuery := ""
+		if inc.Metric.Type != "" {
+			if inc.ThresholdValue != "" {
+				alertQuery = fmt.Sprintf("%s > %s", inc.Metric.Type, inc.ThresholdValue)
+			} else {
+				alertQuery = fmt.Sprintf("gcp_monitoring{metric_type=\"%s\"}", inc.Metric.Type)
+			}
+		} else {
+			alertQuery = fmt.Sprintf("gcp_monitoring_alert{policy_name=\"%s\"}", normalized.AggregationKey)
+		}
+
+		alertSeverity := "warning"
+		if normalized.Priority == string(event.EventPriorityHigh) {
+			alertSeverity = "critical"
+		}
+
+		eventReq := eventrule.EventConfig{
+			Annotations: struct {
+				Description string `json:"description"`
+				Summary     string `json:"summary"`
+				Runbook     string `json:"runbook"`
+			}{
+				Description: normalized.Description,
+				Summary:     normalized.Title,
+			},
+			Expr: alertQuery,
+			Labels: struct {
+				Severity string `json:"severity"`
+			}{Severity: alertSeverity},
+			Alert:         normalized.AggregationKey,
+			Duration:      "0",
+			AccountID:     accountId,
+			Source:        "gcp_monitoring_webhook",
+			Category:      "alert",
+			Severity:      alertSeverity,
+			Enabled:       true,
+			TriggerParams: []map[string]interface{}{},
+			ActionParams:  []map[string]interface{}{},
+		}
+		_, err := eventrule.CreateEventRule(sc, eventReq)
+		if err != nil {
+			sc.GetLogger().Error("CreateEventRule failed for GCP Monitoring webhook", "error", err, "incidentId", inc.IncidentID)
+		}
+	}()
+
+	return []core.EventIncomingWebhook{webhook}, nil
+}
+
+// buildGCPMonitoringWebhookEvent fills the webhook event from the collector's normalized
+// row; the raw delivery is kept as evidence.
+func buildGCPMonitoringWebhookEvent(inc GCPMonitoringIncident, payload map[string]any, n gcpNormalizedEvent) core.EventIncomingWebhook {
 	var eventTime time.Time
 	if inc.StartedAt > 0 {
 		eventTime = time.Unix(inc.StartedAt, 0).UTC()
@@ -151,223 +209,14 @@ func (m GCPMonitoringWebhook) ProcessEventWebook(sc *security.RequestContext, se
 		eventTime = time.Now()
 	}
 
-	// Map state to event status
+	// routeWebhookEvent resolves on "resolved" and investigates on "triggered".
 	eventStatus := "triggered"
-	var investigationStatus event.EventStatus
-	if strings.ToLower(inc.State) == "closed" {
+	investigationStatus := event.EventStatusFiring
+	if n.Status == string(event.EventStatusResolved) {
 		eventStatus = "resolved"
 		investigationStatus = event.EventStatusResolved
-	} else {
-		investigationStatus = event.EventStatusFiring
 	}
 
-	// Map severity, preferring GCP's native incident severity field and falling
-	// back to a "severity" policy user label. An unset/unknown value defaults to
-	// MEDIUM (not HIGH) so routine alerts without a configured severity don't all
-	// land in HIGH. This mirrors the polling path in
-	// cloud-collector's gcloud_monitoring_incidents_v3.go.
-	sev := inc.Severity
-	if sev == "" {
-		sev = inc.PolicyUserLabels["severity"]
-	}
-	eventPriority := mapGCPSeverityToPriority(sev)
-
-	// Determine subject name from resource (needed for fingerprint and labels).
-	// Resolution order matches polling in gcloud_monitoring_incidents_v3.go.
-	subjectName := inc.ResourceDisplayName
-	if subjectName == "" {
-		subjectName = inc.Resource.Labels["instance_id"]
-	}
-	if subjectName == "" {
-		subjectName = inc.Resource.Labels["resource_id"]
-	}
-	if subjectName == "" {
-		// database_id kept as-is (e.g., "project:instance") to match polling behavior
-		subjectName = inc.Resource.Labels["database_id"]
-	}
-	if subjectName == "" {
-		subjectName = inc.Resource.Labels["pod_name"]
-	}
-	if subjectName == "" {
-		subjectName = inc.Resource.Labels["container_name"]
-	}
-	if subjectName == "" {
-		subjectName = inc.Resource.Labels["function_name"]
-	}
-
-	// Extract region from zone (matches polling logic in gcloud_monitoring_incidents_v3.go)
-	var region string
-	if zone, ok := inc.Resource.Labels["zone"]; ok {
-		parts := strings.Split(zone, "-")
-		if len(parts) >= 3 {
-			region = strings.Join(parts[:len(parts)-1], "-")
-		}
-	}
-	if region == "" {
-		region = inc.Resource.Labels["region"]
-	}
-	if region == "" {
-		region = inc.Resource.Labels["location"]
-	}
-
-	serviceName := gcpResourceTypeToServiceName(inc.Resource.Type)
-
-	// Build title — match polling format: "{resource_type}: {policy_name}"
-	var title string
-	if inc.Resource.Type != "" {
-		title = fmt.Sprintf("%s: %s", inc.Resource.Type, policyName)
-	} else {
-		title = policyName
-	}
-
-	// Build markdown description
-	var desc strings.Builder
-	if inc.Summary != "" {
-		fmt.Fprintf(&desc, "## Summary\n%s\n\n", inc.Summary)
-	}
-
-	desc.WriteString("## Alert Details\n")
-	fmt.Fprintf(&desc, "- **Policy:** %s\n", policyName)
-	if conditionName != "" {
-		fmt.Fprintf(&desc, "- **Condition:** %s\n", conditionName)
-	}
-	fmt.Fprintf(&desc, "- **State:** %s\n", inc.State)
-	if projectID != "" {
-		fmt.Fprintf(&desc, "- **Project:** %s\n", projectID)
-	}
-
-	// Metric info
-	if inc.Metric.Type != "" {
-		desc.WriteString("\n## Metric Information\n")
-		metricDisplayName := inc.Metric.DisplayName
-		if metricDisplayName == "" {
-			metricDisplayName = inc.Metric.Type
-		}
-		fmt.Fprintf(&desc, "- **Metric:** %s\n", metricDisplayName)
-		if inc.ObservedValue != "" && inc.ThresholdValue != "" {
-			fmt.Fprintf(&desc, "- **Observed Value:** %s\n", inc.ObservedValue)
-			fmt.Fprintf(&desc, "- **Threshold:** %s\n", inc.ThresholdValue)
-		}
-	}
-
-	// Resource info
-	if inc.Resource.Type != "" {
-		desc.WriteString("\n## Resource\n")
-		resourceDisplay := inc.ResourceDisplayName
-		if resourceDisplay == "" {
-			resourceDisplay = inc.Resource.Type
-		}
-		fmt.Fprintf(&desc, "- **Type:** %s\n", inc.Resource.Type)
-		fmt.Fprintf(&desc, "- **Name:** %s\n", resourceDisplay)
-		if zone, ok := inc.Resource.Labels["zone"]; ok {
-			fmt.Fprintf(&desc, "- **Zone:** %s\n", zone)
-		}
-	}
-
-	if inc.URL != "" {
-		fmt.Fprintf(&desc, "\n[View in GCP Console](%s)\n", inc.URL)
-	}
-
-	message := desc.String()
-
-	// Build labels
-	labels := map[string]string{
-		"integration":    "gcp_monitoring",
-		"incident_id":    inc.IncidentID,
-		"policy_name":    policyName,
-		"condition_name": conditionName,
-		"state":          inc.State,
-		"alertname":      policyName,
-	}
-
-	if projectID != "" {
-		labels["project_id"] = projectID
-	}
-	if inc.Resource.Type != "" {
-		labels["resource_type"] = inc.Resource.Type
-	}
-	if inc.ResourceDisplayName != "" {
-		labels["resource_display_name"] = inc.ResourceDisplayName
-	}
-	if inc.ResourceTypeDisplayName != "" {
-		labels["resource_type_display_name"] = inc.ResourceTypeDisplayName
-	}
-	if inc.Metric.Type != "" {
-		labels["metric_type"] = inc.Metric.Type
-	}
-	if inc.Metric.DisplayName != "" {
-		labels["metric_display_name"] = inc.Metric.DisplayName
-	}
-	if inc.ObservedValue != "" {
-		labels["observed_value"] = inc.ObservedValue
-	}
-	if inc.ThresholdValue != "" {
-		labels["threshold_value"] = inc.ThresholdValue
-	}
-	if inc.URL != "" {
-		labels["gcp_console_url"] = inc.URL
-	}
-
-	// Add resource labels
-	for k, v := range inc.Resource.Labels {
-		labels["resource_"+k] = v
-	}
-
-	// Add policy user labels
-	for k, v := range inc.PolicyUserLabels {
-		labels["policy_"+k] = v
-	}
-
-	// Serialize condition for labels
-	if inc.Condition.Name != "" {
-		labels["condition_resource_name"] = inc.Condition.Name
-	}
-
-	// Compatibility labels for auto-execution of enrichment actions (cloud_resource,
-	// cloud_list_metrics, cloud_logs). Matches the label names set by the polling path in
-	// gcloud_monitoring_incidents_v3.go. Same pattern as Azure PR #27020.
-	labels["gcp_region"] = region
-	labels["gcp_event_instance"] = subjectName
-	labels["gcp_service_name"] = serviceName
-	labels["gcp_account"] = projectID
-	labels["gcp_event_resource_type"] = inc.Resource.Type
-	if zone, ok := inc.Resource.Labels["zone"]; ok {
-		labels["gcp_zone"] = zone
-	}
-	if inc.Metric.Type != "" {
-		labels["gcp_alert_type"] = "metric"
-		labels["gcp_metric_type"] = inc.Metric.Type
-		labels["gcp_event_metric_type"] = inc.Metric.Type
-		labels["gcp_event_metric_name"] = inc.Metric.Type
-	} else {
-		labels["gcp_alert_type"] = "log"
-	}
-
-	// Fingerprint: match polling's buildStableEventID() format — {policy_path}:{resource_type}:{resource_id}.
-	// Extract policy path from condition name by stripping the /conditions/... suffix.
-	policyPath := inc.Condition.Name
-	if idx := strings.Index(policyPath, "/conditions/"); idx != -1 {
-		policyPath = policyPath[:idx]
-	}
-	fingerprint := policyPath
-	if policyPath != "" && inc.Resource.Type != "" && subjectName != "" {
-		fingerprint = fmt.Sprintf("%s:%s:%s", policyPath, inc.Resource.Type, subjectName)
-	}
-	if fingerprint == "" {
-		fingerprint = inc.IncidentID
-	}
-	for k, v := range gcpLogEnrichmentLabels(inc, projectID, policyPath) {
-		labels[k] = v
-	}
-
-	// EventId (finding_id): use the GCP API's native incident path format so the
-	// polling path (which uses alert.Name) produces the same finding_id for dedup.
-	eventId := fmt.Sprintf("projects/%s/alerts/%s", projectID, inc.IncidentID)
-
-	// Build service_key matching cloud-collector's buildExternalResourceId format
-	serviceKey := buildGCPServiceKey(projectID, region, serviceName, inc.Resource.Type, subjectName)
-
-	// Build raw payload evidence
 	evidences := []event.EventEvidence{
 		{
 			Type: "json",
@@ -390,197 +239,92 @@ func (m GCPMonitoringWebhook) ProcessEventWebook(sc *security.RequestContext, se
 	}
 
 	investigation := core.EventIncomingWebhookInvestigation{
-		RuleName: policyName,
-		Labels:   labels,
+		RuleName: n.AggregationKey,
+		Labels:   n.Labels,
 		Annotations: map[string]string{
-			"description": message,
-			"summary":     title,
+			"description": n.Description,
+			"summary":     n.Title,
 		},
 		RuleType:    "gcp_monitoring_alert",
-		RuleId:      policyName,
-		Fingerprint: fingerprint,
+		RuleId:      n.AggregationKey,
+		Fingerprint: n.Fingerprint,
 		Status:      investigationStatus,
-		Severity:    eventPriority,
+		Severity:    event.EventPriority(n.Priority),
 		SourceUrl:   inc.URL,
 		Evidences:   evidences,
 	}
 
-	webhook := core.EventIncomingWebhook{
-		WebhookId:             eventId,
+	return core.EventIncomingWebhook{
+		WebhookId:             n.FindingId,
 		EventType:             "gcp_monitoring_alert",
-		EventId:               eventId,
+		EventId:               n.FindingId,
 		EventUrl:              inc.URL,
 		EventStatus:           eventStatus,
-		EventPriority:         string(eventPriority),
+		EventPriority:         n.Priority,
 		EventCreatedAt:        eventTime,
-		EventTitle:            title,
-		EventDescription:      message,
+		EventTitle:            n.Title,
+		EventDescription:      n.Description,
 		EventTags:             []string{"gcp", "monitoring", inc.Resource.Type, inc.State},
 		Investigation:         investigation,
-		EventSubjectNamespace: inc.Resource.Type,
-		EventSubjectName:      subjectName,
-		ServiceKey:            serviceKey,
+		EventSubjectKind:      n.SubjectType,
+		EventSubjectNamespace: n.SubjectNamespace,
+		EventSubjectName:      n.SubjectName,
+		ServiceKey:            n.ServiceKey,
+		CloudResourceId:       n.CloudResourceId,
+	}
+}
+
+// normalizeGCPIncident asks the collector for the event row polling would store for this
+// incident. A collector outage fails the delivery; the incident still arrives by polling
+// on accounts whose credentials can list alerts.
+func normalizeGCPIncident(sc *security.RequestContext, accountId, webhookPayload string) (gcpNormalizedEvent, error) {
+	// The tenant-admin context is nil when its account lookup failed.
+	if sc.GetSecurityContext() == nil {
+		return gcpNormalizedEvent{}, fmt.Errorf("no tenant context")
+	}
+	collectorURL := fmt.Sprintf("%s/v1/cloud/normalize_gcp_monitoring_webhook?account_id=%s",
+		config.Config.CloudCollectorServerUrl, url.QueryEscape(accountId))
+	httpReq, err := http.NewRequestWithContext(sc.GetContext(), http.MethodPost, collectorURL, bytes.NewReader([]byte(webhookPayload)))
+	if err != nil {
+		return gcpNormalizedEvent{}, fmt.Errorf("failed to create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set(config.Config.CloudCollectorServerTokenHeader, config.Config.CloudCollectorServerToken)
+	httpReq.Header.Set("x-tenant-id", sc.GetSecurityContext().GetTenantId())
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return gcpNormalizedEvent{}, fmt.Errorf("failed to call collector-server: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return gcpNormalizedEvent{}, fmt.Errorf("failed to read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return gcpNormalizedEvent{}, fmt.Errorf("collector-server returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	// Async create event rule (same pattern as Azure Monitor)
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				sc.GetLogger().Error("Panic recovered in GCP Monitoring event rule creation goroutine",
-					"panic", r, "incidentId", inc.IncidentID, "policyName", policyName)
-			}
-		}()
-
-		alertName := policyName
-		alertQuery := ""
-		alertMessage := message
-		alertCategory := "alert"
-
-		// Build query from metric info
-		if inc.Metric.Type != "" {
-			if inc.ThresholdValue != "" {
-				alertQuery = fmt.Sprintf("%s > %s", inc.Metric.Type, inc.ThresholdValue)
-			} else {
-				alertQuery = fmt.Sprintf("gcp_monitoring{metric_type=\"%s\"}", inc.Metric.Type)
-			}
-		} else {
-			alertQuery = fmt.Sprintf("gcp_monitoring_alert{policy_name=\"%s\"}", policyName)
-		}
-
-		alertSeverity := "warning"
-		if eventPriority == event.EventPriorityHigh {
-			alertSeverity = "critical"
-		}
-
-		conditionJSON, _ := json.Marshal(inc.Condition)
-		_ = conditionJSON
-
-		eventReq := eventrule.EventConfig{
-			Annotations: struct {
-				Description string `json:"description"`
-				Summary     string `json:"summary"`
-				Runbook     string `json:"runbook"`
-			}{
-				Description: alertMessage,
-				Summary:     title,
-			},
-			Expr: alertQuery,
-			Labels: struct {
-				Severity string `json:"severity"`
-			}{Severity: alertSeverity},
-			Alert:         alertName,
-			Duration:      "0",
-			AccountID:     accountId,
-			Source:        "gcp_monitoring_webhook",
-			Category:      alertCategory,
-			Severity:      alertSeverity,
-			Enabled:       true,
-			TriggerParams: []map[string]interface{}{},
-			ActionParams:  []map[string]interface{}{},
-		}
-		_, err := eventrule.CreateEventRule(sc, eventReq)
-		if err != nil {
-			sc.GetLogger().Error("CreateEventRule failed for GCP Monitoring webhook", "error", err, "incidentId", inc.IncidentID)
-		}
-	}()
-
-	return []core.EventIncomingWebhook{webhook}, nil
+	var apiResponse struct {
+		Data   gcpNormalizedEvent `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(respBody, &apiResponse); err != nil {
+		return gcpNormalizedEvent{}, fmt.Errorf("failed to parse response: %w", err)
+	}
+	if len(apiResponse.Errors) > 0 {
+		return gcpNormalizedEvent{}, fmt.Errorf("%s", apiResponse.Errors[0].Message)
+	}
+	if apiResponse.Data.FindingId == "" {
+		return gcpNormalizedEvent{}, fmt.Errorf("collector-server returned no finding_id")
+	}
+	return apiResponse.Data, nil
 }
 
 func (m GCPMonitoringWebhook) TestConnection(sc *security.RequestContext, settings []core.IntegrationConfigValue, accountId string) (bool, error) {
 	return true, nil
-}
-
-// mapGCPSeverityToPriority maps a GCP severity string (native policy severity
-// CRITICAL/ERROR/WARNING, or a severity user label) to an event priority.
-// An empty or unrecognized value defaults to MEDIUM — mirrors the polling path
-// in cloud-collector's gcloud_monitoring_incidents_v3.go so both ingestion
-// routes agree.
-func mapGCPSeverityToPriority(sev string) event.EventPriority {
-	switch strings.ToLower(strings.TrimSpace(sev)) {
-	case "critical", "error", "high":
-		return event.EventPriorityHigh
-	case "warning", "medium":
-		return event.EventPriorityMedium
-	case "low":
-		return event.EventPriorityLow
-	case "info", "informational":
-		return event.EventPriorityInfo
-	default:
-		return event.EventPriorityMedium
-	}
-}
-
-// gcpLogEnrichmentLabels returns the labels the cloud_logs enricher reads but that the
-// webhook payload alone does not spell the way the polling path does. Split out of
-// ProcessEventWebook so the contract with cloud.gcpLogRawParams is unit-testable.
-//
-// Until #36870 the webhook path set none of these, so a log-based metric alert ingested
-// by webhook could not narrow its log query the way the same alert does when polled.
-func gcpLogEnrichmentLabels(inc GCPMonitoringIncident, projectID, policyPath string) map[string]string {
-	labels := map[string]string{}
-	if projectID != "" {
-		// gcpLogRawParams reads gcp_project_id, not the project_id label set above.
-		labels["gcp_project_id"] = projectID
-	}
-	// A log-based metric names the log it counts in its metric labels. The polling path
-	// carries that as metric_log; cloud_logs turns it into a log_group_name that narrows
-	// the query to that log instead of the whole resource.
-	if metricLog := inc.Metric.Labels["log"]; metricLog != "" {
-		labels["metric_log"] = metricLog
-	}
-	// Native log alerts scope themselves off the policy's own log-match filter; the
-	// collector's scope resolver reads the policy path as policy_id.
-	if policyPath != "" {
-		labels["gcp_policy_id"] = policyPath
-	}
-	return labels
-}
-
-// gcpResourceTypeToServiceName maps GCP monitored resource types to human-readable service names.
-// Mirrors mapResourceTypeToServiceName in cloud-collector's gcloud_monitoring_alerts_common.go.
-func gcpResourceTypeToServiceName(resourceType string) string {
-	m := map[string]string{
-		"gce_instance":         "Compute Engine",
-		"cloudsql_database":    "Cloud SQL",
-		"cloud_run_revision":   "Cloud Run",
-		"k8s_cluster":          "Kubernetes Engine",
-		"k8s_node":             "Kubernetes Engine",
-		"k8s_pod":              "Kubernetes Engine",
-		"k8s_container":        "Kubernetes Engine",
-		"gke_cluster":          "Kubernetes Engine",
-		"gke_nodepool":         "Kubernetes Engine",
-		"gcs_bucket":           "Cloud Storage",
-		"cloud_function":       "Cloud Functions",
-		"https_lb_rule":        "Cloud Load Balancing",
-		"tcp_ssl_proxy_rule":   "Cloud Load Balancing",
-		"pubsub_topic":         "Cloud Pub/Sub",
-		"pubsub_subscription":  "Cloud Pub/Sub",
-		"bigquery_dataset":     "BigQuery",
-		"bigquery_table":       "BigQuery",
-		"vpc_access_connector": "Networking",
-	}
-	if s, ok := m[resourceType]; ok {
-		return s
-	}
-	return "Cloud Monitoring"
-}
-
-// buildGCPServiceKey builds an ARN-style service key matching the format produced by
-// cloud-collector's buildExternalResourceId (account/common.go).
-// Format: arn:gcp:{service}:{region}:{project}:{resource_type}:{resource_id}
-func buildGCPServiceKey(projectID, region, serviceName, resourceType, resourceID string) string {
-	if resourceType == "" || resourceID == "" {
-		return ""
-	}
-	svc := strings.ReplaceAll(strings.ToLower(serviceName), " ", "-")
-	if region == "" {
-		region = "global"
-	}
-	region = strings.ToLower(region)
-	resourceID = strings.ToLower(resourceID)
-	resourceID = strings.ReplaceAll(resourceID, " ", "-")
-	resourceType = strings.ToLower(resourceType)
-	resourceType = strings.ReplaceAll(resourceType, " ", "-")
-	return "arn:gcp:" + svc + ":" + region + ":" + projectID + ":" + resourceType + ":" + resourceID
 }

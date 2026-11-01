@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"nudgebee/collector/cloud/providers"
+	"sort"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -499,49 +500,110 @@ func (a *amazonVpc) GetRecommendations(ctx providers.CloudProviderContext, accou
 		ctx.GetLogger().Error("failed to create aws session", "error", err, "accountNumber", account.AccountNumber)
 		return recommendations, err
 	}
-	for _, resource := range existingResources {
-		svc := ec2.NewFromConfig(cfg)
 
-		// unallocated elastic ips
-		addresses, err := svc.DescribeAddresses(context.TODO(), &ec2.DescribeAddressesInput{})
+	for _, region := range eipScanRegions(cfg.Region, existingResources) {
+		regionCfg := cfg
+		regionCfg.Region = region
+		svc := ec2.NewFromConfig(regionCfg)
+
+		addresses, err := svc.DescribeAddresses(ctx.GetContext(), &ec2.DescribeAddressesInput{})
 		if err != nil {
-			ctx.GetLogger().Error("Error getting elastic ips", "error", err)
+			ctx.GetLogger().Error("Error getting elastic ips", "error", err, "region", region)
 			continue
 		}
+
+		priced := false
+		var cost float64
+		var pricingSource string
 		for _, address := range addresses.Addresses {
-			if address.AssociationId == nil {
-				usageType, err := getUsageType(cfg.Region)
+			if address.AssociationId != nil {
+				continue
+			}
+			if !priced {
+				// Price once per region, lazily on the first idle address, so a
+				// region whose addresses are all in use costs no pricing lookup.
+				usageType, err := getUsageType(region)
 				var prices []map[string]interface{}
 				if err == nil {
+					// The Pricing API lives in a handful of regions only, so the
+					// lookup keeps the account's base config; the region lands in
+					// the usage-type filter instead.
 					prices, err = getAvailableInstancesFromPricing(cfg, "AmazonVPC", idleElasticIPPricingFilters(usageType))
 				}
 				// An unmapped region or an empty price list still describes an idle
 				// address that is being billed; price it rather than drop or zero it.
-				cost, pricingSource := idleElasticIPMonthlyCost(prices, err)
+				cost, pricingSource = idleElasticIPMonthlyCost(prices, err)
 				if pricingSource != eipPricingSourceAPI {
-					ctx.GetLogger().Warn("idle elastic ip priced at the AWS flat rate; pricing lookup returned nothing usable", "region", cfg.Region, "error", err)
+					ctx.GetLogger().Warn("idle elastic ip priced at the AWS flat rate; pricing lookup returned nothing usable", "region", region, "error", err)
 				}
-				recommendation := providers.Recommendation{
-					CategoryName: providers.RecommendationCategoryRightSizing,
-					RuleName:     "aws_vpc_unallocated_elastic_ip",
-					Severity:     providers.RecommendationSeverityMedium,
-					Savings:      cost,
-					Data: map[string]any{
-						"elastic_ip":     aws.ToString(address.PublicIp),
-						"pricing_source": pricingSource,
-					},
-					Action:              providers.RecommendationActionModify,
-					ResourceServiceName: resource.ServiceName,
-					ResourceId:          resource.Id,
-					ResourceType:        resource.Type,
-					ResourceRegion:      resource.Region,
-				}
+				priced = true
+			}
+			if recommendation, ok := idleElasticIPRecommendation(address, region, cost, pricingSource); ok {
 				recommendations = append(recommendations, recommendation)
 			}
 		}
-
 	}
 	return recommendations, nil
+}
+
+// eipScanRegions lists the regions to check for idle Elastic IPs: every region
+// the account has resources in, plus the account's default region so an
+// account with no synced resources still gets the pre-existing coverage.
+func eipScanRegions(defaultRegion string, existingResources []providers.Resource) []string {
+	seen := map[string]bool{}
+	regions := []string{}
+	if defaultRegion != "" {
+		seen[defaultRegion] = true
+		regions = append(regions, defaultRegion)
+	}
+	for _, resource := range existingResources {
+		if resource.Region == "" || seen[resource.Region] {
+			continue
+		}
+		seen[resource.Region] = true
+		regions = append(regions, resource.Region)
+	}
+	sort.Strings(regions)
+	return regions
+}
+
+// idleElasticIPRecommendation targets the idle address's own elastic-ip row,
+// so the resource identity (AllocationId, PublicIp for EC2-Classic) must stay
+// in lockstep with the rows GetResources stores — that match is what links the
+// recommendation to the Inactive resource instead of fanning out across every
+// VPC resource in the account.
+func idleElasticIPRecommendation(address ec2types.Address, region string, cost float64, pricingSource string) (providers.Recommendation, bool) {
+	if address.AssociationId != nil {
+		return providers.Recommendation{}, false
+	}
+	// GetResources skips an address with no PublicIp, so no elastic-ip row is
+	// stored for it; skip here too, else this would emit a recommendation that
+	// cannot link to any resource.
+	if address.PublicIp == nil {
+		return providers.Recommendation{}, false
+	}
+	resourceId := aws.ToString(address.AllocationId)
+	if resourceId == "" {
+		resourceId = aws.ToString(address.PublicIp)
+	}
+	if resourceId == "" {
+		return providers.Recommendation{}, false
+	}
+	return providers.Recommendation{
+		CategoryName: providers.RecommendationCategoryRightSizing,
+		RuleName:     "aws_vpc_unallocated_elastic_ip",
+		Severity:     providers.RecommendationSeverityMedium,
+		Savings:      cost,
+		Data: map[string]any{
+			"elastic_ip":     aws.ToString(address.PublicIp),
+			"pricing_source": pricingSource,
+		},
+		Action:              providers.RecommendationActionModify,
+		ResourceServiceName: ServiceNameVPC,
+		ResourceId:          resourceId,
+		ResourceType:        getAwsServiceResourceType(ServiceNameVPC, "elastic-ip"),
+		ResourceRegion:      region,
+	}, true
 }
 
 func (a *amazonVpc) GetLogGroupName(ctx providers.CloudProviderContext, account providers.Account, region, resourceId string) (string, error) {

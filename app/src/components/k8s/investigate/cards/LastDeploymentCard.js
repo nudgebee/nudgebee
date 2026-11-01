@@ -3,6 +3,7 @@ import PropTypes from 'prop-types';
 import Datetime, { formatClockCompact } from '@shared/format/Datetime';
 import {
   describeChangeTiming,
+  describeRollbackWrites,
   isPathAncestor,
   isRolloutOnlyKey,
   normalizePath,
@@ -723,7 +724,14 @@ class LastDeploymentCard {
   // One change the rollback dialog can act on.
   buildChoice = (changeEventId, at, fields) => {
     const summary = summarizeChangedFields(fields);
-    return { changeEventId, at, when: formatClockCompact(at), timing: describeChangeTiming(at, this.event?.starts_at), summary };
+    return {
+      changeEventId,
+      at,
+      when: formatClockCompact(at),
+      timing: describeChangeTiming(at, this.event?.starts_at),
+      summary,
+      writes: describeRollbackWrites(fields),
+    };
   };
 
   // The action row names its change when there is exactly one; with several, it says how many and
@@ -738,7 +746,9 @@ class LastDeploymentCard {
       ? ''
       : this.choosesTarget
       ? [`${choices.length} recent changes can be rolled back`, newest.timing ? `newest ${newest.timing}` : ''].filter(Boolean).join(' · ')
-      : [newest.timing, newest.summary ? `changes ${newest.summary}` : ''].filter(Boolean).join(' · ');
+      : [newest.timing, newest.writes ? `rolls back ${newest.writes}` : newest.summary ? `changes ${newest.summary}` : '']
+          .filter(Boolean)
+          .join(' · ');
   };
 
   // A stable component: the page asks for it on every render, and a fresh one each time would remount

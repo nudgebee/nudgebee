@@ -41,6 +41,16 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+func TestResolveOriginalQueryForAnalysis(t *testing.T) {
+	task := "Inspect manual KB context-tag normalization implementation"
+	original := "Read codex_p2_code_handoff through the code analyzer and verify its late marker" + strings.Repeat(" detail", 2000) + " FINAL-CANARY"
+	got := resolveOriginalQueryForAnalysis(task, original)
+	require.Equal(t, strings.TrimSpace(original), got)
+	require.Empty(t, resolveOriginalQueryForAnalysis(task, ""))
+	require.Empty(t, resolveOriginalQueryForAnalysis(task, task))
+	require.Empty(t, resolveOriginalQueryForAnalysis(task, "  "+task+"  "))
+}
+
 // TODO mock DBs
 // TODO mock Tool Execution
 

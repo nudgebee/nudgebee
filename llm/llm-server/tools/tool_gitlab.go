@@ -90,7 +90,7 @@ func (m GitlabCliTool) Call(nbRequestContext core.NbToolContext, input core.NBTo
 		return core.NBToolResponse{}, fmt.Errorf("failed to resolve GitLab credentials: %w", err)
 	}
 
-	command = strings.ReplaceAll(command, "\\n", "\n")
+	command = expandEscapedNewlines(command)
 
 	wm := workspace.NewWorkspaceManager()
 
@@ -238,7 +238,7 @@ func (m GitlabCliTool) InferToolRequestTypePrompt(ctx *security.RequestContext, 
 }
 
 func (m GitlabCliTool) InferToolRequestType(ctx *security.RequestContext, toolName, input string) (core.ToolRequestType, error) {
-	requestType := inferNestedCLIRequestType(input, "glab", gitlabReadActions, gitlabCreateActions, gitlabUpdateActions, gitlabDeleteActions)
+	requestType := inferNestedCLIRequestType(expandEscapedNewlines(extractCommandFromToolInput(input)), "glab", gitlabReadActions, gitlabCreateActions, gitlabUpdateActions, gitlabDeleteActions)
 	if requestType == "" {
 		ctx.GetLogger().Warn("gitlab: action not recognized by heuristic, falling through to LLM classification", "input", input)
 	}

@@ -16,6 +16,7 @@ import (
 const ToolWatchResource = "watch_resource"
 
 func init() {
+	watch.ResolveToolCallTarget = ResolveToolCallTarget
 	core.RegisterNBToolFactory(ToolWatchResource, func(accountId string) (core.NBTool, error) {
 		return WatchResourceTool{}, nil
 	})

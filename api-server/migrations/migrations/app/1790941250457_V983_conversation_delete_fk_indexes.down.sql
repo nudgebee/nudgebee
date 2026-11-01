@@ -1,0 +1,3 @@
+DROP INDEX IF EXISTS idx_llm_conv_agent_critiques_conversation_id;
+DROP INDEX IF EXISTS idx_llm_conv_agent_critiques_message_id;
+DROP INDEX IF EXISTS idx_llm_conversation_token_usage_message_id;

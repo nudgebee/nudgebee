@@ -557,6 +557,11 @@ func buildLogsActionResponse(logs []OutputLog, title string, additionalInfo map[
 		additionalInfo["log_window_end"] = digest.LastSeen
 	}
 	insight := extractLogInsights(logs, maxInsights)
+	// A card that does not hold its whole window says so in its summary line, which is
+	// built from the insights. Without it, a card with no error line reads as "no errors".
+	if note, _ := additionalInfo["log_truncation_note"].(string); note != "" {
+		insight = append(insight, playbooks.PlaybookActionResponseInsight{Message: note, Severity: "Info"})
+	}
 	metadata := map[string]any{
 		"query-result-version": "1.0",
 		"query":                metaQuery,
@@ -599,6 +604,226 @@ func addExecutedQueryInfo(info map[string]any, result FetchLogsResult) map[strin
 		info["provider"] = result.Provider
 	}
 	return info
+}
+
+// lineFilterSource is implemented by log sources that can narrow a query they ran to
+// the lines matching a pattern. A log card uses it to keep the error and warning lines
+// of a window that holds more lines than the card.
+//
+// An implementation must report each line's level as read off the line, or unknown —
+// never a default. The narrowed lines are ranked by that level, and a source that stamps
+// every line INFO (the Elasticsearch agent source does, for stdout) would have all of
+// them discarded as routine.
+type lineFilterSource interface {
+	withLineFilter(query, pattern string) (string, bool)
+}
+
+// The lines a log card asks a lineFilterSource for: a level word at the start of a word
+// anywhere in the line, or a glog header (E0917 …). That is looser than
+// logparser.GuessLevel, which reads only a line's first fields, so the level the source
+// reports decides afterwards. "alert", which GuessLevel also reads as critical, is left
+// out: alerting components write the word on routine lines.
+var (
+	errorLines          = regexp.MustCompile(`(?i)(^|[^a-z])(err|crit|fatal|ftl|emerg|panic)|^[EF][0-9]{4} `)
+	errorOrWarningLines = regexp.MustCompile(`(?i)(^|[^a-z])(err|crit|fatal|ftl|emerg|panic|warn|wrn)|^[EFW][0-9]{4} `)
+)
+
+// flaggedLinesBudget is how long a card's narrowed queries may take, all of them
+// together. The card's own query can take up to 60s — the Loki client timeout on the
+// agent and on a user-configured Loki — so a full card takes at most half as long again,
+// and a narrowed query that runs out of time leaves the card as it was.
+var flaggedLinesBudget = 30 * time.Second
+
+// fetchCardLogs is FetchLogs for a log card. When the window holds more lines than
+// req.Limit, the card keeps the ones in it that look like errors or warnings, and the
+// returned note says what the card holds; the note is empty when the whole window fit.
+//
+// Providers return the most recent req.Limit lines of the window. On a busy workload a
+// 60-minute request comes back as its last few minutes, and the error lines that explain
+// the alert are older than every line kept: a card for an error-spike alert could hold
+// 1000 lines without one of them at ERROR, and read as "no errors".
+func fetchCardLogs(ctx *security.RequestContext, req FetchLogRequest) (FetchLogsResult, string, error) {
+	result, err := FetchLogs(ctx, req)
+	if err != nil {
+		return result, "", err
+	}
+	executed := result.Query
+	var note string
+	result.Logs, note = keepFlaggedLines(result.Logs, req.Limit, flaggedLinesBudget, func(pattern string, limit int, timeout time.Duration) ([]OutputLog, error) {
+		return queryMatchingLines(ctx, req, executed, pattern, limit, timeout)
+	})
+	if note != "" {
+		ctx.GetLogger().Info("observability: log card reached its line limit",
+			"limit", req.Limit, "provider", result.Provider, "note", note)
+	}
+	return result, note, nil
+}
+
+// queryMatchingLines runs executed — the provider query FetchLogs ran for req — again,
+// narrowed to the lines matching pattern, giving up after timeout without a retry.
+//
+// It goes to the source directly because executed already carries the label mapping and
+// default filters FetchLogs applied. Sent through FetchLogs again, the account's default
+// filters would land in an empty where-clause, and LokiSource builds its query from a
+// non-empty where-clause in preference to the raw one, dropping the workload selector.
+func queryMatchingLines(ctx *security.RequestContext, req FetchLogRequest, executed, pattern string, limit int, timeout time.Duration) ([]OutputLog, error) {
+	source, err := getLogSourceForAccount(ctx, req.AccountId, req.LogProvider, req.LogProviderSource)
+	if err != nil {
+		return nil, err
+	}
+	filterable, ok := source.(lineFilterSource)
+	if !ok {
+		return nil, errors.New("log source cannot filter lines")
+	}
+	query, ok := filterable.withLineFilter(executed, pattern)
+	if !ok {
+		return nil, errors.New("log query cannot take a line filter")
+	}
+	logs, err := source.QueryLogs(ctx, FetchLogRequest{
+		AccountId: req.AccountId,
+		Query:     query,
+		StartTime: req.StartTime,
+		EndTime:   req.EndTime,
+		Limit:     limit,
+		Timeout:   timeout,
+	})
+	if err != nil {
+		ctx.GetLogger().Info("observability: error-line log query failed", "timeout", timeout, "error", err)
+		return nil, err
+	}
+	normalizeOutputLogLabels(logs, getMergedLabelMapping(ctx, req.AccountId, source))
+	return logs, nil
+}
+
+// keepFlaggedLines makes room, in a card that filled its limit, for the window's lines
+// that look like errors or warnings: up to half the card, the rest being the most recent
+// lines as before. query runs the card's query narrowed to a line pattern, within a
+// timeout; when it fails (a source that cannot filter lines, or one too slow for budget,
+// included) the card keeps the lines it had.
+//
+// Returns the lines, newest first, and a note saying what they are — empty, with the
+// lines untouched, when the window fit.
+func keepFlaggedLines(recent []OutputLog, limit int, budget time.Duration, query func(pattern string, limit int, timeout time.Duration) ([]OutputLog, error)) ([]OutputLog, string) {
+	if limit <= 0 || len(recent) < limit {
+		return recent, ""
+	}
+	head := fmt.Sprintf("The queried window has more lines than the %d a log card holds.", limit)
+	partial := head + " This card shows only part of it, so errors logged elsewhere in the window may not be here."
+	reserve := limit / 2
+	if reserve == 0 {
+		return recent, partial
+	}
+	deadline := time.Now().Add(budget)
+	flagged, more, err := queryFlaggedLines(query, errorOrWarningLines, reserve, budget)
+	if err != nil {
+		return recent, partial
+	}
+	which := "every line in it that looks like an error or warning"
+	if more {
+		// Warnings crowd errors out of a limited result just as info lines did. The
+		// errors-only query gets what is left of the budget, and only when the first
+		// query left at least half of it: a slow first answer predicts a slow second.
+		which = "the most recent of its lines that look like errors or warnings"
+		if left := time.Until(deadline); left >= budget/2 {
+			if errs, moreErrs, err := queryFlaggedLines(query, errorLines, reserve, left); err == nil {
+				flagged = firstDistinct(reserve, errs, flagged)
+				which = "every line in it that looks like an error, then the most recent that look like warnings"
+				if moreErrs {
+					which = "the most recent of its lines that look like errors"
+				}
+			}
+		}
+	}
+	kept := newestFirst(firstDistinct(limit, flagged, newestFirst(recent)))
+	switch {
+	case len(flagged) > 0:
+		return kept, fmt.Sprintf("%s This card keeps %s (%d), and the %d most recent other lines.", head, which, len(flagged), len(kept)-len(flagged))
+	case !more:
+		return kept, fmt.Sprintf("%s None of its lines look like errors or warnings; these are the %d most recent.", head, len(kept))
+	}
+	return kept, partial
+}
+
+// queryFlaggedLines asks query for the lines matching re and keeps the ones that are not
+// routine, newest first. more reports that the source had at least limit matching lines,
+// so older ones may be missing.
+func queryFlaggedLines(query func(pattern string, limit int, timeout time.Duration) ([]OutputLog, error), re *regexp.Regexp, limit int, timeout time.Duration) ([]OutputLog, bool, error) {
+	logs, err := query(re.String(), limit, timeout)
+	if err != nil {
+		return nil, false, err
+	}
+	var flagged []OutputLog
+	for _, l := range logs {
+		// The source narrowed the lines already. Checking again means a source that
+		// ignored the filter cannot pass routine lines off as errors.
+		if !re.MatchString(l.Message) {
+			continue
+		}
+		// The pattern finds a level word anywhere in a line; the level read off the
+		// line decides. `level=info msg="cache refreshed" errors=0` is routine.
+		if level := logparser.GuessLevel(l.Severity); level == logparser.LevelInfo || level == logparser.LevelDebug {
+			continue
+		}
+		flagged = append(flagged, l)
+	}
+	return newestFirst(flagged), len(logs) >= limit, nil
+}
+
+// firstDistinct takes up to n lines from lists in order, skipping a line an earlier one
+// already took. The same line comes back from both the card's query and a narrowed one.
+func firstDistinct(n int, lists ...[]OutputLog) []OutputLog {
+	out := make([]OutputLog, 0, n)
+	seen := map[string]bool{}
+	for _, list := range lists {
+		for _, l := range list {
+			if len(out) >= n {
+				return out
+			}
+			key := l.Timestamp + "\x00" + l.Message
+			if !seen[key] {
+				seen[key] = true
+				out = append(out, l)
+			}
+		}
+	}
+	return out
+}
+
+// newestFirst returns logs ordered newest first. Loki returns each stream newest first
+// but the streams one after another. Lines without an RFC 3339 timestamp go last, in the
+// order they came.
+func newestFirst(logs []OutputLog) []OutputLog {
+	type dated struct {
+		log OutputLog
+		at  time.Time
+		ok  bool
+	}
+	rows := make([]dated, len(logs))
+	for i, l := range logs {
+		at, err := time.Parse(time.RFC3339Nano, l.Timestamp)
+		rows[i] = dated{log: l, at: at, ok: err == nil}
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].ok != rows[j].ok {
+			return rows[i].ok
+		}
+		return rows[i].ok && rows[i].at.After(rows[j].at)
+	})
+	out := make([]OutputLog, len(rows))
+	for i, r := range rows {
+		out[i] = r.log
+	}
+	return out
+}
+
+// putLogTruncation records on a card that it does not hold its whole window, and what it
+// holds instead (see fetchCardLogs).
+func putLogTruncation(additionalInfo map[string]any, note string) map[string]any {
+	if note != "" {
+		additionalInfo["log_truncated"] = true
+		additionalInfo["log_truncation_note"] = note
+	}
+	return additionalInfo
 }
 
 // signozLogsAction is the action for signoz_logs_enricher.
@@ -1914,7 +2139,7 @@ func (a *observabilityLogAction) autoExecuteByTraceID(ctx playbooks.PlaybookActi
 	}
 
 	requestCtx := security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil)
-	logResult, err := FetchLogs(requestCtx, FetchLogRequest{
+	logResult, truncation, err := fetchCardLogs(requestCtx, FetchLogRequest{
 		AccountId: ctx.GetAccountId(),
 		StartTime: startTime,
 		EndTime:   endTime,
@@ -1934,7 +2159,7 @@ func (a *observabilityLogAction) autoExecuteByTraceID(ctx playbooks.PlaybookActi
 
 	ctx.GetLogger().Info("observability: logs auto action found trace-correlated results",
 		"trace_id", traceID, "count", len(logResult.Logs))
-	additionalInfo := addExecutedQueryInfo(map[string]any{"title": "Trace Logs For - " + traceID}, logResult)
+	additionalInfo := putLogTruncation(addExecutedQueryInfo(map[string]any{"title": "Trace Logs For - " + traceID}, logResult), truncation)
 	return a.buildLogResponse(logResult.Logs, map[string]any{
 		"trace_id": traceID,
 		"source":   "configured_integration",
@@ -1993,7 +2218,7 @@ func (a *observabilityLogAction) autoExecuteByWorkload(ctx playbooks.PlaybookAct
 
 	// Try configured log source with workload-based query
 	requestCtx := security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil)
-	logResult, err := FetchLogs(requestCtx, FetchLogRequest{
+	logResult, truncation, err := fetchCardLogs(requestCtx, FetchLogRequest{
 		AccountId: ctx.GetAccountId(),
 		StartTime: startTime,
 		EndTime:   endTime,
@@ -2015,7 +2240,7 @@ func (a *observabilityLogAction) autoExecuteByWorkload(ctx playbooks.PlaybookAct
 			"workload_name": workloadName,
 			"namespace":     namespace,
 			"source":        "configured_integration",
-		}, addExecutedQueryInfo(map[string]any{}, logResult))
+		}, putLogTruncation(addExecutedQueryInfo(map[string]any{}, logResult), truncation))
 	}
 
 	// Skip relay fallback for cloud event sources — these accounts have no K8s agent
@@ -2398,7 +2623,7 @@ func (a *observabilityLogAction) Execute(ctx playbooks.PlaybookActionContext, ra
 
 	startTime, endTime := resolveLogQueryWindow(ctx.GetEvent(), params.Duration)
 
-	logResult, err := FetchLogs(security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil), FetchLogRequest{
+	logResult, truncation, err := fetchCardLogs(security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil), FetchLogRequest{
 		AccountId: params.AccountId,
 		Query:     params.Query,
 		Request:   params.QueryOptions,
@@ -2411,7 +2636,7 @@ func (a *observabilityLogAction) Execute(ctx playbooks.PlaybookActionContext, ra
 		return nil, err
 	}
 
-	return logsResponseOrNil(buildLogsActionResponse(logResult.Logs, "", addExecutedQueryInfo(map[string]any{}, logResult), actionLogMaxInsightErrors, rawParams, params.RegexExtractors, params.LabelExtractors))
+	return logsResponseOrNil(buildLogsActionResponse(logResult.Logs, "", putLogTruncation(addExecutedQueryInfo(map[string]any{}, logResult), truncation), actionLogMaxInsightErrors, rawParams, params.RegexExtractors, params.LabelExtractors))
 }
 
 // Datadog Logs Action

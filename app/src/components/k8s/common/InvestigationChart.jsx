@@ -3,6 +3,12 @@ import { Box, Typography, Grid } from '@mui/material';
 import PropTypes from 'prop-types';
 import { ds, resolveColor, resolveColors } from '@utils/colors';
 
+// The units MemoryAllocationCard converts each series into before it gets here.
+// Container series are memory only.
+const POD_UNITS = { memory: 'MiB', cpu: 'millicores' };
+const NODE_UNITS = { memory: 'GiB', cpu: 'cores' };
+const chartTitle = (subject, resourceType, units) => `${subject} ${resourceType}${units[resourceType] ? ` (${units[resourceType]})` : ''}`;
+
 const InvestigationCharts = ({
   data, // Container memory usage
   labels, // Container memory usage labels
@@ -16,7 +22,8 @@ const InvestigationCharts = ({
   podLimitRequest, // Pod memory limit and request
   dataRequestN, // Node memory request
   dataRequestL, // Node memory request labels
-  resourceType = 'memory',
+  resourceType = 'memory', // Pod series
+  nodeResourceType = 'memory', // Node series
 }) => {
   let containerData = {};
   if (data && data.length > 0) {
@@ -232,7 +239,7 @@ const InvestigationCharts = ({
             }}
           >
             <Typography fontSize={ds.text.bodyLg} fontWeight={500} color={ds.gray[700]}>
-              {`Container ${resourceType}` + `${resourceType == 'memory' ? ' (MB)' : ''}`}
+              Container memory (MiB)
             </Typography>
             <Chart.Line
               colors={resolveColors([ds.amber[500], ds.blue[500], ds.red[500]])}
@@ -260,7 +267,7 @@ const InvestigationCharts = ({
             }}
           >
             <Typography fontSize={ds.text.bodyLg} fontWeight={500} color={ds.gray[700]}>
-              {`Node ${resourceType}` + `${resourceType == 'memory' ? ' (GB)' : ''}`}
+              {chartTitle('Node', nodeResourceType, NODE_UNITS)}
             </Typography>
             <Chart.Line dataset={nodeData.datasets ?? []} labels={nodeData.labels} scaleOptions={options.scales} />
           </Box>
@@ -282,7 +289,7 @@ const InvestigationCharts = ({
             }}
           >
             <Typography fontSize={ds.text.bodyLg} fontWeight={600} color={ds.gray[700]}>
-              {`Pod ${resourceType}` + `${resourceType == 'memory' ? ' (MB)' : ''}`}
+              {chartTitle('Pod', resourceType, POD_UNITS)}
             </Typography>
             <Chart.Line dataset={podData.datasets ?? []} labels={podData.labels} scaleOptions={options.scales} />
           </Box>
@@ -306,6 +313,7 @@ InvestigationCharts.propTypes = {
   dataRequestN: PropTypes.array,
   dataRequestL: PropTypes.array,
   resourceType: PropTypes.string,
+  nodeResourceType: PropTypes.string,
 };
 
 export default InvestigationCharts;

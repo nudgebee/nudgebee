@@ -48,6 +48,7 @@ const CLASSIFICATION_INFO: Record<string, { tone: ChipTone; description: string 
   false_positive: { tone: 'critical', description: 'Mostly noise — high transient rate, low engagement' },
   broken: { tone: 'critical', description: 'Misconfigured — fires constantly with no resolution' },
   noisy_but_real: { tone: 'warning', description: 'Fires too often but represents real conditions' },
+  noisy_ignored: { tone: 'warning', description: 'Fires often and stays firing, but nobody acts on it' },
   healthy: { tone: 'success', description: 'Firing at acceptable patterns, threshold tuning can reduce noise' },
 };
 

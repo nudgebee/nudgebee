@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"nudgebee/tickets-server/clients"
 	"nudgebee/tickets-server/models"
 	"nudgebee/tickets-server/services/ticket"
@@ -56,8 +57,11 @@ func (s *GitLabService) Get(ctx *gin.Context, config models.TicketConfigurations
 	}
 	projectKey := config.Projects[0].Key
 
-	issue, _, err := gitlabClient.Issues.GetIssue(projectKey, issueIID)
+	issue, resp, err := gitlabClient.Issues.GetIssue(projectKey, issueIID)
 	if err != nil {
+		if resp != nil && resp.StatusCode == http.StatusNotFound {
+			return nil, fmt.Errorf("gitlab issue %s#%d not found: %w", projectKey, issueIID, ticket.ErrNotFound)
+		}
 		return nil, fmt.Errorf("failed to get GitLab issue: %w", err)
 	}
 

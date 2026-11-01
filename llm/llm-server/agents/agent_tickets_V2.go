@@ -65,6 +65,7 @@ func (a TicketMasterV2Agent) GetSystemPrompt(ctx *security.RequestContext, query
 	}
 
 	instructions := []string{
+		codeOwnershipInstructions,
 		"**Analyze User Request**: Determine if the user wants to create a ticket, list tickets, add a comment, get comments, or get ticket details.",
 		"**Before Creating Tickets**: ALWAYS call ticket_master_v2 with operation_type='get_create_meta' and include project_key if known. This returns required/optional field keys, types, and allowed values. Read the response carefully — it includes a field mapping guide that tells you which fields map to standard parameters (title, description, ticket_type, severity, assignee) and which go in additional_fields. For GitHub and GitLab integrations, if only one project/repository is configured it is auto-selected. If multiple are configured and no project_key is provided, the tool returns an error listing available projects — use ask_clarification with 'single_select' to ask the user to choose one, then retry with the selected project_key. When the response includes a 'Selected project' line, use that exact value as project_key in create_ticket.",
 		reviewFieldsInstruction,

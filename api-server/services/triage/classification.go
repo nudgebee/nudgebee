@@ -355,26 +355,29 @@ type eventBasicInfo struct {
 	TenantID         string  `db:"tenant"`
 	AggregationKey   *string `db:"aggregation_key"`
 	FindingType      *string `db:"finding_type"`
+	Source           *string `db:"source"`
+	SubjectType      *string `db:"subject_type"`
+	SubjectName      *string `db:"subject_name"`
 	SubjectOwner     *string `db:"subject_owner"`
 	SubjectNamespace *string `db:"subject_namespace"`
 }
 
 // classKey derives the signal-class key for this event projection (same formula as ClassKey).
 func (e *eventBasicInfo) classKey() string {
-	get := func(p *string) string {
-		if p == nil {
-			return ""
-		}
-		return *p
-	}
-	return classKeyFromParts(get(e.AggregationKey), get(e.FindingType), get(e.SubjectOwner), get(e.SubjectNamespace))
+	return classKeyFromParts(deref(e.AggregationKey), deref(e.FindingType), classSubject{
+		Source:    deref(e.Source),
+		Owner:     deref(e.SubjectOwner),
+		Type:      deref(e.SubjectType),
+		Name:      deref(e.SubjectName),
+		Namespace: deref(e.SubjectNamespace),
+	})
 }
 
 // loadEventByID loads basic event info by ID
 func loadEventByID(ctx context.Context, db *sqlx.DB, eventID, cloudAccountID string) (*eventBasicInfo, error) {
 	query := `
 		SELECT id, title, fingerprint, computed_score, computed_priority, cloud_account_id, tenant,
-		       aggregation_key, finding_type, subject_owner, subject_namespace
+		       aggregation_key, finding_type, source, subject_type, subject_name, subject_owner, subject_namespace
 		FROM events
 		WHERE id = $1 AND cloud_account_id = $2
 	`
@@ -668,22 +671,21 @@ func addDuplicateLabelTx(ctx context.Context, tx *sqlx.Tx, eventID, linkedEventI
 	return err
 }
 
-// getFirstEventIDFromChainTx looks up the TRUE first event for a fingerprint from event_duplicates (within transaction)
-func getFirstEventIDFromChainTx(ctx context.Context, tx *sqlx.Tx, fingerprint, cloudAccountID string) string {
+// getFirstEventIDFromChainTx looks up the TRUE first event of the chain eventID belongs to (within transaction).
+// Keyed on the event's own row for the same reason as getFirstEventIDFromChain.
+func getFirstEventIDFromChainTx(ctx context.Context, tx *sqlx.Tx, eventID, cloudAccountID string) string {
 	query := `
 		SELECT first_event_id
 		FROM event_duplicates
-		WHERE fingerprint = $1
+		WHERE event_id = $1
 		  AND cloud_account_id = $2
-		  AND occurrence_number = 1
-		LIMIT 1
 	`
 
 	var firstEventID string
-	err := tx.GetContext(ctx, &firstEventID, query, fingerprint, cloudAccountID)
+	err := tx.GetContext(ctx, &firstEventID, query, eventID, cloudAccountID)
 	if err != nil {
-		slog.DebugContext(ctx, "No duplicate chain found for fingerprint",
-			"fingerprint", fingerprint,
+		slog.DebugContext(ctx, "No duplicate chain found for event",
+			"event_id", eventID,
 			"error", err,
 		)
 		return ""
@@ -782,7 +784,7 @@ func createRuleFromClassificationTx(ctx context.Context, tx *sqlx.Tx, c *EventCl
 		// This ensures nb_duplicate_of always points to the original event
 		linkedEventID := c.LinkedEventID
 		if event.Fingerprint != nil {
-			firstEventID := getFirstEventIDFromChainTx(ctx, tx, *event.Fingerprint, c.CloudAccountID)
+			firstEventID := getFirstEventIDFromChainTx(ctx, tx, event.ID, c.CloudAccountID)
 			if firstEventID != "" {
 				linkedEventID = &firstEventID
 				slog.InfoContext(ctx, "Using true first event for duplicate rule",

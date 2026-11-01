@@ -54,7 +54,7 @@ export async function encodeSessionJWT(user: any, claims: any, exp: number, iat:
   }
   // jti is the per-token identifier the server-side denylist
   // (sessionRevocation) keys on for per-jti revocations from
-  // /api/auth/revoke. User-wide revocations (NextAuth signOut event) ignore
+  // the relay proxy. User-wide revocations (NextAuth signOut event) ignore
   // jti and key on user_id + revoked_at vs iat, so old tokens minted before
   // this field existed remain checkable too.
   const jti = crypto.randomUUID();

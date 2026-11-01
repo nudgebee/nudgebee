@@ -1,8 +1,14 @@
 package tools
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/url"
 	"nudgebee/tickets-server/clients"
 	"nudgebee/tickets-server/models"
 	"nudgebee/tickets-server/services/ticket"
@@ -69,7 +75,7 @@ func resolveIncidentAPIID(ctx *gin.Context, client *pagerduty.Client, ticketID s
 		offset += 100
 	}
 
-	return "", fmt.Errorf("PagerDuty incident with number %s not found", ticketID)
+	return "", fmt.Errorf("PagerDuty incident with number %s not found: %w", ticketID, ticket.ErrNotFound)
 }
 
 func (s *PagerDutyService) Create(ctx *gin.Context, config models.TicketConfigurations, t models.Ticket) (models.Ticket, error) {
@@ -121,8 +127,11 @@ func (s *PagerDutyService) Get(ctx *gin.Context, config models.TicketConfigurati
 		return nil, fmt.Errorf("failed to resolve PagerDuty incident: %w", err)
 	}
 
-	incident, err := client.GetIncidentWithContext(ctx, apiID)
+	incident, full, err := readPagerDutyIncident(ctx, client, clients.NormalizePagerDutyEndpoint(""), apiID)
 	if err != nil {
+		if pagerDutyIsNotFound(err) {
+			return nil, fmt.Errorf("pagerduty incident %s not found: %w", ticketID, ticket.ErrNotFound)
+		}
 		return nil, fmt.Errorf("failed to get PagerDuty incident: %w", err)
 	}
 
@@ -172,8 +181,115 @@ func (s *PagerDutyService) Get(ctx *gin.Context, config models.TicketConfigurati
 		URL:         incident.HTMLURL,
 		CreatedAt:   createdAt,
 		UpdatedAt:   updatedAt,
-		Raw:         marshalToMap(incident),
+		Raw:         pagerDutyRaw(incident, full),
 	}, nil
+}
+
+// maxPagerDutyIncidentBytes bounds how much of one incident response is read.
+const maxPagerDutyIncidentBytes = 10 << 20
+
+type pagerDutyStatusError struct{ statusCode int }
+
+func (e pagerDutyStatusError) Error() string {
+	return fmt.Sprintf("status %d: %s", e.statusCode, http.StatusText(e.statusCode))
+}
+
+// pagerDutyIsNotFound reports whether err means the incident does not exist
+// upstream (deleted, or never valid), covering both read paths
+// readPagerDutyIncident can return: getPagerDutyIncidentWithCustomFields's
+// own status wrapper, and the SDK's own error type from the plain fallback
+// read.
+func pagerDutyIsNotFound(err error) bool {
+	var statusErr pagerDutyStatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.statusCode == http.StatusNotFound
+	}
+	var apiErr pagerduty.APIError
+	return errors.As(err, &apiErr) && apiErr.NotFound()
+}
+
+// retryWithoutCustomFields says whether the plain SDK read can succeed where the
+// read with custom fields failed. A cancelled request, a rejected token or a
+// missing incident fail the same way without the include, so they are returned
+// as they are.
+func retryWithoutCustomFields(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	var statusErr pagerDutyStatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.statusCode != http.StatusUnauthorized && statusErr.statusCode != http.StatusNotFound
+	}
+	return true
+}
+
+// readPagerDutyIncident reads an incident with its custom fields. The SDK's
+// Incident struct keeps only the keys it models, so custom fields and anything
+// else PagerDuty adds are lost if the SDK decodes the response; the full body is
+// kept here alongside the typed incident. If that read fails, for example on an
+// account that does not accept the custom_fields include, it falls back to the
+// SDK read, which returns full as nil, unless the plain read would fail too.
+func readPagerDutyIncident(ctx context.Context, client *pagerduty.Client, endpoint, apiID string) (*pagerduty.Incident, map[string]any, error) {
+	incident, full, err := getPagerDutyIncidentWithCustomFields(ctx, client, endpoint, apiID)
+	if err == nil {
+		return incident, full, nil
+	}
+	if !retryWithoutCustomFields(ctx, err) {
+		return nil, nil, err
+	}
+	slog.Warn("PagerDuty incident read with custom fields failed; reading without them", "incident_id", apiID, "error", err)
+	incident, err = client.GetIncidentWithContext(ctx, apiID)
+	return incident, nil, err
+}
+
+func getPagerDutyIncidentWithCustomFields(ctx context.Context, client *pagerduty.Client, endpoint, apiID string) (*pagerduty.Incident, map[string]any, error) {
+	target := endpoint + "/incidents/" + url.PathEscape(apiID) + "?include[]=custom_fields"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	resp, err := client.Do(req, true)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, nil, pagerDutyStatusError{statusCode: resp.StatusCode}
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPagerDutyIncidentBytes))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var envelope struct {
+		Incident json.RawMessage `json:"incident"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, nil, err
+	}
+	if len(envelope.Incident) == 0 {
+		return nil, nil, fmt.Errorf("response has no incident")
+	}
+	var incident pagerduty.Incident
+	if err := json.Unmarshal(envelope.Incident, &incident); err != nil {
+		return nil, nil, err
+	}
+	var full map[string]any
+	if err := json.Unmarshal(envelope.Incident, &full); err != nil {
+		return nil, nil, err
+	}
+	return &incident, full, nil
+}
+
+// pagerDutyRaw is the incident as PagerDuty sent it when that is available. It
+// holds every key the SDK's struct would have, since each struct field is
+// omitempty under the same JSON name, plus the keys the SDK drops (custom_fields
+// among them). After a fallback read only the SDK's struct is available.
+func pagerDutyRaw(incident *pagerduty.Incident, full map[string]any) map[string]any {
+	if full != nil {
+		return full
+	}
+	return marshalToMap(incident)
 }
 
 // Acknowledge acknowledges a PagerDuty incident.

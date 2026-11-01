@@ -1,0 +1,37 @@
+{
+  "_comment": "Contract for Run Script step rules. runbook-server (executors.CheckAccountSupports, executors.ScriptLogin) and the app's Run Script hint (scriptRunLocation.ts) are both tested against this file; change it and both sides must follow.",
+  "account_executor": [
+    { "executor": "kubernetes", "provider": "K8s", "ok": false },
+    { "executor": "aws_ssm", "provider": "K8s", "ok": false },
+    { "executor": "azure_run_command", "provider": "K8s", "ok": false },
+    { "executor": "gcp_compute_ssh", "provider": "K8s", "ok": false },
+    { "executor": "kubernetes", "provider": "SelfHosted", "ok": false },
+    { "executor": "aws_ssm", "provider": "Azure", "ok": false },
+    { "executor": "gcp_compute_ssh", "provider": "AWS", "ok": false },
+    { "executor": "azure_run_command", "provider": "GCP", "ok": false },
+    { "executor": "kubernetes", "provider": "AWS", "ok": true },
+    { "executor": "kubernetes", "provider": "Azure", "ok": true },
+    { "executor": "kubernetes", "provider": "GCP", "ok": true },
+    { "executor": "aws_ssm", "provider": "AWS", "ok": true },
+    { "executor": "azure_run_command", "provider": "Azure", "ok": true },
+    { "executor": "gcp_compute_ssh", "provider": "GCP", "ok": true },
+    { "executor": "agent", "provider": "K8s", "ok": true },
+    { "executor": "ssh", "provider": "K8s", "ok": true },
+    { "executor": "", "provider": "K8s", "ok": true },
+    { "executor": "kubernetes", "provider": "", "ok": true }
+  ],
+  "script_login": [
+    { "script": "creds=$(aws sts assume-role --role-arn \"$ROLE\" --role-session-name x)", "login": "sts assume-role" },
+    { "script": "ROLE=arn:aws:iam::123456789012:role/Deploy\nexport X=1", "login": "a hard-coded role ARN" },
+    { "script": "aws eks update-kubeconfig --name prod --kubeconfig /tmp/k", "login": "aws eks update-kubeconfig" },
+    { "script": "az login --identity >/dev/null", "login": "az login" },
+    { "script": "gcloud auth activate-service-account --key-file k.json", "login": "gcloud auth" },
+    { "script": "unset KUBERNETES_SERVICE_HOST KUBERNETES_SERVICE_PORT", "login": "unsetting the in-cluster Kubernetes settings" },
+    { "script": "export AWS_ACCESS_KEY_ID=\"$KEY\"", "login": "AWS access keys" },
+    { "script": "echo ok", "env": { "AWS_SECRET_ACCESS_KEY": "{{ Secrets.key }}" }, "login": "AWS access keys" },
+    { "script": "kubectl get pods -n \"$NAMESPACE\"", "login": "" },
+    { "script": "aws ec2 describe-instances --region us-west-2", "login": "" },
+    { "script": "aws sts get-caller-identity", "login": "" },
+    { "script": "terraform init && terraform apply -auto-approve", "login": "" }
+  ]
+}

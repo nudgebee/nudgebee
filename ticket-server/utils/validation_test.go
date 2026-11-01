@@ -202,3 +202,25 @@ func TestValidateTicketID_ReturnsTypedError(t *testing.T) {
 		t.Error("expected a non-empty Reason on the validation error")
 	}
 }
+
+func TestNormalizeServiceNowBaseURL(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"bare host", "dev12345.service-now.com", "https://dev12345.service-now.com"},
+		{"https prefix", "https://dev12345.service-now.com", "https://dev12345.service-now.com"},
+		{"http prefix", "http://dev12345.service-now.com", "https://dev12345.service-now.com"},
+		{"trailing slash", "https://dev12345.service-now.com/", "https://dev12345.service-now.com"},
+		{"whitespace and trailing slash", "  https://dev12345.service-now.com/  ", "https://dev12345.service-now.com"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NormalizeServiceNowBaseURL(tt.input); got != tt.want {
+				t.Errorf("NormalizeServiceNowBaseURL(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}

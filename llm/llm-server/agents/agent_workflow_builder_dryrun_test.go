@@ -36,7 +36,7 @@ func TestWorkflowBuilderAgent_ToolDryRun(t *testing.T) {
 	innerDef := map[string]interface{}{"version": "v1", "triggers": []interface{}{}, "tasks": []interface{}{}}
 	agent.state.WorkingWorkflow = map[string]interface{}{"name": "cf-stack-cleanup", "definition": innerDef}
 
-	out := agent.toolDryRun(dryRunBuilderCtx())
+	out := agent.toolDryRun(dryRunBuilderCtx(), nil)
 
 	assert.Equal(t, "/workflows/dry-run", gotPath)
 	assert.Equal(t, innerDef, gotBody["definition"], "the inner definition must be sent under the definition key")
@@ -51,6 +51,6 @@ func TestWorkflowBuilderAgent_ToolDryRun(t *testing.T) {
 
 func TestWorkflowBuilderAgent_ToolDryRun_NotInitialized(t *testing.T) {
 	agent := newWorkflowBuilderAgent("acct-1")
-	out := agent.toolDryRun(dryRunBuilderCtx())
+	out := agent.toolDryRun(dryRunBuilderCtx(), nil)
 	assert.Contains(t, out, "not initialized")
 }

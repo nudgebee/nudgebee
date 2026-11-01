@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from notifications_server.models.models import (
     Integration,
@@ -384,6 +384,73 @@ def load_installation(session, tenant_id, platform: str) -> Optional[MessagingPl
     """Sync: the single install for (tenant, platform), or None (one per tenant)."""
     installs = load_installations(session, tenant_id, platform)
     return installs[0] if installs else None
+
+
+def load_ms_teams_installation_by_aad_tenant(session, aad_tenant_id) -> Optional[MessagingPlatform]:
+    """The enabled ms_teams install linked to a Microsoft tenant. The integration
+    name is the tenant id; installs saved before that carry "<object id>.<tenant
+    id>" (integrations until the rename migration runs, legacy rows always)."""
+    if not aad_tenant_id:
+        return None
+    suffix = f".{aad_tenant_id}"
+    integ = (
+        session.query(Integration)
+        .filter(
+            Integration.type == "ms_teams",
+            Integration.status != "disabled",
+            or_(Integration.name == aad_tenant_id, Integration.name.endswith(suffix, autoescape=True)),
+        )
+        # Deterministic if two tenants share a Microsoft tenant (the unique index
+        # is skipped while such data exists): the latest connection wins.
+        .order_by(Integration.updated_at.desc().nulls_last(), Integration.id)
+        .first()
+    )
+    if integ:
+        rows = session.query(IntegrationConfigValue).filter(IntegrationConfigValue.integration_id == integ.id).all()
+        return build_installation("ms_teams", integ, _decrypt_config(rows))
+    legacy = (
+        session.query(MessagingPlatform)
+        .filter(
+            MessagingPlatform.platform == "ms_teams",
+            or_(
+                MessagingPlatform.team_id == aad_tenant_id, MessagingPlatform.team_id.endswith(suffix, autoescape=True)
+            ),
+        )
+        .first()
+    )
+    if legacy:
+        legacy._origin = ORIGIN_LEGACY
+    return legacy
+
+
+def ms_teams_aad_tenant_owner(session, aad_tenant_id, enabled_only: bool = False) -> Optional[str]:
+    """The NudgeBee tenant whose ms_teams install (integration, or legacy row) is
+    linked to this Microsoft tenant, or None. One Microsoft tenant links to one
+    NudgeBee tenant. Connect counts disabled integrations too, so a disabled
+    connection can't be claimed by another workspace."""
+    if not aad_tenant_id:
+        return None
+    suffix = f".{aad_tenant_id}"
+    query = session.query(Integration.tenant_id).filter(
+        Integration.type == "ms_teams",
+        or_(Integration.name == aad_tenant_id, Integration.name.endswith(suffix, autoescape=True)),
+    )
+    if enabled_only:
+        query = query.filter(Integration.status != "disabled")
+    integ = query.order_by(Integration.updated_at.desc().nulls_last(), Integration.id).first()
+    if integ:
+        return str(integ[0])
+    legacy = (
+        session.query(MessagingPlatform.tenant_id)
+        .filter(
+            MessagingPlatform.platform == "ms_teams",
+            or_(
+                MessagingPlatform.team_id == aad_tenant_id, MessagingPlatform.team_id.endswith(suffix, autoescape=True)
+            ),
+        )
+        .first()
+    )
+    return str(legacy[0]) if legacy else None
 
 
 def load_installation_by_team(

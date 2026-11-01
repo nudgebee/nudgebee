@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net"
 	"nudgebee/llm/config"
+	"os"
 	"strconv"
 	"testing"
 	"time"
@@ -25,6 +26,9 @@ func requireRabbitMQ(t *testing.T) {
 	addr := net.JoinHostPort(config.Config.RabbitMqHost, strconv.Itoa(config.Config.RabbitMqPort))
 	conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
 	if err != nil {
+		if os.Getenv("NB_REQUIRE_RABBITMQ") != "" {
+			t.Fatalf("RabbitMQ required (NB_REQUIRE_RABBITMQ) but not reachable at %s: %v", addr, err)
+		}
 		t.Skipf("RabbitMQ not reachable at %s; skipping (%v)", addr, err)
 	}
 	_ = conn.Close()

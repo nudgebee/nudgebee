@@ -128,7 +128,8 @@ describe('rollback choices', () => {
     const single = await cardFor([change('c1', '2026-09-16T17:12:28Z', [image('v1', 'v2')])]);
     expect(single.choosesTarget).toBe(false);
     expect(single.actionSubject).toBeTruthy();
-    expect(single.actionDetail).toBe('31h before the alert · changes image');
+    // A single change states what the rollback writes back: running now → after rollback.
+    expect(single.actionDetail).toBe('31h before the alert · rolls back image v2 → v1');
   });
 
   // app-test: the newest change was a cron scaling 0 → 2, and the row offered to "fix" it by scaling

@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM golang:1.26.6-alpine AS builder
+FROM ghcr.io/nudgebee/golang:1.26.10-alpine AS builder
 
 WORKDIR /app
 
@@ -38,24 +38,36 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux GOBIN=/usr/local/bin \
-    go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0
+    go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
 
 # Install the GitLab CLI (glab) from source rather than `apk add glab`.
 # Two reasons: (1) Alpine v3.22 community pins glab at 1.58.0-r5, which is far
 # behind, and (2) llm-server's base image has no glab apt package and builds it
 # from source too — building both from the same pinned version keeps the
 # workspace pod and llm-server's local-exec fallback on identical glab, so a
-# prompt that works in one works in the other. `gh` is the counter-example to
-# avoid: apk `github-cli` here vs a source build there, free to drift.
+# prompt that works in one works in the other. `gh` follows the same rule: Alpine's
+# `github-cli` package is a prebuilt Go binary that lags Go security releases, so
+# it is built here at the version llm-server's base image pins.
 # Consumed by llm-server's gitlab_execute tool (tools/tool_gitlab.go) and by
 # this service's own glab tool (tools/glab_tool.go).
+#
+# glab gets its own stage because v1.122+ (the first release on patched
+# x/net/x/image/x/crypto) requires Go 1.27. It is a static CGO-free binary, so
+# building it on a newer toolchain than the shipped /usr/local/go is safe —
+# unlike golangci-lint, which must match the toolchain it analyses with.
+FROM ghcr.io/nudgebee/golang:1.27.3-alpine AS glab-builder
+ENV GOTOOLCHAIN=local
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux GOBIN=/usr/local/bin \
-    go install gitlab.com/gitlab-org/cli/cmd/glab@v1.112.0
+    go install gitlab.com/gitlab-org/cli/cmd/glab@v1.126.0
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux GOBIN=/usr/local/bin \
+    go install github.com/cli/cli/v2/cmd/gh@v2.103.3
 
 # Final stage
-FROM ghcr.io/nudgebee/alpine:3.22
+FROM ghcr.io/nudgebee/alpine:3.23
 
 
 WORKDIR /app
@@ -68,8 +80,10 @@ WORKDIR /app
 # cache key so BuildKit re-runs the apk install and pulls current Alpine security
 # patches instead of a stale cached layer. Committed (not a build-arg) so each
 # refresh is a reviewable, revertable diff; bump when the Trivy scan flags a stale
-# package (e.g. c-ares CVE-2026-33630); currently W36 pulls patched packages (libcrypto3 3.5.8-r0).
-ARG OS_PKG_EPOCH=2026-W36
+# package (e.g. c-ares CVE-2026-33630).
+# Currently W44 pulls ca-certificates 20261020, which drops the distrusted
+# emSign ECC Root CA - G3.
+ARG OS_PKG_EPOCH=2026-W44
 RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
     && apk upgrade --no-cache \
     && apk add --no-cache \
@@ -92,7 +106,6 @@ RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
     ripgrep \
     the_silver_searcher \
     ca-certificates \
-    github-cli \
     aws-cli \
     python3 \
     py3-pip \
@@ -142,7 +155,11 @@ ENV GOCACHE=/tmp/code-analysis/shared-cache/go-build \
     GRADLE_USER_HOME=/tmp/code-analysis/shared-cache/gradle
 
 # Install Azure CLI in a venv to isolate its dependencies (e.g. urllib3 2.x)
-# from system Python packages used by apk-installed aws-cli
+# from system Python packages used by apk-installed aws-cli.
+# The system packages aws-cli runs on are then upgraded past Alpine's py3-*
+# builds, which lag these fixes: certifi (GHSA-6q48-6c7w-9gw2), urllib3
+# (GHSA-mf9v-mfxr-j63j), and setuptools' vendored jaraco.context and wheel
+# (84.2.1 vendors 6.1.0 / 0.46.3; GHSA-58pv-8j8x-9vj2, GHSA-8rrh-rw8j-w5fx).
 RUN apk add --no-cache --virtual .build-deps \
     gcc \
     musl-dev \
@@ -156,8 +173,12 @@ RUN apk add --no-cache --virtual .build-deps \
     /opt/azure-cli-venv/bin/pip install --no-cache-dir --upgrade pip && \
     /opt/azure-cli-venv/bin/pip install --no-cache-dir azure-cli "cryptography>=48.0.1" && \
     ln -s /opt/azure-cli-venv/bin/az /usr/local/bin/az && \
-    pip install --no-cache-dir --break-system-packages --upgrade "cryptography>=48.0.1" && \
+    pip install --no-cache-dir --break-system-packages --upgrade \
+        "cryptography>=48.0.1" "certifi>=2026.10.18" "urllib3>=2.7.0,<3" "jmespath>=1.1.0" "setuptools>=84.2.1" && \
     apk del .build-deps
+# urllib3 2.8.0 warns on the `strict` argument Alpine's botocore still passes, once
+# per aws call. Silence that one warning so it stays out of command output.
+ENV PYTHONWARNINGS=ignore::FutureWarning:urllib3.poolmanager
 
 # Pre-install Azure CLI extensions to a fixed directory.
 # AZURE_EXTENSION_DIR decouples extension storage from AZURE_CONFIG_DIR,
@@ -182,7 +203,11 @@ RUN apk add --no-cache \
 # Install common linters and package managers
 # Python tools are installed in a venv to avoid polluting system site-packages
 # (e.g. poetry pulls in urllib3 2.x which breaks apk-installed aws-cli)
-RUN npm install -g yarn pnpm && \
+# Alpine's npm package lags npm's own dependency fixes (tar, minimatch, pacote), so
+# replace it with a pinned npm from the same major. The prefix keeps it out of the
+# paths `apk del` removes, and the apk copy has to go or scanners keep reporting it.
+RUN npm install -g --prefix=/usr/local npm@11.21.1 yarn pnpm && \
+    apk del --no-cache npm && \
     python3 -m venv /opt/python-tools && \
     /opt/python-tools/bin/pip install --no-cache-dir --upgrade pip && \
     /opt/python-tools/bin/pip install --no-cache-dir poetry black flake8 mypy && \
@@ -217,13 +242,30 @@ RUN npm install --no-save --prefix /tmp/tarfix "tar@${TAR_VERSION}" \
            || { echo "ERROR: unpatched pnpm vendored tar at $d"; exit 1; }; \
        done
 
+# Patch npm's bundled undici the same way: every npm release up to 12.2.1 ships
+# 6.29.0 (GHSA-xjj6-f33q-929c, HIGH). undici has no dependencies and this is a
+# patch-level bump. Bump UNDICI_VERSION when the scan flags it again.
+ARG UNDICI_VERSION=6.29.1
+RUN npm install --no-save --prefix /tmp/undicifix "undici@${UNDICI_VERSION}" \
+    && for d in $(find /usr/local/lib/node_modules/npm \
+                    -type d -path '*/node_modules/undici' -prune -print); do \
+         rm -rf "$d" && cp -R /tmp/undicifix/node_modules/undici "$d"; \
+       done \
+    && rm -rf /tmp/undicifix \
+    && for d in $(find /usr/local/lib/node_modules/npm \
+                    -type d -path '*/node_modules/undici' -prune -print); do \
+         grep -q "\"version\": \"${UNDICI_VERSION}\"" "$d/package.json" \
+           || { echo "ERROR: unpatched npm bundled undici at $d"; exit 1; }; \
+       done
+
 # Copy Go toolchain and golangci-lint from builder.
 # Builder uses golang:1.26-alpine; matching that here keeps build/vet runnable
 # against modules that pin go >= 1.26.
 COPY --from=builder /usr/local/go /usr/local/go
 ENV PATH=/usr/local/go/bin:$PATH
 COPY --from=builder /usr/local/bin/golangci-lint /usr/local/bin/golangci-lint
-COPY --from=builder /usr/local/bin/glab /usr/local/bin/glab
+COPY --from=glab-builder /usr/local/bin/glab /usr/local/bin/glab
+COPY --from=glab-builder /usr/local/bin/gh /usr/bin/gh
 
 # Create a non-root user
 RUN adduser -D -g '' appuser

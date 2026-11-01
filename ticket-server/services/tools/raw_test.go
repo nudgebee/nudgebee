@@ -3,6 +3,8 @@ package tools
 import (
 	"testing"
 	"time"
+
+	"nudgebee/tickets-server/clients"
 )
 
 // Verifies marshalToMap round-trips an arbitrary tagged struct (modelling
@@ -95,5 +97,36 @@ func TestMarshalToMap_NonMarshalableReturnsNil(t *testing.T) {
 	ch := make(chan int)
 	if got := marshalToMap(ch); got != nil {
 		t.Errorf("marshalToMap(chan) = %v, want nil (marshal must fail gracefully)", got)
+	}
+}
+
+func TestRawWithUnmodeledKeepsTypedValuesAndAddsTheRest(t *testing.T) {
+	typed := &clients.ZenDutyIncident{
+		UniqueID:   "zd-1",
+		Title:      "Checkout latency",
+		AssignedTo: clients.FlexibleZenDutyAssign{{Username: "alice"}},
+	}
+	full := map[string]any{
+		"unique_id":     "zd-1",
+		"title":         "Checkout latency",
+		"assigned_to":   "user-uuid-1",
+		"linked_ticket": "OPS-42",
+	}
+
+	raw := rawWithUnmodeled(typed, full)
+	if raw["linked_ticket"] != "OPS-42" {
+		t.Errorf("a key the struct does not model must reach raw, got %v", raw["linked_ticket"])
+	}
+	assigned, ok := raw["assigned_to"].([]any)
+	if !ok || len(assigned) != 1 {
+		t.Errorf("assigned_to must keep the typed shape automations already read, got %#v", raw["assigned_to"])
+	}
+	if full["assigned_to"] != "user-uuid-1" {
+		t.Error("the upstream map must not be modified")
+	}
+
+	fallback := rawWithUnmodeled(typed, nil)
+	if fallback["title"] != "Checkout latency" || fallback["linked_ticket"] != nil {
+		t.Errorf("without a full response raw is the typed value alone, got %v", fallback)
 	}
 }

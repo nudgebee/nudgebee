@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"nudgebee/llm/security"
+	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 	"strings"
 
@@ -45,11 +46,28 @@ func RegisterNBAgentFactoryWithAliases(agent string, agentFactory func(accountId
 	}
 }
 
+// ExecutionTargetAwareAgent marks a child that can use a delegated execution
+// target. Agent-tools are target-blind unless their implementation opts in.
+type ExecutionTargetAwareAgent interface {
+	AcceptsExecutionTarget()
+}
+
 func NewToolFromAgent(agent NBAgent) toolcore.NBTool {
-	return &nbAgentTool{name: agent.GetName(), description: agent.GetDescription(), input: "Refer description for inputs", output: "Refer description for inputs", agent: agent, toolType: toolcore.NBToolTypeAgent}
+	_, targetSupported := agent.(ExecutionTargetAwareAgent)
+	return &nbAgentTool{name: agent.GetName(), description: agent.GetDescription(), input: "Refer description for inputs", output: "Refer description for inputs", agent: agent, toolType: toolcore.NBToolTypeAgent, targetSupported: targetSupported}
 }
 
 func RegisterNBAgentFactoryAndTool(agent string, agentFactory func(accountId string) (NBAgent, error), toolDescription string, toolInput string, toolOutput string) {
+	registerNBAgentFactoryAndTool(agent, agentFactory, toolDescription, toolInput, toolOutput, false)
+}
+
+// RegisterTargetAwareNBAgentFactoryAndTool exposes a target only for children
+// whose own execution tools can honor it.
+func RegisterTargetAwareNBAgentFactoryAndTool(agent string, agentFactory func(accountId string) (NBAgent, error), toolDescription string, toolInput string, toolOutput string) {
+	registerNBAgentFactoryAndTool(agent, agentFactory, toolDescription, toolInput, toolOutput, true)
+}
+
+func registerNBAgentFactoryAndTool(agent string, agentFactory func(accountId string) (NBAgent, error), toolDescription string, toolInput string, toolOutput string, targetSupported bool) {
 	slog.Info("registering agent", "agent", agent)
 	if _, ok := nbSystemAgents[strings.ToLower(agent)]; ok {
 		slog.Warn("agent already registered", "agent", agent)
@@ -57,7 +75,7 @@ func RegisterNBAgentFactoryAndTool(agent string, agentFactory func(accountId str
 	nbSystemAgents[strings.ToLower(agent)] = agentFactory
 	useResponseAlways := true
 	toolcore.RegisterNBToolFactory(agent, func(accountId string) (toolcore.NBTool, error) {
-		return &nbAgentTool{name: agent, description: toolDescription, input: toolInput, output: toolOutput, useResponseAlways: useResponseAlways, toolType: toolcore.NBToolTypeAgent, accountId: accountId}, nil
+		return &nbAgentTool{name: agent, description: toolDescription, input: toolInput, output: toolOutput, useResponseAlways: useResponseAlways, toolType: toolcore.NBToolTypeAgent, accountId: accountId, targetSupported: targetSupported}, nil
 	})
 }
 
@@ -66,6 +84,17 @@ func RegisterNBAgentFactoryAndTool(agent string, agentFactory func(accountId str
 // but only the canonical name is exposed as a tool to parent orchestrators.
 func RegisterNBAgentFactoryAndToolWithAliases(agent string, agentFactory func(accountId string) (NBAgent, error), toolDescription string, toolInput string, toolOutput string, aliases ...string) {
 	RegisterNBAgentFactoryAndTool(agent, agentFactory, toolDescription, toolInput, toolOutput)
+	registerAgentAliases(agentFactory, aliases)
+}
+
+// RegisterTargetAwareNBAgentFactoryAndToolWithAliases is the aliased form of
+// RegisterTargetAwareNBAgentFactoryAndTool.
+func RegisterTargetAwareNBAgentFactoryAndToolWithAliases(agent string, agentFactory func(accountId string) (NBAgent, error), toolDescription string, toolInput string, toolOutput string, aliases ...string) {
+	RegisterTargetAwareNBAgentFactoryAndTool(agent, agentFactory, toolDescription, toolInput, toolOutput)
+	registerAgentAliases(agentFactory, aliases)
+}
+
+func registerAgentAliases(agentFactory func(accountId string) (NBAgent, error), aliases []string) {
 	for _, alias := range aliases {
 		RegisterNBAgentFactory(alias, agentFactory)
 		nbSystemAgentAliases[strings.ToLower(alias)] = true
@@ -73,13 +102,23 @@ func RegisterNBAgentFactoryAndToolWithAliases(agent string, agentFactory func(ac
 }
 
 func RegisterNBAgentFactoryAsTool(agent string, agentFactory func(accountId string) (NBAgent, error), toolDescription string, toolInput string, toolOutput string) {
+	registerNBAgentFactoryAsTool(agent, agentFactory, toolDescription, toolInput, toolOutput, false)
+}
+
+// RegisterTargetAwareNBAgentFactoryAsTool is RegisterNBAgentFactoryAsTool for
+// an agent that accepts a target (it implements ExecutionTargetAwareAgent).
+func RegisterTargetAwareNBAgentFactoryAsTool(agent string, agentFactory func(accountId string) (NBAgent, error), toolDescription string, toolInput string, toolOutput string) {
+	registerNBAgentFactoryAsTool(agent, agentFactory, toolDescription, toolInput, toolOutput, true)
+}
+
+func registerNBAgentFactoryAsTool(agent string, agentFactory func(accountId string) (NBAgent, error), toolDescription string, toolInput string, toolOutput string, targetSupported bool) {
 	slog.Info("registering agent as tool", "agent", agent)
 	if _, ok := nbSystemAgents[strings.ToLower(agent)]; ok {
 		slog.Warn("agent already registered", "agent", agent)
 	}
 	nbSystemAgents[strings.ToLower(agent)] = agentFactory
 	toolcore.RegisterNBToolFactory(agent, func(accountId string) (toolcore.NBTool, error) {
-		return &nbAgentTool{name: agent, description: toolDescription, input: toolInput, output: toolOutput, useResponseAlways: true, agent: nil, toolType: toolcore.NBToolTypeTool, accountId: accountId}, nil
+		return &nbAgentTool{name: agent, description: toolDescription, input: toolInput, output: toolOutput, useResponseAlways: true, agent: nil, toolType: toolcore.NBToolTypeTool, accountId: accountId, targetSupported: targetSupported}, nil
 	})
 }
 
@@ -240,6 +279,7 @@ type nbAgentTool struct {
 	agent             NBAgent
 	toolType          toolcore.NBToolType
 	accountId         string
+	targetSupported   bool
 }
 
 func (m *nbAgentTool) GetAgent(ctx *security.RequestContext) NBAgent {
@@ -270,17 +310,30 @@ func (m *nbAgentTool) Description() string {
 }
 
 func (m *nbAgentTool) InputSchema() toolcore.ToolSchema {
+	properties := map[string]toolcore.ToolSchemaProperty{
+		"command": {Type: toolcore.ToolSchemaTypeString, Description: m.input},
+	}
+	if m.targetSupported {
+		properties["target"] = toolcore.AgentTargetSchemaProperty()
+	}
 	return toolcore.ToolSchema{
-		Type: toolcore.ToolSchemaTypeObject,
-		Properties: map[string]toolcore.ToolSchemaProperty{
-			"command": {
-				Type:        toolcore.ToolSchemaTypeString,
-				Description: m.input,
-			},
-		},
-		Required: []string{"command"},
+		Type:       toolcore.ToolSchemaTypeObject,
+		Properties: properties,
+		Required:   []string{"command"},
 	}
 }
+
+// PrepareDelegatedTargetInput lets a targeted child hand its own target to a
+// target-aware agent it calls without naming one. Target-blind agents are left
+// unchanged; an explicit target in the input still wins.
+func (m *nbAgentTool) PrepareDelegatedTargetInput(target *toolcore.ExecutionTarget, input string) (string, error) {
+	if !m.targetSupported {
+		return input, nil
+	}
+	return tools.AddDelegatedTargetObject(input, target)
+}
+
+func (m *nbAgentTool) SupportsDelegatedTarget() bool { return m.targetSupported }
 
 func (m *nbAgentTool) ConfigSchema(ctx *security.RequestContext) toolcore.ToolConfigSchema {
 	toolNames := map[string]any{}
@@ -313,6 +366,11 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 			Data:   fmt.Sprintf("%s requires a non-empty query describing what to investigate. Provide a plain-text description of the problem or question.", m.name),
 		}, nil
 	}
+	if !m.targetSupported {
+		if target, err := toolcore.ParseExecutionTarget(input); err != nil || target != nil {
+			return toolcore.NBToolResponse{Status: toolcore.NBToolResponseStatusError, Data: "this agent does not accept an execution target"}, nil
+		}
+	}
 
 	agent := m.GetAgent(nbRequestContext.Ctx)
 	if agent == nil {
@@ -324,6 +382,9 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 	additionalDetails := map[string]any{
 		nbToolCallAdditionalDatailsAgentId:   resp.AgentId,
 		nbToolCallAdditionalDatailsMessageId: resp.MessageId,
+	}
+	if tgt, _ := childAgentTarget(nbRequestContext, agent, input); tgt != nil {
+		additionalDetails["target"] = map[string]any{"provider": tgt.Provider, "name": tgt.Name}
 	}
 
 	if err != nil {
@@ -430,7 +491,50 @@ func lastNonTrivialStepContent(steps []ToolInvocation) (content string, ok bool)
 	return "", false
 }
 
+func childAgentTarget(ctx toolcore.NbToolContext, agent NBAgent, query toolcore.NBToolCallRequest) (*toolcore.ExecutionTarget, error) {
+	target, err := toolcore.ParseExecutionTarget(query)
+	if err != nil {
+		return nil, fmt.Errorf("agent target: %w", err)
+	}
+	if target == nil {
+		return nil, nil
+	}
+	if _, ok := agent.(ExecutionTargetAwareAgent); !ok {
+		return nil, fmt.Errorf("agent %s does not support a delegated execution target", agent.GetName())
+	}
+	resolved, err := tools.ResolveAgentHandoffTarget(ctx.Ctx, ctx.AccountId, target)
+	if err != nil {
+		return nil, fmt.Errorf("agent target: %w", err)
+	}
+	// A nested child re-resolves its caller's target by name; keep the
+	// connection identity validated at the first handoff.
+	if bound := ctx.QueryConfig.DelegatedTarget; bound != nil && bound.AccountID != "" &&
+		bound.Provider == resolved.Provider && strings.EqualFold(bound.Name, resolved.Name) && bound.AccountID != resolved.AccountID {
+		return nil, fmt.Errorf("delegated %s target %q changed since handoff; select the connection again", bound.Provider, bound.Name)
+	}
+	return resolved, nil
+}
+
+// subAgentQuery is what a tool-run sub-agent is started or resumed with: the
+// tool's command, or — when the sub-agent paused on a question — the user's
+// answer. The answer used to arrive by replacing the calling tool's input,
+// which broke tools whose input is a JSON envelope (delegate_agent's "prompt").
+func subAgentQuery(nbRequestContext toolcore.NbToolContext, query toolcore.NBToolCallRequest) string {
+	if nbRequestContext.FollowupAnswer != "" {
+		return nbRequestContext.FollowupAnswer
+	}
+	return query.Command
+}
+
 func ExecuteAgentToolCall(nbRequestContext toolcore.NbToolContext, agent NBAgent, query toolcore.NBToolCallRequest) (NBAgentResponse, error) {
+	target, err := childAgentTarget(nbRequestContext, agent, query)
+	if err != nil {
+		return NBAgentResponse{}, err
+	}
+	// The child's target is only what its input names. A targeted caller's
+	// planner injects its own target into target-aware agents' input
+	// (PrepareDelegatedTargetInput), so a nested handoff keeps the target.
+	nbRequestContext.QueryConfig.DelegatedTarget = target
 	existingAgentId := ""
 	if nbRequestContext.ToolCallId != "" {
 		existingAgentId = GetConversationDao().GetConversationToolCallChildAgentId(nbRequestContext.ConversationId, nbRequestContext.ParentAgentId, nbRequestContext.ToolCallId)
@@ -455,7 +559,7 @@ func ExecuteAgentToolCall(nbRequestContext toolcore.NbToolContext, agent NBAgent
 	}
 
 	agentRequest := NBAgentRequest{
-		Query:          query.Command,
+		Query:          subAgentQuery(nbRequestContext, query),
 		AccountId:      nbRequestContext.AccountId,
 		UserId:         nbRequestContext.UserId,
 		ConversationId: nbRequestContext.ConversationId,
@@ -477,6 +581,7 @@ func ExecuteAgentToolCall(nbRequestContext toolcore.NbToolContext, agent NBAgent
 		// selection — re-running it against a mechanical sub-agent command (e.g.
 		// "fetch CPU for pod foo") would destroy relevance.
 		OriginalQuery:           nbRequestContext.OriginalQuery,
+		OriginalQueryFromUser:   nbRequestContext.OriginalQueryFromUser,
 		SelectedSkillIds:        nbRequestContext.SelectedSkillIds,
 		SessionId:               nbRequestContext.SessionId,
 		KBPrestepContent:        nbRequestContext.KBPrestepContent,

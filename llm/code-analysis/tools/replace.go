@@ -50,6 +50,8 @@ func (t *ReplaceTool) Name() string {
 func (t *ReplaceTool) Description() string {
 	return `Modifies file content using exact string matching. REQUIRES old_string to uniquely identify the code to change.
 
+The result shows the changed lines as they now stand in the file, with their line numbers. That is the confirmation: do not read the file again to check an edit.
+
 RECOMMENDED WORKFLOW:
 1. Use file_view to READ the file and find the exact code to change
 2. Use replace with old_string (exact text from file) and new_string (replacement)
@@ -106,7 +108,7 @@ IMPORTANT:
 
 PITFALLS TO AVOID:
 - Using too little context in old_string (causes ambiguous matches)
-- Not re-reading the file after previous edits (content may have changed)
+- Reading the file again only to confirm an edit (the result already shows the changed lines and their new line numbers)
 - Replacing imports without checking usage (tool blocks this automatically)`
 }
 
@@ -208,16 +210,84 @@ func (t *ReplaceTool) Execute(ctx context.Context, input map[string]any) core.NB
 		// broke. nil (unreadable/new file) degrades to the plain check.
 		beforeContent, _ := os.ReadFile(filePath)
 		resp := t.executeReplace(ctx, filePath, input)
-		// Post-edit syntax gate (advisory, parse-only, tri-state): catch an
-		// edit that mechanically broke the file immediately instead of paying
-		// LLM review or CI to find out. not_checked appends nothing.
 		if resp.Status == "success" {
+			// Show what the edit left in the file. "Replaced successfully" alone
+			// sent the agent back to file_view to see its own change — one full
+			// round trip per edit. Done here, once, so every matching strategy
+			// reports the same way.
+			if afterContent, err := os.ReadFile(filePath); err == nil {
+				resp.Observation += changedRegion(string(beforeContent), string(afterContent))
+			}
+			// Post-edit syntax gate (advisory, parse-only, tri-state): catch an
+			// edit that mechanically broke the file immediately instead of paying
+			// LLM review or CI to find out. not_checked appends nothing.
 			resp.Observation = CheckEditedFileSyntaxDelta(filePath, beforeContent).AppendToObservation(resp.Observation)
 		}
 		return resp
 	default:
 		return core.NBToolResponse{Status: "error", Error: fmt.Sprintf("Unknown action: %s. Supported actions: replace, verify", action)}
 	}
+}
+
+const (
+	changedRegionContext  = 3  // unchanged lines shown on each side of the change
+	changedRegionMaxLines = 80 // beyond this the middle of the region is left out, and says so
+)
+
+// changedRegion renders the part of after that differs from before: everything
+// from the first changed line to the last, with a few lines of context, numbered
+// as the lines now stand in the file. Empty when the edit changed nothing.
+func changedRegion(before, after string) string {
+	if before == after {
+		return ""
+	}
+	old, cur := strings.Split(before, "\n"), strings.Split(after, "\n")
+	prefix := 0
+	for prefix < len(old) && prefix < len(cur) && old[prefix] == cur[prefix] {
+		prefix++
+	}
+	suffix := 0
+	for suffix < len(old)-prefix && suffix < len(cur)-prefix && old[len(old)-1-suffix] == cur[len(cur)-1-suffix] {
+		suffix++
+	}
+	// cur[prefix : len(cur)-suffix] is what the edit wrote; empty for a pure deletion.
+	first, last := prefix-changedRegionContext, len(cur)-suffix-1+changedRegionContext
+	if first < 0 {
+		first = 0
+	}
+	if last > len(cur)-1 {
+		last = len(cur) - 1
+	}
+	// A file ending in a newline splits into a final empty element, not a line.
+	total := len(cur)
+	if cur[total-1] == "" {
+		total--
+	}
+	if last > total-1 {
+		last = total - 1
+	}
+	if last < first {
+		return fmt.Sprintf("\n\nThe edit removed lines; the file now has %d lines.", total)
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "\n\nChanged lines as they now stand in the file (lines %d-%d of %d):\n", first+1, last+1, total)
+	shown := last - first + 1
+	head := shown
+	if shown > changedRegionMaxLines {
+		head = changedRegionMaxLines * 3 / 4
+	}
+	for i := first; i < first+head; i++ {
+		fmt.Fprintf(&sb, "%d: %s\n", i+1, cur[i])
+	}
+	if shown > changedRegionMaxLines {
+		tail := changedRegionMaxLines - head
+		fmt.Fprintf(&sb, "[... lines %d-%d not shown ...]\n", first+head+1, last-tail+1)
+		for i := last - tail + 1; i <= last; i++ {
+			fmt.Fprintf(&sb, "%d: %s\n", i+1, cur[i])
+		}
+	}
+	return strings.TrimRight(sb.String(), "\n")
 }
 
 // executeReplace handles the replace functionality using string-based matching

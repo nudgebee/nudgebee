@@ -349,6 +349,16 @@ export const safeParseJSON = (value: any): any => {
   }
 };
 
+const NATIVE_RULE_RE = /^(aws|gcp|azure)_native_/;
+
+/** A cost finding the cloud provider's own recommender emitted without a
+ *  savings figure. It belongs on the Cost tab, but there is nothing to put in
+ *  the Savings column, so the UI says so instead of leaving the cell blank.
+ *  The collector stores a missing projection as exactly 0; any non-zero
+ *  amount, however small, is a figure the provider gave. */
+export const isUnestimatedNativeCostFinding = (category: string, ruleName: string, savings: number | null | undefined): boolean =>
+  category === 'RightSizing' && NATIVE_RULE_RE.test(ruleName || '') && !savings;
+
 /** Extract a display-friendly resource name from a recommendation row.
  *  Fallback order: resource_name → cloud_resourse.name → recommendation JSON fields → dash */
 export const getResourceDisplayName = (rec: any, fallback = '—'): string => {

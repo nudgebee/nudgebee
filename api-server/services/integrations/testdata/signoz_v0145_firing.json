@@ -1,0 +1,50 @@
+{
+  "receiver": "nb-echo",
+  "status": "firing",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "nbtest demo pod memory high",
+        "k8s.deployment.name": "kafka",
+        "k8s.namespace.name": "demo",
+        "k8s.pod.name": "kafka-5d8d6bb8f6-j6jsq",
+        "ruleId": "01a13ef7-e690-7691-b987-4dbb45e45058",
+        "ruleSource": "http://localhost:8080/alerts/overview?ruleId=01a13ef7-e690-7691-b987-4dbb45e45058",
+        "severity": "critical",
+        "team": "sre",
+        "threshold.name": "critical"
+      },
+      "annotations": {
+        "description": "Pod  working set is 6.77249024e+08 bytes",
+        "summary": "Demo pod memory high"
+      },
+      "startsAt": "2026-10-15T09:50:30.335905971Z",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "generatorURL": "http://localhost:8080/alerts/overview?ruleId=01a13ef7-e690-7691-b987-4dbb45e45058",
+      "fingerprint": "b591fe39e835adef"
+    }
+  ],
+  "groupLabels": {
+    "ruleId": "01a13ef7-e690-7691-b987-4dbb45e45058"
+  },
+  "commonLabels": {
+    "alertname": "nbtest demo pod memory high",
+    "k8s.deployment.name": "kafka",
+    "k8s.namespace.name": "demo",
+    "k8s.pod.name": "kafka-5d8d6bb8f6-j6jsq",
+    "ruleId": "01a13ef7-e690-7691-b987-4dbb45e45058",
+    "ruleSource": "http://localhost:8080/alerts/overview?ruleId=01a13ef7-e690-7691-b987-4dbb45e45058",
+    "severity": "critical",
+    "team": "sre",
+    "threshold.name": "critical"
+  },
+  "commonAnnotations": {
+    "description": "Pod  working set is 6.77249024e+08 bytes",
+    "summary": "Demo pod memory high"
+  },
+  "externalURL": "http://localhost:8080",
+  "version": "4",
+  "groupKey": "{__receiver__=\"nb-echo\"}:{ruleId=\"01a13ef7-e690-7691-b987-4dbb45e45058\"}",
+  "truncatedAlerts": 0
+}

@@ -18,6 +18,7 @@ import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
 import { useTenantBranding, getNubiIconUrl } from '@hooks/useTenantBranding';
 import { Modal } from '@ui/Modal';
+import ExecutedTargetChip from './common/ExecutedTargetChip';
 
 const QUESTION_PREVIEW_LINES = 6;
 
@@ -250,11 +251,13 @@ const MessageItem = ({
         memoryCount={responseMeta.memoryCount}
         channelCount={responseMeta.channelCount}
         watchCount={responseMeta.watchCount}
+        followups={responseMeta.followups}
         onOpenTasks={responseMeta.onOpenTasks}
         onOpenContexts={responseMeta.onOpenContexts}
         onOpenMemories={responseMeta.onOpenMemories}
         onOpenChannels={responseMeta.onOpenChannels}
         onOpenWatches={responseMeta.onOpenWatches}
+        onOpenFollowups={responseMeta.onOpenFollowups}
         messageTokenData={responseMeta.messageTokenData}
         onTokenUsageHover={responseMeta.onTokenUsageHover}
         isFetchingTokenData={responseMeta.isFetchingTokenData}
@@ -539,6 +542,7 @@ const MessageItem = ({
                       }
                       sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', fontFamily: ds.font.sans, flex: 1, minWidth: 0 }}
                     />
+                    <ExecutedTargetChip metadata={message.metadata} status={message.response_status} />
                     {parsedReferences.length > 0 && (
                       <Box
                         onMouseEnter={(e) => setReferencesAnchorEl(e.currentTarget)}
@@ -715,10 +719,12 @@ MessageItem.propTypes = {
     contextCount: PropTypes.number,
     memoryCount: PropTypes.number,
     watchCount: PropTypes.number,
+    followups: PropTypes.object,
     onOpenTasks: PropTypes.func,
     onOpenContexts: PropTypes.func,
     onOpenMemories: PropTypes.func,
     onOpenWatches: PropTypes.func,
+    onOpenFollowups: PropTypes.func,
     messageTokenData: PropTypes.any,
     onTokenUsageHover: PropTypes.func,
     isFetchingTokenData: PropTypes.bool,

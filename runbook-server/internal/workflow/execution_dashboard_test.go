@@ -1,12 +1,16 @@
 package workflow
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"nudgebee/runbook/internal/model"
+
+	"go.temporal.io/api/workflowservice/v1"
+	"go.temporal.io/sdk/client"
 )
 
 func TestBuildExecutionQueryAlwaysScopesTenantAndAccount(t *testing.T) {
@@ -378,6 +382,82 @@ func TestSeekRankByCloseTimePropagatesCountErrors(t *testing.T) {
 	failing := func(time.Time) (int64, error) { return 0, fmt.Errorf("visibility unavailable") }
 	if _, _, err := seekRankByCloseTime(50, 20, oldest, 100, newest, 0, failing, model.MaxExecutionSeekProbes); err == nil {
 		t.Fatal("expected the count error to surface")
+	}
+}
+
+// countingClient answers CountWorkflow from a closeTimeStore the way the SQL
+// visibility store does. openMatchesCloseTime picks which of the store's two
+// behaviours is in force: Temporal up to 1.31 treats a run that has not closed
+// as closing in the far future, so `CloseTime > T` matches it; from 1.32 such a
+// run has no close time and matches no CloseTime predicate at all.
+type countingClient struct {
+	client.Client
+	store                *closeTimeStore
+	openMatchesCloseTime bool
+}
+
+func (c *countingClient) CountWorkflow(_ context.Context, req *workflowservice.CountWorkflowExecutionsRequest) (*workflowservice.CountWorkflowExecutionsResponse, error) {
+	query := req.GetQuery()
+	openOnly := strings.Contains(query, "ExecutionStatus='Running'")
+	closedOnly := strings.Contains(query, "ExecutionStatus!='Running'")
+
+	var boundary time.Time
+	_, rest, bounded := strings.Cut(query, "CloseTime > '")
+	if bounded {
+		stamp, _, _ := strings.Cut(rest, "'")
+		parsed, err := time.Parse(time.RFC3339Nano, stamp)
+		if err != nil {
+			return nil, err
+		}
+		boundary = parsed
+	}
+
+	var count int64
+	if !closedOnly && (!bounded || c.openMatchesCloseTime) {
+		count += c.store.openRows
+	}
+	if !openOnly {
+		for _, closeTime := range c.store.closeTimes {
+			if !bounded || closeTime.After(boundary) {
+				count++
+			}
+		}
+	}
+	return &workflowservice.CountWorkflowExecutionsResponse{Count: count}, nil
+}
+
+func TestSeekPageBoundaryCountsOpenRunsOnce(t *testing.T) {
+	const rows, openRows, limit = 5000, 7, 20
+	// Page 60 at 20 rows: the first page past MaxExecutionDeepPageRows.
+	const target = int64(1180)
+
+	for name, openMatchesCloseTime := range map[string]bool{
+		"open runs match a CloseTime predicate":  true,
+		"open runs match no CloseTime predicate": false,
+	} {
+		t.Run(name, func(t *testing.T) {
+			oldest := time.Now().UTC().Add(-time.Duration(rows+1) * time.Minute).Truncate(time.Microsecond)
+			store := &closeTimeStore{openRows: openRows}
+			for i := 0; i < rows; i++ {
+				store.closeTimes = append(store.closeTimes, oldest.Add(time.Duration(i+1)*time.Minute))
+			}
+			s := &Service{temporalClient: &countingClient{store: store, openMatchesCloseTime: openMatchesCloseTime}}
+
+			boundary, rank, err := s.seekPageBoundary(context.Background(), "nb_tenant_id='tenant-1'", model.ExecutionDashboardFilter{StartDate: &oldest}, target, limit)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			// The list call returns the closed rows at or before the boundary, so
+			// the page really starts at the boundary's own rank. A reported rank
+			// that differs makes the caller slice the page at the wrong row.
+			want, _ := store.rankBefore(boundary)
+			if rank != want {
+				t.Fatalf("seek reported rank %d for a boundary that ranks %d — the page would be off by %d rows", rank, want, rank-want)
+			}
+			if rank > target || target-rank > limit {
+				t.Fatalf("rank %d not within %d of target %d", rank, limit, target)
+			}
+		})
 	}
 }
 

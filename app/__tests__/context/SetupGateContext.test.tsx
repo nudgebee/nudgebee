@@ -10,7 +10,7 @@ const mockReplace = jest.fn();
 let pathname = '/home';
 jest.mock('next/router', () => ({ useRouter: () => ({ replace: mockReplace, pathname }) }));
 
-let session: unknown = { roles: ['tenant_admin'], tenant: { id: 't1' } };
+let session: unknown = { roles: ['tenant_admin'], tenant: { id: 't1' }, uiFeatures: { setupCenter: true } };
 let sessionStatus = 'authenticated';
 jest.mock('next-auth/react', () => ({ useSession: () => ({ data: session, status: sessionStatus }) }));
 
@@ -47,7 +47,7 @@ const account = (over: Record<string, unknown> = {}) => ({ id: 'a1', status: 'ac
 beforeEach(() => {
   jest.clearAllMocks();
   pathname = '/home';
-  session = { roles: ['tenant_admin'], tenant: { id: 't1' } };
+  session = { roles: ['tenant_admin'], tenant: { id: 't1' }, uiFeatures: { setupCenter: true } };
   sessionStatus = 'authenticated';
   mockGetAllAccount.mockResolvedValue(accounts([]));
   mockListK8sAccAgentHealth.mockResolvedValue(agentHealth([]));
@@ -69,7 +69,7 @@ describe('the rule', () => {
   // second admin on a first login inherits it rather than starting over.
   it('does not care which browser or which user is asking', async () => {
     mockGetAllAccount.mockResolvedValue(accounts([account()]));
-    session = { roles: ['tenant_admin'], tenant: { id: 't1' }, email: 'second.admin@example.com' };
+    session = { roles: ['tenant_admin'], tenant: { id: 't1' }, email: 'second.admin@example.com', uiFeatures: { setupCenter: true } };
     renderGate();
     await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('OPEN'));
   });
@@ -211,20 +211,20 @@ describe('a non-admin is gated too now, but never onto a checklist', () => {
   // reads `hasConnectedAccount` off this same context and shows a non-admin
   // one line, never the checklist. This file only pins `locked` itself.
   it('gates a read-only user on a tenant with no accounts', async () => {
-    session = { roles: ['tenant_admin_readonly'], tenant: { id: 't1' } };
+    session = { roles: ['tenant_admin_readonly'], tenant: { id: 't1' }, uiFeatures: { setupCenter: true } };
     renderGate();
     await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('GATED'));
     expect(mockReplace).toHaveBeenCalledWith('/setup');
   });
 
   it('gates a user with no roles at all on a tenant with no accounts', async () => {
-    session = { roles: [], tenant: { id: 't1' } };
+    session = { roles: [], tenant: { id: 't1' }, uiFeatures: { setupCenter: true } };
     renderGate();
     await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('GATED'));
   });
 
   it('never gates a non-admin once the tenant has an account — role and account state are independent', async () => {
-    session = { roles: [], tenant: { id: 't1' } };
+    session = { roles: [], tenant: { id: 't1' }, uiFeatures: { setupCenter: true } };
     mockGetAllAccount.mockResolvedValue(accounts([account()]));
     renderGate();
     await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('OPEN'));
@@ -299,7 +299,7 @@ describe('re-evaluation', () => {
     await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('OPEN'));
 
     mockGetAllAccount.mockResolvedValue(accounts([]));
-    session = { roles: ['tenant_admin'], tenant: { id: 't2' } };
+    session = { roles: ['tenant_admin'], tenant: { id: 't2' }, uiFeatures: { setupCenter: true } };
     rerender(
       <SetupGateProvider>
         <Probe />
@@ -357,5 +357,57 @@ describe('the readiness model can disagree with the gate, in only one direction'
     renderGate();
     await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('OPEN'));
     expect(evaluateOnboarding({ accounts: [inactiveAccount] }).hasCloudAccount).toBe(false);
+  });
+});
+
+// `UI_ENABLE_SETUP_CENTER` wraps all of it — see the file's own doc comment.
+// Off is meant to be indistinguishable from the feature never having shipped,
+// not just a hidden lock.
+describe('UI_ENABLE_SETUP_CENTER', () => {
+  it('never locks a zero-account tenant while the flag is off', async () => {
+    session = { roles: ['tenant_admin'], tenant: { id: 't1' }, uiFeatures: { setupCenter: false } };
+    renderGate();
+    await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('OPEN'));
+    expect(mockReplace).not.toHaveBeenCalled();
+  });
+
+  it('never locks a non-admin either, while the flag is off', async () => {
+    session = { roles: [], tenant: { id: 't1' }, uiFeatures: { setupCenter: false } };
+    renderGate();
+    await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('OPEN'));
+  });
+
+  it('does not spend a request on the account lookup while the flag is off', async () => {
+    session = { roles: ['tenant_admin'], tenant: { id: 't1' }, uiFeatures: { setupCenter: false } };
+    renderGate();
+    await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('OPEN'));
+    expect(mockGetAllAccount).not.toHaveBeenCalled();
+  });
+
+  it('exposes false through the context so /setup and the banner can stay inert too', async () => {
+    const Flag = () => {
+      const { setupCenterEnabled } = useSetupGate();
+      return <div data-testid='flag'>{String(setupCenterEnabled)}</div>;
+    };
+    session = { roles: ['tenant_admin'], tenant: { id: 't1' }, uiFeatures: { setupCenter: false } };
+    render(
+      <SetupGateProvider>
+        <Flag />
+      </SetupGateProvider>
+    );
+    await waitFor(() => expect(screen.getByTestId('flag')).toHaveTextContent('false'));
+  });
+
+  it('exposes true once the session says so', async () => {
+    const Flag = () => {
+      const { setupCenterEnabled } = useSetupGate();
+      return <div data-testid='flag'>{String(setupCenterEnabled)}</div>;
+    };
+    render(
+      <SetupGateProvider>
+        <Flag />
+      </SetupGateProvider>
+    );
+    await waitFor(() => expect(screen.getByTestId('flag')).toHaveTextContent('true'));
   });
 });

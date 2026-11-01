@@ -245,6 +245,10 @@ func (s *Service) validateTaskTypes(ctx *security.RequestContext, accountID stri
 							}
 						}
 					}
+				case "scripting.run_script":
+					if err := validateScriptAccount(ctx, accountID, task); err != nil {
+						return err
+					}
 				case "data.filter":
 					if condition, ok := task.Params["condition"].(string); ok && condition != "" {
 						// Skip template expressions, they resolve at execution time.

@@ -88,11 +88,14 @@ export function CloudCostSummary({ clusterSummary = {}, currencySymbol = '$' }: 
   const hasValidPercentage = lastMonthGrossSpend > 0;
   const percentageChange = hasValidPercentage ? ((monthlyForecast - lastMonthGrossSpend) * 100) / lastMonthGrossSpend : 0;
 
+  // Savings are USD from every producer; only spend is in the billing currency.
   const savingsYearly = (clusterSummary?.recommendation_aggregate?.aggregate?.sum?.estimated_savings || 0) * 12;
   const yearlyGrossSpend =
     clusterSummary?.yearly_gross_spends_aggregate?.aggregate?.sum?.amount || clusterSummary?.yearly_spends_aggregate?.aggregate?.sum?.amount || 0;
   const yearlyExpense = getExpectedYearlyExpense(currentGrossSpend, yearlyGrossSpend);
-  const savingsPercentage = savingsYearly > 0 && yearlyExpense > 1 ? Math.min(Math.round((savingsYearly * 100) / yearlyExpense), 100) : 0;
+  // A USD saving over a non-USD spend is not a percentage, so the doughnut hides.
+  const savingsPercentage =
+    currencySymbol === '$' && savingsYearly > 0 && yearlyExpense > 1 ? Math.min(Math.round((savingsYearly * 100) / yearlyExpense), 100) : 0;
 
   const renderForecastValue = () => {
     if (currentGrossSpend <= 0) return <NoDataInline />;
@@ -190,11 +193,11 @@ export function CloudCostSummary({ clusterSummary = {}, currencySymbol = '$' }: 
               </DsTooltip>
             </Box>
             {savingsYearly > 0 ? (
-              <Currency prefix={currencySymbol} value={savingsYearly} suffix='/yr' />
+              <Currency prefix='$' value={savingsYearly} suffix='/yr' />
             ) : (
               <Typography sx={{ color: ds.gray[500], fontSize: ds.text.caption }}>No savings available</Typography>
             )}
-            <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>estimated 12 mos</Typography>
+            <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>estimated 12 mos{currencySymbol !== '$' ? ' · USD' : ''}</Typography>
           </Box>
           {savingsPercentage > 0 && (
             <DoughnutChart

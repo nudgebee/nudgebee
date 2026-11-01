@@ -44,6 +44,7 @@ class ExecutePrometheus {
     const plusMinus30MinDuration = formatDateForPlusMinusDuration(new Date(startDate).getTime(), 30);
     return (
       <KubernetesPrometheus
+        inferUnits
         showDrilldown={false}
         preparedEvidences={[]}
         showExtraOptions={false}

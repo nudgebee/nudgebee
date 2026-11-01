@@ -92,7 +92,7 @@ def _telemetry(activity_stats=None, include_key=True):
 def _recorder(calls):
     """Record every run_query call, and answer only the one query whose result is read.
 
-    _upsert_integration takes result[0][0] from its RETURNING id (9 params); every other
+    _upsert_integration takes result[0][0] from its RETURNING id (10 params); every other
     statement here either ignores its result or, like _maybe_set_default_provider's
     two-column SELECT, must see no rows. psycopg2 is a MagicMock in this harness, so
     sql.SQL(...) is a mock and the params are the only thing that identifies a statement.
@@ -100,7 +100,7 @@ def _recorder(calls):
 
     def record(_statement, params=None):
         calls.append(params)
-        return [[INTEGRATION]] if params and len(params) == 9 else []
+        return [[INTEGRATION]] if params and len(params) == 10 else []
 
     return record
 

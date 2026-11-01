@@ -15,6 +15,10 @@ LOG = logging.getLogger(__name__)
 _UPDATE_EVENT_ENTRY_MAX_RETRIES = 5
 
 
+def _teams_analysis_key(event_id):
+    return f"event_analysis_poll:ms_teams:{event_id}"
+
+
 class Cache:
     _redis_client = None
 
@@ -267,6 +271,72 @@ class Cache:
         except (redis.RedisError, json.JSONDecodeError) as e:
             LOG.exception(f"Error removing keys from event entry {thread_ts}: {e}")
             return False
+
+    def take_teams_thinking(self, thread_ts, claim):
+        """Clear this turn's Teams Thinking card from the entry and return its
+        activity id, but only while claim is still the entry's claim, so a newer
+        turn's card is never taken. None when it isn't."""
+        self._ensure_connection()
+        if not self.redis_client or not claim:
+            return None
+        key = f"chat_event:{thread_ts}"
+        for _ in range(_UPDATE_EVENT_ENTRY_MAX_RETRIES):
+            try:
+                with self.redis_client.pipeline() as pipe:
+                    pipe.watch(key)
+                    event_json = pipe.get(key)
+                    event_entry = json.loads(event_json) if event_json else None
+                    if not event_entry or event_entry.get("thinking_claim") != claim:
+                        pipe.unwatch()
+                        return None
+                    activity_id = event_entry.pop("thinking_id", None)
+                    event_entry.pop("thinking_claim", None)
+                    event_entry.pop("thinking_at", None)
+                    event_entry["timestamp"] = time.time()
+                    pipe.multi()
+                    pipe.set(key, json.dumps(event_entry, default=self._json_serializable))
+                    pipe.expire(key, settings.redis.conversation_cache_expiration_minutes * 60)
+                    pipe.execute()
+                    return activity_id
+            except redis.WatchError:
+                continue
+            except (redis.RedisError, json.JSONDecodeError) as e:
+                LOG.exception(f"Error taking the Teams Thinking card from {thread_ts}: {e}")
+                return None
+        return None
+
+    def lock_teams_message(self, activity_id, token, ttl_seconds):
+        """Serialises updates to one Teams message. True when token now holds it.
+        Fails open (True) when Redis is unavailable."""
+        self._ensure_connection()
+        if not self.redis_client:
+            return True
+        try:
+            return bool(self.redis_client.set(f"teams_message_lock:{activity_id}", token, nx=True, ex=ttl_seconds))
+        except redis.RedisError as e:
+            LOG.exception(f"Error locking Teams message {activity_id}: {e}")
+            return True
+
+    def unlock_teams_message(self, activity_id, token):
+        """Releases the lock only if token still holds it."""
+        self._ensure_connection()
+        if not self.redis_client:
+            return
+        key = f"teams_message_lock:{activity_id}"
+        try:
+            with self.redis_client.pipeline() as pipe:
+                pipe.watch(key)
+                value = pipe.get(key)
+                if (value.decode() if isinstance(value, bytes) else value) != token:
+                    pipe.unwatch()
+                    return
+                pipe.multi()
+                pipe.delete(key)
+                pipe.execute()
+        except redis.WatchError:
+            return
+        except redis.RedisError as e:
+            LOG.exception(f"Error unlocking Teams message {activity_id}: {e}")
 
     def remove_event_entry(self, thread_ts):
         self._ensure_connection()
@@ -580,6 +650,30 @@ class Cache:
             LOG.exception(f"Error deduping event {event_id}: {e}")
             return True
 
+    def claim_card_action(self, key, ttl_seconds):
+        """First click on a card action wins (True) until the claim expires.
+        Only a fast path: the stored card is what refuses repeats. Fails open
+        (True) when Redis is unavailable."""
+        self._ensure_connection()
+        if not self.redis_client:
+            return True
+        try:
+            return bool(self.redis_client.set(f"card_action:{key}", "1", nx=True, ex=ttl_seconds))
+        except redis.RedisError as e:
+            LOG.exception(f"Error claiming card action {key}: {e}")
+            return True
+
+    def release_card_action(self, key):
+        """Drops a claim taken by claim_card_action, so a retry after a failure
+        isn't ignored until the claim expires."""
+        self._ensure_connection()
+        if not self.redis_client:
+            return
+        try:
+            self.redis_client.delete(f"card_action:{key}")
+        except redis.RedisError as e:
+            LOG.exception(f"Error releasing card action {key}: {e}")
+
     def claim_event_analysis_poller(self, event_id, ttl_seconds):
         """First claim for event_id wins (True); a second, still-live claim
         gets False -- guards against two overlapping clicks on the same event
@@ -594,6 +688,48 @@ class Cache:
         except redis.RedisError as e:
             LOG.exception(f"Error claiming event analysis poller for {event_id}: {e}")
             return True
+
+    def claim_teams_analysis(self, event_id, ttl_seconds, token):
+        """First Teams Ask Nubi click on an event wins (True) while the claim
+        lives; it's the only "still analyzing" signal, kept alive by
+        refresh_teams_analysis. token identifies the worker that owns it.
+        Separate from Slack's claim, so neither platform silences the other.
+        Fails open (True) when Redis is unavailable."""
+        self._ensure_connection()
+        if not self.redis_client:
+            return True
+        try:
+            return bool(self.redis_client.set(_teams_analysis_key(event_id), token, nx=True, ex=ttl_seconds))
+        except redis.RedisError as e:
+            LOG.exception(f"Error claiming Teams event analysis for {event_id}: {e}")
+            return True
+
+    def _teams_analysis_owner(self, event_id):
+        value = self.redis_client.get(_teams_analysis_key(event_id))
+        return value.decode() if isinstance(value, bytes) else value
+
+    def refresh_teams_analysis(self, event_id, ttl_seconds, token):
+        """Keeps a live worker's claim from expiring, re-taking it if it lapsed
+        and nobody else took it; a dead worker's runs out."""
+        self._ensure_connection()
+        if not self.redis_client:
+            return
+        try:
+            if self._teams_analysis_owner(event_id) in (None, token):
+                self.redis_client.set(_teams_analysis_key(event_id), token, ex=ttl_seconds)
+        except redis.RedisError as e:
+            LOG.exception(f"Error refreshing Teams event analysis for {event_id}: {e}")
+
+    def release_teams_analysis(self, event_id, token):
+        """Releases the claim only if this worker still owns it."""
+        self._ensure_connection()
+        if not self.redis_client:
+            return
+        try:
+            if self._teams_analysis_owner(event_id) == token:
+                self.redis_client.delete(_teams_analysis_key(event_id))
+        except redis.RedisError as e:
+            LOG.exception(f"Error releasing Teams event analysis for {event_id}: {e}")
 
     def release_event_analysis_poller(self, event_id):
         """Releases a claim taken by claim_event_analysis_poller -- without

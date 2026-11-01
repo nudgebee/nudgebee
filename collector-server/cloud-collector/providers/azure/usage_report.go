@@ -2,11 +2,13 @@ package azure
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"nudgebee/collector/cloud/common"
 	"nudgebee/collector/cloud/providers"
 	"strconv"
 	"strings"
@@ -16,6 +18,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/costmanagement/armcostmanagement"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources"
 )
 
 func getAzureUsageReport(ctx providers.CloudProviderContext, account providers.Account, month time.Month, year int) (providers.GetUsageReportResponse, error) {
@@ -105,18 +108,16 @@ func getAzureUsageReport(ctx providers.CloudProviderContext, account providers.A
 				"attempt", attempt+1, "backoff", backoff, "honoredRetryAfter", fromAzure,
 				"subscription", session.SubscriptionID)
 			if werr := waitBeforeRetry(ctx.GetContext(), backoff); werr != nil {
-				return providers.GetUsageReportResponse{}, werr
+				// The sync was cancelled while waiting out a rate limit: still a
+				// throttled query, not a broken credential.
+				return providers.GetUsageReportResponse{}, wrapAzureCostFailure(common.ClassifyAzureCostError(err, session.SubscriptionID, nil), werr)
 			}
 			continue
 		}
 		break
 	}
 	if err != nil {
-		var respErr *azcore.ResponseError
-		if errors.As(err, &respErr) && respErr.StatusCode == 429 {
-			return providers.GetUsageReportResponse{}, fmt.Errorf("failed to get usage report from Azure Cost Management API: %w (rate limited after retries)", err)
-		}
-		return providers.GetUsageReportResponse{}, fmt.Errorf("failed to get usage report from Azure Cost Management API: %w. This may be due to missing permissions. Please ensure the service principal has the 'Cost Management Reader' role assigned at the subscription scope", err)
+		return providers.GetUsageReportResponse{}, classifyAzureUsageError(ctx, cred, session.SubscriptionID, err)
 	}
 
 	appendRows := func(props *armcostmanagement.QueryProperties) {
@@ -173,6 +174,64 @@ func getAzureUsageReport(ctx providers.CloudProviderContext, account providers.A
 	}
 
 	return providers.GetUsageReportResponse{Items: allItems}, nil
+}
+
+// classifyAzureUsageError turns a failed cost query into the error the spend
+// sync acts on. Only a credential that can no longer read the subscription
+// marks the account disconnected. A cost-only failure keeps it connected, and
+// the Spends error names the cause and who can fix it.
+func classifyAzureUsageError(ctx providers.CloudProviderContext, cred azcore.TokenCredential, subscriptionID string, err error) error {
+	probe := func() error { return probeAzureSubscriptionAccess(ctx, cred, subscriptionID) }
+	failure := common.ClassifyAzureCostError(err, subscriptionID, probe)
+	// The returned error reads as the plain reason only, so log the raw Azure
+	// response here where support can still find it.
+	ctx.GetLogger().Warn("azure: cost query failed", "subscription", subscriptionID, "kind", failure.Kind, "error", err)
+	return wrapAzureCostFailure(failure, err)
+}
+
+// azureCostError is a classified cost failure. Its text is the plain-language
+// reason alone — that is what the Spends error column shows — while the
+// sentinel and the original Azure error stay reachable via errors.Is/As.
+type azureCostError struct {
+	message  string
+	sentinel error
+	cause    error
+}
+
+func (e *azureCostError) Error() string { return e.message }
+
+func (e *azureCostError) Unwrap() []error {
+	if e.sentinel == nil {
+		return []error{e.cause}
+	}
+	return []error{e.sentinel, e.cause}
+}
+
+// wrapAzureCostFailure maps a classified cost failure onto the sentinels the
+// spend sync acts on, keeping the original error in the chain.
+func wrapAzureCostFailure(failure common.AzureCostFailure, err error) error {
+	wrapped := &azureCostError{message: failure.Message, cause: err}
+	switch failure.Kind {
+	case common.AzureCostUnavailable:
+		wrapped.sentinel = providers.ErrCostNotConfigured
+	case common.AzureCostTransient, common.AzureCostUnexpected:
+		wrapped.sentinel = providers.ErrCostFetchFailedCredentialOK
+	}
+	return wrapped
+}
+
+// probeAzureSubscriptionAccess checks that cred can still read the subscription
+// by listing one resource group. It uses the audited client options, so a
+// denial here lands in the permission audit like any other Azure call.
+func probeAzureSubscriptionAccess(ctx providers.CloudProviderContext, cred azcore.TokenCredential, subscriptionID string) error {
+	client, err := armresources.NewResourceGroupsClient(subscriptionID, cred, getAzureAuditOpts(ctx))
+	if err != nil {
+		return err
+	}
+	probeCtx, cancel := context.WithTimeout(ctx.GetContext(), 10*time.Second)
+	defer cancel()
+	_, err = client.NewListPager(&armresources.ResourceGroupsClientListOptions{Top: to.Ptr[int32](1)}).NextPage(probeCtx)
+	return err
 }
 
 // fetchAzureUsagePage follows a Cost Management Query API NextLink to retrieve a

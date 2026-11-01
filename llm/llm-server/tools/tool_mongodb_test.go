@@ -159,3 +159,32 @@ func TestMongoDBTool_RequiresAccountId(t *testing.T) {
 	})
 	assert.False(t, called, "relay must not be invoked when tenant scope is missing")
 }
+
+// #38596: a MongoDB diagnostic about another account is relayed to that
+// account, with the connection picked there; one about the conversation's
+// own account is relayed to it as before.
+func TestMongoDBTool_RelaysToTheAccountItReads(t *testing.T) {
+	var captured relay.ActionExecuteBody
+	fake := func(_ context.Context, body relay.ActionExecuteBody) (map[string]any, error) {
+		captured = body
+		return map[string]any{"data": `{"ok":1}`}, nil
+	}
+	tool := MongoDBTool{toolName: ToolMongoServerStatus}
+
+	own := newMongoToolContext()
+	withFakeRelay(t, fake, func() {
+		_, err := tool.Call(own, core.NBToolCallRequest{})
+		require.NoError(t, err)
+	})
+	assert.Equal(t, "acct-1", captured.AccountID)
+
+	other := newMongoToolContext()
+	other.TargetAccountId = "acct-prod"
+	other.ToolConfig.Values = []core.ToolConfigValue{{Name: "connection_mode", Value: "vm_agent"}, {Name: "datasource_key", Value: "ds-prod"}}
+	withFakeRelay(t, fake, func() {
+		_, err := tool.Call(other, core.NBToolCallRequest{})
+		require.NoError(t, err)
+	})
+	assert.Equal(t, "acct-prod", captured.AccountID, "relayed to the account the call is about")
+	assert.Equal(t, "ds-prod", captured.ActionParams["datasource_id"])
+}

@@ -79,6 +79,11 @@ const CloudPostureView = ({ accountId, accountsById, providerById, leadingFilter
   const [refreshKey, setRefreshKey] = useState(0);
   const [isTicketFormOpen, setIsTicketFormOpen] = useState(false);
   const [ticketTarget, setTicketTarget] = useState<{ rule: CloudPostureRule; resource: any } | null>(null);
+  // The create-ticket response already carries everything the row needs to
+  // show (id, url) — passed straight to the open resource table so it can
+  // patch its own state, rather than re-querying cloud_posture_resources for
+  // data the caller already has.
+  const [justTicketed, setJustTicketed] = useState<{ resourceId: string; ticket: { ticket_id: string; url?: string } } | null>(null);
   const beginRequest = useLatestRequest();
 
   const closeTicketForm = useCallback(() => setIsTicketFormOpen(false), []);
@@ -188,7 +193,11 @@ const CloudPostureView = ({ accountId, accountsById, providerById, leadingFilter
         open={isTicketFormOpen}
         handleClose={closeTicketForm}
         onClose={closeTicketForm}
-        onSuccess={() => {}}
+        onSuccess={({ ticketId, url }: { ticketId?: string; url?: string } = {}) => {
+          if (ticketTarget?.resource?.id && ticketId) {
+            setJustTicketed({ resourceId: ticketTarget.resource.id, ticket: { ticket_id: ticketId, url } });
+          }
+        }}
         onFailure={(res: any) => snackbar.error(`Failed! ${res}.`)}
         ticketData={{
           subject: `Cloud Posture - ${cloudRuleTitle(ticketTarget?.rule?.ruleName || '', undefined)}`,
@@ -255,6 +264,7 @@ const CloudPostureView = ({ accountId, accountsById, providerById, leadingFilter
                         scopeAccountId={accountId}
                         status={statusFilter === 'Dismissed' ? ['Dismissed'] : undefined}
                         refreshKey={refreshKey}
+                        justTicketed={justTicketed}
                         accountsById={accountsById}
                         rowActions={resourceRowActions}
                       />

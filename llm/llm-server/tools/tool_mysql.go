@@ -7,6 +7,8 @@ import (
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
 	"strings"
+
+	"github.com/google/shlex"
 )
 
 const ToolExecuteMySQLQuery = "mysql_query_execute" // Change the constant name
@@ -70,6 +72,7 @@ func (m MySQLExecuteTool) InputSchema() core.ToolSchema {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Target MySQL database to run the query against.",
 			},
+			"instance": instanceProperty,
 		},
 		RequiredOneOf: [][]string{{"command", "query"}},
 	}
@@ -118,11 +121,16 @@ func (m MySQLExecuteTool) Call(nbRequestContext core.NbToolContext, input core.N
 	}
 
 	wm := workspace.NewWorkspaceManager()
-	// For workspace mode, we want raw terminal output
-	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, query, map[string]string{
-		"MYSQL_DATABASE":                  database,
-		workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
-	})
+	// The input is SQL. It used to be run as the shell command itself, so
+	// "SHOW PROCESSLIST" failed with "sh: SHOW: not found" and any shell text
+	// in it ran in the workspace pod. Run it through the mysql shim, quoted.
+	query, err = mysqlWorkspaceShellCommand(query)
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, query, IntegrationWorkspaceEnv(nbRequestContext, map[string]string{
+		"MYSQL_DATABASE": database,
+	}))
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("mysql: unable to execute shell script", "error", err.Error(), "command", query)
 		if response == "" {
@@ -160,4 +168,39 @@ func (m MySQLExecuteTool) ConfigSchema(ctx *security.RequestContext) core.ToolCo
 			},
 		},
 	}
+}
+
+// mysqlWorkspaceShellCommand builds the mysql command the workspace pod's shell
+// runs. The input is normally SQL, passed single-quoted to `mysql -e`. A full
+// `mysql ...` / `mariadb ...` command is accepted too: its words are quoted
+// one by one, so shell text in them stays an argument instead of running in
+// the workspace pod.
+func mysqlWorkspaceShellCommand(input string) (string, error) {
+	input = strings.TrimSpace(input)
+	if first := strings.Fields(input); len(first) > 0 && (first[0] == "mysql" || first[0] == "mariadb") {
+		words, err := shlex.Split(input)
+		if err != nil {
+			return "", fmt.Errorf("mysql: unable to parse the command: %w", err)
+		}
+		// Always `mysql`: the workspace image links only mysql to the shim
+		// (llm/code-analysis/Dockerfile), and the proxy routes only that name
+		// to the MySQL job, so `mariadb` would run without the integration.
+		quoted := []string{"mysql"}
+		for _, word := range words[1:] {
+			quoted = append(quoted, common.ShellEscape(word))
+		}
+		return strings.Join(quoted, " "), nil
+	}
+	return "mysql -e " + common.ShellEscape(input), nil
+}
+
+// InferToolRequestType classifies the query with the static SQL rules; ""
+// leaves an unclear query to InferToolRequestTypePrompt.
+func (m MySQLExecuteTool) InferToolRequestType(_ *security.RequestContext, _, input string) (core.ToolRequestType, error) {
+	return inferSQLRequestType(input), nil
+}
+
+// InferToolRequestTypePrompt classifies queries the static SQL rules cannot.
+func (m MySQLExecuteTool) InferToolRequestTypePrompt(_ *security.RequestContext, _, _ string) (string, error) {
+	return sqlRequestTypePrompt("MySQL"), nil
 }

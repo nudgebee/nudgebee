@@ -11,30 +11,14 @@ const SERVICE_NAME = "ticket-server"
 var Config appConfig
 
 type appConfig struct {
-	EtlServerEndpoint string `mapstructure:"etl_server_endpoint"`
-	EtlServerToken    string `mapstructure:"etl_server_token"`
-
-	ServiceApiServerToken       string `mapstructure:"action_api_server_token"`
-	ServiceApiServerTokenHeader string `mapstructure:"action_api_server_token_header"`
-	ServiceDBUrl                string `mapstructure:"app_database_url"`
-	ServiceEndpoint             string `mapstructure:"service_api_server_url"`
+	ServiceApiServerToken string `mapstructure:"action_api_server_token"`
+	ServiceDBUrl          string `mapstructure:"app_database_url"`
+	ServiceEndpoint       string `mapstructure:"service_api_server_url"`
 
 	NudgebeeEncryptionKey string `mapstructure:"nudgebee_encryption_key"`
 
-	ClickhouseHost     string `mapstructure:"clickhouse_host"`
-	ClickhouseUser     string `mapstructure:"clickhouse_user"`
-	ClickhousePassword string `mapstructure:"clickhouse_password"`
-	ClickhouseDatabase string `mapstructure:"clickhouse_database"`
+	Port int `mapstructure:"port"`
 
-	Env  string `mapstructure:"env"`
-	Port int    `mapstructure:"port"`
-
-	MlServiceUrl   string `mapstructure:"ml_service_url"`
-	GPTToken       string `mapstructure:"gpt_token"`
-	OpenAIEndpoint string `mapstructure:"openai_endpoint"`
-	GPTModel       string `mapstructure:"gpt_model"`
-
-	OtelServiceName          string `mapstructure:"otel_service_name"`
 	OtelExporterOtlpEndpoint string `mapstructure:"otel_exporter_otlp_endpoint"`
 
 	OtelExporter                   string `mapstructure:"otel_exporter"`
@@ -43,7 +27,6 @@ type appConfig struct {
 
 	OtelMetricesExporter            string `mapstructure:"otel_metrics_exporter"`
 	OtelExporterOtlpMetricsEndpoint string `mapstructure:"otel_exporter_otlp_metrics_endpoint"`
-	OtelLogsExporter                string `mapstructure:"otel_logs_exporter"`
 
 	OtelGrpcTimeoutSeconds int    `mapstructure:"otel_grpc_timeout_seconds"`
 	OtelGrpcMaxMsgSize     int    `mapstructure:"otel_grpc_max_msg_size"`
@@ -69,30 +52,14 @@ func init() {
 	viper.SetConfigType("dotenv")
 	viper.AddConfigPath(".")
 
-	viper.SetDefault("action_api_server_token_header", "X-ACTION-TOKEN")
-
-	viper.SetDefault("clickhouse_host", "http://localhost:8123")
-	viper.SetDefault("clickhouse_user", "default")
-	viper.SetDefault("clickhouse_database", "nudgebee")
-	viper.SetDefault("clickhouse_password", "default")
-
-	viper.SetDefault("ml_service_url", "http://localhost:9000")
-	viper.SetDefault("etl_server_endpoint", "http://localhost:5000")
-
-	viper.SetDefault("env", "production")
 	viper.SetDefault("port", 8080)
 	viper.SetDefault("service_api_server_url", "http://services-server:8000")
-	viper.SetDefault("gpt_token", "default")
-	viper.SetDefault("openai_endpoint", "https://api.openai.com/v1")
-	viper.SetDefault("gpt_model", "gpt-3.5-turbo")
 
 	// viper requires default values or bind.. else Unmarshal skips fields with no default values
-	viper.SetDefault("etl_server_token", "")
 	viper.SetDefault("action_api_server_token", "")
 	viper.SetDefault("app_database_url", "")
 	viper.SetDefault("nudgebee_encryption_key", "")
 
-	viper.SetDefault("otel_service_name", SERVICE_NAME)
 	viper.SetDefault("otel_exporter", "noop")
 	viper.SetDefault("otel_exporter_otlp_endpoint", "127.0.0.1:4317")
 	viper.SetDefault("otel_grpc_timeout_seconds", 5)

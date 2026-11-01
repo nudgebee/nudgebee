@@ -99,7 +99,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
   const [alertRules, setAlertRules] = useState<{ supported: boolean; reason: string }>({ supported: true, reason: '' });
 
   // Providers whose alert condition is expressed in PromQL / MetricsQL.
-  const PROMQL_METRICS_PROVIDERS = ['prometheus', 'victoria_metrics', 'victoria-metrics', 'chronosphere'];
+  const PROMQL_METRICS_PROVIDERS = ['prometheus', 'victoria_metrics', 'victoria-metrics', 'chronosphere', 'signoz'];
 
   // Sources whose rules are owned by the external provider (Datadog monitors,
   // Kibana alerting rules, Chronosphere). The form shows them read-only: the

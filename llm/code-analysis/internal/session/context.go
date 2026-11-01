@@ -1,6 +1,8 @@
 package session
 
 import (
+	"strings"
+
 	"nudgebee/code-analysis-agent/internal/credentials"
 	"nudgebee/code-analysis-agent/planners"
 )
@@ -19,6 +21,7 @@ type BuildConfig struct {
 type SessionContext struct {
 	AnalysisID       string
 	OriginalQuery    string
+	Task             string // Delegated task from caller (when distinct from OriginalQuery)
 	InitialLogs      string
 	RepoContext      *planners.RepositoryContext
 	Credentials      *credentials.ResolvedCredentials // Secure credentials for tools
@@ -47,4 +50,17 @@ func (sc *SessionContext) AddToScratchpad(agentName, entry string) {
 // GetScratchpad returns the accumulated investigation history
 func (sc *SessionContext) GetScratchpad() string {
 	return sc.Scratchpad
+}
+
+// FormatQuerySection returns the formatted query section for agent prompts.
+// When Task is distinct from OriginalQuery, it formats both the original user request
+// and the delegated task. Otherwise, it formats the original user query.
+func (sc *SessionContext) FormatQuerySection() string {
+	if sc == nil {
+		return ""
+	}
+	if sc.Task != "" && sc.OriginalQuery != "" && !strings.EqualFold(sc.Task, sc.OriginalQuery) {
+		return "=== USER REQUEST ===\n" + sc.OriginalQuery + "\n\n=== DELEGATED TASK ===\n" + sc.Task + "\n\n"
+	}
+	return "=== USER QUERY ===\n" + sc.OriginalQuery + "\n\n"
 }

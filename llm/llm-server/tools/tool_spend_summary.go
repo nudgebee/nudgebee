@@ -70,6 +70,7 @@ func (t SpendSummaryTool) InferToolRequestType(_ *security.RequestContext, _, _ 
 }
 
 func (t SpendSummaryTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	nbCtx = nbCtx.ForTarget()
 	groupBy := "cloud_account"
 	window := "30d"
 	accountId := ""

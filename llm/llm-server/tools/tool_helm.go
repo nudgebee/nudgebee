@@ -33,6 +33,18 @@ func (m HelmExecuteTool) ConfirmationKey(toolInput string) string {
 	return targetConfirmationKey(m.Name(), requested)
 }
 
+func (m HelmExecuteTool) PrepareDelegatedTargetInput(target *core.ExecutionTarget, input string) (string, error) {
+	if target == nil || target.Provider != "kubernetes" {
+		return input, nil
+	}
+	req := core.ParseNBToolCallRequestFromInput(input)
+	requested, err := RequestedHelmCluster(req.Command, req.Arguments)
+	if err != nil || requested != "" {
+		return input, err
+	}
+	return addDelegatedTargetArgument(input, "cluster", target.Name)
+}
+
 func (m HelmExecuteTool) RequestedTarget(toolInput string) (string, error) {
 	req := core.ParseNBToolCallRequestFromInput(toolInput)
 	return RequestedHelmCluster(req.Command, req.Arguments)
@@ -124,6 +136,9 @@ func (m HelmExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NB
 	}
 	target, err := ResolveKubernetesTarget(nbRequestContext, nbRequestContext.ToolConfig, requested)
 	if err != nil {
+		return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
+	}
+	if err := VerifyDelegatedTargetIdentity(nbRequestContext, "kubernetes", target, requested); err != nil {
 		return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
 	}
 	if target.Name == "" && requested == "" {

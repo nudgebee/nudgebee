@@ -1,11 +1,20 @@
 import logging
 from typing import List, Optional, Tuple
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from notifications_server.models.models import User, TenantUser, LlmConversation
 
 LOG = logging.getLogger(__name__)
+
+# A suspended user can't sign in to the app, so chat must not act as them either. "inactive" is an invited user who
+# hasn't signed in yet, and is let in, as the app does.
+SUSPENDED_USER_STATUS = "suspended"
+
+
+def _not_suspended():
+    return or_(User.status.is_(None), User.status != SUSPENDED_USER_STATUS)
 
 
 def get_user_tenants(session: Session, user_email: str) -> Tuple[Optional[str], Optional[List[str]]]:
@@ -22,7 +31,10 @@ def get_user_tenants(session: Session, user_email: str) -> Tuple[Optional[str], 
     """
     try:
         tenant_users = (
-            session.query(TenantUser).join(User, TenantUser.user == User.id).filter(User.username == user_email).all()
+            session.query(TenantUser)
+            .join(User, TenantUser.user == User.id)
+            .filter(User.username == user_email, _not_suspended())
+            .all()
         )
 
         if not tenant_users:
@@ -49,7 +61,7 @@ def get_user_by_email(session: Session, user_email: str) -> Optional[dict]:
         Dict with 'id', 'username', 'display_name' keys or None
     """
     try:
-        user = session.query(User).filter(User.username == user_email.strip()).first()
+        user = session.query(User).filter(User.username == user_email.strip(), _not_suspended()).first()
 
         if not user:
             return None

@@ -98,3 +98,36 @@ func TestPagerdutyCommentIfNotInvestigated_SkipsWhenEnqueued(t *testing.T) {
 	assert.NoError(t, pagerdutyCommentIfNotInvestigated(testCtx(), map[string]any{llm.EventInvestigationEnqueuedKey: true}))
 	assert.NoError(t, pagerdutyCommentIfNotInvestigated(testCtx(), map[string]any{}))
 }
+
+func TestPostProcessEvent_RecordOnlyIsTriagedButNotActedOn(t *testing.T) {
+	shapes := map[string]any{
+		"labels as decoded from the queue": map[string]any{recordOnlyLabel: "true"},
+		"labels as a string map":           map[string]string{recordOnlyLabel: "true"},
+		"labels as stored JSON":            `{"nb_record_only":"true"}`,
+	}
+	for name, labels := range shapes {
+		t.Run(name, func(t *testing.T) {
+			called := stubPipeline(t, false)
+			PostProcessEvent(testCtx(), map[string]any{"source": "AWS_CloudWatch_Alarm", "labels": labels})
+			// Triage still counts it; no investigation, notification or workflow.
+			assert.Equal(t, []string{"triage"}, *called)
+		})
+	}
+}
+
+func TestPostProcessEvent_OtherLabelsAreActedOn(t *testing.T) {
+	for name, event := range map[string]map[string]any{
+		"no labels":            {"source": "AWS_CloudWatch_Alarm"},
+		"label set to false":   {"source": "AWS_CloudWatch_Alarm", "labels": map[string]any{recordOnlyLabel: "false"}},
+		"unrelated label only": {"source": "AWS_CloudWatch_Alarm", "labels": map[string]any{"aws_region": "us-east-1"}},
+		// A label the customer's own alert rule can set must not mute it.
+		"label from a customer-controlled source": {"source": "prometheus", "labels": map[string]any{recordOnlyLabel: "true"}},
+		"label with no source":                    {"labels": map[string]any{recordOnlyLabel: "true"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			called := stubPipeline(t, false)
+			PostProcessEvent(testCtx(), event)
+			assert.Equal(t, []string{"triage", "llm", "emit:event.created"}, *called)
+		})
+	}
+}

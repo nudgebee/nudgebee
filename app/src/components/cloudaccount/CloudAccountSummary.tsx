@@ -140,7 +140,8 @@ const toCanonicalSeverityLevel = (priority: string | undefined): CanonicalSeveri
   return 'info';
 };
 
-// Replaces currency symbols in text with the target currency symbol.
+// Replaces currency symbols in text with the target currency symbol. Only spend
+// insights are in the billing currency; savings insights are USD and keep `$`.
 const replaceCurrencyInText = (text: string, targetCurrencySymbol: string): string => {
   if (!text || targetCurrencySymbol === '$') return text;
   return text.replace(/\$(\d[\d,]*\.?\d*)/g, `${targetCurrencySymbol}$1`);
@@ -166,7 +167,7 @@ const ClusterSummary = ({ accountId = '', cloudProvider = '' }: any) => {
 
   // Process insights with correct currency symbol
   const insights = rawInsights.map((item: any) => {
-    const symbol = currencySymbol || '$';
+    const symbol = item.rule?.source === 'Spends' ? currencySymbol || '$' : '$';
     return {
       ...item,
       title: replaceCurrencyInText(item.rawTitle, symbol),
@@ -193,25 +194,8 @@ const ClusterSummary = ({ accountId = '', cloudProvider = '' }: any) => {
         const services = res.data || [];
         if (!cancelled) setDynamicServices(services);
       } catch (error) {
+        // No unfiltered fallback: it counted every billing line item as a resource.
         console.error('Error fetching filtered resource counts:', error);
-        // Fallback to old method if new one fails
-        try {
-          const fallbackRes: any = await apiResources.getResourceGroupings(
-            100,
-            0,
-            { account_id: accountId },
-            ['resource_service_name'],
-            ['resource_service_name', 'count_resource'],
-            { name: 'count_resource', order: 'desc' }
-          );
-          const services = (fallbackRes.data?.resource_groupings || []).map((item: any) => ({
-            service_name: item.resource_service_name,
-            count: item.count_resource || 0,
-          }));
-          if (!cancelled) setDynamicServices(services);
-        } catch (fallbackError) {
-          console.error('Fallback also failed:', fallbackError);
-        }
       } finally {
         if (!cancelled) setLoadingServices(false);
       }
@@ -724,7 +708,7 @@ const UtilizationAndHealth = ({ accountId, clusterSummary = {}, serviceName }: a
             label='Fired Alarm Count'
             value={
               <Box sx={{ display: 'inline-flex', alignItems: 'baseline', gap: ds.space[2] }}>
-                <Box component='span'>{clusterSummary?.events_aggregate?.aggregate?.count ?? '-'}</Box>
+                <Box component='span'>{clusterSummary?.events_aggregate?.aggregate?.count ?? 0}</Box>
                 {hasTrend && <Trend sign={trendSign} value={trendValue} width='auto' />}
                 <Typography component='span' sx={{ fontSize: ds.text.caption, color: ds.gray[400], whiteSpace: 'nowrap' }}>
                   last 7 days
@@ -740,7 +724,7 @@ const UtilizationAndHealth = ({ accountId, clusterSummary = {}, serviceName }: a
             label='Optimize Count'
             value={
               <Box component='span' className='stat-value-affordance' sx={{ transition: `color ${ds.motion.micro} ${ds.motion.ease}` }}>
-                {clusterSummary?.recommendation_aggregate?.aggregate?.count ?? '-'}
+                {clusterSummary?.recommendation_aggregate?.aggregate?.count ?? 0}
               </Box>
             }
             onClick={handleOptimizeClick}
@@ -915,13 +899,17 @@ const CostSummary = ({ clusterSummary = {}, currencySymbol = '$' }: any) => {
               </Tooltip>
             </Box>
             {clusterSummary?.recommendation_aggregate?.aggregate?.sum?.estimated_savings ? (
-              <Currency prefix={currencySymbol} value={clusterSummary.recommendation_aggregate.aggregate.sum.estimated_savings * 12} suffix='/yr' />
+              <Currency prefix='$' value={clusterSummary.recommendation_aggregate.aggregate.sum.estimated_savings * 12} suffix='/yr' />
             ) : (
               <Typography sx={{ color: ds.gray[500], fontSize: ds.text.caption }}>No savings available</Typography>
             )}
-            <Typography sx={{ color: ds.gray[400], fontSize: ds.text.caption, whiteSpace: 'nowrap' }}>estimated 12 mos</Typography>
+            <Typography sx={{ color: ds.gray[400], fontSize: ds.text.caption, whiteSpace: 'nowrap' }}>
+              estimated 12 mos{currencySymbol !== '$' ? ' · USD' : ''}
+            </Typography>
           </Box>
           {(() => {
+            // A USD saving over a non-USD spend is not a percentage.
+            if (currencySymbol !== '$') return null;
             const savPct = (() => {
               if (!clusterSummary?.recommendation_aggregate?.aggregate?.sum?.estimated_savings) {
                 return 0;

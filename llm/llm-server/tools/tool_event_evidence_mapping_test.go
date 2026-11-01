@@ -183,3 +183,101 @@ func TestFormatErrorLogLine(t *testing.T) {
 		t.Errorf("expected formatted warning line, got %q (isErr=%v)", line, isErr)
 	}
 }
+
+// The error-log-spike card must land in its own slot. Left to the generic
+// json branch it fell into Others, where only its insight line reached the
+// investigation and the whole slot can be dropped when evidence is over budget.
+func TestProcessRowWithMessages_MapsLogPatternBreakdown(t *testing.T) {
+	card := `{"enriched_labels":{"container_id":"/k8s/shop/api-1/api"},"pattern_breakdown":{"patterns_seen":1,"total":{"peak":705,"normal":9},"patterns":[{"pattern_hash":"aaa","level":"error","peak":700,"normal":2.8}]}}`
+	row := buildEvidencesRow(t, []map[string]any{
+		{
+			"type":            "json",
+			"data":            card,
+			"additional_info": map[string]any{"action_name": "aggregated_alert_label_enricher"},
+			"insight":         []map[string]any{{"message": "Error and critical log lines peaked at 705 per 5 min against 9 normal.", "severity": "Info"}},
+		},
+	})
+	ev := processedEvidence(t, EventsExecuteTool{}.processRowWithMessages(row, 0, 1, nil))
+
+	breakdown, ok := events.DecodeLogPatternBreakdown(ev.LogPatternBreakdown.Data)
+	if !ok {
+		t.Fatalf("expected the card in the LogPatternBreakdown slot, got %#v (Others=%v)", ev.LogPatternBreakdown.Data, ev.Others)
+	}
+	assert.Equal(t, 700.0, breakdown.Patterns[0].Peak)
+	assert.Equal(t, 9.0, breakdown.Total.Normal)
+	assert.Len(t, ev.LogPatternBreakdown.Insight, 1)
+	assert.Empty(t, ev.Others)
+	assert.Equal(t, ev.LogPatternBreakdown, extractEvidenceByType(ev, "log_pattern_breakdown"))
+}
+
+// The same action enriches labels for other alerts with no breakdown. That
+// card stays with the generic json evidence, as before.
+func TestProcessRowWithMessages_LabelOnlyEnricherCardStaysInOthers(t *testing.T) {
+	block := map[string]any{
+		"type":            "json",
+		"data":            `{"enriched_labels":{"path":"/checkout","method":"GET","status":"503"}}`,
+		"additional_info": map[string]any{"action_name": "aggregated_alert_label_enricher"},
+	}
+	ev := processedEvidence(t, EventsExecuteTool{}.processRowWithMessages(buildEvidencesRow(t, []map[string]any{block}), 0, 1, nil))
+	assert.Nil(t, ev.LogPatternBreakdown.Data)
+	assert.Len(t, ev.Others, 1)
+	assert.Nil(t, extractEvidenceByType(ev, "log_pattern_breakdown"))
+
+	data := map[string]any{"id": "test-event"}
+	EventsExecuteTool{}.buildEvidenceManifest(data, []events.Evidence{{Type: "json", Data: block["data"], AdditionalInfo: map[string]any{"action_name": "aggregated_alert_label_enricher"}}})
+	types, _ := data["evidences"].(map[string]any)["available_evidence_types"].([]string)
+	assert.NotContains(t, types, "log_pattern_breakdown")
+}
+
+func TestBuildEvidenceManifest_ListsLogPatternBreakdown(t *testing.T) {
+	data := map[string]any{"id": "test-event"}
+	evidences := []events.Evidence{
+		{
+			Type:           "json",
+			Data:           `{"pattern_breakdown":{"patterns":[{"pattern_hash":"aaa","level":"error","peak":700}]}}`,
+			AdditionalInfo: map[string]any{"action_name": "aggregated_alert_label_enricher"},
+		},
+	}
+	EventsExecuteTool{}.buildEvidenceManifest(data, evidences)
+	manifest, ok := data["evidences"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected manifest map, got %T", data["evidences"])
+	}
+	types, _ := manifest["available_evidence_types"].([]string)
+	assert.Contains(t, types, "log_pattern_breakdown")
+}
+
+// A log card that could not hold its whole window says so in additional_info.
+// That has to reach the evidence, or a full card reads as the whole window.
+func TestProcessRowWithMessages_LogCoverageNote(t *testing.T) {
+	entries := []map[string]any{{"timestamp": "2026-01-15T10:19:58Z", "message": "discovery failed", "severity": "ERROR"}}
+
+	t.Run("a cut card states its span and what it kept", func(t *testing.T) {
+		row := buildEvidencesRow(t, []map[string]any{logsEvidenceBlock(t, entries, map[string]any{
+			"log_window_start":    "2026-01-15T10:14:02Z",
+			"log_window_end":      "2026-01-15T10:20:00Z",
+			"log_truncated":       true,
+			"log_truncation_note": "The queried window has more lines than the 1000 a log card holds.",
+		})})
+		ev := processedEvidence(t, EventsExecuteTool{FullEvidence: true}.processRowWithMessages(row, 0, 1, nil))
+		assert.Equal(t,
+			"The collected log lines span 2026-01-15T10:14:02Z to 2026-01-15T10:20:00Z. The queried window has more lines than the 1000 a log card holds.",
+			ev.LogCoverageNote)
+	})
+
+	t.Run("a whole card states its span only", func(t *testing.T) {
+		row := buildEvidencesRow(t, []map[string]any{logsEvidenceBlock(t, entries, map[string]any{
+			"log_window_start":    "2026-01-15T10:14:02Z",
+			"log_window_end":      "2026-01-15T10:20:00Z",
+			"log_truncation_note": "stale note without the flag",
+		})})
+		ev := processedEvidence(t, EventsExecuteTool{FullEvidence: true}.processRowWithMessages(row, 0, 1, nil))
+		assert.Equal(t, "The collected log lines span 2026-01-15T10:14:02Z to 2026-01-15T10:20:00Z.", ev.LogCoverageNote)
+	})
+
+	t.Run("a card that says nothing leaves no note", func(t *testing.T) {
+		row := buildEvidencesRow(t, []map[string]any{logsEvidenceBlock(t, entries, nil)})
+		ev := processedEvidence(t, EventsExecuteTool{FullEvidence: true}.processRowWithMessages(row, 0, 1, nil))
+		assert.Empty(t, ev.LogCoverageNote)
+	})
+}

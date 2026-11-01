@@ -106,7 +106,7 @@ function IncidentGroupDrilldown({ eventId, accountId }) {
         showTimeFilter={false}
         hideScopeFilters
         tableColumns={[
-          { name: 'Severity', width: '10%' },
+          { name: 'Source Severity', width: '10%' },
           { name: 'Message', width: '42%' },
           { name: 'Alert Status', width: '10%' },
           { name: 'Error Type', width: '16%' },

@@ -73,10 +73,8 @@ func TestDelegateAgent_FollowupResumeExecutesDelegatedWrite(t *testing.T) {
 
 	sc := security.NewRequestContextForTenantAccountAdmin(tenantId, userId, []string{accountId})
 
-	// Clean slate before + after so re-runs don't collide.
-	_ = core.DeleteConversationBySession(sessionId, accountId, userId)
+	t.Logf("Running with preserved sessionId: %s", sessionId)
 	defer func() {
-		_ = core.DeleteConversationBySession(sessionId, accountId, userId)
 		// Best-effort ConfigMap cleanup so the test doesn't leak resources on the
 		// dev cluster. Ignore errors — if the write never happened (Phase C fail)
 		// there's nothing to delete anyway.
@@ -212,6 +210,33 @@ func TestDelegateAgent_FollowupResumeExecutesDelegatedWrite(t *testing.T) {
 			"agent didn't re-delegate on resume, or QueryConfig.ToolConfirmations propagation broke, or the "+
 			"sub-agent's re-plan chose a different action.",
 		cmName, cmName, realOutputCount, conversationId)
+
+	// The write landing is not enough: a resumed delegation that fails and is
+	// then delegated again by the model also creates the ConfigMap.
+	failed, total := inspectDelegateAgentCalls(t, conversationId)
+	assert.Zerof(t, failed,
+		"%d of %d delegate_agent tool_calls failed — the resumed delegation must complete itself, "+
+			"not be re-planned after an error. Conversation: %s.", failed, total, conversationId)
+}
+
+// inspectDelegateAgentCalls counts the delegate_agent tool_calls in the
+// conversation and how many of them ended in error ('fail' is an in-progress
+// call closed when its conversation failed).
+func inspectDelegateAgentCalls(t *testing.T, conversationId string) (failed, total int) {
+	t.Helper()
+	dbm, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		t.Fatalf("inspectDelegateAgentCalls: unable to get db manager: %v", err)
+	}
+	row := dbm.Db.QueryRow(`
+		SELECT COUNT(*) FILTER (WHERE status IN ('error', 'fail')), COUNT(*)
+		FROM llm_conversation_tool_calls
+		WHERE conversation_id = $1
+		  AND tool_name = 'delegate_agent'`, conversationId)
+	if err := row.Scan(&failed, &total); err != nil {
+		t.Fatalf("inspectDelegateAgentCalls: query failed: %v", err)
+	}
+	return failed, total
 }
 
 // fetchLatestWaitingDelegateSubAgentId queries llm_conversation_agent for the

@@ -69,6 +69,7 @@ import {
   cardTabSx,
   type SortField,
   type SortDirection,
+  isUnestimatedNativeCostFinding,
 } from './utils';
 
 // Inlined from the deleted SeveritySummaryBar — only the row shape, the
@@ -1507,6 +1508,12 @@ const OptimizeNewPage = ({ lockedCategory }: OptimizeNewPageProps = {}) => {
                     color: ds.gray[500],
                   }}
                 />
+              ) : isUnestimatedNativeCostFinding(row.category, row.rec?.rule_name, row.savings) ? (
+                <Tooltip title='The cloud provider flags this as a cost finding but gives no savings figure' placement='top'>
+                  <Box component='span' sx={{ fontSize: ds.text.caption, color: ds.gray[500], cursor: 'default', whiteSpace: 'nowrap' }}>
+                    Not estimated
+                  </Box>
+                </Tooltip>
               ) : (
                 <Box component='span' sx={{ color: ds.gray[400] }}>
                   —

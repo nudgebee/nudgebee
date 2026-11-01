@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -18,7 +19,6 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/config"
 	"nudgebee/services/internal/database"
-	"nudgebee/services/localagent"
 
 	"github.com/Cyprinus12138/otelgin"
 	"github.com/gin-contrib/pprof"
@@ -178,15 +178,19 @@ func main() {
 	})
 
 	defer func() {
+		// Runs after serve's drain, so it has to fit the rest of the pod's
+		// grace period; an unreachable collector must not hold it up.
+		ctx, cancel := context.WithTimeout(context.Background(), telemetryFlushTimeout)
+		defer cancel()
 		tpSdk, ok := tp.(*sdktrace.TracerProvider)
 		if ok {
-			if err := tpSdk.Shutdown(context.Background()); err != nil {
+			if err := tpSdk.Shutdown(ctx); err != nil {
 				slog.Error(fmt.Sprintf("Error shutting down tracer provider: %v", err))
 			}
 		}
 		mpSdk, ok := mp.(*sdkmetric.MeterProvider)
 		if ok {
-			if err := mpSdk.Shutdown(context.Background()); err != nil {
+			if err := mpSdk.Shutdown(ctx); err != nil {
 				slog.Error(fmt.Sprintf("Error shutting down meter provider: %v", err))
 			}
 		}
@@ -204,7 +208,9 @@ func main() {
 	slogginConfig := sloggin.DefaultConfig()
 	slogginConfig.WithTraceID = true
 	slogginConfig.WithSpanID = true
-	slogginConfig.Filters = []sloggin.Filter{sloggin.IgnorePath("/health")}
+	// 499 is a request the caller abandoned (api.StatusClientClosedRequest). sloggin
+	// would log it at Warn like any 4xx; the handler already logs it at Info.
+	slogginConfig.Filters = []sloggin.Filter{sloggin.IgnorePath("/health"), sloggin.IgnoreStatus(api.StatusClientClosedRequest)}
 	r.Use(sloggin.NewWithConfig(logger, slogginConfig))
 	r.Use(traceResponseHeaderMiddleware())
 	r.Use(authHandlerMiddleware())
@@ -214,31 +220,17 @@ func main() {
 
 	api.RunEEBootstrapHooks(logger)
 
-	// Adopt the credential the chart generated for the bundled in-cluster agent.
-	// Inert unless LOCAL_AGENT_ACCESS_KEY/SECRET are set. Logged, not fatal: a
-	// server that cannot register its own agent must still serve.
+	// Provision the first admin and tenant, and adopt the credential the chart
+	// generated for the bundled in-cluster agent, so a fresh install is complete
+	// before anyone signs in. Inert unless an admin address and LOCAL_AGENT_* are
+	// configured. Logged, not fatal: a server that cannot do this must still serve.
 	//
-	// Synchronous, matching RunEEBootstrapHooks above and its documented "must
-	// complete before requests arrive" contract, but bounded — the liveness and
-	// readiness probes declare no initialDelaySeconds, so an unbounded query
-	// against an unresponsive database would burn the probe budget and get the
-	// pod killed before it ever served. 10s mirrors the license feature-flag
-	// reconcile's own bound.
-	bootCtx, cancelBoot := context.WithTimeout(context.Background(), 10*time.Second)
-
-	// Provision the first admin and tenant, so a fresh install is complete
-	// before anyone signs in. Inert unless an admin address is configured or
-	// carried by the licence; those installs provision at first login instead.
-	// This runs first because it registers the bundled cluster as part of the
-	// same call, which makes the reconcile below a no-op on a fresh install.
-	if err := bootstrap.Provision(bootCtx, logger); err != nil {
-		logger.Error("first-run provisioning failed; the deployment will fall back to provisioning at first login", "error", err)
-	}
-
-	if err := localagent.Reconcile(bootCtx, logger); err != nil {
-		logger.Error("local agent registration failed; the bundled cluster will not appear until this is resolved", "error", err)
-	}
-	cancelBoot()
+	// One bounded attempt happens here, before requests arrive, matching
+	// RunEEBootstrapHooks above. On a fresh install the migration Job is still
+	// running at this point, so a failure is retried in the background until the
+	// schema catches up; firstRunCtx stops those retries on shutdown.
+	firstRunCtx, stopFirstRun := context.WithCancel(context.Background())
+	bootstrap.RunFirstRun(firstRunCtx, logger)
 
 	api.ConfigureRoutes(r, &tracer, &meter, logger)
 
@@ -253,20 +245,61 @@ func main() {
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-c
-		slog.Info("Got SIGTERM, shutting down")
+	if err := serve(srv, c, shutdownTimeout, func() {
+		stopFirstRun()
 		cleanup()
-		slog.Info("Connections closed, shutting down server")
-		err := srv.Shutdown(context.Background())
-		if err != nil {
-			slog.Error("Server shutdown failed:", "error", err)
-		}
-		os.Exit(1)
-	}()
-
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	}); err != nil {
 		slog.Error("Server listen failed:", "error", err)
 	}
+}
 
+// shutdownTimeout bounds how long in-flight requests get to finish after
+// SIGTERM, and telemetryFlushTimeout the trace/metric flush after that. The
+// chart's terminationGracePeriodSeconds must cover the preStop sleep, both of
+// these and cleanup(), or the kubelet SIGKILLs the pod part-way through.
+const (
+	shutdownTimeout       = 15 * time.Second
+	telemetryFlushTimeout = 5 * time.Second
+)
+
+// serve runs srv until stop fires, then stops accepting connections, gives
+// in-flight requests up to timeout to finish, and only then runs cleanup.
+// Closing the DB and MQ first would fail exactly those requests. It returns
+// only once all of that is done, because main returning ends the process.
+func serve(srv *http.Server, stop <-chan os.Signal, timeout time.Duration, cleanup func()) error {
+	drained := make(chan struct{})
+	// Closed when serve returns, so neither signal watcher outlives it — e.g.
+	// when the listen fails and no signal ever comes.
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-stop:
+		case <-done:
+			return
+		}
+		slog.Info("Got SIGTERM, draining in-flight requests", "timeout", timeout)
+		// A second signal skips the drain, so a local Ctrl-C twice still exits.
+		go func() {
+			select {
+			case <-stop:
+				slog.Warn("Second signal, exiting without finishing the drain")
+				os.Exit(1)
+			case <-done:
+			}
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			slog.Error("Server shutdown did not finish draining", "error", err)
+		}
+		cleanup()
+		close(drained)
+	}()
+
+	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	<-drained
+	return nil
 }

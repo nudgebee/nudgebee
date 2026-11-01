@@ -76,17 +76,25 @@ func (t *ImSendTask) Execute(taskCtx types.TaskContext, params map[string]any) (
 	}
 
 	resp, err := notification.SendNotification(requestContext, request)
-	if err == nil && resp.Status == notification.StatusSuppressed {
-		taskCtx.GetLogger().Info("IM notification suppressed by a notification rule", "channel", channel, "reason", resp.Reason)
-	}
 
-	return map[string]any{
+	output := map[string]any{
 		"channel":    resp.ChannelId,
 		"message_id": resp.MessageTs,
 		"team":       resp.TeamId,
 		"provider":   resp.Platform,
 		"status":     resp.Status,
-	}, err
+	}
+	if err == nil && resp.Status == notification.StatusSuppressed {
+		taskCtx.GetLogger().Info("IM notification suppressed by a notification rule", "channel", channel, "reason", resp.Reason)
+		if resp.Reason != "" {
+			output["reason"] = resp.Reason
+		}
+		if resp.RuleManagementURL != "" {
+			output["rule_management_url"] = resp.RuleManagementURL
+		}
+	}
+
+	return output, err
 }
 
 func (t *ImSendTask) InputSchema() *types.Schema {
@@ -154,6 +162,16 @@ func (t *ImSendTask) OutputSchema() *types.Schema {
 			"status": {
 				Type:        "string",
 				Description: "Delivery status: sent, or suppressed when a notification rule dropped the message.",
+				Required:    false,
+			},
+			"reason": {
+				Type:        "string",
+				Description: "Why the message was not delivered, e.g. which notification rule suppressed it. Set only when status is suppressed.",
+				Required:    false,
+			},
+			"rule_management_url": {
+				Type:        "string",
+				Description: "Link to the Notification Rules page to review or edit the rule that suppressed this message. Set only when status is suppressed.",
 				Required:    false,
 			},
 		},

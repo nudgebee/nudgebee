@@ -25,7 +25,7 @@ jobs:
       image_tag: ${{ steps.set-tag.outputs.IMAGE_TAG }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
@@ -36,13 +36,13 @@ jobs:
           echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_OUTPUT
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: "1.26.x"
           cache-dependency-path: llm/llm-server/go.sum
 
       - name: Cache Go build
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/go-build
           key: ${{ runner.os }}-go-build-${{ hashFiles('llm/llm-server/go.sum') }}
@@ -50,7 +50,7 @@ jobs:
             ${{ runner.os }}-go-build-
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.11.3
           working-directory: llm/llm-server
@@ -112,10 +112,10 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: "1.26.x"
           cache-dependency-path: ./api-server/services/go.sum
@@ -156,6 +156,13 @@ jobs:
       # foreign-key cascades run. A mirror left NULL reads as every account to
       # older code. Only its NotificationRule test: account's other _DB test needs
       # a migrated database.
+      #
+      # insight carries the two statements the 10-minute insight refresh writes
+      # with: an upsert that must skip an insight that did not change, and a
+      # close that must reach exactly the accounts a run stopped reporting. Both
+      # are decided by SQL comparisons over jsonb and a uuid array, and the
+      # failure modes are a rewrite of every row on every run and insights that
+      # never close; Go sees neither.
       - name: Run PR-lifecycle DB tests
         working-directory: ./api-server/services
         env:
@@ -164,9 +171,12 @@ jobs:
           # suite cannot quietly stop running here.
           REQUIRE_DB_TESTS: "true"
         # triage/eventrule: which suppression rows a mute owns is decided in SQL over
-        # jsonb tags and nullable match columns (alert-rule mute, epic #38553). Only
-        # the Mute tests: triage's other _DB test needs a migrated database.
+        # jsonb tags and nullable match columns (alert-rule mute, epic #38553). All
+        # but CascadePipeline, the one triage _DB test that needs a migrated database.
+        # integrations/core: the ms_teams rename migration must not collide with
+        # integrations' unique key, which would abort the post-upgrade hook.
         run: |
-          go test ./account/adapter/ ./observability/ ./event/ ./recommendation/ ./query/ ./reports/ -run '_DB$' -v
-          go test ./triage/ ./eventrule/ -run 'Mute.*_DB$' -v
+          go test ./account/adapter/ ./observability/ ./event/ ./recommendation/ ./query/ ./reports/ ./insight/ -run '_DB$' -v
+          go test ./triage/ ./eventrule/ -run '_DB$' -skip 'CascadePipeline' -v
           go test ./account/ -run 'NotificationRule.*_DB$' -v
+          go test ./integrations/core/ -run 'MsTeams.*_DB$' -v

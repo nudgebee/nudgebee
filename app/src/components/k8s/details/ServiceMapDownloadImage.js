@@ -1,13 +1,12 @@
 import React, { useEffect } from 'react';
-import { Panel, useReactFlow, getNodesBounds, getViewportForBounds } from 'reactflow';
+import { Panel, useReactFlow, getNodesBounds } from 'reactflow';
 import { toPng, getFontEmbedCSS } from 'html-to-image';
 import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
 import { Button } from '@ui/Button';
-import { colors } from 'src/utils/colors';
 
-function downloadImage(dataUrl) {
+function downloadImage(dataUrl, fileName) {
   const a = document.createElement('a');
-  a.setAttribute('download', 'servicemap.png');
+  a.setAttribute('download', fileName);
   a.setAttribute('href', dataUrl);
   a.click();
 }
@@ -33,6 +32,53 @@ function ensureFontEmbedCSSCached(viewport) {
   return cachedFontEmbedCSSPromise;
 }
 
+// Safari caps a canvas at ~16.7M pixels and every browser caps a side at 16384px;
+// past either, toPng returns a blank image. Large graphs trade resolution to fit.
+const MAX_CANVAS_AREA = 16_000_000;
+const MAX_CANVAS_SIDE = 16_000;
+const IMAGE_PADDING = 100;
+
+export function imagePixelRatio(width, height) {
+  return Math.min(2, Math.sqrt(MAX_CANVAS_AREA / (width * height)), MAX_CANVAS_SIDE / width, MAX_CANVAS_SIDE / height);
+}
+
+/**
+ * Render a ReactFlow graph to a PNG and download it. `viewportEl` is the graph's
+ * `.react-flow__viewport`; every node in `nodes` must be rendered into it.
+ */
+export async function downloadFlowImage(viewportEl, nodes, fileName) {
+  const nodesBounds = getNodesBounds(nodes);
+  const imageWidth = nodesBounds.width + IMAGE_PADDING * 2;
+  const imageHeight = nodesBounds.height + IMAGE_PADDING * 2;
+  // html-to-image paints the background onto a canvas and an SVG foreignObject,
+  // neither of which can resolve var(--ds-*); pass the token's computed value.
+  const backgroundColor = getComputedStyle(viewportEl).getPropertyValue('--ds-background-100').trim() || undefined;
+  const fontEmbedCSS = await ensureFontEmbedCSSCached(viewportEl);
+
+  const dataUrl = await toPng(viewportEl, {
+    backgroundColor,
+    width: imageWidth,
+    height: imageHeight,
+    style: {
+      width: `${imageWidth}px`,
+      height: `${imageHeight}px`,
+      // 1:1 scale, shifted so the bounds' top-left lands at the padding offset.
+      // (reactflow's getViewportForBounds takes padding as a fraction, not px.)
+      transform: `translate(${IMAGE_PADDING - nodesBounds.x}px, ${IMAGE_PADDING - nodesBounds.y}px) scale(1)`,
+    },
+    pixelRatio: imagePixelRatio(imageWidth, imageHeight),
+    // Reuse the cached font CSS when it still covers the fonts in use,
+    // instead of re-fetching every font file (~100 requests) each click.
+    fontEmbedCSS: fontEmbedCSS || undefined,
+    // When font embedding failed (a cross-origin stylesheet throws
+    // "Cannot access rules" on cssRules access), skip fonts entirely so
+    // toPng doesn't re-run the same failing embed and reject the download.
+    // The image still renders with system-font fallback.
+    skipFonts: !fontEmbedCSS,
+  });
+  downloadImage(dataUrl, fileName);
+}
+
 function ServiceMapDownloadImage() {
   const { getNodes } = useReactFlow();
 
@@ -50,53 +96,11 @@ function ServiceMapDownloadImage() {
     return () => cancelIdleCallback(handle);
   }, []);
 
-  const onClick = async () => {
-    const nodesBounds = getNodesBounds(getNodes());
-
-    // Add padding around the graph
-    const padding = 100;
-
-    // Calculate dimensions based on actual node bounds
-    const imageWidth = nodesBounds.width + padding * 2;
-    const imageHeight = nodesBounds.height + padding * 2;
-
-    // Calculate viewport to center the graph with padding
-    const graphViewport = getViewportForBounds(
-      nodesBounds,
-      imageWidth,
-      imageHeight,
-      0.5, // min zoom
-      2, // max zoom
-      padding // padding
-    );
-
+  const onClick = () => {
     const viewport = document.querySelector('.react-flow__viewport');
-    const cachedFontEmbedCSS = await ensureFontEmbedCSSCached(viewport);
-
-    toPng(viewport, {
-      backgroundColor: colors.background.white,
-      width: imageWidth,
-      height: imageHeight,
-      style: {
-        width: `${imageWidth}px`,
-        height: `${imageHeight}px`,
-        transform: `translate(${graphViewport.x}px, ${graphViewport.y}px) scale(${graphViewport.zoom})`,
-      },
-      // Increase quality for better output
-      pixelRatio: 2,
-      // Reuse the cached font CSS when it still covers the fonts in use,
-      // instead of re-fetching every font file (~100 requests) each click.
-      fontEmbedCSS: cachedFontEmbedCSS || undefined,
-      // When font embedding failed (a cross-origin stylesheet throws
-      // "Cannot access rules" on cssRules access), skip fonts entirely so
-      // toPng doesn't re-run the same failing embed and reject the download.
-      // The image still renders with system-font fallback.
-      skipFonts: !cachedFontEmbedCSS,
-    })
-      .then(downloadImage)
-      .catch((error) => {
-        console.error('Error generating image:', error);
-      });
+    downloadFlowImage(viewport, getNodes(), 'servicemap.png').catch((error) => {
+      console.error('Error generating image:', error);
+    });
   };
 
   return (

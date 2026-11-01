@@ -357,7 +357,15 @@ type recRow struct {
 	resourceName      *string
 	resourceNamespace *string
 	resourceID        *string
+	volume            k8sVolumeRef
 	changeClass       ChangeClass
+}
+
+func stringOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // scoreRow is a scored recommendation ready for the batched UPDATE.
@@ -423,8 +431,9 @@ func recomputeFinOpsScoresWith(ctx *security.RequestContext, dbms *database.Data
 	//
 	// mutableSince bounds the recency boost: past recencyBoostLastStepDays the
 	// boost is zero and stays zero, so a row older than that can only change if
-	// it has a resource to re-annotate, or its scoring inputs moved since it was
-	// last scored, or it was never scored. The WHERE below spells that out, so
+	// it has a resource to re-annotate (a cloud_resourses row, or a k8s volume
+	// identified by its payload), or its scoring inputs moved since it was last
+	// scored, or it was never scored. The WHERE below spells that out, so
 	// the rows that dominate the Open set — image-scan findings with no resource
 	// and no savings — drop out of the walk once their boost has decayed instead
 	// of being read, scored and probed every day for nothing. The predicate is a
@@ -466,18 +475,24 @@ func recomputeFinOpsScoresWith(ctx *security.RequestContext, dbms *database.Data
 				ELSE r.recommendation ->> 'namespace'
 			END AS resource_k8s_namespace,
 			r.resource_id,
+			-- k8s volume rules have no cloud_resourses row; their payload is the
+			-- PV object, which names the volume and the claim bound to it.
+			CASE WHEN r.rule_name IN ('unused_pvc', 'pv_rightsize') THEN r.recommendation -> 'metadata' ->> 'name' END AS volume_pv_name,
+			CASE WHEN r.rule_name IN ('unused_pvc', 'pv_rightsize') THEN r.recommendation -> 'spec' -> 'claimRef' ->> 'namespace' END AS volume_claim_namespace,
+			CASE WHEN r.rule_name IN ('unused_pvc', 'pv_rightsize') THEN r.recommendation -> 'spec' -> 'claimRef' ->> 'name' END AS volume_claim_name,
 			CASE
-				-- Only pod_right_sizing needs its payload (to read the request
-				-- deltas for change classification); every other rule classifies
-				-- from its name alone, and fetching JSONB for the whole Open set
-				-- would balloon this scan's memory for nothing.
-				WHEN r.rule_name = 'pod_right_sizing' THEN r.recommendation
+				-- Only pod_right_sizing and pv_rightsize need their payload (to
+				-- read the change's direction for classification); every other
+				-- rule classifies from its name alone, and fetching JSONB for the
+				-- whole Open set would balloon this scan's memory for nothing.
+				WHEN r.rule_name IN ('pod_right_sizing', 'pv_rightsize') THEN r.recommendation
 			END AS change_payload
 		FROM recommendation r
 		LEFT JOIN cloud_resourses cr ON cr.id = r.resource_id
 		WHERE r.status = 'Open' AND r.created_at > $1 AND r.created_at <= $2
 		  AND (
 		    r.resource_id IS NOT NULL
+		    OR r.rule_name IN ('unused_pvc', 'pv_rightsize')
 		    OR r.created_at > $3
 		    OR r.finops_score_breakdown ->> 'version' IS NULL
 		    OR COALESCE(r.finops_score_breakdown -> 'factors' ->> 'severity', '')
@@ -518,13 +533,15 @@ func recomputeFinOpsScoresWith(ctx *security.RequestContext, dbms *database.Data
 			var r recRow
 			var createdAt time.Time
 			var changePayload []byte
+			var volumePV, volumeClaimNS, volumeClaim *string
 			pageCount++
-			if err := rows.Scan(&r.id, &r.tenantID, &r.cloudAccountID, &r.category, &r.ruleName, &r.severity, &r.estimatedSavings, &createdAt, &r.resourceName, &r.resourceNamespace, &r.resourceID, &changePayload); err != nil {
+			if err := rows.Scan(&r.id, &r.tenantID, &r.cloudAccountID, &r.category, &r.ruleName, &r.severity, &r.estimatedSavings, &createdAt, &r.resourceName, &r.resourceNamespace, &r.resourceID, &volumePV, &volumeClaimNS, &volumeClaim, &changePayload); err != nil {
 				ctx.GetLogger().Error("error scanning recommendation row", "error", err)
 				stats.errors++
 				continue
 			}
 			r.createdAt = &createdAt
+			r.volume = k8sVolumeRef{PVName: stringOrEmpty(volumePV), ClaimNamespace: stringOrEmpty(volumeClaimNS), ClaimName: stringOrEmpty(volumeClaim)}
 			// Classify here and keep only the class, so the payload bytes never
 			// outlive the scan.
 			r.changeClass = ClassifyChange(r.ruleName, changePayload)
@@ -623,7 +640,7 @@ func scoreAndWritePage(ctx *security.RequestContext, dbms *database.DatabaseMana
 		if r.resourceID != nil {
 			resID = *r.resourceID
 		}
-		annotateBreakdownWithImpact(kg, r.tenantID, accountID, ns, name, resID, r.ruleName, r.changeClass, result.Breakdown, cache)
+		annotateBreakdownWithImpact(kg, r.tenantID, accountID, ns, name, resID, r.ruleName, r.volume, r.changeClass, result.Breakdown, cache)
 
 		breakdownJSON, err := json.Marshal(result.Breakdown)
 		if err != nil {

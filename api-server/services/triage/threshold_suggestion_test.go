@@ -681,11 +681,11 @@ func TestExtractPromQLThreshold(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:      "compound AND — no guard, picks first leg (LHS)",
-			expr:      `rate(errors[5m]) > 0.5 and rate(requests[5m]) > 10`,
-			wantQuery: `rate(errors[5m])`,
-			wantOp:    ">",
-			wantVal:   0.5,
+			// Both legs decide when the rule fires, so replaying one of them against a new
+			// threshold would not predict its firings.
+			name:    "compound AND — two real conditions, no single threshold to tune",
+			expr:    `rate(errors[5m]) > 0.5 and rate(requests[5m]) > 10`,
+			wantErr: true,
 		},
 		{
 			name:      "compound OR — picks first leg",
@@ -695,11 +695,56 @@ func TestExtractPromQLThreshold(t *testing.T) {
 			wantVal:   0,
 		},
 		{
-			name:      "compound AND with guard — metric comparison on one side",
-			expr:      `(error_rate / baseline) > 3 and error_count > 10`,
-			wantQuery: `(error_rate / baseline)`,
+			name:    "compound OR — either threshold can fire the rule",
+			expr:    `rate(errors[5m]) > 5 or rate(timeouts[5m]) > 10`,
+			wantErr: true,
+		},
+		{
+			// An equality check filters on state; it is not a second threshold.
+			name:      "compound AND — threshold plus a state check",
+			expr:      `cpu_usage > 80 and up == 1`,
+			wantQuery: `cpu_usage`,
 			wantOp:    ">",
-			wantVal:   3,
+			wantVal:   80,
+		},
+		{
+			name:      "compound AND — state check first, threshold second",
+			expr:      `up == 1 and cpu_usage > 80`,
+			wantQuery: `cpu_usage`,
+			wantOp:    ">",
+			wantVal:   80,
+		},
+		{
+			name:      "compound AND — threshold plus a group of guards",
+			expr:      `cpu_usage > 80 and (up > 0 or healthy > 0)`,
+			wantQuery: `cpu_usage`,
+			wantOp:    ">",
+			wantVal:   80,
+		},
+		{
+			// The right leg of UNLESS is an exclusion, never the alerting threshold.
+			name:    "compound UNLESS — exclusion is not picked when the alerting leg has no static threshold",
+			expr:    `(requests_in_flight > max_in_flight) unless maintenance_window > 5`,
+			wantErr: true,
+		},
+		{
+			name:    "compound AND — ratio plus a volume floor is two conditions",
+			expr:    `(error_rate / baseline) > 3 and error_count > 10`,
+			wantErr: true,
+		},
+		{
+			// Free-space rule that also needs the trend to reach zero: the trend leg is a real
+			// condition, and neither the guard nor the exclusion may be picked in its place.
+			name:    "compound AND — threshold plus trend, behind a guard and an exclusion",
+			expr:    `(volume_available_bytes / volume_capacity_bytes) < 0.15 and volume_used_bytes > 0 and predict_linear(volume_available_bytes[6h], 4 * 24 * 3600) < 0 unless on(namespace, persistentvolumeclaim) volume_access_mode{access_mode="ReadOnlyMany"} == 1`,
+			wantErr: true,
+		},
+		{
+			name:      "compound AND — single threshold behind a guard and an exclusion",
+			expr:      `(volume_available_bytes / volume_capacity_bytes) < 0.03 and volume_used_bytes > 0 unless on(namespace, persistentvolumeclaim) volume_access_mode{access_mode="ReadOnlyMany"} == 1`,
+			wantQuery: `(volume_available_bytes / volume_capacity_bytes)`,
+			wantOp:    "<",
+			wantVal:   0.03,
 		},
 		{
 			name:      "compound AND — picks alerting threshold over guard (> 0)",
@@ -953,7 +998,9 @@ func TestClassifyAlertQuality(t *testing.T) {
 		wantRecommend string
 	}{
 		{
-			name: "false positive — fires often, auto-resolves, no engagement",
+			// Nobody acting on an alert is not evidence that it is false: firings that stay
+			// open are a real condition, so the rule is never recommended for disabling.
+			name: "noisy ignored — fires often, auto-resolves, no engagement, sustained firings",
 			score: AlertQualityScore{
 				FlappingRate:    0.95,
 				ResolutionRate:  0.95,
@@ -961,8 +1008,22 @@ func TestClassifyAlertQuality(t *testing.T) {
 				FiringFrequency: 5.0,
 				TransientRate:   0.3,
 			},
-			wantClass:     "false_positive",
-			wantRecommend: "disable_alert",
+			wantClass:     "noisy_ignored",
+			wantRecommend: "tune_threshold",
+		},
+		{
+			// A capacity alert that re-fires a few times a week and stays open for hours each time.
+			name: "noisy ignored — sustained firings at moderate frequency, zero engagement",
+			score: AlertQualityScore{
+				ResolutionRate:  0.9444,
+				EngagementRate:  0.0,
+				FiringFrequency: 0.72,
+				TransientRate:   0.0588,
+				MeanTimeToClose: 11050,
+				DurationP90:     21905,
+			},
+			wantClass:     "noisy_ignored",
+			wantRecommend: "tune_threshold",
 		},
 		{
 			name: "false positive with transient spikes — recommend duration increase",
@@ -1036,8 +1097,20 @@ func TestClassifyAlertQuality(t *testing.T) {
 				FiringFrequency: 1.5,
 				TransientRate:   0.3,
 			},
-			wantClass:     "false_positive",
+			wantClass:     "noisy_ignored",
 			wantRecommend: "tune_threshold",
+		},
+		{
+			name: "false positive at moderate frequency — most firings clear within minutes",
+			score: AlertQualityScore{
+				FlappingRate:    0.6,
+				ResolutionRate:  0.7,
+				EngagementRate:  0.02,
+				FiringFrequency: 0.8,
+				TransientRate:   0.85,
+			},
+			wantClass:     "false_positive",
+			wantRecommend: "increase_duration",
 		},
 		{
 			name: "healthy — low frequency, well-engaged",
@@ -1061,7 +1134,7 @@ func TestClassifyAlertQuality(t *testing.T) {
 				FiringFrequency: 285.0,
 			},
 			wantClass:     "false_positive",
-			wantRecommend: "disable_alert",
+			wantRecommend: "investigate",
 		},
 		{
 			name: "instant-dominated but low frequency stays healthy",
@@ -1103,7 +1176,7 @@ func TestQualityOnlyRecommendation(t *testing.T) {
 		recommendation string
 		want           string
 	}{
-		{"disable_alert maps to disable", "disable_alert", "disable"},
+		{"firing history alone never maps to disable", "disable_alert", ""},
 		{"increase_duration passes through", "increase_duration", "increase_duration"},
 		{"investigate maps to review_alert", "investigate", "review_alert"},
 		{"tune_threshold degrades to review_alert without a metric", "tune_threshold", "review_alert"},
@@ -1212,14 +1285,14 @@ func TestComputeDurationRecommendation(t *testing.T) {
 			wantDuration: 0,
 		},
 		{
-			name:       "broken classification — disable",
+			name:       "broken classification — review, never disable",
 			suggestion: ThresholdSuggestion{EstimatedReduction: 30},
 			alertDef:   AlertDefinition{},
 			quality: &AlertQualityScore{
 				TransientRate:  0.0,
 				Classification: "broken",
 			},
-			wantRecType:   "disable",
+			wantRecType:   "review_alert",
 			wantDuration:  0,
 			wantHasReason: true,
 		},

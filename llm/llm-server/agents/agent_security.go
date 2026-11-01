@@ -13,7 +13,7 @@ func init() {
 	toolInput := "Provide security question in natural language"
 	toolOutput := "The tool will return the response based on the user question."
 
-	core.RegisterNBAgentFactoryAndTool(SecurityAgentName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAndTool(SecurityAgentName, func(accountId string) (core.NBAgent, error) {
 		return SecurityAgent{
 			accountId: accountId,
 		}, nil
@@ -21,6 +21,10 @@ func init() {
 }
 
 const SecurityAgentName = "security"
+
+// AcceptsExecutionTarget: security findings follow a handed target; the
+// scan triggers cannot take one and are refused under another account.
+func (SecurityAgent) AcceptsExecutionTarget() {}
 
 type SecurityAgent struct {
 	accountId string

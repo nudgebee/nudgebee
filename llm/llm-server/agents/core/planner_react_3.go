@@ -2253,7 +2253,8 @@ func (o *NBReActPlanner3) runCritique(input, scratchpad, finalAnswer string, int
 	Debug(msg string, args ...any)
 }) (resultDecision, resultFeedback string) {
 	defer func() {
-		resultDecision, resultFeedback = runClaimCritiqueShadow(o.ctx, o.request, "react3", o.nbAgent.GetName(), resultDecision, resultFeedback, input, finalAnswer, o.Notebook, intermediateSteps)
+		resultDecision, resultFeedback = runClaimCritiqueShadow(o.ctx, o.request, "react3", o.nbAgent.GetName(), resultDecision, resultFeedback, input, finalAnswer, o.Notebook, intermediateSteps,
+			o.refinementAttempts+1 >= o.maxRefinementAttempts, nil)
 		// Surface the feedback actually returned to the planner, including claim gaps.
 		if !strings.EqualFold(resultDecision, "accept") && resultFeedback != "" {
 			if err := o.saveCritiqueAsToolCall(resultFeedback); err != nil {

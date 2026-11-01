@@ -75,14 +75,7 @@ func CacheCreateNamespace(namespace string, options ...CacheNamespaceOption) {
 
 	if cacheManager == nil {
 		if config.Config.CacheProvider == "redis" {
-			redisClient := redis.NewClient(&redis.Options{
-				Addr:     fmt.Sprintf("%s:%d", config.Config.CacheRedisServerHost, config.Config.CacheRedisServerPort),
-				Username: config.Config.CacheRedisUserName,
-				Password: config.Config.CacheRedisUserPassword,
-			})
-			redisStore := redis_store.NewRedis(redisClient)
-			cacheManager = cache.New[any](redisStore)
-			cacheClient = redisClient
+			_, _ = ensureRedisClientLocked()
 		} else {
 			defaultConfig := bigcache_store.DefaultConfig(time.Duration(config.Config.CacheExpirationMinutes) * time.Minute)
 			if cacheNamespaceOptions.Expiration > 0 {
@@ -101,6 +94,36 @@ func CacheCreateNamespace(namespace string, options ...CacheNamespaceOption) {
 		}
 	}
 	cacheManagers[namespace] = cacheNamespaceOptions
+}
+
+// ensureRedisClientLocked returns the active *redis.Client, initializing cacheManager
+// and cacheClient if they have not yet been instantiated. Caller must hold syncCacheManagers.
+func ensureRedisClientLocked() (*redis.Client, error) {
+	if config.Config.CacheProvider != "redis" {
+		return nil, nil
+	}
+	if cacheClient == nil {
+		redisClient := redis.NewClient(&redis.Options{
+			Addr:     fmt.Sprintf("%s:%d", config.Config.CacheRedisServerHost, config.Config.CacheRedisServerPort),
+			Username: config.Config.CacheRedisUserName,
+			Password: config.Config.CacheRedisUserPassword,
+		})
+		redisStore := redis_store.NewRedis(redisClient)
+		cacheManager = cache.New[any](redisStore)
+		cacheClient = redisClient
+		return redisClient, nil
+	}
+	rc, ok := cacheClient.(*redis.Client)
+	if !ok {
+		return nil, errors.New("cache: cacheClient is not *redis.Client")
+	}
+	return rc, nil
+}
+
+func getRedisClient() (*redis.Client, error) {
+	syncCacheManagers.Lock()
+	defer syncCacheManagers.Unlock()
+	return ensureRedisClientLocked()
 }
 
 // cacheNamespaceExpiration returns the TTL a namespace was registered with, or
@@ -235,37 +258,50 @@ func CacheListKeys(namespace string) ([]string, error) {
 	if err != nil {
 		return nil, errors.New("cache: namespace not found")
 	}
-	keys := make([]string, 0)
 
 	if config.Config.CacheProvider == "redis" {
-		redisClient := cacheClient.(*redis.Client)
+		redisClient, err := getRedisClient()
+		if err != nil || redisClient == nil {
+			return nil, errors.New("cache: redis client unavailable")
+		}
 		keys := redisClient.Keys(context.Background(), namespace+":*").Val()
 		keys = lo.Map(keys, func(key string, i int) string {
 			return strings.TrimPrefix(key, namespace+":")
 		})
 		return keys, nil
-	} else {
-		bigCacheClient := cacheClient.(*bigcache_store.BigCache)
-		iterator := bigCacheClient.Iterator()
-
-		for iterator.SetNext() {
-			k, err := iterator.Value()
-			if err != nil {
-				return nil, err
-			}
-			if strings.HasPrefix(k.Key(), namespace+":") {
-				key := strings.TrimPrefix(k.Key(), namespace+":")
-				keys = append(keys, key)
-			}
-		}
 	}
 
+	syncCacheManagers.Lock()
+	bigCacheClient, ok := cacheClient.(*bigcache_store.BigCache)
+	syncCacheManagers.Unlock()
+	if !ok || bigCacheClient == nil {
+		return nil, errors.New("cache: local cache client unavailable")
+	}
+
+	iterator := bigCacheClient.Iterator()
+	keys := make([]string, 0)
+	for iterator.SetNext() {
+		k, err := iterator.Value()
+		if err != nil {
+			return nil, err
+		}
+		if strings.HasPrefix(k.Key(), namespace+":") {
+			key := strings.TrimPrefix(k.Key(), namespace+":")
+			keys = append(keys, key)
+		}
+	}
 	return keys, nil
 }
 
 func CachePublish(channel string, message string) error {
 	if config.Config.CacheProvider == "redis" {
-		redisClient := cacheClient.(*redis.Client)
+		redisClient, err := getRedisClient()
+		if err != nil {
+			return err
+		}
+		if redisClient == nil {
+			return errors.New("cache: redis client unavailable")
+		}
 		return redisClient.Publish(context.Background(), channel, message).Err()
 	}
 	return nil
@@ -273,7 +309,11 @@ func CachePublish(channel string, message string) error {
 
 func CacheSubscribe(channel string, handler func(message string)) {
 	if config.Config.CacheProvider == "redis" {
-		redisClient := cacheClient.(*redis.Client)
+		redisClient, err := getRedisClient()
+		if err != nil || redisClient == nil {
+			slog.Warn("cache: cannot subscribe to redis channel, client unavailable", "channel", channel, "error", err)
+			return
+		}
 		pubsub := redisClient.Subscribe(context.Background(), channel)
 		go func() {
 			ch := pubsub.Channel()
@@ -299,8 +339,8 @@ const releaseLockScript = `if redis.call("get", KEYS[1]) == ARGV[1] then return 
 // a transient Redis problem degrades to the in-process guard rather than
 // blocking work.
 func CacheTryLock(ctx context.Context, key string, ttl time.Duration) (string, bool) {
-	rc, ok := cacheClient.(*redis.Client)
-	if !ok || rc == nil {
+	rc, err := getRedisClient()
+	if err != nil || rc == nil {
 		return "", true
 	}
 	tokenBytes := make([]byte, 16)
@@ -323,8 +363,8 @@ func CacheUnlock(ctx context.Context, key, token string) {
 	if token == "" {
 		return
 	}
-	rc, ok := cacheClient.(*redis.Client)
-	if !ok || rc == nil {
+	rc, err := getRedisClient()
+	if err != nil || rc == nil {
 		return
 	}
 	if err := rc.Eval(ctx, releaseLockScript, []string{"lock:" + key}, token).Err(); err != nil {

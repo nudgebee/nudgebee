@@ -53,7 +53,8 @@ func TestResumeConfirmationKey_Fallback(t *testing.T) {
 		ToolInput: `{"command": "get pods"}`,
 	}
 
-	key := resumeConfirmationKey(nameToTool, action, "account-1")
+	e := &plannerExecutor{agentRequest: NBAgentRequest{AccountId: "account-1"}}
+	key := e.confirmationKeyOf(nameToTool, action)
 	assert.NotEmpty(t, key)
 
 	// Unknown tool returns tool name
@@ -61,6 +62,6 @@ func TestResumeConfirmationKey_Fallback(t *testing.T) {
 		Tool:      "unknown_tool",
 		ToolInput: `{}`,
 	}
-	keyUnknown := resumeConfirmationKey(nameToTool, unknownAction, "account-1")
+	keyUnknown := e.confirmationKeyOf(nameToTool, unknownAction)
 	assert.Equal(t, "unknown_tool", keyUnknown)
 }

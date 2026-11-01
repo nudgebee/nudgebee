@@ -64,7 +64,10 @@ Ignore the canonical rules' standalone-output formatting instruction. The final 
 
 	human := fmt.Sprintf("<knowledge_reference>\n%s\n</knowledge_reference>\n\n<user_request>\n%s\n</user_request>",
 		strings.TrimSpace(request.KBPrestepContent), request.Query)
-	if original := strings.TrimSpace(request.OriginalQuery); original != "" && original != strings.TrimSpace(request.Query) {
+	// Only a request the user wrote. On an event investigation the original
+	// request is the generated investigation prompt: tens of kilobytes that say
+	// nothing about this fetch and contain time phrases that are not requests.
+	if original := strings.TrimSpace(request.OriginalQuery); request.OriginalQueryFromUser && original != "" && original != strings.TrimSpace(request.Query) {
 		human += fmt.Sprintf("\n\n<original_user_request>\n%s\n</original_user_request>", original)
 	}
 	if queryContext := strings.TrimSpace(request.QueryContext); queryContext != "" {
@@ -95,10 +98,6 @@ Ignore the canonical rules' standalone-output formatting instruction. The final 
 }
 
 func validateLogQueryPlan(request core.NBAgentRequest, provider services_server.ObservabilityProvider, plan logQueryPlan) (logQueryPlan, error) {
-	constraintSource := request.Query
-	if original := strings.TrimSpace(request.OriginalQuery); original != "" {
-		constraintSource = original
-	}
 	switch strings.ToLower(strings.TrimSpace(plan.QueryType)) {
 	case "native":
 		validated := strings.TrimSpace(plan.Native.Query)
@@ -110,33 +109,7 @@ func validateLogQueryPlan(request core.NBAgentRequest, provider services_server.
 		}
 		plan.QueryType = "native"
 		plan.Native.Query = validated
-		limit, timeRange, hasLimit, hasRange := parseExplicitLogQueryConstraints(request.Query)
-		if original := strings.TrimSpace(request.OriginalQuery); original != "" {
-			originalLimit, originalRange, originalHasLimit, originalHasRange := parseExplicitLogQueryConstraints(original)
-			if originalHasLimit {
-				limit, hasLimit = originalLimit, true
-			}
-			if originalHasRange {
-				timeRange, hasRange = originalRange, true
-			}
-		}
-		if hasLimit {
-			plan.Native.Limit = limit
-		}
-		if hasRange {
-			plan.Native.StartTime = ""
-			plan.Native.TimeRange = timeRange
-			// A relative request such as "last 30m" ends now. Do not let an
-			// unrelated historical end from the planner or KB silently shift it.
-			// The original request wins over a parent agent's paraphrase.
-			endSource := request.Query
-			if original := strings.TrimSpace(request.OriginalQuery); original != "" {
-				endSource = original
-			}
-			if !explicitLogEndAnchorRE.MatchString(endSource) {
-				plan.Native.EndTime = ""
-			}
-		}
+		applyLogPlanConstraints(request, &plan, time.Now())
 		if plan.Native.Limit <= 0 {
 			plan.Native.Limit = 1000
 		}
@@ -152,12 +125,12 @@ func validateLogQueryPlan(request core.NBAgentRequest, provider services_server.
 		if !ok {
 			return logQueryPlan{}, fmt.Errorf("query plan returned invalid canonical query")
 		}
-		canonical = enforceCanonicalLogConstraints(canonical, constraintSource)
 		plan.CanonicalQuery = nil
 		if err := json.Unmarshal([]byte(canonical), &plan.CanonicalQuery); err != nil {
 			return logQueryPlan{}, fmt.Errorf("decode normalized canonical query: %w", err)
 		}
 		plan.QueryType = "canonical"
+		applyLogPlanConstraints(request, &plan, time.Now())
 	default:
 		return logQueryPlan{}, fmt.Errorf("query plan returned unsupported query_type %q", plan.QueryType)
 	}
@@ -208,8 +181,12 @@ func (a *FetchLogsAgent) executeNativeQueryDirect(ctx *security.RequestContext, 
 	if strings.EqualFold(provider.Provider, "loki") {
 		logs = unwrapLokiInnerTimestamps(ctx, logs)
 	}
-	fileRef, flattened, fileRefs := saveLogsToWorkspace(ctx, a.accountId, request.ConversationId, provider.Provider, logs)
-	bundleSignal, err := runAutoDiagnosticBundle(ctx, a.accountId, request, fileRef)
+	workspaceAccount := request.AccountId
+	if workspaceAccount == "" {
+		workspaceAccount = a.accountId
+	}
+	fileRef, flattened, fileRefs := saveLogsToWorkspace(ctx, workspaceAccount, request.ConversationId, provider.Provider, logs)
+	bundleSignal, err := runAutoDiagnosticBundle(ctx, workspaceAccount, request, fileRef)
 	if err != nil {
 		return core.NBAgentResponse{}, err
 	}

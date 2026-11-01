@@ -3,6 +3,7 @@ import { Box, Typography } from '@mui/material';
 import CustomTable from '@shared/tables/CustomTable';
 import Text from '@shared/format/Text';
 import Datetime from '@shared/format/Datetime';
+import TicketLink from '@shared/links/TicketLink';
 import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import { SeverityIcon } from '@ui/SeverityIcon';
 import MarkDowns from '@shared/viewers/MarkDowns';
@@ -80,6 +81,10 @@ interface CloudRuleResourcesProps {
   status?: string[];
   /** Bump to reload after a row changed status. */
   refreshKey?: number;
+  /** A ticket just created elsewhere on the page — patched into the matching
+   *  row locally rather than re-fetching, since the caller already has
+   *  everything the row needs to show. */
+  justTicketed?: { resourceId: string; ticket: { ticket_id: string; url?: string } } | null;
 }
 
 /**
@@ -94,7 +99,7 @@ interface CloudRuleResourcesProps {
  * could not reconstruct from the rows themselves, so it moves here rather than
  * being dropped when the panel does.
  */
-const CloudRuleResources = ({ rule, scopeAccountId, accountsById, rowActions, status, refreshKey }: CloudRuleResourcesProps) => {
+const CloudRuleResources = ({ rule, scopeAccountId, accountsById, rowActions, status, refreshKey, justTicketed }: CloudRuleResourcesProps) => {
   const [rows, setRows] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
@@ -141,6 +146,7 @@ const CloudRuleResources = ({ rule, scopeAccountId, accountsById, rowActions, st
         ...(status ? { status } : {}),
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
+        fetchTicket: true,
       });
       if (!isLatest()) return;
       setRows(res?.rows || []);
@@ -160,6 +166,17 @@ const CloudRuleResources = ({ rule, scopeAccountId, accountsById, rowActions, st
     load();
   }, [load]);
 
+  // Patch the matching row in place instead of re-fetching — the create-ticket
+  // response already carries the id and url this row needs to show.
+  useEffect(() => {
+    if (!justTicketed) return;
+    setRows((prev) =>
+      prev.some((r) => r.id === justTicketed.resourceId)
+        ? prev.map((r) => (r.id === justTicketed.resourceId ? { ...r, ticket: justTicketed.ticket } : r))
+        : prev
+    );
+  }, [justTicketed]);
+
   const tableData = useMemo(
     () =>
       rows.map((row: any) => {
@@ -175,7 +192,15 @@ const CloudRuleResources = ({ rule, scopeAccountId, accountsById, rowActions, st
             ),
             data: severity,
           },
-          { component: <Text value={name} showAutoEllipsis />, data: name },
+          {
+            component: (
+              <Box>
+                <Text value={name} showAutoEllipsis />
+                {row.ticket?.ticket_id && <TicketLink ticketURL={row.ticket?.url} ticketID={row.ticket.ticket_id} />}
+              </Box>
+            ),
+            data: name,
+          },
           {
             component: <Text value={accountsById?.[row.account_id] || row.account_id || '—'} showAutoEllipsis />,
             data: row.account_id,
@@ -192,7 +217,11 @@ const CloudRuleResources = ({ rule, scopeAccountId, accountsById, rowActions, st
                 <ThreeDotsMenu
                   sx={{ ...action.primary }}
                   menuItems={[
-                    { id: 'create-ticket', label: 'Create ticket' },
+                    {
+                      id: 'create-ticket',
+                      label: 'Create ticket',
+                      disabled: !!row.ticket?.ticket_id,
+                    },
                     ...(canAssignOwner && row.resource_id ? [{ id: 'assign-owner', label: 'Assign owner' }] : []),
                     ...(() => {
                       const entry = dismissMenuEntry(row.status, hasWriteAccess(row.account_id));

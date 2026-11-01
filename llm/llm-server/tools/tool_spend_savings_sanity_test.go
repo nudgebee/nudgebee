@@ -1,10 +1,12 @@
 package tools
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestSavingsExceedSpend pins the impossible-savings predicate. It replaces a
@@ -27,28 +29,54 @@ func TestSavingsExceedSpend(t *testing.T) {
 
 // TestRecommendationViewExposesDedupe pins the deduplication contract on the
 // view the FinOps agent queries. Alternative purchase options for one
-// commitment share a dedupe_group; summing them all inflated a live AWS
-// account's savings from $1,184 to $2,806. The window must mirror
-// recommendation_groupings_v2 (the query-engine view the Optimise UI reads) so
-// both surfaces produce the same total.
+// commitment share a dedupe_group, and summing them all overstates savings.
+// The flag must mark the same rows PrimaryRecommendationRank ranks first, the
+// definition shared with the Optimise UI, so both surfaces produce the same
+// total.
 func TestRecommendationViewExposesDedupe(t *testing.T) {
 	assert.Contains(t, recommendationView, "is_primary_recommendation",
 		"the view must expose the dedupe flag the agent filters savings totals on")
 	assert.Contains(t, recommendationView, "r.dedupe_group",
 		"dedupe_group must be selectable so alternatives can be reported as one opportunity")
-
-	// Same partition key and ordering as recommendation_groupings_v2: highest
-	// savings wins within (dedupe_group | resource_id | id, category).
-	window := recommendationView[strings.Index(recommendationView, "ROW_NUMBER() OVER"):]
-	assert.Contains(t, window, "PARTITION BY")
-	assert.Contains(t, window, "r.dedupe_group")
-	assert.Contains(t, window, "r.category")
-	assert.Contains(t, window, "CASE WHEN r.status IN ('Archive', 'Closed') THEN 1 ELSE 0 END",
-		"terminal rows must sort last, or one wins its group and marks the live row non-primary")
-	assert.Contains(t, window, "r.estimated_savings DESC, r.updated_at DESC, r.id")
+	assert.Contains(t, recommendationView, "("+primaryRecommendationFlag()+") AS is_primary_recommendation")
 
 	assert.Contains(t, RecommendationExecuteTool{}.Description(), "is_primary_recommendation",
 		"the tool description must tell callers totals require the dedupe filter")
+}
+
+// TestRecommendationViewPrimaryFlagMatchesRank pins primaryRecommendationFlag
+// to PrimaryRecommendationRank: the flag is the window's rank-1 test computed
+// per partition-key branch, so every branch of the window's CASE must have an
+// arm in the flag, and both must rank a group in the same order.
+func TestRecommendationViewPrimaryFlagMatchesRank(t *testing.T) {
+	flag := primaryRecommendationFlag()
+	rank := PrimaryRecommendationRank("r", "ca")
+
+	partitionKey := rank[strings.Index(rank, "PARTITION BY"):strings.Index(rank, "ORDER BY")]
+	whens := regexp.MustCompile(`(?s)WHEN (.+?)\s+THEN`).FindAllStringSubmatch(partitionKey, -1)
+	require.Len(t, whens, 3, "the window's partition key has three keyed branches besides the row's own id")
+	for _, when := range whens {
+		assert.Contains(t, flag, "WHEN "+when[1]+" THEN",
+			"a partition-key branch of PrimaryRecommendationRank has no arm in the view's primary flag")
+	}
+	assert.Contains(t, flag, "ELSE TRUE", "a row outside every keyed branch is a group of one")
+
+	assert.Contains(t, rank, primaryRankOrder("r"))
+	assert.Equal(t, 3, strings.Count(flag, "ORDER BY "+primaryRankOrder("s")),
+		"every arm must rank a group in PrimaryRecommendationRank's order")
+	assert.Contains(t, rank, azurePartitionKey("r"))
+	assert.Contains(t, flag, "PARTITION BY "+azurePartitionKey("s")+", s.category")
+
+	assert.NotContains(t, recommendationView, rank,
+		"a window over the view's own rows fences every query into a sort of the whole account")
+}
+
+// TestRecommendationViewReadsSavingsColumn pins estimated_saving to the stored
+// column: it is the value every ranking orders by, and reading the JSON payload
+// instead forces a detoast of every row and keeps the savings index unused.
+func TestRecommendationViewReadsSavingsColumn(t *testing.T) {
+	assert.Contains(t, recommendationView, "r.estimated_savings::numeric AS estimated_saving")
+	assert.NotContains(t, recommendationView, "'estimated_saving'")
 }
 
 // TestPrimaryRecommendationRankShape pins the one dedupe definition every

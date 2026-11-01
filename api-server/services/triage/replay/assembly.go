@@ -31,6 +31,7 @@ func toIdentity(e GoldenEvent) triage.AlertIdentity {
 		TsOffsetS:        e.TsOffsetS,
 		IsConfigChange:   e.IsConfigChange,
 		FindingType:      e.FindingType,
+		NodeMemory:       e.NodeMemory,
 	}
 }
 
@@ -89,13 +90,15 @@ type AssemblyScore struct {
 	CauseRecall     float64
 	ImpactRecall    float64
 	ChronicFoldRate float64 // chronic-labelled members correctly folded (never shown as related)
+	SameNodeRecall  float64 // memory failures of the seed's node recovered as same_node
 	FalseIncludes   int     // "none"-labelled distractors placed into any tier
 
-	CoreHit, CoreTot       int
-	CauseHit, CauseTot     int
-	ImpactHit, ImpactTot   int
-	ChronicHit, ChronicTot int
-	ExcludeTot             int
+	CoreHit, CoreTot         int
+	CauseHit, CauseTot       int
+	ImpactHit, ImpactTot     int
+	ChronicHit, ChronicTot   int
+	SameNodeHit, SameNodeTot int
+	ExcludeTot               int
 }
 
 // ScoreAssembly runs the assembler once per labelled incident (seeded on that
@@ -145,6 +148,11 @@ func ScoreAssembly(set GoldenSet, a Assembler) AssemblyScore {
 				if got == triage.TierChronic {
 					sc.ChronicHit++
 				}
+			case triage.TierSameNode:
+				sc.SameNodeTot++
+				if got == triage.TierSameNode {
+					sc.SameNodeHit++
+				}
 			case TierNone:
 				sc.ExcludeTot++
 				if got != "" {
@@ -157,6 +165,7 @@ func ScoreAssembly(set GoldenSet, a Assembler) AssemblyScore {
 	sc.CauseRecall = ratio(sc.CauseHit, sc.CauseTot)
 	sc.ImpactRecall = ratio(sc.ImpactHit, sc.ImpactTot)
 	sc.ChronicFoldRate = ratio(sc.ChronicHit, sc.ChronicTot)
+	sc.SameNodeRecall = ratio(sc.SameNodeHit, sc.SameNodeTot)
 	return sc
 }
 

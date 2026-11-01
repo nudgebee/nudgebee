@@ -14,7 +14,7 @@ test("Add Daily High notification rule", { tag: ["@dev", "@test", "@oss", "@regr
 
   // There is one daily email rule; with one already saved, its chip is disabled and
   // the page edits that rule instead.
-  if (await locators.dailyHighTab.isDisabled()) {
+  if (await locators.isTypeChipDisabled(locators.dailyHighTab)) {
     await locators.ruleCancelEditorBtn.click();
     test.skip(true, "This tenant already has its daily email rule");
   }

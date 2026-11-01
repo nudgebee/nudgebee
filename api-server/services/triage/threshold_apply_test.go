@@ -58,6 +58,25 @@ func TestRewritePromQLThreshold(t *testing.T) {
 			wantOp:    ">",
 		},
 		{
+			name:      "compound AND with a state check leg",
+			expr:      `up == 1 and cpu_ratio > 0.9`,
+			newValue:  0.75,
+			wantValue: 0.75,
+			wantOp:    ">",
+		},
+		{
+			name:     "exclusion leg is never rewritten",
+			expr:     `(requests_in_flight > max_in_flight) unless maintenance_window > 5`,
+			newValue: 9,
+			wantErr:  true,
+		},
+		{
+			name:     "two real conditions are not rewritten",
+			expr:     `cpu_ratio > 0.9 and request_rate > 10`,
+			newValue: 0.75,
+			wantErr:  true,
+		},
+		{
 			name:      "arithmetic constant 25/100 replaced with absolute",
 			expr:      `disk_used_ratio > 25 / 100`,
 			newValue:  0.5,
@@ -236,5 +255,60 @@ func TestParseDurationMinutes(t *testing.T) {
 		if got := parseDurationMinutes(in); got != want {
 			t.Errorf("parseDurationMinutes(%q) = %d, want %d", in, got, want)
 		}
+	}
+}
+
+// Applying a suggestion needs the caller's override unless it is a safe tuning with medium or
+// high confidence. The rule is the same for a direct write and a pull request.
+func TestApplyNeedsOverride(t *testing.T) {
+	cases := []struct {
+		name string
+		sug  ApplySuggestionRow
+		want bool
+	}{
+		{"safe and high confidence", ApplySuggestionRow{RecommendationType: "tune_threshold", RiskLevel: "safe", Confidence: "high"}, false},
+		{"safe and medium confidence", ApplySuggestionRow{RecommendationType: "tune_both", RiskLevel: "safe", Confidence: "medium"}, false},
+		{"safe but low confidence", ApplySuggestionRow{RecommendationType: "tune_threshold", RiskLevel: "safe", Confidence: "low"}, true},
+		{"review risk", ApplySuggestionRow{RecommendationType: "tune_threshold", RiskLevel: "review", Confidence: "high"}, true},
+		{"no risk assessment", ApplySuggestionRow{RecommendationType: "increase_duration", Confidence: "medium"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := applyNeedsOverride(&tc.sug); got != tc.want {
+				t.Errorf("applyNeedsOverride() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A stored "disable" predates the rule that firing history never recommends one, and such rows
+// are not recomputed once the alert stops firing — so it is refused outright, override or not.
+func TestApplyBlockReason(t *testing.T) {
+	clean := ApplySuggestionRow{RecommendationType: "tune_threshold", RiskLevel: "safe", Confidence: "medium"}
+	weak := ApplySuggestionRow{RecommendationType: "tune_threshold", RiskLevel: "review", Confidence: "medium"}
+	dangerous := ApplySuggestionRow{RecommendationType: "review_alert", RiskLevel: "dangerous", Confidence: "low"}
+	disable := ApplySuggestionRow{RecommendationType: "disable", Status: "quality_only"}
+
+	cases := []struct {
+		name        string
+		sug         ApplySuggestionRow
+		override    bool
+		wantBlocked bool
+	}{
+		{"clean suggestion proceeds", clean, false, false},
+		{"weak suggestion needs the override", weak, false, true},
+		{"weak suggestion proceeds with the override", weak, true, false},
+		{"dangerous suggestion needs the override", dangerous, false, true},
+		{"dangerous suggestion proceeds with the override", dangerous, true, false},
+		{"stored disable is refused", disable, false, true},
+		{"stored disable is refused even with the override", disable, true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reason := applyBlockReason(&tc.sug, tc.override)
+			if (reason != "") != tc.wantBlocked {
+				t.Errorf("applyBlockReason() = %q, want blocked=%v", reason, tc.wantBlocked)
+			}
+		})
 	}
 }

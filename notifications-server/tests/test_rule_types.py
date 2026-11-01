@@ -435,6 +435,59 @@ def test_check_says_approvals_always_go_out(monkeypatch):
     assert answer["result"] == "sent"
 
 
+APPROVAL = {"source": "automation", "account_id": ACCT_A, "event": "automation.approval.requested"}
+TASK_FAILED = {"source": "automation", "account_id": ACCT_A, "event": "automation.task.failed"}
+
+
+def _every_type(rule_id, **overrides):
+    return _rule(rule_id, source_mode="all", scope_mode=SCOPE_ACCOUNTS, account_ids=[ACCT_A], **overrides)
+
+
+@pytest.mark.parametrize(
+    "stop",
+    [
+        _every_type("mute", name="Stop account A"),
+        _every_type("pause", name="Pause account A", expires_at=datetime.utcnow() + timedelta(hours=1)),
+    ],
+)
+def test_check_does_not_credit_a_dont_send_rule_for_an_approval(monkeypatch, stop):
+    assert _check(monkeypatch, [stop], TASK_FAILED)["stopped_by"]["id"] == stop.id
+    answer = _check(monkeypatch, [stop], APPROVAL)
+    assert (answer["result"], answer["reason"], answer["rules"]) == ("sent", "always_sent", [])
+    assert answer["stopped_by"] is None and answer["default_channels"] is True
+
+
+def test_check_says_approvals_go_out_despite_a_dont_send_default(monkeypatch):
+    answer = _check(monkeypatch, [], APPROVAL, policy=defaults.DROP)
+    assert (answer["result"], answer["reason"], answer["default_channels"]) == ("sent", "always_sent", True)
+
+
+def test_check_credits_a_rule_that_delivers_an_approval(monkeypatch):
+    send = _every_type("ops", name="Account A to #ops", is_suppressed=False)
+    answer = _check(monkeypatch, [send], APPROVAL, policy=defaults.DROP)
+    assert (answer["result"], answer["reason"]) == ("sent", "rule")
+    assert answer["rules"] == [{"id": "ops", "name": "Account A to #ops"}]
+
+
+def test_check_credits_a_send_rule_whose_old_pause_has_ended(monkeypatch):
+    send = _every_type(
+        "ops", name="Account A to #ops", is_suppressed=False, expires_at=datetime.utcnow() - timedelta(hours=1)
+    )
+    _MappingsSession.mappings = [SimpleNamespace(rule_id="ops", platform="slack", channels={"id": "#ops"})]
+    try:
+        answer = _check(monkeypatch, [send], APPROVAL)
+    finally:
+        _MappingsSession.mappings = []
+    assert (answer["result"], answer["reason"]) == ("sent", "rule")
+    assert answer["rules"] == [{"id": "ops", "name": "Account A to #ops"}]
+
+
+def test_check_credits_the_default_channels_for_an_approval(monkeypatch):
+    answer = _check(monkeypatch, [], APPROVAL, policy=defaults.CHANNELS)
+    assert (answer["result"], answer["reason"]) == ("sent", "default_policy")
+    assert answer["channels"] == [{"platform": "slack", "channels": {"id": "#oncall"}, "rule_id": None}]
+
+
 def test_check_reports_a_timed_dont_send_that_ended_as_nothing(monkeypatch):
     ended = _rule("maintenance", expires_at=datetime.utcnow() - timedelta(minutes=1))
     answer = _check(monkeypatch, [ended], {"source": "troubleshoot", "account_id": ACCT_A})

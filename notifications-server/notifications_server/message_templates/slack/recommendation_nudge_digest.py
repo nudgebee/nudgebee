@@ -32,6 +32,9 @@ class DigestRecommendation(BaseModel):
 
 class AccountRecommendations(BaseModel):
     account_name: str
+    # Only populated by the security posture alert producer, which needs it to
+    # route the "View all findings" link at an account-type-appropriate page.
+    account_type: str = ""
     recommendations: List[DigestRecommendation] = []
 
 

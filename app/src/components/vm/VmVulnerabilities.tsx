@@ -22,7 +22,7 @@ import SecurityFindingPanel from '@components/recommendations/security/SecurityF
 import { fromVmRow } from '@components/recommendations/security/securityFinding';
 import { AskNubiIconButton, findingPromptContext, useAskNubiAboutSecurityFinding } from '@components/recommendations/security/askNubi';
 import { dismissMenuEntry, useRecommendationDismissal } from '@components/recommendations/security/dismissal';
-import { CellText, joinVmNames, useLatestRequest } from './common';
+import { CellText, joinVmNames, severityFromWeight, useLatestRequest } from './common';
 import { ds } from '@utils/colors';
 
 // Widths are explicit because CustomTable falls back to 20% per column, which
@@ -90,18 +90,6 @@ const GROUP_HEADERS: Record<string, Array<{ name: string; width: string }>> = {
     { name: 'Findings', width: '22%' },
   ],
 };
-
-/**
- * Reverse of the severity_weight ranking the grouping query aggregates with — a
- * group carries its worst severity as that weight, not as a name.
- */
-const WEIGHT_SEVERITY: Array<[number, string]> = [
-  [10, 'Critical'],
-  [8, 'High'],
-  [5, 'Medium'],
-  [2, 'Low'],
-];
-const severityFromWeight = (weight: number) => WEIGHT_SEVERITY.find(([threshold]) => weight >= threshold)?.[1] || 'Info';
 
 /**
  * Row actions. Create Ticket needs write access to the finding's account or the

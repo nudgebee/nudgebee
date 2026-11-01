@@ -15,7 +15,7 @@ func (t *CreateChannelTask) GetName() string {
 
 // GetDescription returns a brief description of the task.
 func (t *CreateChannelTask) GetDescription() string {
-	return "Find or create a Slack channel, MS Teams channel, or Google Chat space."
+	return "Find or create a Slack channel or Google Chat space."
 }
 
 // GetDisplayName returns a human-readable name for the task.
@@ -72,7 +72,7 @@ func (t *CreateChannelTask) InputSchema() *types.Schema {
 				Type:        "string",
 				Description: "Notification Provider",
 				Required:    true,
-				Options:     []string{"slack", "ms_teams", "google_chat"},
+				Options:     []string{"slack", "google_chat"},
 				Order:       1,
 			},
 			"name": {
@@ -83,7 +83,7 @@ func (t *CreateChannelTask) InputSchema() *types.Schema {
 			},
 			"team_id": {
 				Type:        "string",
-				Description: "MS Teams TeamId (required for ms_teams)",
+				Description: "Slack workspace (team) ID, when the tenant has more than one workspace",
 				Required:    false,
 				Order:       3,
 			},
@@ -95,7 +95,7 @@ func (t *CreateChannelTask) InputSchema() *types.Schema {
 			},
 			"description": {
 				Type:        "string",
-				Description: "Channel description (MS Teams)",
+				Description: "Channel description",
 				Required:    false,
 				Order:       5,
 			},
@@ -119,7 +119,7 @@ func (t *CreateChannelTask) OutputSchema() *types.Schema {
 			},
 			"team": {
 				Type:        "string",
-				Description: "MS Teams TeamId.",
+				Description: "Team ID, when the platform returns one.",
 				Required:    false,
 			},
 			"url": {

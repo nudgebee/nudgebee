@@ -110,9 +110,11 @@
     <p style="margin:0 0 4px; font-family:'DM Sans',Arial,sans-serif; font-size:13.5px; color:#333333;">
       &mdash; The {{ _brand_name }} team
     </p>
+    {% if _support_email %}
     <p style="margin:0; font-family:'DM Sans',Arial,sans-serif; font-size:12.5px; color:#888888;">
       Questions? <a href="mailto:{{ _support_email }}" style="color:#888888;">{{ _support_email }}</a>
     </p>
+    {% endif %}
   </div>
 {% endblock %}
 

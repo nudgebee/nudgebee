@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { describeResolution } from '@components/k8s/investigate/resolutionStatus';
+import { describeResolution, readableStatusMessage } from '@components/k8s/investigate/resolutionStatus';
 import Typography from '@mui/material/Typography';
 import { IconButton, Box, Grid, Avatar, Collapse, ListItem } from '@mui/material';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
@@ -382,7 +382,7 @@ function CollapsableCard({
                       ))}
                     {eventResolution.status === 'Failed' && eventResolution.status_message && (
                       <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-red-500)', mt: 'var(--ds-space-1)' }}>
-                        {eventResolution.status_message}
+                        {readableStatusMessage(eventResolution.status_message)}
                       </Typography>
                     )}
                   </Box>

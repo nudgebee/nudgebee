@@ -441,23 +441,23 @@ mutation EventGetStatusChange($event_ids: [String!]!) {
 }
 `;
 export const EVENT_SIMILAR_AND_INSIGHTS = `
-query eventsSimilarAndInsightData($id:String!,$aggregation_key: String!, $service_key: String!, $sdate_1_days:Datetime!,$sdate_7_days:Datetime!,$endDate: Datetime!) {
-  similar_issue_in_7_days: event_groupings_v2(where: {starts_at: {_gte: $sdate_7_days, _lte: $endDate}, aggregation_key: {_eq: $aggregation_key}, id: {_neq:$id}}) {
+query eventsSimilarAndInsightData($id:String!,$account_id: String!,$aggregation_key: String!, $service_key: String!, $sdate_1_days:Datetime!,$sdate_7_days:Datetime!,$endDate: Datetime!) {
+  similar_issue_in_7_days: event_groupings_v2(where: {account_id: {_eq: $account_id}, starts_at: {_gte: $sdate_7_days, _lte: $endDate}, aggregation_key: {_eq: $aggregation_key}, id: {_neq:$id}}) {
     rows {
       event_count
     }
   }
-  similar_issue_on_same_service_in_7days: event_groupings_v2(where: {service_key: {_eq: $service_key}, aggregation_key: {_eq: $aggregation_key}, id: {_neq: $id}, starts_at: {_gte: $sdate_7_days, _lte: $endDate}}) {
+  similar_issue_on_same_service_in_7days: event_groupings_v2(where: {account_id: {_eq: $account_id}, service_key: {_eq: $service_key}, aggregation_key: {_eq: $aggregation_key}, id: {_neq: $id}, starts_at: {_gte: $sdate_7_days, _lte: $endDate}}) {
     rows {
       event_count
     }
   }
-  similar_issue_on_same_service_in_1days: event_groupings_v2(where: {service_key: {_eq: $service_key}, aggregation_key: {_eq: $aggregation_key}, id: {_neq: $id}, starts_at: {_gte: $sdate_1_days, _lte: $endDate}}) {
+  similar_issue_on_same_service_in_1days: event_groupings_v2(where: {account_id: {_eq: $account_id}, service_key: {_eq: $service_key}, aggregation_key: {_eq: $aggregation_key}, id: {_neq: $id}, starts_at: {_gte: $sdate_1_days, _lte: $endDate}}) {
     rows {
       event_count
     }
   }
-  corelatedDeployment: event_groupings_v2(where: {service_key: {_eq: $service_key}, aggregation_key: {_eq: "ConfigurationChange/KubernetesResource/Change"}, starts_at: {_gte: $sdate_1_days, _lte: $endDate}}) {
+  corelatedDeployment: event_groupings_v2(where: {account_id: {_eq: $account_id}, service_key: {_eq: $service_key}, aggregation_key: {_eq: "ConfigurationChange/KubernetesResource/Change"}, starts_at: {_gte: $sdate_1_days, _lte: $endDate}}) {
     rows {
       event_count
     }
@@ -1239,36 +1239,30 @@ const apiKubernetes = {
       return error;
     }
   },
-  async getEventsSimilarDataAndInsights(aggregation_key: string, service_key: string, id: string, end_date: string | null = null) {
+  async getEventsSimilarDataAndInsights(aggregation_key: string, service_key: string, id: string, end_date: string | null = null, account_id = '') {
     try {
-      let parsedEndDate: Date | null = null;
-
-      if (end_date) {
-        parsedEndDate = new Date(end_date);
-        if (isNaN(parsedEndDate.getTime())) {
-          throw new Error('Invalid date format');
-        }
-      } else {
-        // If end_date is null, you can use the current date, or handle it as needed.
-        // For this example, we'll use the current date.
-        parsedEndDate = new Date();
+      // The event's start is UTC and may be written without a zone, so it is read as UTC here.
+      const end = end_date ? new Date(/([Zz]|[+-]\d{2}:?\d{2})$/.test(end_date) ? end_date : `${end_date}Z`) : new Date();
+      if (isNaN(end.getTime())) {
+        throw new Error('Invalid date format');
       }
-      const sdate_1_days = new Date(parsedEndDate);
-      sdate_1_days.setDate(parsedEndDate.getDate() - 1);
-
-      const sdate_7_days = new Date(parsedEndDate);
-      sdate_7_days.setDate(parsedEndDate.getDate() - 7);
+      const DAY_MS = 24 * 60 * 60 * 1000;
 
       const response = await queryGraphQL(EVENT_SIMILAR_AND_INSIGHTS, 'eventsSimilarAndInsightData', {
         id: id,
+        // Without the account, the counts covered every account in the tenant: two accounts
+        // watching one cluster have the same service key, and their alerts were added together.
+        account_id,
         aggregation_key: aggregation_key,
         service_key: service_key,
         // Anchored on the event, not on now: with `endDate` set to the event's
         // start and these set from today, the range inverted on any event older
         // than the window and the count silently came back 0.
-        sdate_1_days,
-        sdate_7_days,
-        endDate: parsedEndDate,
+        // Sent as ISO strings: queryGraphQL shifts a Date object by the browser's UTC offset, which
+        // moved both windows by that offset (a day's count of 67 read 53 for a viewer at UTC+5:30).
+        sdate_1_days: new Date(end.getTime() - DAY_MS).toISOString(),
+        sdate_7_days: new Date(end.getTime() - 7 * DAY_MS).toISOString(),
+        endDate: end.toISOString(),
       });
       const d = response?.data?.data;
       return {
@@ -2003,7 +1997,11 @@ query list_k8_issues_count {
     },
     groupBy = ['tenant_id', 'account_id', 'created_at'],
     cols: Array<string> = ['tenant_id', 'account_id', 'created_at', 'event_count'],
-    orderBy = { name: '', order: '' }
+    orderBy = { name: '', order: '' },
+    // A grouped datetime column without a transformation comes back truncated to the
+    // day (query engine default); pass e.g. date_unit/second to keep the time.
+    // Applied to the list query only; ignored when onlyGroupingCount is set.
+    columnTransformations: Array<{ name: string; expr: string; args?: string[] }> = []
   ) {
     if (query?.account_id == 'demo') {
       const eventDemoData: any = await getMockData('k8s-events');
@@ -2164,7 +2162,7 @@ query list_k8_issues_count {
 
       let LIST_K8_EVENTS_GROUPINGS = `
 query k8s_event_groupings($limit:Int,$offset:Int){
-  event_groupings: event_groupings_v2(where:__WHERE__, group_by:__GROUP_BY__, limit:$limit,offset:$offset,order_by:__ORDER_BY__){
+  event_groupings: event_groupings_v2(where:__WHERE__, group_by:__GROUP_BY__, limit:$limit,offset:$offset,order_by:__ORDER_BY__ __COLUMN_TRANSFORMATIONS__){
     rows{
       __COLS__
     }
@@ -2191,6 +2189,10 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       let formattedQuery = LIST_K8_EVENTS_GROUPINGS.replaceAll('__WHERE__', gqlStringify(filterParams));
       formattedQuery = formattedQuery.replaceAll('__GROUP_BY__', gqlStringify(groupBy));
       formattedQuery = formattedQuery.replaceAll('__COLS__', cols.join(' '));
+      formattedQuery = formattedQuery.replaceAll(
+        '__COLUMN_TRANSFORMATIONS__',
+        columnTransformations.length ? `, column_transformations:${gqlStringify(columnTransformations)}` : ''
+      );
       if (orderBy.name) {
         formattedQuery = formattedQuery.replaceAll(
           '__ORDER_BY__',

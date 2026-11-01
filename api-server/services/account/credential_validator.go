@@ -2,6 +2,7 @@ package account
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -13,6 +14,23 @@ import (
 	"strings"
 	"time"
 )
+
+// azureCostWarning returns the onboarding warning for an Azure subscription
+// whose credentials can't read cost data, or "" when they can. The reason is
+// the collector's, which explains the cause and who can fix it the same way the
+// daily spend sync reports it.
+func azureCostWarning(validation ValidateCloudCredentialsResponse) string {
+	for _, perm := range validation.PermissionDetails {
+		if perm.Permission != "Cost Management" {
+			continue
+		}
+		if perm.HasAccess {
+			return ""
+		}
+		return azureCostWarningPrefix + cmp.Or(perm.ErrorDetail, azureCostWarningFallback) + azureCostWarningSuffix
+	}
+	return azureCostWarningPrefix + azureCostWarningFallback + azureCostWarningSuffix
+}
 
 // validateAzureCredentialsInternal delegates to collector-server
 func validateAzureCredentialsInternal(ctx context.Context, tenantID, clientID, clientSecret, subscriptionID string) ValidateCloudCredentialsResponse {

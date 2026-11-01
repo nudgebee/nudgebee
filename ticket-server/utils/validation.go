@@ -2,6 +2,7 @@ package utils
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -90,6 +91,25 @@ func ValidateServiceNowTicketID(ticketID string) error {
 	}
 
 	return nil
+}
+
+// NormalizeServiceNowBaseURL strips whitespace, scheme, and a trailing slash so a
+// trailing slash can't produce a "//api/now" path (the SDK expands "{+baseurl}/api/now").
+func NormalizeServiceNowBaseURL(rawURL string) string {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		return ""
+	}
+	if !strings.HasPrefix(trimmed, "http://") && !strings.HasPrefix(trimmed, "https://") {
+		trimmed = "https://" + trimmed
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil {
+		return strings.TrimRight(trimmed, "/")
+	}
+	u.Scheme = "https"
+	u.Path = strings.TrimSuffix(u.Path, "/")
+	return strings.TrimRight(u.String(), "/")
 }
 
 // ValidateGitHubIssueID validates a GitHub issue number (numeric)

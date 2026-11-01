@@ -318,7 +318,7 @@ const KubernetesGroupedEventTypeTable: React.FC<KubernetesGroupedEventTypeTableP
                     enableFilters={false}
                     tableColumns={
                       [
-                        { name: 'Severity', width: '10%' },
+                        { name: 'Source Severity', width: '10%' },
                         { name: 'Application', component: 'Subject Name', width: '20%' },
                         { name: 'Message', width: '40%' },
                         { name: 'Alert Status', width: '4%' },

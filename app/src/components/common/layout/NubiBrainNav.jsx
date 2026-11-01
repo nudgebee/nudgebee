@@ -24,9 +24,8 @@ import PropTypes from 'prop-types';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/router';
 import { Box, ButtonBase, Typography } from '@mui/material';
-import PsychologyOutlined from '@mui/icons-material/PsychologyOutlined';
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
-import SafeIcon from '@components/common/icons/SafeIcon';
+import BCortexIcon from '@assets/ask-nudgebee/bcortex-icon.icon.svg';
 import { isOSSDeploymentMode } from '@hooks/useBCortexEnabled';
 import { hasAdminSurfaceAccess } from '@lib/auth';
 
@@ -68,7 +67,7 @@ const RailButton = ({ label, testId, iconComponent, iconSx, color, onClick }) =>
       '&:focus-visible': { outline: '2px solid var(--ds-brand-400)', outlineOffset: '2px' },
     }}
   >
-    <SafeIcon src={iconComponent} alt='' width={20} height={20} sx={iconSx} />
+    <Box component={iconComponent} sx={{ width: 20, height: 20, ...iconSx }} />
     <Typography sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 'var(--ds-font-weight-medium)', color, textAlign: 'center', lineHeight: 1 }}>
       {label}
     </Typography>
@@ -166,14 +165,17 @@ const NubiBrainNav = ({ surface = 'dark', accountId }) => {
           <RailButton
             label='b-Cortex'
             testId='nav-bcortex-btn'
-            iconComponent={PsychologyOutlined}
+            iconComponent={BCortexIcon}
             iconSx={{
+              width: 26,
+              height: 26,
               color: 'var(--ds-yellow-500)',
-              // Subtle looping "shine" so the icon gently draws attention in the rail.
-              animation: 'bcortexShine 8s ease-in-out infinite',
+              // Looping glow pulse — icon brightens and glows, then fades back — so it
+              // visibly draws attention in the rail (per design feedback from Rakesh).
+              animation: 'bcortexShine 2.5s ease-in-out infinite',
               '@keyframes bcortexShine': {
-                '0%, 100%': { filter: 'drop-shadow(0 0 0px var(--ds-yellow-500))' },
-                '50%': { filter: 'drop-shadow(0 0 3px var(--ds-yellow-500))' },
+                '0%, 100%': { filter: 'brightness(1) drop-shadow(0 0 0px var(--ds-yellow-500))' },
+                '50%': { filter: 'brightness(1.6) drop-shadow(0 0 8px var(--ds-yellow-500))' },
               },
               '@media (prefers-reduced-motion: reduce)': { animation: 'none' },
             }}

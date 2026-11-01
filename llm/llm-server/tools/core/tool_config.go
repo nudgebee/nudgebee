@@ -446,7 +446,7 @@ func ListToolConfigs(context *security.RequestContext, accountId string, tool NB
 				Values: []ToolConfigValue{},
 				Tags:   map[string]string{},
 				Schema: toolConfigSchema,
-				Name:   "NoConfigToolsFound",
+				Name:   ToolConfigNameNone,
 			})
 		} else if foundToolWithConfig && isConfigAvailable {
 			toolConfigNames = lo.Uniq(toolConfigNames)
@@ -459,7 +459,7 @@ func ListToolConfigs(context *security.RequestContext, accountId string, tool NB
 				},
 				Tags:   map[string]string{},
 				Schema: toolConfigSchema,
-				Name:   "NoConfigToolsFound",
+				Name:   ToolConfigNameNone,
 			})
 		}
 
@@ -481,7 +481,7 @@ func ListToolConfigs(context *security.RequestContext, accountId string, tool NB
 					Values: []ToolConfigValue{},
 					Tags:   map[string]string{},
 					Schema: toolConfigSchema,
-					Name:   "Agent",
+					Name:   ToolConfigNameAccountAgent,
 				},
 			}
 		}
@@ -1131,7 +1131,7 @@ func unmarshalLabelsToStringMap(configLabels *string) map[string]string {
 // provider in the tenant, one ToolConfig per account.
 func queryTenantAccountConfigs(dbms *common.DatabaseManager, tenantId string, toolConfigSchema ToolConfigSchema) ([]ToolConfig, error) {
 	configs := []ToolConfig{}
-	configRows, err := dbms.Query("select id::text, account_name, account_number  from cloud_accounts where tenant = $1 and lower(cloud_provider) = lower($2) and status = 'active'", tenantId, toolConfigSchema.ConfigType)
+	configRows, err := dbms.Query("select id::text, account_name, account_number  from cloud_accounts where tenant = $1 and lower(cloud_provider) = lower($2) and account_type is distinct from 'vm' and status = 'active'", tenantId, toolConfigSchema.ConfigType)
 	if err != nil {
 		slog.Error("tools: failed to get tool", "error", err)
 		return configs, fmt.Errorf("queryTenantAccountConfigs: %w", err)

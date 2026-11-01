@@ -46,6 +46,20 @@ func TestParseAddressedComments(t *testing.T) {
 		require.Equal(t, 2026, got[0].AddressedAt.Year())
 	})
 
+	// The agent also records failing CI runs, under their own source (#39995).
+	// This service gives a source no meaning: it must pass any of them through,
+	// and keep the entry apart from a comment that happens to share its number.
+	t.Run("a check-run entry is kept, apart from a comment with the same id", func(t *testing.T) {
+		got := parseAddressedComments([]any{
+			map[string]any{"source": "check_run", "comment_id": float64(77), "action": "acknowledged"},
+			map[string]any{"source": "issue_comment", "comment_id": float64(77), "action": "acknowledged"},
+		})
+		require.Len(t, got, 2)
+		require.Equal(t, "check_run", got[0].Source)
+		require.Equal(t, int64(77), got[0].CommentID)
+		require.Equal(t, "issue_comment", got[1].Source)
+	})
+
 	t.Run("drops half-identified entries but keeps the rest", func(t *testing.T) {
 		got := parseAddressedComments([]any{
 			map[string]any{"comment_id": float64(1), "action": "fixed"},                        // no source
@@ -147,7 +161,7 @@ func TestBuildPRFollowupChatRequestAddressedComments(t *testing.T) {
 			// compact jsonb.
 			json.RawMessage("  []  "), json.RawMessage("\n[]\n"), json.RawMessage(" null "),
 		} {
-			req := buildPRFollowupChatRequest(meta, "tok", "prompt", empty)
+			req := buildPRFollowupChatRequest(meta, "tok", "prompt", "", empty)
 			require.NotContainsf(t, req.Query, "addressed_comments",
 				"a fresh PR's payload must be unchanged for %q", string(empty))
 		}
@@ -155,7 +169,7 @@ func TestBuildPRFollowupChatRequestAddressedComments(t *testing.T) {
 
 	t.Run("embedded as an array when present", func(t *testing.T) {
 		raw := json.RawMessage(`[{"source":"inline","comment_id":3,"action":"fixed"}]`)
-		req := buildPRFollowupChatRequest(meta, "tok", "prompt", raw)
+		req := buildPRFollowupChatRequest(meta, "tok", "prompt", "", raw)
 		require.Contains(t, req.Query, "addressed_comments")
 		// As an array, not a JSON-quoted string — a quoted string would arrive at
 		// code-analysis as an unparseable scalar.

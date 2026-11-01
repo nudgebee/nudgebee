@@ -64,6 +64,11 @@ func parseMemoryQuantityToBytes(s string) (float64, bool) {
 	return n, true
 }
 
+// FormatMemoryQuantity renders one memory value the way a rightsizing pull
+// request writes it (see applyMemoryUnit), so text shown to the code agent uses
+// the same units as the values file it edits.
+func FormatMemoryQuantity(v any) any { return applyMemoryUnit(v) }
+
 // applyMemoryUnit renders a memory value as a compact Kubernetes quantity string
 // (e.g. "331Mi", "1.5Gi"). It accepts a raw byte count (float64/int, as carried
 // by the recommendation pipeline and the UI "Create PR" path) or an already
@@ -185,6 +190,19 @@ func validateContainerResources(containers []any) error {
 			if cores > maxCPUCores {
 				return fmt.Errorf("container %q: %s %q exceeds %.0f cores — likely a unit error", name, field, raw, maxCPUCores)
 			}
+		}
+		// Kubernetes refuses a request above its limit, so the agent's patch would
+		// fail after the recommendation is already marked in progress. Checked only
+		// when both are in the payload: the bounds above have already parsed them.
+		memRequest, _ := parseMemoryQuantityToBytes(asString(cm["memory_request"]))
+		memLimit, _ := parseMemoryQuantityToBytes(asString(cm["memory_limit"]))
+		if memRequest > 0 && memLimit > 0 && memRequest > memLimit {
+			return fmt.Errorf("container %q: memory_request %q is above memory_limit %q", name, asString(cm["memory_request"]), asString(cm["memory_limit"]))
+		}
+		cpuRequest, _ := cpuQuantityToCores(asString(cm["cpu_request"]))
+		cpuLimit, _ := cpuQuantityToCores(asString(cm["cpu_limit"]))
+		if cpuRequest > 0 && cpuLimit > 0 && cpuRequest > cpuLimit {
+			return fmt.Errorf("container %q: cpu_request %q is above cpu_limit %q", name, asString(cm["cpu_request"]), asString(cm["cpu_limit"]))
 		}
 	}
 	return nil
@@ -609,6 +627,7 @@ func (k *kuberntesAdapter) GetRecommendationResolutionStatus(ctx AccountAdapterC
 		message = "Recommendation applied successfully"
 	case "FAILED":
 		resolutionStatus = RecommendationResolutionStatusFailed
+		message = agentFailureMessage(message)
 	case "TODO":
 		resolutionStatus = RecommendationResolutionStatusInProgress
 	}
@@ -617,4 +636,17 @@ func (k *kuberntesAdapter) GetRecommendationResolutionStatus(ctx AccountAdapterC
 		Status:        resolutionStatus,
 		StatusMessage: message,
 	}, nil
+}
+
+// agentFailureMessage returns the reason out of a failed agent task's response. The agent answers
+// {"msg": "...", "success": false, ...}; stored whole, every screen that says why an attempt failed
+// printed the JSON. Anything that is not that shape is returned unchanged.
+func agentFailureMessage(response string) string {
+	var parsed struct {
+		Msg string `json:"msg"`
+	}
+	if err := json.Unmarshal([]byte(response), &parsed); err == nil && strings.TrimSpace(parsed.Msg) != "" {
+		return parsed.Msg
+	}
+	return response
 }

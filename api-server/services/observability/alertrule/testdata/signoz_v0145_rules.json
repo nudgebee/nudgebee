@@ -1,0 +1,247 @@
+{
+ "status": "success",
+ "data": {
+  "rules": [
+   {
+    "id": "01a13ef7-50a3-75a4-b0fb-19e176fa97ed",
+    "state": "firing",
+    "alert": "nbtest-promql-v5",
+    "alertType": "METRIC_BASED_ALERT",
+    "ruleType": "promql_rule",
+    "evalWindow": "5m0s",
+    "frequency": "1m0s",
+    "condition": {
+     "compositeQuery": {
+      "queries": [
+       {
+        "type": "promql",
+        "spec": {
+         "name": "A",
+         "query": "max by (\"k8s.pod.name\", \"k8s.namespace.name\") ({\"k8s.container.restarts\", \"k8s.namespace.name\"=\"demo\"})",
+         "disabled": false,
+         "step": 0,
+         "stats": false,
+         "legend": ""
+        }
+       }
+      ],
+      "panelType": "graph",
+      "queryType": "promql"
+     },
+     "op": "1",
+     "target": 0,
+     "matchType": "1",
+     "selectedQueryName": "A"
+    },
+    "labels": {
+     "severity": "warning"
+    },
+    "annotations": {
+     "description": "pod {{$labels.k8s_pod_name}} restarts {{$value}}",
+     "summary": "pod restarted"
+    },
+    "disabled": false,
+    "preferredChannels": [
+     "nudgebee"
+    ],
+    "version": "v5",
+    "createAt": "2026-10-15T09:49:17.859364Z",
+    "createBy": "admin@example.com",
+    "updateAt": "2026-10-15T09:49:17.859364Z",
+    "updateBy": "admin@example.com"
+   },
+   {
+    "id": "01a13ef7-e690-7691-b987-4dbb45e45058",
+    "state": "firing",
+    "alert": "nbtest demo pod memory high",
+    "alertType": "METRIC_BASED_ALERT",
+    "ruleType": "promql_rule",
+    "evalWindow": "5m0s",
+    "frequency": "1m0s",
+    "condition": {
+     "compositeQuery": {
+      "queries": [
+       {
+        "type": "promql",
+        "spec": {
+         "name": "A",
+         "query": "max by (\"k8s.pod.name\", \"k8s.namespace.name\", \"k8s.deployment.name\") ({\"k8s.pod.memory.working_set\", \"k8s.namespace.name\"=\"demo\"})",
+         "disabled": false,
+         "step": 0,
+         "stats": false,
+         "legend": ""
+        }
+       }
+      ],
+      "panelType": "graph",
+      "queryType": "promql"
+     },
+     "op": "1",
+     "target": 600000000,
+     "matchType": "1",
+     "selectedQueryName": "A"
+    },
+    "labels": {
+     "severity": "critical",
+     "team": "sre"
+    },
+    "annotations": {
+     "description": "Pod {{$labels.k8s_pod_name}} working set is {{$value}} bytes",
+     "summary": "Demo pod memory high"
+    },
+    "disabled": false,
+    "preferredChannels": [
+     "nudgebee"
+    ],
+    "version": "v5",
+    "createAt": "2026-10-15T09:49:56.240425Z",
+    "createBy": "admin@example.com",
+    "updateAt": "2026-10-15T09:49:56.240425Z",
+    "updateBy": "admin@example.com"
+   },
+   {
+    "id": "01a13f03-d932-7338-a250-8735f8537de8",
+    "state": "firing",
+    "alert": "nbtest log errors",
+    "alertType": "LOGS_BASED_ALERT",
+    "ruleType": "threshold_rule",
+    "evalWindow": "1m0s",
+    "frequency": "1m0s",
+    "condition": {
+     "compositeQuery": {
+      "queries": [
+       {
+        "type": "builder_query",
+        "spec": {
+         "name": "A",
+         "stepInterval": 60,
+         "signal": "logs",
+         "source": "",
+         "aggregations": [
+          {
+           "expression": "count()"
+          }
+         ],
+         "disabled": false,
+         "filter": {
+          "expression": "k8s.namespace.name = 'demo' AND body CONTAINS 'error'"
+         },
+         "legend": ""
+        }
+       }
+      ],
+      "panelType": "graph",
+      "queryType": "builder"
+     },
+     "op": "1",
+     "target": 0,
+     "matchType": "1",
+     "selectedQueryName": "A"
+    },
+    "labels": {
+     "severity": "warning"
+    },
+    "disabled": false,
+    "preferredChannels": [
+     "nudgebee"
+    ],
+    "version": "v5",
+    "createAt": "2026-10-15T10:02:59.250205Z",
+    "createBy": "admin@example.com",
+    "updateAt": "2026-10-15T10:02:59.250205Z",
+    "updateBy": "admin@example.com"
+   },
+   {
+    "id": "01a13f03-dce1-7dda-a1b6-aeafbbccfd43",
+    "state": "inactive",
+    "alert": "nbtest threshold",
+    "alertType": "METRIC_BASED_ALERT",
+    "ruleType": "promql_rule",
+    "evalWindow": "1m0s",
+    "frequency": "1m0s",
+    "condition": {
+     "compositeQuery": {
+      "queries": [
+       {
+        "type": "promql",
+        "spec": {
+         "name": "A",
+         "query": "max({\"k8s.pod.memory.working_set\", \"k8s.namespace.name\"=\"demo\"})",
+         "disabled": false,
+         "step": 0,
+         "stats": false,
+         "legend": ""
+        }
+       }
+      ],
+      "panelType": "graph",
+      "queryType": "promql"
+     },
+     "op": "5",
+     "target": 600000000,
+     "matchType": "1",
+     "selectedQueryName": "A"
+    },
+    "labels": {
+     "severity": "warning"
+    },
+    "disabled": false,
+    "preferredChannels": [
+     "nudgebee"
+    ],
+    "version": "v5",
+    "createAt": "2026-10-15T10:03:00.193903Z",
+    "createBy": "admin@example.com",
+    "updateAt": "2026-10-15T10:03:00.193903Z",
+    "updateBy": "admin@example.com"
+   },
+   {
+    "id": "01a13f03-e16f-7ed8-95f5-7bb600b72863",
+    "state": "inactive",
+    "alert": "nbtest wrapped up==0",
+    "alertType": "METRIC_BASED_ALERT",
+    "ruleType": "promql_rule",
+    "evalWindow": "2m0s",
+    "frequency": "1m0s",
+    "condition": {
+     "compositeQuery": {
+      "queries": [
+       {
+        "type": "promql",
+        "spec": {
+         "name": "A",
+         "query": "(max by (\"k8s.pod.name\") ({\"k8s.container.restarts\", \"k8s.namespace.name\"=\"demo\"}) > 100) * 0 + 1",
+         "disabled": false,
+         "step": 0,
+         "stats": false,
+         "legend": ""
+        }
+       }
+      ],
+      "panelType": "graph",
+      "queryType": "promql"
+     },
+     "op": "1",
+     "target": 0,
+     "matchType": "2",
+     "selectedQueryName": "A"
+    },
+    "labels": {
+     "severity": "critical"
+    },
+    "annotations": {
+     "summary": "restarts high"
+    },
+    "disabled": false,
+    "preferredChannels": [
+     "nudgebee"
+    ],
+    "version": "v5",
+    "createAt": "2026-10-15T10:03:01.359967Z",
+    "createBy": "admin@example.com",
+    "updateAt": "2026-10-15T10:03:01.359967Z",
+    "updateBy": "admin@example.com"
+   }
+  ]
+ }
+}

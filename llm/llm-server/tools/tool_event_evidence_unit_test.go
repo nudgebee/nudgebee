@@ -279,6 +279,36 @@ func TestSummarizePrometheusMetrics(t *testing.T) {
 	assert.Equal(t, float64(300), s["last_timestamp"])
 }
 
+// The series of the object the alert fired for is told apart from the rule's other
+// objects, which share the list.
+func TestSummarizePrometheusMetrics_FlagsTheAlertingSeries(t *testing.T) {
+	insight := events.InvestigateDataInsight{
+		Data: map[string]any{
+			"result_type": "matrix",
+			"series_list_result": []any{
+				map[string]any{
+					"alerting":   true,
+					"metric":     map[string]any{"namespace": "shop", "deployment": "orders"},
+					"values":     []any{"1", "1"},
+					"timestamps": []any{100.0, 160.0},
+				},
+				map[string]any{
+					"metric":     map[string]any{"namespace": "shop", "deployment": "cart"},
+					"values":     []any{"3"},
+					"timestamps": []any{100.0},
+				},
+			},
+		},
+	}
+	resp, err := GetEventEvidenceTool{}.summarizePrometheusMetrics([]events.InvestigateDataInsight{insight})
+	require.NoError(t, err)
+
+	summaries := decodeResponse[[]map[string]any](t, resp.Data)
+	require.Len(t, summaries, 2)
+	assert.Equal(t, true, summaries[0]["alerting"])
+	assert.NotContains(t, summaries[1], "alerting")
+}
+
 func TestSummarizePodNodeMetrics_MemoryConvertedToMB(t *testing.T) {
 	insight := events.InvestigateDataInsight{
 		Data: map[string]any{

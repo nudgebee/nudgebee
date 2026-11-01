@@ -36,7 +36,8 @@ func (m DatadogMetricsExecuteTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
 		Properties: map[string]core.ToolSchemaProperty{
-			"command": {Type: core.ToolSchemaTypeString, Description: "The Datadog metrics query to execute"},
+			"instance": instanceProperty,
+			"command":  {Type: core.ToolSchemaTypeString, Description: "The Datadog metrics query to execute"},
 		},
 		Required: []string{"command"},
 	}

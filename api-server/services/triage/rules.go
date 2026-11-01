@@ -608,12 +608,13 @@ func applyAutoClassificationToEvent(ctx context.Context, db *sqlx.DB, event *mod
 	// Resolve the duplicate link BEFORE mutating nb_status - always use TRUE first event
 	// from chain
 	if ac.Classification == ClassificationDuplicate && event.Fingerprint != nil && event.CloudAccountId != nil {
-		firstEventID := getFirstEventIDFromChain(ctx, db, *event.Fingerprint, *event.CloudAccountId)
+		firstEventID := getFirstEventIDFromChain(ctx, db, event.Id, *event.CloudAccountId)
 		if firstEventID == event.Id {
 			// This event IS the chain's original: marking it a duplicate of itself would
 			// leave the whole chain DUPLICATE with nothing to link to and no open event.
-			// Reachable only when a stale occurrence number slipped past the rule match
-			// (e.g. the event was re-processed after later chain members were recorded).
+			// Reachable when a stale occurrence number slipped past the rule match (e.g. the
+			// event was re-processed after later chain members were recorded), or when a rule
+			// with no occurrence condition matches the first event of a chain.
 			slog.WarnContext(ctx, "Refusing to auto-classify chain-first event as duplicate of itself",
 				"event_id", event.Id,
 				"fingerprint", *event.Fingerprint,
@@ -670,22 +671,23 @@ func applyAutoClassificationToEvent(ctx context.Context, db *sqlx.DB, event *mod
 	return nil
 }
 
-// getFirstEventIDFromChain looks up the TRUE first event for a fingerprint from event_duplicates
-func getFirstEventIDFromChain(ctx context.Context, db *sqlx.DB, fingerprint, cloudAccountID string) string {
+// getFirstEventIDFromChain looks up the TRUE first event of the chain eventID belongs to.
+// Read from the event's own event_duplicates row, not by fingerprint: a fingerprint has one
+// occurrence_number = 1 row per chain (a chain restarts on RESOLVED or once the dedup window
+// elapses), so the fingerprint alone picks an arbitrary chain, usually the oldest.
+func getFirstEventIDFromChain(ctx context.Context, db *sqlx.DB, eventID, cloudAccountID string) string {
 	query := `
 		SELECT first_event_id
 		FROM event_duplicates
-		WHERE fingerprint = $1
+		WHERE event_id = $1
 		  AND cloud_account_id = $2
-		  AND occurrence_number = 1
-		LIMIT 1
 	`
 
 	var firstEventID string
-	err := db.GetContext(ctx, &firstEventID, query, fingerprint, cloudAccountID)
+	err := db.GetContext(ctx, &firstEventID, query, eventID, cloudAccountID)
 	if err != nil {
-		slog.DebugContext(ctx, "No duplicate chain found for fingerprint",
-			"fingerprint", fingerprint,
+		slog.DebugContext(ctx, "No duplicate chain found for event",
+			"event_id", eventID,
 			"error", err,
 		)
 		return ""
@@ -1203,7 +1205,7 @@ func PreviewTriageRule(ctx context.Context, db *sqlx.DB, req RulePreviewRequest,
 	}
 
 	if req.MatchNamespace != nil && *req.MatchNamespace != "" {
-		conditions += fmt.Sprintf(" AND subject_namespace ~ $%d", argIndex)
+		conditions += fmt.Sprintf(" AND subject_namespace = $%d", argIndex)
 		args = append(args, *req.MatchNamespace)
 		argIndex++
 	}
@@ -1320,7 +1322,7 @@ func ApplyRuleToExistingEvents(ctx context.Context, db *sqlx.DB, rule *TriageRul
 	}
 
 	if rule.MatchNamespace != nil && *rule.MatchNamespace != "" {
-		query += fmt.Sprintf(" AND subject_namespace ~ $%d", argIndex)
+		query += fmt.Sprintf(" AND subject_namespace = $%d", argIndex)
 		args = append(args, *rule.MatchNamespace)
 		argIndex++
 	}
@@ -1413,7 +1415,7 @@ func applyScoreAdjustmentToExistingEvents(ctx context.Context, db *sqlx.DB, rule
 	}
 
 	if rule.MatchNamespace != nil && *rule.MatchNamespace != "" {
-		conditions += fmt.Sprintf(" AND subject_namespace ~ $%d", argIndex)
+		conditions += fmt.Sprintf(" AND subject_namespace = $%d", argIndex)
 		args = append(args, *rule.MatchNamespace)
 		argIndex++
 	}
@@ -1531,7 +1533,7 @@ func applyPriorityPinToExistingEvents(ctx context.Context, db *sqlx.DB, rule *Tr
 		argIndex++
 	}
 	if rule.MatchNamespace != nil && *rule.MatchNamespace != "" {
-		conditions += fmt.Sprintf(" AND subject_namespace ~ $%d", argIndex)
+		conditions += fmt.Sprintf(" AND subject_namespace = $%d", argIndex)
 		args = append(args, *rule.MatchNamespace)
 		argIndex++
 	}

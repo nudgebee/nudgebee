@@ -27,10 +27,14 @@ export interface SignalClassRow {
 export interface ThresholdSuggestionLike {
   alert_name?: string | null;
   event_aggregation_key?: string | null;
-  alert_quality?: any;
-  firing_analysis?: any;
+  alert_quality?: { classification?: string | null } | null;
+  firing_analysis?: { total_occurrences?: number | null } | null;
+  recommendation_type?: string | null;
   apply_status?: string | null;
 }
+
+// Only these carry a change to make; the list also returns rows that just ask for a review.
+const TUNING_RECOMMENDATIONS = new Set(['tune_threshold', 'tune_both', 'increase_duration']);
 
 export interface BriefingPayload {
   windowTotals: Record<string, number | null | undefined>;
@@ -322,7 +326,9 @@ export const resolveBriefing = (payload: BriefingPayload): BriefingModel => {
   const top3Pct = ingested > 0 ? (top3Share / ingested) * 100 : 0;
   const worstPct = worst && ingested > 0 ? (worst.count / ingested) * 100 : 0;
 
-  const openSuggestions = payload.thresholdSuggestions.filter((suggestion) => suggestion.apply_status !== 'applied');
+  const openSuggestions = payload.thresholdSuggestions.filter(
+    (suggestion) => suggestion.apply_status !== 'applied' && TUNING_RECOMMENDATIONS.has(suggestion.recommendation_type || '')
+  );
   const topSuggestion = openSuggestions[0];
 
   const coverageGap = unscored > 0;
@@ -365,8 +371,8 @@ export const resolveBriefing = (payload: BriefingPayload): BriefingModel => {
   }
 
   if (topSuggestion) {
-    const firings = num(topSuggestion.firing_analysis?.total_firings);
-    const quality = topSuggestion.alert_quality?.verdict || topSuggestion.alert_quality?.classification;
+    const firings = num(topSuggestion.firing_analysis?.total_occurrences);
+    const quality = topSuggestion.alert_quality?.classification;
     flagged.push({
       key: 'tuning',
       kind: 'TUNING AVAILABLE',

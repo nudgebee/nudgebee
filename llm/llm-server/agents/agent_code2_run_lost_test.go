@@ -33,6 +33,11 @@ func TestShouldSkipRetryGuard(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "ErrWorkspaceRunLost returned at once by the poll loop",
+			err:  fmt.Errorf("analysis lost with its workspace pod: %w", fmt.Errorf("%w: workspace pod is not ready: pod has failed", workspace.ErrWorkspaceRunLost)),
+			want: true,
+		},
+		{
 			name: "an ordinary timeout is not exempt",
 			err:  errors.New("context deadline exceeded"),
 			want: false,

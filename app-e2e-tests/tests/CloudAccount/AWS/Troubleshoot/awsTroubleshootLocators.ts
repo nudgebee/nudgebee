@@ -32,7 +32,7 @@ export const EVENTS_FILTER_SEARCH = `${EVENTS_TABLE}-filter-search-message`;
 
 export const EVENTS_FILTER_LABEL: Record<keyof typeof EVENTS_FILTER, string> = {
   eventName: "Event Name",
-  severity: "Severity",
+  severity: "Source Severity",
   triagePriority: "Triage Priority",
   source: "Source",
   status: "Status",
@@ -65,7 +65,10 @@ export const SUGGESTIONS_FILTER_LABEL: Record<keyof typeof SUGGESTIONS_FILTER, s
 // and that dropdown never renders on this route.
 
 // Column headers each listing declares, in order, for the single-account shape.
-export const EVENTS_HEADERS = ["Severity", "Application", "Event", "Triage Score", "Alert Status", "Triage Status"] as const;
+// "Severity" (not "Source Severity") on purpose: the th assert matches by hasText, which is
+// a substring match, so it accepts both the deployed label and the post-#39806 "Source
+// Severity". Tighten after the rename deploys.
+export const EVENTS_HEADERS = ["Triage Score", "Severity", "Application", "Event", "Alert Status", "Triage Status"] as const;
 export const RULES_HEADERS = ["Name", "Type", "Action", "Match Criteria", "Priority", "Status", "Matches", "Created"] as const;
 export const SUGGESTIONS_HEADERS = ["Alert", "Recommendation", "Threshold", "Confidence", "Noise Reduction"] as const;
 

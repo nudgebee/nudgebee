@@ -82,6 +82,7 @@ func main() {
 		mode             = flag.String("mode", "", "Analysis mode: 'explore' (read-only) or 'fix'. When set it overrides raisepr; use mode=fix with raisepr=false for propose mode (generate a diff without opening a PR).")
 		followup         = flag.Bool("followup", false, "Follow up on an existing PR (address CI failures and review comments)")
 		prURL            = flag.String("pr-url", "", "PR URL to follow up on")
+		followupInstr    = flag.String("followup-instruction", "", "With -followup: a specific change to make on the PR branch; the run makes only that change")
 	)
 
 	// Custom boolean flag for raisepr that handles both --raisepr and --raisepr=false syntax
@@ -150,7 +151,7 @@ func main() {
 
 	// Check if PR followup mode
 	if *followup {
-		runFollowup(cfg, *repoURL, *prURL, *branch, *token, *gitProvider)
+		runFollowup(cfg, *repoURL, *prURL, *branch, *token, *gitProvider, *followupInstr)
 		return
 	}
 
@@ -246,13 +247,14 @@ func main() {
 	// shared bare-repo mirror's git worktree registration dangling (the
 	// directory is gone but git still thinks it's checked out, which fails
 	// every subsequent repo_clone for that conversation with "missing but
-	// already registered worktree"). Use the same age threshold as the
-	// periodic sweep instead of an unconditional one.
-	startupMaxAge := cfg.Analysis.MaxProcessingTime + time.Hour
-	if startupMaxAge < 2*time.Hour {
-		startupMaxAge = 2 * time.Hour
+	// already registered worktree"). So checkouts are removed by age, not
+	// unconditionally: once nothing inside one has changed for longer than any
+	// run can last, and only while the workspace is idle.
+	abandonedRunMaxAge := cfg.Analysis.MaxProcessingTime + time.Hour
+	if abandonedRunMaxAge < 2*time.Hour {
+		abandonedRunMaxAge = 2 * time.Hour
 	}
-	handlers.SweepOrphanedAnalysisWorkspaces(startupMaxAge)
+	handlers.RegisterWorkspaceLeftovers(cfg, abandonedRunMaxAge)
 	if reclaimed, err := handlers.CollectWorkspaceGarbage(cfg.Analysis.WorkspaceDir); err != nil {
 		log.Printf("WARN: workspace cache cleanup failed: %v", err)
 	} else if reclaimed > 0 {
@@ -273,11 +275,6 @@ func main() {
 		ticker := time.NewTicker(15 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
-			maxAge := cfg.Analysis.MaxProcessingTime + time.Hour
-			if maxAge < 2*time.Hour {
-				maxAge = 2 * time.Hour
-			}
-			handlers.SweepOrphanedAnalysisWorkspaces(maxAge)
 			if reclaimed, err := handlers.CollectWorkspaceGarbage(cfg.Analysis.WorkspaceDir); err != nil {
 				log.Printf("WARN: periodic workspace cache cleanup failed: %v", err)
 			} else if reclaimed > 0 {
@@ -619,7 +616,7 @@ func runCLIAnalysis(cfg *config.Config, repoURL, logs, branch, commit, token, pr
 	})
 }
 
-func runFollowup(cfg *config.Config, repoURL, prURL, branch, token, gitProvider string) {
+func runFollowup(cfg *config.Config, repoURL, prURL, branch, token, gitProvider, instruction string) {
 	if prURL == "" {
 		log.Fatal("PR URL is required (--pr-url)")
 	}
@@ -723,11 +720,12 @@ func runFollowup(cfg *config.Config, repoURL, prURL, branch, token, gitProvider 
 	agent := agents.NewPRFollowupAgent(cfg, llmClient, logger, workspaceDir, token, gitProvider)
 
 	req := agents.PRFollowupRequest{
-		RepoURL:  repoURL,
-		Branch:   branch,
-		PRNumber: prNumber,
-		PRURL:    prURL,
-		Provider: gitProvider,
+		RepoURL:     repoURL,
+		Branch:      branch,
+		PRNumber:    prNumber,
+		PRURL:       prURL,
+		Provider:    gitProvider,
+		Instruction: instruction,
 	}
 
 	result, err := agent.Execute(context.Background(), req)

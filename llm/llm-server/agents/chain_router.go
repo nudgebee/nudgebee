@@ -278,19 +278,19 @@ func getTicketAgentName() string {
 	return TicketsAgentName
 }
 
-// getEventsAgentName returns the appropriate events agent name based on the feature flag.
-func getEventsAgentName() string {
-	if config.Config.EventsV2Enabled {
-		return EventsV2AgentName
-	}
-	return EventsAgentName
-}
-
 func getAgent(ctx *security.RequestContext, agent string, accountId string) (core.NBAgent, bool) {
 	var agentName string
 	switch strings.ToLower(agent) {
-	case "investigatechain", "investigate", "troubleshoot", "investigateagent", AgentK8sOrchestratorName, aws.AgentAwsOrchestratorName, "k8s_debug", "aws_debug":
+	case "investigatechain", "investigate", "troubleshoot", "investigateagent", AgentK8sOrchestratorName, "k8s_debug":
 		agentName = GetDebugAgentName(accountId)
+	case "aws_debug":
+		// Legacy alias for the AWS orchestrator (V797 repointed it the same way).
+		agentName = aws.AgentAwsOrchestratorName
+	case aws.AgentAwsOrchestratorName, AgentGcpOrchestratorName, AgentAzureOrchestratorName:
+		// An explicit cloud orchestrator ("@aws_orchestrator …") resolves to
+		// itself. aws_orchestrator used to share the InvestigateAgent case above,
+		// so on a Kubernetes account it silently became k8s_orchestrator.
+		agentName = strings.ToLower(agent)
 	case "postgreschain", "postgres_debug", "postgresagent", PostgresAgentName:
 		agentName = PostgresAgentName
 	case "mysqlchain", "mysql_debug", "mysqlagent", MySQLAgentName:
@@ -306,11 +306,9 @@ func getAgent(ctx *security.RequestContext, agent string, accountId string) (cor
 	case "recommendationschain", "recommendation", "recommendationsagent", RecommendationsAgentName:
 		agentName = RecommendationsAgentName
 	case "eventschain", "event", "eventchain", EventsAgentName:
-		agentName = getEventsAgentName()
+		agentName = EventsAgentName
 	case FinOpsAgentName, "finopschain", "finopsagent", "cost", "spend":
 		agentName = FinOpsAgentName
-	case EventsV2AgentName:
-		agentName = EventsV2AgentName
 	case "ticket", "jira", "bugs", "issues", "ticketagent", "ticketmaster", "create_ticket", "ticket_create", TicketsAgentName:
 		agentName = getTicketAgentName()
 	case TicketsV2AgentName:

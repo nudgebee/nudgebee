@@ -5,6 +5,7 @@ jest.mock('@api1/ask-nudgebee', () => ({
   __esModule: true,
   default: {
     deleteQueuedMessage: jest.fn().mockResolvedValue({ data: { status: 'deleted' } }),
+    updateQueuedMessage: jest.fn().mockResolvedValue({ data: { status: 'updated' } }),
     forceExecuteQueuedMessage: jest.fn().mockResolvedValue({
       data: { data: { ai_execute_queued_message: { data: { status: 'executing' } } } },
     }),
@@ -80,32 +81,6 @@ describe('useQueuedMessages', () => {
 
     expect(result.current.queuedMessages).toHaveLength(1);
     expect(result.current.queuedMessages[0].id).toBe(id2);
-  });
-
-  it('edits a message by removing it and returning its payload', async () => {
-    const onDispatch = jest.fn();
-    const { result } = renderHook(() =>
-      useQueuedMessages({
-        isConversationInProgress: true,
-        conversationStatus: 'IN_PROGRESS',
-        onDispatch,
-      })
-    );
-
-    let id = '';
-    act(() => {
-      id = result.current.enqueue('question to edit', [{ data: 'img', mime_type: 'image/jpeg' }]);
-    });
-
-    let edited: any = null;
-    await act(async () => {
-      edited = await result.current.edit(id);
-    });
-
-    expect(edited).not.toBeNull();
-    expect(edited.text).toBe('question to edit');
-    expect(edited.images).toEqual([{ data: 'img', mime_type: 'image/jpeg' }]);
-    expect(result.current.queuedMessages).toHaveLength(0);
   });
 
   it('sends now immediately, calling onStop if in progress', async () => {
@@ -337,19 +312,11 @@ describe('useQueuedMessages', () => {
     });
   });
 
-  it('edits a server queued message via deleteQueuedMessage and returns its content', async () => {
-    const onDispatch = jest.fn();
+  it('updates a server queued message in place, keeping its position', async () => {
     const serverMsgs = [
-      {
-        id: 'server-msg-edit',
-        text: 'edit me',
-        createdAt: 1000,
-        user: 'You',
-        userId: 'user-self',
-        isServer: true,
-      },
+      { id: 'first', text: 'first question', createdAt: 1000, user: 'You', isServer: true },
+      { id: 'second', text: 'second question', createdAt: 2000, user: 'You', isServer: true },
     ];
-
     const { result } = renderHook(() =>
       useQueuedMessages({
         isConversationInProgress: true,
@@ -357,22 +324,25 @@ describe('useQueuedMessages', () => {
         conversationId: 'conv-123',
         accountId: 'acc-123',
         serverQueuedMessages: serverMsgs,
-        onDispatch,
+        onDispatch: jest.fn(),
       })
     );
 
-    let edited: any = null;
     await act(async () => {
-      edited = await result.current.edit('server-msg-edit');
+      await result.current.update('first', '  first question, edited  ');
     });
 
-    expect(edited).not.toBeNull();
-    expect(edited.text).toBe('edit me');
-    expect(apiAskNudgebee.deleteQueuedMessage).toHaveBeenCalledWith({
+    expect(apiAskNudgebee.updateQueuedMessage).toHaveBeenCalledWith({
       accountId: 'acc-123',
       conversationId: 'conv-123',
-      messageId: 'server-msg-edit',
+      messageId: 'first',
+      message: 'first question, edited',
     });
+    expect(apiAskNudgebee.deleteQueuedMessage).not.toHaveBeenCalledWith(expect.objectContaining({ messageId: 'first' }));
+    expect(result.current.queuedMessages.map((m) => [m.id, m.text])).toEqual([
+      ['first', 'first question, edited'],
+      ['second', 'second question'],
+    ]);
   });
 
   it('forces execution of a server queued message via forceExecuteQueuedMessage', async () => {
@@ -467,8 +437,24 @@ describe('useQueuedMessages', () => {
     expect(result.current.queuedMessages).toHaveLength(2);
     expect(result.current.isMaxQueueReached).toBe(true);
   });
-  it('keeps a server message when edit loses the race with dispatch', async () => {
-    (apiAskNudgebee.deleteQueuedMessage as jest.Mock).mockRejectedValueOnce(new Error('Already started'));
+  it('updates a local-only queued message without calling the server', async () => {
+    const { result } = renderHook(() =>
+      useQueuedMessages({ isConversationInProgress: true, conversationStatus: 'IN_PROGRESS', onDispatch: jest.fn() })
+    );
+    let id = '';
+    act(() => {
+      id = result.current.enqueue('local draft');
+    });
+    await act(async () => {
+      await result.current.update(id, 'local draft, edited');
+    });
+    expect(apiAskNudgebee.updateQueuedMessage).not.toHaveBeenCalledWith(expect.objectContaining({ messageId: id }));
+    expect(result.current.queuedMessages.find((m) => m.id === id)?.text).toBe('local draft, edited');
+  });
+
+  it('keeps the original text and refreshes when an edit loses the race with dispatch', async () => {
+    (apiAskNudgebee.updateQueuedMessage as jest.Mock).mockRejectedValueOnce(Object.assign(new Error('Already started'), { upstreamStatus: 409 }));
+    const onRefresh = jest.fn().mockResolvedValue(undefined);
     const msg = { id: 'queued-1', text: 'keep me', createdAt: 1, isServer: true };
     const { result } = renderHook(() =>
       useQueuedMessages({
@@ -478,15 +464,14 @@ describe('useQueuedMessages', () => {
         conversationStatus: 'IN_PROGRESS',
         serverQueuedMessages: [msg],
         onDispatch: jest.fn(),
+        onRefresh,
       })
     );
-    let edited;
     await act(async () => {
-      edited = await result.current.edit(msg.id);
+      await expect(result.current.update(msg.id, 'changed')).rejects.toThrow('Already started');
     });
-    expect(edited).toBeNull();
+    expect(onRefresh).toHaveBeenCalledTimes(1);
     expect(result.current.queuedMessages).toEqual([msg]);
-    expect(result.current.error).toBe('Already started');
   });
 
   it('never falls back to a second execution when server Send Now fails', async () => {

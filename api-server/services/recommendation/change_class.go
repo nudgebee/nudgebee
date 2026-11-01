@@ -2,6 +2,7 @@ package recommendation
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 )
 
@@ -60,12 +61,13 @@ var additiveRules = map[string]bool{
 
 // reductiveRulePatterns catch the rightsizing/downsizing family by substring
 // (pv_rightsize, replica-rightsizing, azure_sql_large_dtu_rightsizing,
-// *_oversized_compute, spot conversions). pod_right_sizing is handled before
-// patterns run because its direction is decidable from the payload.
+// *_oversized_compute, spot conversions). pod_right_sizing and pv_rightsize
+// are handled before patterns run because their direction is decidable from
+// the payload.
 var reductiveRulePatterns = []string{"rightsiz", "right_siz", "oversized", "spot"}
 
 // ClassifyChange grades a recommendation's change from its rule name and, for
-// pod_right_sizing, its payload deltas. recommendation may be nil for rules
+// pod_right_sizing and pv_rightsize, its payload deltas. recommendation may be nil for rules
 // that classify statically.
 func ClassifyChange(ruleName string, recommendation []byte) ChangeClass {
 	name := strings.ToLower(strings.TrimSpace(ruleName))
@@ -77,6 +79,9 @@ func ClassifyChange(ruleName string, recommendation []byte) ChangeClass {
 	}
 	if name == "pod_right_sizing" {
 		return classifyPodRightSizing(recommendation)
+	}
+	if name == "pv_rightsize" {
+		return classifyPVRightsize(recommendation)
 	}
 	for _, p := range reductiveRulePatterns {
 		if strings.Contains(name, p) {
@@ -168,4 +173,48 @@ func parsePodRightSizingEntries(recommendation []byte) []podResourceEntry {
 		}
 	}
 	return out
+}
+
+// pvRightsizePayload is the part of a pv_rightsize payload that decides its
+// direction: capacity is the claim's current size in bytes, recommend_size the
+// proposed size in GiB. Both producers write numbers; strings are tolerated.
+type pvRightsizePayload struct {
+	Recommendation struct {
+		Capacity      json.RawMessage `json:"capacity"`
+		RecommendSize json.RawMessage `json:"recommend_size"`
+	} `json:"recommendation"`
+}
+
+// classifyPVRightsize is additive only when the proposed size is larger than
+// the current one — the producer recommends growing a claim that is nearly
+// full. Anything else, including a payload that names no size, stays
+// reductive, as the rule has always been classed.
+func classifyPVRightsize(recommendation []byte) ChangeClass {
+	var p pvRightsizePayload
+	if len(recommendation) == 0 || json.Unmarshal(recommendation, &p) != nil {
+		return ChangeClassReductive
+	}
+	capacityBytes, okCap := jsonNumber(p.Recommendation.Capacity)
+	recommendGiB, okRec := jsonNumber(p.Recommendation.RecommendSize)
+	if okCap && okRec && capacityBytes > 0 && recommendGiB > 0 && recommendGiB*(1<<30) > capacityBytes {
+		return ChangeClassAdditive
+	}
+	return ChangeClassReductive
+}
+
+// jsonNumber reads a JSON number, or a string holding one.
+func jsonNumber(raw json.RawMessage) (float64, bool) {
+	if len(raw) == 0 {
+		return 0, false
+	}
+	var f float64
+	if err := json.Unmarshal(raw, &f); err == nil {
+		return f, true
+	}
+	var str string
+	if err := json.Unmarshal(raw, &str); err != nil {
+		return 0, false
+	}
+	f, err := strconv.ParseFloat(strings.TrimSpace(str), 64)
+	return f, err == nil
 }

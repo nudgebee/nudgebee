@@ -125,6 +125,9 @@ type UpdateFields struct {
 	// there), as 1/2/3 codes or High/Medium/Low.
 	Impact  string `json:"impact,omitempty"`
 	Urgency string `json:"urgency,omitempty"`
+	// Raw is additional_fields unparsed, for platform-specific keys (e.g. ServiceNow's
+	// resolution_code/resolution_notes/work_notes) — a tool's Update reads what it needs.
+	Raw map[string]any `json:"-"`
 	// Assignee is the legacy single-assignee field, still used by tickets.update.
 	Assignee string `json:"assignee,omitempty"`
 	// Assignees is the multi-assignee set used by tickets.assign. When set it

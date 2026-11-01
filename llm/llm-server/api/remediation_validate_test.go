@@ -3,6 +3,8 @@ package api
 import (
 	"testing"
 
+	"nudgebee/llm/tools/core"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -319,7 +321,7 @@ func TestSsmPayloadExtraction(t *testing.T) {
 		{`aws ssm send-command --instance-ids i-1 --document-name AWS-RunShellScript --parameters "commands=systemctl is-active postgresql" --region us-east-1`, "systemctl is-active postgresql"},
 		{`aws ec2 reboot-instances --instance-ids i-1`, ""},
 	} {
-		assert.Equal(t, tc.want, ssmPayload(tc.cmd), tc.cmd)
+		assert.Equal(t, tc.want, core.SSMPayload(tc.cmd), tc.cmd)
 	}
 }
 

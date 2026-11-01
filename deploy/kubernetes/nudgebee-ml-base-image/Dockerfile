@@ -49,7 +49,7 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then MF_ARCH=aarch64; else MF_ARCH=x86_64; f
     rm miniforge.sh && \
     # Setup environment and install packages
     "${CONDA_DIR}/bin/conda" update -n base -c conda-forge conda -y && \
-    "${CONDA_DIR}/bin/conda" create -n myenv python=3.11.8 -c conda-forge -y && \
+    "${CONDA_DIR}/bin/conda" create -n myenv python=3.11.18 -c conda-forge -y && \
     "${CONDA_DIR}/bin/conda" install -n myenv -c conda-forge pulp -y && \
     "${CONDA_DIR}/bin/conda" run -n myenv pip install uv && \
     "${CONDA_DIR}/bin/conda" run -n myenv pip uninstall -y importlib-metadata || true && \

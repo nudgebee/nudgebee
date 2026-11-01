@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"nudgebee/llm/common"
@@ -110,8 +111,8 @@ func (m ShellTool) InputSchema() core.ToolSchema {
 // resolveShellTarget picks the target for a shell command owned by a
 // config-backed CLI: the cluster kubectl --context names when present,
 // otherwise the conversation's saved target.
-func (m ShellTool) resolveShellTarget(nbRequestContext core.NbToolContext, owner, command string) (core.ToolConfig, error) {
-	requested, err := RequestedShellTarget(owner, command)
+func (m ShellTool) resolveShellTarget(nbRequestContext core.NbToolContext, owner, command string, args map[string]any) (core.ToolConfig, error) {
+	_, requested, err := RequestedShellTargetFromCall(core.NBToolCallRequest{Command: command, Arguments: args})
 	if err != nil {
 		return core.ToolConfig{}, err
 	}
@@ -122,6 +123,37 @@ func (m ShellTool) resolveShellTarget(nbRequestContext core.NbToolContext, owner
 	// configs); only use it to short-circuit a request that names it.
 	saved, _ := ResolveShellTarget(nbRequestContext, owner)
 	return ResolveRequestedTarget(nbRequestContext.Ctx, nbRequestContext.AccountId, owner, saved, requested)
+}
+
+func (m ShellTool) PrepareDelegatedTargetInput(target *core.ExecutionTarget, input string) (string, error) {
+	if target == nil {
+		return input, nil
+	}
+	owner, requested, err := RequestedShellTargetFromInput(input)
+	if errors.Is(err, ErrAmbiguousShellTarget) {
+		// A script's aws invocations without --profile still take the default.
+		err = nil
+	}
+	if err != nil || requested != "" || !delegatedTargetMatchesShellOwner(target.Provider, owner) {
+		return input, err
+	}
+	field := "account"
+	if target.Provider == "kubernetes" {
+		field = "cluster"
+	}
+	return addDelegatedTargetArgument(input, field, target.Name)
+}
+
+func (m ShellTool) ValidateWriteTargetInput(input string) error {
+	req := core.ParseNBToolCallRequestFromInput(input)
+	owner, _, err := RequestedShellTargetFromCall(req)
+	if err != nil {
+		return err
+	}
+	if owner == "" || strings.ContainsAny(req.Command, "|;&\n$()`") {
+		return fmt.Errorf("shell: write target is ambiguous; run one remote CLI command per approved call")
+	}
+	return nil
 }
 
 // ConfirmationKey scopes a shell kubectl write approval to the cluster the
@@ -191,18 +223,54 @@ func (m ShellTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCa
 	// Prepare per-command routing metadata. Cloud credentials are resolved only
 	// after the shim reaches the server-side cloud execution boundary.
 	env := map[string]string{}
-	commandOwner := ShellConfigToolName(originalCommand)
-	if selected := nbRequestContext.QueryConfig.ToolConfigs[commandOwner]; commandOwner != "" && selected != "" {
+	// This is scoped to the one shell execution, not the shared workspace or
+	// conversation. If a script invokes a CLI that the shell owner detector
+	// cannot see, its shim must still not fall back to the origin account.
+	commandOwner, concreteRequested, targetErr := RequestedShellTargetFromCall(input)
+	if errors.Is(targetErr, ErrAmbiguousShellTarget) {
+		// Reads such as region loops run as before: the shim routes each aws
+		// invocation by its own --profile, else the default. Writes were already
+		// refused before approval by the planner's shell write-target check.
+		targetErr = nil
+	}
+	if targetErr != nil {
+		return core.NBToolResponse{Data: targetErr.Error(), Status: core.NBToolResponseStatusError}, targetErr
+	}
+	if target := nbRequestContext.QueryConfig.DelegatedTarget; target != nil && (commandOwner == "" || delegatedTargetMatchesShellOwner(target.Provider, commandOwner)) {
+		env[workspace.ENV_NB_TOOL_CONFIG_NAME] = target.Name
+	}
+	if selected := nbRequestContext.QueryConfig.ToolConfigs[commandOwner]; env[workspace.ENV_NB_TOOL_CONFIG_NAME] == "" && commandOwner != "" && selected != "" {
 		// The shim treats this as the default for a command that does not name
-		// its own --context/--profile. This is what makes a delegate's child-only
-		// target apply to shell commands without rewriting their argv.
+		// its own --context/--profile. The saved conversation default applies
+		// only when this child has no separate delegated target.
 		env[workspace.ENV_NB_TOOL_CONFIG_NAME] = selected
 	}
-	if requested := requestedCloudAccountFromCall(input); requested != "" && (commandOwner == ToolExecuteGcpCliCommand || commandOwner == ToolExecuteAzureCliCommand || commandOwner == ToolExecuteAwsCliCommand) {
+	requested := requestedCloudAccountFromCall(input)
+	if bound := nbRequestContext.QueryConfig.DelegatedTarget; bound != nil && bound.Provider == "aws" && commandOwner == ToolExecuteAwsCliCommand && requested == "" {
+		requested = concreteRequested // Preserve an explicit --profile over this child's default.
+	}
+	if requested == "" {
+		if bound := nbRequestContext.QueryConfig.DelegatedTarget; bound != nil &&
+			(commandOwner == ToolExecuteAwsCliCommand || commandOwner == ToolExecuteGcpCliCommand || commandOwner == ToolExecuteAzureCliCommand) &&
+			delegatedTargetMatchesShellOwner(bound.Provider, commandOwner) {
+			requested = bound.Name
+		}
+	}
+	if commandOwner == ToolExecuteKubectlCommand || commandOwner == ToolExecuteHelmCommand {
+		if cluster, ok := input.Arguments["cluster"].(string); ok && cluster != "" {
+			requested = cluster
+		}
+	}
+	if requested != "" && commandOwner != "" {
 		saved, _ := ResolveShellTarget(nbRequestContext, commandOwner)
 		target, err := ResolveRequestedTarget(nbRequestContext.Ctx, nbRequestContext.AccountId, commandOwner, saved, requested)
 		if err != nil {
 			return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
+		}
+		if bound := nbRequestContext.QueryConfig.DelegatedTarget; bound != nil && delegatedTargetMatchesShellOwner(bound.Provider, commandOwner) {
+			if err := VerifyDelegatedTargetIdentity(nbRequestContext, bound.Provider, target, concreteRequested); err != nil {
+				return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
+			}
 		}
 		env[workspace.ENV_NB_TOOL_CONFIG_NAME] = target.Name
 		env[workspace.ENV_NB_TARGET_ACCOUNT_ID] = TargetAccountID(target)
@@ -212,8 +280,11 @@ func (m ShellTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCa
 		// visible to the planner and passed its confirmation gate. Reads and
 		// kubeconfig discovery are resolved from concrete argv by the shim.
 		if directShellKubectlType(originalCommand) != core.ToolRequestTypeRead && !kubectlUsesConfigSubcommand(originalCommand) {
-			selected, err := m.resolveShellTarget(nbRequestContext, ToolExecuteKubectlCommand, originalCommand)
+			selected, err := m.resolveShellTarget(nbRequestContext, ToolExecuteKubectlCommand, originalCommand, input.Arguments)
 			if err != nil {
+				return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
+			}
+			if err := VerifyDelegatedTargetIdentity(nbRequestContext, "kubernetes", selected, concreteRequested); err != nil {
 				return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
 			}
 			targetEnv, err := KubernetesTargetEnv(nbRequestContext, selected)

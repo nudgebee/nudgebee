@@ -1,5 +1,4 @@
 import { getFontEmbedCSS, toPng } from 'html-to-image';
-import { ds } from '@utils/colors';
 import { filenameSlug } from '@utils/fileDownload';
 
 /**
@@ -132,7 +131,11 @@ export async function downloadNodeAsPng(node: HTMLElement, title: string, fallba
 
 async function rasterize(node: HTMLElement, title: string, fallbackName: string, fontEmbedCSS: string | null): Promise<void> {
   const dataUrl = await toPng(node, {
-    backgroundColor: ds.background[100],
+    // html-to-image fills the canvas with this colour before drawing the node.
+    // A var(--ds-*) is not a valid canvas colour, so the fill stayed at the
+    // canvas default — black — which showed through a panel's rounded corners.
+    // Pass the token's computed value instead.
+    backgroundColor: getComputedStyle(node).getPropertyValue('--ds-background-100').trim() || undefined,
     // 2× so the text in the image survives being read on a retina screen or
     // pasted into a doc at full width.
     pixelRatio: 2,

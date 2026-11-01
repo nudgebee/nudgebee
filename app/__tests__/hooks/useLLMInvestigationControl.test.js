@@ -943,6 +943,14 @@ describe('useLLMInvestigationControl', () => {
                     user_id: 'user-alice-id',
                     created_at: '2026-09-07T10:01:00Z',
                   },
+                  {
+                    id: 'msg-queued-own',
+                    message: 'my own queued question',
+                    status: 'QUEUED',
+                    message_type: 'generation',
+                    user: { display_name: 'Test User' },
+                    created_at: '2026-09-07T10:02:00Z',
+                  },
                 ],
               },
             ],
@@ -955,7 +963,9 @@ describe('useLLMInvestigationControl', () => {
         await result.current.fetchConversation('sess-1', 'conv-1', 'direct', false);
       });
 
-      expect(result.current.queuedMessages).toHaveLength(1);
+      expect(result.current.queuedMessages).toHaveLength(2);
+      // The viewer's own queued message is labelled "You", so no author chip is shown.
+      expect(result.current.queuedMessages[1]).toEqual(expect.objectContaining({ id: 'msg-queued-own', user: 'You' }));
       expect(result.current.queuedMessages[0]).toEqual(
         expect.objectContaining({
           id: 'msg-queued-1',

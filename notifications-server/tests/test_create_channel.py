@@ -8,7 +8,7 @@ whose name matches, otherwise creates a new one ("created" flags which happened)
 Covered here at the service layer (no live engine — the helpers use no DB state
 beyond the install lookup, which is monkeypatched):
   * Slack    — name normalization + find-or-create + name_taken race fallback
-  * MS Teams — team_id required + find-by-display-name
+  * MS Teams — refused: creating a channel needs Microsoft Graph
   * Google Chat — find-by-display-name + needs_authorization surfacing
 """
 
@@ -99,41 +99,12 @@ def test_slack_no_installation_returns_error(monkeypatch, svc):
 # --------------------------------- MS Teams ---------------------------------
 
 
-def test_ms_teams_requires_team_id(svc):
-    result = svc.create_channel(platform="ms_teams", tenant_id="t1", name="x")
-    assert "error" in result
-    assert "team_id" in result["error"]["message"]
-
-
-def test_ms_teams_returns_existing_channel(monkeypatch, svc):
-    monkeypatch.setattr(svc, "_get_messaging_platform", lambda *a, **k: _Install())
-    monkeypatch.setattr(svc, "_refresh_ms_teams_token", lambda mp: None)
-    monkeypatch.setattr(
-        common.MsTeamsClient, "list_team_channels", lambda token, team_id: [{"name": "General", "id": "19:abc"}]
-    )
-
-    result = svc.create_channel(platform="ms_teams", tenant_id="t1", name="General", team_id="team-1")
-
-    assert result["created"] is False
-    assert result["data"]["channel_id"] == "19:abc"
-    assert result["data"]["team_id"] == "team-1"
-
-
-def test_ms_teams_creates_when_missing(monkeypatch, svc):
-    monkeypatch.setattr(svc, "_get_messaging_platform", lambda *a, **k: _Install())
-    monkeypatch.setattr(svc, "_refresh_ms_teams_token", lambda mp: None)
-    monkeypatch.setattr(common.MsTeamsClient, "list_team_channels", lambda token, team_id: [])
-    monkeypatch.setattr(
-        common.MsTeamsClient,
-        "create_channel",
-        lambda **kw: {"success": True, "channel_id": "19:new", "name": kw["display_name"], "url": "http://x"},
-    )
+def test_ms_teams_channels_cannot_be_created(svc):
+    """Creating a Teams channel needs Microsoft Graph, which the bot doesn't use."""
+    from notifications_server.services.ms_teams.bot_sender import NOT_SUPPORTED
 
     result = svc.create_channel(platform="ms_teams", tenant_id="t1", name="Ops", team_id="team-1")
-
-    assert result["created"] is True
-    assert result["data"]["channel_id"] == "19:new"
-    assert result["data"]["url"] == "http://x"
+    assert result == {"error": {"message": NOT_SUPPORTED}}
 
 
 # -------------------------------- Google Chat --------------------------------

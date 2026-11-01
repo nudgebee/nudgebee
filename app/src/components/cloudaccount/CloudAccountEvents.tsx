@@ -33,8 +33,7 @@ import ticketsApi from '@api1/tickets';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import EventClassifyModal, { type ClassifyUpdate } from '@components/events/EventClassifyModal';
 import { toast as snackbar } from '@ui/Toast';
-import ScoreDisplay from '@shared/widgets/ScoreDisplay';
-import PriorityPinControl from '@shared/widgets/PriorityPinControl';
+import TriageScore from '@shared/widgets/TriageScore';
 import WorkflowIcon from '@assets/WorkflowIcon';
 import Tooltip from '@ui/Tooltip';
 import TicketLink from '@shared/links/TicketLink';
@@ -43,9 +42,14 @@ import SafeIcon from '@shared/icons/SafeIcon';
 
 const TABLE_COLUMNS = [
   {
-    name: 'Severity',
+    name: 'Triage Score',
     width: '9%',
-    info: "Severity is the original urgency level assigned by the source monitoring/alerting system, based on that tool's built-in rules or your configured thresholds",
+    info: TRIAGE_SCORE_INFO,
+  },
+  {
+    name: 'Source Severity',
+    width: '9%',
+    info: "The original urgency level assigned by the source monitoring/alerting system, based on that tool's built-in rules or your configured thresholds",
   },
   {
     name: 'Application',
@@ -56,11 +60,6 @@ const TABLE_COLUMNS = [
     name: 'Event',
     width: '28%',
     info: 'The type of alert or event reported by the source system.',
-  },
-  {
-    name: 'Triage Score',
-    width: '9%',
-    info: TRIAGE_SCORE_INFO,
   },
   {
     name: 'Alert Status',
@@ -394,6 +393,22 @@ const CloudAccountEvents = (props: {
     const subjectName = parseSubjectName(item);
     const rowData: ICustomTableRow[] = [];
 
+    rowData.push({
+      component: (
+        <TriageScore
+          score={item.computed_score}
+          priority={item.computed_priority}
+          scoreFactors={item.score_factors}
+          confidence={item.score_confidence != null ? parseFloat(item.score_confidence) : undefined}
+          eventId={item.id}
+          accountId={item.account_id || props.accountId}
+          canWrite={hasWriteAccess(item.account_id || props.accountId)}
+          onChanged={(newPriority, newScore, newFactors) => handlePriorityChange(item.id, newPriority, newScore, newFactors)}
+        />
+      ),
+      data: item.computed_priority,
+    });
+
     // Severity + Occurrence time merged
     rowData.push({
       component: (
@@ -440,29 +455,6 @@ const CloudAccountEvents = (props: {
       ),
       drilldownQuery: { event: item },
       data: item.aggregation_key,
-    });
-
-    rowData.push({
-      component: (
-        <Box display='flex' alignItems='center' gap={ds.space[1]}>
-          <ScoreDisplay
-            score={item.computed_score}
-            priority={item.computed_priority}
-            scoreFactors={item.score_factors}
-            confidence={item.score_confidence != null ? parseFloat(item.score_confidence) : undefined}
-          />
-          <PriorityPinControl
-            eventId={item.id}
-            accountId={item.account_id || props.accountId}
-            currentPriority={item.computed_priority}
-            currentScore={item.computed_score}
-            currentScoreFactors={item.score_factors}
-            canWrite={hasWriteAccess(item.account_id || props.accountId)}
-            onChanged={(newPriority, newScore, newFactors) => handlePriorityChange(item.id, newPriority, newScore, newFactors)}
-          />
-        </Box>
-      ),
-      data: item.computed_priority,
     });
 
     // Alert Status + Source merged (Status as primary, Source as secondary)
@@ -519,6 +511,7 @@ const CloudAccountEvents = (props: {
             <DsDropdownMenu
               align='end'
               size='sm'
+              disablePortal={false}
               items={menuItemsConfig.map((m) => ({
                 id: `events-action-${item.id}-${m.id}`,
                 label: m.label,
@@ -789,7 +782,7 @@ const CloudAccountEvents = (props: {
           />
           <FilterDropdown
             id={`${cloudAccountEventsTable}-filter-severity`}
-            label='Severity'
+            label='Source Severity'
             options={(severityFilterType || []).map((s: string) => ({ label: s, value: s }))}
             value={selectedSeverity ? { label: selectedSeverity, value: selectedSeverity } : null}
             onSelect={(_e: any, item: any) => onSeverityFilterChange({ target: { value: item?.value || '' } } as any)}
@@ -841,7 +834,7 @@ const CloudAccountEvents = (props: {
             loading={loading}
             showExpandable={false}
             pageNumber={page + 1}
-            tableHeadingCenter={props.tableHeadingCenter || ['Severity', 'Alert Status']}
+            tableHeadingCenter={props.tableHeadingCenter || ['Source Severity', 'Alert Status']}
             stickyColumnIndex={props.stickyColumnIndex}
           />
         </ListingLayout.Body>

@@ -178,3 +178,59 @@ func TestDuplicateNameError(t *testing.T) {
 		t.Errorf("nil error should pass through as nil, got %v", err)
 	}
 }
+
+func TestInterpretServiceNowError(t *testing.T) {
+	tests := []struct {
+		name       string
+		inputErr   error
+		wantErrSub string
+	}{
+		{
+			name:       "html content type error with factory registered",
+			inputErr:   errors.New("content type text/html does not have a factory registered to be parsed"),
+			wantErrSub: "received HTML response instead of JSON",
+		},
+		{
+			name:       "html response error without factory registered keyword",
+			inputErr:   errors.New("received text/html error page from gateway"),
+			wantErrSub: "received HTML response instead of JSON",
+		},
+		{
+			name:       "factory registered error without text/html keyword",
+			inputErr:   errors.New("content type application/xml does not have a factory registered to be parsed"),
+			wantErrSub: "received HTML response instead of JSON",
+		},
+		{
+			name:       "401 unauthorized",
+			inputErr:   errors.New("no error factory is registered for this code: 401"),
+			wantErrSub: "servicenow authentication failed: invalid username or password",
+		},
+		{
+			name:       "403 forbidden",
+			inputErr:   errors.New("no error factory is registered for this code: 403"),
+			wantErrSub: "servicenow authentication failed: user lacks permission to read the incident table",
+		},
+		{
+			name:       "404 not found",
+			inputErr:   errors.New("no error factory is registered for this code: 404"),
+			wantErrSub: "servicenow connection failed: instance URL not found",
+		},
+		{
+			name:       "other generic error wrapped",
+			inputErr:   errors.New("connection timeout"),
+			wantErrSub: "servicenow auth failed: connection timeout",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := interpretServiceNowError(tt.inputErr)
+			if got == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !strings.Contains(got.Error(), tt.wantErrSub) {
+				t.Errorf("interpretServiceNowError(%q) = %q, want substring %q", tt.inputErr.Error(), got.Error(), tt.wantErrSub)
+			}
+		})
+	}
+}

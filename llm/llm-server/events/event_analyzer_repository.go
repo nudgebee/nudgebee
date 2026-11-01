@@ -89,6 +89,9 @@ type EventAnalysisRepository struct {
 	// different event sharing its fingerprint. Zero disables the bound, which is
 	// the previous behaviour. See config.EventAnalysisFreshnessHours.
 	analysisFreshness time.Duration
+	// settings are the account's event analysis settings; zero value when the
+	// repository was built without an account. See NewEventAnalysisRepositoryForAccount.
+	settings EventAnalysisSettings
 }
 
 // NewEventAnalysisRepository creates a new repository for event analysis.
@@ -256,6 +259,32 @@ func (r *EventAnalysisRepository) GetEventInfo(ctx *security.RequestContext, eve
 	}
 
 	return nil, fmt.Errorf("%w - %s", ErrEventNotFound, eventId)
+}
+
+// GetEventNamespace returns the event's subject namespace, or "" if it has none.
+func (r *EventAnalysisRepository) GetEventNamespace(ctx *security.RequestContext, eventId, accountId string) (string, error) {
+	var namespace sql.NullString
+	err := r.dbManager.Db.QueryRowx(`SELECT subject_namespace FROM events WHERE id = $1 AND cloud_account_id = $2`, eventId, accountId).Scan(&namespace)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		ctx.GetLogger().Warn("analyzer: failed to get event namespace", "error", err, "event_id", eventId)
+		return "", err
+	}
+	return namespace.String, nil
+}
+
+// HasAnalysisMapping reports whether the event is already bound to an analysis
+// of any type, i.e. whether it has been analysed (or reused one) before.
+func (r *EventAnalysisRepository) HasAnalysisMapping(ctx *security.RequestContext, eventId string) (bool, error) {
+	var exists bool
+	err := r.dbManager.Db.QueryRowx(`SELECT EXISTS (SELECT 1 FROM event_analysis_mapping WHERE event_id = $1)`, eventId).Scan(&exists)
+	if err != nil {
+		ctx.GetLogger().Warn("analyzer: failed to check event analysis mapping", "error", err, "event_id", eventId)
+		return false, err
+	}
+	return exists, nil
 }
 
 // GetAnalysisIdFromMapping returns the analysis_id for a given (event_id, analysis_type) pair.

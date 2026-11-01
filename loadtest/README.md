@@ -22,6 +22,7 @@ dashboard, which is view-only.
 | Script | Drives | Required | What to watch |
 |---|---|---|---|
 | `services-server-api` | `POST /rpc/*` on the API pods, weighted mix from `services-server-actions.json` | `TENANT_ID` | per-action p95 in the summary, Postgres connections and slow queries |
+| `services-server-metrics` | `POST /rpc/metrics`: the workload, node, pod and rightsizing utilisation charts (`metrics_aggregate_utilisation`), the same trends as PromQL (`metrics_list`) and the metrics explorer's name, label and label-value lookups; 104 variants in `services-server-metrics.json` | `TENANT_ID`, `ACCOUNT_IDS` (Kubernetes accounts) | per-variant p95, per-account p95 (overall and per action), `metrics_empty_response`, relay-server and each cluster's Prometheus. Every call reaches the account's agent and Prometheus, so a run loads those clusters too |
 | `services-server-worker` | `POST /rpc-cron` on the worker pod, every allowlisted cron at once | `TENANT_ID`; `ACCOUNT_IDS` to include `K8s Recommendation refresh` | worker CPU/memory, Postgres, RabbitMQ queue depth. k6 latency is meaningless here: `/rpc-cron` replies before the job runs |
 | `llm-server` | async chat, then polls the conversation like the UI | `TENANT_ID`, `ACCOUNT_ID`, mock LLM (below) | `conversation_duration`, `conversation_outcomes`, 503s on submit (worker pool full) |
 | `rag-server` | `POST /get_matching_doc`, as llm-server calls it | `ACCOUNT_ID` | p95, pod CPU (the reranker is CPU-bound) |
@@ -40,6 +41,7 @@ even when the service slows down, so saturation shows up as rising latency and
 | `stress` | ramps to `RATE` over 14m | find the rate where errors or p95 jump |
 | `soak` | 70% of `RATE` for 1h | find leaks and pool exhaustion |
 | `spike` | 10% → 100% → 10% of `RATE` | see how autoscaling and queues cope |
+| `users` | `VUS` users, each looping request → think time, for `DURATION` (5m) | model N concurrent people instead of a request rate |
 
 Run in that order. Take the stress limit as the ceiling and use about 70% of it for the soak.
 
@@ -54,10 +56,12 @@ names and are not forwarded from your shell.
 | `TIME_UNIT` | `1s` (`1m` for llm-server) | unit for `RATE` |
 | `DURATION` | per profile | length of smoke, baseline and soak |
 | `MAX_VUS` | 200 | cap on concurrent requests in flight |
+| `VUS`, `THINK_TIME` | 20, `1-3` | `users` profile: how many users, and the seconds each waits between requests (a range picks uniformly) |
 | `P95_MS` | per script | p95 threshold; crossing it marks the run FAIL |
 | `USER_ID` | empty | services-server: run the per-user RBAC path instead of a tenant-admin context |
 | `CRONS`, `REPEAT`, `INTERVAL` | all, 1, 60 | worker: which crons, how many rounds, seconds between rounds |
-| `ACCOUNT_IDS` | empty | worker: limits the two recommendation crons to these accounts; `K8s Recommendation refresh` only runs when it is set |
+| `ACCOUNT_IDS` | empty | worker: limits the two recommendation crons to these accounts; `K8s Recommendation refresh` only runs when it is set. metrics: the Kubernetes accounts to query (comma-separated) |
+| `ACTIONS`, `POOL_SIZE`, `SWEEP` | all, 10, false | metrics: only these actions; how many workloads/pods/nodes/PVCs setup samples per account; `SWEEP=true` runs every variant once per account, one at a time, and logs status, latency and series count per call |
 | `QUERY`, `POLL_INTERVAL`, `MAX_WAIT` | see script | llm-server |
 | `MODULES`, `K`, `UNIQUE_QUERIES` | `knowledge_base`, 3, false | rag-server; `UNIQUE_QUERIES=true` defeats its embedding cache |
 | `K6_PROMETHEUS_RW_SERVER_URL` | empty | push k6 metrics to a Prometheus/VictoriaMetrics `/api/v1/write` to graph them next to pod and DB metrics |
@@ -75,6 +79,10 @@ names and are not forwarded from your shell.
   every tenant, exactly as their schedules already do, so each extra run adds load for
   the whole environment. `K8s Recommendation refresh` also dispatches scan Jobs to each
   account's agent, so it is skipped unless `ACCOUNT_IDS` names the accounts to scan.
+- The metrics script queries each account's own Prometheus through relay-server and the
+  agent. Load on a production cluster's account lands on that cluster. Run `SWEEP=true`
+  first: it is one request per variant per account, and it does not stop itself on
+  failures, so that every variant gets a line in the log.
 - The default services-server mix is read-only. Adding write actions to
   `services-server-actions.json` writes real rows.
 

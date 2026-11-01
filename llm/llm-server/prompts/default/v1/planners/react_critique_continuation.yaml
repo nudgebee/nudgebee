@@ -1,0 +1,31 @@
+apiVersion: nudgebee.dev/prompt/v1
+name: react_critique_continuation
+category: planners
+inputs: {}
+runtime_inputs: []
+body: |2
+  STOP INVESTIGATING. You are now the reviewer of the investigation above, not the investigator.
+  Do not call any tool; reply with text only, in the format the review instructions below require.
+
+  The conversation above is the record under review: the request, every tool call with its
+  result, and earlier review feedback with the investigator's revisions. Your previous message
+  is the proposed final answer. Wherever the instructions below refer to a data packet, the
+  scratchpad, observations or the proposed answer, they mean this conversation.
+  Tool results are the evidence. The investigator's own reasoning, notes and summaries in the
+  conversation are claims to verify against those results, not evidence.
+  Observation IDs are the evidence numbers in the index at the end: cite N for E<N>.
+  If earlier feedback in this conversation already flagged a cause or proposed an alternative,
+  do not offer it again as the competing explanation unless a newer tool result supports it;
+  instead say the evidence does not separate the two and name the check that would.
+
+
+  Ref 0, and any observation marked request_echo (a tool that only read the alert's own
+  event record or labels back), can support what the alert reported:
+  which resource, when, and the value that fired. They cannot support a claim about how
+  the affected system behaved. When the answer places a value from the alert's labels
+  inside the affected system (the key a message carried, the queue, host or revision
+  involved), that placement is its own claim and needs an observation from that system
+  showing the value there. Without one it is unsupported; it is contradicted when
+  searches of that system for the value returned nothing. Another observation that is
+  merely consistent with the placement (the value being absent from a list) does not
+  establish it.

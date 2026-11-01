@@ -34,6 +34,21 @@ interface UseCloudMetricsQueryPanelResult {
 
 const STATISTIC_OPTIONS = ['Average', 'Sum', 'Maximum', 'Minimum'].map((s) => ({ label: s, value: s }));
 
+// The metrics list can return 200+ descriptors for one service (GCP Cloud SQL
+// returns every engine's metrics, including SQL Server ones on a Postgres
+// instance). Pre-selecting all of them makes the query fan out to one backend
+// call per metric and time out, and renders 200+ charts. So we pre-select a
+// small, broadly-useful default (CPU / memory / disk / connections / network),
+// capped, and fall back to the first few when none of those keywords match.
+const DEFAULT_METRIC_KEYWORDS = ['cpu', 'memory', 'mem', 'disk', 'connection', 'network'];
+const DEFAULT_METRIC_LIMIT = 5;
+
+function pickDefaultMetrics(metricItems: { name: string }[]): string[] {
+  const names = metricItems.map((m) => m.name);
+  const preferred = names.filter((n) => DEFAULT_METRIC_KEYWORDS.some((k) => n.toLowerCase().includes(k)));
+  return (preferred.length > 0 ? preferred : names).slice(0, DEFAULT_METRIC_LIMIT);
+}
+
 export function useCloudMetricsQueryPanel({
   provider: _provider,
   accountId,
@@ -198,7 +213,7 @@ export function useCloudMetricsQueryPanel({
           statistics: m.attributes?.statistics || [],
         }));
         setAvailableMetrics(metricItems);
-        setSelectedMetrics(metricItems.map((m: any) => m.name));
+        setSelectedMetrics(pickDefaultMetrics(metricItems));
 
         if (metricItems.length > 0 && metricItems[0].statistics?.length > 0) {
           setSelectedStatistic(metricItems[0].statistics[0]);

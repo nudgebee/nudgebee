@@ -14,6 +14,10 @@ type RelayExecuteRequest struct {
 	Cache          bool              `json:"cache,omitempty"`
 	TimeoutSeconds int               `json:"timeout_seconds,omitempty"`
 	AgentType      string            `json:"-"` // passed via X-NB-Agent-Type header, not body
+	// MaxAttempts caps how many times Execute sends the request; 0 means the default
+	// of three. A caller working to a deadline sets 1, because a retry after a timeout
+	// only makes it later.
+	MaxAttempts int `json:"-"`
 }
 
 type ApplicationStatsRequest struct {

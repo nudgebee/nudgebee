@@ -120,6 +120,21 @@ type TableDefinition struct {
 	// builder as a separate argument and never through QueryRequest, which
 	// callers control.
 	AccountScope func(accountIds []string, quote func(any) string) string
+	// LateProjectionAlias, when set, lets a plain list query pick its page of
+	// rows before the select list is applied:
+	//
+	//	SELECT <columns> FROM (SELECT * FROM <def> WHERE … ORDER BY … LIMIT n) AS <alias> ORDER BY …
+	//
+	// Postgres evaluates cheap select-list expressions before a sort it has to
+	// perform itself, so when no index provides the order, a cast of a large
+	// json column is computed (and the value read from TOAST) for every row in
+	// scope rather than for the page. Selecting the rows untouched and
+	// projecting afterwards keeps that work to the page.
+	//
+	// The value is the name the page is exposed under. Set it only on a table
+	// whose column Defs refer to the def's columns unqualified or through this
+	// name. Requests it cannot serve are generated as before; see canProjectLate.
+	LateProjectionAlias string
 }
 
 var AzureTraceTableDefinition = map[string]ColumnDefinition{
@@ -733,7 +748,108 @@ func whereReferencesColumns(where QueryWhereClause, cols map[string]bool) bool {
 	return false
 }
 
+// incidentLeaderScanFilter turns a top-level incident_leader_id filter on
+// events_v2 into a semi/anti-join on the link table. Left as a filter on the
+// computed column, the leader lookup runs for every event in scope before a
+// single row can be rejected; as a join the planner can start from the link
+// index (members of one incident) or stop at the first page (folded list).
+//
+// IS [NOT] NULL is exactly "has no / any link", so that filter is dropped from
+// the request. Equality keeps its outer filter: a child linked to two leaders
+// reports only the lowest one, and the outer filter still enforces that.
+//
+// The filter is dropped wherever it sits in the _and chain, which
+// extractFilterSQL avoids. That is safe here because the pushed-down predicate
+// only ever removes rows of `events e` itself: every other filter on the
+// request, including the tenant and account scope the security layer adds,
+// still applies on top of it.
+func incidentLeaderScanFilter(request *QueryRequest) string {
+	filter, holder := locateBinaryFilter(&request.Where, "incident_leader_id")
+	if holder == nil {
+		return ""
+	}
+	const link = `SELECT 1 FROM event_correlations ecf
+						WHERE ecf.correlation_type = 'same_incident'
+							AND ecf.event_id = e.id
+							AND ecf.cloud_account_id = e.cloud_account_id`
+	if isNull, ok := filter[IsNull]; ok && len(filter) == 1 {
+		// The request's filter maps are shared with the caller. Drop the
+		// filter from a copy, so generating SQL from the same request a second
+		// time still sees it.
+		request.Where = cloneWhereClause(request.Where)
+		_, holder = locateBinaryFilter(&request.Where, "incident_leader_id")
+		delete(holder, "incident_leader_id")
+		cleanEmptyAndClauses(&request.Where)
+		if hasNoLeader, isBool := isNull.(bool); isBool && !hasNoLeader {
+			return "EXISTS (" + link + ")"
+		}
+		return "NOT EXISTS (" + link + ")"
+	}
+	if eqVal, ok := filter[Eq]; ok {
+		dialect := &postgresDialect{}
+		return "EXISTS (" + link + `
+							AND ecf.related_event_id = ` + dialect.QuoteLiteral(eqVal) + ")"
+	}
+	return ""
+}
+
+// cloneWhereClause copies a where clause down to its per-column filter maps, so
+// a column's filter can be removed from the copy without touching the original.
+// The operator maps inside are shared: nothing edits those.
+func cloneWhereClause(where QueryWhereClause) QueryWhereClause {
+	clone := QueryWhereClause{}
+	if where.Binary != nil {
+		clone.Binary = make(BinaryWhereClause, len(where.Binary))
+		for column, filter := range where.Binary {
+			clone.Binary[column] = filter
+		}
+	}
+	for _, and := range where.And {
+		clone.And = append(clone.And, cloneWhereClause(and))
+	}
+	for _, or := range where.Or {
+		clone.Or = append(clone.Or, cloneWhereClause(or))
+	}
+	if where.Not != nil {
+		not := cloneWhereClause(*where.Not)
+		clone.Not = &not
+	}
+	return clone
+}
+
+// distinctArgsReference reports whether a count(DISTINCT ...) transformation on
+// a requested column names any of cols in its args. For a count(*) column,
+// generateColumnExpression rewrites those args to the named columns' Defs, so
+// the request reads them even though the only column it names is the count
+// (#39843). Only "distinct" args are column names; a date_unit's args are a
+// unit and a period. On any other column the args are ignored when the SQL is
+// built, so counting them here costs at most a join nothing reads.
+func distinctArgsReference(columns []QueryColumn, cols map[string]bool) bool {
+	for _, col := range columns {
+		if col.Expr != "distinct" {
+			continue
+		}
+		for _, arg := range col.Args {
+			if cols[arg] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// requestReferencesColumns reports whether the request reads any of cols, by
+// name or through a distinct count's args. It is the check for a DefGenerator
+// deciding what its subquery must expose: anything it misses becomes a column
+// the outer SELECT names and the subquery never produced.
 func requestReferencesColumns(request QueryRequest, cols map[string]bool) bool {
+	return requestNamesColumns(request, cols) || distinctArgsReference(request.Columns, cols)
+}
+
+// requestNamesColumns is the by-name half: the request selects, groups, orders
+// or filters on one of cols itself. Use it where the question is which rows the
+// request is about, not which columns must exist.
+func requestNamesColumns(request QueryRequest, cols map[string]bool) bool {
 	if len(request.Columns) == 0 {
 		return true
 	}
@@ -909,6 +1025,74 @@ func renderFilterSQLForColumn(request *QueryRequest, filterName string, sqlColum
 		}
 	}
 	return ""
+}
+
+// recommendationTerminalStatuses are the statuses the recommendation dedupe
+// window sorts last (the first key of its ORDER BY). The window SQL spells them
+// out inline; TestRecommendationDedupe_TerminalStatusesMatchTheWindow fails if
+// the two drift.
+var recommendationTerminalStatuses = []string{"Archive", "Closed"}
+
+// nonTerminalStatusPushdown returns a predicate that keeps terminal rows out of
+// the recommendation dedupe window, or "" when dropping them is not safe.
+//
+// The window orders terminal rows after every other row of their partition, so
+// removing them cannot change the rank of any row that is left. That is only
+// useful to a request whose own status filter (top-level eq / in) returns no
+// terminal row: the rows it returns, and their is_primary_recommendation, are
+// then identical with or without the terminal rows in the window. Any other
+// request gets "" and ranks the full set as before.
+//
+// This is not the request's status filter pushed down. That one also removes
+// live competitors — a Dismissed row that outranks an Open one — and crowns the
+// wrong row primary (#38469), so the status filter itself stays on the outer
+// query.
+//
+// Written as ranges rather than NOT IN: a btree cannot serve "<>", so with NOT
+// IN the scan still reads every row of the account and only the sort shrinks.
+// With ranges idx_recommendation_tenant_account_status reaches the live rows
+// directly. "x < v OR x > v" is exactly "x <> v" under a deterministic
+// collation. Measured on a 387k-row account that is 77% archived, warm cache:
+// 3.0s -> 0.6s and 112.7k -> 48.4k buffers (NOT IN: 1.0s, buffers unchanged).
+// A NULL status ranks as live in the window, so it is kept.
+func nonTerminalStatusPushdown(request *QueryRequest, sqlColumn string) string {
+	if request == nil {
+		return ""
+	}
+	filter, holder := locateBinaryFilter(&request.Where, "status")
+	if holder == nil {
+		return ""
+	}
+	var wanted []any
+	if eqVal, ok := filter[Eq]; ok {
+		wanted = []any{eqVal}
+	} else if inVal, ok := filter[In]; ok {
+		switch vals := inVal.(type) {
+		case []any:
+			wanted = vals
+		case []string:
+			for _, v := range vals {
+				wanted = append(wanted, v)
+			}
+		}
+	}
+	// An empty IN list renders as "true" on the outer query: no filter at all.
+	if len(wanted) == 0 {
+		return ""
+	}
+	for _, v := range wanted {
+		// Same rendering QuoteLiteral gives the outer filter's value.
+		if slices.Contains(recommendationTerminalStatuses, fmt.Sprintf("%v", v)) {
+			return ""
+		}
+	}
+	dialect := &postgresDialect{}
+	live := make([]string, len(recommendationTerminalStatuses))
+	for i, status := range recommendationTerminalStatuses {
+		literal := dialect.QuoteLiteral(status)
+		live[i] = "(" + sqlColumn + " < " + literal + " OR " + sqlColumn + " > " + literal + ")"
+	}
+	return " AND (" + sqlColumn + " IS NULL OR (" + strings.Join(live, " AND ") + "))"
 }
 
 // VulnerabilityRecommendationSQL reconstructs the legacy recommendation.recommendation
@@ -1434,24 +1618,35 @@ var table_metadata = map[string]TableDefinition{
 				from += " LEFT JOIN event_duplicates ed ON ed.event_id = events.id AND ed.cloud_account_id = events.cloud_account_id"
 			}
 			if requestReferencesColumns(request, incidentDependentColumns) {
-				// Same-subject incident grouping (#34655): mirrors the events_v2
-				// joins so grouped counts can filter/aggregate on the same
-				// incident columns the list filters on (children folded by
-				// default must fold in the counts too).
-				from += ` LEFT JOIN (SELECT DISTINCT ON (event_id, cloud_account_id) event_id, cloud_account_id, related_event_id
-					FROM event_correlations WHERE correlation_type = 'same_incident'
-					ORDER BY event_id, cloud_account_id, related_event_id) ecl
-					ON ecl.event_id = events.id AND ecl.cloud_account_id = events.cloud_account_id`
+				// Same-subject incident grouping (#34655): the same incident
+				// columns as events_v2, so grouped counts can filter/aggregate on
+				// what the list filters on (children folded by default must fold
+				// in the counts too).
+				//
+				// LATERAL, keyed per outer row, rather than a whole-table grouped
+				// subquery — bounds cost to the outer result size instead of
+				// event_correlations' total size.
+				from += ` LEFT JOIN LATERAL (
+					SELECT related_event_id
+					FROM event_correlations
+					WHERE correlation_type = 'same_incident'
+						AND event_id = events.id
+						AND cloud_account_id = events.cloud_account_id
+					ORDER BY related_event_id
+					LIMIT 1
+				) ecl ON true`
 				// Distinct ALERTS, not links. Group links join firings, so one alert firing repeatedly inside an incident contributes several rows
 				// counting them would report an incident with two alerts in it
 				// as having six members.
-				from += ` LEFT JOIN (SELECT ec.related_event_id, ec.cloud_account_id,
-					       count(DISTINCT me.fingerprint) AS incident_member_count
+				from += ` LEFT JOIN LATERAL (
+					SELECT count(DISTINCT me.fingerprint) AS incident_member_count
 					FROM event_correlations ec
 					JOIN events me ON me.id = ec.event_id AND me.cloud_account_id = ec.cloud_account_id
 					WHERE ec.correlation_type = 'same_incident'
-					GROUP BY ec.related_event_id, ec.cloud_account_id) ecc
-					ON ecc.related_event_id = events.id AND ecc.cloud_account_id = events.cloud_account_id`
+						AND ec.related_event_id = events.id
+						AND ec.cloud_account_id = events.cloud_account_id
+					HAVING count(*) > 0
+				) ecc ON true`
 			}
 			// One row per analysed event, not per analysis stage. event_log_analysis
 			// carries a row per analysis_type (summary / log_analysis /
@@ -1471,27 +1666,27 @@ var table_metadata = map[string]TableDefinition{
 					GROUP BY event_id, cloud_account_id
 				) ela ON ela.event_id = events.id AND ela.cloud_account_id = events.cloud_account_id`
 			}
-			// One row per triple (not per analysis stage), so it can't fan out
-			// event rows. The inner DISTINCT ON picks the newest row per stage —
-			// V850 keeps history rows. completion_ts is that newest stage's
-			// timestamp; the is_investigated column compares it to created_at.
+			// LATERAL rather than a whole-table grouped subquery — the same
+			// lookup events_v2 runs for is_investigated. The inner DISTINCT ON
+			// picks the newest row per stage — V850 keeps history rows.
+			// completion_ts is that newest stage's timestamp; is_investigated
+			// compares it to created_at.
 			if requestReferencesColumns(request, investigationStatusDependentColumns) {
-				from += ` LEFT JOIN (
-					SELECT event_fingerprint, cloud_account_id, event_aggregation_key,
-					       count(*) FILTER (WHERE status = 'COMPLETED') = 4 AS is_complete,
-					       max(ts) FILTER (WHERE status = 'COMPLETED') AS completion_ts
+				from += ` LEFT JOIN LATERAL (
+					SELECT count(*) FILTER (WHERE latest.status = 'COMPLETED') = 4 AS is_complete,
+					       max(latest.ts) FILTER (WHERE latest.status = 'COMPLETED') AS completion_ts
 					FROM (
-						SELECT DISTINCT ON (event_fingerprint, cloud_account_id, event_aggregation_key, analysis_type)
-						       event_fingerprint, cloud_account_id, event_aggregation_key,
+						SELECT DISTINCT ON (analysis_type)
 						       status, coalesce(updated_at, recorded_at) AS ts
 						FROM event_log_analysis
-						WHERE analysis_type IN ('summary', 'investigation', 'log_analysis', 'detailed_response')
-						ORDER BY event_fingerprint, cloud_account_id, event_aggregation_key, analysis_type, coalesce(updated_at, recorded_at) DESC
+						WHERE event_fingerprint = events.fingerprint
+							AND cloud_account_id = events.cloud_account_id
+							AND event_aggregation_key = events.aggregation_key
+							AND analysis_type IN ('summary', 'investigation', 'log_analysis', 'detailed_response')
+						ORDER BY analysis_type, coalesce(updated_at, recorded_at) DESC
 					) latest
-					GROUP BY event_fingerprint, cloud_account_id, event_aggregation_key
-				) eia ON eia.event_fingerprint = events.fingerprint
-					AND eia.cloud_account_id = events.cloud_account_id
-					AND eia.event_aggregation_key = events.aggregation_key`
+					HAVING count(*) > 0
+				) eia ON true`
 			}
 			return from, request, nil
 		},
@@ -1883,10 +2078,19 @@ var table_metadata = map[string]TableDefinition{
 		Type:             Normal,
 		Source:           getSource("events_v2"),
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
-			// Composable optional joins: each requested column family adds its
-			// SELECT extras + JOIN once, so families combine without a
-			// combinatorial switch.
+			// Composable optional columns: each requested column family adds its
+			// SELECT extras (and a JOIN, where it needs one) once, so families
+			// combine without a combinatorial switch.
+			//
+			// The incident and investigation columns are subqueries in the
+			// SELECT list, not joins. Postgres evaluates an expensive
+			// select-list expression after ORDER BY and LIMIT, so a page of 20
+			// rows runs each lookup 20 times; as joins they ran for every
+			// event in scope before the sort. The cost returns for a request
+			// that filters or sorts on one of these columns, which is why
+			// incident_leader_id filters are rewritten below.
 			var selects, joins []string
+			var where string
 			if requestReferencesColumns(request, prDependentColumns) {
 				selects = append(selects,
 					`ela.analysis::jsonb->'automated_fix_pr'->>'url' as pr_url`,
@@ -1904,38 +2108,35 @@ var table_metadata = map[string]TableDefinition{
 			}
 			if requestReferencesColumns(request, incidentDependentColumns) {
 				// Same-subject incident grouping (#34655): a child's leader, and
-				// a leader's member count. DISTINCT ON guards against a child
-				// carrying links to two leaders (concurrent-attach race) fanning
-				// the event row out.
+				// a leader's member count. A child carrying links to two leaders
+				// (concurrent-attach race) reports the lowest one.
 				selects = append(selects,
-					`ecl.related_event_id as incident_leader_id`,
-					`coalesce(ecc.incident_member_count, 0) as incident_member_count`)
-				joins = append(joins,
-					`LEFT JOIN (SELECT DISTINCT ON (event_id, cloud_account_id) event_id, cloud_account_id, related_event_id
-						FROM event_correlations WHERE correlation_type = 'same_incident'
-						ORDER BY event_id, cloud_account_id, related_event_id) ecl
-						ON ecl.event_id = e.id AND ecl.cloud_account_id = e.cloud_account_id`,
+					`(SELECT ec.related_event_id
+						FROM event_correlations ec
+						WHERE ec.correlation_type = 'same_incident'
+							AND ec.event_id = e.id
+							AND ec.cloud_account_id = e.cloud_account_id
+						ORDER BY ec.related_event_id
+						LIMIT 1) as incident_leader_id`,
 					// Distinct alerts, not links — see the matching join above.
-					`LEFT JOIN (SELECT ec.related_event_id, ec.cloud_account_id,
-						       count(DISTINCT me.fingerprint) AS incident_member_count
+					`(SELECT count(DISTINCT me.fingerprint)
 						FROM event_correlations ec
 						JOIN events me ON me.id = ec.event_id AND me.cloud_account_id = ec.cloud_account_id
 						WHERE ec.correlation_type = 'same_incident'
-						GROUP BY ec.related_event_id, ec.cloud_account_id) ecc
-						ON ecc.related_event_id = e.id AND ecc.cloud_account_id = e.cloud_account_id`)
+							AND ec.related_event_id = e.id
+							AND ec.cloud_account_id = e.cloud_account_id) as incident_member_count`)
+				if scanFilter := incidentLeaderScanFilter(&request); scanFilter != "" {
+					where = "\n\t\t\t\tWHERE " + scanFilter
+				}
 			}
 			if requestReferencesColumns(request, investigationStatusDependentColumns) {
-				// LATERAL rather than a whole-table grouped subquery: per list
-				// row this is an index range scan on
-				// idx_event_log_analysis_fingerprint_account_agg_type (V850),
-				// Memoized across repeated fingerprints, so cost stays flat as
-				// event_log_analysis grows. DISTINCT ON picks the newest row per
-				// stage — V850 keeps history rows.
-				selects = append(selects, `coalesce(eia.is_investigated, false) as is_investigated`)
-				joins = append(joins, `LEFT JOIN LATERAL (
+				// Per list row this is an index range scan on
+				// idx_event_log_analysis_fingerprint_account_agg_type (V850), so
+				// cost stays flat as event_log_analysis grows. DISTINCT ON picks
+				// the newest row per stage — V850 keeps history rows.
+				selects = append(selects, `coalesce((
 						SELECT count(*) FILTER (WHERE latest.status = 'COMPLETED') = 4
 							AND max(latest.ts) FILTER (WHERE latest.status = 'COMPLETED') >= e.created_at - INTERVAL '24 hours'
-							AS is_investigated
 						FROM (
 							SELECT DISTINCT ON (ela.analysis_type)
 							       ela.status, coalesce(ela.updated_at, ela.recorded_at) AS ts
@@ -1946,18 +2147,21 @@ var table_metadata = map[string]TableDefinition{
 								AND ela.analysis_type IN ('summary', 'investigation', 'log_analysis', 'detailed_response')
 							ORDER BY ela.analysis_type, coalesce(ela.updated_at, ela.recorded_at) DESC
 						) latest
-					) eia ON true`)
+					), false) as is_investigated`)
 			}
-			if len(joins) == 0 {
+			if len(selects) == 0 {
 				return "events", request, nil
 			}
 			return `(SELECT e.*, ` + strings.Join(selects, ",\n\t\t\t\t") + `
-				FROM events e ` + strings.Join(joins, "\n\t\t\t\t") + `) as events`, request, nil
+				FROM events e ` + strings.Join(joins, "\n\t\t\t\t") + where + `) as events`, request, nil
 		},
 		Name:                "events_v2",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
 		NamespaceColumnName: "subject_namespace",
+		// The list selects labels and score_factors, both large json, and can
+		// be sorted by a column no index orders (the triage score).
+		LateProjectionAlias: "events",
 		Columns: map[string]ColumnDefinition{
 			"id": {
 				Type: ColumnDefinitionTypeString,
@@ -2640,6 +2844,38 @@ var table_metadata = map[string]TableDefinition{
 				Type:         ColumnDefinitionTypeFloat,
 				IsAggregated: true,
 				Def:          "count(distinct cloud_account)",
+			},
+			"currency_type": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "unit",
+			},
+		},
+	},
+	// An account's currency, for the currency symbol next to every cost figure.
+	// Asked through spend_groupings_v2 this was `GROUP BY unit LIMIT 1`, and the
+	// LIMIT only applies after grouping the account's whole spend history
+	// (seconds on a large account). A Normal table has no GROUP BY, so
+	// `limit: 1` stops at the first matching row. An account's spend rows all
+	// carry the same unit.
+	"spend_currency_v2": {
+		PermissionModule:    "spend",
+		Type:                Normal,
+		Source:              database.Metastore,
+		Def:                 "spends",
+		Name:                "spend_currency_v2",
+		TenantIdColumnName:  "tenant_id",
+		AccountIdColumnName: "account_id",
+		Columns: map[string]ColumnDefinition{
+			"tenant_id": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "tenant",
+			},
+			"account_id": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "cloud_account",
+			},
+			"exclude_aggregate": {
+				Type: ColumnDefinitionTypeBoolean,
 			},
 			"currency_type": {
 				Type: ColumnDefinitionTypeString,
@@ -3409,8 +3645,13 @@ var table_metadata = map[string]TableDefinition{
 			// inspects Having and treats an empty Columns list as "references everything",
 			// either of which would re-route requests that take the fast path today. This
 			// closure performs exactly the checks the previous inline loops did, so
-			// needsJoin is unchanged for every request.
+			// needsJoin is unchanged for every request. The one addition since is
+			// count(DISTINCT ...) args (distinctArgsReference), which only re-routes
+			// a request whose distinct args name one of these columns.
 			references := func(cols map[string]bool) bool {
+				if distinctArgsReference(request.Columns, cols) {
+					return true
+				}
 				for _, col := range request.Columns {
 					if cols[col.Name] {
 						return true
@@ -3450,6 +3691,11 @@ var table_metadata = map[string]TableDefinition{
 			case isImageScanOnly:
 				pushdownFilters += extractFilterSQL(&request, "rule_name", "r.rule_name")
 				pushdownFilters += extractFilterSQL(&request, "severity", "r.severity")
+			}
+			// The windowed paths keep the status filter on the outer query, but
+			// can still skip ranking the terminal rows it would discard.
+			if !isFastPath {
+				pushdownFilters += nonTerminalStatusPushdown(&request, "r.status")
 			}
 
 			// Push tenant_id into the CTE for the same reason the sibling recommendations_v2
@@ -4118,13 +4364,14 @@ var table_metadata = map[string]TableDefinition{
 			//   - the per-CVE listing GROUPs BY vulnerability_id, so a NULL-CVE row would
 			//     create a bogus bucket. That listing selects the RAW `vulnerability_id`
 			//     column (nothing else does — `count_vulnerability_id` is fine, DISTINCT
-			//     ignores the NULL), so gate on that.
+			//     ignores the NULL), so gate on that. By name only, for the same reason:
+			//     a count(DISTINCT vulnerability_id) passes the column as an arg.
 			//   - a severity filter implies the user wants vulnerable rows, and clean
 			//     rows have no severity, so they correctly drop out.
 			// The status filter is applied to the clean branch itself (cleanStatusFilter
 			// below) rather than disabling clean rows — summary rows are written
 			// status='Open', so the default Status=Open view includes them.
-			includeCleanImages := !requestReferencesColumns(request, map[string]bool{"vulnerability_id": true}) &&
+			includeCleanImages := !requestNamesColumns(request, map[string]bool{"vulnerability_id": true}) &&
 				recSeverityFilter == ""
 
 			// v2 joins vulnerabilities against rec2.vulnerability_id — only added
@@ -5544,6 +5791,10 @@ var table_metadata = map[string]TableDefinition{
 				pushdownFilters += extractFilterSQL(&request, "id", "r.id")
 				pushdownFilters += extractFilterSQL(&request, "rule_name", "r.rule_name")
 				pushdownFilters += extractFilterSQL(&request, "account_object_id", "r.account_object_id")
+			} else {
+				// Terminal rows can still be kept out of the window when the
+				// status filter would discard them anyway.
+				pushdownFilters += nonTerminalStatusPushdown(&request, "r.status")
 			}
 			// Push tenant_id and category into the CTE WHERE so the ROW_NUMBER()
 			// window is computed over only the relevant slice. The window's
@@ -7462,7 +7713,11 @@ var table_metadata = map[string]TableDefinition{
 								icv.name LIKE 'llm_tier_access_key%' OR
 								icv.name LIKE 'llm_tier_secret_key%' OR
 								icv.name LIKE 'llm_tier_session_token%' OR
-								icv.name LIKE 'llm_tier_oauth_client_secret%'
+								icv.name LIKE 'llm_tier_oauth_client_secret%' OR
+								icv.name LIKE 'llm_fallback_api_key%' OR
+								icv.name LIKE 'llm_fallback_access_key%' OR
+								icv.name LIKE 'llm_fallback_secret_key%' OR
+								icv.name LIKE 'llm_fallback_oauth_client_secret%'
 							) THEN ''
 							ELSE icv.value
 						END,
@@ -10782,6 +11037,7 @@ var table_metadata = map[string]TableDefinition{
 			SELECT
 				ua.id::text as auth_id,
 				ua.credential as credential,
+				ua.token_sha256 as token_sha256,
 				ua.tenant_id::text as auth_tenant_id,
 				ua.expires_at as expires_at,
 				ua.kind::text as kind,
@@ -10845,6 +11101,7 @@ var table_metadata = map[string]TableDefinition{
 		Columns: map[string]ColumnDefinition{
 			"auth_id":        {Type: ColumnDefinitionTypeString, Def: "auth_id"},
 			"credential":     {Type: ColumnDefinitionTypeString, Def: "credential"},
+			"token_sha256":   {Type: ColumnDefinitionTypeString, Def: "token_sha256"},
 			"auth_tenant_id": {Type: ColumnDefinitionTypeString, Def: "auth_tenant_id"},
 			"expires_at":     {Type: ColumnDefinitionTypeDatetime, Def: "expires_at"},
 			"kind":           {Type: ColumnDefinitionTypeString, Def: "kind"},

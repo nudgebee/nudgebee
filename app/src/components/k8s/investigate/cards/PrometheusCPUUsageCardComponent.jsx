@@ -35,7 +35,15 @@ export const getDataFromProemtheus = async (event) => {
       if (cpuLimitData.length > 0) {
         seriesData.push(cpuLimitData[0].values?.map((val) => parseFloat(val)));
       }
-      return { labels: cpuUsageLabels, data: seriesData };
+      // `series` names what `data` only orders: with no usage samples, data[0] is the request.
+      // `usage` is left undefined when the usage query was not answered at all.
+      const numbers = (payload) => (payload[0]?.values || []).map((val) => parseFloat(val));
+      const usageAnswered = result.some((data) => data.query_key === 'cpu_usage_pod');
+      return {
+        labels: cpuUsageLabels,
+        data: seriesData,
+        series: { usage: usageAnswered ? numbers(cpuUsageData) : undefined, request: numbers(cpuRequestData), limit: numbers(cpuLimitData) },
+      };
     }
   } catch (e) {
     console.error('Error fetching data from Prometheus:', e);

@@ -291,3 +291,33 @@ func TestMarkAlertOrigin(t *testing.T) {
 	assert.Equal(t, AlertOriginNoRuleEvaluation, postedAlert[AlertOriginLabel])
 	assert.NotContains(t, postedAlert, "generatorURL")
 }
+
+// OTel-native alert rules (SigNoz, any rule over k8s-infra metrics) keep the
+// resource attributes' dotted names as labels.
+func TestExtractPromSubject_OTelDottedLabels(t *testing.T) {
+	cases := []struct {
+		name     string
+		labels   map[string]string
+		wantKind string
+		wantName string
+		wantNS   string
+	}{
+		{"deployment", map[string]string{"k8s.deployment.name": "kafka", "k8s.pod.name": "kafka-1", "k8s.namespace.name": "demo"}, "deployment", "kafka", "demo"},
+		{"statefulset", map[string]string{"k8s.statefulset.name": "db", "k8s.namespace.name": "data"}, "statefulset", "db", "data"},
+		{"job", map[string]string{"k8s.job.name": "migrate"}, "job", "migrate", ""},
+		{"service.name", map[string]string{"service.name": "checkout", "k8s.pod.name": "checkout-1"}, "service", "checkout", ""},
+		{"pod only", map[string]string{"k8s.pod.name": "cart-1", "k8s.namespace.name": "shop"}, "pod", "cart-1", "shop"},
+		{"prometheus names win", map[string]string{"deployment": "a", "k8s.deployment.name": "b", "namespace": "n1", "k8s.namespace.name": "n2"}, "deployment", "a", "n1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			kind, name := extractPromSubject(tc.labels)
+			if kind != tc.wantKind || name != tc.wantName {
+				t.Fatalf("subject = %s/%s, want %s/%s", kind, name, tc.wantKind, tc.wantName)
+			}
+			if ns := extractPromNamespace(tc.labels); ns != tc.wantNS {
+				t.Fatalf("namespace = %q, want %q", ns, tc.wantNS)
+			}
+		})
+	}
+}

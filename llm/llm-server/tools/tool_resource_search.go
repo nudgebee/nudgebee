@@ -212,6 +212,13 @@ func (r K8sResourceSearchTool) RequestedTarget(toolInput string) (string, error)
 	return RequestedResourceSearchCluster(req.Arguments), nil
 }
 
+func (r K8sResourceSearchTool) PrepareDelegatedTargetInput(target *core.ExecutionTarget, input string) (string, error) {
+	if target == nil || target.Provider != "kubernetes" || RequestedResourceSearchCluster(core.ParseNBToolCallRequestFromInput(input).Arguments) != "" {
+		return input, nil
+	}
+	return addDelegatedTargetArgument(input, "cluster", target.Name)
+}
+
 func RequestedResourceSearchCluster(arguments map[string]any) string {
 	cluster, _ := arguments["cluster"].(string)
 	return strings.TrimSpace(cluster)
@@ -334,6 +341,9 @@ func (r K8sResourceSearchTool) Call(nbRequestContext core.NbToolContext, input c
 		if err != nil {
 			return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
 		}
+	}
+	if err := VerifyDelegatedTargetIdentity(nbRequestContext, "kubernetes", target, requested); err != nil {
+		return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
 	}
 	targetAccountID := KubernetesTargetAccountID(target)
 	if targetAccountID == "" {

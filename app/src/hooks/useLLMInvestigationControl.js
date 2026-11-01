@@ -134,6 +134,9 @@ export const buildDrawerTasks = (agents, message) => {
       response: { type: 'tool_call_response', text: agent.response },
       references: agentReferences.length > 0 ? agentReferences : undefined,
       metadata: spawnerTool?.metadata,
+      // The input the parent sent this sub-agent (e.g. delegate_agent's prompt) —
+      // Tool Details shows it as the step's Query box.
+      toolParameters: spawnerTool?.parameters,
       isPlannerAction: Boolean(spawnerTool),
       created_at: agent.created_at,
       updated_at: agent.updated_at,
@@ -274,13 +277,18 @@ const parseConversationMessages = (conversationMessages, accountId) => {
     }
 
     if (conversationMessage.status === 'QUEUED') {
+      const author = conversationMessage?.user?.display_name || conversationMessage?.user_display_name;
+      // Messages carry only a display name and the session has no user id, so two members
+      // with the same name both read as "You". This only affects the label; the server
+      // enforces who may edit or delete.
+      const isOwn = Boolean(author) && author === getUserSession()?.user?.name;
       queuedMessages.push({
         id: conversationMessage.id,
         text: conversationMessage.message,
         images: conversationMessage.attachments || [],
         config: conversationMessage.message_config,
         createdAt: new Date(conversationMessage.created_at).getTime(),
-        user: conversationMessage?.user?.display_name || conversationMessage?.user_display_name || 'Workspace member',
+        user: isOwn ? 'You' : author || 'Workspace member',
         userId: conversationMessage.user_id,
         isServer: true,
       });
@@ -386,6 +394,8 @@ const parseConversationMessages = (conversationMessages, accountId) => {
               type: 'followup-question',
               tool: 'followup-question',
               ack_message: fMsg.ack_message,
+              asked_at: fMsg.created_at,
+              last_updated_at: fMsg.updated_at,
               response: {
                 type: 'followup-response',
                 text: fMsg.response,
@@ -536,6 +546,8 @@ const parseConversationMessages = (conversationMessages, accountId) => {
           type: 'followup-question',
           tool: 'followup-question',
           ack_message: fMsg.ack_message,
+          asked_at: fMsg.created_at,
+          last_updated_at: fMsg.updated_at,
           response: {
             type: 'followup-response',
             text: fMsg.response,

@@ -119,6 +119,13 @@ type NBAgentRequest struct {
 	// executor entry and propagated unchanged through delegation. Empty means this
 	// is the top-level invocation; non-empty means we are running under a parent.
 	OriginalQuery string `json:"original_query,omitempty"`
+	// OriginalQueryFromUser says OriginalQuery is text a person typed, not a
+	// prompt this system generated (an event investigation, an automation, a
+	// notification). Set where OriginalQuery is, from the conversation's source,
+	// and carried with it. A reader that takes constraints from OriginalQuery —
+	// a time window, a limit — must check this first: a generated prompt contains
+	// phrases like "last 2h" that are instructions to the model, not a request.
+	OriginalQueryFromUser bool `json:"original_query_from_user,omitempty"`
 	// SelectedSkillIds is retained for custom code-analysis and compatibility
 	// paths. Account-wide runtime knowledge discovery does not use it.
 	SelectedSkillIds []string `json:"selected_skill_ids,omitempty"`
@@ -131,6 +138,10 @@ type NBAgentRequest struct {
 	// #29973). New-turn requests must keep IsResume=false so legitimate races
 	// (user submits while another turn is running) still surface as errors.
 	IsResume bool `json:"is_resume,omitempty"`
+	// TopLevelResume is internal: resume_v2 is resuming the turn's top-level
+	// agent after a followup. Its OriginalQuery is already restored, so
+	// seedOriginalQuery cannot be what marks it top level (#40085).
+	TopLevelResume bool `json:"-" mapstructure:"-"`
 	// IsQueuedDispatch is internal: the queue claim owns this fresh message.
 	IsQueuedDispatch bool `json:"-" mapstructure:"-"`
 	// KBPrestepContent holds relevant knowledge retrieved before planning. The
@@ -232,6 +243,10 @@ type NBAgentPlannerToolAction struct {
 	// persisted before this field existed, which are then replayed one per
 	// message exactly as before.
 	TurnID string `json:"turn_id,omitempty"`
+	// FollowupAnswer is the user's answer to a question this call's sub-agent
+	// asked, set only for the call's resumed run and handed to the tool as
+	// NbToolContext.FollowupAnswer. Not persisted: it belongs to one resume.
+	FollowupAnswer string `json:"-"`
 	// ExecutionBatchID groups tool calls that were emitted in one multi-action
 	// planner turn. ExecutionMode records whether the shared executor actually
 	// dispatched that batch through its parallel or sequential path; this is a
@@ -391,7 +406,7 @@ type MemoryFact struct {
 	// human can verify why the memory was inferred.
 	EvidenceQuote string `json:"evidence_quote,omitempty"`
 	// PatternKind is the snake_case category the extractor assigns to a
-	// pattern record (e.g. frequent_namespace, preferred_diagnostic_flow).
+	// pattern record (e.g. frequent_namespace, diagnostic_playbook).
 	// Required when IsPattern is true — without it the projection step
 	// falls back to a single default kind and every pattern row collapses
 	// to the same value, defeating the per-kind diversity cap downstream.

@@ -40,7 +40,7 @@ export async function sendEmail({ toEmail, subject, html, text }: any) {
     text: text,
     html: html,
   });
-  const failed = result.rejected.concat(result.pending).filter(Boolean);
+  const failed = (result.rejected ?? []).concat(result.pending ?? []).filter(Boolean);
   if (failed.length) {
     throw new Error(`Email (${failed.join(', ')}) could not be sent`);
   }

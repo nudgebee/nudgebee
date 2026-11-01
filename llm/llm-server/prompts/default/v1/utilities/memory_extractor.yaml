@@ -176,7 +176,7 @@ body: |2
       frequent_configuration_error   — the same misconfiguration recurring
       frequent_root_cause            — the same underlying root cause recurring
                                        across otherwise-different symptoms
-      preferred_diagnostic_flow      — user's habitual investigation sequence
+      diagnostic_playbook            — user's habitual investigation sequence
                                        (e.g. "always checks pods → logs → metrics")
       misleading_logs                — logs / errors that mislead diagnosis
                                        (users repeatedly hit the same false trail)

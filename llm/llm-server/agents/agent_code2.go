@@ -424,6 +424,13 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 		"account_id":         request.AccountId,
 		"conversation_id":    agentRequest.SessionId,
 		"message_id":         agentRequest.MessageId,
+		// The workspace returns this on every model call it makes through
+		// llm-server, which records that call's usage against this run.
+		"agent_run_id": agentRequest.AgentId,
+	}
+
+	if orig := resolveOriginalQueryForAnalysis(request.Query, agentRequest.OriginalQuery); orig != "" {
+		analyzeRequest["original_query"] = orig
 	}
 
 	if request.Agent != "" {
@@ -555,6 +562,13 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 
 		statusBytes, err := pollWm.CallAPI(ctx, agentRequest.AccountId, "GET", statusEndpoint, nil, nil)
 		if err != nil {
+			if errors.Is(err, workspace.ErrWorkspaceRunLost) {
+				// The pod that owned this analysis is confirmed gone, so more
+				// polls cannot bring it back and there is nothing to cancel.
+				// Return now so the caller can redispatch instead of waiting
+				// out the consecutive-error budget.
+				return codeAnalysisResult{}, fmt.Errorf("analysis lost with its workspace pod: %w", err)
+			}
 			consecutiveErrors++
 			logger.Warn("code: failed to poll analysis status", "error", err, "analysis_id", analysisID,
 				"consecutive_errors", consecutiveErrors, "max_consecutive_errors", maxConsecutiveErrors)
@@ -611,6 +625,18 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 		}
 		// status == "running" → keep polling
 	}
+}
+
+// The code-agent tool argument may summarize away a user's original request or
+// intent. When the original query is non-empty and differs from the delegated
+// task, resolveOriginalQueryForAnalysis extracts it to forward as a first-class
+// field in the JSON request.
+func resolveOriginalQueryForAnalysis(task, originalQuery string) string {
+	originalQuery = strings.TrimSpace(originalQuery)
+	if originalQuery == "" || strings.EqualFold(strings.TrimSpace(task), originalQuery) {
+		return ""
+	}
+	return originalQuery
 }
 
 // cancelWorkspaceAnalysis is best-effort and deliberately uses a detached
@@ -1251,6 +1277,7 @@ func (l CodeAgent2) GetSupportedTools(ctx *security.RequestContext) []toolcore.N
 func (l CodeAgent2) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
 
 	instructions := []string{
+		codeOwnershipInstructions,
 		"Your primary goal is to analyze error logs and correlate them with source code to identify root causes and debug issues.",
 		"You execute a sophisticated multi-agent system (orchestrator, router, and specialist agents) that uses ReAct planning to analyze repositories.",
 		"The analysis includes: cloning the repository, searching for relevant code, correlating logs with code patterns, identifying root causes, and optionally proposing fixes.",
@@ -1313,6 +1340,11 @@ type CodeAgent2Request struct {
 	// hop only forwards it — llm-server never inspects the entries. Absent for an
 	// older api-server, which simply means no fallback skip set.
 	AddressedComments json.RawMessage `json:"addressed_comments,omitempty"`
+	// Instruction is one specific change api-server wants made on the PR branch
+	// (a value refresh). Forwarded to code-analysis as followup_instruction,
+	// where it becomes the run's whole task; the regular review followup never
+	// sets it. Query cannot carry this: every followup sends generic text there.
+	Instruction string `json:"instruction,omitempty"`
 }
 
 // repoFromQueryConfig returns the repo a conversation has already settled on: one
@@ -1761,6 +1793,7 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 		"workloads.nudgebee.com/git.hash": codeAgentRequest.GitCommit,
 		"workloads.nudgebee.com/git.repo": codeAgentRequest.GitRepo,
 	}
+	addCompanionIssueGuidance(actualResponse)
 	jsonResponse, err := json.Marshal(actualResponse)
 	if err != nil {
 		return core.NBAgentResponse{}, err
@@ -3119,6 +3152,25 @@ func (l CodeAgent2) GetSourceCodeAnnotations(ctx *security.RequestContext, reque
 
 // executeFollowup handles PR followup mode — calls workspace /analyze with followup fields
 // to address CI failures and review comments on agent-created PRs.
+// addFollowupPassThrough copies the followup fields llm-server only forwards
+// onto the code-analysis /analyze request. Each is omitted when empty so the
+// payload is unchanged for a caller that does not send it.
+func addFollowupPassThrough(analyzeRequest map[string]any, request CodeAgent2Request) {
+	// Forward the already-addressed comment set (#36865) so code-analysis can use
+	// it as a fallback skip source. Trimmed before comparing: the value is always
+	// compact JSON from encoding/json in practice, but the comparison itself
+	// costs nothing extra and shouldn't depend on that.
+	trimmedComments := strings.TrimSpace(string(request.AddressedComments))
+	if trimmedComments != "" && trimmedComments != "[]" && trimmedComments != "null" {
+		analyzeRequest["addressed_comments"] = request.AddressedComments
+	}
+	// A value refresh's instruction. Without it code-analysis finds no comments
+	// or CI failures on a quiet PR and reports nothing to do.
+	if instruction := strings.TrimSpace(request.Instruction); instruction != "" {
+		analyzeRequest["followup_instruction"] = instruction
+	}
+}
+
 func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBAgentRequest, request CodeAgent2Request) (core.NBAgentResponse, error) {
 	logger := ctx.GetLogger()
 
@@ -3166,21 +3218,14 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 		"raise_pr":        true,
 		"conversation_id": query.SessionId,
 		"message_id":      query.MessageId,
+		"agent_run_id":    query.AgentId,
 		// Followup-specific fields
 		"followup":  true,
 		"pr_url":    request.PRURL,
 		"pr_branch": request.PRBranch,
 	}
 
-	// Forward the already-addressed comment set (#36865) so code-analysis can use
-	// it as a fallback skip source. Omitted when empty so the payload is
-	// unchanged for a PR with no followup history. Trimmed before comparing:
-	// the value is always compact JSON from encoding/json in practice, but the
-	// comparison itself costs nothing extra and shouldn't depend on that.
-	trimmedComments := strings.TrimSpace(string(request.AddressedComments))
-	if trimmedComments != "" && trimmedComments != "[]" && trimmedComments != "null" {
-		analyzeRequest["addressed_comments"] = request.AddressedComments
-	}
+	addFollowupPassThrough(analyzeRequest, request)
 
 	if gitToken != "" {
 		analyzeRequest["git_credentials"] = map[string]any{
@@ -3272,6 +3317,11 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 
 		statusBytes, err := pollWm.CallAPI(ctx, query.AccountId, "GET", statusEndpoint, nil, nil)
 		if err != nil {
+			if errors.Is(err, workspace.ErrWorkspaceRunLost) {
+				// Same as the analysis poll: the pod is confirmed gone, so stop
+				// here instead of waiting out the consecutive-error budget.
+				return core.NBAgentResponse{}, fmt.Errorf("followup lost with its workspace pod: %w", err)
+			}
 			consecutiveErrors++
 			logger.Warn("code followup: failed to poll status", "error", err, "analysis_id", analysisID,
 				"consecutive_errors", consecutiveErrors, "max_consecutive_errors", maxConsecutiveErrors)

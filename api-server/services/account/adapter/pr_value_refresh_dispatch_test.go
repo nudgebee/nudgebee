@@ -82,17 +82,11 @@ func TestReleasePRFollowupClaimRestoresNeedsFollowup(t *testing.T) {
 		"only a row this run claimed may be handed back")
 }
 
-// TestReleasePRFollowupClaimAloneKeepsTheCooldown covers the no_op path, which
-// is the one that produced hourly agent runs on dev.
-//
-// The agent read the branch and found nothing to change. The next run
-// recomputes the same drift from the same values and would reach the same
-// conclusion, so handing the cooldown back buys an identical agent run every
-// hour for as long as the pull request stays open. The no_op path
-// (DispatchPRValueRefresh's settle closure) releases only the pr_followup
-// mutex and never calls recordValueRefreshFailure, so the cooldown stamp
-// claimValueRefreshCadence wrote stays in place — this test pins that the
-// mutex-release statement alone never touches last_value_refresh_at.
+// TestReleasePRFollowupClaimAloneKeepsTheCooldown pins that releasing the
+// pr_followup mutex never touches the cooldown stamp. Every path that releases
+// it after a refresh that did not land relies on that: handing the cooldown back
+// would re-run the same agent on the very next scheduled run, since nothing about
+// the inputs has changed.
 func TestReleasePRFollowupClaimAloneKeepsTheCooldown(t *testing.T) {
 	sql := captureExec(t, func(dbms *database.DatabaseManager) {
 		releasePRFollowupClaim(dbms, "followup-1", "no_op")

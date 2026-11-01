@@ -398,7 +398,9 @@ func (m ImageScanTool) handleAgentStatus(nbRequestContext core.NbToolContext, ag
 	}
 }
 
-func (m ImageScanTool) InferToolRequestTypePrompt(ctx *security.RequestContext, toolName, input string) (string, error) {
-	// This tool only triggers a scan, which is considered a 'read' operation as it doesn't change any state.
-	return "read", nil
+// InferToolRequestType: this tool only triggers a scan, which changes no
+// state, so it is always a read. (It used to send the one-word prompt "read"
+// to an LLM and rely on the model echoing it back.)
+func (m ImageScanTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
+	return core.ToolRequestTypeRead, nil
 }

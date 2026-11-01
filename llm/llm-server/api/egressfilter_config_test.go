@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/stretchr/testify/require"
+	"nudgebee/llm/config"
 	"nudgebee/llm/security/egressfilter"
 )
 
@@ -164,4 +165,24 @@ func TestParseEgressDisabledAgents(t *testing.T) {
 		require.NoError(t, err)
 		assert.Len(t, got, maxDisabledAgentsEntries)
 	})
+}
+
+func TestEgressConfigResponse_NERCapability(t *testing.T) {
+	previous := config.Config.LlmServerEgressFilterPIIBackend
+	t.Cleanup(func() { config.Config.LlmServerEgressFilterPIIBackend = previous })
+	for _, tc := range []struct {
+		backend   string
+		supported bool
+	}{
+		{"inprocess", false}, {" InProcess ", false}, {"http", true}, {" HTTP ", true}, {"", true}, {"typo", true},
+	} {
+		t.Run(tc.backend, func(t *testing.T) {
+			config.Config.LlmServerEgressFilterPIIBackend = tc.backend
+			cfg := &egressfilter.TenantConfig{PIINerEnabled: boolp(true), PIIDisabledCategories: []string{"PERSON", "LOCATION"}}
+			resp := egressConfigResponse(cfg, egressfilter.ModeDetect, true, true, nil)
+			assert.Equal(t, tc.supported, resp["pii_ner_supported"])
+			assert.Equal(t, true, resp["pii_ner_enabled"], "saved override preserved")
+			assert.Equal(t, []string{"PERSON", "LOCATION"}, resp["pii_disabled_categories"])
+		})
+	}
 }

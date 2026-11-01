@@ -427,18 +427,31 @@ func detectAndRecordCorrelations(ctx context.Context, db sqlx.ExtContext, event 
 
 	// Query recent events to check for correlation (exclude same fingerprint - those are duplicates)
 	// Use DISTINCT ON to get only one representative event per fingerprint to avoid correlating with all duplicates
+	//
+	// The cap is applied outside the DISTINCT ON, nearest in time first. DISTINCT ON
+	// has to order by fingerprint, so a LIMIT on that query kept the fingerprints
+	// that sort first as strings: in an account with more than
+	// MaxRecentEventsToCheck alerts in the window, the same late-sorting alerts were
+	// never scored, however close to the triaged event they fired. Fingerprint
+	// breaks ties so a re-run scores the same candidates.
 	query := `
-		SELECT DISTINCT ON (fingerprint)
-			id, fingerprint, starts_at, ends_at, status,
+		SELECT id, fingerprint, starts_at, ends_at, status,
 			subject_name, subject_namespace, subject_owner, subject_owner_kind,
 			service_key, cloud_resource_id
-		FROM events
-		WHERE cloud_account_id = $1
-		  AND fingerprint != $2
-		  AND starts_at >= $3
-		  AND starts_at <= $4
-		ORDER BY fingerprint, starts_at DESC
-		LIMIT $5
+		FROM (
+			SELECT DISTINCT ON (fingerprint)
+				id, fingerprint, starts_at, ends_at, status,
+				subject_name, subject_namespace, subject_owner, subject_owner_kind,
+				service_key, cloud_resource_id
+			FROM events
+			WHERE cloud_account_id = $1
+			  AND fingerprint != $2
+			  AND starts_at >= $3
+			  AND starts_at <= $4
+			ORDER BY fingerprint, starts_at DESC
+		) sub
+		ORDER BY abs(extract(epoch FROM (sub.starts_at - $5))), sub.fingerprint
+		LIMIT $6
 	`
 
 	// Time window: 10 minutes before and after current event
@@ -451,6 +464,7 @@ func detectAndRecordCorrelations(ctx context.Context, db sqlx.ExtContext, event 
 		*event.Fingerprint,
 		startWindow,
 		endWindow,
+		*event.StartsAt,
 		MaxRecentEventsToCheck,
 	)
 

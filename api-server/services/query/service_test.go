@@ -1,6 +1,7 @@
 package query
 
 import (
+	"context"
 	"nudgebee/services/common"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/internal/testenv"
@@ -187,7 +188,7 @@ func TestQueryGenerationOnBuilder(t *testing.T) {
 		query, err := GenerateSqlQuery(security.NewRequestContextForSuperAdmin(nil, nil, nil), uuid.NewString(), queryRequest, table_metadata["resource_groupings_v2"])
 		assert.Nil(t, err)
 		assert.NotEmpty(t, query)
-		queryResponse, err := executeSqlQuery(database.Metastore, query, []any{}, queryRequest.Limit)
+		queryResponse, err := executeSqlQuery(context.Background(), database.Metastore, query, []any{}, queryRequest.Limit)
 		assert.Nil(t, err)
 		assert.NotEmpty(t, queryResponse)
 	})

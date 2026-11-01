@@ -11,7 +11,7 @@ platform clients are monkeypatched):
   * Slack       — per-user invite + already_in_channel handling + no-install error,
                   plus channel-level errors (not_in_channel/is_archived) surfacing
                   as one actionable error instead of a per-user failure
-  * MS Teams    — team_id required + client result passthrough
+  * MS Teams    — refused: adding members needs Microsoft Graph
   * Google Chat — add-members + needs_authorization surfacing + not-configured error
 """
 
@@ -167,53 +167,14 @@ def test_slack_no_installation_returns_error(monkeypatch, svc):
 # --------------------------------- MS Teams ---------------------------------
 
 
-def test_ms_teams_requires_team_id(monkeypatch, svc):
-    monkeypatch.setattr(svc, "_get_messaging_platform", lambda *a, **k: _Install())
-    result = svc.add_channel_members(platform="ms_teams", tenant_id="t1", channel_id="19:abc", user_ids=["U1"])
-    assert "error" in result
-    assert "team_id" in result["error"]["message"]
-
-
-def test_ms_teams_client_rejects_invalid_user_id(monkeypatch):
-    """A user_id with disallowed characters must never be interpolated into the
-    Graph URL — it lands in "failed" without a network call, and valid ids in the
-    same batch still go through."""
-    from notifications_server.clients import ms_teams_client
-
-    calls = []
-
-    class _Resp:
-        status_code = 201
-        text = ""
-
-    monkeypatch.setattr(ms_teams_client.requests, "post", lambda *a, **k: calls.append(a) or _Resp())
-
-    result = ms_teams_client.MsTeamsClient.add_team_members(
-        access_token="tok", team_id="team-1", user_ids=["../etc/passwd", "good-user"]
-    )
-
-    assert result["added"] == ["good-user"]
-    assert [f["user_id"] for f in result["failed"]] == ["../etc/passwd"]
-    # Only the valid user reached the network.
-    assert len(calls) == 1
-
-
-def test_ms_teams_passes_through_client_result(monkeypatch, svc):
-    monkeypatch.setattr(svc, "_get_messaging_platform", lambda *a, **k: _Install())
-    monkeypatch.setattr(svc, "_refresh_ms_teams_token", lambda mp: None)
-    monkeypatch.setattr(
-        common.MsTeamsClient,
-        "add_team_members",
-        lambda **kw: {"added": kw["user_ids"], "already_members": [], "failed": []},
-    )
+def test_ms_teams_members_cannot_be_added(svc):
+    """Adding Teams members needs Microsoft Graph, which the bot doesn't use."""
+    from notifications_server.services.ms_teams.bot_sender import NOT_SUPPORTED
 
     result = svc.add_channel_members(
-        platform="ms_teams", tenant_id="t1", channel_id="19:abc", user_ids=["U1", "U2"], team_id="team-1"
+        platform="ms_teams", tenant_id="t1", channel_id="19:abc", user_ids=["U1"], team_id="team-1"
     )
-
-    assert result["success"] is True
-    assert result["data"]["added"] == ["U1", "U2"]
-    assert result["data"]["team_id"] == "team-1"
+    assert result == {"error": {"message": NOT_SUPPORTED}}
 
 
 # -------------------------------- Google Chat --------------------------------

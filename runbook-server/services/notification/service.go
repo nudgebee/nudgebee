@@ -61,12 +61,13 @@ type SendImNotificationRequest struct {
 }
 
 type SendImNotificationResponse struct {
-	Platform  string `json:"platform"`
-	TeamId    string `json:"team_id"`
-	ChannelId string `json:"channel_id"`
-	MessageTs string `json:"message_ts"`
-	Status    string `json:"status"`
-	Reason    string `json:"reason"`
+	Platform          string `json:"platform"`
+	TeamId            string `json:"team_id"`
+	ChannelId         string `json:"channel_id"`
+	MessageTs         string `json:"message_ts"`
+	Status            string `json:"status"`
+	Reason            string `json:"reason"`
+	RuleManagementURL string `json:"rule_management_url"`
 }
 
 func SendNotification(ctx *security.RequestContext, request SendImNotificationRequest) (SendImNotificationResponse, error) {
@@ -180,6 +181,9 @@ type SendDirectMessageResponse struct {
 func SendDirectMessage(ctx *security.RequestContext, request SendDirectMessageRequest) (SendDirectMessageResponse, error) {
 	if err := validatePlatform(request.Platform); err != nil {
 		return SendDirectMessageResponse{}, err
+	}
+	if request.Platform == "ms_teams" {
+		return SendDirectMessageResponse{}, errors.New("notifications: direct messages aren't supported for Microsoft Teams yet")
 	}
 
 	if ctx.GetSecurityContext().GetTenantId() == "" {
@@ -501,6 +505,10 @@ func AddReaction(ctx *security.RequestContext, request AddReactionRequest) (AddR
 	if err := validatePlatform(request.Platform); err != nil {
 		return AddReactionResponse{Success: false, Error: err.Error()}, err
 	}
+	if request.Platform == "ms_teams" {
+		err := errors.New("notifications: adding reactions isn't supported for Microsoft Teams")
+		return AddReactionResponse{Success: false, Error: err.Error()}, err
+	}
 
 	if ctx.GetSecurityContext().GetTenantId() == "" {
 		return AddReactionResponse{Success: false, Error: "tenantId is required"}, errors.New("notifications: tenantId is required")
@@ -662,8 +670,8 @@ func CreateChannel(ctx *security.RequestContext, request CreateChannelRequest) (
 		return CreateChannelResponse{}, err
 	}
 
-	if request.Platform == "ms_teams" && request.TeamID == "" {
-		return CreateChannelResponse{}, errors.New("notifications: team_id is required for ms_teams")
+	if request.Platform == "ms_teams" {
+		return CreateChannelResponse{}, errors.New("notifications: creating channels isn't supported for Microsoft Teams")
 	}
 
 	headers := map[string]string{
@@ -762,8 +770,8 @@ func AddChannelMembers(ctx *security.RequestContext, request AddChannelMembersRe
 		return AddChannelMembersResponse{}, errors.New("notifications: at least one user is required")
 	}
 
-	if request.Platform == "ms_teams" && request.TeamID == "" {
-		return AddChannelMembersResponse{}, errors.New("notifications: team_id is required for ms_teams")
+	if request.Platform == "ms_teams" {
+		return AddChannelMembersResponse{}, errors.New("notifications: adding members isn't supported for Microsoft Teams")
 	}
 
 	headers := map[string]string{

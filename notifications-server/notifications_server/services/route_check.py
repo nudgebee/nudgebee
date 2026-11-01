@@ -4,10 +4,16 @@ same matcher and outcome the send path uses, without sending anything."""
 import logging
 
 from notifications_server.models.db_base import BaseDB
-from notifications_server.services.message import NotificationRuleMatcher, is_realtime_severity_gated, resolve_outcome
+from notifications_server.services.message import (
+    NON_SUPPRESSIBLE_EVENT_TYPES,
+    NotificationRuleMatcher,
+    is_realtime_severity_gated,
+    resolve_outcome,
+)
 from notifications_server.utils.datetime_utils import utc_now
 from notifications_server.services.rules import (
     AUTOMATION_EVENT_TYPES,
+    DEFAULT_CHANNELS,
     OPTIMIZE_EVENT_BY_MESSAGE_TYPE,
     RULE_SOURCES,
     NotificationRulesService,
@@ -92,9 +98,15 @@ class RouteCheckService:
         rules = await self.rules_service.get_notification_rules(tenant_id) or []
         names = {str(rule.id): rule.name for rule in rules}
         now = utc_now()
+        # An event that is never stopped ignores every rule that would hold it back,
+        # so those rules must not be named as the reason it went out.
+        never_stopped = payload.get("event_type") in NON_SUPPRESSIBLE_EVENT_TYPES
         matched_rules = []
         for entry in matched:
             if entry["suppressed"] and entry["expires_at"] and entry["expires_at"] <= now:
+                continue
+            paused = bool(entry["expires_at"]) and entry["expires_at"] > now
+            if never_stopped and (entry["suppressed"] or paused or entry.get("delivery_mode") == "batch"):
                 continue
             rule_id = str(entry["rule_id"])
             if rule_id not in (r["id"] for r in matched_rules):
@@ -128,10 +140,16 @@ class RouteCheckService:
             for target in outcome.targets
         ]
         delivering_rule = any(target.get("rule_id") for target in outcome.targets) or bool(matched_rules)
+        if delivering_rule:
+            reason = "rule"
+        elif never_stopped and (default_policy or {}).get("action") != DEFAULT_CHANNELS:
+            reason = "always_sent"
+        else:
+            reason = "default_policy"
         return {
             **answer,
             "result": "sent",
-            "reason": "rule" if delivering_rule else "default_policy",
+            "reason": reason,
             "channels": channels,
             "default_channels": outcome.use_defaults,
         }

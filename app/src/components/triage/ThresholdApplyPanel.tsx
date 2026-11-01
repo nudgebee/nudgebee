@@ -9,6 +9,7 @@ import { Select } from '@ui/Select';
 import Modal from '@ui/Modal';
 import apiTriage, { type ThresholdSuggestionItem, type ThresholdApplyOptions, type ThresholdApplyResult } from '@api1/triage';
 import apiIntegrations from '@api1/integrations';
+import { buildAuditLogUrl } from '@components/audits/common';
 import { snackbar } from '@shared/snackbarService';
 import { ds } from 'src/utils/colors';
 
@@ -42,6 +43,10 @@ const NO_ENGINE_CHANGE = new Set(['investigate_signal', 'insufficient_data']);
 
 // Integrations management lives on the user-management page, integrations tab.
 const INTEGRATIONS_SETTINGS_URL = '/user-management#integrations';
+
+// Category the apply/revert handlers audit under (api-server audit.EventAlertManagerRelay),
+// with the alert rule key as the audit target.
+const APPLY_AUDIT_CATEGORY = 'ALERT_MANAGER';
 
 const statusTone = (status?: string): 'success' | 'warning' | 'critical' | 'neutral' => {
   switch (status) {
@@ -154,6 +159,9 @@ const ThresholdApplyPanel: React.FC<ThresholdApplyPanelProps> = ({ data, onAppli
   const [result, setResult] = useState<ThresholdApplyResult | null>(null);
   const [error, setError] = useState<string>('');
   const [applyStatus, setApplyStatus] = useState<string | undefined>(data.apply_status);
+  // An apply/revert done from this panel. Its local time stands in for applied_at until the
+  // refetched row carries the server's, which is the clock the audit row is written on.
+  const [acted, setActed] = useState<{ at: number; rowAppliedAt?: string } | undefined>();
 
   // Editable threshold value applied to the rule (defaults to the suggested value).
   const [acceptValue, setAcceptValue] = useState<string>('');
@@ -260,7 +268,8 @@ const ThresholdApplyPanel: React.FC<ThresholdApplyPanelProps> = ({ data, onAppli
 
   const directOption = options?.options?.find((o) => o.method === 'direct');
   const prOption = options?.options?.find((o) => o.method === 'pr');
-  const requiresOverride = options?.requires_override || data.metric_stats?.risk_level === 'dangerous';
+  const isDangerous = options?.risk_level === 'dangerous' || data.metric_stats?.risk_level === 'dangerous';
+  const requiresOverride = options?.requires_override || isDangerous;
   const selectedAvailable = method === 'direct' ? directOption?.available : prOption?.available;
 
   const selectedIntegration = gitIntegrations.find((i) => i.key === gitIntegrationKey);
@@ -330,6 +339,7 @@ const ThresholdApplyPanel: React.FC<ThresholdApplyPanelProps> = ({ data, onAppli
       }
       setResult(res);
       setApplyStatus(res.status);
+      setActed({ at: Date.now(), rowAppliedAt: data.applied_at });
       setConfirmOpen(false);
       if (res.status === 'pending') {
         snackbar.success('Pull request raised to update the alert rule.');
@@ -361,6 +371,7 @@ const ThresholdApplyPanel: React.FC<ThresholdApplyPanelProps> = ({ data, onAppli
       }
       setResult(res);
       setApplyStatus('reverted');
+      setActed({ at: Date.now(), rowAppliedAt: data.applied_at });
       snackbar.success('Threshold reverted to its previous value.');
       onApplied?.();
     } catch (e: any) {
@@ -377,6 +388,13 @@ const ThresholdApplyPanel: React.FC<ThresholdApplyPanelProps> = ({ data, onAppli
     applying || !selectedAvailable || !validValue || overrideMissing || (requiresOverride && !overrideRisk) || !prInputsValid || noIntegration;
 
   const alreadyApplied = applyStatus === 'applied';
+
+  const auditLogUrl = buildAuditLogUrl({
+    accountId: data.cloud_account_id,
+    category: APPLY_AUDIT_CATEGORY,
+    target: data.alert_rule_key,
+    at: acted && acted.rowAppliedAt === data.applied_at ? acted.at : data.applied_at,
+  });
 
   return (
     <Box
@@ -398,7 +416,7 @@ const ThresholdApplyPanel: React.FC<ThresholdApplyPanelProps> = ({ data, onAppli
             {statusLabel(applyStatus)}
           </Chip>
         )}
-        {requiresOverride && (
+        {isDangerous && (
           <Chip variant='tag' size='xs' tone='critical'>
             High risk
           </Chip>
@@ -415,7 +433,7 @@ const ThresholdApplyPanel: React.FC<ThresholdApplyPanelProps> = ({ data, onAppli
                   sx={{ fontSize: ds.text.caption, color: ds.gray[600] }}
                 />
               )}
-          <Button tone='link' size='xs' href='/user-management#access-users/audit-log'>
+          <Button tone='link' size='xs' id='threshold-apply-audit-log-link' href={auditLogUrl}>
             View in audit log
           </Button>
         </Box>
@@ -479,7 +497,7 @@ const ThresholdApplyPanel: React.FC<ThresholdApplyPanelProps> = ({ data, onAppli
               id='threshold-apply-confirm'
               data-testid='threshold-apply-confirm'
               size='sm'
-              tone={requiresOverride ? 'danger' : 'primary'}
+              tone={isDangerous ? 'danger' : 'primary'}
               loading={applying}
               disabled={confirmDisabled}
               onClick={doApply}
@@ -574,7 +592,15 @@ const ThresholdApplyPanel: React.FC<ThresholdApplyPanelProps> = ({ data, onAppli
           )}
 
           {requiresOverride && (
-            <Checkbox checked={overrideRisk} onChange={setOverrideRisk} label='I understand this is a high-risk change and want to proceed' />
+            <Checkbox
+              checked={overrideRisk}
+              onChange={setOverrideRisk}
+              label={
+                isDangerous
+                  ? 'I understand this is a high-risk change and want to proceed'
+                  : 'This suggestion is not rated safe with solid confidence. I have reviewed it and want to proceed'
+              }
+            />
           )}
 
           {error && <Text value={error} sx={{ fontSize: ds.text.caption, color: ds.red[700] }} />}

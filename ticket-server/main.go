@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/Cyprinus12138/otelgin"
 	"github.com/gin-contrib/pprof"
@@ -22,6 +23,13 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	oteltrace "go.opentelemetry.io/otel/trace"
+)
+
+const (
+	// No default limit otherwise, so a stalled client holds a connection forever.
+	readHeaderTimeout = 10 * time.Second
+	// Must stay under terminationGracePeriodSeconds (45s in the chart values).
+	shutdownTimeout = 35 * time.Second
 )
 
 var errorFormatter = slogformatter.ErrorFormatter("error")
@@ -104,8 +112,9 @@ func main() {
 	routes.InitializeRoutes(router)
 
 	srv := &http.Server{
-		Addr:    fmt.Sprintf(":%d", common.Config.Port),
-		Handler: router,
+		Addr:              fmt.Sprintf(":%d", common.Config.Port),
+		Handler:           router,
+		ReadHeaderTimeout: readHeaderTimeout,
 	}
 
 	c := make(chan os.Signal, 1)
@@ -113,11 +122,13 @@ func main() {
 	go func() {
 		<-c
 		slog.Info("Got SIGTERM, shutting down")
-		slog.Info("Connections closed, shutting down server")
-		err := srv.Shutdown(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		err := srv.Shutdown(ctx)
 		if err != nil {
 			slog.Error("Server shutdown failed:", "error", err)
 		}
+		slog.Info("Connections closed, shutting down server")
 		os.Exit(1)
 	}()
 

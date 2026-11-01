@@ -3,20 +3,17 @@ package azure
 import (
 	"errors"
 	"fmt"
+	"nudgebee/collector/cloud/common"
 	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 )
 
-// azurePermissionErrorCodes lists Azure API error codes that indicate permission/access issues.
-var azurePermissionErrorCodes = map[string]bool{
-	"AuthorizationFailed":              true,
-	"AuthorizationPermissionMismatch":  true,
-	"InsufficientAccountPermissions":   true,
-	"AuthorizationPermissionDenied":    true,
-	"LinkedAuthorizationFailed":        true,
-	"InvalidAuthenticationTokenTenant": true,
-	"AuthenticationFailed":             true,
+// isAzurePermissionErrorCode reports whether an Azure API error code indicates a
+// permission/access issue: either a rejected credential or a missing role. The
+// code lists live in common so the cost-error classifier uses the same ones.
+func isAzurePermissionErrorCode(code string) bool {
+	return common.IsAzureCredentialErrorCode(code) || common.IsAzureAccessDeniedErrorCode(code)
 }
 
 // IsAzurePermissionError inspects an error returned by an Azure SDK call and
@@ -38,7 +35,7 @@ func IsAzurePermissionError(err error) (apiOperation, errorCode, errorMessage st
 		}
 
 		// Check by error code
-		if azurePermissionErrorCodes[errorCode] {
+		if isAzurePermissionErrorCode(errorCode) {
 			return apiOperation, errorCode, errorMessage, true
 		}
 

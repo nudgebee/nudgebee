@@ -115,6 +115,9 @@ func missRegionHint(resourceName, service string, regions []string) string {
 }
 
 func (r CloudResourceSearchTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	// The search is tenant-wide; the target decides whose regions a
+	// no-match hint suggests.
+	nbRequestContext = nbRequestContext.ForTarget()
 	var request CloudResourceSearchRequest
 	inputData := input.Command
 	if inputData == "" && input.Arguments != nil {

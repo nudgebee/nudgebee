@@ -3,6 +3,7 @@ package query
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"nudgebee/services/common"
@@ -217,8 +218,19 @@ func ExecuteQuery(context *security.RequestContext, query QueryRequest) (QueryRe
 
 	context.GetLogger().Info(fmt.Sprintf("Query To Execute %s", queryText))
 
-	rowsMap, err := executeSqlQuery(sourceType, queryText, queryArgs, query.Limit)
+	rowsMap, err := executeSqlQuery(context.GetContext(), sourceType, queryText, queryArgs, query.Limit)
 	if err != nil {
+		if errors.Is(err, ErrQueryCancelled) {
+			// The caller left before the answer was ready. Reported as its own
+			// outcome, at Info, so an abandoned page does not read as a failed query.
+			context.GetLogger().Info("query cancelled by caller", "table", query.Table, "detail", err.Error())
+			return QueryResponse{
+				Errors: []common.Error{
+					common.ErrorInternal("Query cancelled by caller"),
+				},
+				ExecutionTimeMs: time.Since(startTime).Milliseconds(),
+			}, ErrQueryCancelled
+		}
 		context.GetLogger().Error(err.Error())
 		return QueryResponse{
 			Errors: []common.Error{

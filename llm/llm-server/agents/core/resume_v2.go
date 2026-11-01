@@ -16,6 +16,7 @@
 package core
 
 import (
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"log/slog"
@@ -156,15 +157,12 @@ func resumeFollowupLocked(ctx *security.RequestContext, req NBAgentRequest) (NBA
 	// registered"), the whole request errors out, and the user's approved
 	// write silently never runs (message stuck WAITING forever, prod bug at
 	// conv 7564e464). Fall back to the closest registered ancestor and treat
-	// this as a parent-resume: the ancestor's planner re-plans the delegation
-	// with the same intent, and the user's Yes rides through via
-	// QueryConfig.ToolConfirmations (already merged into req.QueryConfig
-	// below at line 190) so the re-planned action executes for real.
-	//
-	// Semantically correct because dynamicReActAgent holds no persistent
-	// planner state we could restore — its full state is the (prompt, tools,
-	// max_iterations) tuple captured on the parent's delegate_agent tool_call.
-	// Re-planning is the state.
+	// this as a parent-resume. The ancestor does NOT re-plan: its saved state
+	// holds the WAITING delegate_agent action, which the planner re-dispatches
+	// with its original input; the child resumes from its own saved state
+	// (keyed by the tool call), with the approval in
+	// QueryConfig.ToolConfirmations (merged into req.QueryConfig below) or the
+	// answer in NbToolContext.FollowupAnswer.
 	if _, implRegistered := GetNBAgent(ctx, agent.AgentName, req.AccountId, AgentStatusEnabled); !implRegistered {
 		// The helper is called for its `walked > 0` verdict (does a registered
 		// ancestor exist anywhere up the chain?). DAO errors bubble up so a
@@ -261,6 +259,23 @@ func resumeFollowupLocked(ctx *security.RequestContext, req NBAgentRequest) (NBA
 	// sub-agent's refine already wrote its config, we must surface it here or
 	// refine will overwrite message_config losing the sibling's choice (#28141).
 	req.QueryConfig = mergeLatestMessageConfig(dao, req.MessageId, req.AccountId, req.ConversationId, req.QueryConfig, logger, "resume_v2: merged existing message_config into request QueryConfig")
+	req = withOriginalQuestion(ctx, req)
+
+	// A resumed turn ends here rather than in the save-back that drains the
+	// queue after a normal turn, so start whatever was queued while it ran.
+	// Off the caller's goroutine: the conversation lock is still held here.
+	defer func() {
+		go func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					logger.Error("resume_v2: panic dispatching queued message", "panic", recovered, "conversation_id", req.ConversationId)
+				}
+			}()
+			if conversation, err := dao.GetConversation(req.ConversationId); err == nil {
+				dispatchNextQueuedMessage(ctx, nil, conversation)
+			}
+		}()
+	}()
 
 	// 3. Resume the agent with its saved state.
 	resumeResp, resumeErr := runAgentResumeV2(ctx, req, agent)
@@ -377,6 +392,10 @@ func runAgentResumeV2(ctx *security.RequestContext, req NBAgentRequest, agent Co
 	// so no additional DB lookup is needed here. The in-request config is the
 	// source of truth for resume.
 	queryConfig := req.QueryConfig
+	queryConfig, err = withResumedAgentTarget(queryConfig, agent)
+	if err != nil {
+		return NBAgentResponse{}, err
+	}
 
 	// IMPORTANT: pass the user's raw answer as Query. HandleFollowupResponse
 	// (called inside executeAgent → refine) writes request.Query as the
@@ -408,6 +427,19 @@ func runAgentResumeV2(ctx *security.RequestContext, req NBAgentRequest, agent Co
 	return executeAgent(ctx, agentImpl, resumeReq)
 }
 
+func withResumedAgentTarget(config toolcore.NBQueryConfig, agent ConversationAgent) (toolcore.NBQueryConfig, error) {
+	config.DelegatedTarget = nil
+	if agent.QueryConfig == nil || *agent.QueryConfig == "" {
+		return config, nil
+	}
+	var saved toolcore.NBQueryConfig
+	if err := json.Unmarshal([]byte(*agent.QueryConfig), &saved); err != nil {
+		return config, fmt.Errorf("resume_v2: decode agent query config: %w", err)
+	}
+	config.DelegatedTarget = saved.DelegatedTarget
+	return config, nil
+}
+
 // buildResumeAgentRequest carries the turn's request forward and overrides only
 // what resume changes. Copy-then-override, not an allowlist: the request already
 // arrives fully populated from the normal conversation path, and rebuilding it
@@ -422,6 +454,7 @@ func runAgentResumeV2(ctx *security.RequestContext, req NBAgentRequest, agent Co
 func buildResumeAgentRequest(req NBAgentRequest, parentAgentID, previousState string, queryConfig toolcore.NBQueryConfig) NBAgentRequest {
 	resumed := req
 	resumed.ParentAgentId = parentAgentID
+	resumed.TopLevelResume = parentAgentID == req.AgentId
 	resumed.PreviousState = previousState
 	resumed.QueryConfig = queryConfig
 	resumed.ClientTools = queryConfig.ClientTools
@@ -608,6 +641,11 @@ func bubbleUpIfSiblingsDone(ctx *security.RequestContext, req NBAgentRequest, ch
 		PreviousState:  parentState,
 		QueryConfig:    parentQueryConfig,
 		SessionId:      req.SessionId,
+
+		OriginalQuery:         req.OriginalQuery,
+		OriginalQueryFromUser: req.OriginalQueryFromUser,
+		ConversationSource:    req.ConversationSource,
+		TopLevelResume:        grandparentID == parentAgentID,
 	}
 
 	logger.Info("resume_v2: all siblings complete, resuming parent agent",
@@ -703,8 +741,8 @@ func finalizeCompletedConversation(ctx *security.RequestContext, req NBAgentRequ
 		return
 	}
 
-	// Free checks before either DB read below. shouldScoreAnswerConfidence
-	// rejects a blank answer anyway, so reaching it costs two round-trips for a
+	// Free check before the tenant lookup below. shouldScoreAnswerConfidence
+	// rejects a blank answer anyway, so reaching it costs a round-trip for a
 	// turn that was never gradeable.
 	answer := ""
 	if len(resp.Response) > 0 {
@@ -714,51 +752,60 @@ func finalizeCompletedConversation(ctx *security.RequestContext, req NBAgentRequ
 		return
 	}
 
-	// Cheap gate before the GetConversationMessage round-trip below, so a tenant
-	// without the feature pays nothing on every followup resume. This repeats a
-	// check ScoreAnswerConfidenceAsync also makes, which costs one extra indexed
-	// lookup for tenants that DO have it enabled.
 	secCtx := ctx.GetSecurityContext()
 	if secCtx == nil || !AnswerConfidenceEnabledForTenant(ctx, secCtx.GetTenantId()) {
 		return
 	}
 
-	question, err := originalQuestionForScoring(req)
-	if err != nil {
-		// Worth surfacing: a dropped connection or schema mismatch here stops
-		// every resumed turn being graded, and silence would make that look
-		// like the feature simply doing nothing.
-		ctx.GetLogger().Error("resume_v2: unable to recover the original question, skipping confidence scoring",
-			"error", err, "message_id", req.MessageId)
-		return
-	}
-	if question == "" {
-		// Must not fall through with an empty OriginalQuery: on this resume
-		// path req.Query is always the followup answer (e.g. "yes"), never
-		// empty (HandleFollowupAndResumeV2 rejects that at the door), so
-		// shouldScoreAnswerConfidence's OriginalQuery-empty fallback would
-		// grade the followup answer as if it were the question — reintroducing
-		// the bug this function exists to fix (#37535 review).
+	// resumeFollowupLocked already set OriginalQuery; this is a no-op then and
+	// covers callers that reach bubble-up another way. Must not fall through
+	// with it empty: req.Query is the followup answer (e.g. "yes"), and
+	// shouldScoreAnswerConfidence's OriginalQuery-empty fallback would grade
+	// that answer as if it were the question (#37535 review).
+	req = withOriginalQuestion(ctx, req)
+	if req.OriginalQuery == "" {
 		return
 	}
 
-	scoreReq := req
-	scoreReq.OriginalQuery = question
-	ScoreAnswerConfidenceAsync(ctx, scoreReq, answer)
+	ScoreAnswerConfidenceAsync(ctx, req, answer)
 }
 
-// originalQuestionForScoring resolves the user's verbatim top-level question
-// for answer-confidence classification. On a followup-resume completion,
-// req.Query is the user's answer to the followup (e.g. "yes"), not the
-// question — the generation message row holds the original text, untouched
-// by any followup exchange.
+// withOriginalQuestion restores the turn's original question on a followup
+// resume. There req.Query is the user's answer (e.g. "yes") and the followup
+// request never carried the question, so everything that reads OriginalQuery —
+// prompt variant, task type and model tier (isTopLevelPlainRetrievalTurn),
+// knowledge retrieval, confidence scoring — would classify the answer instead:
+// an approved investigation finished on the lean prompt and lost its prompt
+// cache (#40085). A lookup failure leaves the request unchanged.
+func withOriginalQuestion(ctx *security.RequestContext, req NBAgentRequest) NBAgentRequest {
+	if req.OriginalQuery != "" {
+		return req
+	}
+	question, err := loadOriginalQuestion(req)
+	if err != nil {
+		ctx.GetLogger().Error("resume_v2: unable to recover the original question", "error", err, "message_id", req.MessageId)
+		return req
+	}
+	if question == "" {
+		return req
+	}
+	// The stored message keeps the routed @agent mention; the first run's
+	// OriginalQuery was seeded after executeAgent stripped it.
+	req.OriginalQuery = stripRoutedAgentMention(question)
+	req.OriginalQueryFromUser = isUserConversationSource(req.ConversationSource)
+	return req
+}
+
+// loadOriginalQuestion resolves the user's verbatim top-level question for a
+// followup resume. req.Query is the user's answer to the followup (e.g. "yes"),
+// not the question — the generation message row holds the original text,
+// untouched by any followup exchange.
 //
 // An empty string with a nil error means "no usable question" — a missing
-// identifier, or a blank stored message — and the caller skips scoring quietly.
-// A non-nil error means the lookup itself failed and is worth logging. Either
-// way the caller must NOT hand on a "", which shouldScoreAnswerConfidence would
-// silently replace with req.Query, i.e. the followup answer.
-func originalQuestionForScoring(req NBAgentRequest) (string, error) {
+// identifier, or a blank stored message. A non-nil error means the lookup
+// itself failed and is worth logging. Either way OriginalQuery stays empty, and
+// confidence scoring then skips the turn rather than grade the followup answer.
+func loadOriginalQuestion(req NBAgentRequest) (string, error) {
 	// Not an error: there is simply nothing to look up, and querying with a
 	// blank uuid would turn a structurally impossible case into log noise.
 	if req.AccountId == "" || req.MessageId == "" || req.ConversationId == "" {
@@ -766,7 +813,7 @@ func originalQuestionForScoring(req NBAgentRequest) (string, error) {
 	}
 	msg, err := GetConversationDao().GetConversationMessage(req.MessageId, req.AccountId, req.ConversationId)
 	if err != nil {
-		return "", fmt.Errorf("resume_v2: failed to load generation message %s for confidence scoring: %w", req.MessageId, err)
+		return "", fmt.Errorf("resume_v2: failed to load generation message %s: %w", req.MessageId, err)
 	}
 	// Return the trimmed form so the value matches the predicate computed from
 	// it. Both consumers trim anyway (IsInvestigationRequestTask, and

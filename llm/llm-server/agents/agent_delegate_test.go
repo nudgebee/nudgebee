@@ -6,6 +6,7 @@ import (
 
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/security"
+	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/stretchr/testify/assert"
@@ -27,6 +28,53 @@ func TestParseDelegateInput_StructuredArguments(t *testing.T) {
 	assert.Equal(t, "Investigate MySQL connection pool exhaustion", prompt)
 	assert.Equal(t, []string{"mysql_query", "prometheus"}, toolNames)
 	assert.Equal(t, 8, maxIter)
+}
+
+func TestDelegateTargetHandoff(t *testing.T) {
+	got, err := toolcore.ParseExecutionTarget(toolcore.NBToolCallRequest{Command: `{"prompt":"check","target":{"provider":"GCP","name":"prod"}}`})
+	require.NoError(t, err)
+	require.Equal(t, &toolcore.ExecutionTarget{Provider: "gcp", Name: "prod"}, got)
+	for _, value := range []any{"prod", map[string]any{"provider": "gcp"}, map[string]any{"provider": "other", "name": "prod"}} {
+		_, err := toolcore.ParseExecutionTarget(toolcore.NBToolCallRequest{Arguments: map[string]any{"target": value}})
+		require.Error(t, err)
+	}
+	require.Contains(t, (&delegateAgentTool{}).InputSchema().Properties, "target")
+}
+
+func TestCustomPlannerToolsDoNotAdvertiseDelegatedTarget(t *testing.T) {
+	for _, name := range []string{WorkflowBuilderAgentName, AgentCodeAnalyzer, VisualizationAgentName, AgentLogAnalysisName, FetchLogsAgentName, WebSearchAgentName} {
+		tool, ok := toolcore.GetNBTool("test-account", name)
+		require.True(t, ok, name)
+		require.NotContains(t, tool.InputSchema().Properties, "target", name)
+	}
+}
+
+func TestObservabilityPlannerToolsAdvertiseDelegatedTarget(t *testing.T) {
+	require.Contains(t, (MetricsAgentTool{}).InputSchema().Properties, "target")
+	require.Contains(t, (TracesAgentTool{}).InputSchema().Properties, "target")
+	logsAgentTool, ok := toolcore.GetNBTool("test-account", LogsAgentName)
+	require.True(t, ok)
+	require.Contains(t, logsAgentTool.InputSchema().Properties, "target")
+	fetchLogsDirect, ok := toolcore.GetNBTool("test-account", FetchLogsDirectToolName)
+	require.True(t, ok)
+	require.Contains(t, fetchLogsDirect.InputSchema().Properties, "target")
+}
+
+func TestTargetedDelegateDoesNotMisattributeOriginObservability(t *testing.T) {
+	for _, tool := range []toolcore.NBTool{MetricsAgentTool{}, TracesAgentTool{}, &fetchLogsDirectTool{accountId: "origin-account"}} {
+		t.Run(tool.Name(), func(t *testing.T) {
+			ctx := toolcore.NbToolContext{
+				AccountId: "origin-account",
+				QueryConfig: toolcore.NBQueryConfig{
+					DelegatedTarget: &toolcore.ExecutionTarget{Provider: "kubernetes", Name: "k8s-prod"},
+				},
+			}
+			response, err := tool.Call(ctx, toolcore.NBToolCallRequest{Command: "current CPU or latency"})
+			require.NoError(t, err)
+			require.Equal(t, toolcore.NBToolResponseStatusError, response.Status)
+			require.Contains(t, response.Data, "k8s-prod")
+		})
+	}
 }
 
 func TestParseDelegateInput_JSONCommand(t *testing.T) {
@@ -743,4 +791,101 @@ func TestDynamicReActAgent_InjectDefaultSkills(t *testing.T) {
 	agent := &dynamicReActAgent{name: "test_delegate", accountId: "acct-1"}
 	assert.True(t, agent.OptOutDefaultTools(), "delegate must still opt out of default tools (parent-curated scope)")
 	assert.True(t, agent.InjectDefaultSkills(), "delegate must re-enable load_skills via the skills carve-out")
+}
+
+func TestDelegateAgentKeepsCallerTarget(t *testing.T) {
+	tool := &delegateAgentTool{}
+	bound := &toolcore.ExecutionTarget{Provider: "aws", Name: "aws-prod", AccountID: "aws-id"}
+	for _, input := range []string{
+		"Check the public buckets",
+		`{"prompt":"Check the public buckets","tools":["aws_execute"]}`,
+	} {
+		prepared, err := tool.PrepareDelegatedTargetInput(bound, input)
+		require.NoError(t, err)
+		request := toolcore.NBToolCallRequest{Command: prepared}
+		prompt, _, _, err := parseDelegateInput(request)
+		require.NoError(t, err)
+		assert.Equal(t, "Check the public buckets", prompt)
+		target, err := toolcore.ParseExecutionTarget(request)
+		require.NoError(t, err)
+		assert.Equal(t, &toolcore.ExecutionTarget{Provider: "aws", Name: "aws-prod"}, target)
+	}
+
+	explicit := `{"prompt":"p","tools":["aws_execute"],"target":{"provider":"aws","name":"aws-dev"}}`
+	prepared, err := tool.PrepareDelegatedTargetInput(bound, explicit)
+	require.NoError(t, err)
+	assert.Equal(t, explicit, prepared, "an explicit target wins")
+}
+
+// Every tool the events agent can run must read the delegated target's
+// account; one that could not would answer from the conversation's own.
+func TestEventsAgentToolsFollowTheTarget(t *testing.T) {
+	agent := newEventsAgent("origin-id")
+	_, aware := agent.(core.ExecutionTargetAwareAgent)
+	require.True(t, aware)
+	for _, tool := range agent.GetSupportedTools(nil) {
+		assert.True(t, toolcore.SupportsDelegatedTarget(tool), "%s cannot take the target", tool.Name())
+	}
+	tool, ok := toolcore.GetNBTool("origin-id", EventsAgentName)
+	require.True(t, ok)
+	assert.True(t, toolcore.SupportsDelegatedTarget(tool), "the events agent-tool must accept a target")
+}
+
+// FinOps reads follow a handed target; its writes stay refused under another
+// account until approvals are bound to a target.
+func TestFinOpsReadsFollowTheTargetWritesDoNot(t *testing.T) {
+	_, aware := core.NBAgent(&FinOpsAgent{}).(core.ExecutionTargetAwareAgent)
+	require.True(t, aware)
+	for name, want := range map[string]bool{
+		FinOpsAgentName:                                true,
+		tools.ToolSpendSummary:                         true,
+		tools.ToolSpendForecast:                        true,
+		tools.ToolSpendAllocation:                      true,
+		tools.ToolRecommendationExecuteSql:             true,
+		tools.ToolRecommendationResolutionExecuteSql:   true,
+		tools.ToolProposeRecommendationApply:           true,
+		tools.ToolRecommendationApply:                  false,
+		tools.ToolRecommendationExecuteCli:             false,
+		tools.ToolRecommendationSetDismissal:           false,
+		tools.ToolRecommendationRecordTicketResolution: false,
+	} {
+		tool, ok := toolcore.GetNBTool("origin-id", name)
+		require.True(t, ok, name)
+		assert.Equal(t, want, toolcore.SupportsDelegatedTarget(tool), name)
+	}
+}
+
+// A target-aware agent's own tools must follow the target or read no account
+// data; only writes, which await target-scoped approval, may be refused.
+func TestTargetAwareAgentsToolsFollowTheTarget(t *testing.T) {
+	writesAwaitingApproval := map[string]bool{tools.ToolTriggerImageScan: true, tools.ToolTriggerCisScan: true}
+	for _, agent := range []core.NBAgent{newEventsAgent("origin-id"), SecurityAgent{accountId: "origin-id"}, newServiceDependencyGraphAgent("origin-id"), newNudgebeeAgent("origin-id"),
+		newPrometheusAgent("origin-id"), ElasticSearchMetricsAgent{accountId: "origin-id"}, SplunkEnterpriseMetricsAgent{accountId: "origin-id"}, &PromqlAgent{accountId: "origin-id"}} {
+		_, aware := agent.(core.ExecutionTargetAwareAgent)
+		require.True(t, aware, agent.GetName())
+		for _, tool := range agent.GetSupportedTools(nil) {
+			if writesAwaitingApproval[tool.Name()] {
+				assert.False(t, toolcore.SupportsDelegatedTarget(tool), tool.Name())
+				continue
+			}
+			assert.True(t, toolcore.SupportsDelegatedTarget(tool) || toolcore.IsTargetNeutral(tool.Name()), "%s: %s cannot take the target", agent.GetName(), tool.Name())
+		}
+	}
+}
+
+// A tool that applies a delegated target from the call context must also let
+// a top-level agent name one: without a "target" input it silently answers
+// for the conversation's own account (seen live with prometheus_execute).
+// ModelInputSchema adds it from the tool's declared scope.
+func TestContextTargetToolsAcceptAPerCallTarget(t *testing.T) {
+	for _, name := range toolcore.ListRegisteredSystemToolNames() {
+		tool, ok := toolcore.GetNBTool("00000000-0000-0000-0000-000000000001", name)
+		if !ok || tool == nil || !toolcore.SupportsDelegatedTarget(tool) {
+			continue
+		}
+		if _, preparer := tool.(toolcore.DelegatedTargetInputPreparer); preparer {
+			continue // applies the target to its own selector (cluster, account, --context)
+		}
+		assert.Contains(t, toolcore.ModelInputSchema(tool).Properties, "target", "%s follows a handed target but cannot be given one", name)
+	}
 }

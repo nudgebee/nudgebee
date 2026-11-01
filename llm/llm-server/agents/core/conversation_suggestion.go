@@ -32,25 +32,44 @@ type ConversationSuggestionResponse struct {
 	Suggestions    []ConversationSuggestionMessageResponse `json:"suggestions" validate:"required"`
 }
 
+// StoredConversationSuggestions returns the suggestions already saved on a message,
+// if it has any. Serving them costs no LLM call, so the API returns them before its
+// budget check rather than after it.
+func StoredConversationSuggestions(ctx *security.RequestContext, request ConversationSuggestionRequest, message ConversationMessage) (ConversationSuggestionResponse, bool) {
+	if message.Suggestions == nil {
+		return ConversationSuggestionResponse{}, false
+	}
+	var suggestions []ConversationSuggestionMessageResponse
+	if err := common.UnmarshalJson([]byte(*message.Suggestions), &suggestions); err != nil {
+		ctx.GetLogger().Error("suggestions: unable to parse suggestions", "error", err, "suggestions", *message.Suggestions)
+		return ConversationSuggestionResponse{}, false
+	}
+	if len(suggestions) == 0 {
+		return ConversationSuggestionResponse{}, false
+	}
+	return ConversationSuggestionResponse{
+		ConversationId: request.ConversationId,
+		AccountId:      request.AccountId,
+		MessageId:      request.MessageId,
+		Suggestions:    suggestions,
+	}, true
+}
+
+// conversationSuggestionCallOptions are the LLM options for generating follow-up
+// questions. A short list of suggested questions needs no deep reasoning: without
+// an explicit level the call spent 520-608 thinking tokens on 66 output tokens.
+func conversationSuggestionCallOptions() []llms.CallOption {
+	return []llms.CallOption{llms.WithTemperature(0.7), llms.WithJSONMode(), WithThinkingLevel(ThinkingLevelFastTask)}
+}
+
 func HandleConversationSuggestionRequest(ctx *security.RequestContext, request ConversationSuggestionRequest) (ConversationSuggestionResponse, error) {
 	mesasge, err := GetConversationDao().GetConversationMessage(request.MessageId, request.AccountId, request.ConversationId)
 	if err != nil {
 		return ConversationSuggestionResponse{}, err
 	}
 
-	if mesasge.Suggestions != nil {
-		var suggestions []ConversationSuggestionMessageResponse
-		err = common.UnmarshalJson([]byte(*mesasge.Suggestions), &suggestions)
-		if err == nil && len(suggestions) > 0 {
-			return ConversationSuggestionResponse{
-				ConversationId: request.ConversationId,
-				AccountId:      request.AccountId,
-				MessageId:      request.MessageId,
-				Suggestions:    suggestions,
-			}, err
-		} else {
-			ctx.GetLogger().Error("suggestions: unable to parse suggestions", "error", err, "suggestions", *mesasge.Suggestions)
-		}
+	if stored, ok := StoredConversationSuggestions(ctx, request, mesasge); ok {
+		return stored, nil
 	}
 
 	// Build the per-account tools list. Sort by agent name so the byte
@@ -120,7 +139,7 @@ func HandleConversationSuggestionRequest(ctx *security.RequestContext, request C
 			time.Sleep(backoffDuration)
 		}
 
-		response, err = GenerateAndTrackLLMContent(suggestionCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, "conversation_suggestion", true, llmMessages, true, llms.WithTemperature(0.7), llms.WithJSONMode())
+		response, err = GenerateAndTrackLLMContent(suggestionCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, "conversation_suggestion", true, llmMessages, true, conversationSuggestionCallOptions()...)
 		if err == nil {
 			break // Success, exit the retry loop
 		}

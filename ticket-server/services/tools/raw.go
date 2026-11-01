@@ -33,3 +33,21 @@ func marshalToMap(v any) map[string]any {
 	}
 	return out
 }
+
+// rawWithUnmodeled is the full upstream response with the typed value marshalled
+// over it. Every key the typed value already carried keeps exactly the value it
+// had, and the keys the typed struct does not model (custom fields among them)
+// are added. Falls back to the typed value alone when full is nil.
+func rawWithUnmodeled(typed any, full map[string]any) map[string]any {
+	if len(full) == 0 {
+		return marshalToMap(typed)
+	}
+	out := make(map[string]any, len(full))
+	for k, v := range full {
+		out[k] = v
+	}
+	for k, v := range marshalToMap(typed) {
+		out[k] = v
+	}
+	return out
+}

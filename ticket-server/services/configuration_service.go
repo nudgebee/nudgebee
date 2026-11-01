@@ -27,6 +27,7 @@ import (
 	"nudgebee/tickets-server/services/cache"
 	ticketmgr "nudgebee/tickets-server/services/ticket"
 	"nudgebee/tickets-server/services/tools"
+	"nudgebee/tickets-server/utils"
 )
 
 // createMetaNamespace is the cache namespace for create-meta blobs, keyed by
@@ -277,7 +278,7 @@ func quickValidateGitLab(configuration models.TicketConfigurations) error {
 
 func quickValidateServiceNow(ctx context.Context, configuration models.TicketConfigurations) error {
 	cred := credentials.NewBasicProvider(configuration.Username, configuration.Password)
-	baseURL := "https://" + strings.TrimPrefix(configuration.URL, "https://")
+	baseURL := utils.NormalizeServiceNowBaseURL(configuration.URL)
 	client, err := servicenowsdkgo.NewServiceNowServiceClient(
 		servicenowsdkgo.WithAuthenticationProvider(cred),
 		servicenowsdkgo.WithURL(baseURL),
@@ -294,8 +295,9 @@ func quickValidateServiceNow(ctx context.Context, configuration models.TicketCon
 	}
 	if _, err := tableBuilder.Get(ctx, getConfig); err != nil {
 		// The servicenow-sdk-go library has no error factory for non-2xx
-		// statuses, so its raw error reads "no error factory is registered
-		// for this code: 401". Surface a user-actionable message instead.
+		// statuses or HTML responses (e.g. SSO redirects), so its raw error
+		// reads "no error factory is registered for this code" or "content type text/html does not have a factory registered".
+		// Surface a user-actionable message instead.
 		return interpretServiceNowError(err)
 	}
 	return nil
@@ -313,6 +315,8 @@ func interpretServiceNowError(err error) error {
 		return fmt.Errorf("servicenow authentication failed: user lacks permission to read the incident table")
 	case strings.Contains(msg, "404"):
 		return fmt.Errorf("servicenow connection failed: instance URL not found (check the URL field)")
+	case strings.Contains(msg, "text/html") || strings.Contains(msg, "factory registered"):
+		return fmt.Errorf("servicenow connection failed: received HTML response instead of JSON (check instance URL, SSO, or proxy configuration)")
 	default:
 		return fmt.Errorf("servicenow auth failed: %w", err)
 	}
@@ -676,7 +680,7 @@ func validateGithubConfigurationAndReturnMetadata(ctx context.Context, configura
 
 func validateServiceNowConfigurationAndReturnMetadata(ctx context.Context, configuration models.TicketConfigurations) ([]map[string]interface{}, error) {
 	cred := credentials.NewBasicProvider(configuration.Username, configuration.Password)
-	baseURL := "https://" + strings.TrimPrefix(configuration.URL, "https://")
+	baseURL := utils.NormalizeServiceNowBaseURL(configuration.URL)
 	client, err := servicenowsdkgo.NewServiceNowServiceClient(
 		servicenowsdkgo.WithAuthenticationProvider(cred),
 		servicenowsdkgo.WithURL(baseURL),
@@ -695,8 +699,9 @@ func validateServiceNowConfigurationAndReturnMetadata(ctx context.Context, confi
 		QueryParameters: &tableapi.TableRequestBuilder2GetQueryParameters{Limit: 1},
 	}
 	if _, err := tableBuilder.Get(ctx, getConfig); err != nil {
-		slog.Error("Failed to query ServiceNow table", "error", err)
-		return nil, err
+		interpretedErr := interpretServiceNowError(err)
+		slog.Error("Failed to query ServiceNow table", "error", interpretedErr)
+		return nil, interpretedErr
 	}
 
 	return []map[string]interface{}{

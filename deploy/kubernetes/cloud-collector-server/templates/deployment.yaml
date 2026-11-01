@@ -97,8 +97,9 @@ spec:
               path: /livez
               port: http
             # /livez fails only when the MQ heartbeat has been stale longer than its
-            # 120s timeout. Keep the probe conservative so a brief broker blip does
-            # not restart the pod: ~90s of failing checks (3 x 30s) are required.
+            # 120s timeout while the broker connection is up; a broker outage never
+            # fails it. Keep the probe conservative so a brief blip does not restart
+            # the pod: ~90s of failing checks (3 x 30s) are required.
             initialDelaySeconds: 60
             periodSeconds: 30
             timeoutSeconds: 5

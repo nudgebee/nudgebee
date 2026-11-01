@@ -48,6 +48,8 @@ export function formatStat(value: number | undefined, unit?: string): string {
 export interface ChipsLegendOptions {
   /** Suffixed to every number in the detail strip, e.g. `cores`, `MB`. */
   unit?: string;
+  /** Formats every number in the detail strip, unit included; replaces `unit` when given. */
+  format?: (value: number) => string;
 }
 
 /** The columns of the detail strip, in the order the old legend printed them. */
@@ -117,7 +119,7 @@ function scaffold(container: HTMLElement): { chips: HTMLElement; detail: HTMLEle
 }
 
 /** Fills the strip with one series' name and numbers. */
-function renderDetail(detail: HTMLElement, entry: LegendEntry | undefined, unit?: string): void {
+function renderDetail(detail: HTMLElement, entry: LegendEntry | undefined, options: ChipsLegendOptions): void {
   detail.textContent = '';
   if (!entry) return;
 
@@ -150,7 +152,8 @@ function renderDetail(detail: HTMLElement, entry: LegendEntry | undefined, unit?
     style(heading, { fontSize: '10px', color: ds.gray[500] });
 
     const value = document.createElement('span');
-    value.textContent = formatStat(entry.stats?.[column.key], unit);
+    const stat = entry.stats?.[column.key];
+    value.textContent = options.format && stat !== undefined && Number.isFinite(stat) ? options.format(stat) : formatStat(stat, options.unit);
     style(value, { fontFamily: ds.font.mono, fontSize: ds.text.caption, fontWeight: ds.weight.semibold, color: ds.gray[700] });
 
     cell.appendChild(heading);
@@ -240,7 +243,7 @@ export function chipsLegendPlugin(containerId: string, options: ChipsLegendOptio
           chip.style.borderColor = ds.blue[500];
           chip.style.background = ds.blue[100];
         }
-        renderDetail(detail, entry, options.unit);
+        renderDetail(detail, entry, options);
       };
 
       for (const entry of entries) {
@@ -257,7 +260,7 @@ export function chipsLegendPlugin(containerId: string, options: ChipsLegendOptio
       }
 
       chips.onmouseleave = () => focus(fallback, null);
-      renderDetail(detail, fallback, options.unit);
+      renderDetail(detail, fallback, options);
     },
   };
 }

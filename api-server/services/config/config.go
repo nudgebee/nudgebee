@@ -70,7 +70,10 @@ type appConfig struct {
 	ServiceDBIdleMinutes            int    `mapstructure:"app_database_idle_minutes"`
 	ServiceDBConnMaxLifetimeMinutes int    `mapstructure:"app_database_conn_max_lifetime_minutes"`
 	ServiceDBQueryTimeoutSeconds    int    `mapstructure:"app_database_query_timeout_seconds"`
-	ServiceEndpoint                 string `mapstructure:"service_api_server_url"`
+	// ServiceDBQueryCancelOnDisconnect stops a table query when the caller that asked
+	// for it goes away. Off by default; see sqlQueryParent in query/sql.go.
+	ServiceDBQueryCancelOnDisconnect bool   `mapstructure:"app_database_query_cancel_on_disconnect"`
+	ServiceEndpoint                  string `mapstructure:"service_api_server_url"`
 
 	NudgebeeEncryptionKey string `mapstructure:"nudgebee_encryption_key"`
 
@@ -145,6 +148,10 @@ type appConfig struct {
 
 	RelayServerEndpoint  string `mapstructure:"relay_server_endpoint"`
 	RelayServerSecretKey string `mapstructure:"relay_server_secret_key"`
+	// RelayMaxResponseBytes caps how much of one relay response is read. A response
+	// is decoded into generic maps, which costs several times its size in memory, so
+	// an oversized one is rejected instead of read. 0 or less disables the cap.
+	RelayMaxResponseBytes int64 `mapstructure:"relay_max_response_bytes"`
 
 	VulnMatcherServerEndpoint string `mapstructure:"vuln_matcher_server_endpoint"`
 
@@ -296,6 +303,13 @@ type appConfig struct {
 	// will ever reach them otherwise (issue #36597). Default on: the current
 	// always-open behavior is the bug.
 	FeatureEventPointInTimeCloseEnabled bool `mapstructure:"feature_event_point_in_time_close_enabled"`
+
+	// When true, a Kubernetes anomaly that fires again after it had cleared is
+	// announced in the next anomaly digest, labelled "returned" (issue #40007).
+	// The producer reads the stored status before its upsert to tell a return
+	// from the hourly re-detection of an open anomaly, which stays silent.
+	// Default off.
+	FeatureAnomalyReturnedDigestEnabled bool `mapstructure:"feature_anomaly_returned_digest_enabled"`
 
 	// Triage scoring: when true, ComputeScore uses the LLM-verdict-per-class + deterministic
 	// policy path instead of the legacy severity*env formula. Default off (legacy formula).
@@ -472,6 +486,7 @@ func init() {
 	viper.SetDefault("app_database_idle_minutes", "5")
 	viper.SetDefault("app_database_conn_max_lifetime_minutes", "15")
 	viper.SetDefault("app_database_query_timeout_seconds", "120")
+	viper.SetDefault("app_database_query_cancel_on_disconnect", "false")
 	viper.SetDefault("nudgebee_encryption_key", "")
 
 	viper.SetDefault("rabbit_mq_notifications_queue", "notifications")
@@ -495,8 +510,9 @@ func init() {
 
 	viper.SetDefault("relay_server_endpoint", "http://localhost:52832")
 	viper.SetDefault("relay_server_secret_key", "")
+	viper.SetDefault("relay_max_response_bytes", 64<<20)
 
-	viper.SetDefault("vuln_matcher_server_endpoint", "http://vuln-matcher-server:8080")
+	viper.SetDefault("vuln_matcher_server_endpoint", "http://vulnerability-server:8080")
 
 	viper.SetDefault("git_commit_nudgebee_user", "Nudgebee Bot")
 	viper.SetDefault("git_commit_nudgebee_user_email", "")
@@ -576,6 +592,9 @@ func init() {
 	viper.SetDefault("nb_anomaly_evaluation_hours", 1)
 
 	viper.SetDefault("feature_event_point_in_time_close_enabled", true)
+	// Off by default, but declared: Unmarshal skips a key with no default, so
+	// without this line the environment variable could never turn it on.
+	viper.SetDefault("feature_anomaly_returned_digest_enabled", false)
 	viper.SetDefault("feature_kg_cloud_topology_from_db", true)
 	viper.SetDefault("feature_kg_cfn_stack_resources_from_db", true)
 	viper.SetDefault("webhook_async_execution", true)

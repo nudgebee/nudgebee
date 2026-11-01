@@ -4,6 +4,7 @@ import CustomTable from '@shared/tables/CustomTable';
 import ListingLayout from '@ui/ListingLayout';
 import SearchInput from '@ui/SearchInput';
 import { Label } from '@ui/Label';
+import { Chip } from '@ui/Chip';
 import { Button } from '@ui/Button';
 import Datetime from '@shared/format/Datetime';
 import DownloadButton from '@shared/buttons/DownloadButton';
@@ -30,6 +31,10 @@ const statusTone = (status?: string) => {
 
 interface VmInventoryProps {
   accountId: string;
+  /** Scope the list to just the VMs one CVE affects — set when arriving from a CVE deep link (Optimize card, top-CVE summary cards, …). */
+  vulnId?: string;
+  scopeLabel?: string;
+  onClearScope?: () => void;
 }
 
 /**
@@ -40,7 +45,7 @@ interface VmInventoryProps {
  * with those columns blank rather than being hidden, because "known asset, never
  * scanned" is exactly the state this page exists to surface.
  */
-const VmInventory = ({ accountId }: VmInventoryProps) => {
+const VmInventory = ({ accountId, vulnId, scopeLabel, onClearScope }: VmInventoryProps) => {
   const [loading, setLoading] = useState(false);
   const [vms, setVms] = useState<VmResource[]>([]);
   const [total, setTotal] = useState(0);
@@ -52,20 +57,57 @@ const VmInventory = ({ accountId }: VmInventoryProps) => {
   const [appliedSearch, setAppliedSearch] = useState('');
   const [scanTarget, setScanTarget] = useState<VmResource | null>(null);
   const [showAccountScan, setShowAccountScan] = useState(false);
+  const [scopedResourceIds, setScopedResourceIds] = useState<string[] | null>(null);
   const { page, rowsPerPage, changePage, setPage } = usePagination();
   const beginVmsRequest = useLatestRequest();
   const beginEnrichmentRequest = useLatestRequest();
+  const beginScopeRequest = useLatestRequest();
 
   const canScan = hasWriteAccess(accountId);
 
+  // A vulnId scope names a CVE, not a VM — resolve which machines it actually
+  // sits on first, then fetch exactly those (below) instead of paging the fleet.
+  useEffect(() => {
+    if (!accountId || !vulnId) {
+      setScopedResourceIds(null);
+      return;
+    }
+    const isLatest = beginScopeRequest();
+    apiVm
+      .listVulnerabilityGroups({ accountId, grouping: 'vm', vulnId, includeTotal: false, limit: 500 })
+      .then(({ rows }) => {
+        if (!isLatest()) return;
+        setScopedResourceIds(rows.map((row) => row.key).filter(Boolean));
+      })
+      .catch((error) => {
+        if (!isLatest()) return;
+        console.error('Failed to resolve VMs for vulnerability scope:', error);
+        setScopedResourceIds([]);
+      });
+  }, [accountId, vulnId, beginScopeRequest]);
+
   const fetchVms = useCallback(() => {
     if (!accountId) return;
+    // Scope resolution above hasn't landed yet — wait for it rather than fetching an empty/unscoped page first.
+    if (vulnId && !scopedResourceIds) return;
+    // vulnId was just cleared but the scope-resolution effect hasn't reset scopedResourceIds
+    // yet — wait for that reset instead of fetching the whole unscoped fleet twice.
+    if (!vulnId && scopedResourceIds !== null) return;
+    // Resolved and empty (the CVE no longer sits on any VM) — an empty `resourceIds` filter
+    // is a no-op in listVms, which would silently fall back to the whole fleet.
+    if (vulnId && scopedResourceIds?.length === 0) {
+      setVms([]);
+      setTotal(0);
+      return;
+    }
     setLoading(true);
     // Paging or searching faster than the previous response arrives would
     // otherwise let the older result land last and show the wrong page.
     const isLatest = beginVmsRequest();
-    apiVm
-      .listVms({ accountId, search: appliedSearch, limit: rowsPerPage, offset: page * rowsPerPage })
+    const request = vulnId
+      ? apiVm.listVms({ accountId, resourceIds: scopedResourceIds || [], limit: (scopedResourceIds || []).length || 1 })
+      : apiVm.listVms({ accountId, search: appliedSearch, limit: rowsPerPage, offset: page * rowsPerPage });
+    request
       .then(({ rows, total: count }) => {
         if (!isLatest()) return;
         setVms(rows);
@@ -80,7 +122,7 @@ const VmInventory = ({ accountId }: VmInventoryProps) => {
       .finally(() => {
         if (isLatest()) setLoading(false);
       });
-  }, [accountId, appliedSearch, page, rowsPerPage, beginVmsRequest]);
+  }, [accountId, appliedSearch, page, rowsPerPage, beginVmsRequest, vulnId, scopedResourceIds]);
 
   // Enrichment is account-wide (one grouping query each), not per page of rows,
   // so it does not refetch as the operator pages through the table.
@@ -147,7 +189,9 @@ const VmInventory = ({ accountId }: VmInventoryProps) => {
   }, [pollDeadline, fetchEnrichment]);
 
   const onSearchEnter = () => {
-    setAppliedSearch(searchInput);
+    // Pasted text often carries a stray space, which the substring match would
+    // otherwise treat as part of the name and find nothing.
+    setAppliedSearch(searchInput.trim());
     setPage(0);
   };
 
@@ -206,20 +250,28 @@ const VmInventory = ({ accountId }: VmInventoryProps) => {
             </Box>
           }
         >
-          <SearchInput
-            id='vm-inventory-search'
-            label='Search By Name Or Resource ID'
-            value={searchInput}
-            onChange={(next: string) => {
-              if (searchInput !== '' && next === '') {
-                setAppliedSearch('');
-                setPage(0);
-              }
-              setSearchInput(next);
-            }}
-            onEnterPress={onSearchEnter}
-            onClear={onSearchClear}
-          />
+          {vulnId ? (
+            scopeLabel && (
+              <Chip variant='filter' size='sm' tone='info' onDismiss={onClearScope} sx={{ alignSelf: 'center' }}>
+                {scopeLabel}
+              </Chip>
+            )
+          ) : (
+            <SearchInput
+              id='vm-inventory-search'
+              label='Search By Name Or Resource ID'
+              value={searchInput}
+              onChange={(next: string) => {
+                if (searchInput !== '' && next === '') {
+                  setAppliedSearch('');
+                  setPage(0);
+                }
+                setSearchInput(next);
+              }}
+              onEnterPress={onSearchEnter}
+              onClear={onSearchClear}
+            />
+          )}
         </ListingLayout.Toolbar>
 
         <ListingLayout.Body>
@@ -233,6 +285,7 @@ const VmInventory = ({ accountId }: VmInventoryProps) => {
             totalRows={total}
             onPageChange={changePage}
             showExpandable={true}
+            expandAllInitially={Boolean(vulnId)}
             emptyHeading='No virtual machines yet'
             emptySubHeading='VMs appear here once a proxy agent has reported them for this account.'
             showUpdatedEmptyData={true}

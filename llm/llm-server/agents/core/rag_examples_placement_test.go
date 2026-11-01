@@ -38,28 +38,32 @@ func stubRAGServer(t *testing.T) *int32 {
 
 // RAG examples depend on the query, so for the ReAct planners they must stay out
 // of the system prompt (a stable cacheable prefix) and ride in the human message.
-func TestRAGExamples_KeptOutOfReActSystemPrompt(t *testing.T) {
+func TestMoveRAGExamplesToHumanMessage(t *testing.T) {
 	calls := stubRAGServer(t)
-	p := NBAgentPrompt{Role: "an events analyst", Rag: NBAgentPromptRag{Module: "events"}}
-	render := func(q string, prompt NBAgentPrompt) string {
-		s, err := GetPromptTemplate(prompt, NBAgentRequest{Query: q, AccountId: "acc-1"}, AgentPlannerTypeReAct3).Format(map[string]any{})
+	base := NBAgentPrompt{Role: "an events analyst", Rag: NBAgentPromptRag{Module: "events"}}
+	systemFor := func(q string, plannerType AgentPlannerType) (string, NBAgentRequest) {
+		p, req := moveRAGExamplesToHumanMessage(base, NBAgentRequest{Query: q, AccountId: "acc-1"}, plannerType)
+		s, err := GetPromptTemplate(p, req, plannerType).Format(map[string]any{})
 		require.NoError(t, err)
-		return s
+		return s, req
 	}
 
-	// The executor renders the ReAct system prompt with Rag cleared.
-	systemPrompt := p
-	systemPrompt.Rag = NBAgentPromptRag{}
-	a, b := render("pod crashloop", systemPrompt), render("disk pressure", systemPrompt)
-	assert.Equal(t, a, b, "system prompt must not vary with the query")
-	assert.NotContains(t, a, "<rag_examples>")
-	assert.Zero(t, atomic.LoadInt32(calls), "no RAG lookup when the examples go to the human message")
+	t.Run("react planners", func(t *testing.T) {
+		a, reqA := systemFor("pod crashloop", AgentPlannerTypeReAct3)
+		b, reqB := systemFor("disk pressure", AgentPlannerTypeReAct3)
+		assert.Equal(t, a, b, "system prompt must not vary with the query")
+		assert.NotContains(t, a, "example for")
+		assert.Contains(t, reqA.RAGExamples, "<rag_examples>")
+		assert.Contains(t, reqA.RAGExamples, "example for pod crashloop")
+		assert.Contains(t, reqB.RAGExamples, "example for disk pressure")
+		assert.Equal(t, int32(2), atomic.LoadInt32(calls), "one lookup per query")
+	})
 
-	assert.Contains(t, render("pod crashloop", p), "example for pod crashloop", "GetPromptTemplate callers keep the examples")
-
-	examples := renderRAGExamples(p, NBAgentRequest{Query: "pod crashloop", AccountId: "acc-1"}, AgentPlannerTypeReAct3)
-	assert.Contains(t, examples, "<rag_examples>")
-	assert.Contains(t, examples, "example for pod crashloop")
+	t.Run("other planner types keep them in the system prompt", func(t *testing.T) {
+		s, req := systemFor("pod crashloop", AgentPlannerTypeTool)
+		assert.Contains(t, s, "example for pod crashloop")
+		assert.Empty(t, req.RAGExamples)
+	})
 }
 
 func TestRAGExamples_RenderedInHumanMessage(t *testing.T) {

@@ -4797,6 +4797,19 @@ actions:
       - role: k8s_namespace_admin
       - role: account_admin
       - role: tenant_admin
+  - name: security_list_vm_scan_datasources
+    comment: List the discovery datasources a single-VM scan can run through for an account
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/recommendation'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: k8s_namespace_admin
+      - role: account_admin
+      - role: tenant_admin
   - name: slo_config_create
     comment: Create an SLO configuration
     definition:
@@ -4906,6 +4919,20 @@ actions:
       - role: account_admin
   - name: spend_groupings_v2
     comment: Aggregate cloud spend grouped by service, account and time
+    definition:
+      kind: "synchronous"
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/query'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+  - name: spend_currency_v2
+    comment: Currency of one cloud account's spend, read from its first spend row
     definition:
       kind: "synchronous"
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/query'
@@ -5724,7 +5751,7 @@ actions:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
   # Session revocation actions are server-only — invoked by NextAuth signOut /
-  # /api/auth/revoke / authenticateRequest via bypassGraphQLAsServer (which
+  # authenticateRequest via bypassGraphQLAsServer (which
   # synthesises super_admin). No `permissions` block by design: a frontend
   # caller must never be able to forge a revocation for another user, and the
   # cookie-flow denylist check would loop if it required user auth.
@@ -7412,6 +7439,7 @@ custom_types:
     - name: security_scan_vm_input
     - name: security_scan_vm_account_input
     - name: security_list_vm_scan_statuses_input
+    - name: security_list_vm_scan_datasources_input
     - name: tenant_user_roles_upsert_one_input
     - name: tenant_group_roles_upsert_one_input
     - name: account_user_roles_upsert_one_input
@@ -7851,6 +7879,7 @@ custom_types:
     - name: security_scan_vm_output
     - name: security_scan_vm_account_output
     - name: security_list_vm_scan_statuses_output
+    - name: security_list_vm_scan_datasources_output
     - name: tenant_user_roles_upsert_one_output
     - name: tenant_group_roles_upsert_one_output
     - name: account_user_roles_upsert_one_output

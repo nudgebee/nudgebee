@@ -68,6 +68,7 @@ type serviceDependencyGraphToolInput struct {
 }
 
 func (m ServiceDependencyGraphTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	nbRequestContext = nbRequestContext.ForTarget()
 	nbRequestContext.Ctx.GetLogger().Info("traces: executing getTraces tool call", "input", slog.AnyValue(input))
 
 	depInput := serviceDependencyGraphToolInput{}

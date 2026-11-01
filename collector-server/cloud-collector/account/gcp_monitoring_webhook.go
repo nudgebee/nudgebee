@@ -1,8 +1,10 @@
 package account
 
 import (
+	"encoding/json"
 	"fmt"
 	"nudgebee/collector/cloud/common"
+	"nudgebee/collector/cloud/providers"
 	"nudgebee/collector/cloud/providers/gcloud"
 	"nudgebee/collector/cloud/security"
 	"time"
@@ -42,6 +44,80 @@ func SetupGCPMonitoringWebhook(ctx *security.RequestContext, accountId, webhookU
 
 	tenantId := ctx.GetSecurityContext().GetTenantId()
 	return gcloud.SetupWebhookNotificationChannel(ctx, account, tenantId, webhookUrl)
+}
+
+// GCPWebhookEvent is the event row polling would store for a GCP Monitoring incident.
+// api-server ingests webhook deliveries itself but takes their identity from here, so a
+// pushed incident and a polled one agree on every field enrichment, dedup and resolve
+// key on.
+type GCPWebhookEvent struct {
+	Title            string            `json:"title"`
+	Description      string            `json:"description"`
+	AggregationKey   string            `json:"aggregation_key"`
+	SubjectName      string            `json:"subject_name"`
+	SubjectType      string            `json:"subject_type"`
+	SubjectNamespace string            `json:"subject_namespace"`
+	ServiceKey       string            `json:"service_key"`
+	Fingerprint      string            `json:"fingerprint"`
+	FindingId        string            `json:"finding_id"`
+	CloudResourceId  string            `json:"cloud_resource_id"`
+	Priority         string            `json:"priority"`
+	Status           string            `json:"status"`
+	Labels           map[string]string `json:"labels"`
+}
+
+// NormalizeGCPMonitoringWebhook converts a GCP Monitoring webhook body into the event row
+// polling would store for the same incident, linked to its cloud resource the same way.
+// It stores nothing.
+func NormalizeGCPMonitoringWebhook(ctx *security.RequestContext, accountId string, body []byte) (GCPWebhookEvent, error) {
+	account, provider, err := getAccount(ctx, accountId)
+	if err != nil {
+		return GCPWebhookEvent{}, err
+	}
+	if provider != "GCP" {
+		return GCPWebhookEvent{}, fmt.Errorf("account %s is not a GCP account", accountId)
+	}
+
+	event, err := gcloud.ConvertWebhookIncident(ctx, account, body)
+	if err != nil {
+		return GCPWebhookEvent{}, err
+	}
+	row, err := gcpWebhookEventRow(ctx, event, account, accountId)
+	if err != nil {
+		return GCPWebhookEvent{}, err
+	}
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return GCPWebhookEvent{}, err
+	}
+	linkCloudResourceIds(ctx, dbms, []map[string]any{row}, accountId)
+	return gcpWebhookEventFromRow(row)
+}
+
+// gcpWebhookEventRow runs the polling path's own row mapping rather than restating it,
+// so the two cannot drift apart again.
+func gcpWebhookEventRow(ctx *security.RequestContext, event providers.Event, account providers.Account, accountId string) (map[string]any, error) {
+	row, err := prepareEventForDB(ctx, event, account, accountId)
+	if err != nil {
+		return nil, err
+	}
+	// Set by insertNewEvents, not prepareEventForDB.
+	row["finding_id"] = event.FiringFindingID()
+	return row, nil
+}
+
+func gcpWebhookEventFromRow(row map[string]any) (GCPWebhookEvent, error) {
+	// Round-trip through JSON: the row holds pointers (description, cloud_resource_id)
+	// and typed enums.
+	raw, err := json.Marshal(row)
+	if err != nil {
+		return GCPWebhookEvent{}, err
+	}
+	var out GCPWebhookEvent
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return GCPWebhookEvent{}, err
+	}
+	return out, nil
 }
 
 // SyncGCPMonitoringWebhooks syncs webhook notification channels for all GCP accounts

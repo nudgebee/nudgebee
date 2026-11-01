@@ -120,7 +120,6 @@ func TestShellAwsUsesShimWithoutWorkspaceCredentials(t *testing.T) {
 	require.Equal(t, "aws-prod", capture.env[workspace.ENV_NB_TOOL_CONFIG_NAME], "the shim receives the per-call default; an explicit profile can still override it")
 	require.Equal(t, "aws --profile aws-demo sts get-caller-identity", capture.command)
 	require.Equal(t, "shell_execute@aws-demo", ShellTool{}.ConfirmationKey(`{"command":"aws --profile aws-demo s3 rm s3://b/k"}`))
-
 	t.Run("explicit account argument sets target environment", func(t *testing.T) {
 		capture := &targetWorkspaceCapture{}
 		tool := ShellTool{AccountId: account, workspaceManager: capture}

@@ -4,6 +4,8 @@ Configuration classes for RAG server.
 Contains all configuration classes loaded from environment variables.
 """
 
+import logging
+import math
 import os
 import tempfile
 from enum import Enum
@@ -11,6 +13,43 @@ from enum import Enum
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _int_env(name: str, default: int) -> int:
+    """Read an int setting without letting a bad value stop the service.
+
+    These are cache settings, and the cache is optional -- a typo in one
+    should degrade it, not prevent rag-server from starting, which is what
+    a bare int() at class-body scope did.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logging.getLogger(__name__).error("config: %s is %r, which is not a number; using %d", name, raw, default)
+        return default
+
+
+def _float_env(name: str, default: float) -> float:
+    """Read a float setting without letting a bad value stop the service.
+
+    Rejects NaN and infinities too: both compare in ways that silently break
+    the timeout arithmetic downstream rather than failing visibly.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        logging.getLogger(__name__).error("config: %s is %r, which is not a number; using %s", name, raw, default)
+        return default
+    if not math.isfinite(value):
+        logging.getLogger(__name__).error("config: %s is %r, which is not finite; using %s", name, raw, default)
+        return default
+    return value
 
 
 class DBConfig:
@@ -63,6 +102,23 @@ class Config:
     search_max_workers = int(
         os.environ.get("RAG_SEARCH_MAX_WORKERS", 8)
     )  # thread pool size for parallel collection search
+    collection_metadata_max_workers = max(
+        1, int(os.environ.get("RAG_COLLECTION_METADATA_MAX_WORKERS", 16))
+    )  # thread pool size for the collection-list metadata refresh; 1 disables concurrency
+
+    # Cache backend. "redis" shares cached state across restarts and replicas;
+    # anything else keeps it in process memory. These four variable names match
+    # llm-server's, because they already arrive in rag-server's environment via
+    # the shared `nudgebee` secret -- no deployment change is needed to use them.
+    # Redis holds no credentials: see rag/core/cache_backend.py.
+    cache_provider = os.environ.get("CACHE_PROVIDER", "in_memory").strip().lower()
+    cache_redis_host = os.environ.get("REDIS_SERVER_HOST", "").strip()
+    cache_redis_port = _int_env("REDIS_SERVER_PORT", 6379)
+    cache_redis_username = os.environ.get("REDIS_USER_NAME", "").strip()
+    cache_redis_password = os.environ.get("REDIS_USER_PASSWORD", "")
+    cache_redis_timeout_seconds = _float_env("RAG_CACHE_REDIS_TIMEOUT_SECONDS", 2.0)
+    # How long a retired Redis is left alone before one call probes it again.
+    cache_redis_retry_after_seconds = _float_env("RAG_CACHE_REDIS_RETRY_AFTER_SECONDS", 60.0)
     reranking_enabled = os.environ.get("RAG_RERANKING_ENABLED", "false").lower() == "true"  # LLM reranking default
 
     # Figures described in parallel during a knowledge-base load. Bounded because
@@ -170,6 +226,7 @@ class Config:
     embeddings_api_key = os.environ.get("EMBEDDINGS_PROVIDER_API_KEY", "")
     embeddings_api_version = os.environ.get("EMBEDDINGS_PROVIDER_API_VERSION", "")  # Azure - '2023-05-15'
     embeddings_api_type = os.environ.get("EMBEDDINGS_PROVIDER_API_TYPE", "")
+    embeddings_api_style = os.environ.get("EMBEDDINGS_PROVIDER_API_STYLE", "")  # Azure - 'v1' (default) or 'classic'
     embeddings_region = os.environ.get("EMBEDDINGS_PROVIDER_REGION", "us-west-2")
 
     # Embedding output dimensions (Matryoshka truncation)
@@ -219,6 +276,10 @@ class Config:
     relay_server_secret = os.environ.get("RELAY_SERVER_SECRET_KEY", "")
     if not relay_server_secret:
         raise ValueError("RELAY_SERVER_SECRET_KEY environment variable not set")
+
+    # llm-server — used by platform_capability_sync.py. Optional: unset
+    # simply means platform_capability rows never populate.
+    llm_server_url = os.environ.get("LLM_SERVER_URL", "")
 
 
 class OTELConfig:

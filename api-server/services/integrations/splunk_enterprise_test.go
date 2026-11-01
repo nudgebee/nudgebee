@@ -159,6 +159,44 @@ func TestSplunkEnterprise_ConfigSchema_IndexAndAppHaveDefaults(t *testing.T) {
 	assert.Equal(t, SplunkEnterpriseDefaultApp, schema.Properties[SplunkEnterpriseConfigApp].Default)
 }
 
+// Every field ValidateConfig guards with IsSafeSplunkIndexName must be IsTestable.
+//
+// The dynamic form decides whether to re-validate an edit by asking whether any
+// is_testable field changed (shouldSkipValidation in IntegrationDynamicFormModal.jsx).
+// When nothing testable changed it sends skip_validation=true, and CreateIntegrationConfig
+// then skips ValidateConfig entirely -- so an index or app name edited on its own would be
+// persisted without the SPL-safety check, and without the probe's datatype check. These
+// names are interpolated into SPL as bare tokens and cannot be parameterized, so that is a
+// correctness and an injection hole at once.
+//
+// Asserting the whole guarded set, rather than the four names, means a fifth
+// SPL-interpolated field cannot be added to ValidateConfig without landing here too.
+func TestSplunkEnterprise_ConfigSchema_SPLInterpolatedFieldsAreTestable(t *testing.T) {
+	schema := SplunkEnterprise{}.ConfigSchema()
+	for _, key := range []string{
+		SplunkEnterpriseConfigLogIndex,
+		SplunkEnterpriseConfigMetricIndex,
+		SplunkEnterpriseConfigTraceIndex,
+		SplunkEnterpriseConfigApp,
+	} {
+		assert.True(t, schema.Properties[key].IsTestable,
+			"%s is validated by IsSafeSplunkIndexName, so it must be IsTestable or an edit to it skips validation", key)
+	}
+}
+
+// The connection fields were already testable; the index change must not have displaced them.
+func TestSplunkEnterprise_ConfigSchema_ConnectionFieldsStayTestable(t *testing.T) {
+	schema := SplunkEnterprise{}.ConfigSchema()
+	for _, key := range []string{
+		SplunkEnterpriseConfigURL,
+		SplunkEnterpriseConfigToken,
+		SplunkEnterpriseConfigUsername,
+		SplunkEnterpriseConfigPassword,
+	} {
+		assert.True(t, schema.Properties[key].IsTestable, "%s must stay IsTestable", key)
+	}
+}
+
 // ----- URL normalization ----------------------------------------------------
 
 // The port is the whole point for Splunk: 8089 is the management API and 8000 is the web

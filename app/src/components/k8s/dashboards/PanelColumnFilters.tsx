@@ -159,7 +159,10 @@ interface Props {
 const PanelColumnFilters: React.FC<Props> = ({ panelId, columns, filters, onChange, loadValues, scopeKey, openColumn }) => {
   if (filters.length === 0) return null;
   return (
-    <Box data-testid={`panel-filters-${panelId}`} sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: ds.space[1], px: 1.25, pt: 1 }}>
+    <Box
+      data-testid={`panel-filters-${panelId}`}
+      sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: ds.space[1], px: 1.25, pt: ds.space[2] }}
+    >
       {filters.map((filter) => {
         const column = columns.find((c) => c.name === filter.column);
         if (!column) return null;

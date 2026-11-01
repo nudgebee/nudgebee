@@ -9,11 +9,11 @@
 // CustomTable's column selector cannot hide, so all eight are asserted by name
 // rather than by position.
 export const INBOX_COLUMNS = [
-  "Severity",
+  "Triage Score",
+  "Source Severity",
   "Application",
   "Event Type",
   "Count",
-  "Triage Score",
   "Triage Status",
   "Alert Status",
   "Action",
@@ -36,7 +36,12 @@ export const ISSUE_TYPE_ALL = "All Issues";
 export const ISSUE_TYPE_NEW = "New Issues";
 export const ISSUE_TYPE_RECURRING = "Recurring Issues";
 
-// Severity filter options. 'High' is chosen for the filter test on purpose: the
+// Transition tolerance (#39806): the Severity column was renamed to "Source Severity",
+// but this suite also runs against dev before the rename deploys. The column assert
+// accepts either shape; collapse to just "Source Severity" in the cleanup PR.
+export const SEVERITY_COLUMN_SHAPES = ["Source Severity", "Severity"] as const;
+
+// Source Severity filter options. 'High' is chosen for the filter test on purpose: the
 // rendered severity is derived from distinct_priority with HIGH taking top
 // precedence (KubernetesGroupedEventsTable.tsx:137), so a group returned for
 // priority=HIGH always renders HIGH. Filtering a lower severity gives no such

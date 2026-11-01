@@ -65,6 +65,9 @@ func (m SignozExecuteTool) buildSignozAPI(nbRequestContext core.NbToolContext, a
 }
 
 func (m SignozExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	// A targeted child's call reads the target's account throughout (views,
+	// provider, routing), exactly as inside the metrics/traces sub-agents.
+	nbRequestContext = nbRequestContext.ForTarget()
 	nbRequestContext.Ctx.GetLogger().Info("signoz: executing logs tool call", "query", input.Command)
 	finalQuery := m.cleanupQuery(input.Command)
 	var result map[string]any

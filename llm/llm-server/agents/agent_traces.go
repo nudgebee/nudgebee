@@ -224,7 +224,10 @@ func (f *fallbackTracesAgent) GetSupportedTools(ctx *security.RequestContext) []
 	return supportedTools
 }
 
+func (f *fallbackTracesAgent) AcceptsExecutionTarget() {}
+
 func (f *fallbackTracesAgent) GetPlannerType() core.AgentPlannerType {
+
 	return core.AgentPlannerTypeCustom
 }
 
@@ -250,6 +253,7 @@ func (f *fallbackTracesAgent) Execute(ctx *security.RequestContext, query core.N
 			// "traces" via its lazy <skill-lists> + load_skills flow.
 			InheritSkillsFromAgents: append(query.InheritSkillsFromAgents, f.GetName()),
 			OriginalQuery:           query.OriginalQuery,
+			OriginalQueryFromUser:   query.OriginalQueryFromUser,
 			SelectedSkillIds:        query.SelectedSkillIds,
 			KnowledgePolicy:         string(query.KnowledgePolicy),
 			KnowledgePolicyResolved: query.KnowledgePolicyResolved,
@@ -442,13 +446,50 @@ func (m TracesAgentTool) InputSchema() toolcore.ToolSchema {
 				Type:        toolcore.ToolSchemaTypeString,
 				Description: "Time range for the query (e.g., '2d', '1w', '1h'). If provided, start_time is calculated relative to end_time.",
 			},
+			"target": toolcore.AgentTargetSchemaProperty(),
 		},
 		Required: []string{"command"},
 	}
 }
 
+func (m TracesAgentTool) PrepareDelegatedTargetInput(target *toolcore.ExecutionTarget, input string) (string, error) {
+	return tools.AddDelegatedTargetObject(input, target)
+}
+
 func (m TracesAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolcore.NBToolCallRequest) (toolcore.NBToolResponse, error) {
-	agent, err := getTracesAgent(nbRequestContext.Ctx, nbRequestContext.AccountId)
+	target, queryAccountId, err := tools.ResolveObservabilityTarget(nbRequestContext, input)
+	if err != nil {
+		return toolcore.NBToolResponse{
+			Status: toolcore.NBToolResponseStatusError,
+			Data:   err.Error(),
+		}, nil
+	}
+	if target != nil {
+		nbRequestContext.QueryConfig.DelegatedTarget = target
+		// The sub-agent writes its own query from the command text, which may
+		// still name the target; tell it the target is already the scope.
+		input.Context = strings.TrimSpace(input.Context + "\n" + target.ScopeNote())
+	}
+
+	provider, err := tools.GetTraceProvider(queryAccountId)
+	if target != nil {
+		if err != nil || provider.Provider == "" {
+			return toolcore.NBToolResponse{
+				Status: toolcore.NBToolResponseStatusError,
+				Data:   fmt.Sprintf("no traces provider configured for target %s %q (account %s); will not fall back to conversation origin account", target.Provider, target.Name, queryAccountId),
+			}, nil
+		}
+		if tools.IsCloudObservabilityProvider(target.Provider) {
+			if !strings.EqualFold(provider.Provider, target.Provider) && !tools.HasActiveCloudProvider(queryAccountId, target.Provider) {
+				return toolcore.NBToolResponse{
+					Status: toolcore.NBToolResponseStatusError,
+					Data:   fmt.Sprintf("target %s %q requires a %s traces provider, but found %q; will not fall back to conversation origin account", target.Provider, target.Name, target.Provider, provider.Provider),
+				}, nil
+			}
+		}
+	}
+
+	agent, err := getTracesAgent(nbRequestContext.Ctx, queryAccountId)
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Info("traces: unable to get tracesAgent", "error", err.Error())
 		return toolcore.NBToolResponse{}, err
@@ -460,6 +501,7 @@ func (m TracesAgentTool) Call(nbRequestContext toolcore.NbToolContext, input too
 	}
 
 	resp, err := core.ExecuteAgentToolCall(nbRequestContext, agent, input)
+
 	preambleResponse, preambleErr, handled := handleNestedAgentCallPreamble(nbRequestContext, resp, err, TracesAgentName)
 	if preambleErr != nil {
 		nbRequestContext.Ctx.GetLogger().Error("traces: unable to process events request", "error", err, "input", input)

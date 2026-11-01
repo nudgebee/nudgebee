@@ -37,23 +37,23 @@ const (
 )
 
 // datadogPerPodKeys are answered per pod and container rather than per workload.
-var datadogPerPodKeys = map[string]string{
-	"container_cpu_usage_by_pod":          datadogPerPodMetricCPU,
-	"container_memory_working_set_by_pod": datadogPerPodMetricMemory,
-	"container_cpu_request_by_pod":        datadogPerPodMetricCPURequest,
-	"container_cpu_limit_by_pod":          datadogPerPodMetricCPULimit,
-	"container_memory_request_by_pod":     datadogPerPodMetricMemoryRequest,
-	"container_memory_limit_by_pod":       datadogPerPodMetricMemoryLimit,
+var datadogPerPodKeys = map[UtilisationKey]string{
+	KeyContainerCPUUsageByPod:         datadogPerPodMetricCPU,
+	KeyContainerMemoryWorkingSetByPod: datadogPerPodMetricMemory,
+	KeyContainerCPURequestByPod:       datadogPerPodMetricCPURequest,
+	KeyContainerCPULimitByPod:         datadogPerPodMetricCPULimit,
+	KeyContainerMemoryRequestByPod:    datadogPerPodMetricMemoryRequest,
+	KeyContainerMemoryLimitByPod:      datadogPerPodMetricMemoryLimit,
 }
 
 // datadogUnanswerableKeys are keys Datadog cannot answer, and why. Kept as a list
 // rather than an absence so the reason reaches the caller: a key merely missing from
 // the builder is dropped from the response, which is indistinguishable from a
 // workload that used nothing.
-var datadogUnanswerableKeys = map[string]string{
-	"container_memory_max_usage_by_pod": "Datadog reports no cgroup high-water mark. " +
+var datadogUnanswerableKeys = map[UtilisationKey]string{
+	KeyContainerMemoryMaxUsageByPod: "Datadog reports no cgroup high-water mark. " +
 		"kubernetes.memory.working_set is a different number — answering with it would size a limit too low.",
-	"container_oomkilled_limit_by_pod": "Datadog reports no per-container terminated reason, so there is nothing " +
+	KeyContainerOOMKilledLimitByPod: "Datadog reports no per-container terminated reason, so there is nothing " +
 		"to join a memory limit against. kubernetes_state.container.restarts counts restarts of every cause — " +
 		"answering with it would report a limit for containers that were never OOM-killed.",
 
@@ -65,8 +65,8 @@ var datadogUnanswerableKeys = map[string]string{
 	// ship a conversion that is plausible and possibly wrong by a factor of the
 	// scrape interval, the key says it is unanswerable until the semantics are
 	// confirmed against Datadog's own metric metadata.
-	"network_receive_bytes_increase":  "Not implemented for Datadog: kubernetes.network.rx_bytes' rate-versus-total semantics are unconfirmed, and guessing decides the unit.",
-	"network_transmit_bytes_increase": "Not implemented for Datadog: kubernetes.network.tx_bytes' rate-versus-total semantics are unconfirmed, and guessing decides the unit.",
+	KeyNetworkReceiveBytesIncrease:  "Not implemented for Datadog: kubernetes.network.rx_bytes' rate-versus-total semantics are unconfirmed, and guessing decides the unit.",
+	KeyNetworkTransmitBytesIncrease: "Not implemented for Datadog: kubernetes.network.tx_bytes' rate-versus-total semantics are unconfirmed, and guessing decides the unit.",
 }
 
 // datadogRollupSecondsForPods picks the finest rollup whose response stays inside the
@@ -261,7 +261,7 @@ func datadogCollapseOverTime(results []QueryResult, meta RequestMetadata) {
 		// Every key collapses here now. Nothing is pushed down as a bucket the width
 		// of the window, and Datadog's source reads neither `instant` nor `step`, so
 		// everything arrives as a range whatever the caller asked for.
-		_, isPerPod := datadogPerPodKeys[results[i].QueryKey]
+		_, isPerPod := datadogPerPodKeys[UtilisationKey(results[i].QueryKey)]
 		for j := range results[i].Payload {
 			series := &results[i].Payload[j]
 			if len(series.Timestamps) == 0 {
@@ -384,7 +384,7 @@ func percentileOverTime(values []float64, quantile float64) (float64, bool) {
 // allocated.
 func datadogNoteUnanswerableKeys(results []QueryResult, requested []string) []QueryResult {
 	for _, key := range requested {
-		reason, unanswerable := datadogUnanswerableKeys[key]
+		reason, unanswerable := datadogUnanswerableKeys[UtilisationKey(key)]
 		if !unanswerable {
 			continue
 		}

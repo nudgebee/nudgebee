@@ -38,19 +38,19 @@ var datadogAPMOperationCandidates = []string{
 }
 
 // datadogHTTPKeys are the utilisation keys answered from APM trace metrics.
-var datadogHTTPKeys = map[string]bool{
-	"http_throughput":        true,
-	"http_latency_p95":       true,
-	"http_latency_p99":       true,
-	"http_latency_sum":       true,
-	"http_error_rate":        true,
-	"http_status":            true,
-	"http_max_response_time": true,
+var datadogHTTPKeys = map[UtilisationKey]bool{
+	KeyHTTPThroughput:      true,
+	KeyHTTPLatencyP95:      true,
+	KeyHTTPLatencyP99:      true,
+	KeyHTTPLatencySum:      true,
+	KeyHTTPErrorRate:       true,
+	KeyHTTPStatus:          true,
+	KeyHTTPMaxResponseTime: true,
 }
 
 func requestsDatadogHTTPKeys(keys []string) bool {
 	for _, k := range keys {
-		if datadogHTTPKeys[k] {
+		if datadogHTTPKeys[UtilisationKey(k)] {
 			return true
 		}
 	}
@@ -121,23 +121,23 @@ func buildDatadogHTTPQuery(key string, meta RequestMetadata) string {
 	metric := "trace." + op
 	scope := fmt.Sprintf("{service:%s}", service)
 	w := datadogRollupSeconds(meta.RangeWindow)
-	switch key {
-	case "http_throughput":
+	switch UtilisationKey(key) {
+	case KeyHTTPThroughput:
 		return fmt.Sprintf("sum:%s.hits%s by {resource_name}.as_count().rollup(sum, %d)", metric, scope, w)
-	case "http_latency_p95":
+	case KeyHTTPLatencyP95:
 		return fmt.Sprintf("p95:%s%s by {resource_name}.rollup(%d)", metric, scope, w)
-	case "http_latency_p99":
+	case KeyHTTPLatencyP99:
 		return fmt.Sprintf("p99:%s%s by {resource_name}.rollup(%d)", metric, scope, w)
-	case "http_latency_sum":
+	case KeyHTTPLatencySum:
 		return fmt.Sprintf("sum:%s%s by {resource_name}.rollup(sum, %d)", metric, scope, w)
-	case "http_error_rate":
+	case KeyHTTPErrorRate:
 		// Datadog counts a span as an error when the tracer marks it failed — in
 		// practice 5xx — so this reads lower than the Prometheus rate, which counts 4xx too.
 		return fmt.Sprintf("(sum:%s.errors%s by {resource_name}.as_count().rollup(sum, %d) / sum:%s.hits%s by {resource_name}.as_count().rollup(sum, %d)) * 100",
 			metric, scope, w, metric, scope, w)
-	case "http_status":
+	case KeyHTTPStatus:
 		return fmt.Sprintf("sum:%s.hits.by_http_status%s by {http.status_code}.as_rate()", metric, scope)
-	case "http_max_response_time":
+	case KeyHTTPMaxResponseTime:
 		return fmt.Sprintf("max:%s%s", metric, scope)
 	}
 	return ""
@@ -193,7 +193,7 @@ func datadogRollupSeconds(window string) int {
 // Only HTTP keys are touched; a user's own query is not.
 func datadogHTTPLabels(results []QueryResult) {
 	for i := range results {
-		if !datadogHTTPKeys[results[i].QueryKey] {
+		if !datadogHTTPKeys[UtilisationKey(results[i].QueryKey)] {
 			continue
 		}
 		for j := range results[i].Payload {

@@ -3,6 +3,7 @@ package observability
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -74,8 +75,29 @@ func TestNoisyNeighboursSaysTheNodeWasFineWhenItWas(t *testing.T) {
 }
 
 // A node committed to ~100% of allocatable is the condition the issue reports as
-// the norm: memory requests exceeded 95% of allocatable on 484 of 730 cards.
+// the norm: memory requests exceeded 95% of allocatable on 484 of 730 cards. It
+// explains the kill only on a node that actually ran out.
 func TestNoisyNeighboursReportsACommittedNode(t *testing.T) {
+	resp, err := noisyNeighboursResponse("api-1", "shop", nil, &noisyNeighbourData{
+		NodeName:        "node-a",
+		NodeUsed:        11 * 1024 * 1024 * 1024,
+		NodeAllocatable: 12 * 1024 * 1024 * 1024,
+		TotalRequested:  11.9 * 1024 * 1024 * 1024,
+		Neighbours:      []map[string]any{},
+		SubjectMeasured: true,
+	})
+	require.NoError(t, err)
+
+	insights := resp.GetInsights()
+	require.Len(t, insights, 1)
+	assert.Contains(t, insights[0].Message, "Node memory is committed to 99% of allocatable")
+	assert.Equal(t, "HIGH", insights[0].Severity)
+}
+
+// Requests are a scheduling reservation; the kernel does not enforce them. A
+// committed node with memory to spare had room for the pod to grow, so the card
+// must not tell the reader it had none.
+func TestNoisyNeighboursCommittedButIdleNodeWasNotShort(t *testing.T) {
 	resp, err := noisyNeighboursResponse("api-1", "shop", nil, &noisyNeighbourData{
 		NodeName:        "node-a",
 		NodeUsed:        6 * 1024 * 1024 * 1024,
@@ -88,8 +110,93 @@ func TestNoisyNeighboursReportsACommittedNode(t *testing.T) {
 
 	insights := resp.GetInsights()
 	require.Len(t, insights, 1)
-	assert.Contains(t, insights[0].Message, "Node memory is committed to 99% of allocatable")
-	assert.Equal(t, "HIGH", insights[0].Severity)
+	assert.Contains(t, insights[0].Message, "The node was not short of memory")
+	assert.Contains(t, insights[0].Message, "Requests reserve 99% of allocatable")
+	assert.NotContains(t, insights[0].Message, "no headroom")
+	assert.Equal(t, "INFO", insights[0].Severity)
+}
+
+// The case this was reported for: a pod OOM-killed on a node whose limits added
+// up to 209% of allocatable while the node used 8% of it. The card said the
+// kernel killed the pod to settle the oversubscription, and the investigation
+// repeated it as the root cause. Limits are a ceiling, not usage; with no
+// shortage and no other kill, the pod's own limit is the lead.
+func TestNoisyNeighboursOversubscriptionOnAnIdleNodeIsNotTheCause(t *testing.T) {
+	gib := float64(1024 * 1024 * 1024)
+	resp, err := noisyNeighboursResponse("api-1", "shop", nil, &noisyNeighbourData{
+		NodeName:        "node-a",
+		NodeUsed:        1.28 * gib,
+		NodeAllocatable: 16 * gib,
+		TotalRequested:  11.6 * gib,
+		TotalLimits:     33.44 * gib,
+		Neighbours:      []map[string]any{},
+		SubjectMeasured: true,
+	})
+	require.NoError(t, err)
+
+	insights := resp.GetInsights()
+	require.Len(t, insights, 1)
+	assert.Contains(t, insights[0].Message, "The node was not short of memory — it peaked at 8% of allocatable")
+	assert.Contains(t, insights[0].Message, "limits add up to 209% of allocatable (33.44 GiB)")
+	assert.Contains(t, insights[0].Message, "not what killed this pod")
+	assert.NotContains(t, insights[0].Message, "kernel resolves it by killing one")
+	assert.Equal(t, "INFO", insights[0].Severity)
+}
+
+// Limits over allocatable and requests near it are both highlighted on the card
+// and routinely true together; each gets its own "not the cause" explanation.
+func TestNoisyNeighboursIdleNodeExplainsBothReservationFigures(t *testing.T) {
+	gib := float64(1024 * 1024 * 1024)
+	resp, err := noisyNeighboursResponse("api-1", "shop", nil, &noisyNeighbourData{
+		NodeName:        "node-a",
+		NodeUsed:        4 * gib,
+		NodeAllocatable: 16 * gib,
+		TotalRequested:  15.5 * gib,
+		TotalLimits:     24 * gib,
+		Neighbours:      []map[string]any{},
+		SubjectMeasured: true,
+	})
+	require.NoError(t, err)
+
+	insights := resp.GetInsights()
+	require.Len(t, insights, 1)
+	assert.Contains(t, insights[0].Message, "The node was not short of memory")
+	assert.Contains(t, insights[0].Message, "limits add up to 150% of allocatable")
+	assert.Contains(t, insights[0].Message, "Requests reserve 97% of allocatable")
+	assert.Equal(t, "INFO", insights[0].Severity)
+}
+
+// Once the node did run out, oversubscription is how it got there and stays the
+// headline — whether the shortage shows in usage or in other pods dying with it.
+func TestNoisyNeighboursReportsOversubscriptionWhenTheNodeRanOut(t *testing.T) {
+	gib := float64(1024 * 1024 * 1024)
+	cases := map[string]*noisyNeighbourData{
+		"usage near allocatable": {
+			NodeUsed: 11 * gib, NodeAllocatable: 12 * gib, TotalRequested: 6 * gib, TotalLimits: 17.4 * gib,
+		},
+		"another pod killed on the node": {
+			NodeUsed: 6 * gib, NodeAllocatable: 12 * gib, TotalRequested: 6 * gib, TotalLimits: 17.4 * gib,
+			CoKilled: []coKilledPod{{PodName: "cache-0", Namespace: "shop", OffsetSeconds: -30}},
+		},
+	}
+	for name, d := range cases {
+		t.Run(name, func(t *testing.T) {
+			d.NodeName, d.Neighbours, d.SubjectMeasured = "node-a", []map[string]any{}, true
+			resp, err := noisyNeighboursResponse("api-1", "shop", nil, d)
+			require.NoError(t, err)
+
+			var found bool
+			for _, insight := range resp.GetInsights() {
+				assert.NotContains(t, insight.Message, "not short of memory")
+				if strings.Contains(insight.Message, "This node is oversubscribed") {
+					found = true
+					assert.Contains(t, insight.Message, "145% of allocatable")
+					assert.Equal(t, "HIGH", insight.Severity)
+				}
+			}
+			assert.True(t, found, "a node that ran out with limits over allocatable must say it is oversubscribed")
+		})
+	}
 }
 
 // The subject was absent from its own card on 494 of 730 cards because topk(15)

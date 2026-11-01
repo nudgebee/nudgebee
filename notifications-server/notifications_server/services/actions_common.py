@@ -35,6 +35,8 @@ from notifications_server.services.channel_ingest import ChannelIngestService
 from notifications_server.services.common import CommonService
 from notifications_server.services.events import Events, event_cache
 from notifications_server.services.messaging_installations import load_installation, load_installation_by_team
+from notifications_server.services.ms_teams.bot_installations import record_team_installations
+from notifications_server.services.ms_teams.bot_sender import forget_changed_channels
 from notifications_server.services.bot_messages import get_bot_joined_message
 from notifications_server.utils.action_requests import ActionRequestBody, verify_action_request
 from notifications_server.utils.transformer import SLACK_SIGNIN_SECRET, Transformer
@@ -52,6 +54,62 @@ SUPPRESS_DURATION_LABELS = {1: "1h", 4: "4h", 24: "24h", 168: "7d"}
 # Edits/deletes and our own replies must never be treated as a new DM question.
 _DM_IGNORED_SUBTYPES = {"message_changed", "message_deleted", "message_replied"}
 LOG = logging.getLogger(__name__)
+
+
+# Shared by the Slack and Microsoft Teams suppress actions.
+def can_manage_triage_rules(user_id, tenant_id, account_id):
+    try:
+        response = requests.post(
+            settings.services.api_server + ACCOUNT_SECURITY_CONTEXT,
+            json={"user_id": user_id, "tenant_id": tenant_id},
+            headers={"X-ACTION-TOKEN": settings.action_api_server_token},
+            timeout=10,
+        )
+        response.raise_for_status()
+        context = (response.json() or {}).get("context") or {}
+        if account_id not in (context.get("AccountIds") or []):
+            return False
+        return bool(set(context.get("Roles") or []) & SUPPRESS_ALLOWED_ROLES)
+    except Exception as e:
+        LOG.warning("Failed to check suppress permission for user %s: %s", user_id, e)
+        return False
+
+
+def build_suppress_rule_input(account_id, scope, fingerprint, alertname, until, name):
+    """The event_create_triage_rule input for a time-boxed suppression, or None
+    when the scope has nothing to match on."""
+    rule_input = {
+        "cloud_account_id": account_id,
+        "rule_type": "suppression",
+        "action": "suppress",
+        "effective_until": until.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "apply_to_existing": True,
+        "name": name,
+    }
+    if scope == "alertname" and alertname:
+        # match_alertname is evaluated as a regex against aggregation_key.
+        rule_input["match_alertname"] = f"^{re.escape(alertname)}$"
+    elif fingerprint:
+        rule_input["match_fingerprint"] = fingerprint
+    else:
+        return None
+    return rule_input
+
+
+def create_suppress_rule(tenant_id, user_id, rule_input):
+    """Creates the triage rule; True when api-server reports success."""
+    response = requests.post(
+        settings.services.api_server + "/rpc/triage",
+        json={
+            "action": {"name": "event_create_triage_rule"},
+            "input": rule_input,
+            "session_variables": {"tenant_id": tenant_id, "user_id": user_id},
+        },
+        headers={"X-ACTION-TOKEN": settings.action_api_server_token},
+        timeout=15,
+    )
+    response.raise_for_status()
+    return bool((response.json() or {}).get("success"))
 
 
 class SlackActionsBaseService:
@@ -458,34 +516,12 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
                 return self.reply_with_error(channel_id, team_id, message_ts, SUPPRESS_NOT_ALLOWED_MESSAGE)
 
             until = datetime.now(timezone.utc) + timedelta(hours=duration_hours)
-            rule_input = {
-                "cloud_account_id": account_id,
-                "rule_type": "suppression",
-                "action": "suppress",
-                "effective_until": until.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "apply_to_existing": True,
-                "name": f"Suppressed via Slack by {user_email}",
-            }
-            if scope == "alertname" and alertname:
-                # match_alertname is evaluated as a regex against aggregation_key.
-                rule_input["match_alertname"] = f"^{re.escape(alertname)}$"
-            elif fingerprint:
-                rule_input["match_fingerprint"] = fingerprint
-            else:
-                return self.reply_with_error(channel_id, team_id, message_ts, UNABLE_TO_PROCESS_REQUEST)
-
-            response = requests.post(
-                settings.services.api_server + "/rpc/triage",
-                json={
-                    "action": {"name": "event_create_triage_rule"},
-                    "input": rule_input,
-                    "session_variables": {"tenant_id": tenant_id, "user_id": user_id},
-                },
-                headers={"X-ACTION-TOKEN": settings.action_api_server_token},
-                timeout=15,
+            rule_input = build_suppress_rule_input(
+                account_id, scope, fingerprint, alertname, until, f"Suppressed via Slack by {user_email}"
             )
-            response.raise_for_status()
-            if not (response.json() or {}).get("success"):
+            if rule_input is None:
+                return self.reply_with_error(channel_id, team_id, message_ts, UNABLE_TO_PROCESS_REQUEST)
+            if not create_suppress_rule(tenant_id, user_id, rule_input):
                 return self.reply_with_error(channel_id, team_id, message_ts, UNABLE_TO_PROCESS_REQUEST)
 
             slack_user_id = data["user"]["id"]
@@ -517,21 +553,7 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
 
     @staticmethod
     def _can_manage_triage_rules(user_id, tenant_id, account_id):
-        try:
-            response = requests.post(
-                settings.services.api_server + ACCOUNT_SECURITY_CONTEXT,
-                json={"user_id": user_id, "tenant_id": tenant_id},
-                headers={"X-ACTION-TOKEN": settings.action_api_server_token},
-                timeout=10,
-            )
-            response.raise_for_status()
-            context = (response.json() or {}).get("context") or {}
-            if account_id not in (context.get("AccountIds") or []):
-                return False
-            return bool(set(context.get("Roles") or []) & SUPPRESS_ALLOWED_ROLES)
-        except Exception as e:
-            LOG.warning("Failed to check suppress permission for user %s: %s", user_id, e)
-            return False
+        return can_manage_triage_rules(user_id, tenant_id, account_id)
 
     def _mark_finding_suppressed(self, channel_id, team_id, message, status_line):
         message_ts = message.get("ts")
@@ -939,6 +961,14 @@ def _post_final_writeup(service, context, detailed, investigation, summary):
     the write-up adds; when it adds nothing, still close with a one-line ping so
     the user learns the analysis finished. Returns True iff settled.
     """
+    content, preamble = final_writeup(detailed, investigation, summary)
+    return _post_investigation_content(service, context, content, preamble, mention=True)
+
+
+def final_writeup(detailed, investigation, summary):
+    """(content, preamble) closing an analysis thread: what the write-up adds
+    to the investigation already posted, "That's everything" when it adds
+    nothing, or the summary when there's no write-up. Shared with Teams."""
     detailed = (detailed or "").strip()
     investigation = (investigation or "").strip()
 
@@ -947,11 +977,11 @@ def _post_final_writeup(service, context, detailed, investigation, summary):
         added = detailed[len(investigation) :].strip()
 
     if added:
-        return _post_investigation_content(service, context, added, "Here's the full write-up:", mention=True)
+        return added, "Here's the full write-up:"
     if detailed:
-        return _post_investigation_content(service, context, "That's everything I found.", "", mention=True)
+        return "That's everything I found.", ""
     # No write-up at all -- fall back to the initial summary, as before.
-    return _post_investigation_content(service, context, summary, "Here's the full write-up:", mention=True)
+    return summary, "Here's the full write-up:"
 
 
 def _post_investigation_content(service, context, content, preamble, mention=False):
@@ -1441,12 +1471,23 @@ class MsTeamsEventsService(SlackActionsBaseService):
 
             activity_type = activity.type
 
-            if activity_type == ActivityTypes.message:
-                await self.event_service.handle_message_event(activity)
-            elif activity_type == ActivityTypes.conversation_update:
-                await self.event_service.handle_conversation_update(activity)
-            else:
-                LOG.debug(f"Unhandled activity type: {activity_type}")
+            try:
+                if activity_type == ActivityTypes.message:
+                    await self.event_service.handle_message_event(activity)
+                elif activity_type == ActivityTypes.conversation_update:
+                    await self.event_service.handle_conversation_update(activity)
+                else:
+                    LOG.debug(f"Unhandled activity type: {activity_type}")
+            finally:
+                # After the handlers, so recording never holds up a reply or the welcome card.
+                try:
+                    forget_changed_channels(activity)
+                except Exception as e:
+                    LOG.exception(f"Error refreshing Teams channels: {e}")
+                try:
+                    await record_team_installations(activity, self.engine)
+                except Exception as e:
+                    LOG.exception(f"Error recording Teams bot installation: {e}")
 
         except Exception as e:
             LOG.exception(f"Error processing Teams event {e}")

@@ -67,6 +67,36 @@ func Validate(rules []Rule) error {
 	return nil
 }
 
+// ValidateForSave is Validate plus the admin write-path check that a rule does
+// something. Loading stays on Validate so stored rules and config files still load.
+func ValidateForSave(r Rule) error {
+	if err := Validate([]Rule{r}); err != nil {
+		return err
+	}
+	if !hasEffect(r.Target, r.Match.Provider) {
+		return fmt.Errorf("routing rule %q does nothing: set a target model, a different target provider, a fallback, or block matching requests", r.ID)
+	}
+	return nil
+}
+
+// hasEffect reports whether a matched request would change: blocked, rewritten to
+// another model/provider, sent to a named key, or given a fallback. Affinity/weight alone change nothing.
+func hasEffect(t Target, matchProvider string) bool {
+	if t.Deny || changesEndpoint(t.Endpoint, matchProvider) {
+		return true
+	}
+	for _, fb := range t.Fallbacks {
+		if changesEndpoint(fb, "") {
+			return true
+		}
+	}
+	return false
+}
+
+func changesEndpoint(e Endpoint, matchProvider string) bool {
+	return e.Model != "" || e.KeyRef != "" || (e.Provider != "" && e.Provider != matchProvider)
+}
+
 // knownProviderOrEmpty enforces that a target/fallback provider is empty (= keep the
 // addressed provider) or one of the known providers.
 func knownProviderOrEmpty(ruleID, kind, provider string) error {

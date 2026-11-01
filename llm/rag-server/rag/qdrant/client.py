@@ -11,7 +11,9 @@ import gc
 import logging
 import os
 import threading
+import time
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Optional, List, cast
 
 import httpx
@@ -20,7 +22,7 @@ from qdrant_client.http.exceptions import ResponseHandlingException
 from qdrant_client.http.models import CollectionDescription
 from qdrant_client.models import Distance, VectorParams, HnswConfigDiff
 
-from utils.config import FileConfig
+from utils.config import Config, FileConfig
 
 # Suppress Qdrant local mode warnings for large collections
 # We're aware of the limitation and accept the tradeoff for simplicity
@@ -349,6 +351,43 @@ class CollectionInfo:
         self.points_count = points_count
 
 
+def _fetch_collection_info(client: QdrantClient, name: str) -> CollectionInfo:
+    """Read one collection's metadata.
+
+    Never raises: a collection we cannot describe still has to appear in the
+    list, or module/account routing silently stops seeing it.
+    """
+    try:
+        coll_info = client.get_collection(name)
+        metadata = {}
+        if hasattr(coll_info, "config") and hasattr(coll_info.config, "metadata"):
+            metadata = coll_info.config.metadata or {}
+        return CollectionInfo(name=name, metadata=metadata, points_count=getattr(coll_info, "points_count", 0))
+    except Exception as e:
+        logger.warning(f"Error fetching metadata for collection {name}: {e}")
+        return CollectionInfo(name=name, metadata={}, points_count=0)
+
+
+# Cross-process single-flight. The in-process Event below coalesces threads;
+# this lock coalesces replicas. The TTL means a holder that dies cannot pin
+# everyone else -- the worst case is one duplicated refresh.
+_REFRESH_LOCK_KEY = "collection_list:refresh"
+_REFRESH_LOCK_TTL_SECONDS = 120
+_REFRESH_LOCK_WAIT_SECONDS = 30
+# A full refresh takes ~18s, so polling four times a second just adds load.
+_REFRESH_POLL_SECONDS = 1.0
+
+
+def _signal_singleflight() -> None:
+    """Clear the in-flight marker and wake any waiting threads."""
+    global _singleflight_event
+    with _singleflight_lock:
+        event_to_signal = _singleflight_event
+        _singleflight_event = None
+    if event_to_signal is not None:
+        event_to_signal.set()
+
+
 # Single-flight coordination for list_collections_optimized. When the cache is
 # empty (fresh start, retag_migration clear, TTL expiry), N concurrent callers
 # would each trigger the slow list+metadata iteration — the "thundering herd"
@@ -418,8 +457,39 @@ def list_collections_optimized() -> List[CollectionInfo]:
             return cached_collections
         return []
 
-    # We are the refresh winner. Do the slow work outside the coordination
-    # lock so other paths (add, clear, get) aren't blocked by the fetch.
+    # We are the in-process winner. Across processes, a shared lock decides
+    # who actually talks to Qdrant -- otherwise every replica refreshes the
+    # same 300+ collections at the same moment.
+    from rag.core.cache_backend import get_cache_backend
+
+    backend = get_cache_backend()
+    lock_token = backend.try_lock(_REFRESH_LOCK_KEY, _REFRESH_LOCK_TTL_SECONDS)
+    if lock_token is None:
+        # Another process is refreshing. Give it a moment, then take its
+        # snapshot rather than duplicating the work.
+        deadline = time.monotonic() + _REFRESH_LOCK_WAIT_SECONDS
+        while time.monotonic() < deadline:
+            time.sleep(_REFRESH_POLL_SECONDS)
+            borrowed = cache.get()
+            if borrowed is not None:
+                logger.info("Collection list cache: used another process's refresh")
+                _signal_singleflight()
+                return borrowed
+        # It did not finish in time -- the holder died, or is slower than the
+        # wait. Try once more for the lock: if several replicas time out
+        # together, this is what stops all of them refreshing at once, which
+        # is the stampede the lock exists to prevent.
+        lock_token = backend.try_lock(_REFRESH_LOCK_KEY, _REFRESH_LOCK_TTL_SECONDS)
+        if lock_token is None:
+            # Still held. Refreshing anyway is wasteful but correct; returning
+            # nothing would not be.
+            logger.warning(
+                "Collection list cache: shared refresh did not land in time and the lock is "
+                "still held, refreshing locally"
+            )
+        else:
+            logger.warning("Collection list cache: shared refresh did not land in time, took over the lock")
+
     fetched_at_generation = cache.begin_refresh()
     logger.info("Collection list cache MISS - fetching from Qdrant")
     client = get_qdrant_client()
@@ -431,28 +501,20 @@ def list_collections_optimized() -> List[CollectionInfo]:
             response.collections if hasattr(response, "collections") else cast(List[CollectionDescription], response)
         )
 
-        # Then fetch metadata for each collection
-        collections_with_metadata = []
-        for coll_desc in collection_descriptions:
-            try:
-                # Get detailed collection info including metadata
-                coll_info = client.get_collection(coll_desc.name)
-
-                # Extract metadata from config
-                metadata = {}
-                if hasattr(coll_info, "config") and hasattr(coll_info.config, "metadata"):
-                    metadata = coll_info.config.metadata or {}
-
-                # Get points count
-                points_count = getattr(coll_info, "points_count", 0)
-
-                collections_with_metadata.append(
-                    CollectionInfo(name=coll_desc.name, metadata=metadata, points_count=points_count)
-                )
-            except Exception as e:
-                logger.warning(f"Error fetching metadata for collection {coll_desc.name}: {e}")
-                # Add collection with empty metadata on error
-                collections_with_metadata.append(CollectionInfo(name=coll_desc.name, metadata={}, points_count=0))
+        # Qdrant's list endpoint returns names only, so each collection needs its
+        # own GET for the module/account metadata routing depends on. Fan them
+        # out: sequentially this was ~8s for 300 collections, paid on the request
+        # that happened to trip the TTL.
+        names = [coll_desc.name for coll_desc in collection_descriptions]
+        workers = min(Config.collection_metadata_max_workers, len(names))
+        if workers > 1:
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="qdrant-collmeta") as pool:
+                collections_with_metadata = list(pool.map(lambda name: _fetch_collection_info(client, name), names))
+        else:
+            # Empty listing, a single collection, or concurrency turned off: no
+            # pool. This also means a nonsensical worker count cannot reach
+            # ThreadPoolExecutor, which rejects anything below 1.
+            collections_with_metadata = [_fetch_collection_info(client, name) for name in names]
 
         logger.debug(f"Fetched {len(collections_with_metadata)} collections with metadata from Qdrant")
 
@@ -468,10 +530,6 @@ def list_collections_optimized() -> List[CollectionInfo]:
         return []
 
     finally:
-        # Clear the in-flight marker and wake any waiters. Signal outside
-        # the lock so we don't hold it across a potentially large wake-up.
-        with _singleflight_lock:
-            event_to_signal = _singleflight_event
-            _singleflight_event = None
-        if event_to_signal is not None:
-            event_to_signal.set()
+        if lock_token is not None:
+            backend.unlock(_REFRESH_LOCK_KEY, lock_token)
+        _signal_singleflight()

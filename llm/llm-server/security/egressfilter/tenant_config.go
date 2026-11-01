@@ -415,7 +415,7 @@ func applyTenantOverrides(r Result, payload string, tcfg *TenantConfig) Result {
 
 	kept := r.Hits[:0]
 	for _, h := range r.Hits {
-		if dropEntropy && h.RuleID == "high-entropy-blob" {
+		if dropEntropy && h.RuleID == EntropyRuleID {
 			continue
 		}
 		if disabledSet != nil {

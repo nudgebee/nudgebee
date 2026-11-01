@@ -60,6 +60,7 @@ export const METRICS_PROVIDERS: OnboardingProviderDef[] = [
   { route: 'ES', label: 'Elasticsearch', types: ['es'], cloudCapable: true },
   { route: 'SOLARWINDS', label: 'SolarWinds', types: ['solarwinds'], cloudCapable: true },
   { route: 'CUBEAPM', label: 'CubeAPM', types: ['cubeapm'] },
+  { route: 'SIGNOZ', label: 'SigNoz', types: ['signoz'] },
   { route: 'SPLUNK_ENTERPRISE', label: 'Splunk Enterprise', types: ['splunk_enterprise'] },
 ];
 
@@ -89,6 +90,7 @@ export const TRACES_PROVIDERS: OnboardingProviderDef[] = [
   { route: 'NEWRELIC', label: 'New Relic', types: ['newrelic'] },
   { route: 'SPLUNK_ENTERPRISE', label: 'Splunk Enterprise', types: ['splunk_enterprise'] },
   { route: 'CUBEAPM', label: 'CubeAPM', types: ['cubeapm'] },
+  { route: 'GRAFANA_TEMPO', label: 'Grafana Tempo', types: ['grafana_tempo'] },
   { route: 'ES', label: 'Elasticsearch', types: ['es'], cloudCapable: true },
   { route: 'SOLARWINDS', label: 'SolarWinds', types: ['solarwinds'], cloudCapable: true },
 ];
@@ -123,6 +125,7 @@ export const ALERT_PROVIDERS: OnboardingProviderDef[] = [
   { route: 'SERVICENOW_WEBHOOK', label: 'ServiceNow', types: ['servicenow_webhook'] },
   { route: 'SOLARWINDS_WEBHOOK', label: 'SolarWinds', types: ['solarwinds_webhook'] },
   { route: 'ELASTICSEARCH_WEBHOOK', label: 'Elasticsearch', types: ['elasticsearch_webhook'] },
+  { route: 'EVENT_WEBHOOK', label: 'Event webhook', types: ['event_webhook'] },
 ];
 
 export const REPO_PROVIDERS: OnboardingProviderDef[] = [

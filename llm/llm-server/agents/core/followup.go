@@ -61,24 +61,23 @@ type FollowupRequest struct {
 	// per-tool behavior); tools implementing toolcore.ToolConfirmationScope get
 	// a per-action key here so each invocation is approved separately.
 	ConfirmationKey string `json:"confirmationKey,omitempty"`
+	// Target and Integration say where a tool_confirmation's write lands, for
+	// the UI; CrossAccount marks a target other than the conversation's own.
+	Target       *FollowupTarget `json:"target,omitempty"`
+	CrossAccount bool            `json:"crossAccount,omitempty"`
+}
+
+// FollowupTarget is the cluster or account an approval's write lands on and
+// the integration used there.
+type FollowupTarget struct {
+	Provider    string `json:"provider"`
+	Kind        string `json:"kind"`
+	Name        string `json:"name"`
+	Integration string `json:"integration,omitempty"`
 }
 
 func FollowupRequestForToolOperationConfirmation(ctx *security.RequestContext, query NBAgentRequest, agent NBAgent, action NBAgentPlannerToolAction, toolRequestType toolcore.ToolRequestType, confirmationKey string, questionOverride string) (FollowupRequest, error) {
-	input := action.ToolInput
-	if strings.Contains(input, `"query"`) {
-		commandMap := map[string]any{}
-		err := common.UnmarshalJson([]byte(input), &commandMap)
-		if err == nil {
-			// strings.Contains is only a substring guard — the literal "query"
-			// may appear inside the SQL/command text while the top-level key is
-			// something else (e.g. "command"), leaving commandMap["query"] nil.
-			// Assert with the comma-ok form so a missing/non-string value falls
-			// back to the raw ToolInput instead of panicking mid-confirmation.
-			if q, ok := commandMap["query"].(string); ok {
-				input = q
-			}
-		}
-	}
+	input := confirmationDisplayInput(action.ToolInput)
 	question := fmt.Sprintf("Tool(%s) is trying to %s cluster resources. Do you want to continue?\nCommand - %s", action.Tool, toolRequestType, input)
 	if questionOverride != "" {
 		question = questionOverride
@@ -97,6 +96,26 @@ func FollowupRequestForToolOperationConfirmation(ctx *security.RequestContext, q
 		ConfirmationKey: confirmationKey,
 	}
 	return followUpRequest, nil
+}
+
+// confirmationDisplayInput is the part of a tool input an approver reads: the
+// SQL of a query tool, else the raw input.
+func confirmationDisplayInput(input string) string {
+	if strings.Contains(input, `"query"`) {
+		commandMap := map[string]any{}
+		err := common.UnmarshalJson([]byte(input), &commandMap)
+		if err == nil {
+			// strings.Contains is only a substring guard — the literal "query"
+			// may appear inside the SQL/command text while the top-level key is
+			// something else (e.g. "command"), leaving commandMap["query"] nil.
+			// Assert with the comma-ok form so a missing/non-string value falls
+			// back to the raw ToolInput instead of panicking mid-confirmation.
+			if q, ok := commandMap["query"].(string); ok {
+				return q
+			}
+		}
+	}
+	return input
 }
 
 func FollowupRequestForMultipleToolConfigs(ctx *security.RequestContext, query NBAgentRequest, agent NBAgent, action NBAgentPlannerToolAction) (FollowupRequest, error) {
@@ -135,7 +154,11 @@ func FollowupRequestForMultipleToolConfigs(ctx *security.RequestContext, query N
 		if !found {
 			// action.Tool may be a search_tools discovery (auth_agent.go's
 			// DiscoveredToolCanonicalName) not in GetSupportedTools — else it never gets asked.
-			if canonical, discovered := DiscoveredToolCanonicalName(query.ConversationId, action.Tool); discovered {
+			canonical, discovered := DiscoveredToolCanonicalName(query.ConversationId, action.Tool)
+			if !discovered {
+				canonical, discovered = QueryConfigDiscoveredToolCanonicalName(query.QueryConfig, action.Tool)
+			}
+			if discovered {
 				if t, ok := toolcore.GetNBTool(query.AccountId, canonical); ok && t != nil {
 					if _, hasConfig := t.(toolcore.NBToolConfig); hasConfig {
 						toolsInCompleteFlow[t.Name()] = t
@@ -331,6 +354,12 @@ func followupMessageConfig(followupRequest FollowupRequest) map[string]any {
 	}
 	if followupRequest.FollowupData != nil {
 		cfg["followupData"] = followupRequest.FollowupData
+	}
+	if followupRequest.Target != nil {
+		cfg["target"] = followupRequest.Target
+		if followupRequest.CrossAccount {
+			cfg["crossAccount"] = true
+		}
 	}
 	return cfg
 }

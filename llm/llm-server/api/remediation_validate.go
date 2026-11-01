@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"nudgebee/llm/tools/core"
 	"regexp"
 	"strings"
 )
@@ -63,13 +64,13 @@ func isReadOnlyCommand(command string) bool {
 	case "kubectl":
 		two := strings.Join(fields[1:minInt(3, len(fields))], " ")
 		if fields[1] == "exec" {
-			return execRemoteCommandIsReadOnly(fields)
+			return core.ExecRemoteCommandIsReadOnly(fields)
 		}
 		return readOnlyKubectlVerbs[fields[1]] ||
 			strings.HasPrefix(two, "rollout status") || strings.HasPrefix(two, "auth can-i")
 	case "aws", "az", "gcloud", "gsutil":
 		if strings.Contains(command, "ssm send-command") {
-			return ssmPayloadIsReadOnly(command)
+			return core.SSMPayloadIsReadOnly(command)
 		}
 		return readOnlyCloudVerb.MatchString(command)
 	case "helm":
@@ -291,7 +292,7 @@ func deriveSsmVerify(executeCommand string) string {
 	if !strings.Contains(executeCommand, "ssm send-command") {
 		return ""
 	}
-	f := strings.Fields(ssmPayload(executeCommand))
+	f := strings.Fields(core.SSMPayload(executeCommand))
 	if len(f) > 0 && f[0] == "sudo" {
 		f = f[1:]
 	}
@@ -394,7 +395,7 @@ func restartLikeCommand(command string) bool {
 		return true
 	}
 	if strings.Contains(c, "ssm send-command") {
-		return hostServiceRestart(ssmPayload(c))
+		return hostServiceRestart(core.SSMPayload(c))
 	}
 	return false
 }
@@ -669,83 +670,10 @@ func referencesAny(command string, names []string) bool {
 	return false
 }
 
-// readOnlyRemoteCommands are the in-container commands that only report. `kubectl exec` is a
-// write-capable channel, so it is read-only only when what it runs is one of these — which keeps a
-// genuinely useful verify like `kubectl exec zookeeper-0 -- df -h /datalog` working.
-var readOnlyRemoteCommands = map[string]bool{
-	"df": true, "ls": true, "cat": true, "ps": true, "top": true, "free": true,
-	"stat": true, "wc": true, "head": true, "tail": true, "id": true, "env": true,
-	"date": true, "uptime": true, "hostname": true, "pwd": true,
-}
-
-// readOnlySystemctlVerbs are the `systemctl` subcommands that only report. `systemctl` is the
-// natural way to verify a service fix on a host, and it is the whole command's first word only in
-// the SSM payload form, so it is checked separately from readOnlyRemoteCommands.
-var readOnlySystemctlVerbs = map[string]bool{
-	"is-active": true, "is-enabled": true, "is-failed": true, "status": true, "show": true,
-}
-
-// ssmPayload extracts the shell command inside `aws ssm send-command --parameters …`.
-//
-// The parameter is written several ways by the model — commands=["x"], commands="x", 'commands=[x]'
-// — so the payload is taken as whatever follows the first `commands=`, stripped of the JSON and
-// quoting scaffolding rather than parsed as JSON, which none of these reliably are.
-func ssmPayload(command string) string {
-	_, after, ok := strings.Cut(command, "commands=")
-	if !ok {
-		return ""
-	}
-	after = strings.TrimSpace(after)
-	after = strings.Trim(after, `'"`)
-	after = strings.TrimPrefix(after, "[")
-	if i := strings.IndexAny(after, "]"); i >= 0 {
-		after = after[:i]
-	}
-	after = strings.Trim(after, `'"`)
-	// Drop a trailing flag that followed an unquoted payload (`--region us-east-1`).
-	if i := strings.Index(after, " --"); i >= 0 {
-		after = after[:i]
-	}
-	return strings.TrimSpace(strings.Trim(strings.TrimSpace(after), `'"`))
-}
-
-// ssmPayloadIsReadOnly reports whether an `aws ssm send-command` only observes the host.
-//
-// `send-command` is a write channel, so it is read-only exactly when what it runs is — the same
-// reasoning `kubectl exec` already gets. Without this the one correct verify the model produces for
-// a host-service fix (`systemctl is-active postgresql`) is thrown away for not being a `describe`,
-// and the misleading alarm read is kept in its place.
-func ssmPayloadIsReadOnly(command string) bool {
-	payload := ssmPayload(command)
-	if payload == "" {
-		return false
-	}
-	// A compound payload is not inspectable one word at a time.
-	if strings.ContainsAny(payload, ";&|<>`$\n") {
-		return false
-	}
-	f := strings.Fields(payload)
-	if len(f) == 0 {
-		return false
-	}
-	if f[0] == "sudo" {
-		f = f[1:]
-		if len(f) == 0 {
-			return false
-		}
-	}
-	if f[0] == "systemctl" {
-		return len(f) > 1 && readOnlySystemctlVerbs[f[1]]
-	}
-	return readOnlyRemoteCommands[f[0]]
-}
-
-// execRemoteCommandIsReadOnly inspects the command after the `--` separator of a `kubectl exec`.
-func execRemoteCommandIsReadOnly(fields []string) bool {
-	for i, f := range fields {
-		if f == "--" && i+1 < len(fields) {
-			return readOnlyRemoteCommands[fields[i+1]]
-		}
-	}
-	return false
-}
+// The read-only-remote-command allowlist (readOnlyRemoteCommands equivalent), the SSM payload
+// parser, and execRemoteCommandIsReadOnly/ssmPayloadIsReadOnly moved to tools/core
+// (readonly_remote.go) so the live investigation gate (tools/tool_kubectl.go,
+// tools/tool_cloud_aws.go) can share the same read-only-command notion instead of maintaining an
+// independent, narrower copy. See core.ReadOnlyRemoteCommands's doc comment for why entries there
+// must be safe under "runs with no human confirmation," a stricter bar than this file's own
+// confidence-scoring use.

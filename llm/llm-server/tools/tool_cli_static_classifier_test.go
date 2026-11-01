@@ -82,10 +82,6 @@ func TestStaticCLIClassifiers(t *testing.T) {
 	}
 }
 
-func inferGithubRequestType(input string) core.ToolRequestType {
-	return inferNestedCLIRequestType(input, "gh", githubReadActions, githubCreateActions, githubUpdateActions, githubDeleteActions)
-}
-
 func inferGitlabRequestType(input string) core.ToolRequestType {
 	return inferNestedCLIRequestType(input, "glab", gitlabReadActions, gitlabCreateActions, gitlabUpdateActions, gitlabDeleteActions)
 }

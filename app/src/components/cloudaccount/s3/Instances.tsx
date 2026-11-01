@@ -142,6 +142,7 @@ const InstancesView = (props: {
                 <DsDropdownMenu
                   align='end'
                   size='sm'
+                  disablePortal={false}
                   items={[
                     {
                       id: `s3-delete-${item.resourse_id}`,

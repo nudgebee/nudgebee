@@ -25,21 +25,23 @@ import (
 
 func mockMetastoreForRecovery(t *testing.T) sqlmock.Sqlmock {
 	t.Helper()
-	database.RegisterDatabaseManagerHook(database.Metastore, func() (*database.DatabaseManager, error) {
-		return &database.DatabaseManager{}, nil
-	})
-	manager, err := database.GetDatabaseManager(database.Metastore)
-	require.NoError(t, err)
-
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 
-	previous := manager.Db
+	// Put back whatever metastore was there before, not a manager with a nil Db,
+	// which nil-panics any later test in the package that reaches the metastore.
+	previous, hadPrevious := database.GetDatabaseManagerIfInitialized(database.Metastore)
+	database.RegisterDatabaseManagerHook(database.Metastore, func() (*database.DatabaseManager, error) {
+		return &database.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}, nil
+	})
 	t.Cleanup(func() {
 		_ = db.Close()
-		manager.Db = previous
+		if hadPrevious {
+			database.RegisterDatabaseManagerHook(database.Metastore, func() (*database.DatabaseManager, error) { return previous, nil })
+			return
+		}
+		database.RegisterDatabaseManagerHook(database.Metastore, nil)
 	})
-	manager.Db = sqlx.NewDb(db, "postgres")
 	return mock
 }
 

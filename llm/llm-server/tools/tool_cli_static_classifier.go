@@ -37,19 +37,55 @@ func staticCLIArgs(input string, allowBare bool, executables ...string) ([]strin
 	return tokens, true
 }
 
+// expandEscapedNewlines turns a literal `\n` into a newline, as the gh and glab
+// tools do before running a command. Their classifiers must read the command
+// in that form: a newline outside quotes starts a second shell command.
+func expandEscapedNewlines(command string) string {
+	return strings.ReplaceAll(command, "\\n", "\n")
+}
+
 func helpOrVersion(tokens []string) bool {
 	if len(tokens) == 0 {
 		return false
 	}
-	for _, token := range tokens {
-		switch strings.ToLower(token) {
-		case "-h", "--help":
-			return true
-		}
+	if isHelpRequest(tokens) {
+		return true
+	}
+	return isHelpOrVersionCommand(tokens)
+}
+
+// isHelpOrVersionCommand reports `<cli> help ...` / `<cli> version ...`.
+func isHelpOrVersionCommand(tokens []string) bool {
+	if len(tokens) == 0 {
+		return false
 	}
 	first := strings.ToLower(tokens[0])
 	return first == "help" || first == "version" ||
 		(len(tokens) == 1 && (first == "-v" || first == "--version"))
+}
+
+// isHelpRequest reports a command that only asks for help: the help flag is
+// the last token and no flag comes before it, as in `<cli> [command words]
+// --help`. A help flag anywhere else proves nothing. A flag before it can take
+// it as its value (`helm uninstall rel --description -h` uninstalls), and a
+// shell comment or another command can hide it from what actually runs.
+func isHelpRequest(tokens []string) bool {
+	if len(tokens) == 0 {
+		return false
+	}
+	last := tokens[len(tokens)-1] // case-sensitive: `-H` is not `-h`
+	if last == "--version" && len(tokens) == 1 {
+		return true
+	}
+	if last != "-h" && last != "--help" {
+		return false
+	}
+	for _, token := range tokens[:len(tokens)-1] {
+		if strings.HasPrefix(token, "-") {
+			return false
+		}
+	}
+	return true
 }
 
 func classifyAction(action string, reads, creates, updates, deletes map[string]struct{}) core.ToolRequestType {
@@ -130,6 +166,21 @@ func inferHelmRequestType(input string) core.ToolRequestType {
 	return classifyAction(tokens[0], helmReadActions, helmCreateActions, helmUpdateActions, helmDeleteActions)
 }
 
+// githubSearchTypes are the `gh search` subcommands. GitHub search only reads.
+var githubSearchTypes = wordSet("code", "commits", "issues", "prs", "repos")
+
+// inferGithubRequestType classifies one gh command: `gh search <type>` is a
+// read, everything else goes through the shared nested-CLI rules.
+func inferGithubRequestType(command string) core.ToolRequestType {
+	if tokens, ok := staticCLIArgs(command, false, "gh"); ok && len(tokens) >= 2 && strings.EqualFold(tokens[0], "search") {
+		if _, known := githubSearchTypes[strings.ToLower(tokens[1])]; known {
+			return core.ToolRequestTypeRead
+		}
+		return ""
+	}
+	return inferNestedCLIRequestType(command, "gh", githubReadActions, githubCreateActions, githubUpdateActions, githubDeleteActions)
+}
+
 func inferNestedCLIRequestType(
 	input string,
 	executable string,
@@ -187,8 +238,21 @@ func inferAPIRequestType(tokens []string) core.ToolRequestType {
 	return classifyHTTPMethod(method)
 }
 
+// redisCommandAsRun returns the shell command the Redis tool runs: the input
+// as given when it starts with redis-cli, else the input as redis-cli's
+// arguments. The classifier reads this same string. A redis-cli anywhere else
+// in the input does not count: "command bash -c 'id' redis-cli" used to run
+// as given, so bash ran it, while the classifier read Redis COMMAND.
+func redisCommandAsRun(command string) string {
+	command = strings.TrimSpace(command)
+	if fields := strings.Fields(command); len(fields) > 0 && fields[0] == "redis-cli" {
+		return command
+	}
+	return "redis-cli " + command
+}
+
 func inferRedisRequestType(input string) core.ToolRequestType {
-	tokens, ok := staticCLIArgs(input, true, "redis-cli", "redis")
+	tokens, ok := staticCLIArgs(redisCommandAsRun(extractCommandFromToolInput(input)), false, "redis-cli")
 	if !ok {
 		return ""
 	}
@@ -201,7 +265,9 @@ func inferRedisRequestType(input string) core.ToolRequestType {
 		}
 		return ""
 	}
-	if helpOrVersion(tokens) {
+	// Words after a Redis command are its arguments (`DEL key --help` deletes
+	// two keys), so only the client's own help command counts.
+	if isHelpOrVersionCommand(tokens) {
 		return core.ToolRequestTypeRead
 	}
 	return classifyAction(tokens[0], redisReadActions, redisCreateActions, redisUpdateActions, redisDeleteActions)
@@ -213,7 +279,9 @@ func inferRabbitRequestType(input string) core.ToolRequestType {
 	if !ok {
 		return ""
 	}
-	if helpOrVersion(tokens) {
+	// rabbitmq-api passes its trailing words to curl, so a trailing help flag
+	// is not proof of a help request; only the help command counts.
+	if isHelpOrVersionCommand(tokens) {
 		return core.ToolRequestTypeRead
 	}
 	if strings.HasPrefix(tokens[0], "-") {
@@ -221,9 +289,52 @@ func inferRabbitRequestType(input string) core.ToolRequestType {
 	}
 	commandTokens, err := shlex.Split(command)
 	if err == nil && len(commandTokens) > 0 && strings.EqualFold(filepath.Base(commandTokens[0]), "rabbitmq-api") {
-		return classifyHTTPMethod(tokens[0])
+		requestType := classifyHTTPMethod(tokens[0])
+		// Words after the path go to curl unquoted, after the broker
+		// credentials: "-X DELETE" overrides the method (curl uses the last
+		// -X) and another URL receives the credentials. Only a bare
+		// `rabbitmq-api GET /path` is a read.
+		if requestType == core.ToolRequestTypeRead && len(tokens) != 2 {
+			return core.ToolRequestTypeUpdate
+		}
+		return requestType
 	}
-	return classifyAction(tokens[0], rabbitReadActions, rabbitCreateActions, rabbitUpdateActions, rabbitDeleteActions)
+	requestType := classifyAction(tokens[0], rabbitReadActions, rabbitCreateActions, rabbitUpdateActions, rabbitDeleteActions)
+	if requestType == core.ToolRequestTypeRead && strings.EqualFold(tokens[0], "get") && rabbitGetDropsMessages(tokens[1:]) {
+		return core.ToolRequestTypeUpdate
+	}
+	return requestType
+}
+
+// rabbitGetDropsMessages reports a rabbitmqadmin `get` that takes messages off
+// the queue for good. `get` fetches messages and, by default, puts them back
+// (ackmode=ack_requeue_true); any other ack mode, or requeue=false, removes
+// them.
+func rabbitGetDropsMessages(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		key, value, hasValue := strings.Cut(strings.ToLower(arg), "=")
+		key = strings.TrimLeft(key, "-")
+		// `--flag value`: the value is consumed so it is not read again as a
+		// setting (`--queue requeue` names a queue). A word that is itself a
+		// setting (has `=`) or a flag is never consumed, so it is still checked.
+		if !hasValue && strings.HasPrefix(arg, "--") && i+1 < len(args) &&
+			!strings.HasPrefix(args[i+1], "-") && !strings.Contains(args[i+1], "=") {
+			i++
+			value = strings.ToLower(args[i])
+		}
+		switch key {
+		case "ackmode", "ack-mode", "ack_mode":
+			if value != "ack_requeue_true" && value != "reject_requeue_true" {
+				return true
+			}
+		case "requeue":
+			if value != "true" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func extractRabbitCommand(input string) string {

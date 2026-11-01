@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"nudgebee/services/common"
 	"nudgebee/services/config"
@@ -71,6 +72,32 @@ func ProcessEvent(ctx *security.RequestContext, newEvent map[string]any) (err er
 // thread to reply to. Gating on priority would in fact break the cloud path,
 // which downgrades priority to INFO in the same UPDATE that resolves the row.
 func ProcessEventResolved(ctx *security.RequestContext, newEvent map[string]any) (err error) {
+	return publishFindingTransition(ctx, newEvent, "finding_resolved")
+}
+
+// ProcessEventReturned publishes the returned notification for an event that
+// had cleared and fired again. The first firing went through ProcessEvent; a
+// re-fire of a stored event runs no pipeline, so without this the return is
+// never announced. notifications-server lists it in the next anomaly digest and
+// drops it for any other source.
+func ProcessEventReturned(ctx *security.RequestContext, newEvent map[string]any) (err error) {
+	// The event is read when the message is consumed. If it has cleared again by
+	// then, there is no return left to announce.
+	if status, _ := newEvent["status"].(string); !strings.EqualFold(status, "FIRING") {
+		return nil
+	}
+	return publishFindingTransition(ctx, newEvent, "finding_returned")
+}
+
+// publishNotification sends one message to notifications-server. A variable so
+// tests can read the message without a broker.
+var publishNotification = func(ctx *security.RequestContext, message map[string]any) error {
+	return common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message, common.MqPublishWithContext(ctx.GetContext()))
+}
+
+// publishFindingTransition publishes a stored event's change of state to
+// notifications-server as notificationType, with the event row as the finding.
+func publishFindingTransition(ctx *security.RequestContext, newEvent map[string]any, notificationType string) (err error) {
 	source, _ := newEvent["source"].(string)
 	if source == "slo" {
 		return nil
@@ -78,7 +105,7 @@ func ProcessEventResolved(ctx *security.RequestContext, newEvent map[string]any)
 
 	// The queue consumer's event map carries no nb_status (only PostProcessEvent
 	// refreshes it post-triage), so a silenced/suppressed finding needs a lookup
-	// here to stay silent on resolve too.
+	// here to stay silent on resolve and on return too.
 	eventID, _ := newEvent["id"].(string)
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -94,10 +121,10 @@ func ProcessEventResolved(ctx *security.RequestContext, newEvent map[string]any)
 		return nil
 	}
 
-	ctx.GetLogger().Info(fmt.Sprintf("Publishing resolved event to notification - %v", eventID))
+	ctx.GetLogger().Info(fmt.Sprintf("Publishing %s event to notification - %v", strings.TrimPrefix(notificationType, "finding_"), eventID))
 	message := map[string]any{
 		"kind":      "notification",
-		"type":      "finding_resolved",
+		"type":      notificationType,
 		"source":    source,
 		"tenant_id": newEvent["tenant"],
 		"parameters": map[string]any{
@@ -105,7 +132,7 @@ func ProcessEventResolved(ctx *security.RequestContext, newEvent map[string]any)
 		},
 	}
 
-	err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message, common.MqPublishWithContext(ctx.GetContext()))
+	err = publishNotification(ctx, message)
 	if err != nil {
 		ctx.GetLogger().Error("Error publishing message to queue", "error", err)
 		return err

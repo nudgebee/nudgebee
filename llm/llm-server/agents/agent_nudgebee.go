@@ -10,7 +10,7 @@ import (
 const NudgebeeAgentName = "nudgebee"
 
 func init() {
-	core.RegisterNBAgentFactoryAndToolWithAliases(NudgebeeAgentName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAndToolWithAliases(NudgebeeAgentName, func(accountId string) (core.NBAgent, error) {
 		return newNudgebeeAgent(accountId), nil
 	}, nudgebeeAgentDescription,
 		"A question about Nudgebee product knowledge, authorized configuration, integration diagnosis, or Nudgebee-recorded agent and feature health.",
@@ -19,6 +19,10 @@ func init() {
 }
 
 const nudgebeeAgentDescription = "Nubi, Nudgebee's self-aware product assistant. Use for Nudgebee product concepts and docs; authorized account inventory and configured integrations; integration diagnosis; and Nudgebee-recorded collector, agent, Prometheus, Alertmanager, logs, traces, relay, or OpenCost health. It reports the product control-plane view and may be combined with environment tools for deeper investigation. Do not use it alone for arbitrary workloads, Kubernetes resources, raw telemetry, cloud resources, incidents, or general operational troubleshooting."
+
+// AcceptsExecutionTarget: agent health defaults to a handed target's account;
+// the account, integration and docs tools are tenant-wide.
+func (a *NudgebeeAgent) AcceptsExecutionTarget() {}
 
 type NudgebeeAgent struct {
 	accountId string

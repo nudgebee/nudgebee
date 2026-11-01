@@ -155,6 +155,8 @@ const VmPage = () => {
   );
   const scopeProps = scope ? { [scope.entry.prop]: scope.value as string } : {};
   const scopeLabel = scope?.entry.chip ? `${scope.entry.label}: ${scope.value}` : undefined;
+  // The Instances tab only understands a vulnId scope (which VMs a CVE sits on) — vmId/packageName have no meaning there.
+  const vulnScope = scope?.entry.param === 'vulnId' ? (scope.value as string) : undefined;
   const severityParam = typeof router.query.severity === 'string' ? router.query.severity : undefined;
 
   // Drops the scope only. Severity stays with its dropdown, which owns it once
@@ -162,7 +164,8 @@ const VmPage = () => {
   const clearScope = () => {
     const query = { ...router.query };
     SCOPE_PARAMS.forEach((entry) => delete query[entry.param]);
-    router.replace({ pathname: '/vm', query, hash: 'vulnerabilities' }, undefined, { shallow: true });
+    const fragment = tabOptions.find((option) => option.value === selectedTab)?.fragment || 'vulnerabilities';
+    router.replace({ pathname: '/vm', query, hash: fragment }, undefined, { shallow: true });
   };
 
   if (loadingAccounts) {
@@ -186,7 +189,14 @@ const VmPage = () => {
       <AnchorComponent manageRoute={true} filterOptions={tabOptions} onChangeFilter={(val: number) => setSelectedTab(val)} />
       <ErrorBoundary key={`${accountId}-${selectedTab ?? 'none'}`}>
         {accountId && selectedTab === 0 && <VmSummary accountId={accountId} />}
-        {accountId && selectedTab === 1 && <VmInventory accountId={accountId} />}
+        {accountId && selectedTab === 1 && (
+          <VmInventory
+            accountId={accountId}
+            vulnId={vulnScope}
+            scopeLabel={vulnScope ? scopeLabel : undefined}
+            onClearScope={vulnScope ? clearScope : undefined}
+          />
+        )}
         {accountId && selectedTab === 2 && (
           <VmVulnerabilities
             accountId={accountId}

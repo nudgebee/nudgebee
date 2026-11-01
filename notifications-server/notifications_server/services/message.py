@@ -34,12 +34,26 @@ from notifications_server.services.rules import (
     rule_sources,
 )
 from notifications_server.services import weekly_digest_report
-from notifications_server.services.delivery_split import account_sections, has_recommendations, merged_parameters
+from notifications_server.services.delivery_split import (
+    account_sections,
+    has_recommendations,
+    latest_per_key,
+    merged_parameters,
+)
 from notifications_server.message_templates.slack.weekly_digest_events import digest_link, digest_verdict
 from notifications_server.services.slack.slack import retriable_slack_api_error, slack_channel_not_found_error
 from notifications_server.message_templates import template_mapping
 from notifications_server.message_templates.google_chat.finding import get_markdown_message_template
 from notifications_server.message_templates.ms_teams.finding import get_ms_teams_finding_message_template
+from notifications_server.services.ms_teams import card_actions
+from notifications_server.services.ms_teams.bot_sender import (
+    APP_NOT_IN_TEAM,
+    TeamsBotError,
+    card_activity,
+    get_sender,
+    load_team_async,
+    thread_conversation_id,
+)
 from notifications_server.message_templates.slack.finding import (
     get_slack_finding_message,
     get_slack_resolved_finding_reply,
@@ -70,6 +84,17 @@ cache = Cache()
 
 
 # ----------------------------- Utility functions -----------------------------
+
+
+# Set on the session when a Teams card with buttons was added to it, so the
+# caller knows to commit.
+STORED_TEAMS_CARDS = "stored_teams_cards"
+
+
+def _approval_account_id(params):
+    """The account a workflow approval belongs to, when its params name one."""
+    metadata = getattr(params, "workflow_metadata", None)
+    return getattr(metadata, "account_id", None) if metadata else None
 
 
 def get_fingerprint(type_, kwargs):
@@ -175,7 +200,18 @@ def resolve_outcome(matched_rules, source=None, event_type=None, honour_batch=Tr
     if not non_suppressible:
         suppressing = next((entry for entry in matched_rules if entry["suppressed"]), None)
         if suppressing is not None:
-            response = system_response("suppressed", "Notification suppressed by notification rule configuration")
+            rule_name = suppressing.get("name")
+            reason = (
+                f'Suppressed by notification rule "{rule_name}"'
+                if rule_name
+                else "Notification suppressed by notification rule configuration"
+            )
+            extra = (
+                {"rule_management_url": f"{settings.base_url}/user-management#notification-rules"}
+                if settings.base_url
+                else {}
+            )
+            response = system_response("suppressed", reason, **extra)
             return RuleOutcome([response], [], False, suppressing["rule_id"])
         snoozing = next((entry for entry in matched_rules if snoozed(entry)), None)
         if snoozing is not None:
@@ -451,6 +487,7 @@ class NotificationRuleMatcher:
                 matched_rules.extend(
                     {
                         "rule_id": rule.id,
+                        "name": rule.name,
                         "suppressed": rule.is_suppressed,
                         "platform": mapping.platform,
                         "channels": mapping.channels,
@@ -468,6 +505,7 @@ class NotificationRuleMatcher:
                 matched_rules.append(
                     {
                         "rule_id": rule.id,
+                        "name": rule.name,
                         "suppressed": rule.is_suppressed,
                         "platform": None,
                         "channels": None,
@@ -626,39 +664,6 @@ class SlackSender(BaseSender):
             ),
         )
         return notification
-
-
-class TeamsSender(BaseSender):
-    def __init__(self, teams_app, cache: Cache, engine):
-        super().__init__(cache=cache, teams_app=teams_app, engine=engine)
-
-    async def acquire_teams_access_token(self, session, ms_teams_installation):
-        async def _refresh(sess, ip):
-            response = self.teams_app.acquire_token_by_refresh_token(
-                ip.refresh_token,
-                scopes=settings.ms_teams.scopes,
-            )
-            if "error" in response and response["error"]:
-                if "AADSTS700082" in response.get("error_description", ""):
-                    LOG.warning(f"Refresh token expired for installation id {ms_teams_installation.id}")
-                    # Clear the expiry (origin-aware) to mark the install as needing re-auth.
-                    await persist_messaging_token_async(sess, ip, ip.token, token_expires_at=None)
-                    return None
-                LOG.exception(
-                    f"Unable to get access token for teams due to {response.get('error_description')} for "
-                    f"installation id {ms_teams_installation.id}"
-                )
-                return None
-
-            ip.token = response.get("access_token")
-            ip.refresh_token = response.get("refresh_token")
-            expires_in = response.get("expires_in")
-            ip.token_expires_at = utc_now() + timedelta(seconds=expires_in - 60) if expires_in else None
-            return ip.token
-
-        return await self._refresh_token_if_expired(
-            session, ms_teams_installation, PlatformTypes.MS_TEAMS.value, _refresh
-        )
 
 
 class GoogleChatSender(BaseSender):
@@ -836,7 +841,11 @@ class GroupedMessageHandler:
                     platform_responses = []
                     for ip, channel, indexes in routes:
                         self.message_service.point_at(installed_platforms, ip, channel)
-                        params = {"events": [batch[index]["parameters"] for index in indexes]}
+                        events = [batch[index]["parameters"] for index in indexes]
+                        if orig_type == "anomaly" and settings.notifications.digest_resolved_enabled:
+                            # A firing anomaly and its resolve in one window show once, as resolved.
+                            events = latest_per_key(events)
+                        params = {"events": events}
                         platform_responses.extend(
                             await self.message_service.send_template_notification(
                                 session, tenant_id, {"parameters": params}, f"grouped_{orig_type}", [ip]
@@ -879,7 +888,6 @@ class MessageService:
 
         # Senders
         self.slack_sender = SlackSender(slack_app, cache)
-        self.teams_sender = TeamsSender(teams_app, cache, engine)
         self.gchat_sender = GoogleChatSender(cache)
         self.discord_sender = DiscordSender(cache)
 
@@ -918,7 +926,16 @@ class MessageService:
                 return await self.send_threaded_reply(tenant_id, thread, parameters)
 
             if type_ == "finding_resolved":
+                # An anomaly's firing went out in a grouped digest, which records
+                # no thread to reply in; its resolve joins the next digest instead.
+                if settings.notifications.digest_resolved_enabled:
+                    group_result = await self._maybe_enqueue_anomaly(parameters, tenant_id)
+                    if group_result is not None:
+                        return group_result
                 return await self.send_finding_resolved_reply(tenant_id, parameters)
+
+            if type_ == "finding_returned":
+                return await self._queue_returned_anomaly(parameters, tenant_id)
 
             group_result = await self._maybe_handle_grouped_message(source, parameters, tenant_id, payload)
             if group_result is not None:
@@ -985,9 +1002,16 @@ class MessageService:
         if source and source.lower() == "slo":
             return await self.group_handler.enqueue(kwargs)
 
+        return await self._maybe_enqueue_anomaly(parameters, tenant_id)
+
+    async def _maybe_enqueue_anomaly(self, parameters, tenant_id, returned=False):
+        """Queue an anomaly finding, firing, resolved or returned, for the
+        grouped anomaly digest. None when the finding is not an anomaly."""
         finding = parameters.get("finding") or {}
         finding_source = finding.get("source", "")
         if finding_source and finding_source.lower() == "anomaly":
+            if returned:
+                finding = {**finding, "returned": True}
             anomaly = {
                 "source": "anomaly",
                 "type": "anomaly",
@@ -997,6 +1021,19 @@ class MessageService:
             return await self.group_handler.enqueue(anomaly)
 
         return None
+
+    async def _queue_returned_anomaly(self, parameters, tenant_id):
+        """An anomaly that had cleared and fired again joins the next digest,
+        labelled. No other source has a message for a return."""
+        finding_source = (parameters.get("finding") or {}).get("source") or ""
+        if finding_source.lower() != "anomaly":
+            return [system_response("dropped", "A returned finding is only announced in the anomaly digest")]
+        group_result = await self._maybe_enqueue_anomaly(parameters, tenant_id, returned=True)
+        if group_result is not None:
+            return group_result
+        # enqueue logs its own failure and returns None; say so rather than
+        # report the anomaly as unsupported.
+        return [system_response("failed", "Could not queue the returned anomaly for the digest")]
 
     async def trigger_notification(
         self,
@@ -1020,6 +1057,8 @@ class MessageService:
             platform_responses = await self.send_template_notification(
                 session, tenant_id, kwargs, type_, installed_platforms
             )
+            if session.info.pop(STORED_TEAMS_CARDS, False):
+                await session.commit()
         else:
             LOG.warning("No template found for notification type '%s' — notification not delivered", type_)
         return platform_responses
@@ -1296,6 +1335,8 @@ class MessageService:
 
         async with BaseDB.async_session(self.engine)() as session:
             query = select(SentNotifications).filter_by(tenant_id=tenant_id, fingerprint=fingerprint)
+            # Only Slack rows have a thread to reply in; skip the rest in the query.
+            query = query.filter(SentNotifications.slack_thread_id.isnot(None))
             if account_id:
                 query = query.filter_by(account_id=account_id)
             rows = (await session.execute(query)).scalars().all()
@@ -1360,35 +1401,49 @@ class MessageService:
 
         return responses or [system_response("dropped", "Resolved reply already delivered")]
 
-    async def _send_finding_to_teams(self, session, tenant_id, ip, finding, _):
-        token = await self.teams_sender.acquire_teams_access_token(session, ip)
-        if not token:
-            return None, None
+    async def _post_teams_card_as_bot(self, session, tenant_id, team_id, channel_id, card, root_message_id=None):
+        """Post a card through the bot to a channel of an installed team, or as a
+        reply under root_message_id. Returns the Teams message id."""
+        team = await load_team_async(session, tenant_id, team_id)
+        if team is None:
+            raise TeamsBotError(APP_NOT_IN_TEAM)
+        sender = get_sender()
+        await asyncio.to_thread(sender.check_channel, team, channel_id)
+        conversation_id = thread_conversation_id(channel_id, root_message_id) if root_message_id else channel_id
+        return await asyncio.to_thread(sender.send, team.service_url, conversation_id, card_activity(card))
 
+    async def _send_teams_template_as_bot(self, session, ip, card):
+        """Post to the mapping's first channel."""
         teams_channels = self._normalize_teams_channels(ip)
-
-        response = await asyncio.to_thread(
-            MsTeamsClient.post_to_ms_teams,
-            token,
-            teams_channels,
-            get_ms_teams_finding_message_template(finding),
-            tenant_id,
-        )
-        if not (response and response.status_code == 201):
-            return None, None
-
-        channels_list = teams_channels.get("channels", [])
+        channels_list = teams_channels.get("channels", []) if isinstance(teams_channels, dict) else []
         channel_id = channels_list[0].get("id") if channels_list else None
-        message_data = response.json() if hasattr(response, "json") else {}
+        team_id = teams_channels.get("team_id") if isinstance(teams_channels, dict) else None
+        if not (team_id and channel_id):
+            return failed_response("ms_teams", reason="No Microsoft Teams channel is mapped")
+        try:
+            message_id = await self._post_teams_card_as_bot(session, ip.tenant_id, team_id, channel_id, card)
+        except TeamsBotError as e:
+            LOG.warning("Teams bot send to team %s failed: %s", team_id, e)
+            return failed_response("ms_teams", reason=str(e))
+        return success_response("ms_teams", team_id=team_id, channel_id=channel_id, message_ts=message_id)
 
-        response_data = success_response(
-            "ms_teams",
-            team_id=teams_channels.get("team_id"),
-            channel_id=channel_id,
-            message_ts=message_data.get("id"),
+    async def _send_finding_to_teams(self, session, tenant_id, ip, finding, fingerprint):
+        # A failure is returned too, so its reason reaches the delivery status.
+        card = get_ms_teams_finding_message_template(finding, ip.tenant_id)
+        response = await self._send_teams_template_as_bot(session, ip, card)
+        if response.get("status") != "success":
+            return response, None
+        # Stored so a click can update it and a reply in its thread can read it.
+        row = card_actions.card_row(
+            ip.tenant_id,
+            finding.get("cloud_account_id"),
+            fingerprint,
+            response.get("channel_id"),
+            response.get("message_ts"),
+            card,
+            "finding",
         )
-
-        return response_data, None
+        return response, row
 
     async def _send_finding_to_teams_webhook(self, session, tenant_id, ip, finding, _):
         """POST a finding card to ip.webhook_url. Returns (response, None) — webhooks
@@ -1744,29 +1799,24 @@ class MessageService:
             LOG.exception("weekly digest: attaching the PDF failed; the summary was delivered")
 
     async def send_teams_template_notification(self, ip, template_func, param_value, session, tenant):
-        token = await self.teams_sender.acquire_teams_access_token(session, ip)
-        if not token:
-            return failed_response("ms_teams", reason="Unable to authenticate teams installation")
-
-        teams_channels = self._normalize_teams_channels(ip)
-        response = await asyncio.to_thread(
-            MsTeamsClient.post_to_ms_teams, token, teams_channels, template_func(param_value), tenant
-        )
-
-        if response and response.status_code == 201:
-            channels_list = teams_channels.get("channels", [])
-            channel_id = channels_list[0].get("id") if channels_list else None
-            message_data = response.json() if hasattr(response, "json") else {}
-
-            return success_response(
-                "ms_teams",
-                team_id=teams_channels.get("team_id"),
-                channel_id=channel_id,
-                message_ts=message_data.get("id"),
+        card = card_actions.with_approval_buttons(template_func(param_value), param_value, ip.tenant_id)
+        response = await self._send_teams_template_as_bot(session, ip, card)
+        # A card with buttons is stored, so a click can update it. It's committed
+        # by the caller with the rest of the notification (trigger_notification).
+        if session is not None and response.get("status") == "success" and card_actions.has_actions(card):
+            row = card_actions.card_row(
+                ip.tenant_id,
+                _approval_account_id(param_value),
+                None,
+                response.get("channel_id"),
+                response.get("message_ts"),
+                card,
+                "approval",
             )
-
-        reason = response.reason if response else "Unable to send teams notification"
-        return failed_response("ms_teams", reason=reason)
+            if row is not None:
+                session.add(row)
+                session.info[STORED_TEAMS_CARDS] = True
+        return response
 
     async def send_teams_webhook_template_notification(self, ip, template_func, param_value, tenant):
         """Template send via webhook: same ms_teams card, POSTed to ip.webhook_url."""
@@ -1955,6 +2005,8 @@ class MessageService:
                     return [failed_response(platform, reason="Unsupported platform")]
 
                 template = template_factories[platform](generic_params)
+                if platform == PlatformTypes.MS_TEAMS.value:
+                    template = card_actions.with_approval_buttons(template, generic_params, ip.tenant_id)
 
                 handlers = {
                     PlatformTypes.SLACK.value: lambda: self._send_slack_threaded_reply(
@@ -2011,28 +2063,33 @@ class MessageService:
 
     async def _send_teams_threaded_reply(self, session, ip, team_id, channel_id, parent_message_id, template):
         """Send MS Teams threaded reply using generic template (adaptive card)."""
-        token = await self.teams_sender.acquire_teams_access_token(session, ip)
-        if not token:
-            return [failed_response("ms_teams", reason="Token acquisition failed")]
-
-        # Template is the adaptive card dict
-        response = await asyncio.to_thread(
-            MsTeamsClient.post_reply_to_thread, token, team_id, channel_id, parent_message_id, template
-        )
-
-        if response and getattr(response, "status_code", None) == 201:
-            message_data = response.json() if hasattr(response, "json") else {}
-            return [
-                success_response(
-                    "ms_teams",
-                    team_id=team_id,
-                    channel_id=channel_id,
-                    message_ts=message_data.get("id"),
-                    parent_message_id=parent_message_id,
-                )
-            ]
-
-        return [failed_response("ms_teams", reason="API call failed")]
+        try:
+            message_id = await self._post_teams_card_as_bot(
+                session, ip.tenant_id, team_id, channel_id, template, root_message_id=parent_message_id
+            )
+        except TeamsBotError as e:
+            LOG.warning("Teams bot thread reply in team %s failed: %s", team_id, e)
+            return [failed_response("ms_teams", reason=str(e))]
+        if card_actions.has_actions(template):
+            row = card_actions.card_row(ip.tenant_id, None, None, channel_id, message_id, template, "approval")
+            if row is not None:
+                # The card is already posted: a failed save only means clicks on it
+                # reply in the thread, so it doesn't fail the send.
+                try:
+                    session.add(row)
+                    await session.commit()
+                except Exception as e:
+                    await session.rollback()
+                    LOG.warning("Storing Teams approval card %s failed: %s", message_id, e)
+        return [
+            success_response(
+                "ms_teams",
+                team_id=team_id,
+                channel_id=channel_id,
+                message_ts=message_id,
+                parent_message_id=parent_message_id,
+            )
+        ]
 
     @staticmethod
     def _convert_gchat_message_to_thread_name(message_name, space_id):

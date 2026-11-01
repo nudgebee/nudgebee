@@ -48,6 +48,13 @@ func (t AzureCliTool) ConfirmationKey(toolInput string) string {
 	return targetConfirmationKey(t.Name(), RequestedCloudAccount(req.Arguments))
 }
 
+func (t AzureCliTool) PrepareDelegatedTargetInput(target *core.ExecutionTarget, input string) (string, error) {
+	if target == nil || target.Provider != "azure" || RequestedCloudAccount(core.ParseNBToolCallRequestFromInput(input).Arguments) != "" {
+		return input, nil
+	}
+	return addDelegatedTargetArgument(input, "account", target.Name)
+}
+
 func (t AzureCliTool) RequestedTarget(toolInput string) (string, error) {
 	req := core.ParseNBToolCallRequestFromInput(toolInput)
 	return RequestedCloudAccount(req.Arguments), nil
@@ -126,6 +133,9 @@ func (t AzureCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToo
 	}
 	target, err := ResolveRequestedTarget(nbRequestContext.Ctx, nbRequestContext.AccountId, t.Name(), nbRequestContext.ToolConfig, requested)
 	if err != nil {
+		return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
+	}
+	if err := VerifyDelegatedTargetIdentity(nbRequestContext, "azure", target, requested); err != nil {
 		return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
 	}
 	provenance := cloudTargetProvenance(target)
@@ -257,6 +267,11 @@ func classifyAzureVerb(verb string) core.ToolRequestType {
 // inferAzureVerbType classifies an Azure CLI command by its verb.
 // Returns empty string if the verb is not recognized (caller should fall back to LLM).
 func inferAzureVerbType(command string) core.ToolRequestType {
+	// The command runs through a shell, so one verb cannot speak for a chain,
+	// a substitution or a comment.
+	if hasUnquotedShellSyntax(command) {
+		return ""
+	}
 	parts := strings.Fields(strings.TrimSpace(command))
 
 	if result := isCloudCLIInfoFlag(parts); result != "" {
@@ -302,7 +317,11 @@ func inferAzureVerbType(command string) core.ToolRequestType {
 }
 
 func (t AzureCliTool) InferToolRequestType(ctx *security.RequestContext, toolName, input string) (core.ToolRequestType, error) {
-	requestType := inferAzureVerbType(extractCommandFromToolInput(input))
+	command := extractCommandFromToolInput(input)
+	requestType := inferAzureVerbType(command)
+	if requestType == "" {
+		requestType = classifyOwnCLIChain(ctx, command, inferAzureVerbType, "az")
+	}
 	if requestType != "" {
 		return requestType, nil
 	}
@@ -345,7 +364,7 @@ func (t AzureCliTool) InferToolRequestTypePrompt(ctx *security.RequestContext, t
 	answer: read
 
 	input: az vm run-command invoke --command-id RunPowerShellScript --name MyVM --resource-group MyRG --scripts "Get-Process"
-	answer: read
+	answer: create
 
 	input: az vm run-command invoke --command-id RunPowerShellScript --name MyVM --resource-group MyRG --scripts "New-Item -Path C:\temp\test.txt -ItemType File"
 	answer: create

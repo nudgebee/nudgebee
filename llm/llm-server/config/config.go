@@ -193,6 +193,33 @@ type appConfig struct {
 	LlmProviderMaxRetries     int    `mapstructure:"llm_provider_max_retries"`
 	LlmProviderThinkingLevel  string `mapstructure:"llm_provider_thinking_level"` // empty (default): use per-model default; "minimal"/"low"/"medium"/"high": explicit level
 
+	// ENV counterparts of the LLM-integration keys that, until now, only a DB
+	// integration could supply. Every other credential/endpoint key already has
+	// one; these did not, so an env-configured deployment (on-prem, test, local)
+	// had no way to set them at all — see resolveLLMAuthSettings and
+	// getLLMDisableThinking. Each sits BELOW its DB counterpart, matching the
+	// package rule that DB always beats ENV, so leaving them unset reproduces
+	// the previous behaviour exactly.
+	//
+	// LlmDisableThinking opts an OpenAI-compatible server out of chat-template
+	// thinking (chat_template_kwargs {"enable_thinking": false}) — the vLLM/Qwen3
+	// switch. Distinct from LlmProviderThinkingBudget, which only the Gemini and
+	// Bedrock-Anthropic clients translate.
+	LlmDisableThinking        bool   `mapstructure:"llm_disable_thinking"`
+	LlmAuthType               string `mapstructure:"llm_auth_type"` // "api_key" (default) or "oauth_client_credentials"
+	LlmOAuthTokenURL          string `mapstructure:"llm_oauth_token_url"`
+	LlmOAuthClientID          string `mapstructure:"llm_oauth_client_id"`
+	LlmOAuthClientSecret      string `mapstructure:"llm_oauth_client_secret"`
+	LlmOAuthScope             string `mapstructure:"llm_oauth_scope"`
+	LlmExtraHeaders           string `mapstructure:"llm_extra_headers"`
+	LlmProviderDeploymentName string `mapstructure:"llm_provider_deployment_name"` // Azure deployment when it differs from the model name
+	LlmProviderApiStyle       string `mapstructure:"llm_provider_api_style"`       // Azure OpenAI wire style: v1 (default) or classic
+	// Configured fallback, reference form only: name a slot ENV or DB already
+	// defines (e.g. "env:tier:summary") rather than restating a whole provider
+	// config in environment variables. The owned-slot form stays DB-only.
+	LlmFallbackRefSource string `mapstructure:"llm_fallback_ref_source"`
+	LlmFallbackRefModel  string `mapstructure:"llm_fallback_ref_model"`
+
 	// LlmThinkingLevelNativeEnabled sends a model's NATIVE thinking control instead of
 	// the legacy numeric budget, for models whose documented control is a level.
 	//
@@ -238,6 +265,11 @@ type appConfig struct {
 	//                          can cover the growing tool history. A request that references a
 	//                          CachedContent gets no implicit caching on the rest of the prompt.
 	LlmServerGeminiCacheStrategy string `mapstructure:"llm_server_gemini_cache_strategy"`
+	// LlmServerAnthropicSystemCacheTTL is the TTL of the Anthropic system-prompt cache
+	// marker for Global/Account-scope agents (#39633): "1h" (default) keeps the shared
+	// system prompt + tools cached across runs up to an hour apart, at 2x write cost;
+	// "5m" is the rollback value. Conversation scope and tool-loop markers stay at 5m.
+	LlmServerAnthropicSystemCacheTTL string `mapstructure:"llm_server_anthropic_system_cache_ttl"`
 	// LlmServerGeminiCacheHybridMinCoverage is the share of the prompt's tokens the CachedContent must
 	// cover for "hybrid" to reference it. Default 0.65.
 	LlmServerGeminiCacheHybridMinCoverage float64 `mapstructure:"llm_server_gemini_cache_hybrid_min_coverage"`
@@ -266,6 +298,10 @@ type appConfig struct {
 	// disabled with a single env, independent of which detectors are wired in.
 	// Default false (off).
 	LlmServerEgressFilterEnabled bool `mapstructure:"llm_server_egressfilter_enabled"`
+	// LlmServerTargetWriteAccess: a write that lands on another cluster or
+	// account needs write access there instead of on the conversation's
+	// account. Off restores requiring write on the conversation's account too.
+	LlmServerTargetWriteAccess bool `mapstructure:"llm_server_target_write_access"`
 
 	// Per-detector knobs. These only apply when LlmServerEgressFilterEnabled is true.
 	//
@@ -276,6 +312,12 @@ type appConfig struct {
 	// Any other value is treated as "audit".
 	LlmServerEgressFilterSecretsEnabled bool   `mapstructure:"llm_server_egressfilter_secrets_enabled"`
 	LlmServerEgressFilterSecretsMode    string `mapstructure:"llm_server_egressfilter_secrets_mode"`
+
+	// LlmServerEgressFilterToolOutputRedactEnabled redacts credential values
+	// in tool output before it is stored or shown to the model, whenever the
+	// secrets detector is on (the mode above governs the outbound request
+	// only). See egressfilter.RedactToolOutput.
+	LlmServerEgressFilterToolOutputRedactEnabled bool `mapstructure:"llm_server_egressfilter_tool_output_redact_enabled"`
 
 	// LlmServerEgressFilterAllowlist is a comma-separated list of values that
 	// will be excluded from detection even when they match a rule. Typical
@@ -396,6 +438,8 @@ type appConfig struct {
 	// resolve the account's default trace provider.
 	LLMServerTraceProviderOverride   string `mapstructure:"llm_server_trace_provider_override"`
 	LlmServerAgentMaxSqlRows         int    `mapstructure:"llm_server_agent_max_sqlrows"`
+	LlmServerAgentSqlTimeoutSec      int    `mapstructure:"llm_server_agent_sql_timeout_sec"`
+	LlmServerAgentSqlWorkMemMB       int    `mapstructure:"llm_server_agent_sql_work_mem_mb"`
 	LlmServerAgentMaxTracesRows      int    `mapstructure:"llm_server_agent_max_tracesrows"`
 	LlmServerAgentMaxScratchpadChars int    `mapstructure:"llm_server_agent_max_scratchpad_chars"`
 	LlmServerMaxGCBytes              int    `mapstructure:"llm_server_max_gc_bytes"`
@@ -646,7 +690,28 @@ type appConfig struct {
 	// own provider-specific evidence recipe. Enabled by default; deployments may opt out.
 	OrchestratorGroundingEnabled bool `mapstructure:"llm_orchestrator_grounding_enabled"`
 	// ClaimCritiqueFeedbackEnabled lets captured claim gaps use the existing refinement budget.
-	ClaimCritiqueFeedbackEnabled bool `mapstructure:"llm_claim_critique_feedback_enabled"`
+	// Derived from CritiqueMode (not off); not set directly.
+	ClaimCritiqueFeedbackEnabled bool `mapstructure:"-"`
+	// ClaimCritiqueActionableFeedbackEnabled adds a second step to the claim critique: when the
+	// audit rejects an answer, a guidance call writes why each flagged claim is weak, a competing
+	// explanation and one discriminating check, replacing the "label hypotheses" template. The
+	// audit and its accept/refine verdict are unchanged (#39803). Derived from CritiqueMode
+	// (guided or continuation); not set directly.
+	ClaimCritiqueActionableFeedbackEnabled bool `mapstructure:"-"`
+	// CritiqueMode selects how answers are critiqued (llm_critique_mode):
+	//   off          — answer critique only, no claim audit
+	//   audit        — plus the claim audit, with its plain feedback
+	//   guided       — plus the guidance step (why each claim is weak, an alternative, a check)
+	//   continuation — guided, with the answer critique, audit and guidance sent as
+	//                  continuations of the ReAct4 planner's own request, so they reuse its
+	//                  prompt cache and see earlier refinement rounds. Any failure falls back to
+	//                  the standalone critique; ReAct3 always uses the standalone path.
+	// Default continuation.
+	// ClaimCritiqueFeedbackEnabled, ClaimCritiqueActionableFeedbackEnabled and
+	// CritiqueContinuationEnabled are set from it at load time; the code reads those.
+	CritiqueMode string `mapstructure:"llm_critique_mode"`
+	// CritiqueContinuationEnabled is derived from CritiqueMode (continuation); not set directly.
+	CritiqueContinuationEnabled bool `mapstructure:"-"`
 	// PremiseVerificationEnabled gates the "confirm the symptom before diagnosing it"
 	// discipline in the answer critiquer. When on, the top-level investigation must
 	// treat a user-asserted symptom ("X is down",
@@ -905,12 +970,6 @@ type appConfig struct {
 	MaxQueuedMessagesPerConversation int     `mapstructure:"llm_server_max_queued_messages_per_conversation"`
 	ProductivityMetricsEnabled       bool    `mapstructure:"llm_server_productivity_metrics_enabled"`
 	TicketV2Enabled                  bool    `mapstructure:"llm_server_ticket_v2_enabled"`
-	// EventsV2Enabled gates the events_v2 agent (deterministic structured
-	// tools fronting raw SQL — see docs/architecture-decisions.md). Unlike
-	// TicketV2Enabled, this does not redirect any existing alias to v2 —
-	// events_v2 isn't wired into generic "events" routing — it's a pure kill
-	// switch on whether an explicit @events_v2 mention resolves. Default false.
-	EventsV2Enabled bool `mapstructure:"llm_server_events_v2_enabled"`
 	// FollowupResumeV2Enabled routes followup submissions through the clean
 	// single-entry resume path (#28141) that uses conv-level locking and
 	// looks up the agent's correct message_id from DB instead of trusting
@@ -1044,10 +1103,10 @@ type appConfig struct {
 	// explicit prefs, session) is injected. Default false — the ambient core is
 	// the baseline; the heavier query-dependent layers are opt-in per env.
 	MemoryInjectEnabled bool `mapstructure:"llm_memory_inject_enabled"`
-	// MemoryToolEnabled is path B: when on, the on-demand `memory` tool is enabled
-	// so agents can search memory via keywords (plain DB fetch, no RAG/rerank).
-	// Independent of MemoryInjectEnabled — either, both, or neither. Default off.
-	MemoryToolEnabled            bool `mapstructure:"llm_memory_tool_enabled"`
+	// MemoryToolsEnabled turns on the filter-based memory_read and typed
+	// memory_write NBTools. When on, orchestrators expose them via
+	// appendMemoryToolName. See llm/llm-server/ee/memory/docs/memory-tools-plan.md.
+	MemoryToolsEnabled           bool `mapstructure:"llm_memory_tools_enabled"`
 	MemoryRagProjectorBatchSize  int  `mapstructure:"llm_memory_rag_projector_batch_size"`
 	MemoryRagProjectorIntervalMs int  `mapstructure:"llm_memory_rag_projector_interval_ms"`
 	MemoryRagProjectorWorkers    int  `mapstructure:"llm_memory_rag_projector_workers"`
@@ -1060,7 +1119,7 @@ type appConfig struct {
 	// MemoryPatternsPerKindLimit caps how many rows of a single pattern_kind
 	// reach Compose. Without it one chatty kind (e.g. lots of
 	// frequent_service rows) can crowd out frequent_namespace /
-	// preferred_diagnostic_flow / etc. Within each kind the rows are
+	// diagnostic_playbook / etc. Within each kind the rows are
 	// ordered by last_seen_at DESC (most recent first); pinned rows still
 	// bypass this cap because pinning is an explicit "always show me this"
 	// signal. Set to 0 to disable.
@@ -1243,6 +1302,8 @@ func init() {
 	viper.SetDefault("llm_server_agent_max_loglines", 100)
 	viper.SetDefault("llm_server_trace_provider_override", "")
 	viper.SetDefault("llm_server_agent_max_sqlrows", 10)
+	viper.SetDefault("llm_server_agent_sql_timeout_sec", 120)
+	viper.SetDefault("llm_server_agent_sql_work_mem_mb", 32)
 	viper.SetDefault("llm_server_agent_max_tracesrows", 10)
 	viper.SetDefault("llm_server_agent_max_scratchpad_chars", 200000)
 	viper.SetDefault("llm_server_max_skill_content_length", 5000)
@@ -1266,6 +1327,21 @@ func init() {
 	//   huggingface:    "meta-llama/Llama-3.3-70B-Instruct"
 	viper.SetDefault("llm_model_name", "")
 	viper.SetDefault("llm_model_fallbacks", "")
+	// These must be registered, not merely tagged. viper.AutomaticEnv only
+	// exposes a key to Unmarshal once viper knows it exists, so a mapstructure
+	// tag alone leaves the field at its zero value however the environment is
+	// set — the variable is read by Get* but never reaches the struct.
+	viper.SetDefault("llm_disable_thinking", false)
+	viper.SetDefault("llm_auth_type", "")
+	viper.SetDefault("llm_oauth_token_url", "")
+	viper.SetDefault("llm_oauth_client_id", "")
+	viper.SetDefault("llm_oauth_client_secret", "")
+	viper.SetDefault("llm_oauth_scope", "")
+	viper.SetDefault("llm_extra_headers", "")
+	viper.SetDefault("llm_provider_deployment_name", "")
+	viper.SetDefault("llm_provider_api_style", "")
+	viper.SetDefault("llm_fallback_ref_source", "")
+	viper.SetDefault("llm_fallback_ref_model", "")
 	viper.SetDefault("llm_provider_api_endpoint", "") // https://api.openai.com/v1 | https://nudgebee-slm.services.ai.azure.com | https://api-inference.huggingface.co
 	viper.SetDefault("llm_provider_api_key", "")
 	viper.SetDefault("llm_provider_api_version", "") // 2024-05-01-preview | 2024-05-01-preview | 2024-05-01-preview
@@ -1286,6 +1362,7 @@ func init() {
 	viper.SetDefault("llm_enable_caching", true)
 	viper.SetDefault("llm_server_async_cache_creation", true)
 	viper.SetDefault("llm_server_gemini_cache_strategy", "hybrid")
+	viper.SetDefault("llm_server_anthropic_system_cache_ttl", "1h")
 	viper.SetDefault("llm_server_gemini_cache_hybrid_min_coverage", 0.65)
 	viper.SetDefault("llm_server_cache_flash_ttl_minutes", 30)
 	viper.SetDefault("llm_server_cache_pro_ttl_minutes", 10)
@@ -1300,8 +1377,10 @@ func init() {
 	// flipped off explicitly if an operator doesn't want the wrapper
 	// installed at all.
 	viper.SetDefault("llm_server_egressfilter_enabled", true)
+	viper.SetDefault("llm_server_target_write_access", true)
 	viper.SetDefault("llm_server_egressfilter_secrets_enabled", true)
 	viper.SetDefault("llm_server_egressfilter_secrets_mode", "detect")
+	viper.SetDefault("llm_server_egressfilter_tool_output_redact_enabled", true)
 	// Required even though "" is the natural zero — viper.Unmarshal skips
 	// fields with no default set, so without this line the env var
 	// LLM_SERVER_EGRESSFILTER_ALLOWLIST is silently ignored in any
@@ -1460,7 +1539,8 @@ func init() {
 	viper.SetDefault("llm_server_k8s_orchestrator_mode", "lean")
 	viper.SetDefault("llm_orchestrator_grounding_enabled", true)
 	viper.SetDefault("llm_premise_verification_enabled", true)
-	viper.SetDefault("llm_claim_critique_feedback_enabled", true)
+	// The default also registers the key: viper.Unmarshal ignores env vars for keys it does not know.
+	viper.SetDefault("llm_critique_mode", CritiqueModeContinuation)
 	viper.SetDefault("llm_server_workspace_port", 8080)
 	viper.SetDefault("llm_server_workspace_local_url", "")   // e.g. http://localhost:8080 for local dev
 	viper.SetDefault("llm_server_workspace_local_token", "") // must match NB_WORKSPACE_TOKEN on the local code-analysis process
@@ -1556,7 +1636,7 @@ func init() {
 	viper.SetDefault("llm_max_monthly_count_limit", 5000)
 	viper.SetDefault("llm_max_daily_count_limit", 500)
 	viper.SetDefault("max_memory_facts_per_conversation", 30)
-	viper.SetDefault("llm_server_queued_messages_enabled", false)
+	viper.SetDefault("llm_server_queued_messages_enabled", true)
 	viper.SetDefault("llm_server_max_queued_messages_per_conversation", 5)
 	viper.SetDefault("llm_memory_ttl_never_used_days", 90)
 	viper.SetDefault("llm_memory_ttl_stale_days", 180)
@@ -1566,7 +1646,6 @@ func init() {
 	viper.SetDefault("llm_server_productivity_metrics_enabled", false)
 
 	viper.SetDefault("llm_server_ticket_v2_enabled", true)
-	viper.SetDefault("llm_server_events_v2_enabled", false)
 
 	viper.SetDefault("llm_server_followup_resume_v2_enabled", true)
 	viper.SetDefault("llm_server_followup_cancel_enabled", false)
@@ -1616,7 +1695,7 @@ func init() {
 	viper.SetDefault("llm_memory_rerank_w_decay", 0.20)
 	viper.SetDefault("llm_memory_rerank_threshold", 0.6)
 	viper.SetDefault("llm_memory_inject_enabled", false)
-	viper.SetDefault("llm_memory_tool_enabled", false)
+	viper.SetDefault("llm_memory_tools_enabled", false)
 	viper.SetDefault("llm_memory_rag_timeout_ms", 800)
 	viper.SetDefault("llm_memory_rag_overfetch_multiplier", 3)
 	viper.SetDefault("llm_memory_rag_projector_batch_size", 50)
@@ -1764,6 +1843,10 @@ func init() {
 		panic(err.Error())
 	}
 
+	if err := Config.deriveCritiqueFlags(); err != nil {
+		panic(err.Error())
+	}
+
 	if Config.OtelExporterOtlpEndpoint == "" {
 		Config.OtelExporterOtlpEndpoint = "127.0.0.1:4317"
 	}
@@ -1815,6 +1898,41 @@ func resolveOrchestratorThinkingLevelConfig(canonical string, canonicalSet bool)
 		return canonical
 	}
 	return "medium"
+}
+
+// Critique modes for llm_critique_mode (see Config.CritiqueMode).
+const (
+	CritiqueModeOff          = "off"
+	CritiqueModeAudit        = "audit"
+	CritiqueModeGuided       = "guided"
+	CritiqueModeContinuation = "continuation"
+)
+
+// deriveCritiqueFlags resolves CritiqueMode and sets the flags the critique code reads.
+func (c *appConfig) deriveCritiqueFlags() error {
+	mode, err := resolveCritiqueMode(c.CritiqueMode)
+	if err != nil {
+		return err
+	}
+	c.CritiqueMode = mode
+	c.ClaimCritiqueFeedbackEnabled = mode != CritiqueModeOff
+	c.ClaimCritiqueActionableFeedbackEnabled = mode == CritiqueModeGuided || mode == CritiqueModeContinuation
+	c.CritiqueContinuationEnabled = mode == CritiqueModeContinuation
+	return nil
+}
+
+// resolveCritiqueMode validates llm_critique_mode; empty means the default, continuation.
+func resolveCritiqueMode(rawMode string) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(rawMode))
+	switch mode {
+	case "":
+		return CritiqueModeContinuation, nil
+	case CritiqueModeOff, CritiqueModeAudit, CritiqueModeGuided, CritiqueModeContinuation:
+		return mode, nil
+	default:
+		return "", fmt.Errorf("invalid llm_critique_mode %q: supported values are %q, %q, %q, %q",
+			rawMode, CritiqueModeOff, CritiqueModeAudit, CritiqueModeGuided, CritiqueModeContinuation)
+	}
 }
 
 func resolvePlannerEngineConfig(rawEngine string, explicitlySet bool) (string, error) {
@@ -1903,4 +2021,14 @@ func LogSecurityWarnings() {
 				"set RELAY_SERVER_SECRET_KEY to a strong random value before deploying.")
 		}
 	}
+}
+
+// EffectivePIIBackend is shared by runtime routing and settings capabilities.
+// Unknown values preserve the historical HTTP fallback; the configured default
+// remains inprocess.
+func EffectivePIIBackend() string {
+	if strings.EqualFold(strings.TrimSpace(Config.LlmServerEgressFilterPIIBackend), "inprocess") {
+		return "inprocess"
+	}
+	return "http"
 }

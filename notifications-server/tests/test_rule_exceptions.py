@@ -20,6 +20,7 @@ PROD, DEV = "acc-prod", "acc-dev"
 def _rule(rule_id, exceptions=None, suppressed=False, accounts=None):
     return SimpleNamespace(
         id=rule_id,
+        name=rule_id,
         source="troubleshoot",
         account_id=None,
         scope_mode=SCOPE_ACCOUNTS if accounts else SCOPE_ALL,

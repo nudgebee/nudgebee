@@ -43,7 +43,7 @@ func (m DatadogHostsTool) Description() string {
 func (m DatadogHostsTool) InputSchema() toolcore.ToolSchema {
 	return toolcore.ToolSchema{
 		Type:       toolcore.ToolSchemaTypeObject,
-		Properties: map[string]toolcore.ToolSchemaProperty{},
+		Properties: map[string]toolcore.ToolSchemaProperty{"instance": instanceProperty},
 		Required:   []string{},
 	}
 }

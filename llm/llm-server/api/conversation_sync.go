@@ -492,7 +492,7 @@ func syncStuckEventAnalyses() error {
 // failAbandonedEventAnalysis persists abandonment before checking the normal pipeline.
 // RCA uses a separate conversation and must never drain normal investigation tokens.
 func failAbandonedEventAnalysis(ctx *security.RequestContext, analysis events.InProgressAnalysis, dbManager *common.DatabaseManager) (EventAnalysisResponse, bool, error) {
-	repo := events.NewEventAnalysisRepository(dbManager)
+	repo := events.NewEventAnalysisRepositoryForAccount(ctx, dbManager, analysis.AccountId)
 	const reason = "recovery abandoned: analysis stuck for over 24 hours"
 	switch analysis.AnalysisType {
 	case events.AnalysisTypeRCAAttempt:

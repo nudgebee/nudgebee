@@ -142,16 +142,8 @@ func (m OracleExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 	// accepts SQL via stdin (heredoc), which the shim cannot capture from os.Args.
 	// The shim captures this -Q flag in os.Args, and forager's sanitizeQuery
 	// extracts the SQL from it.
-	sqlplusFlags := ""
-	if database != "" {
-		escapedDb := strings.ReplaceAll(database, `"`, `\"`)
-		sqlplusFlags = fmt.Sprintf(` -d "%s"`, escapedDb)
-	}
-	escapedQuery := strings.ReplaceAll(query, `"`, `\"`)
-	wsQuery := fmt.Sprintf(`sqlplus%s -Q "%s"`, sqlplusFlags, escapedQuery)
-	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, wsQuery, map[string]string{
-		workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
-	})
+	wsQuery := oracleWorkspaceShellCommand(database, query)
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, wsQuery, IntegrationWorkspaceEnv(nbRequestContext, nil))
 
 	response = convertCsvToJsonString(nbRequestContext, response, rune(','))
 
@@ -294,4 +286,26 @@ func (m OracleExecuteTool) ConfigSchema(ctx *security.RequestContext) core.ToolC
 			},
 		},
 	}
+}
+
+// oracleWorkspaceShellCommand builds the sqlplus command the workspace pod's shell
+// runs. Values are single-quoted: inside double quotes, $( ), backticks and
+// $VAR in the query would run in the workspace pod.
+func oracleWorkspaceShellCommand(database, query string) string {
+	flags := ""
+	if database != "" {
+		flags = " -d " + common.ShellEscape(database)
+	}
+	return fmt.Sprintf(`sqlplus%s -Q %s`, flags, common.ShellEscape(query))
+}
+
+// InferToolRequestType classifies the query with the static SQL rules; ""
+// leaves an unclear query to InferToolRequestTypePrompt.
+func (m OracleExecuteTool) InferToolRequestType(_ *security.RequestContext, _, input string) (core.ToolRequestType, error) {
+	return inferSQLRequestType(input), nil
+}
+
+// InferToolRequestTypePrompt classifies queries the static SQL rules cannot.
+func (m OracleExecuteTool) InferToolRequestTypePrompt(_ *security.RequestContext, _, _ string) (string, error) {
+	return sqlRequestTypePrompt("Oracle"), nil
 }

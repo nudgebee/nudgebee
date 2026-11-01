@@ -15,7 +15,7 @@ import (
 )
 
 // Note categories a document can carry. Mirrors the CHECK constraint on
-// llm_kb_document_categories.note_category.
+// llm_kb_capability_entries.note_category (entry_type = 'kb_document_mark').
 const (
 	KBNoteCategorySOP  = "sop"
 	KBNoteCategoryFact = "fact"
@@ -130,6 +130,13 @@ func ValidKBNoteCategory(category string) bool {
 // retrieval hit cannot name the row it came from. Reading this table any other
 // way here than ResolveDocumentCategories reads it would let the Documents list
 // and retrieval disagree about the same page.
+//
+// Reads entry_type = 'kb_document_mark' rows of llm_kb_capability_entries —
+// formerly its own table, llm_kb_document_categories (#39211), folded in here
+// (#38623 follow-up) because it and this table's kb_collection rows were two
+// lookalike per-KB-classification tables side by side. Only llm-server ever
+// reads or writes this entry type; rag-server's own entry types are untouched
+// by anything in this file.
 func kbDocumentCategories(ctx context.Context, accountId string, keys []string) (map[string]string, error) {
 	categories := map[string]string{}
 	if accountId == "" || len(keys) == 0 {
@@ -144,8 +151,8 @@ func kbDocumentCategories(ctx context.Context, accountId string, keys []string) 
 		NoteCategory string `db:"note_category"`
 	}
 	err = dbms.Db.SelectContext(ctx, &rows,
-		`SELECT document_key, note_category FROM llm_kb_document_categories
-		 WHERE account_id = $1 AND document_key = ANY($2::text[])`,
+		`SELECT document_key, note_category FROM llm_kb_capability_entries
+		 WHERE entry_type = 'kb_document_mark' AND account_id = $1 AND document_key = ANY($2::text[])`,
 		accountId, pq.Array(keys))
 	if err != nil {
 		return nil, fmt.Errorf("kb: failed to read document categories: %w", err)
@@ -212,7 +219,7 @@ func SetKBDocumentCategory(sc *security.RequestContext, accountId, kbId, documen
 	}
 	if category == "" {
 		_, err = dbms.Db.ExecContext(sc.GetContext(),
-			`DELETE FROM llm_kb_document_categories WHERE account_id = $1 AND document_key = $2`,
+			`DELETE FROM llm_kb_capability_entries WHERE entry_type = 'kb_document_mark' AND account_id = $1 AND document_key = $2`,
 			accountId, documentKey)
 		if err != nil {
 			return fmt.Errorf("kb: failed to clear document category: %w", err)
@@ -221,11 +228,14 @@ func SetKBDocumentCategory(sc *security.RequestContext, accountId, kbId, documen
 	}
 
 	actor := sql.NullString{String: sc.GetSecurityContext().GetUserId(), Valid: sc.GetSecurityContext().GetUserId() != ""}
+	// The ON CONFLICT target is the partial unique index on (account_id, document_key)
+	// WHERE entry_type = 'kb_document_mark' — this table's other entry types have their
+	// own, disjoint partial unique indexes, so this can never collide with one of theirs.
 	_, err = dbms.Db.ExecContext(sc.GetContext(), `
-		INSERT INTO llm_kb_document_categories
-			(tenant_id, account_id, kb_id, document_key, note_category, created_by, updated_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $6)
-		ON CONFLICT (account_id, document_key)
+		INSERT INTO llm_kb_capability_entries
+			(entry_type, tenant_id, account_id, kb_id, document_key, note_category, created_by, updated_by)
+		VALUES ('kb_document_mark', $1, $2, $3, $4, $5, $6, $6)
+		ON CONFLICT (account_id, document_key) WHERE entry_type = 'kb_document_mark'
 		DO UPDATE SET kb_id = EXCLUDED.kb_id, note_category = EXCLUDED.note_category,
 		              updated_by = EXCLUDED.updated_by, updated_at = NOW()`,
 		kb.TenantID, accountId, kbId, documentKey, category, actor)

@@ -243,7 +243,7 @@ func (m Signoz) ConfigSchema() core.IntegrationSchema {
 			},
 			"signoz_api_key": {
 				Type:         core.ToolSchemaTypeString,
-				Description:  "SigNoz API key, sent as the SIGNOZ-API-KEY header. Current SigNoz and SigNoz Cloud: Settings → Service Accounts → add a key (Viewer role is enough for logs). Older self-hosted releases: Settings → Access Tokens.",
+				Description:  "SigNoz API key, sent as the SIGNOZ-API-KEY header. Current SigNoz and SigNoz Cloud: Settings → Service Accounts → add a key (Viewer is enough to read logs and metrics; creating alert rules from Nudgebee needs Editor). Older self-hosted releases: Settings → Access Tokens.",
 				IsEncrypted:  true,
 				Priority:     70,
 				IsTestable:   true,
@@ -270,6 +270,12 @@ func (m Signoz) ConfigSchema() core.IntegrationSchema {
 				Default:          false,
 				AutoGenerateFunc: "",
 				Priority:         15,
+			},
+			core.DefaultMetricsProvider: {
+				Type:        core.ToolSchemaTypeBoolean,
+				Description: "Make SigNoz default Metrics Provider",
+				Default:     false,
+				Priority:    13,
 			},
 		},
 	}

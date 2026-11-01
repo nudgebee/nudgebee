@@ -91,7 +91,7 @@ func (a *awsLambda) GetResources(ctx providers.CloudProviderContext, account pro
 				continue
 			}
 
-			resources = append(resources, buildLambdaResource(ctx, svc, ec2Svc, instance, account, region))
+			resources = append(resources, buildLambdaResource(ctx, svc, ec2Svc, instance, nil, account, region))
 		}
 	}
 	return resources, nil
@@ -153,7 +153,7 @@ func (a *awsLambda) GetResourcesByIds(ctx providers.CloudProviderContext, accoun
 		instance := *out.Configuration
 		clearGetFunctionOnlyFields(&instance)
 
-		resources = append(resources, buildLambdaResource(ctx, svc, ec2Svc, instance, account, region))
+		resources = append(resources, buildLambdaResource(ctx, svc, ec2Svc, instance, out, account, region))
 	}
 	return resources, nil
 }
@@ -189,23 +189,37 @@ func clearGetFunctionOnlyFields(fn *lambdatypes.FunctionConfiguration) {
 // Shared by GetResources and GetResourcesByIds so the full-scan and targeted paths
 // produce identical rows — updateCloudResource writes the result straight into
 // cloud_resourses, and any shape difference between the two shows up as row churn.
+//
+// details is the function's GetFunction output when the caller already has it; nil
+// fetches it. One GetFunction returns the tags and the reserved concurrency that
+// used to take a ListTags and a GetFunctionConcurrency call. Those two count against
+// Lambda's control-plane quota (15 requests per second per region, shared with the
+// customer's own tooling), which the per-function calls of a full sync already ran
+// close to; GetFunction has its own, higher quota.
 func buildLambdaResource(
 	ctx providers.CloudProviderContext,
 	svc *lambda.Client,
 	ec2Svc *ec2.Client,
 	instance lambdatypes.FunctionConfiguration,
+	details *lambda.GetFunctionOutput,
 	account providers.Account,
 	region string,
 ) providers.Resource {
+	if details == nil {
+		out, err := svc.GetFunction(ctx.GetContext(), &lambda.GetFunctionInput{
+			FunctionName: instance.FunctionName,
+		})
+		if err != nil {
+			// Log warning for non-critical failure
+			ctx.GetLogger().Warn("failed to fetch lambda tags and concurrency", "error", err, "functionArn", *instance.FunctionArn, "accountNumber", account.AccountNumber, "region", region)
+		} else {
+			details = out
+		}
+	}
+
 	tags := make(map[string][]string)
-	result, err := svc.ListTags(ctx.GetContext(), &lambda.ListTagsInput{
-		Resource: instance.FunctionArn,
-	})
-	if err != nil {
-		// Log warning for non-critical tag fetch failure
-		ctx.GetLogger().Warn("failed to fetch lambda tags", "error", err, "functionArn", *instance.FunctionArn, "accountNumber", account.AccountNumber, "region", region)
-	} else {
-		for k, v := range result.Tags {
+	if details != nil {
+		for k, v := range details.Tags {
 			tags[k] = append(tags[k], v)
 		}
 	}
@@ -237,15 +251,14 @@ func buildLambdaResource(
 		metaMap["FunctionUrls"] = functionUrls.FunctionUrlConfigs
 	}
 
-	// Function Concurrency
-	concurrency, err := svc.GetFunctionConcurrency(ctx.GetContext(), &lambda.GetFunctionConcurrencyInput{
-		FunctionName: instance.FunctionName,
-	})
-	if err != nil {
-		// Log warning for non-critical failure (might error if not set)
-		ctx.GetLogger().Warn("failed to fetch lambda concurrency", "error", err, "functionName", *instance.FunctionName, "accountNumber", account.AccountNumber, "region", region)
-	} else {
-		metaMap["Concurrency"] = concurrency.ReservedConcurrentExecutions
+	// Function Concurrency: nil when no reserved concurrency is set, as
+	// GetFunctionConcurrency reported it; absent when the lookup failed.
+	if details != nil {
+		var reserved *int32
+		if details.Concurrency != nil {
+			reserved = details.Concurrency.ReservedConcurrentExecutions
+		}
+		metaMap["Concurrency"] = reserved
 	}
 
 	// Provisioned Concurrency

@@ -26,6 +26,9 @@ interface ScanVmDialogProps {
 const ScanVmDialog = ({ open, accountId, vm, onClose }: ScanVmDialogProps) => {
   const [targets, setTargets] = useState<VmScanTarget[]>([]);
   const [loadingTargets, setLoadingTargets] = useState(false);
+  // A failed lookup is not "nothing configured": telling the user to configure a
+  // datasource that already exists sends them the wrong way (#39859).
+  const [loadError, setLoadError] = useState('');
   const [selectedTarget, setSelectedTarget] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -33,6 +36,7 @@ const ScanVmDialog = ({ open, accountId, vm, onClose }: ScanVmDialogProps) => {
     if (!open || !accountId) return undefined;
     let cancelled = false;
     setLoadingTargets(true);
+    setLoadError('');
     setSelectedTarget(null);
     apiVm
       .listDiscoveryTargets(accountId)
@@ -47,6 +51,7 @@ const ScanVmDialog = ({ open, accountId, vm, onClose }: ScanVmDialogProps) => {
         if (cancelled) return;
         console.error('Failed to list SSH targets:', error);
         setTargets([]);
+        setLoadError(error?.message || 'Failed to list discovery datasources');
       })
       .finally(() => {
         if (!cancelled) setLoadingTargets(false);
@@ -99,7 +104,13 @@ const ScanVmDialog = ({ open, accountId, vm, onClose }: ScanVmDialogProps) => {
           onSelect={(event: any) => setSelectedTarget(event?.target?.value || null)}
         />
 
-        {!loadingTargets && targets.length === 0 && (
+        {!loadingTargets && loadError && (
+          <Typography id='vm-scan-datasource-error' sx={{ fontSize: ds.text.caption, color: ds.red[600] }}>
+            Could not load the discovery datasources for this account: {loadError}
+          </Typography>
+        )}
+
+        {!loadingTargets && !loadError && targets.length === 0 && (
           <Typography sx={{ fontSize: ds.text.caption, color: ds.red[600] }}>
             No forager discovery datasource is configured for this account. Configure the discovery datasource on the forager first.
           </Typography>

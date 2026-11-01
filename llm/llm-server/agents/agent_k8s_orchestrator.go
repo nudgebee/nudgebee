@@ -83,6 +83,8 @@ func newK8sLeanAgentNamed(accountId, name string) *K8sLeanAgent {
 
 func (l *K8sLeanAgent) GetName() string { return l.name }
 
+func (l *K8sLeanAgent) AcceptsExecutionTarget() {}
+
 func (l *K8sLeanAgent) GetNameAliases() []string {
 	return []string{"Kubernetes Troubleshooter", "Debugger", "k8s_debug"}
 }
@@ -237,29 +239,58 @@ func InvalidateAgentSupportedToolsCache(accountId string, agentName string) {
 	agentSupportedToolsCacheInstance.delete(accountId, agentName)
 }
 
-// appendMemoryToolName adds the on-demand memory tool (path B) to a tool-name
-// list when LLM_MEMORY_TOOL_ENABLED is set, so every top-level orchestrator
-// (k8s + cloud) exposes it consistently. Independent of the RAG-inject path.
+// appendMemoryToolName adds the on-demand memory tools to a tool-name list
+// when LLM_MEMORY_TOOLS_ENABLED is on.
+//
+// Automation / event / cron runs can SEE memory_write in their tool list
+// (we don't hide it per-source), but memoryWriteTool.Call refuses the write
+// at the top when ctx.Source is a known automation source. This closes the
+// alert-text-becomes-tenant-fact path — in those runs the "human" turn
+// carries external payload text, so without this gate an agent-authored
+// type=fact write would land in tenant-wide Collective memory sourced
+// from alert content. The per-request MemoryWriteAllowed switch (PR #39737)
+// is the intended control plane but no caller sets it today, and
+// collectUserTurnsIncludingCurrent's isAutomated check only covers the
+// user-attribution half.
 func appendMemoryToolName(names []string) []string {
-	if config.Config.MemoryToolEnabled {
-		return append(names, core.ToolMemory)
+	if config.Config.MemoryToolsEnabled {
+		// Tool names kept in sync with the Name() method of memoryReadTool /
+		// memoryWriteTool in ee/memory/tool_memory.go. The literals here are
+		// the public contract the model is trained to call.
+		names = append(names, "memory_read", "memory_write")
 	}
 	return names
 }
 
-// memoryToolNudge tells an orchestrator to consult the on-demand memory tool
-// early. A tool description alone doesn't reliably drive call ordering (the model
-// reads it as "what the tool does", not "when to call it"), so the ordering hint
-// lives in the system prompt instead.
-const memoryToolNudge = "**Check memory early:** When investigating a named service, pod, or workload, call the `memory` tool at most once with keywords (service/pod name + symptom) to recall this user's known recurring patterns, past root causes, and preferences for that resource. When the memory input and grounding inputs are already known, issue memory alongside independent, non-conflicting live checks in the same batch. Wait for memory first only when its result is needed to construct the live checks. Use relevant hits to focus the investigation; if nothing relevant returns, proceed normally."
-
-// memoryNudgeIfEnabled returns the memory-first nudge when path B is on, else "".
+// memoryNudgeIfEnabled returns the memory-tools prompt nudge when the tools
+// are enabled.
 func memoryNudgeIfEnabled() string {
-	if config.Config.MemoryToolEnabled {
-		return memoryToolNudge
+	if config.Config.MemoryToolsEnabled {
+		return memoryReadWriteNudge
 	}
 	return ""
 }
+
+// memoryReadWriteNudge teaches the model when to call the new memory tools —
+// the concrete triggers that a tool description alone can't convey reliably
+// enough to survive across LLM providers. Deliberately terse and example-
+// heavy: models converge on the shape from patterns better than from
+// abstract rules. Ordered "read first, write when appropriate" because the
+// model is more likely to over-write than over-read.
+const memoryReadWriteNudge = "**memory_read before running live tools** when a resource id, subject, or preference key could plausibly be in memory. Pass `filters` with a specific field (resource_id, subject, or key) — at least one field is required. Only add `query` when you don't know the exact key and want a semantic broaden.\n\n" +
+	"**Call memory_write when the user's turn is clearly telling you something to remember going forward**, in one of these four shapes:\n" +
+	"- Imperative: 'remember', 'note', 'save this', 'don't forget', 'keep this in mind', 'store'\n" +
+	"- Declarative preference: 'I prefer X', 'I use X', 'my default X is Y', 'always do X', 'never do Y'\n" +
+	"- Declarative fact: 'X is at Y', 'X lives in Y', 'X runs on Y'\n" +
+	"- Declarative playbook / flow: 'for X, my flow is: A → B → C', 'when X happens I do Y', 'here's how I investigate X'\n\n" +
+	"**DO NOT save pass-through context during an unrelated investigation.** If the user drops a fact while asking about something else ('the OOM started at 2pm — by the way, checkout runs on node pool B — can you check limits?'), answer the question; do not save 'checkout runs on node pool B'. Save only when the durable statement is the point of the turn, or when the user explicitly asked you to remember.\n\n" +
+	"Pick the type from the shape:\n" +
+	"- **type=preference** — a rule the user wants you to follow going forward (log source, default namespace, output format). `key` is a short snake_case identifier; `value` is what they said.\n" +
+	"- **type=fact** — a truth about their infra (where a service runs, what it depends on, a config invariant). `subject` names the resource; `body` is the assertion.\n" +
+	"- **type=playbook** — an ordered sequence for handling a specific problem. `problem` names the trigger; `steps` is the ordered list.\n\n" +
+	"Pass the user's own words verbatim as `evidence` (min 15 chars). For type=playbook the evidence must appear verbatim in a recent user turn — the runtime refuses agent-fabricated playbooks.\n\n" +
+	"**When both apply in one user turn** — read first (recall what's known), then write (persist what's new). Call memory_write on the same turn the user stated the durable content; do not defer to a later turn.\n\n" +
+	"**Do NOT call memory_write for** your own methodology or interim findings during an investigation. That path is auto-consolidated when investigations resolve. And do NOT call it for questions the user asks (\"what are the pods?\" is a query, not a save-intent)."
 
 // k8sGroundingNudge is the "ground before you fan out" discipline. k8s_lean is the
 // only lean orchestrator missing the "start where the symptom shows" paragraph its

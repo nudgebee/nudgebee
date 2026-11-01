@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"nudgebee/services/common"
 	"sort"
 	"strings"
 	"time"
@@ -558,11 +559,14 @@ func selectFiringSeries(seriesList []*MetricHistory, threshold float64, isGT boo
 // selectSeriesForEvent picks the metric series that matches the firing event's labels, so the series
 // analyzed aligns with the fingerprint's firing intervals (an alertname spans many series; the wrong
 // one produces a contaminated baseline). Falls back to the top-violating series when the relay
-// returned no labels or none match.
+// returned no labels or none match. The event's "pod" label is the workload's name once a workload
+// matched, so the labels are read through common.SeriesMatchLabels — the same view the alert chart
+// uses to pick its series.
 func selectSeriesForEvent(seriesList []*MetricHistory, eventLabels map[string]interface{}, threshold float64, isGT bool) *MetricHistory {
 	if len(seriesList) == 0 {
 		return nil
 	}
+	eventLabels = common.SeriesMatchLabels(eventLabels)
 	var matches []*MetricHistory
 	for _, s := range seriesList {
 		if len(s.Labels) > 0 && seriesMatchesEvent(s.Labels, eventLabels) {

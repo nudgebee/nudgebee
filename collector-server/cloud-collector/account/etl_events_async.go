@@ -69,6 +69,21 @@ func (h *AsyncEventHandler) ProcessEvent(pCtx providers.CloudProviderContext, ev
 		return err
 	}
 
+	// A pushed firing is stored open only if the account's last poll listed its
+	// scope: the poll is what ends the row when no resolve is pushed, the alarm
+	// is deleted, or the resolve is lost. Where no poll has listed the scope in
+	// the last hour (never, or not since it started failing) it is stored as a
+	// moment, as every push was before.
+	if event.OngoingScope != "" {
+		jobStatus, statusErr := getAgentJobStatus(reqCtx, dbms, internalDBAccountID)
+		if statusErr != nil {
+			jobStatus = nil
+		}
+		if !listedScopesFromStatus(jobStatus, time.Now())[event.OngoingScope] {
+			event.OngoingScope = ""
+		}
+	}
+
 	// Call the centralized processing function with a single event in a slice
 	err = processEventsInternal(reqCtx, dbms, []providers.Event{event}, originatingAccount, internalDBAccountID)
 	if err != nil {

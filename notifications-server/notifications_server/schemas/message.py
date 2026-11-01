@@ -158,6 +158,10 @@ class PlatformResponse(BaseModel):
         description="Send status (success, failed, suppressed, snoozed, batch_delivery, queued, no_platform)",
     )
     reason: Optional[str] = Field(None, description="Additional information about the status")
+    rule_management_url: Optional[str] = Field(
+        None,
+        description="Notification Rules page link; set when status is 'suppressed' due to a matching rule",
+    )
 
     model_config = ConfigDict(extra="allow")
 

@@ -7,8 +7,10 @@ import "os"
 // env vars there to bump. Defaults below match the base chart so local/dev
 // runs without env pull the same digest production uses.
 //
-// trivy and kube-bench are mirrors of the upstream Aqua images, republished
-// under ghcr.io/nudgebee so installs pull from one registry; popeye is our
+// trivy and kube-bench are patched mirrors of the upstream Aqua images (upstream
+// + an apk upgrade layer, deploy/kubernetes/nudgebee-mirrors/, rebuilt weekly
+// by .github/workflows/infra-mirrors-image.yaml) under ghcr.io/nudgebee so
+// installs pull from one registry and OS packages stay patched; popeye is our
 // fork. Nova is published by nova/.github/workflows/build-image.yaml (date_sha
 // tag on every main build, v* on releases), and release.yaml auto-bumps the
 // Nova and Popeye tags from GHCR at package time.
@@ -22,10 +24,10 @@ import "os"
 // .github/workflows/scanner-images-verify.yaml, so a pin that 404s fails CI
 // instead of surfacing as an ImagePullBackOff at scan time.
 const (
-	defaultTrivyImage     = "ghcr.io/nudgebee/trivy:0.58.0"
-	defaultPopeyeImage    = "ghcr.io/nudgebee/popeye:v0.11.1-nudgebee.1"
-	defaultKubeBenchImage = "ghcr.io/nudgebee/kube-bench:v0.10.4"
-	defaultNovaImage      = "ghcr.io/nudgebee/nova:2026-05-22T07-15-34_decaacbbf56e1789c3299a89f790b8e824ab741c"
+	defaultTrivyImage     = "ghcr.io/nudgebee/trivy:0.76.1-nb2"
+	defaultPopeyeImage    = "ghcr.io/nudgebee/popeye:v0.11.1-nudgebee.2"
+	defaultKubeBenchImage = "ghcr.io/nudgebee/kube-bench:v0.16.0-nb2"
+	defaultNovaImage      = "ghcr.io/nudgebee/nova:2026-11-01T06-52-28_672e9c0c399afd5b92709ce34a52434e6f05d603"
 )
 
 func envOr(key, fallback string) string {

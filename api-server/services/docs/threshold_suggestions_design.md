@@ -75,7 +75,7 @@ All computed over a **30-day window** from the events table:
 | Metric | Formula | Meaning |
 |--------|---------|---------|
 | **Resolution Rate** | `COUNT(ends_at > starts_at) / total` | % of alerts that actually resolved |
-| **Transient Rate** | `COUNT(duration < 10 min) / resolved_count` | % of resolved alerts that were very short-lived |
+| **Transient Rate** | `COUNT(duration < 11 min) / resolved_count` | % of resolved alerts that cleared within 10 minutes (one minute of slack for resolves delivered on a fixed interval) |
 | **Flapping Rate** | `COUNT(duration < 5 min) / total` | % of alerts that toggled on/off within 5 minutes |
 | **Engagement Rate** | `COUNT(nb_status_changed_by IS NOT NULL) / total` | % of alerts manually triaged by a human |
 | **Instant Rate** | `COUNT(ends_at = starts_at) / total` | % of alerts that fired and resolved at the same timestamp |
@@ -89,11 +89,20 @@ Evaluated in priority order — first match wins:
 
 | # | Classification | Condition | Default Action |
 |---|---------------|-----------|----------------|
-| 1 | **False Positive** | freq > 1/day AND resolution > 80% AND engagement < 10% | Increase duration if transient > 70%, else disable |
-| 2 | **Broken** | resolution < 10% AND instant rate < 50% | Investigate / disable |
-| 3 | **Noisy but Real** | freq > 1/day AND resolution > 50% AND engagement > 10% | Increase duration if transient > 70%, else tune threshold |
-| 4 | **False Positive** (lower freq) | freq > 0.5/day AND resolution > 50% AND engagement < 10% | Increase duration if transient > 70%, else tune threshold |
-| 5 | **Healthy** | Default — none of the above | No action (threshold tuning can still reduce noise) |
+| 1 | **False Positive** | freq > 0.5/day AND resolution > 50% AND engagement < 10% AND transient > 70% | Increase duration |
+| 2 | **False Positive** (no-lifecycle spam) | freq > 5/day AND instant rate ≥ 50% AND engagement < 10% | Review |
+| 3 | **Broken** | resolution < 10% AND instant rate < 50% | Review |
+| 4 | **Noisy but Real** | freq > 1/day AND resolution > 50% AND engagement > 10% | Increase duration if transient > 70%, else tune threshold |
+| 5 | **Noisy Ignored** | freq > 0.5/day AND resolution > 50% AND engagement < 10% (transient ≤ 70%) | Tune threshold |
+| 6 | **Healthy** | Default — none of the above | No action (threshold tuning can still reduce noise) |
+
+Low engagement on its own is never treated as proof that an alert is false: most alerts are
+handled outside the product, so engagement is near zero for real alerts too. A rule is a
+**False Positive** only when its own firings show it (they clear within minutes, or carry no
+lifecycle at all). Unattended rules whose firings stay open are **Noisy Ignored**.
+
+Firing history never produces a "disable" recommendation, for any classification: turning an
+alert off is a decision for a person, made from the alert-rule controls.
 
 ### 2.3 Duration Recommendation
 
@@ -111,7 +120,7 @@ suggested_duration = ceil(duration_P90 × 1.5 / 5) × 5   # Rounded up to neares
 | `tune_threshold` | Has threshold suggestion, transient rate ≤ 70% |
 | `increase_duration` | No threshold suggestion, transient rate > 70% |
 | `tune_both` | Has threshold suggestion AND transient rate > 70% |
-| `disable` | Classification is `broken` |
+| `review_alert` | Classification is `broken`, or a risk gate rated the suggestion dangerous |
 | `none` | No actionable changes found |
 
 ---
@@ -155,7 +164,11 @@ All queries use a **7-day lookback** window.
 
 The system parses PromQL binary expressions to extract thresholds:
 - Supports compound operators (`AND`, `OR`, `UNLESS`)
-- Identifies and ignores guard conditions (e.g., `> 0`)
+- Identifies and ignores legs that only filter on state — guard conditions (e.g., `> 0`), equality
+  checks (e.g., `up == 1`) and `UNLESS` exclusions
+- Abstains on multi-condition rules — two tunable thresholds joined by `AND`, or a tunable threshold
+  joined to another by `OR`. Such a rule's firing depends on the combination, so replaying one leg
+  against a new threshold would not predict it; it gets a firing-history verdict and no number
 - Handles reversed comparisons (e.g., `100 < expr`)
 - Evaluates constant arithmetic (e.g., `25 / 100`)
 
@@ -273,6 +286,10 @@ CREATE INDEX idx_ets_alert_rule_key ON event_threshold_suggestions (alert_rule_k
 - **Input sanitization:** CLI args for AWS custom namespaces only allow `[a-zA-Z0-9-./: ]`
 - **Data sanitization:** Replaces `+Inf`, `-Inf`, `NaN` with 0 before JSON storage
 - **Sanity cap:** Never suggests >10× current threshold or above P99
+- **Capacity limits:** Loosening a free-space, quota or expiry threshold is always risk `review`, never `safe`
+- **Apply gate:** Applying a suggestion, as a direct write or a pull request, needs an explicit
+  override unless it is risk `safe` with `medium` or `high` confidence. A stored `disable` is
+  never applied from Alert Tuning, override or not
 - **Concurrency control:** Max 5 accounts processed concurrently in batch
 - **Stale cleanup:** Rows older than 30 days are deleted each batch run
 - **Tenant isolation:** All queries filter by `tenant_id` and `cloud_account_id`

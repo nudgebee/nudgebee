@@ -416,6 +416,19 @@ func hashPayload(payload string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// esStatusError is a non-200 Elasticsearch response. The message is the one callers
+// have always seen; the body is kept so a caller can read the error type out of it
+// rather than matching on the message text.
+type esStatusError struct {
+	operation string
+	status    int
+	body      []byte
+}
+
+func (e *esStatusError) Error() string {
+	return fmt.Sprintf("%s failed with status %d: %s", e.operation, e.status, string(e.body))
+}
+
 // readResponse reads and validates the HTTP response body.
 func readResponse(resp *http.Response, operation string) ([]byte, error) {
 	defer func() { _ = resp.Body.Close() }()
@@ -426,7 +439,7 @@ func readResponse(resp *http.Response, operation string) ([]byte, error) {
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("%s failed with status %d: %s", operation, resp.StatusCode, string(bodyBytes))
+		return nil, &esStatusError{operation: operation, status: resp.StatusCode, body: bodyBytes}
 	}
 
 	if err := esRemoteClusterFailure(bodyBytes); err != nil {

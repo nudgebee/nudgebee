@@ -150,6 +150,13 @@ func queryGcloudLogs(ctx providers.CloudProviderContext, account providers.Accou
 		if err != nil {
 			RecordGCPPermissionError(ctx, err)
 			logger.Error("error reading log entry", "error", err)
+			// A query that fails before producing any rows (bad filter syntax, quota
+			// denied up front) must surface the reason — the caller renders an empty
+			// "no logs" state and hides it otherwise. If some rows were already read,
+			// keep them and mark the read partial (Failed) rather than discarding them.
+			if len(messages) == 0 {
+				return providers.QueryLogsResponse{}, fmt.Errorf("failed to query logs: %w", err)
+			}
 			status = "Failed"
 			break
 		}

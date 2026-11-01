@@ -255,13 +255,13 @@ const ApiTokens = ({ open, title, onClose, defaultKind = 'platform' }) => {
       >
         <Box sx={{ color: ds.gray[500], fontSize: ds.text.bodyLg, lineHeight: '20px' }}>
           <Typography sx={{ mb: ds.space[3] }}>
-            {`API tokens allow you to authenticate with ${baseTitle} APIs programmatically. Follow this two-step process:`}
+            {`API tokens let you authenticate with ${baseTitle} APIs programmatically. Send the token as a Bearer token — no exchange step is needed.`}
           </Typography>
 
-          <Typography sx={{ fontSize: ds.text.title, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>
-            Step 1: Generate Temporary Token
+          <Typography sx={{ fontSize: ds.text.title, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>Call the API</Typography>
+          <Typography sx={{ mb: ds.space[2] }}>
+            {`${baseTitle} APIs speak JSON-RPC 2.0.`} Set <code>method</code> to the action you want and <code>params</code> to its arguments:
           </Typography>
-          <Typography sx={{ mb: ds.space[2] }}>First, exchange your API token for a temporary JWT token:</Typography>
           <Box
             sx={{
               mb: ds.space[4],
@@ -275,32 +275,12 @@ const ApiTokens = ({ open, title, onClose, defaultKind = 'platform' }) => {
               overflowX: 'auto',
             }}
           >
-            {`curl ${getAppBaseUrl()}/api/auth/token --data '{"email":"your@email.com", "secret":"YOUR_API_TOKEN"}' -i -H 'content-type: application/json'`}
-          </Box>
-
-          <Typography sx={{ fontSize: ds.text.title, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>
-            Step 2: Use Temporary Token for API Calls
-          </Typography>
-          <Typography sx={{ mb: ds.space[2] }}>Use the JWT token from Step 1 to make GraphQL API calls:</Typography>
-          <Box
-            sx={{
-              mb: ds.space[4],
-              p: ds.space[3],
-              bgcolor: ds.blue[100],
-              borderRadius: ds.radius.sm,
-              fontSize: ds.text.small,
-              fontFamily: ds.font.mono,
-              border: `1px solid ${ds.gray[200]}`,
-              wordBreak: 'break-all',
-              overflowX: 'auto',
-            }}
-          >
-            {`curl ${getAppBaseUrl()}/api/graphql -i -H 'content-type: application/json' -H "Authorization: Bearer $AUTH_TOKEN" --data $QUERY_DATA`}
+            {`curl ${getAppBaseUrl()}/api/rpc -i -H 'content-type: application/json' -H "Authorization: Bearer $NB_API_TOKEN" --data '{"jsonrpc":"2.0","id":1,"method":"accounts_list","params":{}}'`}
           </Box>
 
           <Box component='ul' sx={{ pl: ds.space.mul(0, 10), mb: ds.space[3] }}>
             <li style={{ marginBottom: ds.space[2] }}>
-              <strong>Important:</strong> Your API token is used as the &quot;secret&quot; in Step 1, not directly in API calls
+              <strong>Important:</strong> Send the token exactly as issued, including its <code>sk-nb-</code> prefix
             </li>
             <li style={{ marginBottom: ds.space[2] }}>
               <strong>Current Environment:</strong> Commands above use your current domain ({getAppBaseUrl()})

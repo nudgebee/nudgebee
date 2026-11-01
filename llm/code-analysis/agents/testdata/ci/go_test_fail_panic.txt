@@ -1,0 +1,22 @@
+﻿2026-09-30T07:00:00.0000017Z Current runner version: '2.337.0'
+2026-09-30T07:00:00.0000018Z ##[group]Runner Image
+2026-09-30T07:00:00.0000019Z Image: ubuntu-24.04
+2026-09-30T07:00:00.0000020Z ##[endgroup]
+2026-09-30T07:00:00.0000021Z ##[group]Run actions/checkout@v4
+2026-09-30T07:00:00.0000022Z syncing repository: nudgebee/nudgebee
+2026-09-30T07:00:00.0000023Z ##[endgroup]
+2026-09-30T07:00:00.0000024Z ##[group]Run go test -race ./...
+2026-09-30T07:00:00.0000025Z [36;1mgo test -race ./...[0m
+2026-09-30T07:00:00.0000026Z ##[endgroup]
+2026-09-30T07:00:00.0000027Z === RUN   TestOK
+2026-09-30T07:00:00.0000028Z --- PASS: TestOK (0.00s)
+2026-09-30T07:00:00.0000029Z === RUN   TestBoom
+2026-09-30T07:00:00.0000030Z panic: runtime error: index out of range [3] with length 2
+2026-09-30T07:00:00.0000031Z 
+2026-09-30T07:00:00.0000032Z goroutine 19 [running]:
+2026-09-30T07:00:00.0000033Z nudgebee/x/agents.TestBoom(0xc0001)
+2026-09-30T07:00:00.0000034Z 	/home/runner/work/x/agents/boom_test.go:31 +0x1d
+2026-09-30T07:00:00.0000035Z --- FAIL: TestBoom (0.00s)
+2026-09-30T07:00:00.0000036Z FAIL	nudgebee/x/agents	0.012s
+2026-09-30T07:00:00.0000037Z FAIL
+2026-09-30T07:00:00.0000038Z ##[error]Process completed with exit code 1.

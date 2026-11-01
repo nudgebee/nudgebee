@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"nudgebee/llm/config"
 	"nudgebee/llm/llms/anthropic/anthropicclient"
@@ -194,6 +195,9 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 	if resp.Usage.CacheCreationInputTokens > 0 {
 		genInfo["CacheCreationInputTokens"] = resp.Usage.CacheCreationInputTokens
 	}
+	if cc := resp.Usage.CacheCreation; cc != nil && cc.Ephemeral1hInputTokens > 0 {
+		genInfo["CacheCreation1hInputTokens"] = cc.Ephemeral1hInputTokens
+	}
 	if combinedThinking.Len() > 0 {
 		genInfo["thinking"] = combinedThinking.String()
 	}
@@ -314,7 +318,11 @@ func toCacheControl(cc *llms.CacheControl) *anthropicclient.CacheControl {
 	if typ == "" {
 		typ = "ephemeral"
 	}
-	return &anthropicclient.CacheControl{Type: typ}
+	out := &anthropicclient.CacheControl{Type: typ}
+	if cc.Duration >= time.Hour {
+		out.TTL = "1h"
+	}
+	return out
 }
 
 // withCacheControl sets cache_control on a converted block. Blocks that cannot

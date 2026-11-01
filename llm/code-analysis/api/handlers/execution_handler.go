@@ -145,15 +145,7 @@ func (h *ExecutionHandler) HandleExecute(c *gin.Context) {
 
 	// 2. Directory Setup
 	// Use the configured execution workspace directory + conversation_id
-	baseDir := h.Config.Execution.WorkspaceDir
-	if baseDir == "" {
-		// Fallback to analysis workspace if execution workspace is not configured
-		if h.Config.Analysis.WorkspaceDir != "" {
-			baseDir = filepath.Join(h.Config.Analysis.WorkspaceDir, "exec_workspaces")
-		} else {
-			baseDir = "/tmp/code-analysis/exec_workspaces" // Hard default
-		}
-	}
+	baseDir := execWorkspaceBaseDir(h.Config)
 
 	// Ensure baseDir is absolute for safety
 	absBaseDir, err := filepath.Abs(baseDir)
@@ -171,13 +163,6 @@ func (h *ExecutionHandler) HandleExecute(c *gin.Context) {
 	if err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
 		resp.CommandStatus = "failed"
 		resp.Error = "Invalid workspace path"
-		c.JSON(http.StatusOK, resp)
-		return
-	}
-
-	if err := os.MkdirAll(workDir, 0755); err != nil {
-		resp.CommandStatus = "failed"
-		resp.Error = fmt.Sprintf("Failed to create workspace: %v", err)
 		c.JSON(http.StatusOK, resp)
 		return
 	}
@@ -206,6 +191,17 @@ func (h *ExecutionHandler) HandleExecute(c *gin.Context) {
 	// Release (and its opportunistic, internally time-bounded cleanup) runs
 	// detached so the HTTP response is not held behind a cache sweep.
 	defer func() { go releaseWorkspace() }()
+
+	// Create the conversation's folder only now that the lease is held. Creating
+	// it earlier would leave a gap in which the idle sweep could remove it again:
+	// MkdirAll does not refresh an existing folder's mtime, so one untouched for
+	// a day stays eligible until a lease protects it.
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		resp.CommandStatus = "failed"
+		resp.Error = fmt.Sprintf("Failed to create workspace: %v", err)
+		c.JSON(http.StatusOK, resp)
+		return
+	}
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", req.Command)
 	cmd.Dir = workDir

@@ -99,6 +99,33 @@ func TestRecommendationsV2_StatusNotPushedWhenWindowRuns(t *testing.T) {
 	assert.Contains(t, leanSQL, "r.status = 'Archive'", "safe to push on the lean (no window) path")
 }
 
+// Same exclusion as the sibling table: when the window runs and the status
+// filter returns no terminal row, terminal rows are kept out of the window
+// while the filter itself stays on the outer query.
+func TestRecommendationsV2_TerminalRowsStayOutOfTheWindow(t *testing.T) {
+	request := QueryRequest{
+		Table:   "recommendations_v2",
+		Columns: cols("id", "resource_name", "is_primary_recommendation"),
+		Where:   QueryWhereClause{Binary: BinaryWhereClause{"status": {In: []any{"Open", "Assigned"}}}},
+	}
+	sql, err := GenerateSqlQuery(security.NewRequestContextForSuperAdmin(nil, nil, nil), "", request, table_metadata["recommendations_v2"])
+	require.NoError(t, err)
+	require.Contains(t, sql, "ROW_NUMBER")
+	assert.Contains(t, sql, nonTerminalPushdown)
+	assert.NotContains(t, sql, "r.status IN ('Open'")
+	assert.Contains(t, sql, "status IN ('Open','Assigned')", "the request's status filter must still apply on the outer query")
+
+	terminal := QueryRequest{
+		Table:   "recommendations_v2",
+		Columns: cols("id", "resource_name", "is_primary_recommendation"),
+		Where:   QueryWhereClause{Binary: BinaryWhereClause{"status": {In: []any{"Open", "Closed"}}}},
+	}
+	terminalSQL, err := GenerateSqlQuery(security.NewRequestContextForSuperAdmin(nil, nil, nil), "", terminal, table_metadata["recommendations_v2"])
+	require.NoError(t, err)
+	require.Contains(t, terminalSQL, "ROW_NUMBER")
+	assert.NotContains(t, terminalSQL, nonTerminalPushdown, "a request that returns terminal rows must rank them")
+}
+
 // Vulnerabilities join gating (needsVulnJoin) is independent of needsWindow —
 // a request needing both the vuln join and the window must still get both,
 // with valid SQL (no missing comma between the two conditionally-spliced

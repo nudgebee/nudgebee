@@ -38,6 +38,17 @@ type ServiceNowService struct{}
 
 var _ ticket.IncidentManager = (*ServiceNowService)(nil)
 
+// ServiceNowHost strips the scheme and any trailing slash from a configured
+// ServiceNow instance URL, so callers can append a path with a single leading
+// slash. Whitespace and a trailing slash on the saved URL otherwise survive
+// TrimPrefix and produce a double slash wherever the host is used (#40217).
+func ServiceNowHost(rawURL string) string {
+	host := strings.TrimSpace(rawURL)
+	host = strings.TrimPrefix(host, "https://")
+	host = strings.TrimPrefix(host, "http://")
+	return strings.TrimRight(host, "/")
+}
+
 func init() {
 	ticket.RegisterIncidentManager("servicenow", &ServiceNowService{})
 }
@@ -290,7 +301,7 @@ func getRecordStringValue(record *tableapi.TableRecord, key string) (string, err
 // newServiceNowTableBuilder creates a ServiceNow client and table request builder.
 func newServiceNowTableBuilder(config models.TicketConfigurations, tableName string) (*tableapi.TableRequestBuilder2[*tableapi.TableRecord], error) {
 	cred := credentials.NewBasicProvider(config.Username, config.Password)
-	baseURL := "https://" + strings.TrimPrefix(config.URL, "https://")
+	baseURL := utils.NormalizeServiceNowBaseURL(config.URL)
 	// Start from kiota's default client so its retry and redirect middleware stay; a bare
 	// http.Client would drop them. Only the per-request timeout is set.
 	httpClient := nethttplibrary.GetDefaultClient()
@@ -361,12 +372,12 @@ func (s *ServiceNowService) Get(ctx *gin.Context, config models.TicketConfigurat
 		Title:       shortDesc,
 		Description: description,
 		Status:      mapServiceNowState(state),
-		Severity:    getNudgebeeSeverity(priority),
+		Severity:    severityFromExistingRecord(priority),
 		Assignee:    assignedTo,
 		Assignees:   assignees,
 		Reporter:    openedBy,
 		Platform:    "servicenow",
-		URL:         fmt.Sprintf("https://%s/incident.do?sys_id=%s", strings.TrimPrefix(config.URL, "https://"), sysID),
+		URL:         fmt.Sprintf("https://%s/incident.do?sys_id=%s", ServiceNowHost(config.URL), sysID),
 		CreatedAt:   createdAt,
 		UpdatedAt:   updatedAt,
 		Raw:         record,
@@ -429,7 +440,7 @@ func getServiceNowIncidentRecord(ctx context.Context, config models.TicketConfig
 		return nil, fmt.Errorf("snow get: unmarshal: %w", jerr)
 	}
 	if len(envelope.Result) == 0 {
-		return nil, fmt.Errorf("incident not found: %s", ticketID)
+		return nil, fmt.Errorf("incident not found: %s: %w", ticketID, ticket.ErrNotFound)
 	}
 	return envelope.Result[0], nil
 }
@@ -587,15 +598,66 @@ func updateServiceNowIncidentFields(ctx context.Context, config models.TicketCon
 	}
 
 	sysID, _ := getRecordStringValue(results[0], "sys_id")
-	itemBuilder := tableBuilder.ById(sysID)
 
-	record := tableapi.NewTableRecord()
-	for field, value := range fields {
-		_ = record.SetValue(field, value)
+	// Raw PUT, not the SDK's itemBuilder.Put: the SDK's error type prefers the
+	// response's generic top-level "message" over "detail", the actual reason. #39314.
+	host := strings.TrimSuffix(strings.TrimPrefix(config.URL, "https://"), "/")
+	apiURL := fmt.Sprintf("https://%s/api/now/v1/table/incident/%s", host, sysID)
+	jsonBody, err := json.Marshal(fields)
+	if err != nil {
+		return fmt.Errorf("failed to marshal update fields: %w", err)
 	}
 
-	_, err = itemBuilder.Put(ctx, record, nil)
-	return err
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, apiURL, bytes.NewReader(jsonBody))
+	if err != nil {
+		return fmt.Errorf("failed to create HTTP request: %w", err)
+	}
+	req.SetBasicAuth(config.Username, config.Password)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := common.HttpClient().Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send update request to ServiceNow: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read ServiceNow response: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		slog.Error("ServiceNow update rejected", "incident_id", incidentID, "status", resp.StatusCode, "body", string(respBody))
+		return fmt.Errorf("ServiceNow rejected the update: %s", serviceNowErrorDetail(respBody))
+	}
+	return nil
+}
+
+// serviceNowErrorDetail prefers "detail" over the often-generic "message".
+func serviceNowErrorDetail(body []byte) string {
+	var parsed struct {
+		Error struct {
+			Message string `json:"message"`
+			Detail  string `json:"detail"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		trimmed := strings.TrimSpace(string(body))
+		// A proxy/gateway in front of ServiceNow can answer with an HTML error page
+		// instead of JSON; dumping that into the error would be noise, not a reason.
+		if strings.HasPrefix(trimmed, "<") {
+			return "ServiceNow returned a non-JSON error page"
+		}
+		return trimmed
+	}
+	if parsed.Error.Detail != "" {
+		return parsed.Error.Detail
+	}
+	if parsed.Error.Message != "" {
+		return parsed.Error.Message
+	}
+	return string(body)
 }
 
 // serviceNowSafeValue allows alphanumeric, spaces, hyphens, underscores, dots, colons, @, and +.
@@ -717,7 +779,7 @@ func (s *ServiceNowService) List(ctx *gin.Context, config models.TicketConfigura
 	}
 
 	tickets := make([]models.Ticket, 0, len(results))
-	host := strings.TrimPrefix(config.URL, "https://")
+	host := ServiceNowHost(config.URL)
 	for _, record := range results {
 		number, _ := getRecordStringValue(record, "number")
 		shortDesc, _ := getRecordStringValue(record, "short_description")
@@ -737,7 +799,7 @@ func (s *ServiceNowService) List(ctx *gin.Context, config models.TicketConfigura
 			TicketID:  number,
 			Title:     shortDesc,
 			Status:    mapServiceNowState(state),
-			Severity:  getNudgebeeSeverity(priority),
+			Severity:  severityFromExistingRecord(priority),
 			Platform:  "servicenow",
 			URL:       fmt.Sprintf("https://%s/incident.do?sys_id=%s", host, sysID),
 			CreatedAt: createdAt,
@@ -834,7 +896,7 @@ func serviceNowCreateBody(ticket models.Ticket) (map[string]string, error) {
 }
 
 func CreateServiceNowIncident(ctx *gin.Context, configuration models.TicketConfigurations, ticket models.Ticket) (models.Ticket, error) {
-	host := strings.TrimPrefix(configuration.URL, "https://")
+	host := ServiceNowHost(configuration.URL)
 	apiURL := "https://" + host + "/api/now/v1/table/incident"
 
 	body, err := serviceNowCreateBody(ticket)
@@ -920,7 +982,10 @@ func getServiceNowPriorityLevel(severity string) string {
 
 // getNudgebeeSeverity maps ServiceNow's 1-5 Priority (Critical, High, Moderate,
 // Low, Planning) one-to-one onto Nudgebee's five severity tiers. Unknown or
-// missing values fall back to "Low", as before.
+// missing values fall back to "Low", as before — callers that derive a
+// default severity for a value the caller never specified (e.g.
+// serviceNowSeverityFromLevels, when Impact/Urgency are both blank) rely on
+// this to mean "use Low", not "unknown".
 func getNudgebeeSeverity(priority string) string {
 	switch priority {
 	case "1":
@@ -936,6 +1001,21 @@ func getNudgebeeSeverity(priority string) string {
 	default:
 		return "Low"
 	}
+}
+
+// severityFromExistingRecord maps an already-stored incident's raw priority
+// to a Nudgebee severity, treating a blank priority (field absent, or hidden
+// by the service account's ACL) as unknown rather than falling back to "Low"
+// the way getNudgebeeSeverity does for a caller-omitted value. Get/List read
+// an existing record, so a blank reading here means "couldn't tell", and
+// sync's diffTicketUpdate treats any non-blank Severity as an authoritative
+// platform value — without this guard, an unreadable priority would silently
+// downgrade a correctly stored severity to "Low" on every sync pass.
+func severityFromExistingRecord(priority string) string {
+	if priority == "" {
+		return ""
+	}
+	return getNudgebeeSeverity(priority)
 }
 
 var (
@@ -1073,6 +1153,17 @@ func (s *ServiceNowService) Update(ctx *gin.Context, config models.TicketConfigu
 	// ServiceNow does not have a native labels concept; labels are ignored for this platform.
 	if updateFields.Status != "" {
 		fields["state"] = serviceNowStateCode(updateFields.Status)
+	}
+	// close_code/close_notes must land in the same PUT as "state": ServiceNow validates
+	// a Resolved/Closed transition against the whole write, not field-by-field.
+	if code, ok := updateFields.Raw["resolution_code"].(string); ok && code != "" {
+		fields["close_code"] = code
+	}
+	if notes, ok := updateFields.Raw["resolution_notes"].(string); ok && notes != "" {
+		fields["close_notes"] = markdownToPlainText(notes)
+	}
+	if notes, ok := updateFields.Raw["work_notes"].(string); ok && notes != "" {
+		fields["work_notes"] = markdownToPlainText(notes)
 	}
 	if len(fields) == 0 {
 		if updateFields.Severity != "" {

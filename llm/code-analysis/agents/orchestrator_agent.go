@@ -59,7 +59,8 @@ type NBAgentRequest struct {
 	// Skills carries operator-authored skills mapped to the code agent, already
 	// rendered as a <skills> block by llm-server. code-analysis has no DB of its
 	// own, so skills are resolved upstream and forwarded here for prompt injection.
-	Skills string `json:"skills,omitempty"`
+	Skills        string `json:"skills,omitempty"`
+	OriginalQuery string `json:"original_query,omitempty"`
 }
 
 // shouldFailIncompleteFixRequest decides whether the orchestrator must reject a
@@ -1066,9 +1067,16 @@ func (a *OrchestratorAgent) createSessionContext(request NBAgentRequest) (*sessi
 		}
 	}
 
+	originalQuery := strings.TrimSpace(request.OriginalQuery)
+	task := strings.TrimSpace(request.Query)
+	if originalQuery == "" {
+		originalQuery = task
+	}
+
 	return &session.SessionContext{
 		AnalysisID:       request.ConversationId, // Or generate a new one
-		OriginalQuery:    request.Query,
+		OriginalQuery:    originalQuery,
+		Task:             task,
 		InitialLogs:      initialLogs,
 		RepoContext:      repoCtx,
 		Credentials:      sessionCredentials, // Pass secure credentials to tools
@@ -2116,6 +2124,12 @@ func (a *OrchestratorAgent) createPullRequest(ctx context.Context, sessionCtx *s
 		}
 	}
 
+	provider := gitprovider.GitProviderGitHub
+	if sessionCtx.RepoContext != nil && sessionCtx.RepoContext.GitProvider != "" {
+		provider = gitprovider.ParseProvider(sessionCtx.RepoContext.GitProvider)
+	}
+	ownerClient, owner := a.resolvePROwnership(ctx, sessionCtx, actualRepoDir, branchPointSHA, provider)
+
 	// Determine the push target. The CLI tool only injects a token for `gh` commands,
 	// never for plain `git push`, and the clone-time origin URL is not guaranteed to
 	// carry a token — without auth, `git push` prompts for a username and dies with
@@ -2182,12 +2196,6 @@ func (a *OrchestratorAgent) createPullRequest(ctx context.Context, sessionCtx *s
 		"branch_name": branchName,
 	})
 
-	// Determine git provider for PR/MR creation
-	provider := gitprovider.GitProviderGitHub // Default
-	if sessionCtx.RepoContext != nil && sessionCtx.RepoContext.GitProvider != "" {
-		provider = gitprovider.ParseProvider(sessionCtx.RepoContext.GitProvider)
-	}
-
 	// Log PR/MR creation attempt with details
 	mrTerminology := gitprovider.GetMergeRequestTerminology(provider)
 	a.logger.Log(common.EventStepStart, fmt.Sprintf("Creating %s", gitprovider.GetMergeRequestFullTerminology(provider)), map[string]any{
@@ -2214,11 +2222,7 @@ func (a *OrchestratorAgent) createPullRequest(ctx context.Context, sessionCtx *s
 		if baseBranch != "" {
 			glabArgs = append(glabArgs, "--target-branch", baseBranch)
 		}
-		prResult = glabTool.Execute(ctx, map[string]any{
-			"args":              glabArgs,
-			"working_directory": actualRepoDir,
-		})
-
+		prResult = createOwnedPR(ctx, ownerClient, branchName, baseBranch, actualRepoDir, glabArgs, glabTool.Execute)
 		if prResult.Status != "success" {
 			return nil, fmt.Errorf("failed to create MR: %s", prResult.Error)
 		}
@@ -2260,11 +2264,7 @@ func (a *OrchestratorAgent) createPullRequest(ctx context.Context, sessionCtx *s
 		if baseBranch != "" {
 			ghArgs = append(ghArgs, "--base", baseBranch)
 		}
-		prResult = ghTool.Execute(ctx, map[string]any{
-			"args":              ghArgs,
-			"working_directory": actualRepoDir,
-		})
-
+		prResult = createOwnedPR(ctx, ownerClient, branchName, baseBranch, actualRepoDir, ghArgs, ghTool.Execute)
 		if prResult.Status != "success" {
 			return nil, fmt.Errorf("failed to create PR: %s", prResult.Error)
 		}
@@ -2295,6 +2295,13 @@ func (a *OrchestratorAgent) createPullRequest(ctx context.Context, sessionCtx *s
 		}
 	}
 
+	if ownerClient != nil {
+		owner = ownerClient.VerifyAndAssign(ctx, prURL, owner)
+	}
+	a.logger.Log(common.EventStepComplete, "PR ownership resolved", map[string]any{
+		"provider": owner.Provider, "assignment_status": owner.Status, "warning": owner.Warning,
+	})
+
 	// Create the PR/MR info response
 	prInfo := map[string]any{
 		"status":      "success",
@@ -2302,6 +2309,7 @@ func (a *OrchestratorAgent) createPullRequest(ctx context.Context, sessionCtx *s
 		"description": brandedDescription,
 		"branch":      branchName,
 		"message":     fmt.Sprintf("%s created with NudgeBee branding and repository pattern", mrTerminology),
+		"ownership":   owner,
 		"url":         prURL,
 		"pattern":     detectedPattern,
 		"provider":    string(provider),

@@ -3,11 +3,14 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -28,6 +31,18 @@ func mockMetastore(t *testing.T) (*sqlx.DB, sqlmock.Sqlmock) {
 		return &common.DatabaseManager{Db: sqlxDB}, nil
 	})
 	return sqlxDB, mock
+}
+
+// expectToolQuery expects one tool query as sqlExecuteQuery runs it: prepared
+// inside a read-only transaction that sets its timeout and work_mem, rolled
+// back after.
+func expectToolQuery(mock sqlmock.Sqlmock, sqlRegex string) *sqlmock.ExpectedQuery {
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`SET LOCAL work_mem`).WillReturnResult(sqlmock.NewResult(0, 0))
+	query := mock.ExpectPrepare(sqlRegex).WillBeClosed().ExpectQuery()
+	mock.ExpectRollback()
+	return query
 }
 
 func TestBuildLimitedQuery(t *testing.T) {
@@ -327,7 +342,7 @@ func TestSqlToolCallResults(t *testing.T) {
 
 	t.Run("empty results return JSON message not bare []", func(t *testing.T) {
 		columns := []string{"id", "title", "severity"}
-		mock.ExpectQuery("select").WillReturnRows(sqlmock.NewRows(columns))
+		expectToolQuery(mock, "select").WillReturnRows(sqlmock.NewRows(columns))
 
 		resp, data, err := sqlToolCall(nbCtx, "SELECT id, title, severity FROM events WHERE severity = 'critical'", "events", "", 0, nil)
 		require.NoError(t, err)
@@ -350,7 +365,7 @@ func TestSqlToolCallResults(t *testing.T) {
 
 	t.Run("non-empty results return table with JSON array", func(t *testing.T) {
 		columns := []string{"id", "title"}
-		mock.ExpectQuery("select").WillReturnRows(
+		expectToolQuery(mock, "select").WillReturnRows(
 			sqlmock.NewRows(columns).
 				AddRow("evt-1", "High CPU usage").
 				AddRow("evt-2", "OOM Kill detected"),
@@ -369,6 +384,75 @@ func TestSqlToolCallResults(t *testing.T) {
 		err = json.Unmarshal([]byte(resp.Data), &parsed)
 		require.NoError(t, err, "Data should be a valid JSON array")
 		assert.Len(t, parsed, 2)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+}
+
+// A LIMIT inside the substituted view is not the caller's: a caller query
+// without one must still get the row cap.
+func TestSqlExecuteQueryCapsOnTheCallersSQL(t *testing.T) {
+	db, mock := mockMetastore(t)
+	defer func() { _ = db.Close() }()
+	ctx := security.NewRequestContext(context.Background(), nil, nil, nil, nil)
+
+	view := "SELECT e.id FROM events e WHERE e.id = (SELECT id FROM events LIMIT 1)"
+	expectToolQuery(mock, `^select \* from \(SELECT id FROM \(.*LIMIT 1.*\) as tv\) as ql limit 10;$`).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	_, err := sqlExecuteQuery(ctx, "SELECT id FROM events", "550e8400-e29b-41d4-a716-446655440000", "events", view, 0)
+	require.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestSqlExecuteQueryRunsReadOnlyWithTimeoutAndWorkMem(t *testing.T) {
+	db, mock := mockMetastore(t)
+	defer func() { _ = db.Close() }()
+	ctx := security.NewRequestContext(context.Background(), nil, nil, nil, nil)
+
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta("SET LOCAL statement_timeout = 120000")).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta("SET LOCAL work_mem = '32MB'")).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectPrepare("select").WillBeClosed().ExpectQuery().WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("evt-1"))
+	mock.ExpectRollback()
+
+	data, err := sqlExecuteQuery(ctx, "SELECT id FROM events", "550e8400-e29b-41d4-a716-446655440000", "events", "", 0)
+	require.NoError(t, err)
+	assert.Len(t, data, 1)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A query cut off by statement_timeout must reach callers as an error the
+// model can act on, never as an empty result that reads as "nothing found".
+func TestSqlToolCallTimeoutIsAnActionableError(t *testing.T) {
+	db, mock := mockMetastore(t)
+	defer func() { _ = db.Close() }()
+	nbCtx := core.NbToolContext{
+		AccountId: "550e8400-e29b-41d4-a716-446655440000",
+		Ctx:       security.NewRequestContext(context.Background(), nil, nil, nil, nil),
+	}
+
+	t.Run("statement timeout", func(t *testing.T) {
+		expectToolQuery(mock, "select").
+			WillReturnError(&pq.Error{Code: pqQueryCanceled, Message: "canceling statement due to statement timeout"})
+
+		_, data, err := sqlToolCall(nbCtx, "SELECT id FROM events", "events", "", 0, nil)
+		require.Error(t, err)
+		assert.Nil(t, data)
+		assert.Contains(t, err.Error(), "the query on events did not finish within 2m0s")
+		assert.Contains(t, err.Error(), "narrow it with a filter")
+		var pqErr *pq.Error
+		assert.True(t, errors.As(err, &pqErr), "the driver error must stay unwrappable")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("other failures keep their own message", func(t *testing.T) {
+		expectToolQuery(mock, "select").WillReturnError(errors.New("connection reset"))
+
+		_, data, err := sqlToolCall(nbCtx, "SELECT id FROM events", "events", "", 0, nil)
+		require.Error(t, err)
+		assert.Nil(t, data)
+		assert.Contains(t, err.Error(), "connection reset")
+		assert.NotContains(t, err.Error(), "did not finish")
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 }

@@ -707,6 +707,64 @@ func TestReAct4_ParseCompletion_ProseMentioningToolNameStillAnswers(t *testing.T
 	assert.NotNil(t, finish)
 }
 
+// Every observed "tool call written as text" shape — react_3 XML, a tool name
+// as a tag, Gemini's call:default_api: serialization (#39637), and a bare
+// name{...} / name(...) call — must be a retryable text-tool-call failure,
+// never a terminal final answer.
+func TestReAct4_ParseCompletion_TextToolCallShapesAreParseFailures(t *testing.T) {
+	o := &NBReActPlanner4{tools: []toolcore.NBTool{
+		&stubTool{name: "qa_browser_click"},
+		&stubTool{name: "update_notebook"},
+	}}
+	for name, raw := range map[string]string{
+		"react3 xml":  "<action><tool_name>kubectl_execute</tool_name><tool_input>get pods</tool_input></action>",
+		"tool as tag": "<update_notebook>Confirmed the root cause.</update_notebook>",
+		"gemini default_api": "Click on Troubleshoot in the sidebarcall:default_api:qa_browser_click" +
+			`{_thought:Click on Troubleshoot in the sidebar,element:link Troubleshoot,target:link "Troubleshoot" [ref=f5e71]}`,
+		"gemini unregistered tool": "Checking the pod.call:default_api:shell_execute{command:kubectl get pods}",
+		"brace call":               `Next step: qa_browser_click{"element":"link Troubleshoot"}`,
+		"paren call":               `qa_browser_click(element="link Troubleshoot")`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			actions, finish, err := o.parseCompletion(&llms.ContentChoice{Content: raw})
+			assert.ErrorIs(t, err, ErrParseFailure, "executor contract: still a parse failure")
+			assert.ErrorIs(t, err, errReact4TextToolCall, "Plan keys its one re-prompt on this")
+			assert.Nil(t, actions)
+			assert.Nil(t, finish, "must NOT be treated as a final answer")
+		})
+	}
+}
+
+// Prose that names a tool without call syntax, or contains the name only as
+// part of a longer identifier, is still a final answer.
+func TestReAct4_ParseCompletion_ToolNameWithoutCallSyntaxStillAnswers(t *testing.T) {
+	o := &NBReActPlanner4{tools: []toolcore.NBTool{&stubTool{name: "qa_browser_click"}}}
+	for _, raw := range []string{
+		"I used qa_browser_click to open the Troubleshoot page and it loaded.",
+		"The qa_browser_click (second call) succeeded.",
+		"my_qa_browser_click(x) is unrelated.",
+		"Clicking failed: qa_browser_click_v2{} is not a tool here.",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			_, finish, err := o.parseCompletion(&llms.ContentChoice{Content: raw})
+			assert.NoError(t, err)
+			assert.NotNil(t, finish)
+		})
+	}
+}
+
+// The re-prompt replays the leaked text as the assistant turn and follows it
+// with the correction, so the model sees exactly what it did wrong.
+func TestReAct4_TextToolCallRetryMessages(t *testing.T) {
+	leaked := "call:default_api:qa_browser_snapshot{}"
+	msgs := textToolCallRetryMessages(leaked)
+	assert.Len(t, msgs, 2)
+	assert.Equal(t, llms.ChatMessageTypeAI, msgs[0].Role)
+	assert.Equal(t, leaked, msgs[0].Parts[0].(llms.TextContent).Text)
+	assert.Equal(t, llms.ChatMessageTypeHuman, msgs[1].Role)
+	assert.Contains(t, msgs[1].Parts[0].(llms.TextContent).Text, "native function calling")
+}
+
 // A final-answer wrapper must not hide an attempted text-protocol tool call.
 func TestReAct4_ParseCompletion_FinalAnswerCannotHideActionGrammar(t *testing.T) {
 	o := &NBReActPlanner4{}

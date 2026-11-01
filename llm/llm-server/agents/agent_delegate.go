@@ -9,6 +9,7 @@ import (
 
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/security"
+	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 )
 
@@ -66,8 +67,8 @@ func (t *delegateAgentTool) GetType() toolcore.NBToolType { return toolcore.NBTo
 
 func (t *delegateAgentTool) Description() string {
 	return `Spawn a scoped specialist sub-investigator with its own prompt, tool list, and iteration budget.
-Input: {"prompt": <brief>, "tools": [<tool names>], "max_iterations": <int>} — "tools" is required; omitting it leaves the sub-agent LLM-only, which is almost always misuse. max_iterations defaults to 5, minimum 2, maximum 15.
-When the work names a cluster or cloud account, preserve that exact target in the delegated prompt so the specialist can pass it through the targetable tool's existing per-call argument.
+Input: {"prompt": <brief>, "tools": [<tool names>], "max_iterations": <int>, "target": {"provider": "kubernetes|aws|gcp|azure|vm", "name": <connected account name>}} — "tools" is required; omitting it leaves the sub-agent LLM-only, which is almost always misuse. max_iterations defaults to 5, minimum 2, maximum 15.
+When the work names a cluster or cloud account, pass its exact connected name in target. Split work spanning several accounts into separately targeted calls. Omit target only for discovery that does not name a connected account.
 USE when a specific sub-question needs 3+ tool calls to answer and would otherwise pollute your own scratchpad with serial discovery (e.g. "investigate DNS for service X", "check egress firewall for namespace Y").
 DO NOT use when 1-2 tool calls suffice — call the tool directly.
 DO NOT use to record findings — the parent agent owns investigation state. Prompts that start with "update the notebook" / "updating the notebook" are rejected at the tool boundary with an error pointing here.
@@ -93,9 +94,27 @@ func (t *delegateAgentTool) InputSchema() toolcore.ToolSchema {
 				Description: "Maximum tool calls the sub-agent can make. Default: 5, Min: 2, Max: 15. A value of 1 is rejected — single-iteration sub-agents are degenerate; either iterate or don't delegate.",
 				Default:     defaultDelegateMaxIterations,
 			},
+			"target": toolcore.AgentTargetSchemaProperty(),
 		},
 		Required: []string{"prompt"},
 	}
+}
+
+// PrepareDelegatedTargetInput keeps a targeted caller's target for the
+// sub-investigator unless the call names its own.
+func (t *delegateAgentTool) PrepareDelegatedTargetInput(target *toolcore.ExecutionTarget, input string) (string, error) {
+	if target == nil {
+		return input, nil
+	}
+	if !strings.HasPrefix(strings.TrimSpace(input), "{") {
+		// A plain-text input is the prompt; keep it as the prompt, not a command.
+		encoded, err := json.Marshal(map[string]string{"prompt": input})
+		if err != nil {
+			return "", fmt.Errorf("encode delegate prompt for delegated target: %w", err)
+		}
+		input = string(encoded)
+	}
+	return tools.AddDelegatedTargetObject(input, target)
 }
 
 func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBToolCallRequest) (toolcore.NBToolResponse, error) {
@@ -106,6 +125,10 @@ func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTo
 			Status: toolcore.NBToolResponseStatusError,
 			Data:   fmt.Sprintf("Invalid input: %s", err.Error()),
 		}, nil
+	}
+	target, err := toolcore.ParseExecutionTarget(input)
+	if err != nil {
+		return toolcore.NBToolResponse{Status: toolcore.NBToolResponseStatusError, Data: fmt.Sprintf("Invalid input: %s", err)}, nil
 	}
 
 	// Resolve requested tools with security validation. flattenInstructions carries
@@ -178,6 +201,9 @@ func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTo
 		Command: prompt,
 		Context: input.Context,
 	}
+	if target != nil {
+		subInput.Arguments = map[string]any{"target": map[string]any{"provider": target.Provider, "name": target.Name}}
+	}
 	resp, err := core.ExecuteAgentToolCall(ctx, dynamicAgent, subInput)
 	parentTerminal := core.ResolveAgentParentTerminal(dynamicAgent, resp.IsTerminal)
 
@@ -220,6 +246,9 @@ func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTo
 	// depending on the downstream guard staying in place across refactors.
 	if resp.AgentId != "" {
 		additionalDetails[core.NBToolCallAdditionalDetailsAgentId] = resp.AgentId
+	}
+	if target != nil {
+		additionalDetails["target"] = map[string]any{"provider": target.Provider, "name": target.Name}
 	}
 	if len(toolsUsed) > 0 {
 		additionalDetails["tools_used"] = toolsUsed
@@ -622,6 +651,8 @@ type dynamicReActAgent struct {
 func (a *dynamicReActAgent) GetName() string {
 	return a.name
 }
+
+func (a *dynamicReActAgent) AcceptsExecutionTarget() {}
 
 func (a *dynamicReActAgent) GetNameAliases() []string {
 	return nil

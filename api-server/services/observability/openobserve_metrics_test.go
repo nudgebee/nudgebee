@@ -25,7 +25,10 @@ func TestOpenObserveMetricSource_FetchMetricsQuery(t *testing.T) {
 		require.NoError(t, err)
 
 		query := r.Form.Get("query")
-		assert.Contains(t, query, "up{job=\"prometheus\"}")
+		// The caller's own matcher survives, and every query leaving this source also
+		// excludes OTel "no recorded value" markers (openobserve_stale_markers.go).
+		assert.Contains(t, query, `job="prometheus"`)
+		assert.Contains(t, query, `flag!="DATA_POINT_FLAGS_NO_RECORDED_VALUE_MASK"`)
 
 		respBody := `{
 			"status": "success",
@@ -256,15 +259,19 @@ func openObserveFetchForTest(t *testing.T, serverURL string, instant bool) Outpu
 	return out
 }
 
-// An Aggregate promises ONE point per series, and for OpenObserve that means a
-// different endpoint -- not a parameter.
+// An Aggregate promises ONE point per series. Roughly thirty UI call sites read
+// payload[0], so a key that answers with a whole series plots an arbitrary sample as the
+// workload, with no error anywhere.
 //
-// The builders wrap an aggregated key in max_over_time(...[range:step]) and the layer
-// sets Instant. Sent to query_range, that wrapper is evaluated once per step and comes
-// back as a whole series: measured at 101 points on a 1-day window where the contract
-// promises 1. Roughly thirty UI call sites read payload[0], so the result is an
-// arbitrary sample plotted as the workload, with no error anywhere.
-func TestOpenObserveInstantUsesTheInstantEndpoint(t *testing.T) {
+// The MECHANISM changed once it was clear OpenObserve does not evaluate the builders'
+// `*_over_time` wrapper at all when the inner expression collapses to a single series --
+// it answers with the value at the evaluation instant, so max, min and avg all returned
+// the same number (see openobserve_local_aggregate.go). Pinning that to the instant
+// endpoint produced one point, but not the statistic asked for. So the wrapper is now
+// unwrapped, its inner expression fetched as a range, and the statistic computed here.
+// The endpoint is therefore query_range even for an aggregate; what this test guards is
+// the contract, which is unchanged: exactly one point per series.
+func TestOpenObserveAggregateAnswersOnePointPerSeries(t *testing.T) {
 	var gotPath, gotForm string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
@@ -276,15 +283,19 @@ func TestOpenObserveInstantUsesTheInstantEndpoint(t *testing.T) {
 	defer srv.Close()
 
 	res := openObserveFetchForTest(t, srv.URL, true)
-	assert.Contains(t, gotPath, "/prometheus/api/v1/query")
-	assert.NotContains(t, gotPath, "query_range", "an aggregate must not be a range query")
-	assert.Contains(t, gotForm, "time=", "an instant query is pinned to one instant")
-	assert.NotContains(t, gotForm, "step=")
+	assert.Contains(t, gotPath, "query_range",
+		"the inner expression is fetched as a range and reduced here")
+	assert.Contains(t, gotForm, "step=")
+	// The wrapper must NOT reach OpenObserve: it is the thing the engine ignores, and
+	// sending it is what made max, min and avg agree.
+	assert.NotContains(t, gotForm, "over_time", "the wrapper is reduced locally, not sent")
 
 	require.Len(t, res.Results, 1)
 	require.Len(t, res.Results[0].Payload, 1, "one series")
 	assert.Equal(t, []float64{0.25}, res.Results[0].Payload[0].Values,
-		"the instant `value` shape must decode, not be dropped for lacking `values`")
+		"collapsed to one point; the instant `value` shape must still decode")
+	// And the caller still sees which statistic it asked for, not the unwrapped query.
+	assert.Contains(t, res.Results[0].Query, "max_over_time")
 }
 
 // Without an aggregate nothing changes: a chart still wants the series.

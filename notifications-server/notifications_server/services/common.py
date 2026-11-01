@@ -1,3 +1,4 @@
+import asyncio
 import html
 import json
 import logging
@@ -6,7 +7,6 @@ import re
 import uuid
 from datetime import datetime, timedelta
 
-import aiohttp
 import nh3
 from slack_sdk.errors import SlackApiError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -14,7 +14,6 @@ from sqlalchemy.sql.functions import func
 
 from notifications_server.clients.google_chat_app_client import GoogleChatAppClient
 from notifications_server.clients.google_chat_client import GoogleChatClient
-from notifications_server.clients.ms_teams_client import MsTeamsClient
 from notifications_server.configs import settings
 from notifications_server.exceptions.common_exc import BeeHTTPError
 from notifications_server.exceptions.exceptions import Err
@@ -31,12 +30,23 @@ from notifications_server.models.models import (
 from notifications_server.utils.datetime_utils import utc_now
 from notifications_server.utils.transformer import Transformer
 from notifications_server.services.cache import Cache
+from notifications_server.services.ms_teams.identity import sender_email
+from notifications_server.services.ms_teams.bot_sender import (
+    APP_NOT_IN_TEAM,
+    NOT_SUPPORTED,
+    TeamsBotError,
+    card_activity,
+    get_sender,
+    load_teams,
+)
 from notifications_server.services.messaging_installations import (
     load_installation,
     load_installation_by_team,
+    load_ms_teams_installation_by_aad_tenant,
     load_installations,
-    persist_messaging_token,
+    ms_teams_aad_tenant_owner,
 )
+from notifications_server.services.ms_teams.activity import channel_data_of
 
 from botbuilder.core import TurnContext, BotFrameworkAdapterSettings, BotFrameworkAdapter
 from botbuilder.schema import Activity, ActivityTypes, Attachment
@@ -206,8 +216,9 @@ class CommonService:
                 return BeeHTTPError(400, Err.OS0011, ["platform"])
 
             # Google Chat (service-account bot) has no per-user/DM routing in the
-            # space-binding model — notifications target bound spaces only.
-            if platform == "google_chat":
+            # space-binding model — notifications target bound spaces only. The
+            # Teams bot has no user list without Microsoft Graph.
+            if platform in ("google_chat", "ms_teams"):
                 return {"data": []}
 
             messaging_platform = load_installation(self.session, tenant, platform)
@@ -217,8 +228,6 @@ class CommonService:
 
             if platform == "slack":
                 return self.get_slack_users(messaging_platform)
-            elif platform == "ms_teams":
-                return self.get_ms_teams_users(messaging_platform)
             elif platform == "discord":
                 return {"data": []}  # Discord bots need privileged intents to list members
             return {}
@@ -259,20 +268,23 @@ class CommonService:
 
         return {"data": users}
 
-    def get_ms_teams_users(self, messaging_platform):
-        error = self._refresh_ms_teams_token(messaging_platform)
-        if error:
-            return {"data": []}
-
-        users = MsTeamsClient.list_users(messaging_platform.token)
-        return {"data": users}
-
     def get_ms_teams_channels(self, messaging_platform):
-        error = self._refresh_ms_teams_token(messaging_platform)
-        if error:
-            return None
+        return {"data": self._ms_teams_installed_channels(messaging_platform.tenant_id)}
 
-        return {"data": MsTeamsClient.list_joined_teams(messaging_platform.token)}
+    def _ms_teams_installed_channels(self, tenant_id):
+        """Teams the bot is installed in, each with its channels nested under
+        it. A team whose channels can't be listed right now is shown without
+        them rather than failing the picker."""
+        sender = get_sender()
+        teams = []
+        for team in load_teams(self.session, tenant_id):
+            try:
+                channels = sender.list_channels(team)
+            except TeamsBotError as e:
+                LOG.warning("Listing channels of Teams team %s failed: %s", team.aad_group_id, e)
+                channels = []
+            teams.append({"name": team.name, "id": team.aad_group_id, "channels": channels})
+        return teams
 
     def get_google_chat_channels(self, tenant):
         """List the Google Chat spaces bound to this tenant (google_chat_space integrations).
@@ -664,39 +676,7 @@ class CommonService:
         return self._channel_result(True, "slack", channel.get("id"), channel.get("name"))
 
     def _create_ms_teams_channel(self, tenant_id, team_id, name, description, is_private):
-        if not team_id:
-            return {"error": {"message": "team_id is required to create an MS Teams channel"}}
-
-        messaging_platform = self._get_messaging_platform(tenant_id, team_id, "ms_teams")
-        if not messaging_platform:
-            return {"error": {"message": f"No MS Teams installation found for tenant: {tenant_id}"}}
-
-        error = self._refresh_ms_teams_token(messaging_platform)
-        if error:
-            return {"error": {"message": error}}
-
-        # Find: match an existing channel by display name within the team.
-        try:
-            existing_channels = MsTeamsClient.list_team_channels(messaging_platform.token, team_id)
-        except Exception:
-            LOG.warning("Unable to list MS Teams channels for find-or-create; proceeding to create", exc_info=True)
-            existing_channels = []
-        for channel in existing_channels:
-            if channel.get("name") == name:
-                return self._channel_result(False, "ms_teams", channel["id"], channel["name"], team_id=team_id)
-
-        result = MsTeamsClient.create_channel(
-            access_token=messaging_platform.token,
-            team_id=team_id,
-            display_name=name,
-            description=description,
-            is_private=is_private,
-        )
-        if not result.get("success"):
-            return {"error": {"message": result.get("error") or "Failed to create MS Teams channel"}}
-        return self._channel_result(
-            True, "ms_teams", result.get("channel_id"), result.get("name"), team_id=team_id, url=result.get("url")
-        )
+        return {"error": {"message": NOT_SUPPORTED}}
 
     def _create_google_chat_space(self, tenant_id, name):
         if not GoogleChatAppClient.is_enabled():
@@ -799,30 +779,7 @@ class CommonService:
         return self._members_result("slack", channel_id, added, already_members, failed)
 
     def _add_ms_teams_members(self, tenant_id, team_id, user_ids):
-        if not team_id:
-            return {"error": {"message": "team_id is required to add MS Teams members"}}
-
-        messaging_platform = self._get_messaging_platform(tenant_id, team_id, "ms_teams")
-        if not messaging_platform:
-            return {"error": {"message": f"No MS Teams installation found for tenant: {tenant_id}"}}
-
-        error = self._refresh_ms_teams_token(messaging_platform)
-        if error:
-            return {"error": {"message": error}}
-
-        result = MsTeamsClient.add_team_members(
-            access_token=messaging_platform.token,
-            team_id=team_id,
-            user_ids=user_ids,
-        )
-        return self._members_result(
-            "ms_teams",
-            team_id,
-            result.get("added", []),
-            result.get("already_members", []),
-            result.get("failed", []),
-            team_id=team_id,
-        )
+        return {"error": {"message": NOT_SUPPORTED}}
 
     def _add_google_chat_members(self, tenant_id, channel_id, user_ids):
         if not GoogleChatAppClient.is_enabled():
@@ -871,28 +828,6 @@ class CommonService:
         if team_id and platform == "slack":
             return load_installation_by_team(self.session, team_id, platform)
         return load_installation(self.session, tenant_id, platform)
-
-    def _refresh_ms_teams_token(self, messaging_platform):
-        """Refresh MS Teams token if expired. Returns error string on failure, None on success."""
-        if not (messaging_platform.token_expires_at and messaging_platform.token_expires_at < utc_now()):
-            return None
-        response = self.teams_app.acquire_token_by_refresh_token(
-            messaging_platform.refresh_token,
-            scopes=settings.ms_teams.scopes,
-        )
-        if "error" in response and response["error"]:
-            LOG.error("Unable to refresh MS Teams token: %s", response.get("error_description", ERR_UNKNOWN))
-            return ERR_TOKEN_REFRESH_FAILED
-        expires_in = response.get("expires_in")
-        new_expiry = utc_now() + timedelta(seconds=expires_in - 100) if expires_in else None
-        persist_messaging_token(
-            self.session,
-            messaging_platform,
-            response.get("access_token"),
-            refresh_token=response.get("refresh_token"),
-            token_expires_at=new_expiry,
-        )
-        return None
 
     def _refresh_google_chat_token(self, messaging_platform):
         """Refresh Google Chat token if expired. Returns error string on failure, None on success."""
@@ -984,7 +919,7 @@ class CommonService:
 
     def send_direct_message(self, platform, tenant_id, user_id, text, team_id=None):
         try:
-            if platform not in ["slack", "ms_teams", "google_chat"]:
+            if platform not in ["slack", "google_chat"]:
                 return {"error": {"message": f"Platform {platform} is not supported for direct messages"}}
 
             messaging_platform = self._get_messaging_platform(tenant_id, team_id, platform)
@@ -993,8 +928,6 @@ class CommonService:
 
             if platform == "slack":
                 return self._send_slack_direct_message(messaging_platform, user_id, text)
-            elif platform == "ms_teams":
-                return self._send_teams_direct_message(messaging_platform, user_id, text, tenant_id)
             elif platform == "google_chat":
                 return self._send_google_chat_direct_message(messaging_platform, user_id, text, tenant_id)
 
@@ -1047,27 +980,6 @@ class CommonService:
             error_msg = e.response.get("error") or "slack_api_error"
             LOG.error(f"Slack API error sending DM to user {user_id}: {error_msg}")
             return self._check_dm_error_msg(error_msg)
-
-    def _send_teams_direct_message(self, messaging_platform, user_id, text, tenant_id):
-        error = self._refresh_ms_teams_token(messaging_platform)
-        if error:
-            return {"error": {"message": error}}
-
-        result = MsTeamsClient.create_chat_and_send_message(
-            access_token=messaging_platform.token,
-            user_id=user_id,
-            message=text,
-            tenant_id=tenant_id,
-        )
-
-        if not result.get("success"):
-            return {"error": {"message": result.get("error", "Failed to send direct message")}}
-
-        return {
-            "success": True,
-            "message": MSG_DM_SENT_SUCCESS,
-            "data": result.get("data"),
-        }
 
     def _send_google_chat_direct_message(self, messaging_platform, user_id, text, tenant_id):
         error = self._refresh_google_chat_token(messaging_platform)
@@ -1455,24 +1367,8 @@ class CommonService:
             return {"success": False, "provider": "slack", "error": error_msg}
 
     def _add_teams_reaction(self, messaging_platform, channel_id, message_id, emoji, team_id, tenant_id):
-        """Add a reaction to an MS Teams message."""
-        error = self._refresh_ms_teams_token(messaging_platform)
-        if error:
-            return {"success": False, "provider": "ms_teams", "error": error}
-
-        # Get team_id from messaging_platform if not provided
-        actual_team_id = team_id or messaging_platform.team_id
-        if not actual_team_id:
-            return {"success": False, "provider": "ms_teams", "error": "team_id is required for MS Teams reactions"}
-
-        return MsTeamsClient.set_reaction(
-            access_token=messaging_platform.token,
-            team_id=actual_team_id,
-            channel_id=channel_id,
-            message_id=message_id,
-            reaction_type=emoji,
-            tenant_id=tenant_id,
-        )
+        """The bot can't add reactions in Teams."""
+        return {"success": False, "provider": "ms_teams", "error": NOT_SUPPORTED}
 
     def _add_google_chat_reaction(self, messaging_platform, space_id, message_id, emoji, tenant_id):
         """Add a reaction to a Google Chat message."""
@@ -2220,8 +2116,11 @@ class CommonService:
         app_password = os.environ.get("MS_TEAMS_CLIENT_SECRET")
         if app_id and app_password:
             LOG.debug(f"Initializing Bot Framework adapter with App ID: {app_id[:8]}...")
-            settings = BotFrameworkAdapterSettings(app_id, app_password, channel_auth_tenant)
-            self.teams_adapter = BotFrameworkAdapter(settings)
+            # A SingleTenant bot must take its Bot Connector token from its own
+            # home tenant; without that setting keep the caller's tenant.
+            channel_auth_tenant = settings.ms_teams.bot_tenant_id or channel_auth_tenant
+            adapter_settings = BotFrameworkAdapterSettings(app_id, app_password, channel_auth_tenant)
+            self.teams_adapter = BotFrameworkAdapter(adapter_settings)
             self.teams_app_id = app_id
             LOG.debug("Bot Framework adapter initialized for Teams messaging")
         else:
@@ -2229,31 +2128,19 @@ class CommonService:
             self.teams_app_id = None
             LOG.warning("MS Teams bot credentials not found - Teams bot messaging will not be available")
 
-    async def get_teams_user_info(self, aad_user_id, teams_account_id):
+    async def get_teams_user_info(self, aad_user_id, teams_account_id, activity=None):
         try:
             if not aad_user_id:
                 LOG.warning("No AAD user ID provided")
                 return None
 
-            messaging_platform = load_installation_by_team(self.session, teams_account_id, "ms_teams", contains=True)
+            messaging_platform = load_ms_teams_installation_by_aad_tenant(self.session, teams_account_id)
 
             if not messaging_platform:
                 LOG.debug(f"No Teams messaging platform found for teams account {teams_account_id}")
                 return None
 
-            error = self._refresh_ms_teams_token(messaging_platform)
-            if error:
-                return None
-
-            graph_url = f"https://graph.microsoft.com/v1.0/users/{aad_user_id}"
-            headers = {"Authorization": f"Bearer {messaging_platform.token}", "Content-Type": "application/json"}
-
-            async with aiohttp.ClientSession() as session:
-                async with session.get(graph_url, headers=headers) as response:
-                    response.raise_for_status()
-                    user_data = await response.json()
-
-            user_email = user_data.get("mail") or user_data.get("userPrincipalName")
+            user_email = await sender_email(activity) if activity is not None else None
 
             if not user_email:
                 LOG.warning(f"No email found for AAD user {aad_user_id}")
@@ -2275,9 +2162,6 @@ class CommonService:
             LOG.debug(f"Successfully retrieved email for AAD user {aad_user_id}")
             return user_email
 
-        except aiohttp.ClientError as e:
-            LOG.error(f"Failed to fetch user info from Graph API: {e}")
-            return None
         except Exception as e:
             LOG.exception(f"Unexpected error fetching Teams user info: {e}")
             return None
@@ -2319,6 +2203,36 @@ class CommonService:
         }
 
     @staticmethod
+    def create_teams_account_picked_card(account_name, url):
+        """What the account picker becomes once an account is picked."""
+        return {
+            "type": "AdaptiveCard",
+            ADAPTIVE_CARD_SCHEMA_KEY: ADAPTIVE_CARD_SCHEMA_URL,
+            "version": "1.4",
+            "body": [{"type": "TextBlock", "text": f"Working with **{account_name}**", "wrap": True}],
+            "actions": [
+                {"type": "Action.OpenUrl", "title": f"View in {settings.urls.branding_name}", "url": url},
+            ],
+        }
+
+    async def teams_update_clicked_card(self, activity: Activity, card: dict) -> bool:
+        """Replace the card a click came from. False when Teams didn't take it."""
+        if not activity.reply_to_id:
+            return False
+        try:
+            await asyncio.to_thread(
+                get_sender().update,
+                activity.service_url,
+                activity.conversation.id,
+                activity.reply_to_id,
+                card_activity(card),
+            )
+            return True
+        except TeamsBotError as e:
+            LOG.warning("Updating Teams card %s failed: %s", activity.reply_to_id, e)
+            return False
+
+    @staticmethod
     def create_teams_followup_card(question, followup_options):
         """Create an Adaptive Card with clickable buttons for follow-up options."""
         card = {
@@ -2353,7 +2267,9 @@ class CommonService:
         return card
 
     @staticmethod
-    def create_teams_welcome_card():
+    def create_teams_welcome_card(connected: bool):
+        """The card shown when the app is added. A Microsoft tenant already
+        connected to NudgeBee gets how-to-use; otherwise, how to connect."""
         from notifications_server.services.bot_messages import SIGNUP_URL
 
         branding_name = settings.urls.branding_name
@@ -2408,22 +2324,41 @@ class CommonService:
                     ),
                     "wrap": True,
                 },
+            ],
+        }
+        if connected:
+            card["body"].append(
                 {
                     "type": "TextBlock",
-                    "text": f"Don't have an account yet? [Sign up here]({SIGNUP_URL})",
+                    "text": f"Mention **@{branding_name}** in a channel or a thread to ask a question.",
+                    "wrap": True,
+                }
+            )
+            card["actions"] = [
+                {"type": "Action.OpenUrl", "title": f"Open {branding_name}", "url": f"{settings.base_url}/home"}
+            ]
+        else:
+            card["body"] += [
+                {
+                    "type": "TextBlock",
+                    "text": f"Connect Microsoft Teams in {branding_name} to get alerts and ask questions here.",
+                    "wrap": True,
+                },
+                {
+                    "type": "TextBlock",
+                    "text": f"New to {branding_name}? [Sign up]({SIGNUP_URL})",
                     "wrap": True,
                     "size": "Small",
                     "isSubtle": True,
                 },
-            ],
-            "actions": [
+            ]
+            card["actions"] = [
                 {
                     "type": "Action.OpenUrl",
-                    "title": "Sign Up",
-                    "url": SIGNUP_URL,
+                    "title": "Connect Microsoft Teams",
+                    "url": f"{settings.base_url}/user-management#integrations",
                 }
-            ],
-        }
+            ]
 
         return card
 
@@ -2639,33 +2574,27 @@ class CommonService:
             return {"success": False, "platform": "slack", "error": error_msg}
 
     def _send_test_ms_teams(self, messaging_platform, channel_id, team_id, message, tenant_id):
-        error = self._refresh_ms_teams_token(messaging_platform)
-        if error:
-            return {"success": False, "platform": "ms_teams", "error": error}
-
-        channels_config = {"team_id": team_id, "channels": [{"id": channel_id}]}
         adaptive_card = {
             ADAPTIVE_CARD_SCHEMA_KEY: ADAPTIVE_CARD_SCHEMA_URL,
             "type": "AdaptiveCard",
             "version": "1.4",
             "body": [{"type": "TextBlock", "text": message, "wrap": True}],
         }
+        team = next(
+            (t for t in load_teams(self.session, messaging_platform.tenant_id) if t.aad_group_id == team_id), None
+        )
+        if team is None:
+            return {"success": False, "platform": "ms_teams", "error": APP_NOT_IN_TEAM}
+        sender = get_sender()
         try:
-            resp = MsTeamsClient.post_to_ms_teams(
-                access_token=messaging_platform.token,
-                ms_teams_channels=channels_config,
-                message=adaptive_card,
-                tenant=tenant_id,
-            )
-            if resp and resp.status_code < 400:
-                return {"success": True, "platform": "ms_teams"}
-            if resp is None:
-                return {"success": False, "platform": "ms_teams", "error": "No response"}
-            LOG.warning("MS Teams test notification failed: %s - %s", resp.status_code, resp.text)
-            return {"success": False, "platform": "ms_teams", "error": f"HTTP {resp.status_code}"}
+            sender.check_channel(team, channel_id)
+            sender.send(team.service_url, channel_id, card_activity(adaptive_card))
+        except TeamsBotError as e:
+            return {"success": False, "platform": "ms_teams", "error": str(e)}
         except Exception:
             LOG.exception("MS Teams test notification error")
             return {"success": False, "platform": "ms_teams", "error": "Unexpected error; see server logs"}
+        return {"success": True, "platform": "ms_teams"}
 
     def _send_test_discord(self, messaging_platform, channel_id, message):
         from notifications_server.clients.discord_client import DiscordClient
@@ -2702,7 +2631,14 @@ class CommonService:
 
     async def teams_send_welcome_message(self, activity: Activity) -> bool:
         """Send welcome message when bot is added to a Teams conversation."""
-        card = self.create_teams_welcome_card()
+        aad_tenant_id = (channel_data_of(activity).get("tenant") or {}).get("id")
+        try:
+            connected = bool(ms_teams_aad_tenant_owner(self.session, aad_tenant_id, enabled_only=True))
+        except Exception as e:
+            LOG.warning("Checking the Teams connection for tenant %s failed: %s", aad_tenant_id, e)
+            self.session.rollback()
+            connected = False
+        card = self.create_teams_welcome_card(connected)
         return await self.teams_reply_with_card(activity, card, None)
 
     # ==================== Google Chat Bot Messaging Methods ====================

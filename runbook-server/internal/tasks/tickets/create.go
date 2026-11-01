@@ -10,6 +10,24 @@ import (
 // TicketsCreateTask defines a task for creating a ticket.
 type TicketsCreateTask struct{}
 
+// foldLegacySeverity returns severity, falling back to additional_fields["priority"]
+// for older saved workflows that still carry it there (priority became the basic
+// severity field; see the comment on InputSchema's severity field).
+//
+// additional_fields["urgency"] is deliberately NOT folded in: on ServiceNow it's a
+// genuine, distinct Platform Field (alongside impact), not a legacy severity alias —
+// folding it in and discarding it (as this once did) silently dropped the chosen
+// Urgency and left ServiceNow to default it to Low (#39810). Platforms where urgency
+// really is severity (PagerDuty, ZenDuty) tag that field with FieldGroupSeverity so
+// the UI sends it via the top-level severity field instead, never through
+// additional_fields.
+func foldLegacySeverity(additionalFields map[string]any, severity string) string {
+	if severity != "" {
+		return severity
+	}
+	return additionalFieldString(additionalFields, "priority")
+}
+
 func (t *TicketsCreateTask) GetName() string {
 	return "tickets.create"
 }
@@ -96,22 +114,12 @@ func (t *TicketsCreateTask) Execute(taskCtx types.TaskContext, params map[string
 		}
 	}
 
-	// Back-compat: priority/urgency are basic (severity) fields now. Older saved
-	// workflows may still carry them inside additional_fields — fold into severity
-	// (when severity wasn't set explicitly) so the chosen value still applies.
-	if severity == "" {
-		if legacy := additionalFieldString(additionalFields, "priority"); legacy != "" {
-			severity = legacy
-		} else if legacy := additionalFieldString(additionalFields, "urgency"); legacy != "" {
-			severity = legacy
-		}
-	}
+	severity = foldLegacySeverity(additionalFields, severity)
 
 	// Once consumed, ensure these basic fields aren't forwarded as custom fields.
 	if additionalFields != nil {
 		delete(additionalFields, "assignee")
 		delete(additionalFields, "priority")
-		delete(additionalFields, "urgency")
 	}
 
 	// Dry run: validate params but never reach the ticketing platform. The

@@ -114,7 +114,7 @@ const S3UtilizationAndHealth = ({ accountId, clusterSummary = {}, serviceName }:
             label='Optimize Count'
             value={
               <Box component='span' className='stat-value-affordance' sx={{ transition: `color ${ds.motion.micro} ${ds.motion.ease}` }}>
-                {clusterSummary?.recommendation_aggregate?.aggregate?.count ?? '-'}
+                {clusterSummary?.recommendation_aggregate?.aggregate?.count ?? 0}
               </Box>
             }
             onClick={handleOptimizeClick}

@@ -86,6 +86,7 @@ const integrationConnectionKey = {
   newrelic: 'region',
   splunk_observability_platform: 'realm',
   splunk_enterprise: 'splunk_url',
+  grafana_tempo: 'tempo_url',
   chronosphere: 'chronosphere_url',
   signoz: 'signoz_url',
   loki: 'loki_url',
@@ -149,6 +150,7 @@ const ListIntegrations = ({ integrationName }) => {
     'solarwinds_webhook',
     'elasticsearch_webhook',
     'openobserve_webhook',
+    'event_webhook',
   ];
   const integrationWebhooks = [
     'pagerduty_webhook',
@@ -165,6 +167,7 @@ const ListIntegrations = ({ integrationName }) => {
     'solarwinds_webhook',
     'elasticsearch_webhook',
     'openobserve_webhook',
+    'event_webhook',
   ];
   const agentManagedIntegrations = ['ES', 'loki', 'prometheus', 'otel_clickhouse', 'jaeger'];
   const hideConnectionInfo =
@@ -708,6 +711,8 @@ const ListIntegrations = ({ integrationName }) => {
       integration_config_name: selectedIntegration.name,
       integration_name: integrationName == 'postgres' ? 'postgresql' : integrationName.toLowerCase(),
       integration_config_status: (selectedIntegration.status || 'enabled') == 'enabled' ? 'disabled' : 'enabled',
+      // The agent's own row and a hand-added one can share type and name.
+      source: selectedIntegration?.source || 'user',
     };
     setIsActionLoading(true);
     apiIntegrations

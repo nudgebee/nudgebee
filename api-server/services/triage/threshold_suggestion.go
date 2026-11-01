@@ -3,6 +3,7 @@ package triage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -1196,12 +1197,26 @@ func extractPromQLThreshold(exprStr string) (*promQLThreshold, error) {
 	}
 }
 
+// errMultiCondition marks a rule whose firing depends on more than one real threshold condition.
+// Replaying a single leg against a new threshold would not predict when such a rule fires — its
+// off-alert samples include every moment the other condition held the rule back — so there is
+// no one threshold to tune.
+var errMultiCondition = errors.New("this rule combines more than one threshold condition, so tuning one threshold on its own would not predict when it fires")
+
 // extractFromCompoundExpr handles AND/OR/UNLESS at the top level of a PromQL expression.
-// For AND: extracts the leg with a tunable threshold (the other is a guard condition).
-// For OR: extracts the first leg with a tunable threshold.
+// For AND: extracts the leg with a tunable threshold when the other only filters on state.
+// For UNLESS: extracts the left leg (the right one is an exclusion).
+// Two tunable legs joined by AND, or a tunable leg joined to another threshold by OR, return
+// errMultiCondition.
 func extractFromCompoundExpr(binExpr *parser.BinaryExpr) (*promQLThreshold, error) {
 	lhsResult, lhsErr := extractPromQLThreshold(binExpr.LHS.String())
 	rhsResult, rhsErr := extractPromQLThreshold(binExpr.RHS.String())
+
+	// A multi-condition leg makes the whole rule multi-condition. Falling back to the other leg
+	// would tune a guard or an exclusion as if it were the alerting threshold.
+	if errors.Is(lhsErr, errMultiCondition) || errors.Is(rhsErr, errMultiCondition) {
+		return nil, errMultiCondition
+	}
 
 	var exprType string
 	switch binExpr.Op {
@@ -1220,25 +1235,31 @@ func extractFromCompoundExpr(binExpr *parser.BinaryExpr) (*promQLThreshold, erro
 		lhsResult.ExpressionType = exprType
 		return lhsResult, nil
 	case rhsErr == nil && lhsErr != nil:
+		// The right leg of UNLESS is an exclusion, never the alerting threshold.
+		if binExpr.Op == parser.LUNLESS {
+			return nil, lhsErr
+		}
 		rhsResult.ExpressionType = exprType
 		return rhsResult, nil
 	case lhsErr == nil && rhsErr == nil:
 		// Both sides have thresholds — for AND, one leg is typically a guard
 		// condition (e.g., "requests > 0") and the other is the real alerting threshold.
-		// Heuristic: a guard condition uses a trivial value (0) with GT/GTE.
-		// Pick the non-guard leg; if neither is a guard, pick LHS.
-		if binExpr.Op == parser.LAND {
-			lhsIsGuard := isGuardCondition(lhsResult)
-			rhsIsGuard := isGuardCondition(rhsResult)
-			if lhsIsGuard && !rhsIsGuard {
+		// Pick the tunable leg; two tunable legs leave no single threshold to tune.
+		lhsTunable, rhsTunable := isTunableLeg(lhsResult), isTunableLeg(rhsResult)
+		switch binExpr.Op {
+		case parser.LAND:
+			if lhsTunable && rhsTunable {
+				return nil, errMultiCondition
+			}
+			// With no tunable leg, keep the non-guard one so the eligibility check can say why.
+			if !lhsTunable && (rhsTunable || (isGuardCondition(lhsResult) && !isGuardCondition(rhsResult))) {
 				rhsResult.ExpressionType = exprType
 				return rhsResult, nil
 			}
-			if rhsIsGuard && !lhsIsGuard {
-				lhsResult.ExpressionType = exprType
-				return lhsResult, nil
+		case parser.LOR:
+			if lhsTunable || rhsTunable {
+				return nil, errMultiCondition
 			}
-			// Both or neither are guards: pick LHS (first leg)
 		}
 		lhsResult.ExpressionType = exprType
 		return lhsResult, nil
@@ -1246,6 +1267,16 @@ func extractFromCompoundExpr(binExpr *parser.BinaryExpr) (*promQLThreshold, erro
 		return nil, fmt.Errorf("compound %s: no extractable threshold in either leg: lhs: %v, rhs: %v",
 			binExpr.Op.String(), lhsErr, rhsErr)
 	}
+}
+
+// isTunableLeg reports whether an extracted comparison is a threshold worth tuning rather than
+// a filter on state: an equality check or a "> 0" guard only decides whether the rule applies.
+func isTunableLeg(t *promQLThreshold) bool {
+	switch t.Operator {
+	case ">", ">=", "<", "<=":
+		return !isGuardCondition(t)
+	}
+	return false
 }
 
 // isGuardCondition returns true if a threshold leg looks like a guard condition
@@ -2161,9 +2192,10 @@ func computeDurationRecommendation(suggestion *ThresholdSuggestion, alertDef *Al
 	}
 
 	switch {
+	// Never resolving is a reason to look at the rule, not evidence that it is safe to turn off.
 	case alertQuality.Classification == "broken":
-		suggestion.RecommendationType = "disable"
-		suggestion.DurationReason = "Alert never resolves — investigate root cause or disable."
+		suggestion.RecommendationType = "review_alert"
+		suggestion.DurationReason = "Alert never resolves — investigate the root cause."
 
 	case isTransient && hasThresholdSuggestion:
 		suggestion.RecommendationType = "tune_both"
@@ -2244,7 +2276,7 @@ func computeAlertQuality(ctx context.Context, db *sqlx.DB, source, alertRuleKey,
 			COUNT(*) FILTER (WHERE ends_at IS NOT NULL AND ends_at > starts_at) as resolved_count,
 			COUNT(*) FILTER (WHERE nb_status_changed_by IS NOT NULL) as engaged_count,
 			COUNT(*) FILTER (WHERE ends_at IS NOT NULL AND ends_at > starts_at
-				AND EXTRACT(EPOCH FROM (ends_at - starts_at)) < 600) as transient_count,
+				AND EXTRACT(EPOCH FROM (ends_at - starts_at)) < 660) as transient_count,
 			COUNT(*) FILTER (WHERE ends_at IS NOT NULL AND ends_at = starts_at) as instant_count,
 			PERCENTILE_CONT(0.9) WITHIN GROUP (
 				ORDER BY EXTRACT(EPOCH FROM (ends_at - starts_at))
@@ -2270,7 +2302,9 @@ func computeAlertQuality(ctx context.Context, db *sqlx.DB, source, alertRuleKey,
 		InstantRate:    roundTo(float64(result.InstantCount)/total, 4),
 	}
 
-	// Transient rate = events resolving < 10 min / total resolved (excludes instant events)
+	// Transient rate = events resolving within 10 min / total resolved (excludes instant events).
+	// The cutoff carries a minute of slack: alert routers deliver resolves on a fixed interval, so a
+	// firing that clears at the 10-minute mark is recorded a few seconds past it.
 	if result.ResolvedCount > 0 {
 		score.TransientRate = roundTo(float64(result.TransientCount)/float64(result.ResolvedCount), 4)
 	}
@@ -2298,15 +2332,16 @@ func computeAlertQuality(ctx context.Context, db *sqlx.DB, source, alertRuleKey,
 // classifyAlertQuality assigns classification and recommendation based on quality metrics.
 // Priority order matters: false_positive > no-lifecycle spam > broken > noisy_but_real > noisy_ignored > healthy.
 func classifyAlertQuality(score *AlertQualityScore) {
+	// Fires regularly, clears on its own, and nobody acts on it here. That alone does not make an
+	// alert false — most alerts are handled in the paging tool, so engagement is near zero for real
+	// ones too. What separates noise from a real condition is how long the firings stay open.
+	unattended := score.FiringFrequency > 0.5 && score.ResolutionRate > 0.5 && score.EngagementRate < 0.1
+
 	switch {
-	// 1. False positive: fires often, auto-resolves, nobody acts on it
-	case score.FiringFrequency > 1 && score.ResolutionRate > 0.8 && score.EngagementRate < 0.1:
+	// 1. False positive: unattended, and most firings clear within minutes
+	case unattended && score.TransientRate > 0.7:
 		score.Classification = "false_positive"
-		if score.TransientRate > 0.7 {
-			score.Recommendation = "increase_duration"
-		} else {
-			score.Recommendation = "disable_alert"
-		}
+		score.Recommendation = "increase_duration"
 
 	// 2. No-lifecycle spam: fires many times a day as instant-closed events (ends_at == starts_at,
 	// typical for activity-log style alerts with no resolution semantics) and nobody ever engages.
@@ -2314,7 +2349,7 @@ func classifyAlertQuality(score *AlertQualityScore) {
 	// deliberately excludes instant-dominated rules.
 	case score.FiringFrequency > 5 && score.InstantRate >= 0.5 && score.EngagementRate < 0.1:
 		score.Classification = "false_positive"
-		score.Recommendation = "disable_alert"
+		score.Recommendation = "investigate"
 
 	// 3. Broken: never resolves (but only if instant events aren't dominating)
 	case score.ResolutionRate < 0.1 && score.InstantRate < 0.5:
@@ -2330,14 +2365,11 @@ func classifyAlertQuality(score *AlertQualityScore) {
 			score.Recommendation = "tune_threshold"
 		}
 
-	// 5. Noisy ignored: fires moderately often, resolves, but nobody acts
-	case score.FiringFrequency > 0.5 && score.ResolutionRate > 0.5 && score.EngagementRate < 0.1:
-		score.Classification = "false_positive"
-		if score.TransientRate > 0.7 {
-			score.Recommendation = "increase_duration"
-		} else {
-			score.Recommendation = "tune_threshold"
-		}
+	// 5. Noisy ignored: unattended, but the firings stay open, so the condition behind them is
+	// real. Never recommend disabling on this evidence.
+	case unattended:
+		score.Classification = "noisy_ignored"
+		score.Recommendation = "tune_threshold"
 
 	// 6. Healthy: low frequency or well-engaged
 	default:
@@ -2349,15 +2381,14 @@ func classifyAlertQuality(score *AlertQualityScore) {
 // qualityOnlyRecommendation maps an alert-quality recommendation onto the
 // metric_stats.recommendation_type vocabulary the suggestions UI renders, for rules
 // where no numeric threshold suggestion is possible (metric not fetchable). A numeric
-// tune is off the table there, so tune_threshold degrades to review_alert. An empty
-// return means the verdict is not actionable and the rule keeps today's skipped status.
+// tune is off the table there, so tune_threshold degrades to review_alert. Firing history
+// alone never maps to disable. An empty return means the verdict is not actionable and the
+// rule keeps today's skipped status.
 func qualityOnlyRecommendation(q *AlertQualityScore) string {
 	if q == nil {
 		return ""
 	}
 	switch q.Recommendation {
-	case "disable_alert":
-		return "disable"
 	case "increase_duration":
 		return "increase_duration"
 	case "investigate", "tune_threshold":

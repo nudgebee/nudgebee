@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"nudgebee/services/common"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/llm"
 	"nudgebee/services/security"
@@ -212,6 +213,7 @@ func MatchWorkloadAndEnrich(sc *security.RequestContext, e *EventIncomingWebhook
 		e.EventSubjectOwnerKind = kindLower
 	}
 
+	keepAlertPod(e.Investigation.Labels, workload.Name)
 	e.Investigation.Labels["pod"] = workload.Name
 	e.Investigation.Labels["kind"] = workload.Kind
 	e.Investigation.Labels["nb_matched_workload"] = "true"
@@ -222,6 +224,17 @@ func MatchWorkloadAndEnrich(sc *security.RequestContext, e *EventIncomingWebhook
 			e.Investigation.Labels["namespace"] = workload.Namespace
 		}
 		e.Investigation.Labels["cloud_resource_id"] = workload.CloudResourceId
+	}
+}
+
+// keepAlertPod records the pod the alert named, before the matched workload's name
+// replaces it in labels["pod"]. Metric series carry the pod, so it is what tells
+// this alert's series from the rule's other breaching objects
+// (common.SeriesMatchLabels). The first value kept wins: a second match must not
+// overwrite it with the workload name the first one wrote.
+func keepAlertPod(labels map[string]string, workloadName string) {
+	if pod := labels["pod"]; pod != "" && pod != workloadName && labels[common.AlertPodLabel] == "" {
+		labels[common.AlertPodLabel] = pod
 	}
 }
 
@@ -237,6 +250,23 @@ const SkipWorkloadMatchLabel = "nb_skip_workload_match"
 // names a webhook would like MatchWorkloadAndEnrich to try after EventSubjectName
 // (e.g. dynatrace's impacted-entity list). The label is consumed during matching.
 const WorkloadCandidatesLabel = "nb_workload_candidates"
+
+// podTemplateHashSuffix matches the pod-template-hash a Deployment appends to its
+// ReplicaSet names. Kubernetes renders that hash with rand.SafeEncodeString, whose
+// alphabet has no vowels and no 0/1/3, so a real workload-name segment such as
+// "-backend" or "-v2" does not match.
+var podTemplateHashSuffix = regexp.MustCompile(`^(.+)-[bcdfghjklmnpqrstvwxz2456789]{8,10}$`)
+
+// TrimPodTemplateHash returns the Deployment name behind a ReplicaSet name
+// ("checkout-6f665f49dd" -> "checkout"), or the name unchanged when it carries no
+// pod-template-hash. It is a naming heuristic: callers that act on the result
+// should still let MatchWorkloadAndEnrich confirm it against the inventory.
+func TrimPodTemplateHash(name string) string {
+	if m := podTemplateHashSuffix.FindStringSubmatch(name); len(m) == 2 {
+		return m[1]
+	}
+	return name
+}
 
 const (
 	// webhookSubjectAgentMention pins the dedicated single-shot classifier agent in
@@ -906,6 +936,9 @@ func enrichEventsWithSubjectResolution(sc *security.RequestContext, events []Eve
 			continue
 		}
 		if ResolveSubjectFromTitlePodName(sc, &events[i], accountId) {
+			continue
+		}
+		if ResolveSubjectFromTitleNodeName(sc, &events[i], accountId) {
 			continue
 		}
 		if llmEnabled {

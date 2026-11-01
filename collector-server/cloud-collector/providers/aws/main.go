@@ -514,6 +514,25 @@ func (a *awsProvider) QueryDatabasePerformance(ctx providers.CloudProviderContex
 	return rdsService.QueryDatabasePerformance(ctx, account, request)
 }
 
+// filterResourcesByIds keeps the resources a full GetResources scan returned that
+// match a requested id by Id, Name, Arn or an Arn substring. It is a no-op when no
+// ids were requested.
+func filterResourcesByIds(resources []providers.Resource, resourceIds []string) []providers.Resource {
+	if len(resourceIds) == 0 {
+		return resources
+	}
+	filteredResources := []providers.Resource{}
+	for _, resource := range resources {
+		for _, resourceId := range resourceIds {
+			if resource.Id == resourceId || resource.Name == resourceId || resource.Arn == resourceId || strings.Contains(resource.Arn, resourceId) {
+				filteredResources = append(filteredResources, resource)
+				break
+			}
+		}
+	}
+	return filteredResources
+}
+
 func (a *awsProvider) ListResources(ctx providers.CloudProviderContext, account providers.Account, query providers.ListResourceRequest) (providers.ListResourcesResponse, error) {
 	if query.ServiceName == "" {
 		return providers.ListResourcesResponse{
@@ -560,7 +579,9 @@ func (a *awsProvider) ListResources(ctx providers.CloudProviderContext, account 
 	}
 
 	// When ResourceIds are specified, try targeted fetch first (avoids full service scan).
-	// Falls back to full GetResources + client-side filter if the service doesn't support it.
+	// Falls back to full GetResources + client-side filter if the service doesn't support
+	// it or the targeted call fails. The filter is applied wherever the full scan ran,
+	// per region: a failed targeted call must not hand back the whole region unfiltered.
 	useTargetedFetch := len(query.ResourceIds) > 0
 
 	// Global services (e.g., S3, IAM, CloudFront) expose a single account-wide listing
@@ -571,15 +592,19 @@ func (a *awsProvider) ListResources(ctx providers.CloudProviderContext, account 
 		ctx.GetLogger().Info("fetching global resources", "service", query.ServiceName)
 		var serviceResources []providers.Resource
 		var err error
-		if useTargetedFetch {
+		targeted := useTargetedFetch
+		if targeted {
 			serviceResources, err = service.GetResourcesByIds(ctx, account, "", query.ResourceIds)
 			if errors.Is(err, errors.ErrUnsupported) {
 				err = nil
-				useTargetedFetch = false
+				targeted = false
 			}
 		}
-		if !useTargetedFetch || err != nil {
+		if !targeted || err != nil {
 			serviceResources, err = service.GetResources(ctx, account, "")
+			if err == nil {
+				serviceResources = filterResourcesByIds(serviceResources, query.ResourceIds)
+			}
 		}
 		if err != nil {
 			ctx.GetLogger().Error("failed to fetch global resources", "error", err, "service", query.ServiceName)
@@ -623,53 +648,56 @@ func (a *awsProvider) ListResources(ctx providers.CloudProviderContext, account 
 			defer wg.Done()
 			defer sem.Release(1)
 
+			// A region this account could not reach for the services listed just
+			// before is set aside instead of timing out again. It counts as
+			// unreachable, so it is reported in SkippedRegions and never archived.
+			if resourceListBackoff.shouldSkip(account.AccountNumber, regionName) {
+				ctx.GetLogger().Debug("skipping resource listing in recently unreachable region", "service", query.ServiceName, "region", regionName)
+				mu.Lock()
+				unreachableCount++
+				skippedRegions = append(skippedRegions, regionName)
+				mu.Unlock()
+				return
+			}
+
 			var serviceResources []providers.Resource
 			var err error
 
-			if useTargetedFetch {
+			// Per region: regions run concurrently, so this must not write the shared flag.
+			targeted := useTargetedFetch
+			if targeted {
 				serviceResources, err = service.GetResourcesByIds(ctx, account, regionName, query.ResourceIds)
 				if errors.Is(err, errors.ErrUnsupported) {
 					// Service doesn't support targeted fetch, fall back to full scan
 					err = nil
-					useTargetedFetch = false
+					targeted = false
 				}
 			}
 
-			if !useTargetedFetch || err != nil {
+			if !targeted || err != nil {
 				ctx.GetLogger().Info("fetching resources", "service", query.ServiceName, "region", regionName)
 				serviceResources, err = service.GetResources(ctx, account, regionName)
+				if err == nil {
+					serviceResources = filterResourcesByIds(serviceResources, query.ResourceIds)
+				}
 			}
 
 			if err != nil {
-				if isRegionEndpointMissing(err) {
-					ctx.GetLogger().Debug("skipping region without service endpoint", "service", query.ServiceName, "region", regionName)
-					return
-				}
-				if isServiceUnavailableInRegion(err) {
-					ctx.GetLogger().Info("skipping region where service rejects the request as unavailable", "service", query.ServiceName, "region", regionName, "error", err)
-					return
-				}
-				if isRegionUnreachable(err) {
-					ctx.GetLogger().Warn("skipping unreachable region endpoint", "error", err, "service", query.ServiceName, "region", regionName)
+				if kind := classifyRegionSkip(err); kind != regionSkipNone {
+					logRegionSkip(ctx.GetLogger(), kind, err, regionName, "service", query.ServiceName)
 					mu.Lock()
-					unreachableCount++
-					skippedRegions = append(skippedRegions, regionName)
-					mu.Unlock()
-					return
-				}
-				if isRegionDisabled(err) {
-					ctx.GetLogger().Info("skipping region not enabled for this account", "error", err, "service", query.ServiceName, "region", regionName)
-					mu.Lock()
-					disabledCount++
-					skippedRegions = append(skippedRegions, regionName)
-					mu.Unlock()
-					return
-				}
-				if isThrottleError(err) {
-					ctx.GetLogger().Warn("skipping rate-limited region; will retry next sync", "error", err, "service", query.ServiceName, "region", regionName)
-					mu.Lock()
-					throttledCount++
-					skippedRegions = append(skippedRegions, regionName)
+					switch kind {
+					case regionSkipUnreachable:
+						resourceListBackoff.recordUnreachable(account.AccountNumber, regionName)
+						unreachableCount++
+						skippedRegions = append(skippedRegions, regionName)
+					case regionSkipDisabled:
+						disabledCount++
+						skippedRegions = append(skippedRegions, regionName)
+					case regionSkipThrottled:
+						throttledCount++
+						skippedRegions = append(skippedRegions, regionName)
+					}
 					mu.Unlock()
 					return
 				}
@@ -677,6 +705,7 @@ func (a *awsProvider) ListResources(ctx providers.CloudProviderContext, account 
 				errChan <- fmt.Errorf("failed to fetch %s resources in %s: %w", query.ServiceName, regionName, err)
 				return
 			}
+			resourceListBackoff.recordSuccess(account.AccountNumber, regionName)
 			mu.Lock()
 			resources = append(resources, serviceResources...)
 			successCount++
@@ -700,20 +729,6 @@ func (a *awsProvider) ListResources(ctx providers.CloudProviderContext, account 
 	// exactly as it does when zero regions are queried.
 	if successCount == 0 && (unreachableCount > 0 || throttledCount > 0 || disabledCount > 0) {
 		allErrors = multierr.Append(allErrors, fmt.Errorf("all attempted region(s) failed for service %s (%d unreachable, %d throttled, %d disabled); refusing to report an empty result", query.ServiceName, unreachableCount, throttledCount, disabledCount))
-	}
-
-	// Client-side ResourceIds filter — only needed when we fell back to full GetResources
-	if len(query.ResourceIds) > 0 && !useTargetedFetch {
-		filteredResources := []providers.Resource{}
-		for _, resource := range resources {
-			for _, resourceId := range query.ResourceIds {
-				if resource.Id == resourceId || resource.Name == resourceId || resource.Arn == resourceId || strings.Contains(resource.Arn, resourceId) {
-					filteredResources = append(filteredResources, resource)
-					break
-				}
-			}
-		}
-		resources = filteredResources
 	}
 
 	if len(query.Labels) > 0 {
@@ -1184,11 +1199,17 @@ func (a *awsProvider) ListEvents(ctx providers.CloudProviderContext, account pro
 	}
 
 	// check for alarm events across all active regions
+	var ongoing *providers.OngoingSnapshot
 	if config.Config.CloudCollectorServerEventCloudWatchAlarmEnabled {
 		regions, err := a.getRegions(ctx, account)
 		if err != nil {
 			ctx.GetLogger().Error("failed to fetch regions for cloudwatch alarms", "error", err, "accountNumber", account.AccountNumber)
 		} else {
+			// A region joins the snapshot only when its whole listing succeeded:
+			// the store ends stored firings that the snapshot no longer shows, and a
+			// region it could not read must not look like a region with no alarms.
+			ongoing = newAlarmSnapshot(time.Now().UTC())
+			historySince := clearedFiringWindowStart(query.StartDate, time.Now().UTC())
 			var alarmsMu sync.Mutex
 			var alarmsWg sync.WaitGroup
 			alarmsSem := semaphore.NewWeighted(5)
@@ -1202,19 +1223,35 @@ func (a *awsProvider) ListEvents(ctx providers.CloudProviderContext, account pro
 					}
 					defer alarmsSem.Release(1)
 
+					// A region this account could not reach on recent polls is set
+					// aside for a while instead of timing out again every cycle.
+					if alarmPollBackoff.shouldSkip(account.AccountNumber, region) {
+						ctx.GetLogger().Debug("skipping cloudwatch alarm poll for recently unreachable region", "accountNumber", account.AccountNumber, "region", region)
+						return
+					}
 					alarms, err := getAwsCloudwatchAlarms(ctx, account, AlarmsFilter{
-						Status: AlarmStatusAlarm,
-						Region: region,
+						Status:       AlarmStatusAlarm,
+						Region:       region,
+						HistorySince: historySince,
 					})
 					if err != nil {
+						// A skipped region stays out of the snapshot below, so the
+						// firings stored for it are kept rather than ended.
+						if kind := classifyRegionSkip(err); kind != regionSkipNone {
+							if kind == regionSkipUnreachable {
+								alarmPollBackoff.recordUnreachable(account.AccountNumber, region)
+							}
+							logRegionSkip(ctx.GetLogger(), kind, err, region, "service", "cloudwatch alarms", "accountNumber", account.AccountNumber)
+							return
+						}
 						ctx.GetLogger().Error("failed to fetch cloudwatch alarms", "error", err, "accountNumber", account.AccountNumber, "region", region)
 						return
 					}
-					if len(alarms.Items) > 0 {
-						alarmsMu.Lock()
-						eventList = append(eventList, alarms.Items...)
-						alarmsMu.Unlock()
-					}
+					alarmPollBackoff.recordSuccess(account.AccountNumber, region)
+					alarmsMu.Lock()
+					eventList = append(eventList, alarms.Items...)
+					mergeAlarmRegion(ongoing, alarms.Ongoing)
+					alarmsMu.Unlock()
 				}(region)
 			}
 			alarmsWg.Wait()
@@ -1224,6 +1261,7 @@ func (a *awsProvider) ListEvents(ctx providers.CloudProviderContext, account pro
 	return providers.ListEventResponse{
 		Items:   eventList,
 		Summary: eventSummary,
+		Ongoing: ongoing,
 	}, nil
 }
 

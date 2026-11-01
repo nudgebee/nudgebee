@@ -36,7 +36,7 @@ func init() {
 	toolInput := "A plain-language question describing what you want to know about dependencies/topology/connectivity (e.g. \"what does llm-server in the nudgebee namespace call?\"). State intent only — do NOT mention node IDs, node types, or graph traversal."
 	toolOutput := "The tool will return the output of the question"
 
-	core.RegisterNBAgentFactoryAndTool(ServiceDependencyGraph, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAndTool(ServiceDependencyGraph, func(accountId string) (core.NBAgent, error) {
 		return newServiceDependencyGraphAgent(accountId), nil
 	}, toolDescription, toolInput, toolOutput)
 }
@@ -46,6 +46,10 @@ func newServiceDependencyGraphAgent(accountId string) ServiceDependencyGraphAgen
 		accountId: accountId,
 	}
 }
+
+// AcceptsExecutionTarget: resource_search follows a handed target and the
+// knowledge-graph tools are tenant-wide.
+func (ServiceDependencyGraphAgent) AcceptsExecutionTarget() {}
 
 type ServiceDependencyGraphAgent struct {
 	accountId string

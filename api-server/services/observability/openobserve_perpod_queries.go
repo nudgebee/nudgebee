@@ -88,19 +88,19 @@ const (
 // how it reduces across pods. The reductions are taken from what Prometheus returns for
 // the same key, measured rather than assumed: cpu_usage is one unlabelled series,
 // cpu_usage_by_pod carries namespace+pod but NOT container, and pod_count is a count.
-var openObservePerPodKeys = map[string]struct {
+var openObservePerPodKeys = map[UtilisationKey]struct {
 	Role   openObservePerPodRole
 	Across ooAcross
 }{
-	"container_cpu_usage_by_pod":          {ooRolePodCPUUsage, ooAcrossPerCont},
-	"container_memory_working_set_by_pod": {ooRolePodMemWSet, ooAcrossPerCont},
-	"cpu_usage":                           {ooRolePodCPUUsage, ooAcrossSum},
-	"memory_usage":                        {ooRolePodMemWSet, ooAcrossSum},
-	"cpu_usage_max_pod":                   {ooRolePodCPUUsage, ooAcrossMax},
-	"memory_usage_max_pod":                {ooRolePodMemWSet, ooAcrossMax},
-	"cpu_usage_by_pod":                    {ooRolePodCPUUsage, ooAcrossPerPod},
-	"memory_usage_by_pod":                 {ooRolePodMemWSet, ooAcrossPerPod},
-	"pod_count":                           {ooRolePodCPUUsage, ooAcrossCount},
+	KeyContainerCPUUsageByPod:         {ooRolePodCPUUsage, ooAcrossPerCont},
+	KeyContainerMemoryWorkingSetByPod: {ooRolePodMemWSet, ooAcrossPerCont},
+	KeyCPUUsage:                       {ooRolePodCPUUsage, ooAcrossSum},
+	KeyMemoryUsage:                    {ooRolePodMemWSet, ooAcrossSum},
+	KeyCPUUsageMaxPod:                 {ooRolePodCPUUsage, ooAcrossMax},
+	KeyMemoryUsageMaxPod:              {ooRolePodMemWSet, ooAcrossMax},
+	KeyCPUUsageByPod:                  {ooRolePodCPUUsage, ooAcrossPerPod},
+	KeyMemoryUsageByPod:               {ooRolePodMemWSet, ooAcrossPerPod},
+	KeyPodCount:                       {ooRolePodCPUUsage, ooAcrossCount},
 }
 
 // ooPerPodQueryKey namespaces a probe so it cannot collide with a caller's metric key.
@@ -150,7 +150,7 @@ func fetchOpenObservePerPod(ctx *security.RequestContext, req GetUtilisationTren
 
 	needed := map[openObservePerPodRole]bool{}
 	for _, key := range keys {
-		if spec, ok := openObservePerPodKeys[key]; ok {
+		if spec, ok := openObservePerPodKeys[UtilisationKey(key)]; ok {
 			needed[spec.Role] = true
 		}
 	}
@@ -208,7 +208,7 @@ func fetchOpenObservePerPod(ctx *security.RequestContext, req GetUtilisationTren
 
 	results := make([]QueryResult, 0, len(keys))
 	for _, key := range keys {
-		spec, ok := openObservePerPodKeys[key]
+		spec, ok := openObservePerPodKeys[UtilisationKey(key)]
 		if !ok {
 			continue
 		}
@@ -271,7 +271,7 @@ func ooReducePerPod(series []Result, agg ParsedAggregate) []Result {
 
 // ooServesPerPod reports whether this file answers a key.
 func ooServesPerPod(key string) bool {
-	_, ok := openObservePerPodKeys[key]
+	_, ok := openObservePerPodKeys[UtilisationKey(key)]
 	return ok
 }
 

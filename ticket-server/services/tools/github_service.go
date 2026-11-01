@@ -1,9 +1,11 @@
 package tools
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"nudgebee/tickets-server/clients"
 	"nudgebee/tickets-server/models"
 	"nudgebee/tickets-server/services/ticket"
@@ -83,9 +85,29 @@ func (s *GitHubService) Get(ctx *gin.Context, config models.TicketConfigurations
 // updated_at) to top-level fields. Split out from Get so tests can drive the
 // mapping against an httptest-backed client, mirroring createGithubIssueWithClient.
 func getGithubIssueWithClient(ctx *gin.Context, githubClient *github.Client, owner, repo string, issueNumber int, projectKey string) (*models.Ticket, error) {
-	issue, _, err := githubClient.Issues.Get(ctx, owner, repo, issueNumber)
+	// Same request as Issues.Get, but the body is kept: the SDK's Issue struct
+	// drops keys it does not model, issue_field_values among them.
+	req, err := githubClient.NewRequest(http.MethodGet, fmt.Sprintf("repos/%v/%v/issues/%d", owner, repo, issueNumber), nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get GitHub issue: %w", err)
+	}
+	req.Header.Set("Accept", "application/vnd.github.squirrel-girl-preview")
+	var body json.RawMessage
+	if _, err := githubClient.Do(ctx, req, &body); err != nil {
+		var ghErr *github.ErrorResponse
+		if errors.As(err, &ghErr) && ghErr.Response != nil &&
+			(ghErr.Response.StatusCode == http.StatusNotFound || ghErr.Response.StatusCode == http.StatusGone) {
+			return nil, fmt.Errorf("github issue %s/%s#%d not found: %w", owner, repo, issueNumber, ticket.ErrNotFound)
+		}
+		return nil, fmt.Errorf("failed to get GitHub issue: %w", err)
+	}
+	issue := new(github.Issue)
+	if err := json.Unmarshal(body, issue); err != nil {
+		return nil, fmt.Errorf("failed to decode GitHub issue: %w", err)
+	}
+	var full map[string]any
+	if err := json.Unmarshal(body, &full); err != nil {
+		return nil, fmt.Errorf("failed to decode GitHub issue: %w", err)
 	}
 
 	createdAt := issue.GetCreatedAt().Time
@@ -124,7 +146,7 @@ func getGithubIssueWithClient(ctx *gin.Context, githubClient *github.Client, own
 		URL:         issue.GetHTMLURL(),
 		CreatedAt:   &createdAt,
 		UpdatedAt:   updatedAt,
-		Raw:         marshalToMap(issue),
+		Raw:         rawWithUnmodeled(issue, full),
 	}, nil
 }
 

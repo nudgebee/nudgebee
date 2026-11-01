@@ -18,13 +18,27 @@ jobs:
   notifications-build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+
+    # Real broker for tests/test_consumer_reconnect.py (consumer count stays one
+    # across broker reconnects). Same RabbitMQ version as the chart.
+    services:
+      rabbitmq:
+        image: ghcr.io/nudgebee/rabbitmq:3-management  # official image, RabbitMQ 3.13.7
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q check_port_connectivity"
+          --health-interval 5s
+          --health-timeout 10s
+          --health-retries 20
+
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: 3.11
 
@@ -39,7 +53,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends build-essential postgresql-server-dev-16 libsodium-dev
 
       - name: Install Poetry
-        uses: snok/install-poetry@v1
+        uses: snok/install-poetry@a783c322200f0519c7926aa6faa857c4e23e9263 # v1.4.2
         with:
           version: 1.8.5
           virtualenvs-create: true
@@ -48,7 +62,7 @@ jobs:
 
       - name: Load cached venv
         id: cached-poetry-dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ./notifications-server/.venv
           key: venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('./poetry.lock') }}
@@ -70,4 +84,8 @@ jobs:
 
       - name: Run tests
         working-directory: ./notifications-server
+        # The broker tests skip when RABBIT_MQ_TEST_HOST is unset; here it is set,
+        # so a missing broker fails them.
+        env:
+          RABBIT_MQ_TEST_HOST: 127.0.0.1
         run: poetry run pytest -q

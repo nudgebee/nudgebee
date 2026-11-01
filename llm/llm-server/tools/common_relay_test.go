@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -659,6 +660,107 @@ func TestExecuteContainerJob_RawSurfacesNonZeroExitCode(t *testing.T) {
 			var exitErr *RelayCommandExitError
 			require.ErrorAs(t, err, &exitErr)
 			assert.Equal(t, tc.wantExitCode, exitErr.ExitCode)
+		})
+	}
+}
+
+// Regression: a cluster agent whose runner is read-only refuses `kubectl
+// patch` with status_code 500 and {"error": ...}. The relay forwards that with
+// HTTP 200, so the error JSON was formatted as the command's output and the
+// refused write was reported as a success by kubectl_execute, the workspace
+// shim and the remediation panel alike.
+func TestExecuteContainerJob_AgentRefusalIsAnError(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	reqCtx := security.NewRequestContext(context.Background(), security.NewSecurityContextForSuperAdmin(), logger, nil, nil)
+
+	refusal := `kubectl: verb "patch" not in read-only allowlist; enable runner.enableWritePermissions for writes, or route mutating actions through pkg/mutate`
+	success := goAgentKubectlRelayResponse(t, "pod/app-1 Running\n", "", 0)
+	success["status_code"] = 200
+
+	tests := []struct {
+		name        string
+		module      RelayJob
+		relayReply  map[string]any
+		raw         bool
+		wantStatus  int // 0 = no error expected
+		wantMessage string
+	}{
+		{
+			name:        "agent handler refusal, raw kubectl",
+			relayReply:  map[string]any{"action": "response", "status_code": 500, "data": map[string]any{"error": refusal}, "output_type": "actions"},
+			raw:         true,
+			wantStatus:  500,
+			wantMessage: refusal,
+		},
+		{
+			name:        "agent handler refusal, non-raw caller",
+			relayReply:  map[string]any{"action": "response", "status_code": 500, "data": map[string]any{"error": refusal}},
+			wantStatus:  500,
+			wantMessage: refusal,
+		},
+		{
+			name:        "not limited to kubectl",
+			module:      RelayJobHelm,
+			relayReply:  map[string]any{"action": "response", "status_code": 404, "data": map[string]any{"error": "action not registered: helm_command_executor"}},
+			raw:         true,
+			wantStatus:  404,
+			wantMessage: "action not registered",
+		},
+		{
+			name:        "relay answering for a lost agent carries string data",
+			relayReply:  map[string]any{"status_code": 502, "action": "error", "data": "agent connection lost"},
+			raw:         true,
+			wantStatus:  502,
+			wantMessage: "agent connection lost",
+		},
+		{
+			name:        "no reason given falls back to the status text",
+			relayReply:  map[string]any{"status_code": 503, "data": map[string]any{}},
+			raw:         true,
+			wantStatus:  503,
+			wantMessage: "Service Unavailable",
+		},
+		{
+			name:        "status 200 is a normal result",
+			relayReply:  success,
+			raw:         true,
+			wantMessage: "pod/app-1 Running",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(tc.relayReply)
+			}))
+			defer srv.Close()
+			orig := config.Config.RelayServerEndpoint
+			config.Config.RelayServerEndpoint = srv.URL
+			defer func() { config.Config.RelayServerEndpoint = orig }()
+
+			module, command := tc.module, "kubectl patch deployment app -n demo -p '{}'"
+			if module == "" {
+				module = RelayJobKubectl
+			} else {
+				command = "helm upgrade app ./chart"
+			}
+			toolCtx := core.NbToolContext{AccountId: "test-account", Ctx: reqCtx}
+			result, err := ExecuteContainerJob(toolCtx, module, command, "test-account", nil, tc.raw)
+
+			out, ok := result.(string)
+			require.True(t, ok, "the reason must reach callers that print the result")
+			assert.Contains(t, out, tc.wantMessage)
+			if tc.wantStatus == 0 {
+				assert.NoError(t, err)
+				return
+			}
+			var refusedErr *RelayCommandRefusedError
+			require.ErrorAs(t, err, &refusedErr)
+			assert.Equal(t, tc.wantStatus, refusedErr.StatusCode)
+			assert.Contains(t, refusedErr.Error(), tc.wantMessage)
+			var exitErr *RelayCommandExitError
+			assert.False(t, errors.As(err, &exitErr), "a refusal is not a process exit code")
 		})
 	}
 }

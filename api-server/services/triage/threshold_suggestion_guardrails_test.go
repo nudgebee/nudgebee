@@ -257,3 +257,80 @@ func TestFormatHumanDuration(t *testing.T) {
 		}
 	}
 }
+
+func TestDetectMetricHints_CapacityLimit(t *testing.T) {
+	capacity := []string{
+		"(kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes)",
+		"node_filesystem_avail_bytes / node_filesystem_size_bytes",
+		"FreeStorageSpace",
+		"x509_cert_not_after - time()",
+		"kube_resourcequota{type=\"used\"} / kube_resourcequota{type=\"hard\"}",
+	}
+	for _, m := range capacity {
+		if !detectMetricHints(&AlertDefinition{MetricName: m, Operator: "<", CurrentThreshold: 0.15}).isCapacityLimit {
+			t.Errorf("expected %q to be a capacity limit", m)
+		}
+	}
+
+	other := []string{
+		"rate(node_disk_io_time_weighted_seconds_total[5m])",
+		"rate(http_requests_total[5m])",
+		"rate(http_requests_total{path=\"/free_bytes/expired\"}[5m])",
+		"rate(node_filesystem_errors_total[5m])",
+		"node_filesystem_readonly",
+		"container_spec_cpu_quota",
+		"histogram_quantile(0.95, sum by (le) (rate(request_duration_seconds_bucket[5m])))",
+	}
+	for _, m := range other {
+		if detectMetricHints(&AlertDefinition{MetricName: m, Operator: ">", CurrentThreshold: 10}).isCapacityLimit {
+			t.Errorf("did not expect %q to be a capacity limit", m)
+		}
+	}
+}
+
+// Loosening a free-space threshold shortens the time left to react, so it is never clean advice.
+func TestValidateSuggestion_LooseningCapacityLimitNeedsReview(t *testing.T) {
+	alertDef := &AlertDefinition{
+		MetricName:       "(kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes)",
+		Operator:         "<",
+		CurrentThreshold: 0.15,
+	}
+	suggestion := &ThresholdSuggestion{
+		SuggestedThreshold: 0.10,
+		EstimatedReduction: 70,
+		Confidence:         "high",
+		RecommendationType: "tune_threshold",
+		MetricP50:          0.21,
+		MetricP95:          0.27,
+	}
+	risk := ValidateSuggestion(suggestion, alertDef, nil)
+	if risk.Level != "review" {
+		t.Errorf("expected 'review' for a loosened capacity limit, got %q", risk.Level)
+	}
+	if len(risk.Warnings) == 0 {
+		t.Error("expected a warning explaining the capacity limit")
+	}
+	if suggestion.Confidence == "high" {
+		t.Error("confidence must not stay 'high' for a loosened capacity limit")
+	}
+}
+
+// Tightening a capacity limit gives more warning, not less — nothing to flag.
+func TestValidateSuggestion_TighteningCapacityLimitStaysSafe(t *testing.T) {
+	alertDef := &AlertDefinition{
+		MetricName:       "(kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes)",
+		Operator:         "<",
+		CurrentThreshold: 0.15,
+	}
+	suggestion := &ThresholdSuggestion{
+		SuggestedThreshold: 0.20,
+		EstimatedReduction: 0,
+		Confidence:         "medium",
+		RecommendationType: "tune_threshold",
+		MetricP50:          0.40,
+		MetricP95:          0.60,
+	}
+	if risk := ValidateSuggestion(suggestion, alertDef, nil); risk.Level != "safe" {
+		t.Errorf("expected 'safe' when the limit is tightened, got %q (%v)", risk.Level, risk.Warnings)
+	}
+}

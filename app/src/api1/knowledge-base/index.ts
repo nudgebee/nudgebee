@@ -1,5 +1,12 @@
 import { queryGraphQL } from '@lib/HttpService';
 
+interface CapabilityDetail {
+  name: string;
+  description?: string;
+  surface?: string;
+  scope?: string;
+}
+
 interface KnowledgeBaseOutput {
   id: string;
   tenant_id: string;
@@ -25,6 +32,10 @@ interface KnowledgeBaseOutput {
   error_message?: string;
   note_category?: string;
   context_tags?: string[];
+  kinds?: string[];
+  shapes?: string[];
+  capabilities?: string[];
+  capability_details?: CapabilityDetail[];
 }
 
 /**
@@ -109,6 +120,15 @@ const apiKnowledgeBase = {
             error_message
             note_category
             context_tags
+            kinds
+            shapes
+            capabilities
+            capability_details {
+              name
+              description
+              surface
+              scope
+            }
           }
           errors {
             message
@@ -149,6 +169,10 @@ const apiKnowledgeBase = {
           error_message: kb.error_message,
           note_category: kb.note_category,
           context_tags: kb.context_tags,
+          kinds: kb.kinds,
+          shapes: kb.shapes,
+          capabilities: kb.capabilities,
+          capability_details: kb.capability_details,
         }));
         return { data: transformedData, errors: result.errors || [] };
       }

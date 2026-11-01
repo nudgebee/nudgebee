@@ -682,7 +682,7 @@ func reActPromptToolDescriptions(tools []toolcore.NBTool) string {
 		fmt.Fprintf(&sb, "Type: %s\n", string(tool.GetType()))
 		fmt.Fprintf(&sb, "Description: %s", tool.Description())
 		if isToolSchemaAuthoritative(tool.Name()) {
-			if schemaBlock := renderInputSchema(tool.InputSchema()); schemaBlock != "" {
+			if schemaBlock := renderInputSchema(toolcore.ModelInputSchema(tool)); schemaBlock != "" {
 				sb.WriteString("\n")
 				sb.WriteString(schemaBlock)
 			}

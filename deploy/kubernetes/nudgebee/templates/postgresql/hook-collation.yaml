@@ -1,0 +1,123 @@
+{{- if .Values.postgresql.enabled }}
+{{- $r := include "nudgebee.postgresql.values" . | fromYaml }}
+{{- $podSC := $r.primary.podSecurityContext }}
+{{- $ctrSC := $r.primary.containerSecurityContext }}
+{{- /*
+Databases created by the Bitnami image record glibc 2.31 as their collation
+version; this image's glibc is newer, so PostgreSQL warns about a collation
+version mismatch on every new connection. The en_US.UTF-8 sort order is
+identical between the two (checked across glibc 2.31, 2.36 and 2.41), so after
+the upgrade this re-checks the btree indexes on collatable columns of each such
+database with amcheck's bt_index_check and, only if all pass, runs ALTER
+DATABASE ... REFRESH COLLATION VERSION.
+
+It stays inside a ~4 minute budget so it can never hold `helm upgrade` past
+Helm's default 5 minute hook timeout: a database whose checks would not finish
+in time is left alone (the warning stays; it is harmless) and listed in the log
+with the command to run later. It never fails the upgrade, and creates amcheck
+only where missing, dropping it again afterwards.
+*/}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-collation-refresh" (include "nudgebee.postgresql.fullname" .) | trunc 63 | trimSuffix "-" }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "nudgebee.postgresql.labels" (dict "custom" $r.commonLabels "root" $) | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-upgrade
+    helm.sh/hook-weight: "5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 280
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      {{- $pullSecrets := concat ((.Values.global | default (dict)).imagePullSecrets | default (list)) ($r.image.pullSecrets | default (list)) }}
+      {{- with $pullSecrets }}
+      imagePullSecrets:
+        {{- range . | uniq }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      {{- if $podSC.enabled }}
+      securityContext:
+        {{- toYaml (omit $podSC "enabled") | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: refresh-collation-version
+          image: {{ include "nudgebee.postgresql.image" (dict "image" $r.image "root" $) }}
+          imagePullPolicy: {{ $r.image.pullPolicy | quote }}
+          {{- if $ctrSC.enabled }}
+          securityContext:
+            {{- toYaml (omit $ctrSC "enabled") | nindent 12 }}
+          {{- end }}
+          env:
+            - name: PGHOST
+              value: {{ printf "%s.%s.svc.%s" (include "nudgebee.postgresql.primaryFullname" .) .Release.Namespace $r.clusterDomain | quote }}
+            - name: PGPORT
+              value: {{ include "nudgebee.postgresql.servicePort" . | quote }}
+            - name: PGUSER
+              value: postgres
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "nudgebee.postgresql.secretName" . }}
+                  key: {{ include "nudgebee.postgresql.adminPasswordKey" . }}
+            - name: PGCONNECT_TIMEOUT
+              value: "10"
+          command:
+            - sh
+            - -c
+            - |
+              set -u
+              budget=240; start=$(date +%s)
+              left() { echo $(( budget - ($(date +%s) - start) )); }
+              q() { psql -X -q -At -v ON_ERROR_STOP=1 "$@"; }
+              until q -d postgres -c 'select 1' >/dev/null 2>&1; do
+                [ "$(left)" -le 180 ] && { echo "PostgreSQL not reachable; leaving collation versions as they are."; exit 0; }
+                sleep 5
+              done
+              idx="from pg_index i join pg_class c on c.oid=i.indexrelid join pg_am a on a.oid=c.relam where a.amname='btree' and c.relpersistence <> 't' and i.indisvalid and i.indisready and exists (select 1 from pg_attribute att where att.attrelid = c.oid and att.attcollation <> 0)"
+              skipped=""
+              q -d postgres -c "select datname from pg_database where datallowconn and datlocprovider = 'c' and datcollversion is distinct from pg_database_collation_actual_version(oid)" > /tmp/dbs
+              [ -s /tmp/dbs ] || { echo "No collation version mismatch."; exit 0; }
+              while IFS= read -r db; do
+                t=$(left)
+                if [ "$t" -le 15 ]; then skipped="$skipped\n  $db"; continue; fi
+                echo "== $db"
+                had=$(q -d "$db" -c "select count(*) from pg_extension where extname='amcheck'")
+                if ! q -d "$db" -c 'create extension if not exists amcheck' >/dev/null; then
+                  echo "  cannot create amcheck; leaving it unchanged"; continue
+                fi
+                n=$(q -d "$db" -c "select count(*) $idx")
+                if q -d "$db" -c "set statement_timeout = '$((t - 10))s'; select bt_index_check(c.oid) $idx" >/dev/null; then
+                  # psql only substitutes :'db' in input it reads, not in -c; %I quotes the name.
+                  stmt=$(printf "select format('alter database %%I refresh collation version', :'db')\n" | q -d postgres -v db="$db" -f -)
+                  q -d postgres -c "$stmt" >/dev/null 2>&1
+                  ok=$(printf "select datcollversion = pg_database_collation_actual_version(oid) from pg_database where datname = :'db'\n" | q -d postgres -v db="$db" -f -)
+                  if [ "$ok" = "t" ]; then
+                    echo "  $n collatable btree indexes verified; collation version refreshed"
+                  else
+                    echo "  $n collatable btree indexes verified, but the refresh did not apply"; skipped="$skipped\n  $db"
+                  fi
+                else
+                  echo "  index check failed or ran out of time; collation version NOT refreshed"
+                  skipped="$skipped\n  $db"
+                fi
+                [ "$had" = "0" ] && q -d "$db" -c 'drop extension if exists amcheck' >/dev/null
+              done < /tmp/dbs
+              if [ -n "$skipped" ]; then
+                printf "Not refreshed (PostgreSQL keeps logging a harmless collation-version warning for these):%b\n" "$skipped"
+                echo "To clear it later, check indexes with amcheck, then: ALTER DATABASE <name> REFRESH COLLATION VERSION;"
+              fi
+              exit 0
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+{{- end }}

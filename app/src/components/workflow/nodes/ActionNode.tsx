@@ -505,7 +505,7 @@ const ActionNode = ({ id, data, isConnectable, selected, onTestTask, accountId, 
             cursor: 'help',
           }}
         >
-          Server Error
+          Validation Error
         </div>
       )}
       {isDisabled && (

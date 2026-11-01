@@ -870,7 +870,7 @@ func convertNanoToTimeString(nanoTimestamp string) string {
 	}
 
 	// Convert nanoseconds to time.Time, then to RFC3339 string
-	return time.Unix(0, nanoTime).Format(time.RFC3339)
+	return time.Unix(0, nanoTime).UTC().Format(time.RFC3339)
 }
 
 // calculateDurationAsFloat calculates duration as float64 for TraceSpan compatibility

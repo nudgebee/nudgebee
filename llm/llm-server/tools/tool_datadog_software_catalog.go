@@ -42,6 +42,7 @@ func (m DatadogSoftwareCatalogTool) InputSchema() toolcore.ToolSchema {
 	return toolcore.ToolSchema{
 		Type: toolcore.ToolSchemaTypeObject,
 		Properties: map[string]toolcore.ToolSchemaProperty{
+			"instance": instanceProperty,
 			"query": {
 				Type:        toolcore.ToolSchemaTypeString,
 				Description: "Optional: A query string to filter entities by name or tag.",

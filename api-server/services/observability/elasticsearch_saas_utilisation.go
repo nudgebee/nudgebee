@@ -2,11 +2,14 @@ package observability
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"nudgebee/services/security"
 )
@@ -140,6 +143,11 @@ type esMetricSource struct {
 	// one claim, not one pod, so the pod/container/node filters do not apply — one
 	// claim can be mounted by several pods, and filtering by pod would drop the rest.
 	PVCScoped bool
+	// Fallback marks a source searched only when the plan's other sources match no
+	// documents. For one that answers the same question far more expensively — a
+	// cluster sum over pods behind the sum over nodes — so it is not computed, and
+	// does not count against search.max_buckets, on clusters that have the cheap one.
+	Fallback bool
 }
 
 // esUtilScope is the granularity a utilisation request is asking about. The previous
@@ -327,6 +335,13 @@ func esSpecSources(ecsField, otelMetric string) []esMetricSource {
 // slightly LOW against node capacity — but "slightly low" is a usable utilisation
 // gauge and an empty one is not. The direct node source stays first, so a cluster
 // that does ship the `node` metricset is unaffected.
+//
+// The pod sums are Fallback: searched only when no node source matches anything.
+// Sent alongside the node sums they cost time buckets x pods against
+// search.max_buckets — on the dev cluster that alone refused every window longer than
+// an hour — for an answer that loses to the node sum on coverage whenever both have
+// data. The one case that changes: a node stream with gaps no longer loses to a
+// fuller pod sum; the node series is drawn with its gaps.
 func esNodeCPUUsageSources() []esMetricSource {
 	return []esMetricSource{
 		{
@@ -335,17 +350,18 @@ func esNodeCPUUsageSources() []esMetricSource {
 		},
 		{
 			Field: "kubernetes.pod.cpu.usage.nanocores", Scale: nanocoresToCores, Agg: "avg",
-			GroupBy: []string{esECSFields.Pod}, Fields: esECSFields,
+			GroupBy: []string{esECSFields.Pod}, Fields: esECSFields, Fallback: true,
 		},
 		{
 			Name: "system.cpu.utilization", NameField: "name.keyword", Field: "value", Scale: esNoScale, Agg: "avg",
 			GroupBy: []string{esOTLPFields.Node}, Fields: esOTLPFields,
 		},
 		esOTelNativeSource("k8s.node.cpu.usage", esNoScale, "avg", []string{esOTelNativeFields.Node}),
-		esOTelNativeSource("k8s.pod.cpu.usage", esNoScale, "avg", []string{esOTelNativeFields.Pod}),
+		esUtilFallback(esOTelNativeSource("k8s.pod.cpu.usage", esNoScale, "avg", []string{esOTelNativeFields.Pod})),
 	}
 }
 
+// esNodeMemUsageSources mirrors esNodeCPUUsageSources, pod fallbacks included.
 func esNodeMemUsageSources() []esMetricSource {
 	return []esMetricSource{
 		{
@@ -354,15 +370,20 @@ func esNodeMemUsageSources() []esMetricSource {
 		},
 		{
 			Field: "kubernetes.pod.memory.working_set.bytes", Scale: esNoScale, Agg: "avg",
-			GroupBy: []string{esECSFields.Pod}, Fields: esECSFields,
+			GroupBy: []string{esECSFields.Pod}, Fields: esECSFields, Fallback: true,
 		},
 		{
 			Name: "system.memory.usage", NameField: "name.keyword", Field: "value", Scale: esNoScale, Agg: "avg",
 			GroupBy: []string{esOTLPFields.Node}, Fields: esOTLPFields,
 		},
 		esOTelNativeSource("k8s.node.memory.usage", esNoScale, "avg", []string{esOTelNativeFields.Node}),
-		esOTelNativeSource("k8s.pod.memory.working_set", esNoScale, "avg", []string{esOTelNativeFields.Pod}),
+		esUtilFallback(esOTelNativeSource("k8s.pod.memory.working_set", esNoScale, "avg", []string{esOTelNativeFields.Pod})),
 	}
+}
+
+func esUtilFallback(src esMetricSource) esMetricSource {
+	src.Fallback = true
+	return src
 }
 
 // esNodeOnlyUsageSources are the node-grouped usage candidates, without the
@@ -438,10 +459,10 @@ func esUtilisationMetric(key string, scope esUtilScope, containerNamed bool) (es
 		memUsage = esNodeMemUsageSources()
 	}
 
-	switch key {
-	case "cpu_usage", "cpu_usage_pod", "cpu_real", "cpu_usage_trend":
+	switch UtilisationKey(key) {
+	case KeyCPUUsage, KeyCPUUsagePod, KeyCPUReal, KeyCPUUsageTrend:
 		return esUtilMetric{Sources: cpuUsage}, true
-	case "memory_usage", "mem_real", "mem_usage_trend":
+	case KeyMemoryUsage, KeyMemReal, KeyMemUsageTrend:
 		return esUtilMetric{Sources: memUsage}, true
 
 	// The nodes list asks for these and matches each returned series to a node row,
@@ -452,12 +473,12 @@ func esUtilisationMetric(key string, scope esUtilScope, containerNamed bool) (es
 	// Node filesystem, from the kubelet `node` metricset. These are node-level in
 	// the Prometheus builder too (node_filesystem_* selected by instance), so cluster
 	// scope sums across nodes and node scope narrows to the one.
-	case "disk_total":
+	case KeyDiskTotal:
 		return esUtilMetric{Sources: []esMetricSource{{
 			Field: "kubernetes.node.fs.capacity.bytes", Scale: esNoScale, Agg: "max",
 			GroupBy: []string{esECSFields.Node}, Fields: esECSFields,
 		}}}, true
-	case "disk_used":
+	case KeyDiskUsed:
 		return esUtilMetric{Sources: []esMetricSource{{
 			Field: "kubernetes.node.fs.used.bytes", Scale: esNoScale, Agg: "max",
 			GroupBy: []string{esECSFields.Node}, Fields: esECSFields,
@@ -476,22 +497,22 @@ func esUtilisationMetric(key string, scope esUtilScope, containerNamed bool) (es
 	// One series per claim rather than the sum below. The namespace level goes ABOVE
 	// the claim for the same reason it does for pods: a claim name is unique only
 	// within its namespace, and volume rightsizing keys on the pair.
-	case "pvc_used_by_claim":
+	case KeyPVCUsedByClaim:
 		return esUtilMetric{Sources: []esMetricSource{{
 			Field: "kubernetes.volume.fs.used.bytes", Scale: esNoScale, Agg: "max",
 			GroupBy: []string{esECSFields.Namespace, esECSFields.PVC}, Fields: esECSFields, PVCScoped: true,
 		}}, PerPod: true}, true
-	case "pvc_capacity_by_claim":
+	case KeyPVCCapacityByClaim:
 		return esUtilMetric{Sources: []esMetricSource{{
 			Field: "kubernetes.volume.fs.capacity.bytes", Scale: esNoScale, Agg: "max",
 			GroupBy: []string{esECSFields.Namespace, esECSFields.PVC}, Fields: esECSFields, PVCScoped: true,
 		}}, PerPod: true}, true
-	case "pvc_usage":
+	case KeyPVCUsage:
 		return esUtilMetric{Sources: []esMetricSource{{
 			Field: "kubernetes.volume.fs.used.bytes", Scale: esNoScale, Agg: "avg",
 			GroupBy: []string{esECSFields.PVC}, Fields: esECSFields, PVCScoped: true,
 		}}}, true
-	case "pvc_requests":
+	case KeyPVCRequests:
 		return esUtilMetric{Sources: []esMetricSource{{
 			Field: "kubernetes.volume.fs.capacity.bytes", Scale: esNoScale, Agg: "max",
 			GroupBy: []string{esECSFields.PVC}, Fields: esECSFields, PVCScoped: true,
@@ -500,29 +521,29 @@ func esUtilisationMetric(key string, scope esUtilScope, containerNamed bool) (es
 	// Replica counts describe the controller, so they come from kube-state-metrics
 	// rather than from any pod-level metricset. Field names verified against the same
 	// Elastic Kubernetes integration the customer runs, not inferred.
-	case "replica_defined":
+	case KeyReplicaDefined:
 		return esUtilMetric{Sources: esReplicaSources(
 			"kubernetes.deployment.replicas.desired", "kubernetes.replicaset.replicas.desired")}, true
-	case "replica_ready":
+	case KeyReplicaReady:
 		return esUtilMetric{Sources: esReplicaSources(
 			"kubernetes.deployment.replicas.available", "kubernetes.replicaset.replicas.ready")}, true
 
-	case "cpu_usage_line":
+	case KeyCPUUsageLine:
 		return esUtilMetric{Sources: esNodeOnlyUsageSources(esNodeCPUUsageSources()), Breakdown: true}, true
-	case "memory_usage_line":
+	case KeyMemoryUsageLine:
 		return esUtilMetric{Sources: esNodeOnlyUsageSources(esNodeMemUsageSources()), Breakdown: true}, true
 
-	case "p50_cpu":
+	case KeyP50CPU:
 		return esUtilMetric{Sources: cpuUsage, Reduce: esReduceP50}, true
-	case "p90_cpu":
+	case KeyP90CPU:
 		return esUtilMetric{Sources: cpuUsage, Reduce: esReduceP90}, true
-	case "max_usage_cpu":
+	case KeyMaxUsageCPU:
 		return esUtilMetric{Sources: cpuUsage, Reduce: esReduceMax}, true
-	case "p50_mem":
+	case KeyP50Mem:
 		return esUtilMetric{Sources: memUsage, Reduce: esReduceP50}, true
-	case "p90_mem":
+	case KeyP90Mem:
 		return esUtilMetric{Sources: memUsage, Reduce: esReduceP90}, true
-	case "max_usage_mem":
+	case KeyMaxUsageMem:
 		return esUtilMetric{Sources: memUsage, Reduce: esReduceMax}, true
 
 	// Per-pod companions to the summed usage metrics, mirroring the Prometheus
@@ -533,7 +554,7 @@ func esUtilisationMetric(key string, scope esUtilScope, containerNamed bool) (es
 	// Workload and pod scope only. These read GroupBy[0] of the usage sources, which
 	// is the pod there but the NODE at cluster and node scope — answering at those
 	// scopes would silently count nodes and call them pods.
-	case "pod_count":
+	case KeyPodCount:
 		if nodeScope {
 			return esUtilMetric{}, false
 		}
@@ -562,47 +583,47 @@ func esUtilisationMetric(key string, scope esUtilScope, containerNamed bool) (es
 	// The extra level only exists in the collapsed (aggregate) path. The histogram
 	// path groups at most twice, so a node-scoped request with no aggregate finds no
 	// usable source and comes back empty with a note rather than a merged answer.
-	case "container_cpu_usage_by_pod":
+	case KeyContainerCPUUsageByPod:
 		return esUtilMetric{Sources: perContainerCPU, PerPod: true}, true
-	case "container_memory_working_set_by_pod":
+	case KeyContainerMemoryWorkingSetByPod:
 		return esUtilMetric{Sources: perContainerMem, PerPod: true}, true
 
 	// Requests and limits in the same per-container shape as the usage keys, so a
 	// consumer can join the two on (pod, container) within a namespace.
-	case "container_cpu_request_by_pod":
+	case KeyContainerCPURequestByPod:
 		return esUtilMetric{Sources: perContainerSpec("kubernetes.container.cpu.request.cores", "k8s.container.cpu_request"), PerPod: true}, true
-	case "container_cpu_limit_by_pod":
+	case KeyContainerCPULimitByPod:
 		return esUtilMetric{Sources: perContainerSpec("kubernetes.container.cpu.limit.cores", "k8s.container.cpu_limit"), PerPod: true}, true
-	case "container_memory_request_by_pod":
+	case KeyContainerMemoryRequestByPod:
 		return esUtilMetric{Sources: perContainerSpec("kubernetes.container.memory.request.bytes", "k8s.container.memory_request"), PerPod: true}, true
-	case "container_memory_limit_by_pod":
+	case KeyContainerMemoryLimitByPod:
 		return esUtilMetric{Sources: perContainerSpec("kubernetes.container.memory.limit.bytes", "k8s.container.memory_limit"), PerPod: true}, true
 
-	case "cpu_usage_max_pod":
+	case KeyCPUUsageMaxPod:
 		if nodeScope {
 			return esUtilMetric{}, false
 		}
 		return esUtilMetric{Sources: cpuUsage, Series: esSeriesMax}, true
-	case "memory_usage_max_pod":
+	case KeyMemoryUsageMaxPod:
 		if nodeScope {
 			return esUtilMetric{}, false
 		}
 		return esUtilMetric{Sources: memUsage, Series: esSeriesMax}, true
 
-	case "cpu_request", "cpu_request_pod":
+	case KeyCPURequest, KeyCPURequestPod:
 		return esUtilMetric{Sources: esSpecSources("kubernetes.container.cpu.request.cores", "k8s.container.cpu_request")}, true
-	case "cpu_limit", "cpu_limit_pod":
+	case KeyCPULimit, KeyCPULimitPod:
 		return esUtilMetric{Sources: esSpecSources("kubernetes.container.cpu.limit.cores", "k8s.container.cpu_limit")}, true
-	case "memory_request":
+	case KeyMemoryRequest:
 		return esUtilMetric{Sources: esSpecSources("kubernetes.container.memory.request.bytes", "k8s.container.memory_request")}, true
-	case "memory_limit":
+	case KeyMemoryLimit:
 		return esUtilMetric{Sources: esSpecSources("kubernetes.container.memory.limit.bytes", "k8s.container.memory_limit")}, true
 
-	case "cpu_total":
+	case KeyCPUTotal:
 		return esUtilMetric{Sources: esCapacitySource(
 			"kubernetes.node.cpu.allocatable.cores", "kubernetes.node.cpu.capacity.cores",
 			"k8s.node.allocatable_cpu")}, true
-	case "mem_total":
+	case KeyMemTotal:
 		return esUtilMetric{Sources: esCapacitySource(
 			"kubernetes.node.memory.allocatable.bytes", "kubernetes.node.memory.capacity.bytes",
 			"k8s.node.allocatable_memory")}, true
@@ -610,12 +631,12 @@ func esUtilisationMetric(key string, scope esUtilScope, containerNamed bool) (es
 	// Network counters feed the abandoned-workload scan, which averages the values
 	// as rates. Metricbeat ships cumulative byte counters, so they are differentiated
 	// per second before being summed across pods.
-	case "network_receive_packet":
+	case KeyNetworkReceivePacket:
 		return esUtilMetric{Sources: []esMetricSource{{
 			Field: "kubernetes.pod.network.rx.bytes", Scale: esNoScale, Agg: "max", Counter: true,
 			GroupBy: []string{esECSFields.Pod}, Fields: esECSFields,
 		}}}, true
-	case "network_transmit_packets":
+	case KeyNetworkTransmitPackets:
 		return esUtilMetric{Sources: []esMetricSource{{
 			Field: "kubernetes.pod.network.tx.bytes", Scale: esNoScale, Agg: "max", Counter: true,
 			GroupBy: []string{esECSFields.Pod}, Fields: esECSFields,
@@ -647,7 +668,8 @@ func esUtilisationMetric(key string, scope esUtilScope, containerNamed bool) (es
 // 1,000 sits under the largest interval measured to answer. It is not a guarantee:
 // the limit is buckets x groups and the group count is not known until the results
 // come back, so a key with thousands of groups can still exceed it. It bounds the
-// time-bucket half, which is the half a caller controls.
+// time-bucket half, which is the half a caller controls. The groups half is handled
+// by esUtilSearchSpec.searchTier.
 const esUtilHistogramBucketBudget = 1000
 
 // esUtilStepSeconds picks the date_histogram interval. meta.Step is already derived
@@ -700,6 +722,418 @@ func esUtilFitBuckets(step, rangeSec int64) int64 {
 		step = (rangeSec + esUtilHistogramBucketBudget - 1) / esUtilHistogramBucketBudget
 	}
 	return step
+}
+
+// esDefaultMaxBuckets is Elasticsearch's default `search.max_buckets`, used when a
+// refusal does not say which limit it hit.
+const esDefaultMaxBuckets = 65536
+
+// esUtilProbeBuckets is how many time buckets the group-count probe splits the window
+// into. One bucket over the whole window counts every pod that existed at any point in
+// it, and pods churn: on the dev cluster a 7-day window holds ~6,200 pod names against
+// ~530 reporting at once, which refitted the step to 28h. Eight buckets bring the
+// count close to what one step really holds while keeping the probe itself far below
+// the limit.
+const esUtilProbeBuckets = 8
+
+// esUtilBucketHeadroom is the share of `search.max_buckets` a refitted search aims
+// for, rather than the limit itself: the histogram can add a partial bucket at each
+// edge of the window, and the group count a probe returns is an estimate.
+const esUtilBucketHeadroom = 0.75
+
+// esUtilSearchSpec is everything about one utilisation search except its step and
+// which sources it carries, which esUtilSearch varies while trying to get an answer.
+type esUtilSearchSpec struct {
+	cfg     *ElasticsearchConfig
+	esURL   string
+	index   string
+	plan    esUtilMetric
+	meta    RequestMetadata
+	scope   esUtilScope
+	startMs int64
+	endMs   int64
+}
+
+func (s esUtilSearchSpec) render(stepSec int64, primaryOnly bool) (map[string]any, string, error) {
+	body := buildESUtilisationAggQueryTier(s.plan, s.meta, s.scope, s.startMs, s.endMs, stepSec, primaryOnly)
+	rendered, err := json.Marshal(body)
+	return body, string(rendered), err
+}
+
+// esUtilSearch runs one utilisation search and returns the response body and the
+// query that produced it.
+//
+// Two things keep it under Elasticsearch's `search.max_buckets`, whose count is time
+// buckets x groups. On the dev cluster (~530 pods) a cluster-scope usage key was
+// refused for every window longer than an hour: 300 time buckets x ~530 pods.
+//
+//  1. Fallback sources go out only when the primary ones find nothing. Cluster usage
+//     is a sum over nodes, with a sum over pods behind it for clusters that do not
+//     ship the node metricset. Sent together, the pod fallback is computed on every
+//     search — and is what breaches the limit — even though the node sum wins
+//     whenever it has data. See esUtilSearchSpec.withFallbackLast.
+//  2. The step is widened to fit the limit. See searchTier.
+func (s esUtilSearchSpec) search(stepSec int64) ([]byte, string, error) {
+	if !esUtilHasFallback(s.plan) {
+		return s.searchTier(stepSec, false)
+	}
+	out, sent, err := s.searchTier(stepSec, true)
+	if err != nil || esUtilMatchedDocs(out) > 0 {
+		return out, sent, err
+	}
+	// The primary sources matched nothing: this cluster does not ship them, so the
+	// full search — fallbacks included — is the only one that can answer. Exactly
+	// the search that was sent before primaries were tried first.
+	return s.searchTier(stepSec, false)
+}
+
+// searchTier runs one tier of the search, at a step that fits search.max_buckets.
+//
+// The limit is time buckets x groups, and the group count is the half nothing knows
+// in advance. Which step fits is learned in one of two ways, then remembered in
+// esUtilSteps so the next load of the same window skips straight to it:
+//
+//   - Searches grouped by pod at cluster or node scope are measured BEFORE they are
+//     sent. These are the ones a cluster's pod count can push over the limit, and
+//     their refusals are too slow to wait for: a 6h cluster-scope cpu_request on the
+//     dev cluster (~950 pod and container series per time bucket) took Elasticsearch
+//     65s to refuse, past the 30s client timeout, while the probe took 0.2s.
+//   - Everything else is sent as before and refitted only if refused. Those refusals
+//     come back quickly (2-4s on the dev cluster, out to 7 days), so a search that
+//     fits pays nothing extra.
+func (s esUtilSearchSpec) searchTier(stepSec int64, primaryOnly bool) ([]byte, string, error) {
+	key, keyErr := s.stepMemoryKey(stepSec, primaryOnly)
+	remembered, known := int64(0), false
+	if keyErr == nil {
+		remembered, known = esUtilSteps.get(key, time.Now())
+	}
+	switch {
+	case known:
+		if remembered > stepSec {
+			stepSec = remembered
+		}
+	case s.groupsByPodAtWideScope(primaryOnly):
+		fitted, groups, err := s.measure(esDefaultMaxBuckets, primaryOnly)
+		_, probeRefused := esUtilTooManyBuckets(err)
+		switch {
+		case probeRefused:
+			// Even the eight-bucket probe is over the limit: no step can answer.
+			return nil, "", err
+		case err != nil:
+			// The probe failed — a transient error, most likely. Send the search as
+			// before rather than failing a chart on the probe's account.
+			slog.Warn("ES utilisation: bucket probe failed; sending at the derived step", "err", err)
+		case groups == 0:
+			// The probe matched nothing, so there is nothing to size: send the search as
+			// before, and let it answer "no data" the way it always has.
+		case fitted == 0:
+			return nil, "", fmt.Errorf("utilisation query would exceed Elasticsearch's search.max_buckets: "+
+				"~%d series per time bucket in this window; narrow the scope", groups)
+		default:
+			if fitted > stepSec {
+				slog.Info("ES utilisation: step widened to fit search.max_buckets",
+					"groups_per_bucket", groups, "step_sec", stepSec, "fitted_step_sec", fitted)
+				stepSec = fitted
+			}
+			if keyErr == nil {
+				esUtilSteps.put(key, stepSec, time.Now())
+			}
+		}
+	}
+
+	body, rendered, err := s.render(stepSec, primaryOnly)
+	if err != nil {
+		return nil, "", err
+	}
+	out, err := esUtilPost(s.cfg, s.esURL, body)
+	maxBuckets, refused := esUtilTooManyBuckets(err)
+	if !refused {
+		return out, rendered, err
+	}
+
+	wider, groups, measureErr := s.measure(maxBuckets, primaryOnly)
+	if measureErr != nil || wider <= stepSec {
+		// Not wider means too many groups for even two time buckets: no step answers
+		// this, and the refusal says why better than an empty series would.
+		return nil, rendered, err
+	}
+	retryBody, retryRendered, renderErr := s.render(wider, primaryOnly)
+	if renderErr != nil {
+		return nil, rendered, err
+	}
+	slog.Warn("ES utilisation: search refused for search.max_buckets; retrying at a wider step",
+		"max_buckets", maxBuckets, "groups_per_bucket", groups, "step_sec", stepSec, "retry_step_sec", wider)
+	out, err = esUtilPost(s.cfg, s.esURL, retryBody)
+	if err == nil && keyErr == nil {
+		esUtilSteps.put(key, wider, time.Now())
+	}
+	return out, retryRendered, err
+}
+
+// measure counts the groups one time bucket of this search holds, and returns the
+// step at which the window fits under maxBuckets — 0 when not even two time buckets
+// do.
+//
+// The count comes from a coarse probe of the same search: a group appears in a probe
+// bucket if it reported at any point inside it, so the busiest probe bucket bounds
+// what one step can hold. A search with no histogram (the per-pod collapsed form)
+// renders the same body again; measured after a refusal it is refused again, which
+// ends the attempt.
+func (s esUtilSearchSpec) measure(maxBuckets int64, primaryOnly bool) (fitted, groups int64, err error) {
+	rangeSec := (s.endMs - s.startMs) / 1000
+	if rangeSec <= 0 {
+		return 0, 0, errors.New("empty window")
+	}
+	probeStep := (rangeSec + esUtilProbeBuckets - 1) / esUtilProbeBuckets
+	probeBody, _, err := s.render(probeStep, primaryOnly)
+	if err != nil {
+		return 0, 0, err
+	}
+	probe, err := esUtilPost(s.cfg, s.esURL, probeBody)
+	if err != nil {
+		return 0, 0, err
+	}
+	groups, err = esUtilGroupsPerBucket(probe)
+	if err != nil {
+		return 0, 0, err
+	}
+	return esUtilStepForBucketLimit(rangeSec, groups, maxBuckets), groups, nil
+}
+
+// groupsByPodAtWideScope reports whether this tier of the search sums series per pod
+// across a whole cluster or node — the searches whose bucket count a cluster's size
+// can push past the limit, and so the ones measured before they are sent. Workload
+// and pod scopes are bounded by one workload's pods, and the per-pod collapsed form
+// has no histogram to size.
+func (s esUtilSearchSpec) groupsByPodAtWideScope(primaryOnly bool) bool {
+	if s.scope != esScopeCluster && s.scope != esScopeNode {
+		return false
+	}
+	if s.plan.PerPod && s.meta.Aggregate.Name != "" {
+		return false
+	}
+	for _, src := range s.plan.Sources {
+		if esSourceUnusableAtScope(src, s.meta, s.scope) || (primaryOnly && src.Fallback) {
+			continue
+		}
+		for _, g := range src.GroupBy {
+			if g != "" && g == src.Fields.Pod {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// stepMemoryKey identifies a search for esUtilSteps independently of when it runs: the
+// connection and index it reads, plus the same search rendered over [0, window)
+// instead of [start, end). Keyed on the rendered body for the reason the query groups
+// are — a hand-listed signature goes stale the first time a filter is added.
+//
+// The connection is the integration rather than its URL: two integrations on one URL
+// can authenticate as users who see different documents, and so different pod
+// counts. The index stays in the key because one integration resolves a different
+// index per account, and a request may name its own. A config built without an
+// integration falls back to the URL, which carries the index.
+func (s esUtilSearchSpec) stepMemoryKey(stepSec int64, primaryOnly bool) (string, error) {
+	normalised := s
+	normalised.startMs, normalised.endMs = 0, s.endMs-s.startMs
+	_, rendered, err := normalised.render(stepSec, primaryOnly)
+	if err != nil {
+		return "", err
+	}
+	conn := "url:" + s.esURL
+	if s.cfg != nil && s.cfg.IntegrationID != "" {
+		conn = "integration:" + s.cfg.IntegrationID + "\nindex:" + s.index
+	}
+	return hashPayload(conn + "\n" + rendered), nil
+}
+
+// esUtilStepMemoryTTL is how long a refitted step is reused before the search is tried
+// at its own step again. Long enough that a panel reloaded or revisited does not pay
+// for the refusal and the probe each time; short enough that a cluster which shrank
+// gets its resolution back, and one which grew is refitted again on its next refusal.
+const esUtilStepMemoryTTL = 10 * time.Minute
+
+// esUtilStepMemoryMax bounds the memory. Keys are per search and window length, so a
+// busy api-server holds a few hundred at most; past this, expired entries are swept
+// and, if that frees nothing, the memory starts over rather than growing.
+const esUtilStepMemoryMax = 4096
+
+type esUtilStepMemory struct {
+	mu    sync.Mutex
+	steps map[string]esUtilRememberedStep
+}
+
+type esUtilRememberedStep struct {
+	step    int64
+	expires time.Time
+}
+
+// esUtilSteps remembers, per search, the step a refusal was refitted to. Per
+// api-server pod: each pod pays for one refusal per search and window length per TTL.
+var esUtilSteps = &esUtilStepMemory{steps: map[string]esUtilRememberedStep{}}
+
+func (m *esUtilStepMemory) get(key string, now time.Time) (int64, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.steps[key]
+	if !ok || now.After(r.expires) {
+		return 0, false
+	}
+	return r.step, true
+}
+
+func (m *esUtilStepMemory) put(key string, step int64, now time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.steps) >= esUtilStepMemoryMax {
+		for k, r := range m.steps {
+			if now.After(r.expires) {
+				delete(m.steps, k)
+			}
+		}
+		if len(m.steps) >= esUtilStepMemoryMax {
+			m.steps = map[string]esUtilRememberedStep{}
+		}
+	}
+	m.steps[key] = esUtilRememberedStep{step: step, expires: now.Add(esUtilStepMemoryTTL)}
+}
+
+// esUtilHasFallback reports whether a plan has sources that should only be searched
+// when its primary sources find nothing.
+func esUtilHasFallback(m esUtilMetric) bool {
+	for _, src := range m.Sources {
+		if src.Fallback {
+			return true
+		}
+	}
+	return false
+}
+
+// esUtilMatchedDocs is how many documents the candidate sources of a response matched
+// in total. Zero means none of them is shipped by this cluster.
+func esUtilMatchedDocs(body []byte) int64 {
+	var resp esUtilAggResponse
+	if json.Unmarshal(body, &resp) != nil {
+		return 0
+	}
+	var matched int64
+	for name, raw := range resp.Aggregations {
+		if !strings.HasPrefix(name, "src_") {
+			continue
+		}
+		var sr struct {
+			DocCount int64 `json:"doc_count"`
+		}
+		if json.Unmarshal(raw, &sr) == nil {
+			matched += sr.DocCount
+		}
+	}
+	return matched
+}
+
+func esUtilPost(cfg *ElasticsearchConfig, esURL string, body map[string]any) ([]byte, error) {
+	resp, err := esRequestJSON("POST", esURL, body, cfg) //nolint:bodyclose // readResponse closes it
+	if err != nil {
+		return nil, err
+	}
+	return readResponse(resp, "utilisation query")
+}
+
+// esErrorCause is the part of an Elasticsearch error body that says what failed. The
+// bucket refusal arrives nested — as `caused_by` of a search_phase_execution_exception
+// with an empty root_cause — so every level is searched.
+type esErrorCause struct {
+	Type       string         `json:"type"`
+	MaxBuckets int64          `json:"max_buckets"`
+	CausedBy   *esErrorCause  `json:"caused_by"`
+	RootCause  []esErrorCause `json:"root_cause"`
+}
+
+func (c *esErrorCause) tooManyBuckets() (int64, bool) {
+	if c == nil {
+		return 0, false
+	}
+	if c.Type == "too_many_buckets_exception" {
+		if c.MaxBuckets > 0 {
+			return c.MaxBuckets, true
+		}
+		return esDefaultMaxBuckets, true
+	}
+	for i := range c.RootCause {
+		if limit, ok := c.RootCause[i].tooManyBuckets(); ok {
+			return limit, true
+		}
+	}
+	return c.CausedBy.tooManyBuckets()
+}
+
+// esUtilTooManyBuckets reports whether err is Elasticsearch refusing a search for
+// `search.max_buckets`, and the limit that cluster enforces.
+func esUtilTooManyBuckets(err error) (int64, bool) {
+	var statusErr *esStatusError
+	if !errors.As(err, &statusErr) {
+		return 0, false
+	}
+	var envelope struct {
+		Error esErrorCause `json:"error"`
+	}
+	if json.Unmarshal(statusErr.body, &envelope) != nil {
+		return 0, false
+	}
+	return envelope.Error.tooManyBuckets()
+}
+
+// esUtilGroupsPerBucket reads a probe response and returns how many buckets one time
+// bucket costs: the time bucket itself, its groups, and their subgroups, taking the
+// largest time bucket per source. Sources are summed because Elasticsearch counts
+// every aggregation in the search against the same limit.
+func esUtilGroupsPerBucket(body []byte) (int64, error) {
+	var resp esUtilAggResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return 0, err
+	}
+	var total int64
+	for name, raw := range resp.Aggregations {
+		if !strings.HasPrefix(name, "src_") {
+			continue
+		}
+		var sr esUtilSourceResult
+		if err := json.Unmarshal(raw, &sr); err != nil {
+			return 0, err
+		}
+		var largest int64
+		for _, b := range sr.TS.Buckets {
+			n := int64(1 + len(b.G0.Buckets))
+			for _, g := range b.G0.Buckets {
+				n += int64(len(g.G1.Buckets))
+			}
+			if n > largest {
+				largest = n
+			}
+		}
+		total += largest
+	}
+	return total, nil
+}
+
+// esUtilStepForBucketLimit returns the smallest step at which a window of rangeSec,
+// costing groupsPerBucket buckets per time bucket, stays under maxBuckets with
+// headroom. Returns 0 when not even two time buckets fit, since a single point is
+// not a series — and when there is no window or no groups to size, which callers
+// must tell apart from that by checking groupsPerBucket themselves.
+func esUtilStepForBucketLimit(rangeSec, groupsPerBucket, maxBuckets int64) int64 {
+	if rangeSec <= 0 || groupsPerBucket <= 0 {
+		return 0
+	}
+	timeBuckets := int64(float64(maxBuckets)*esUtilBucketHeadroom) / groupsPerBucket
+	if timeBuckets < 2 {
+		return 0
+	}
+	// A histogram over the window at step s holds up to rangeSec/s + 1 buckets, the
+	// extra one being the partial bucket where the window does not align to s.
+	return (rangeSec + timeBuckets - 2) / (timeBuckets - 1)
 }
 
 // esUtilisationConcurrency bounds how many metric-key queries run at once against a
@@ -985,9 +1419,16 @@ func esSourceAgg(src esMetricSource, meta RequestMetadata, scope esUtilScope, st
 // then query — costs an extra request and can still be wrong when an index pattern
 // spans collectors.
 func buildESUtilisationAggQuery(m esUtilMetric, meta RequestMetadata, scope esUtilScope, startMs, endMs, stepSec int64) map[string]any {
+	return buildESUtilisationAggQueryTier(m, meta, scope, startMs, endMs, stepSec, false)
+}
+
+// buildESUtilisationAggQueryTier is buildESUtilisationAggQuery, leaving out Fallback
+// sources when primaryOnly is set. Omitted sources keep their positional names, so the
+// response parses against the full plan.
+func buildESUtilisationAggQueryTier(m esUtilMetric, meta RequestMetadata, scope esUtilScope, startMs, endMs, stepSec int64, primaryOnly bool) map[string]any {
 	aggs := make(map[string]any, len(m.Sources))
 	for i, src := range m.Sources {
-		if esSourceUnusableAtScope(src, meta, scope) {
+		if esSourceUnusableAtScope(src, meta, scope) || (primaryOnly && src.Fallback) {
 			continue
 		}
 		var agg map[string]any
@@ -1451,7 +1892,6 @@ func esUtilUnsupportedNote(key string, scope esUtilScope) string {
 // rendered body doubles as the grouping key, so two keys are grouped exactly when the
 // bytes they would send are identical — see the comment at the grouping loop.
 type esUtilQueryGroup struct {
-	body     map[string]any
 	rendered string
 	members  []int
 }

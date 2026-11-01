@@ -91,6 +91,7 @@ type ApplySuggestionRow struct {
 	SuggestedThreshold float64
 	RecommendationType string
 	RiskLevel          string
+	Confidence         string
 	SuggestedDuration  int
 	ApplyStatus        string
 	ApplyMethod        string
@@ -98,6 +99,39 @@ type ApplySuggestionRow struct {
 	PreviousThreshold  *float64
 	PreviousDuration   *int
 	Found              bool
+}
+
+// disableNotAppliedReason explains why a stored "disable" is never applied from here.
+const disableNotAppliedReason = "disabling a rule is not applied from Alert Tuning — use the alert-rule controls to disable or mute it"
+
+// applyNeedsOverride reports whether applying this suggestion needs the caller's explicit
+// override: anything short of a safe tuning with medium or high confidence. The rule is the same
+// for a direct write and a pull request, so the one flag the API returns holds for both.
+func applyNeedsOverride(sug *ApplySuggestionRow) bool {
+	if sug.RiskLevel != "safe" {
+		return true
+	}
+	return sug.Confidence != "high" && sug.Confidence != "medium"
+}
+
+// applyBlockReason returns why a stored suggestion must not be applied as requested, or "" when
+// it may proceed. Server-enforced, not just UI.
+func applyBlockReason(sug *ApplySuggestionRow, overrideRisk bool) string {
+	// Firing history no longer produces a "disable", so a stored one predates that rule — and a
+	// row is not recomputed once its alert stops firing. No override lifts this.
+	if sug.RecommendationType == "disable" {
+		return "blocked: " + disableNotAppliedReason
+	}
+	if overrideRisk {
+		return ""
+	}
+	if sug.RiskLevel == "dangerous" {
+		return "blocked: this is a high-risk (dangerous) suggestion and requires explicit override"
+	}
+	if applyNeedsOverride(sug) {
+		return "blocked: this suggestion is not rated safe with medium or high confidence and requires explicit override"
+	}
+	return ""
 }
 
 // getSuggestionForApply loads the apply-relevant fields of a cached suggestion row.
@@ -109,6 +143,7 @@ func getSuggestionForApply(ctx context.Context, db *sqlx.DB, alertRuleKey, cloud
 		Operator           *string  `db:"operator"`
 		CurrentThreshold   *float64 `db:"current_threshold"`
 		SuggestedThreshold *float64 `db:"suggested_threshold"`
+		Confidence         *string  `db:"confidence"`
 		MetricStats        *string  `db:"metric_stats"`
 		ApplyStatus        *string  `db:"apply_status"`
 		ApplyMethod        *string  `db:"apply_method"`
@@ -118,7 +153,7 @@ func getSuggestionForApply(ctx context.Context, db *sqlx.DB, alertRuleKey, cloud
 	}
 	err := db.GetContext(ctx, &row, `
 		SELECT tenant_id, source, alert_name, operator, current_threshold, suggested_threshold,
-		       metric_stats, apply_status, apply_method, status, previous_threshold, previous_duration
+		       confidence, metric_stats, apply_status, apply_method, status, previous_threshold, previous_duration
 		FROM event_threshold_suggestions
 		WHERE alert_rule_key = $1 AND cloud_account_id = $2`,
 		alertRuleKey, cloudAccountID)
@@ -147,6 +182,9 @@ func getSuggestionForApply(ctx context.Context, db *sqlx.DB, alertRuleKey, cloud
 	}
 	if row.SuggestedThreshold != nil {
 		out.SuggestedThreshold = *row.SuggestedThreshold
+	}
+	if row.Confidence != nil {
+		out.Confidence = *row.Confidence
 	}
 	if row.ApplyStatus != nil {
 		out.ApplyStatus = *row.ApplyStatus
@@ -500,20 +538,31 @@ func resolveThresholdNodeCompound(binExpr *parser.BinaryExpr) (*promQLThreshold,
 	lhsRes, lhsNode, lhsErr := resolveThresholdNode(binExpr.LHS)
 	rhsRes, rhsNode, rhsErr := resolveThresholdNode(binExpr.RHS)
 
+	if errors.Is(lhsErr, errMultiCondition) || errors.Is(rhsErr, errMultiCondition) {
+		return nil, nil, errMultiCondition
+	}
+
 	switch {
 	case lhsErr == nil && rhsErr != nil:
 		return lhsRes, lhsNode, nil
 	case rhsErr == nil && lhsErr != nil:
+		if binExpr.Op == parser.LUNLESS {
+			return nil, nil, lhsErr
+		}
 		return rhsRes, rhsNode, nil
 	case lhsErr == nil && rhsErr == nil:
-		if binExpr.Op == parser.LAND {
-			lhsIsGuard := isGuardCondition(lhsRes)
-			rhsIsGuard := isGuardCondition(rhsRes)
-			if lhsIsGuard && !rhsIsGuard {
+		lhsTunable, rhsTunable := isTunableLeg(lhsRes), isTunableLeg(rhsRes)
+		switch binExpr.Op {
+		case parser.LAND:
+			if lhsTunable && rhsTunable {
+				return nil, nil, errMultiCondition
+			}
+			if !lhsTunable && (rhsTunable || (isGuardCondition(lhsRes) && !isGuardCondition(rhsRes))) {
 				return rhsRes, rhsNode, nil
 			}
-			if rhsIsGuard && !lhsIsGuard {
-				return lhsRes, lhsNode, nil
+		case parser.LOR:
+			if lhsTunable || rhsTunable {
+				return nil, nil, errMultiCondition
 			}
 		}
 		return lhsRes, lhsNode, nil

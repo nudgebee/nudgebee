@@ -235,3 +235,57 @@ func TestResolveScanDatasource_NoIntegrationsAccountIDColumn(t *testing.T) {
 	_, err = resolveScanDatasource("account-1", "tenant-1", scanDatasourceID)
 	require.NoError(t, err)
 }
+
+// TestListScanDatasources_ScopedLikeTheResolver pins that the single-VM scan
+// dialog's picker is scoped exactly like resolveScanDatasource: caller's
+// tenant, enabled discovery integrations only, and linked to the account as
+// either its own agent or its scan target. A picker scoped any wider offers a
+// datasource the scan RPC then rejects; any narrower hides one it accepts.
+func TestListScanDatasources_ScopedLikeTheResolver(t *testing.T) {
+	mock := withMockDB(t)
+	rows := sqlmock.NewRows([]string{"id", "name", "status"}).
+		AddRow(scanDatasourceID, "aws-forager-discovery", "enabled").
+		AddRow("22222222-3333-4444-8555-666666666666", "dc-forager-discovery", "enabled")
+	mock.ExpectQuery(`WHERE i.tenant_id = \$1\s+AND i.type = 'discovery' AND i.status = 'enabled'(.|\n)*`+
+		`icv.name = 'datasource_key'(.|\n)*`+
+		`own.link_role = 'own'(.|\n)*`+
+		`link.cloud_account_id = \$2\s+AND link.link_role IN \('own', 'discovery_target'\)`).
+		WithArgs("tenant-1", "account-1").
+		WillReturnRows(rows)
+
+	options, err := ListScanDatasources("account-1", "tenant-1")
+	require.NoError(t, err)
+	require.Len(t, options, 2)
+	assert.Equal(t, ScanDatasourceOption{ID: scanDatasourceID, Name: "aws-forager-discovery", Status: "enabled"}, options[0])
+	assert.Equal(t, "dc-forager-discovery", options[1].Name)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestListScanDatasources_NoneIsEmptyNotNil: an account with no datasource
+// must serialize as [] — the dialog reads "no rows" as "nothing configured".
+func TestListScanDatasources_NoneIsEmptyNotNil(t *testing.T) {
+	mock := withMockDB(t)
+	mock.ExpectQuery("SELECT i.id::text AS id, i.name, i.status").
+		WithArgs("tenant-1", "account-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "status"}))
+
+	options, err := ListScanDatasources("account-1", "tenant-1")
+	require.NoError(t, err)
+	assert.NotNil(t, options)
+	assert.Empty(t, options)
+}
+
+// TestListScanDatasources_DBErrorSurfaces: a failed lookup must reach the
+// caller as an error, never as an empty list — an empty list tells the user
+// to go configure a datasource that may already exist.
+func TestListScanDatasources_DBErrorSurfaces(t *testing.T) {
+	mock := withMockDB(t)
+	mock.ExpectQuery("SELECT i.id::text AS id, i.name, i.status").
+		WithArgs("tenant-1", "account-1").
+		WillReturnError(errors.New("connection reset by peer"))
+
+	options, err := ListScanDatasources("account-1", "tenant-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "connection reset by peer")
+	assert.Nil(t, options)
+}

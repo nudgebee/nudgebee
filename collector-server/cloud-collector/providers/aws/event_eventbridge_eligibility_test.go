@@ -73,6 +73,29 @@ func TestEligibility_DerivedFromRuleSet(t *testing.T) {
 		// in the producer pattern. If it ever lands, Eligible must accept.
 		{"ECR push (any detail-type)", "aws.ecr", "AWS API Call via CloudTrail", "PutImage", ""},
 		{"ECR scan finding", "aws.ecr", "ECR Image Scan", "", ""},
+
+		// ELB (aws.elasticloadbalancing) — CloudTrail-only, no native events.
+		// Target group/listener events (ModifyTargetGroup*, Register/
+		// DeregisterTargets, Create/Modify/DeleteListener) are deliberately
+		// NOT listed in any rule — they're no-ops (target groups/listeners
+		// aren't inventoried), so they belong in mustReject: Eligible()
+		// dropping them at fast-skip is the whole point, not a bug.
+		{"ELB CreateLoadBalancer", "aws.elasticloadbalancing", "AWS API Call via CloudTrail", "CreateLoadBalancer", ""},
+		{"ELB DeleteLoadBalancer", "aws.elasticloadbalancing", "AWS API Call via CloudTrail", "DeleteLoadBalancer", ""},
+		{"ELB SetSecurityGroups", "aws.elasticloadbalancing", "AWS API Call via CloudTrail", "SetSecurityGroups", ""},
+
+		// SQS (aws.sqs) — CloudTrail-only, no native events.
+		{"SQS CreateQueue", "aws.sqs", "AWS API Call via CloudTrail", "CreateQueue", ""},
+		{"SQS DeleteQueue", "aws.sqs", "AWS API Call via CloudTrail", "DeleteQueue", ""},
+		{"SQS SetQueueAttributes", "aws.sqs", "AWS API Call via CloudTrail", "SetQueueAttributes", ""},
+		{"SQS PurgeQueue", "aws.sqs", "AWS API Call via CloudTrail", "PurgeQueue", ""},
+
+		// SNS (aws.sns) — CloudTrail-only, no native events. Subscribe/
+		// Unsubscribe are deliberately NOT listed in any rule — subscriptions
+		// aren't inventoried, so they belong in mustReject.
+		{"SNS CreateTopic", "aws.sns", "AWS API Call via CloudTrail", "CreateTopic", ""},
+		{"SNS DeleteTopic", "aws.sns", "AWS API Call via CloudTrail", "DeleteTopic", ""},
+		{"SNS SetTopicAttributes", "aws.sns", "AWS API Call via CloudTrail", "SetTopicAttributes", ""},
 	}
 
 	for _, tc := range mustAccept {
@@ -96,8 +119,32 @@ func TestEligibility_DerivedFromRuleSet(t *testing.T) {
 	}{
 		// aws.s3 isn't an alert_name on any rule today.
 		{"S3 ObjectCreated", "aws.s3", "Object Created", "", ""},
-		// aws.sns isn't either.
+		// aws.sns has a rule, but only for "AWS API Call via CloudTrail" —
+		// a non-CloudTrail detail-type must still be dropped.
 		{"SNS notification", "aws.sns", "Custom", "", ""},
+		// aws.elasticloadbalancing has a rule, but only for the 3 tracked
+		// load-balancer-level eventNames — an untracked read-only call must
+		// still be dropped.
+		{"ELB DescribeLoadBalancers (untracked call)", "aws.elasticloadbalancing", "AWS API Call via CloudTrail", "DescribeLoadBalancers", ""},
+		// Target group/listener events are no-ops by design (see mustAccept
+		// comment above) — Eligible() must drop them, not just render empty.
+		{"ELB ModifyTargetGroup (no-op, not inventoried)", "aws.elasticloadbalancing", "AWS API Call via CloudTrail", "ModifyTargetGroup", ""},
+		{"ELB ModifyTargetGroupAttributes (no-op, not inventoried)", "aws.elasticloadbalancing", "AWS API Call via CloudTrail", "ModifyTargetGroupAttributes", ""},
+		{"ELB RegisterTargets (no-op, not inventoried)", "aws.elasticloadbalancing", "AWS API Call via CloudTrail", "RegisterTargets", ""},
+		{"ELB DeregisterTargets (no-op, not inventoried)", "aws.elasticloadbalancing", "AWS API Call via CloudTrail", "DeregisterTargets", ""},
+		{"ELB CreateListener (no-op, not inventoried)", "aws.elasticloadbalancing", "AWS API Call via CloudTrail", "CreateListener", ""},
+		{"ELB ModifyListener (no-op, not inventoried)", "aws.elasticloadbalancing", "AWS API Call via CloudTrail", "ModifyListener", ""},
+		{"ELB DeleteListener (no-op, not inventoried)", "aws.elasticloadbalancing", "AWS API Call via CloudTrail", "DeleteListener", ""},
+		// aws.sqs has a rule, but only for the 4 tracked eventNames — an
+		// untracked read-only call must still be dropped.
+		{"SQS ListQueues (untracked call)", "aws.sqs", "AWS API Call via CloudTrail", "ListQueues", ""},
+		// aws.sns has a rule, but only for the 3 tracked eventNames — an
+		// untracked read-only call must still be dropped.
+		{"SNS ListTopics (untracked call)", "aws.sns", "AWS API Call via CloudTrail", "ListTopics", ""},
+		// Subscribe/Unsubscribe are no-ops by design (subscriptions aren't
+		// inventoried) — Eligible() must drop them, not just render empty.
+		{"SNS Subscribe (no-op, not inventoried)", "aws.sns", "AWS API Call via CloudTrail", "Subscribe", ""},
+		{"SNS Unsubscribe (no-op, not inventoried)", "aws.sns", "AWS API Call via CloudTrail", "Unsubscribe", ""},
 	}
 
 	for _, tc := range mustReject {

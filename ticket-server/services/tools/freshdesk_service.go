@@ -188,7 +188,7 @@ func freshdeskStatusError(op string, statusCode int, body []byte) error {
 	case http.StatusForbidden:
 		return fmt.Errorf("freshdesk %s failed: API key lacks permission", op)
 	case http.StatusNotFound:
-		return fmt.Errorf("freshdesk %s failed: not found", op)
+		return fmt.Errorf("freshdesk %s failed: not found: %w", op, ticket.ErrNotFound)
 	case http.StatusTooManyRequests:
 		return fmt.Errorf("freshdesk %s failed: rate limited (429), please retry later", op)
 	default:
