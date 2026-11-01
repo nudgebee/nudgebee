@@ -1,4 +1,4 @@
-h1:xonLeAKeykMXWmd8UjN9ewXghMvFR1ad0TvXFxZECS8=
+h1:8jOJmwGuSQ5RoNMRpIzCdzrTAtzBGfV8v9uSDRtz+Kw=
 1665080411172_V0.up.sql h1:u69osJjPb3FctiXmgk+fpiFMTDQTnGpqDRH45K0pUdc=
 1665211266851_V1.up.sql h1:AGUExFXk9BDw9lpD7Cu1Bu5wn3mQA/Ul+5/jny32xYc=
 1665218608952_V2.up.sql h1:dWrFXuJESbVByq7iXDF7tFbOc1bgbwgCc0Fd8QETHwo=
@@ -1201,3 +1201,4 @@ h1:xonLeAKeykMXWmd8UjN9ewXghMvFR1ad0TvXFxZECS8=
 1791799263882_V1015_usage_report_stream_columns.up.sql h1:HJjfDPT1Em9r9NSnvUDgWHH9DztAzXDJDaxy7QdPIjQ=
 1792062387225_V1028_add_signoz_metrics_query_history_modules.up.sql h1:yAssADm6mHZtum6qnkhDHcw+ptBQvKzxh95xixvFWNk=
 1792068677779_V1029_signoz_webhook_integration.up.sql h1:/rdsqgI7V8QdLPV+nBZcfN02d5ajuBJmkK401Hkn0OM=
+1793526593817_V1831_add_openobserve_event_rule_source.up.sql h1:Q0TEQPoqOsoFiSctcQs7SDCrJnVDzjKj7W9BPNTuWrA=
