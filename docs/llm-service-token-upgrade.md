@@ -38,3 +38,6 @@ with `openssl rand -hex 32`; development example values are not production secre
 the same name at both endpoints. Code-analysis workspace clients use workspace
 credentials on separately authenticated workspace routes; do not replace those
 credentials with the shared service token.
+
+See [focused live upgrade validation](llm-service-token-live-validation.md) for
+the observed Helm/caller/database checks and their deployment limits.
