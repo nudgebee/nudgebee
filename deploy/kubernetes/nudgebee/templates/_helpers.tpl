@@ -56,25 +56,16 @@ If rabbitmq.auth.existingPasswordSecret is set, use that. Otherwise, use the def
 {{- .Values.rabbitmq.auth.existingPasswordSecret | default "rabbitmq" -}}
 {{- end -}}
 {{/*
-Fail on Bitnami image tags for the stores this chart now renders itself.
-`helm upgrade --reuse-values` from 1.12 or older keeps the old chart's
-defaults, Bitnami tags and templated `rabbitmq.configuration` included, and
-those cannot run under these templates. Stop with a fix instead of a template
-error or a half-switched StatefulSet.
+Fail an upgrade that renders against the previous chart's defaults.
+`helm upgrade --reuse-values` replaces this chart's values.yaml with the last
+release's computed values, so every default this version changes is lost:
+the release workflow pins each app image tag there, and 1.12 still carried
+the Bitnami PostgreSQL/RabbitMQ/Redis settings. The release workflow stamps
+chartDefaultsVersion with the chart version; a reused copy carries the old
+stamp (or none, from 1.12 and older).
 */}}
-{{- define "nudgebee.failOnBitnamiDefaults" -}}
-{{- $found := list -}}
-{{- range $k := list "postgresql" "rabbitmq" "redis" -}}
-  {{- $tag := "" -}}
-  {{- $v := get $.Values $k -}}
-  {{- if and (kindIs "map" $v) (kindIs "map" $v.image) -}}
-    {{- $tag = toString $v.image.tag -}}
-  {{- end -}}
-  {{- if regexMatch "-debian-[0-9]+-r[0-9]+" $tag -}}
-    {{- $found = append $found (printf "%s.image.tag=%s" $k $tag) -}}
-  {{- end -}}
-{{- end -}}
-{{- if $found -}}
-  {{- fail (printf "\n\n[ERROR] Bitnami image tags in the values: %s\n\nThis chart deploys the official PostgreSQL, RabbitMQ and Redis images instead of the Bitnami subcharts. These tags are the defaults of chart 1.12 or older, carried over by `helm upgrade --reuse-values`, which keeps the previous chart's defaults.\n\nUpgrade with your values file (-f values.yaml) or with --reset-then-reuse-values instead. If you pinned these tags yourself, remove them.\n" (join ", " $found)) -}}
+{{- define "nudgebee.failOnReusedValues" -}}
+{{- if and .Release.IsUpgrade (ne (toString .Values.chartDefaultsVersion) .Chart.Version) -}}
+  {{- fail (printf "\n\n[ERROR] This upgrade is rendering with the defaults of chart %s, not %s.\n\n`helm upgrade --reuse-values` keeps the previous chart's defaults, including its image tags, so the release would keep running the old images (and, from 1.12, the old Bitnami settings).\n\nUpgrade with your values file (-f values.yaml) or with --reset-then-reuse-values instead. If your values file sets chartDefaultsVersion, remove it.\n" (toString (default "1.12 or older" .Values.chartDefaultsVersion)) .Chart.Version) -}}
 {{- end -}}
 {{- end -}}

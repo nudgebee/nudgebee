@@ -608,6 +608,12 @@ ml-k8s-server:
       memory: 1.5Gi
     limits:
       memory: 4Gi
+# The chart version these defaults belong to. The release workflow sets it with
+# Chart.yaml's version; don't set it yourself. An upgrade whose value differs
+# from the chart version is rendering against an older chart's defaults
+# (`helm upgrade --reuse-values`) and is stopped (templates/validate-upgrade.yaml).
+chartDefaultsVersion: '0.2'
+
 postgres_migrations:
   fullnameOverride: postgres_migrations
   image:
