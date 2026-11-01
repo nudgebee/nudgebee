@@ -655,6 +655,7 @@ const CFInstancesView = (props: {
                 <DsDropdownMenu
                   align='end'
                   size='sm'
+                  disablePortal={false}
                   items={MENU_ITEMS.map((m) => ({
                     id: `cf-action-${item.resourse_id}-${m.id}`,
                     label: m.label,
