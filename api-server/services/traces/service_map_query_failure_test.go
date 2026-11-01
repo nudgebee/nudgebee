@@ -3,12 +3,16 @@ package traces
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/agiledragon/gomonkey/v2"
+
 	"nudgebee/services/common"
+	"nudgebee/services/observability"
 	"nudgebee/services/security"
 )
 
@@ -26,12 +30,17 @@ func TestFocusedTraceQueries(t *testing.T) {
 		{"source query fails", "checkout", "workloadNameSourceFilter", false},
 		{"destination query fails", "checkout", "workloadNameDestinationFilter", false},
 		{"empty query succeeds", "", "none", false},
+		{"no configured provider", "checkout", "unconfigured", false},
+		{"resolution failure alongside no provider", "checkout", "mixed", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := params
 			p.WorkloadName = tc.workload
 			result, err := fetchTracesWithFocusedStrategy(ctx, p, NewTraceServiceMapBuilder(), func(_ *security.RequestContext, _ TraceQueryParams, q FocusedQueryParams) ([]common.OpenTelemetryTrace, error) {
-				if tc.fail == "all" || tc.fail == q.strategy {
+				if tc.fail == "unconfigured" || (tc.fail == "mixed" && q.strategy == "workloadNameSourceFilter") {
+					return nil, fmt.Errorf("focused query failed: %w", observability.ErrTraceProviderNotConfigured)
+				}
+				if tc.fail == "all" || tc.fail == "mixed" || tc.fail == q.strategy {
 					return nil, errors.New("sensitive provider response")
 				}
 				return nil, nil
@@ -76,5 +85,17 @@ func TestFetchTraceServiceMapReturnsQueryFailure(t *testing.T) {
 	result, err := FetchTracesAndBuildServiceMap(ctx, TraceQueryParams{AccountID: "account"})
 	if err == nil || err.Error() != "all focused trace queries failed" || result != nil {
 		t.Fatalf("got map=%v error=%v, want query failure", result, err)
+	}
+}
+
+func TestFetchTraceServiceMapWithoutProvider(t *testing.T) {
+	patch := gomonkey.ApplyFunc(observability.GetTraces, func(*security.RequestContext, observability.TracesV3Request) (observability.TracesResult, error) {
+		return observability.TracesResult{}, observability.ErrTraceProviderNotConfigured
+	})
+	defer patch.Reset()
+	ctx := security.NewRequestContextForTenantAdmin("tenant", slog.Default(), nil, nil)
+	result, err := FetchTracesAndBuildServiceMap(ctx, TraceQueryParams{AccountID: "account", WorkloadName: "checkout"})
+	if err != nil || result == nil || len(result.Applications) != 0 {
+		t.Fatalf("got map=%v error=%v, want empty map for an unconfigured account", result, err)
 	}
 }

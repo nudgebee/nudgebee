@@ -2,6 +2,7 @@ package traces
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"nudgebee/services/common"
@@ -768,6 +769,7 @@ func fetchTracesWithFocusedStrategy(requestContext *security.RequestContext, par
 	focusedQueries := generateFocusedQueries(params)
 
 	successfulQueries := 0
+	unconfiguredQueries := 0
 
 	slog.Info("Executing focused trace queries",
 		"total_queries", len(focusedQueries),
@@ -816,6 +818,9 @@ func fetchTracesWithFocusedStrategy(requestContext *security.RequestContext, par
 	for i := 0; i < len(focusedQueries); i++ {
 		result := <-results
 		if result.err != nil {
+			if errors.Is(result.err, observability.ErrTraceProviderNotConfigured) {
+				unconfiguredQueries++
+			}
 			continue
 		}
 		rows = append(rows, result.rows...)
@@ -831,7 +836,9 @@ func fetchTracesWithFocusedStrategy(requestContext *security.RequestContext, par
 		if err := requestContext.GetContext().Err(); err != nil {
 			return nil, err
 		}
-		return nil, fmt.Errorf("all focused trace queries failed")
+		if unconfiguredQueries != len(focusedQueries) {
+			return nil, fmt.Errorf("all focused trace queries failed")
+		}
 	}
 
 	err := builder.LoadSpansFromRows(requestContext, rows, params)
