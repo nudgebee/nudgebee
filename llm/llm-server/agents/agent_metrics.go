@@ -328,13 +328,15 @@ func normaliseGeneratedMetricsQuery(provider, raw string) (metricsQueryResult, e
 	result := metricsQueryResult{Provider: provider}
 
 	// ESMetricsQueryAgent already answers in the target shape; promql_query answers
-	// {"promql": "..."} or {"promql": ["q1","q2"]}. Both are JSON objects, so one
-	// decode covers them and anything else falls through to the bare-string case.
+	// {"promql": "..."} or {"promql": ["q1","q2"]}, optionally with a "note" for an
+	// approximation or an ambiguous ask. All are JSON objects, so one decode covers
+	// them and anything else falls through to the bare-string case.
 	var envelope struct {
 		Query    string          `json:"query"`
 		Index    string          `json:"index"`
 		Provider string          `json:"provider"`
 		Promql   json.RawMessage `json:"promql"`
+		Note     string          `json:"note"`
 	}
 	if err := json.Unmarshal([]byte(trimmed), &envelope); err == nil {
 		if envelope.Provider != "" {
@@ -343,26 +345,74 @@ func normaliseGeneratedMetricsQuery(provider, raw string) (metricsQueryResult, e
 		result.Index = envelope.Index
 
 		if strings.TrimSpace(envelope.Query) != "" {
+			providerName := strings.ToLower(strings.TrimSpace(provider))
+			if providerName == "datadog" {
+				if !isSingleDatadogMetricsQuery(envelope.Query) {
+					return metricsQueryResult{}, fmt.Errorf("metrics query generation: response is not a runnable query (%s)", truncateString(envelope.Query, 200))
+				}
+			} else if providerName != "elasticsearch" && providerName != "opensearch" && providerName != "es" {
+				// ES DSL does not use PromQL.
+				if _, perr := promQLParser.ParseExpr(strings.ReplaceAll(envelope.Query, "__CLUSTER__", "")); perr != nil {
+					return metricsQueryResult{}, fmt.Errorf("metrics query generation: response is not a runnable query (%s)", truncateString(envelope.Query, 200))
+				}
+			}
 			result.Query = envelope.Query
 			return result, nil
 		}
+		var promqlErr error
 		if len(envelope.Promql) > 0 {
-			promql, perr := firstPromqlQuery(envelope.Promql)
-			if perr != nil {
-				return metricsQueryResult{}, perr
+			var promql string
+			promql, promqlErr = firstPromqlQuery(envelope.Promql)
+			if promqlErr == nil {
+				// A JSON envelope can still carry prose instead of runnable PromQL.
+				if _, perr := promQLParser.ParseExpr(strings.ReplaceAll(promql, "__CLUSTER__", "")); perr != nil {
+					return metricsQueryResult{}, fmt.Errorf("metrics query generation: response is not a runnable query (%s)", truncateString(promql, 200))
+				}
+				result.Query = promql
+				return result, nil
 			}
-			result.Query = promql
-			return result, nil
+		}
+		// No usable query. A {"note": ...}-only answer is promql_query's contract
+		// for an ambiguous ask — surface the note itself as the clarification the
+		// user can act on, instead of a generic failure or an empty editor.
+		if note := strings.TrimSpace(envelope.Note); note != "" {
+			return metricsQueryResult{}, fmt.Errorf("metrics query generation: clarification needed: %s", note)
+		}
+		if promqlErr != nil {
+			return metricsQueryResult{}, promqlErr
 		}
 		// A JSON object carrying neither key is not a query. Falling through here
 		// would put a raw JSON blob in the user's PromQL box.
 		return metricsQueryResult{}, fmt.Errorf("metrics query generation: response had no query (%s)", truncateString(trimmed, 200))
 	}
 
-	// Bare query text — datadog_metrics_query's contract, and the shape any future
-	// writer is most likely to use.
+	// Bare query text. datadog_metrics_query's contract is a bare query and there
+	// is no Go parser for Datadog syntax, so validate its metric shape here.
+	if strings.EqualFold(strings.TrimSpace(provider), "datadog") {
+		if !isSingleDatadogMetricsQuery(trimmed) {
+			return metricsQueryResult{}, fmt.Errorf("metrics query generation: response is not a runnable query (%s)", truncateString(trimmed, 200))
+		}
+		result.Query = trimmed
+		return result, nil
+	}
+
+	// Every other writer answers JSON by contract. Accepting any non-JSON text as
+	// the query is how a markdown "menu of example queries" landed verbatim in the
+	// PromQL editor (issue #293), so bare text is accepted only when it parses as
+	// one PromQL expression. The __CLUSTER__ placeholder is stripped first — it has
+	// no value and is not valid syntax.
+	clean := strings.ReplaceAll(trimmed, "__CLUSTER__", "")
+	if _, perr := promQLParser.ParseExpr(clean); perr != nil {
+		return metricsQueryResult{}, fmt.Errorf("metrics query generation: response is not a runnable query (%s)", truncateString(trimmed, 200))
+	}
 	result.Query = trimmed
 	return result, nil
+}
+
+func isSingleDatadogMetricsQuery(query string) bool {
+	query = strings.TrimSpace(query)
+	match := datadogMetricQueryRE.FindStringIndex(query)
+	return match != nil && match[0] == 0 && !strings.ContainsAny(query, "\r\n`") && validateDatadogQuery(query) == ""
 }
 
 // firstPromqlQuery reads promql_query's value, which is a string for the single-query

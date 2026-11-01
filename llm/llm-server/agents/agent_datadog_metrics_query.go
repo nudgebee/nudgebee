@@ -598,14 +598,15 @@ func (d DatadogMetricsQueryAgent) UpdateExecutorLlmResponse(actions []core.NBAge
 
 // extractAllMetricNames extracts all metric names from a Datadog query
 // Handles complex queries with multiple metrics like: avg:cpu / avg:memory
+var datadogMetricQueryRE = regexp.MustCompile(`(avg|sum|min|max|count|top|percentile|last|stddev|p50|p75|p90|p95|p99):([a-zA-Z0-9_\.]+)`)
+
 func extractAllMetricNames(query string) []string {
 	query = strings.TrimSpace(query)
 
 	// Pattern to match ONLY known aggregation prefixes followed by metric names
 	// This avoids matching tag key:value pairs like pod_name:my.app.v1.2
 	// Matches: avg:metric, sum:metric, min:metric, max:metric, count:metric, etc.
-	re := regexp.MustCompile(`(avg|sum|min|max|count|top|percentile|last|stddev|p50|p75|p90|p95|p99):([a-zA-Z0-9_\.]+)`)
-	matches := re.FindAllStringSubmatch(query, -1)
+	matches := datadogMetricQueryRE.FindAllStringSubmatch(query, -1)
 
 	// Extract all unique metric names
 	// match[0] = full match (e.g., "avg:kubernetes.cpu.usage.total")

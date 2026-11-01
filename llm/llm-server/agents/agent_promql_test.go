@@ -71,6 +71,12 @@ func TestGetSystemPrompt_PrintInstructions(t *testing.T) {
 	assert.NotEmpty(t, s, "system prompt JSON should not be empty")
 	assert.True(t, strings.Contains(s, "Input Analysis"), "should contain 'Input Analysis' section")
 	assert.True(t, strings.Contains(s, "OUTPUT CONTRACT"), "should contain 'OUTPUT CONTRACT' section")
+	// Issue #293: an ambiguous ask must yield a clarification note, never a markdown
+	// menu of example queries.
+	assert.True(t, strings.Contains(s, "exactly ONE query"), "should demand exactly one query, not a menu of examples")
+	assert.True(t, strings.Contains(s, "clarifying question"), "should route ambiguous asks to the note contract")
+	assert.True(t, strings.Contains(s, `\"note\"`), "output contract should allow clarification notes")
+	assert.True(t, strings.Contains(s, "only for explicit requests for multiple queries"), "output contract should reserve query arrays for explicit multi-query requests")
 }
 
 func TestPromqlAgent_UpdateExecutorLlmResponse_InvalidFunction(t *testing.T) {
