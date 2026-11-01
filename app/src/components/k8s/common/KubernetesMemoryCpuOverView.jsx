@@ -10,7 +10,7 @@ import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker
 import { ds } from '@utils/colors';
 import { Modal } from '@ui/Modal';
 import Chart from '@ui/Chart';
-import dayjs from 'dayjs';
+import { buildTrendChart } from './utilisationTrendChart';
 
 export const CpuMemorySkeleton = ({ sx = {} }) => (
   <Box sx={{ display: 'flex', gap: 'var(--ds-space-4)', ...sx }}>
@@ -38,15 +38,6 @@ const TREND_CONFIG = {
     keys: { usage: 'mem_usage_trend', total: 'mem_total', request: 'memory_request', limit: 'memory_limit' },
   },
 };
-
-// One line per label — matches the per-workload utilisation chart (Usage amber,
-// Request blue, Limit red), with Total in grey as the capacity ceiling.
-const TREND_SERIES = [
-  { field: 'usage', label: 'Usage', color: ds.amber[500] },
-  { field: 'total', label: 'Total', color: ds.gray[400] },
-  { field: 'request', label: 'Request', color: ds.blue[400] },
-  { field: 'limit', label: 'Limit', color: ds.red[500] },
-];
 
 // Shared by both card pickers and the Trend popup's own time filter.
 const RANGE_SHORTCUTS = [
@@ -107,34 +98,6 @@ UtilizationRangePicker.propTypes = {
   value: PropTypes.object,
   onChange: PropTypes.func,
   sx: PropTypes.object,
-};
-
-const formatTrendTs = (ts) => dayjs(ts > 1e12 ? ts : ts * 1000).format('HH:mm');
-
-// Build Chart.Series { labels, dataset } from a metric group's range-query response.
-const buildTrendChart = (results, cfg) => {
-  const byKey = {};
-  results.forEach((item) => {
-    const first = (item.payload || [])[0];
-    byKey[item.query_key] = { values: (first?.values || []).map((v) => parseFloat(v)), timestamps: first?.timestamps || [] };
-  });
-  // Longest series drives the x-axis labels (a query_range batch shares one time grid).
-  const labelSeries = Object.values(byKey).reduce((a, b) => (b.timestamps.length > a.timestamps.length ? b : a), { timestamps: [] });
-  const labels = labelSeries.timestamps.map(formatTrendTs);
-  const dataset = TREND_SERIES.map((s) => {
-    const series = byKey[cfg.keys[s.field]] || { values: [] };
-    return {
-      label: s.label,
-      data: series.values.map((v) => (Number.isFinite(v) ? v / cfg.divisor : null)),
-      borderColor: s.color,
-      backgroundColor: s.color,
-      borderWidth: 1.5,
-      pointRadius: 0,
-      tension: 0.3,
-      fill: false,
-    };
-  });
-  return { labels, dataset };
 };
 
 const KubernetesMemoryCpuOverView = ({
