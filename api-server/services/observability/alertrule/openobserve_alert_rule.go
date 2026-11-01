@@ -5,20 +5,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 
 	"nudgebee/services/common"
-	"nudgebee/services/integrations"
 	"nudgebee/services/security"
 )
 
 type OpenObserveAlertRuleSource struct{}
 
 func (s *OpenObserveAlertRuleSource) CreateAlertRule(ctx *security.RequestContext, config AlertRuleConfig) (*AlertRuleResult, error) {
-	oo, err := integrations.GetOpenObserveConfigs(ctx, config.AccountId)
+	oo, err := getOpenObserveAlertConfig(ctx, config.AccountId)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get OpenObserve configs: %w", err)
 	}
@@ -63,7 +64,7 @@ func (s *OpenObserveAlertRuleSource) CreateAlertRule(ctx *security.RequestContex
 }
 
 func (s *OpenObserveAlertRuleSource) UpdateAlertRule(ctx *security.RequestContext, externalRuleId string, config AlertRuleConfig) (*AlertRuleResult, error) {
-	oo, err := integrations.GetOpenObserveConfigs(ctx, config.AccountId)
+	oo, err := getOpenObserveAlertConfig(ctx, config.AccountId)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get OpenObserve configs: %w", err)
 	}
@@ -89,7 +90,7 @@ func (s *OpenObserveAlertRuleSource) UpdateAlertRule(ctx *security.RequestContex
 }
 
 func (s *OpenObserveAlertRuleSource) DeleteAlertRule(ctx *security.RequestContext, accountId string, externalRuleId string) error {
-	oo, err := integrations.GetOpenObserveConfigs(ctx, accountId)
+	oo, err := getOpenObserveAlertConfig(ctx, accountId)
 	if err != nil {
 		return fmt.Errorf("failed to get OpenObserve configs: %w", err)
 	}
@@ -106,7 +107,7 @@ func (s *OpenObserveAlertRuleSource) DeleteAlertRule(ctx *security.RequestContex
 	return nil
 }
 
-func openObserveAlertRequest(method string, oo integrations.OpenObserveConfig, alertID string, payload any) (*http.Response, error) {
+func openObserveAlertRequest(method string, oo openObserveAlertConfig, alertID string, payload any) (*http.Response, error) {
 	if method != http.MethodPost && alertID == "" {
 		return nil, fmt.Errorf("OpenObserve alert ID is required for %s", method)
 	}
@@ -136,13 +137,21 @@ func openObserveAlertRequest(method string, oo integrations.OpenObserveConfig, a
 	}
 }
 
-func buildOpenObserveAlertPayload(config AlertRuleConfig, oo integrations.OpenObserveConfig) (map[string]any, error) {
+func buildOpenObserveAlertPayload(config AlertRuleConfig, oo openObserveAlertConfig) (map[string]any, error) {
 	query := strings.TrimSpace(config.Query)
 	if query == "" {
 		return nil, fmt.Errorf("OpenObserve alert query is required")
 	}
-	if !integrations.IsSafeOpenObserveStreamName(config.Name) {
-		return nil, fmt.Errorf("OpenObserve alert name %q must use only letters, digits and underscores", config.Name)
+	name := strings.TrimSpace(config.Name)
+	if name == "" || strings.IndexFunc(name, unicode.IsControl) >= 0 {
+		return nil, fmt.Errorf("OpenObserve alert name must be non-empty and contain no control characters")
+	}
+	if strings.ContainsAny(name, ":#?&%\"'") || strings.IndexFunc(name, unicode.IsSpace) >= 0 {
+		return nil, fmt.Errorf("OpenObserve alert names cannot contain whitespace, :, #, ?, &, %%, or quotes; use hyphens or underscores instead")
+	}
+	destinations, err := openObserveAlertDestinations(config.ProviderConfig["destinations"])
+	if err != nil {
+		return nil, err
 	}
 
 	queryType := strings.ToLower(openObserveProviderString(config.ProviderConfig, "query_type"))
@@ -181,7 +190,7 @@ func buildOpenObserveAlertPayload(config AlertRuleConfig, oo integrations.OpenOb
 	if streamType != "logs" && streamType != "traces" && streamType != "metrics" {
 		return nil, fmt.Errorf("unsupported OpenObserve stream type %q", streamType)
 	}
-	if !integrations.IsSafeOpenObserveStreamName(streamName) {
+	if !openObserveAlertStreamName(streamName) {
 		return nil, fmt.Errorf("invalid OpenObserve stream name %q", streamName)
 	}
 
@@ -216,7 +225,18 @@ func buildOpenObserveAlertPayload(config AlertRuleConfig, oo integrations.OpenOb
 		}
 		threshold = parsed
 	}
+	if math.IsNaN(threshold) || math.IsInf(threshold, 0) {
+		return nil, fmt.Errorf("OpenObserve alert threshold must be finite")
+	}
 	triggerThreshold := 1
+	triggerOperator := ">="
+	if queryType == "sql" {
+		if threshold <= 0 || math.Trunc(threshold) != threshold {
+			return nil, fmt.Errorf("OpenObserve SQL alert threshold must be a positive whole number of result rows")
+		}
+		triggerThreshold = int(threshold)
+		triggerOperator = operator
+	}
 	if value, ok := config.ProviderConfig["trigger_threshold"]; ok {
 		parsed, err := toInt(value)
 		if err != nil {
@@ -264,33 +284,52 @@ func buildOpenObserveAlertPayload(config AlertRuleConfig, oo integrations.OpenOb
 		queryCondition["sql"] = query
 	} else {
 		queryCondition["promql"] = query
-		ruleMode, _ := config.ProviderConfig["promql_rule_mode"].(bool)
-		queryCondition["promql_rule_mode"] = ruleMode
-		if !ruleMode {
-			queryCondition["promql_condition"] = map[string]any{
-				"column": "value", "ignore_case": false, "operator": operator, "value": threshold,
-			}
+		queryCondition["promql_condition"] = map[string]any{
+			"column": "value", "ignore_case": false, "operator": operator, "value": threshold,
 		}
 	}
 
 	payload := map[string]any{
-		"name":              config.Name,
-		"stream_type":       streamType,
-		"stream_name":       streamName,
-		"is_real_time":      false,
-		"query_condition":   queryCondition,
+		"name":            name,
+		"destinations":    destinations,
+		"stream_type":     streamType,
+		"stream_name":     streamName,
+		"is_real_time":    false,
+		"query_condition": queryCondition,
 		"trigger_condition": map[string]any{
-			"period": period, "operator": operator, "threshold": triggerThreshold,
+			"period": period, "operator": triggerOperator, "threshold": triggerThreshold,
 			"frequency": frequency, "frequency_type": "minutes", "silence": silence,
 		},
 		"enabled":     config.Enabled,
 		"description": description,
 		"tags":        labelsToDatadogTags(config.Labels),
 	}
-	if destinations, ok := config.ProviderConfig["destinations"]; ok {
-		payload["destinations"] = destinations
-	}
 	return payload, nil
+}
+
+func openObserveAlertDestinations(value any) ([]string, error) {
+	var destinations []string
+	switch value := value.(type) {
+	case []string:
+		destinations = value
+	case []any:
+		for _, item := range value {
+			name, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("OpenObserve alert destinations must be a non-empty list of destination names")
+			}
+			destinations = append(destinations, name)
+		}
+	}
+	if len(destinations) == 0 {
+		return nil, fmt.Errorf("OpenObserve alert destinations are required; configure a destination that forwards alerts to Nudgebee")
+	}
+	for _, name := range destinations {
+		if strings.TrimSpace(name) == "" {
+			return nil, fmt.Errorf("OpenObserve alert destination names cannot be empty")
+		}
+	}
+	return destinations, nil
 }
 
 func openObserveProviderString(config map[string]any, key string) string {
