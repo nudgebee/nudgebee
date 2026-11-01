@@ -174,8 +174,11 @@ RUN apk add --no-cache --virtual .build-deps \
     /opt/azure-cli-venv/bin/pip install --no-cache-dir azure-cli "cryptography>=48.0.1" && \
     ln -s /opt/azure-cli-venv/bin/az /usr/local/bin/az && \
     pip install --no-cache-dir --break-system-packages --upgrade \
-        "cryptography>=48.0.1" "certifi>=2026.10.18" "urllib3>=2.7.0,<3" "setuptools>=84.2.1" && \
+        "cryptography>=48.0.1" "certifi>=2026.10.18" "urllib3>=2.7.0,<3" "jmespath>=1.1.0" "setuptools>=84.2.1" && \
     apk del .build-deps
+# urllib3 2.8.0 warns on the `strict` argument Alpine's botocore still passes, once
+# per aws call. Silence that one warning so it stays out of command output.
+ENV PYTHONWARNINGS=ignore::FutureWarning:urllib3.poolmanager
 
 # Pre-install Azure CLI extensions to a fixed directory.
 # AZURE_EXTENSION_DIR decouples extension storage from AZURE_CONFIG_DIR,
