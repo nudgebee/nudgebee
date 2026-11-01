@@ -201,7 +201,6 @@ Open <http://localhost:3000> and sign in as your `admin.email` with that passwor
 The platform is live but empty. A quick tour that takes ~10 minutes:
 
 1. **Connect a cloud account or a Kubernetes cluster** — _Settings → Integrations_. Onboarding a real cluster lets the K8s collector populate the knowledge graph; an AWS / GCP / Azure account lights up the spend + recommendations surfaces. Without at least one of these, most of the dashboard is intentionally empty.
-   To connect an existing OpenObserve organization, see the [OpenObserve setup guide](docs/openobserve-setup.md).
 2. **Wire up a notification channel** — _Settings → Integrations → Slack / Teams / Email_. Without one, you can still try the product, but notifications + ChatOps flows won't reach you.
 3. **Run a sample runbook** — _Runbooks → Library_. The bundled library has runnable examples (health-check loops, K8s investigation, cost spotlights). Run one manually to see end-to-end orchestration.
 4. **Ask the AI assistant something** — bottom-right corner of the dashboard. It can answer questions about your connected clusters, walk you through a recommendation, or kick off an investigation.

@@ -2034,6 +2034,10 @@ const IntegrationDynamicFormModal = ({
     openobserve_webhook: {
       endpoint: 'openobserve',
       message: 'Configure the following URL as a Webhook destination in OpenObserve (Management → Alert Destinations)',
+      learnMore: {
+        url: docsUrl('/docs/integrations/Webhooks/openobserve_webhook/'),
+        text: 'how to configure OpenObserve Webhook',
+      },
       // OpenObserve delivers whatever the alert Template renders — there is no
       // fixed payload schema — so the destination is only half the setup. The
       // template below is what NudgeBee parses best; it is shown inline because
