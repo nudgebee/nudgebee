@@ -77,6 +77,55 @@ func resolveScanDatasource(accountID, tenantID, datasourceID string) (scanDataso
 	return ds, nil
 }
 
+// ScanDatasourceOption is one discovery datasource the single-VM scan dialog
+// can offer for an account.
+type ScanDatasourceOption struct {
+	ID     string `db:"id"`
+	Name   string `db:"name"`
+	Status string `db:"status"`
+}
+
+// ListScanDatasources returns the datasources resolveScanDatasource accepts
+// for accountID+tenantID, for the single-VM scan dialog to pick from. It
+// carries the same conditions as that resolver (tenant, enabled discovery
+// integration with a datasource_key and an 'own' link, linked to the account
+// as 'own' or 'discovery_target') — keep the two in step, so the dialog never
+// offers a datasource the scan then rejects.
+//
+// This exists because the dialog used to read the generic integrations list,
+// which only tenant admins may call, while the scan itself is open to account
+// and namespace admins: they got an empty picker for a datasource they are
+// allowed to scan through.
+func ListScanDatasources(accountID, tenantID string) ([]ScanDatasourceOption, error) {
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get database manager: %w", err)
+	}
+
+	options := []ScanDatasourceOption{}
+	err = dbms.Db.Select(&options,
+		`SELECT i.id::text AS id, i.name, i.status
+		 FROM integrations i
+		 WHERE i.tenant_id = $1
+		   AND i.type = 'discovery' AND i.status = 'enabled'
+		   AND EXISTS (
+		       SELECT 1 FROM integration_config_values icv
+		       WHERE icv.integration_id = i.id AND icv.name = 'datasource_key')
+		   AND EXISTS (
+		       SELECT 1 FROM integrations_cloud_accounts own
+		       WHERE own.integration_id = i.id AND own.link_role = 'own')
+		   AND EXISTS (
+		       SELECT 1 FROM integrations_cloud_accounts link
+		       WHERE link.integration_id = i.id AND link.cloud_account_id = $2
+		         AND link.link_role IN ('own', 'discovery_target'))
+		 ORDER BY i.name, i.id`,
+		tenantID, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("vmpackage: list scan datasources for account %s: %w", accountID, err)
+	}
+	return options, nil
+}
+
 // discoveryContentPackVersion pins the forager content pack this action
 // requires — forager's discovery_inventory has no "latest" default and
 // hard-errors without an explicit version. Used only by the manual

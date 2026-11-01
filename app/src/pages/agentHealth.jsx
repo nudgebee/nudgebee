@@ -37,6 +37,11 @@ import { docsUrl } from '@lib/externalUrls';
 const HEADERS_CLOUD = ['Status', 'Last Connected', 'Cloud', 'Account'];
 const HEADERS_PROXY = ['Status', 'Last Connected'];
 const HEADERS_PROXY_DATASOURCES = ['Name', 'Type', 'Proxy Type', 'Status', 'Last Check', 'Error'];
+// error_class values the proxy agent (forager) attaches to a datasource in status "error".
+const PROXY_ERROR_CLASS_LABELS = {
+  datasource_integration_failure: 'Datasource integration failure',
+  ssh_integration_failure: 'SSH integration failure',
+};
 const HEADERS_COMPONENTS = ['Component', 'Status', 'Endpoint', 'Details'];
 // Executions is right-aligned: a column of counts is read by magnitude, and CustomTable
 // takes the alignment from the header rather than from each cell.
@@ -149,7 +154,7 @@ export const toScheduledJob = (job) => {
 
 const ProxyDatasourceExpandedRow = ({ row }) => {
   const raw = row[row.length - 1]?._raw || {};
-  const entries = Object.entries(raw).filter(([k]) => !['name', 'type', 'proxy_type', 'status', 'last_check', 'error'].includes(k));
+  const entries = Object.entries(raw).filter(([k]) => !['name', 'type', 'proxy_type', 'status', 'last_check', 'error', 'error_class'].includes(k));
 
   if (entries.length === 0) {
     return (
@@ -486,7 +491,22 @@ const AgentHealth = () => {
             component: <Label tone={datasource.status === 'healthy' ? 'success' : 'critical'} dot text={datasource.status || '-'} />,
           },
           { component: <Datetime value={datasource.last_check} /> },
-          { text: datasource.error || '-', _raw: datasource },
+          {
+            // Older agents send no error_class; they fall back to the bare message.
+            component: datasource.error ? (
+              <Box>
+                {typeof datasource.error_class === 'string' && (
+                  <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.semibold, color: ds.red[500], textTransform: 'capitalize' }}>
+                    {PROXY_ERROR_CLASS_LABELS[datasource.error_class] ?? datasource.error_class.replace(/_/g, ' ')}
+                  </Typography>
+                )}
+                <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], wordBreak: 'break-word' }}>{datasource.error}</Typography>
+              </Box>
+            ) : (
+              <Text value='-' />
+            ),
+            _raw: datasource,
+          },
         ]);
       });
       setProxyDatasourcesData(dsTableData);

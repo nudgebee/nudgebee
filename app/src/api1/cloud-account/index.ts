@@ -297,15 +297,37 @@ query cloudAccountCostTrend($dateUnit:String!){
 }
 `;
 
+// spend_currency_v2 has no GROUP BY, so limit 1 stops at the account's first
+// spend row instead of grouping its whole spend history first.
 const ACC_CURRENCY = `
 query accountCurrency {
-  spend_groupings: spend_groupings_v2(where: __WHERE__, limit: 1) {
+  spend_currency: spend_currency_v2(where: __WHERE__, limit: 1) {
     rows {
       currency_type
     }
   }
 }
 `;
+
+// An account's currency does not change, but every cost card asks for it
+// (useCurrencySymbol has ~11 call sites, several on one page). Keep each
+// account's lookup for a while and share it with callers already waiting on it.
+// A failed lookup is dropped so the next caller retries.
+const ACCOUNT_CURRENCY_TTL_MS = 10 * 60 * 1000;
+const accountCurrencyCache = new Map<string, { expires: number; pending: Promise<string | null> }>();
+
+async function fetchAccountCurrency(accountId: string): Promise<string | null> {
+  const filterParams = {
+    account_id: { _eq: accountId },
+    exclude_aggregate: { _eq: false },
+  };
+  const finalQuery = ACC_CURRENCY.replaceAll('__WHERE__', gqlStringify(filterParams));
+  const response = await queryGraphQL(finalQuery, 'accountCurrency', {});
+  if (response?.data?.errors?.length || !response?.data?.data) {
+    throw new Error('accountCurrency query failed');
+  }
+  return response.data.data.spend_currency?.rows?.[0]?.currency_type ?? null;
+}
 
 // Batched per-account spend rollup: spend_groupings_v2 groups by the dimension
 // columns requested in rows, so one query returns (account_id, currency) sums for
@@ -756,9 +778,13 @@ const apiCloudAccount = {
         where.region = { _eq: data.region };
       }
       const andConditions: any[] = [];
-      if (data.nameFilter) {
+      // Every caller passes the search box text as typed. Pasted text often
+      // carries a stray space, which the substring match would otherwise treat
+      // as part of the id/name and find nothing.
+      const nameFilter = data.nameFilter?.trim();
+      if (nameFilter) {
         andConditions.push({
-          _or: [{ resourse_id: { _ilike: '%' + data.nameFilter + '%' } }, { name: { _ilike: '%' + data.nameFilter + '%' } }],
+          _or: [{ resourse_id: { _ilike: '%' + nameFilter + '%' } }, { name: { _ilike: '%' + nameFilter + '%' } }],
         });
       }
       // Handle tag filtering with JSON _contains (values serialized as JSON strings)
@@ -1404,14 +1430,18 @@ mutation CloudMetrics($request: CloudMetricsRequestInput!) {
     if (!accountId || accountId === 'demo') {
       return null;
     }
+    const now = Date.now();
+    let hit = accountCurrencyCache.get(accountId);
+    if (!hit || hit.expires <= now) {
+      const pending = fetchAccountCurrency(accountId);
+      hit = { expires: now + ACCOUNT_CURRENCY_TTL_MS, pending };
+      accountCurrencyCache.set(accountId, hit);
+      pending.catch(() => {
+        if (accountCurrencyCache.get(accountId)?.pending === pending) accountCurrencyCache.delete(accountId);
+      });
+    }
     try {
-      const filterParams = {
-        account_id: { _eq: accountId },
-        exclude_aggregate: { _eq: false },
-      };
-      const finalQuery = ACC_CURRENCY.replaceAll('__WHERE__', gqlStringify(filterParams));
-      const response = await queryGraphQL(finalQuery, 'accountCurrency', {});
-      return response?.data?.data?.spend_groupings?.rows?.[0]?.currency_type ?? null;
+      return await hit.pending;
     } catch {
       return null;
     }
@@ -1620,7 +1650,7 @@ mutation CloudMetrics($request: CloudMetricsRequestInput!) {
       }
 
       const response = await queryGraphQL(CLOUD_ACC_RDS_SUMMARY, 'CloudAccRDSSummary', {
-        resourcesWhere: { account: { _eq: accountId }, service_name: { _eq: data.serviceName }, status: { _eq: 'Active' } },
+        resourcesWhere: { account: { _eq: accountId }, service_name: { _eq: data.serviceName }, status: { _in: ['Active', 'Inactive'] } },
         recWhere,
         eventsWhere,
         spendSummaryWhere: { account_id: { _eq: accountId }, resource_service_name: { _eq: data.serviceName } },
@@ -1661,7 +1691,7 @@ mutation CloudMetrics($request: CloudMetricsRequestInput!) {
         s3Where: {
           account_id: { _eq: accountId },
           service_name: { _eq: data.serviceName },
-          status: { _eq: 'Active' },
+          status: { _in: ['Active', 'Inactive'] },
           type: { _eq: data.storageType },
         },
         recWhere: { account_id: { _eq: accountId }, resource_cloud_service: { _eq: data.serviceName }, status: { _in: ['Open', 'Assigned'] } },
@@ -1723,7 +1753,7 @@ mutation CloudMetrics($request: CloudMetricsRequestInput!) {
         resourcesWhere: {
           account: { _eq: accountId },
           service_name: { _eq: 'AmazonECS' },
-          status: { _eq: 'Active' },
+          status: { _in: ['Active', 'Inactive'] },
           meta: { _contains: JSON.stringify({}) },
         },
         recWhere,

@@ -224,14 +224,27 @@ Based on the commits and diff, generate:
 **Body MUST follow the repo's PR template (`.github/pull_request_template.md`), written to the
 rules in [`docs/writing-for-readers.md`](../../../docs/writing-for-readers.md) — read that file
 before drafting. The short version: one screen above the fold, everything else demoted into a
-`<details>` block, and "How Has This Been Tested?" answers *how the reader verifies this*, not
-*which commands you ran*.**
+`<details>` block, the reviewer is told **what was decided and where to look**, and "How Has This
+Been Tested?" answers *how the reader verifies this*, not *which commands you ran*.**
 
 ```markdown
 # Description
 
 {THE LEAD — max 3 sentences, no symbol names, no file paths, no SHAs. What changed, who it
 affects, why it mattered. One number if you have one. A PM must be able to read this and stop.}
+
+**Decision:** {What you chose, what else was possible, why not that — 1–2 lines. This is the thing
+the reviewer approves. If the choice costs something, say so in bold. Delete the line only when
+there was genuinely no alternative (typo, version bump).}
+
+**Look at:** {The file or area of the diff that carries the risk, and what is mechanical (moved
+code, renames, tests). File names allowed here; no symbols or line numbers. Delete the line when
+the diff is one file or under ~50 lines.}
+
+**Chain:** {ONLY when the ticket has more than one PR — check with
+`gh pr list --state all --search "<issue_number> in:body"`. "3 of 4 for #N. Replaces/adjusts #A.
+After this PR the rule is: {the whole rule as it now stands, not the delta}." If this PR fixes
+something an earlier PR in the chain introduced, say so and link it. Otherwise delete the line.}
 
 Fixes #{issue_number}   ← MANDATORY for PRs to main (from Step 2; use "Part of #N" if the ticket stays open). Remove this line ONLY for PRs to test/prod.
 
@@ -264,6 +277,8 @@ is nothing real — do not write "None".}
 {No length limit. Everything the fold exists to hold, in whatever structure fits:
 
 - Root cause, with file:line, symbols, commit SHAs, migration ids.
+- Proof the problem exists — and, for every number quoted above the fold, the query or command
+  that produced it, so a reviewer can re-run it.
 - Evidence you ran: validation commands and their output, test counts, benchmark numbers.
 - Measurements, comparison tables, per-model / per-service breakdowns.
 - Cross-service impact, performance, UX notes — only where non-obvious. Omit what doesn't apply.
@@ -276,7 +291,11 @@ is nothing real — do not write "None".}
 - Select the "Type of change" based on the semantic type → PR checkbox mapping above
 - Mark applicable types with `[x]` — only include the checked types, delete all unchecked options
 - **Above the fold: 200 words, hard cap.** Over budget means demote into the fold, never trim meaning
+- **Scale to the diff.** 200 is a ceiling, not a target: a 20-line fix gets a lead, a decision line and one verify line. A description longer than its diff is a draft
 - The lead explains **why**, not what — the diff already shows what
+- **One number above the fold, and only if it bears on the decision.** The rest — and the query behind each — go in the fold. Lint/test results and notes about failures already on `main` never go above the fold
+- **The `Decision` alternative must be real.** Take it from Step 4.5 / `/challenge` (the strongest surviving counterargument) or from what you actually considered — never invent a strawman to fill the line. If you cannot name one for a non-trivial change, look for one before posting
+- **Third fix to the same mechanism this week?** Stop and surface it to the user before opening the PR (`CLAUDE.md` → Fix the Class, Not the Instance)
 - **No per-file / per-function change table.** GitHub renders the diff directly above your text; a table restating it is machine output pasted back at the reader
 - **Omit empty sections entirely.** No "None", no "Negligible", no "N/A" — an empty heading is worse than an absent one
 - For PRs to `main`: the issue link is **mandatory** — the number comes from Step 2; `Fixes #` closes the ticket on merge, `Part of #` keeps it open for multi-PR tickets
@@ -285,13 +304,14 @@ is nothing real — do not write "None".}
 
 ## Step 8.5: Reader Test (mandatory, before Step 9)
 
-Re-read your own draft and answer these four. Any failure is a rewrite, not a caveat — and the fix
+Re-read your own draft and answer these five. Any failure is a rewrite, not a caveat — and the fix
 is almost always "move it into the fold", not "delete it".
 
 1. **Skim test** — reading only the first three lines, can a PM tell what changed and whether it's risky?
-2. **Jargon test** — is there a function name, file path, SHA, library version, migration id, or error string above the fold?
+2. **Jargon test** — is there a function name, file path, SHA, library version, migration id, or error string above the fold? (File names in the `Look at` line are the one exception.)
 3. **Reproduce test** — could QA follow "How Has This Been Tested?" without opening the codebase? If it lists only commands you ran, it is not written yet.
 4. **Slop test** — delete every sentence that restates the diff, hedges, or exists to look thorough. If the meaning survived the deletion, leave it deleted.
+5. **Decision test** — reading only what is above the fold, can a reviewer name one thing they could disagree with, and where in the diff to look for it?
 
 Then check the budget: `wc -w` on everything above `<details>` must be ≤ 200.
 

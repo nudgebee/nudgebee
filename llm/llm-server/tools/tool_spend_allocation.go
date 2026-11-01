@@ -84,6 +84,7 @@ func (t SpendAllocationTool) InferToolRequestType(_ *security.RequestContext, _,
 }
 
 func (t SpendAllocationTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	nbCtx = nbCtx.ForTarget()
 	groupBy := "namespace"
 	tagKey := ""
 	window := "30d"

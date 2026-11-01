@@ -1007,6 +1007,192 @@ func TestSQLGen_RealTable_EventGroupings_IncidentGroupLeaderIsGroupAnchor(t *tes
 	assert.Contains(t, sql, ") ecc")
 }
 
+// eventsListSQL generates the events_v2 query for the columns the issues list
+// reads, with the given filter on top of the tenant scope. Whitespace is
+// collapsed so assertions do not depend on how the generator spaces clauses.
+func eventsListSQL(t *testing.T, where QueryWhereClause, orderBy string) string {
+	t.Helper()
+	td, ok := GetTableMetadata("events_v2")
+	require.True(t, ok)
+	if where.Binary == nil {
+		where.Binary = BinaryWhereClause{}
+	}
+	where.Binary["tenant_id"] = map[BinaryWhereClauseType]any{Eq: "t1"}
+	req := QueryRequest{
+		Table:   "events_v2",
+		Columns: cols("id", "account_id", "created_at", "labels", "incident_leader_id", "incident_member_count", "is_investigated"),
+		Where:   where,
+		Limit:   20,
+	}
+	if orderBy != "" {
+		req.OrderBy = []QueryOrderBy{{Column: orderBy, Order: "desc"}}
+	}
+	sql, err := GenerateSqlQuery(superAdminCtx(), "", req, td)
+	require.NoError(t, err)
+	return strings.Join(strings.Fields(sql), " ")
+}
+
+func TestSQLGen_RealTable_Events_ComputedColumnsAreScalarSubqueries(t *testing.T) {
+	sql := eventsListSQL(t, QueryWhereClause{}, "created_at")
+
+	// The leader, member count and investigated flag are select-list
+	// subqueries, so a page of 20 rows costs 20 lookups. As joins they were
+	// computed for every event in scope before the sort and limit.
+	assert.Contains(t, sql, "LIMIT 1) as incident_leader_id")
+	assert.Contains(t, sql, "as incident_member_count")
+	assert.Contains(t, sql, "as is_investigated")
+	assert.NotContains(t, sql, "JOIN LATERAL")
+	// Grouped subqueries over the whole link table are what made the list slow.
+	assert.NotContains(t, sql, "DISTINCT ON (event_id, cloud_account_id)")
+	assert.NotContains(t, sql, "GROUP BY ec.related_event_id")
+	// No incident filter, so nothing restricts the scan.
+	assert.NotContains(t, sql, "EXISTS (")
+}
+
+func TestSQLGen_RealTable_Events_FoldedListIsAnAntiJoin(t *testing.T) {
+	sql := eventsListSQL(t, QueryWhereClause{Binary: BinaryWhereClause{
+		"incident_leader_id": {IsNull: true},
+	}}, "created_at")
+
+	// "Has no leader" is exactly "has no link row", so the filter becomes an
+	// anti-join and leaves the outer WHERE: left there, the leader lookup would
+	// run again for every surviving row.
+	assert.Contains(t, sql, "WHERE NOT EXISTS (SELECT 1 FROM event_correlations ecf")
+	assert.NotContains(t, sql, "incident_leader_id IS NULL")
+}
+
+func TestSQLGen_RealTable_Events_FoldFilterSurvivesASecondGeneration(t *testing.T) {
+	td, ok := GetTableMetadata("events_v2")
+	require.True(t, ok)
+	// A caller's request shares its filter maps with the generator. The fold
+	// filter leaves the outer WHERE, but it must not leave the caller's
+	// request: a second generation from it would otherwise list every event.
+	for name, where := range map[string]QueryWhereClause{
+		"top level": {Binary: BinaryWhereClause{"incident_leader_id": {IsNull: true}}},
+		"under and": {And: []QueryWhereClause{{Binary: BinaryWhereClause{"incident_leader_id": {IsNull: true}}}}},
+	} {
+		req := QueryRequest{Table: "events_v2", Columns: cols("id", "incident_leader_id"), Where: where, Limit: 20}
+		first, err := GenerateSqlQuery(superAdminCtx(), "", req, td)
+		require.NoError(t, err, name)
+		second, err := GenerateSqlQuery(superAdminCtx(), "", req, td)
+		require.NoError(t, err, name)
+		assert.Contains(t, first, "NOT EXISTS", name)
+		assert.Equal(t, first, second, name)
+	}
+}
+
+func TestSQLGen_RealTable_Events_ChildrenOnlyIsASemiJoin(t *testing.T) {
+	sql := eventsListSQL(t, QueryWhereClause{Binary: BinaryWhereClause{
+		"incident_leader_id": {IsNull: false},
+	}}, "created_at")
+
+	assert.Contains(t, sql, "WHERE EXISTS (SELECT 1 FROM event_correlations ecf")
+	assert.NotContains(t, sql, "NOT EXISTS")
+	assert.NotContains(t, sql, "incident_leader_id IS NOT NULL")
+}
+
+func TestSQLGen_RealTable_Events_IncidentMembersStartFromTheLink(t *testing.T) {
+	const leader = "11111111-1111-1111-1111-111111111111"
+	// The frontend and the security layer both send filters as _and lists.
+	sql := eventsListSQL(t, QueryWhereClause{And: []QueryWhereClause{
+		{Binary: BinaryWhereClause{"incident_leader_id": {Eq: leader}}},
+	}}, "created_at")
+
+	assert.Contains(t, sql, "WHERE EXISTS (SELECT 1 FROM event_correlations ecf")
+	assert.Contains(t, sql, "AND ecf.related_event_id = '"+leader+"'")
+	// The outer filter stays: a child linked to two leaders reports only the
+	// lowest, and must not be listed under the other.
+	assert.Contains(t, sql, "incident_leader_id = '"+leader+"'")
+}
+
+func TestSQLGen_RealTable_Events_ConditionalIncidentFilterIsNotPushedDown(t *testing.T) {
+	// Under an OR the filter is one alternative, not a requirement. Restricting
+	// the scan to it would drop the rows the other branch matches.
+	sql := eventsListSQL(t, QueryWhereClause{Or: []QueryWhereClause{
+		{Binary: BinaryWhereClause{"incident_leader_id": {IsNull: true}}},
+		{Binary: BinaryWhereClause{"priority": {Eq: "HIGH"}}},
+	}}, "created_at")
+
+	assert.NotContains(t, sql, "EXISTS (")
+	assert.Contains(t, sql, "incident_leader_id IS NULL")
+}
+
+func TestSQLGen_RealTable_Events_PageIsPickedBeforeItIsProjected(t *testing.T) {
+	sql := eventsListSQL(t, QueryWhereClause{}, "computed_score")
+
+	// The json cast sits outside the page, so it runs for 20 rows. Inside it,
+	// with no index to provide the order, Postgres would evaluate it for every
+	// event in scope before sorting.
+	page := strings.Index(sql, "FROM (SELECT * FROM ")
+	require.NotEqual(t, -1, page, sql)
+	assert.Less(t, strings.Index(sql, "cast(labels as TEXT) AS labels"), page)
+	// Every filter, the ordering and the limit are inside the page; a filter
+	// left outside would be applied after the limit and return a short page.
+	pageEnd := strings.Index(sql, "ORDER BY computed_score DESC LIMIT 20) AS events ORDER BY computed_score DESC")
+	require.NotEqual(t, -1, pageEnd, sql)
+	tenantFilter := strings.Index(sql, "(tenant = 't1')")
+	assert.Greater(t, tenantFilter, page)
+	assert.Less(t, tenantFilter, pageEnd)
+}
+
+func TestSQLGen_RealTable_Events_ServerScopeStaysInsideThePage(t *testing.T) {
+	td, ok := GetTableMetadata("events_v2")
+	require.True(t, ok)
+	req := QueryRequest{
+		Table:   "events_v2",
+		Columns: cols("id", "created_at"),
+		Where:   QueryWhereClause{Binary: BinaryWhereClause{"tenant_id": {Eq: "t1"}}},
+		OrderBy: []QueryOrderBy{{Column: "created_at", Order: "desc"}},
+		Limit:   20,
+	}
+	// accountScope is the server-built predicate for account-scoped readers.
+	sql, err := generateSqlQuery(superAdminCtx(), "", req, td, "cloud_account_id IN ('acctA')")
+	require.NoError(t, err)
+	sql = strings.Join(strings.Fields(sql), " ")
+
+	scope := strings.Index(sql, "cloud_account_id IN ('acctA')")
+	require.NotEqual(t, -1, scope, sql)
+	assert.Less(t, scope, strings.Index(sql, "LIMIT 20) AS events"))
+}
+
+func TestSQLGen_RealTable_Events_NoLateProjectionWhenTheSortIsNotTheBareColumn(t *testing.T) {
+	// ORDER BY names the output column. account_id is cast(cloud_account_id as
+	// TEXT) there; inside a page of raw rows the name does not exist at all, and
+	// for a column that does, the bare value can sort differently from its cast.
+	sql := eventsListSQL(t, QueryWhereClause{}, "account_id")
+	assert.NotContains(t, sql, "(SELECT * FROM")
+	assert.Contains(t, sql, "ORDER BY account_id DESC LIMIT 20")
+
+	// Nothing to pick a page by.
+	assert.NotContains(t, eventsListSQL(t, QueryWhereClause{}, ""), "(SELECT * FROM")
+}
+
+func TestSQLGen_LateProjectionIsOptInAndSkipsAggregates(t *testing.T) {
+	td := newNormalTable()
+	req := QueryRequest{
+		Table:   td.Name,
+		Columns: cols("id"),
+		OrderBy: []QueryOrderBy{{Column: "created_at", Order: "desc"}},
+		Limit:   10,
+	}
+	sql, err := GenerateSqlQuery(superAdminCtx(), "", req, td)
+	require.NoError(t, err)
+	assert.NotContains(t, sql, "(SELECT * FROM", "a table that did not opt in is generated as before")
+
+	td.LateProjectionAlias = "users"
+	sql, err = GenerateSqlQuery(superAdminCtx(), "", req, td)
+	require.NoError(t, err)
+	assert.Contains(t, sql, "(SELECT * FROM")
+
+	// An aggregate over a page of rows is a different number from the same
+	// aggregate over every matching row.
+	td.Columns["row_count"] = ColumnDefinition{Type: ColumnDefinitionTypeInt, Def: "count(*)", IsAggregated: true}
+	req.Columns = cols("row_count")
+	sql, err = GenerateSqlQuery(superAdminCtx(), "", req, td)
+	require.NoError(t, err)
+	assert.NotContains(t, sql, "(SELECT * FROM")
+}
+
 func TestSQLGen_RealTable_SpendGroupings(t *testing.T) {
 	td, ok := GetTableMetadata("spend_groupings_v2")
 	require.True(t, ok)
@@ -1026,6 +1212,34 @@ func TestSQLGen_RealTable_SpendGroupings(t *testing.T) {
 
 	assert.Contains(t, sql, "count(*) AS spend_count")
 	assert.Contains(t, sql, "GROUP BY")
+}
+
+// The currency lookup must stop at the first spend row. Through
+// spend_groupings_v2 it was GROUP BY unit, which reads the account's whole
+// spend history before LIMIT applies.
+func TestSQLGen_RealTable_SpendCurrency(t *testing.T) {
+	td, ok := GetTableMetadata("spend_currency_v2")
+	require.True(t, ok)
+
+	req := QueryRequest{
+		Table:   "spend_currency_v2",
+		Columns: cols("currency_type"),
+		Where: QueryWhereClause{
+			Binary: BinaryWhereClause{
+				"account_id":        {Eq: "a1"},
+				"exclude_aggregate": {Eq: false},
+			},
+		},
+		Limit: 1,
+	}
+	sql, err := GenerateSqlQuery(superAdminCtx(), "", req, td)
+	require.NoError(t, err)
+
+	assert.Contains(t, sql, "AS currency_type FROM spends")
+	assert.Contains(t, sql, "cloud_account = 'a1'")
+	assert.Contains(t, sql, "exclude_aggregate = false")
+	assert.NotContains(t, sql, "GROUP BY")
+	assert.True(t, strings.HasSuffix(strings.TrimSpace(sql), "LIMIT 1"), sql)
 }
 
 func TestSQLGen_RealTable_TicketGroupings(t *testing.T) {

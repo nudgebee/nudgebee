@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/relay"
@@ -1157,6 +1158,14 @@ func ExecuteContainerJob(toolContext core.NbToolContext, module RelayJob, query 
 	if err != nil {
 		return nil, err
 	}
+	// The relay forwards the agent's reply with HTTP 200 whatever its status, so
+	// a refusal has to be read from the reply itself. Before this, the agent's
+	// {"error": ...} was formatted below as the command's output and a write the
+	// agent refused was reported as a success. The message is returned as the
+	// result too, so callers that print output still show why.
+	if refused := relayAgentRefusal(response); refused != nil {
+		return refused.Message, refused
+	}
 
 	responseParsed, err := getRelayCommandResponseData(response)
 	if err != nil {
@@ -1193,12 +1202,58 @@ func (e *RelayCommandExitError) Error() string {
 	return fmt.Sprintf("command exited with status %d", e.ExitCode)
 }
 
+// RelayCommandRefusedError reports a request the cluster agent answered with a
+// failure status instead of a command result: a verb its read-only allowlist
+// refuses, an action it does not register, an overloaded agent, a task that
+// timed out. Unlike RelayCommandExitError there is no exit code; StatusCode is
+// the agent's reply status, not a process exit status.
+type RelayCommandRefusedError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *RelayCommandRefusedError) Error() string {
+	return fmt.Sprintf("cluster agent returned status %d: %s", e.StatusCode, e.Message)
+}
+
+// relayAgentRefusal returns the failure a relay reply reports through a
+// status_code of 400 or more, or nil. A reply without status_code is left
+// alone. data is {"error": ...} when the agent's handler failed, and a plain
+// string when the relay answers for an agent it lost ("agent connection lost").
+// A data.error_msg reply never gets here: relay.Execute already returns it as
+// an error.
+func relayAgentRefusal(response map[string]any) *RelayCommandRefusedError {
+	code, ok := relayIntField(response, "status_code")
+	if !ok || code < 400 {
+		return nil
+	}
+	message := ""
+	switch data := response["data"].(type) {
+	case string:
+		message = data
+	case map[string]any:
+		if s, ok := data["error"].(string); ok {
+			message = s
+		}
+	}
+	if strings.TrimSpace(message) == "" {
+		message = http.StatusText(code)
+	}
+	return &RelayCommandRefusedError{StatusCode: code, Message: message}
+}
+
 // relayExitCode reads exit_code from a parsed relay command response. Both
 // shapes carry it at the top level: the Go agent's {stdout, stderr, exit_code}
 // and the legacy {response, exit_code}. A missing or non-numeric value means
 // the executor did not report one.
 func relayExitCode(responseParsed map[string]any) (int, bool) {
-	switch v := responseParsed["exit_code"].(type) {
+	return relayIntField(responseParsed, "exit_code")
+}
+
+// relayIntField reads a numeric field from a decoded relay reply, whichever
+// numeric type the decoder produced.
+func relayIntField(m map[string]any, key string) (int, bool) {
+	switch v := m[key].(type) {
 	case float64:
 		return int(v), true
 	case int:

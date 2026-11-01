@@ -96,6 +96,7 @@ func (m ArgoCDExecuteTool) InputSchema() core.ToolSchema {
 				Type:        core.ToolSchemaTypeString,
 				Description: "ArgoCD command to execute",
 			},
+			"instance": instanceProperty,
 		},
 		Required: []string{"command"},
 	}
@@ -112,9 +113,7 @@ func (m ArgoCDExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 	command := strings.TrimSpace(input.Command)
 
 	wm := workspace.NewWorkspaceManager()
-	env := map[string]string{
-		workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
-	}
+	env := IntegrationWorkspaceEnv(nbRequestContext, nil)
 
 	// Note: The workspace pod will have these keys available via k8s-secret if configured correctly in relay action.
 	// However, for direct workspace execution, we expect the workspace to have its own way to resolve secrets

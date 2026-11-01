@@ -24,7 +24,7 @@ func init() {
 	toolInput := "Provide a question in natural language to retrieve, analyze, or summarize metrics from Splunk Enterprise."
 	toolOutput := "Returns metric data and summaries derived from Splunk mstats results."
 
-	core.RegisterNBAgentFactoryAndToolAndPrioritizeAgentResponseForTool(SplunkEnterpriseMetricsAgentName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAndTool(SplunkEnterpriseMetricsAgentName, func(accountId string) (core.NBAgent, error) {
 		return SplunkEnterpriseMetricsAgent{accountId: accountId}, nil
 	}, toolDescription, toolInput, toolOutput)
 }
@@ -35,6 +35,10 @@ func init() {
 // accounts fell through to PrometheusAgent, whose only execution tool validates PromQL
 // locally while the Splunk metric source accepts only `| mstats` SPL — so every value
 // query was rejected by one side or the other, and only metric NAMES were reachable.
+// AcceptsExecutionTarget: its tools follow a handed target and re-resolve the
+// metrics provider and index for it, so the agent can run for another account.
+func (a SplunkEnterpriseMetricsAgent) AcceptsExecutionTarget() {}
+
 type SplunkEnterpriseMetricsAgent struct {
 	accountId string
 }
@@ -88,9 +92,10 @@ func lookupSplunkMetricsIndex(accountId string) (string, error) {
 }
 
 func (s SplunkEnterpriseMetricsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
-	index, err := splunkMetricsIndexLookup(s.accountId)
+	accountID := promptAccountID(query, s.accountId)
+	index, err := splunkMetricsIndexLookup(accountID)
 	if err != nil && ctx != nil {
-		ctx.GetLogger().Warn("splunk_enterprise_metrics: could not resolve metrics index", "accountId", s.accountId, "error", err)
+		ctx.GetLogger().Warn("splunk_enterprise_metrics: could not resolve metrics index", "accountId", accountID, "error", err)
 	}
 	return s.buildSystemPrompt(index)
 }

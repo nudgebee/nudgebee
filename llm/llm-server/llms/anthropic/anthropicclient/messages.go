@@ -60,7 +60,8 @@ type Tool struct {
 
 // CacheControl represents prompt caching configuration.
 type CacheControl struct {
-	Type string `json:"type"` // "ephemeral"
+	Type string `json:"type"`          // "ephemeral"
+	TTL  string `json:"ttl,omitempty"` // "1h"; omitted means the 5-minute default
 }
 
 // TextContent represents a text block.
@@ -111,6 +112,16 @@ type Usage struct {
 	ThinkingTokens           int `json:"thinking_tokens,omitempty"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+
+	// CacheCreation splits CacheCreationInputTokens by TTL; 1-hour writes
+	// bill at 2x input instead of 1.25x.
+	CacheCreation *CacheCreationUsage `json:"cache_creation,omitempty"`
+}
+
+// CacheCreationUsage is the per-TTL breakdown of cache writes.
+type CacheCreationUsage struct {
+	Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens,omitempty"`
+	Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens,omitempty"`
 }
 
 // MessageResponse represents the response returned by /v1/messages.
@@ -301,6 +312,7 @@ func (c *Client) createMessageStream(ctx context.Context, req *MessageRequest) (
 					finalResp.Usage.InputTokens = ev.Message.Usage.InputTokens
 					finalResp.Usage.CacheCreationInputTokens = ev.Message.Usage.CacheCreationInputTokens
 					finalResp.Usage.CacheReadInputTokens = ev.Message.Usage.CacheReadInputTokens
+					finalResp.Usage.CacheCreation = ev.Message.Usage.CacheCreation
 				}
 
 			case "content_block_start":

@@ -3,9 +3,12 @@ package tools
 import (
 	"fmt"
 	"regexp"
+	"strings"
 
 	"nudgebee/llm/common"
 	"nudgebee/llm/tools/core"
+
+	"github.com/google/uuid"
 )
 
 func init() {
@@ -53,10 +56,7 @@ func PrimaryRecommendationRank(alias, accountAlias string) string {
 					-- Gated on the provider first so non-Azure rows never detoast the
 					-- recommendation jsonb.
 					WHEN LOWER(%[2]s.cloud_provider) = 'azure' AND %[1]s.recommendation->>'recommendation_type_id' IS NOT NULL
-						THEN %[1]s.cloud_account_id::text || ':'
-							|| COALESCE(%[1]s.recommendation->>'recommendation_type_id', '') || ':'
-							|| COALESCE(%[1]s.recommendation->>'ext_subid', %[1]s.recommendation->>'subscription_id', '') || ':'
-							|| COALESCE(%[1]s.recommendation->>'ext_sku', '')
+						THEN %[3]s
 					ELSE %[1]s.id::text
 				END,
 				%[1]s.category
@@ -65,9 +65,67 @@ func PrimaryRecommendationRank(alias, accountAlias string) string {
 				-- with nothing live in it. Ranked on savings alone it would win
 				-- outright, marking the live row non-primary and removing it from
 				-- every savings total.
-				CASE WHEN %[1]s.status IN ('Archive', 'Closed') THEN 1 ELSE 0 END,
-				%[1]s.estimated_savings DESC, %[1]s.updated_at DESC, %[1]s.id
-		)`, alias, accountAlias)
+				%[4]s
+		)`, alias, accountAlias, azurePartitionKey(alias), primaryRankOrder(alias))
+}
+
+// primaryRankOrder is the ordering PrimaryRecommendationRank ranks a group by,
+// shared with primaryRecommendationFlag so the two cannot rank differently.
+func primaryRankOrder(alias string) string {
+	return fmt.Sprintf(`CASE WHEN %[1]s.status IN ('Archive', 'Closed') THEN 1 ELSE 0 END,
+				%[1]s.estimated_savings DESC, %[1]s.updated_at DESC, %[1]s.id`, alias)
+}
+
+// azurePartitionKey is the partition key of an Azure row that has neither a
+// dedupe_group nor a resource_id.
+func azurePartitionKey(alias string) string {
+	return fmt.Sprintf(`%[1]s.cloud_account_id::text || ':'
+							|| COALESCE(%[1]s.recommendation->>'recommendation_type_id', '') || ':'
+							|| COALESCE(%[1]s.recommendation->>'ext_subid', %[1]s.recommendation->>'subscription_id', '') || ':'
+							|| COALESCE(%[1]s.recommendation->>'ext_sku', '')`, alias)
+}
+
+// primaryRecommendationFlag is `PrimaryRecommendationRank("r", "ca") = 1` for
+// the view's row r, without a window over the view itself. That window was an
+// optimisation fence: every query sorted all of the account's rows before any
+// of its own filters applied. Each branch of the partition key gets the
+// cheapest exact form instead:
+//   - resource_id: the row's group is looked up through the resource index;
+//   - dedupe_group and the Azure key: no index covers them, so the branch's own
+//     rows are ranked once per query (a hashed subplan, built the first time a
+//     row reaches the arm);
+//   - anything else is a group of one.
+//
+// Ranking a branch's rows alone ranks each of its groups exactly as the window
+// does as long as no group spans two branches, which holds while no
+// dedupe_group value equals a resource id or an Azure key (producers write
+// prefixed dedupe_group values). The WHEN conditions and the ordering must
+// stay those of PrimaryRecommendationRank; tests pin both.
+func primaryRecommendationFlag() string {
+	return fmt.Sprintf(`CASE
+				WHEN r.dedupe_group IS NOT NULL AND r.dedupe_group <> '' THEN r.id IN (
+					SELECT w.id FROM (
+						SELECT s.id, ROW_NUMBER() OVER (PARTITION BY s.dedupe_group, s.category ORDER BY %[1]s) AS rn
+						FROM recommendation s
+						WHERE s.cloud_account_id = '__ACCOUNT_ID__'::uuid AND s.dedupe_group IS NOT NULL AND s.dedupe_group <> ''
+					) w WHERE w.rn = 1)
+				WHEN r.resource_id IS NOT NULL THEN r.id = (
+					SELECT s.id FROM recommendation s
+					WHERE s.resource_id = r.resource_id AND s.cloud_account_id = r.cloud_account_id
+						AND s.category IS NOT DISTINCT FROM r.category
+						AND (s.dedupe_group IS NULL OR s.dedupe_group = '')
+					ORDER BY %[1]s
+					LIMIT 1)
+				WHEN LOWER(ca.cloud_provider) = 'azure' AND r.recommendation->>'recommendation_type_id' IS NOT NULL THEN r.id IN (
+					SELECT w.id FROM (
+						SELECT s.id, ROW_NUMBER() OVER (PARTITION BY %[2]s, s.category ORDER BY %[1]s) AS rn
+						FROM recommendation s
+						WHERE s.cloud_account_id = '__ACCOUNT_ID__'::uuid
+							AND (s.dedupe_group IS NULL OR s.dedupe_group = '') AND s.resource_id IS NULL
+							AND s.recommendation->>'recommendation_type_id' IS NOT NULL
+					) w WHERE w.rn = 1)
+				ELSE TRUE
+			END`, primaryRankOrder("s"), azurePartitionKey("s"))
 }
 
 // safeSavingsScopeColumns: the only columns scopeFilter may compare on --
@@ -115,8 +173,8 @@ func PrimarySavingsSubquery(groupCol, scopeFilter string) string {
 }
 
 // recommendationView is the read-only projection the recommendations agent
-// queries. Composed at init (not a const) so the dedupe window comes from the
-// single shared definition rather than a second copy.
+// queries. Composed at init (not a const) so the dedupe ranking is built from
+// the same pieces as PrimaryRecommendationRank rather than a second copy.
 var recommendationView = `
 		SELECT r.id::text as id,
 			t.name AS tenant,
@@ -134,17 +192,12 @@ var recommendationView = `
 			COALESCE(cr.service_name, r.recommendation ->> 'service_name') AS service,
 			cr.name AS resource_name,
 			r.recommendation ->> 'controller_name'::text AS controller_name,
-			-- Both COALESCE branches must be numeric so the expression's type
-			-- matches the real recommendation_view (numeric) and Postgres can
-			-- resolve ROUND(estimated_saving, 2), which only exists for
-			-- numeric (42883 otherwise). r.estimated_savings is stored as
-			-- double precision, so we cast the branch inline rather than
-			-- wrapping the whole COALESCE -- an outer cast would force
-			-- Postgres to first widen the numeric first-branch to double
-			-- precision (its arg-precedence rule), then cast the double back
-			-- to numeric, losing the exact decimal precision of the first
-			-- branch on the round trip.
-			COALESCE((r.recommendation ->> 'estimated_saving'::text)::numeric, r.estimated_savings::numeric) AS estimated_saving,
+			-- Numeric so Postgres can resolve ROUND(estimated_saving, 2), which
+			-- only exists for numeric (42883 otherwise); the column is stored as
+			-- double precision. It is the value every producer writes and every
+			-- savings ranking orders by, and reading it rather than the payload
+			-- lets an estimated_saving filter or sort use the savings index.
+			r.estimated_savings::numeric AS estimated_saving,
 			r.created_at,
 			r.updated_at,
 			r.recommendation::text AS recommendation,
@@ -169,13 +222,27 @@ var recommendationView = `
 			r.finops_score_breakdown -> 'impact_summary' ->> 'computed_at' AS computed_at,
 			r.finops_score_breakdown ->> 'change_class' AS change_class,
 			r.dedupe_group,
-			-- One row per opportunity; see PrimaryRecommendationRank.
-			(` + PrimaryRecommendationRank("r", "ca") + ` = 1) AS is_primary_recommendation
+			-- One row per opportunity; see primaryRecommendationFlag.
+			(` + primaryRecommendationFlag() + `) AS is_primary_recommendation
 		FROM recommendation r
 		LEFT JOIN cloud_resourses cr ON r.resource_id = cr.id
 		JOIN tenant t ON r.tenant_id = t.id
 		JOIN cloud_accounts ca ON r.cloud_account_id = ca.id
+		-- Groups are ranked within one account, as recommendation_groupings_v2
+		-- does. Substituted by recommendationViewFor, here and in the ranking
+		-- subqueries above.
+		WHERE r.cloud_account_id = '__ACCOUNT_ID__'::uuid
 	`
+
+// recommendationViewFor scopes recommendationView to one account. A non-UUID
+// account is left unsubstituted: sqlExecuteQuery rejects it before any SQL runs.
+func recommendationViewFor(accountId string) string {
+	id, err := uuid.Parse(accountId)
+	if err != nil {
+		return recommendationView
+	}
+	return strings.ReplaceAll(recommendationView, "__ACCOUNT_ID__", id.String())
+}
 
 // RecommendationDefaultColumns is the explicit column list queries should
 // default to, instead of SELECT * (the recommendation JSON can exceed 100 KB
@@ -338,7 +405,8 @@ func truncateRecommendationJSON(r map[string]any, _ int, _ int) map[string]any {
 }
 
 func (m RecommendationExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
-	resp, rows, err := sqlToolCall(nbRequestContext, input.Command, "recommendation_view", recommendationView, 10, truncateRecommendationJSON)
+	nbRequestContext = nbRequestContext.ForTarget()
+	resp, rows, err := sqlToolCall(nbRequestContext, input.Command, "recommendation_view", recommendationViewFor(nbRequestContext.AccountId), 10, truncateRecommendationJSON)
 	if err == nil {
 		if len(rows) == 0 {
 			resp.Data = emptyResultWithRuleCatalog(nbRequestContext)
@@ -375,9 +443,24 @@ var queryRecommendationCategories = func() ([]string, error) {
 		return nil, err
 	}
 
-	var categories []string
-	if err := dbManager.QueryAndScan(&categories, "SELECT DISTINCT category FROM recommendation ORDER BY category"); err != nil {
+	// The categories that have at least one recommendation. Probing each value
+	// of the category lookup table through the category index answers that
+	// without reading every recommendation row.
+	rows, err := dbManager.Db.Queryx(`SELECT t.value FROM recommendation_category_type t
+		WHERE EXISTS (SELECT 1 FROM recommendation r WHERE r.category = t.value)
+		ORDER BY t.value`)
+	if err != nil {
 		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var categories []string
+	for rows.Next() {
+		var category string
+		if scanErr := rows.Scan(&category); scanErr != nil {
+			return nil, scanErr
+		}
+		categories = append(categories, category)
 	}
 	return categories, nil
 }

@@ -147,6 +147,16 @@ func (s *Schema) Process(params map[string]any) error {
 
 // Validate checks if the given parameters map conforms to the schema.
 func (s *Schema) Validate(params map[string]any) error {
+	// UI shows defaults as selected without writing them (e.g. nested event.priority); fill before the loop so RequiredWhen sees them regardless of map order.
+	for name, prop := range s.Properties {
+		if !prop.Required || prop.Default == nil || params == nil {
+			continue
+		}
+		if v, ok := params[name]; !ok || v == nil || v == "" {
+			params[name] = prop.Default
+		}
+	}
+
 	for name, prop := range s.Properties {
 		value, exists := params[name]
 

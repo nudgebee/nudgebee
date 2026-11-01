@@ -1213,11 +1213,27 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 			status = models.RecommendationResolutionStatus(string(resp.Status))
 			statusMsg = resp.StatusMessage
 		}
+		// last_pr_check_at is the last time the pull request's state was actually
+		// seen. A check that could not reach the provider leaves it alone (starting
+		// it if it was never set), so it measures how long the pull request has
+		// gone unseen; past the limit the resolution is settled Failed below.
+		lastCheck := "last_pr_check_at" // an adapter error is not a sighting either
+		if err == nil && !resp.Unverified {
+			lastCheck = "(now() AT TIME ZONE 'UTC')"
+		}
+		if err == nil && resp.Unverified {
+			if adapter.PRStatusCheckExpired(resolution.LastPRCheckAt, time.Now().UTC()) {
+				status = models.RecommendationResolutionStatusFailed
+				statusMsg = adapter.PRStatusGaveUpMessage(resp.StatusMessage)
+			} else {
+				lastCheck = "COALESCE(last_pr_check_at, (now() AT TIME ZONE 'UTC'))"
+			}
+		}
 		if status == models.RecommendationResolutionStatusInProgress {
 			// Not a transition — refresh the polled message only. Guarded on the
 			// row still being InProgress so a webhook that settled it between our
 			// read and this write is not overwritten back to InProgress.
-			_, err = dbms.Db.Exec("UPDATE recommendation_resolution SET updated_at = $3, status_message = $4 WHERE id = $1 AND status = $2", resolution.Id, models.RecommendationResolutionStatusInProgress, time.Now().UTC().Format(time.RFC3339), statusMsg)
+			_, err = dbms.Db.Exec("UPDATE recommendation_resolution SET updated_at = $3, status_message = $4, last_pr_check_at = "+lastCheck+" WHERE id = $1 AND status = $2", resolution.Id, models.RecommendationResolutionStatusInProgress, time.Now().UTC().Format(time.RFC3339), statusMsg)
 			if err != nil {
 				ctx.GetLogger().Error("error updating recommendation resolution", "error", err)
 				return err

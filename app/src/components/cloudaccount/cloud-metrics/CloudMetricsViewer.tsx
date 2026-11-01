@@ -61,6 +61,24 @@ interface ChartMapEntry {
   query?: string;
 }
 
+// The GraphQL gateway answers HTTP 200 with a top-level `errors` array for most
+// backend failures (a cloud-collector timeout included), so a caller that reads
+// `data.data...` straight through sees empty results and no error — which is why
+// a timed-out query rendered "No metrics yet" with no hint. Pull that top-level
+// message out so it can be surfaced.
+function topLevelErrorMessage(response: any): string | null {
+  return response?.data?.errors?.[0]?.message || null;
+}
+
+// The backend surfaces a request timeout as a raw Go string
+// (`... context deadline exceeded`). Turn it into a hint the user can act on.
+function friendlyMetricsError(msg: string): string {
+  if (/context deadline exceeded|deadline exceeded|timeout/i.test(msg)) {
+    return 'The metrics query timed out. Try selecting fewer metrics or a shorter time range.';
+  }
+  return msg;
+}
+
 function parseMetricResults(results: any[], setError: (msg: string | null) => void): Record<string, ChartMapEntry> {
   const chartMap: Record<string, ChartMapEntry> = {};
 
@@ -315,6 +333,12 @@ const CloudMetricsViewer: React.FC<CloudMetricsViewerProps> = ({ accountId, prov
           instant: false,
           ...(selectedProvider === 'ES' && saasEsIndex ? { request: { index: saasEsIndex, query_type: saasEsQueryType } } : {}),
         });
+        const topLevelError = topLevelErrorMessage(response);
+        if (topLevelError) {
+          setError(friendlyMetricsError(topLevelError));
+          setCharts([]);
+          return;
+        }
         const results = response?.data?.data?.metrics_list?.results || [];
         const failed = results.find((r: any) => r?.error);
         if (failed) {
@@ -382,6 +406,12 @@ const CloudMetricsViewer: React.FC<CloudMetricsViewerProps> = ({ accountId, prov
       };
 
       const response = await observability.metricsQuery(requestPayload);
+      const topLevelError = topLevelErrorMessage(response);
+      if (topLevelError) {
+        setError(friendlyMetricsError(topLevelError));
+        setCharts([]);
+        return;
+      }
       const results = response?.data?.data?.metrics_list?.results || [];
       const chartMap = parseMetricResults(results, setError);
       const chartData = buildChartData(chartMap, provider === 'GCP');

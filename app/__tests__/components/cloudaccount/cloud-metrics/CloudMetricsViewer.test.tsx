@@ -347,6 +347,27 @@ describe('CloudMetricsViewer (integration)', () => {
     await waitFor(() => expect(screen.queryByTestId(/^chart-/)).not.toBeInTheDocument());
   });
 
+  // Regression for #38373: the gateway answers HTTP 200 with a top-level `errors`
+  // array (and `data: null`) on a cloud-collector timeout, which the resolved-path
+  // reader turned into empty results and rendered "No metrics yet" with no hint.
+  // The error must be surfaced, with the raw Go deadline string mapped to a hint.
+  it('surfaces a top-level 200-body error (timeout) instead of a silent "No metrics yet"', async () => {
+    observability.metricsQuery.mockResolvedValue({
+      data: {
+        data: null,
+        errors: [{ message: 'Post "http://cloud-collector-server:8000/v1/cloud/get_metrics": context deadline exceeded' }],
+      },
+    });
+
+    render(<CloudMetricsViewer accountId='acc-1' provider='GCP' />);
+    fireEvent.click(screen.getByTestId('qp-emit-valid'));
+    fireEvent.click(screen.getByTestId('btn-Run Query'));
+
+    await waitFor(() => expect(screen.getByTestId('banner')).toHaveTextContent(/timed out/i));
+    expect(screen.queryByText('No metrics yet')).not.toBeInTheDocument();
+    expect(screen.queryByTestId(/^chart-/)).not.toBeInTheDocument();
+  });
+
   it('auto-fetches when date range changes after valid params emitted', async () => {
     render(<CloudMetricsViewer accountId='acc-1' provider='AWS' />);
     fireEvent.click(screen.getByTestId('qp-emit-valid'));

@@ -70,6 +70,15 @@ jest.mock('@assets', () => ({ BetaIcon: 'beta.svg', MenuArrowDownIcon: 'arrow.sv
 
 jest.mock('@utils/colors');
 
+// The pending-agent reminder needs a session and the agent-health API; stub it so
+// these tests only cover where AnchorComponent places it.
+const mockClaim = jest.fn();
+jest.mock('@components/integrations/PendingAgentInstallBanner', () => ({
+  __esModule: true,
+  default: () => <div data-testid='pending-agent-install-banner' />,
+  useClaimPendingAgentInstallBanner: () => mockClaim(),
+}));
+
 const baseOptions = [
   { value: 0, name: 'Overview', fragment: 'overview' },
   { value: 1, name: 'Details', fragment: 'details' },
@@ -88,6 +97,18 @@ const optionsWithSubTabs = [
 ];
 
 describe('AnchorComponent', () => {
+  describe('pending-agent reminder', () => {
+    it('claims the reminder from the layout and renders it after the tab strip', () => {
+      mockClaim.mockClear();
+      render(<AnchorComponent filterOptions={optionsWithSubTabs} onChangeFilter={jest.fn()} />);
+      expect(mockClaim).toHaveBeenCalled();
+      const banner = screen.getByTestId('pending-agent-install-banner');
+      const tabLink = document.querySelector('a[href*="overview"]');
+      // DOCUMENT_POSITION_FOLLOWING: the banner comes after the tabs in the DOM.
+      expect(tabLink.compareDocumentPosition(banner) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+  });
+
   describe('rendering', () => {
     it('renders without crashing with empty filterOptions', () => {
       const { container } = render(<AnchorComponent filterOptions={[]} onChangeFilter={jest.fn()} />);

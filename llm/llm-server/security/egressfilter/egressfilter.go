@@ -18,6 +18,7 @@
 package egressfilter
 
 import (
+	"slices"
 	"sort"
 	"strings"
 )
@@ -174,14 +175,50 @@ func (r Result) RuleIDs() []string {
 // any Hit whose matched substring is in the global allowlist is dropped
 // before the Result is returned. Allowlist application is a no-op (zero
 // allocations) when the allowlist is empty.
-func Scan(text string) Result {
+func Scan(text string) Result { return ScanExcept(text, "") }
+
+// ScanExcept is Scan minus the filter registered as skip — lets a filter rescan
+// text it derived without recursing into itself.
+func ScanExcept(text, skip string) Result {
 	if text == "" {
 		return Result{}
 	}
 	var hits []Hit
 	for _, r := range active() {
+		if r.name == skip {
+			continue
+		}
 		hits = append(hits, r.filter.Detect(text)...)
 	}
+	hits = dropContainedBackstopHits(hits)
 	hits = applyAllowlist(text, hits)
 	return Result{Hits: hits}
+}
+
+// EntropyRuleID is the rule id of the EE entropy gate (the backstop detector).
+const EntropyRuleID = "high-entropy-blob"
+
+// dropContainedBackstopHits: an entropy hit wholly inside another rule's span (JWT
+// segment, `ghp_…`) is a duplicate -> dropped; partial overlaps stay (they widen redaction).
+func dropContainedBackstopHits(hits []Hit) []Hit {
+	if !slices.ContainsFunc(hits, func(h Hit) bool { return h.RuleID == EntropyRuleID }) {
+		return hits // nothing to drop: no allocation, nil stays nil
+	}
+	kept := make([]Hit, 0, len(hits))
+	for _, h := range hits {
+		if h.RuleID == EntropyRuleID && containedInOtherRule(h, hits) {
+			continue
+		}
+		kept = append(kept, h)
+	}
+	return kept
+}
+
+func containedInOtherRule(h Hit, hits []Hit) bool {
+	for _, o := range hits {
+		if o.RuleID != EntropyRuleID && o.Start <= h.Start && h.End <= o.End {
+			return true
+		}
+	}
+	return false
 }

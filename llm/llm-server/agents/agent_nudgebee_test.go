@@ -118,3 +118,26 @@ func TestGetAgentRoutesNudgebeeNamesToCanonicalAgent(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, WebSearchAgentName, legacyDocs.GetName())
 }
+
+// TestGetAgentRoutesCloudOrchestratorsToThemselves pins that an explicit cloud
+// orchestrator name (or its legacy *_debug alias) is not remapped to the
+// account's default investigate agent.
+func TestGetAgentRoutesCloudOrchestratorsToThemselves(t *testing.T) {
+	ctx := security.NewRequestContextForSuperAdmin()
+	tests := []struct {
+		name string
+		want string
+	}{
+		{name: "aws_orchestrator", want: "aws_orchestrator"},
+		{name: "aws_debug", want: "aws_orchestrator"},
+		{name: "gcp_orchestrator", want: "gcp_orchestrator"},
+		{name: "Azure_Orchestrator", want: "azure_orchestrator"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agent, ok := getAgent(ctx, tt.name, "account-1")
+			require.True(t, ok)
+			assert.Equal(t, tt.want, agent.GetName())
+		})
+	}
+}

@@ -103,3 +103,27 @@ func TestClassifyChangePodRightSizingDeltas(t *testing.T) {
 		})
 	}
 }
+
+func TestClassifyChangePVRightsizeDirection(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		want    ChangeClass
+	}{
+		{"shrink is reductive", `{"recommendation":{"capacity":107374182400,"recommend_size":20}}`, ChangeClassReductive},
+		{"grow of a nearly full claim is additive", `{"recommendation":{"capacity":10737418240,"recommend_size":12}}`, ChangeClassAdditive},
+		{"numbers as strings", `{"recommendation":{"capacity":"10737418240","recommend_size":"12"}}`, ChangeClassAdditive},
+		{"same size stays reductive", `{"recommendation":{"capacity":10737418240,"recommend_size":10}}`, ChangeClassReductive},
+		{"no recommended size stays reductive", `{"recommendation":{"capacity":10737418240}}`, ChangeClassReductive},
+		{"no recommendation block stays reductive", `{"spec":{"capacity":{"storage":"10Gi"}}}`, ChangeClassReductive},
+		{"unparsable payload stays reductive", `not json`, ChangeClassReductive},
+		{"empty payload stays reductive", ``, ChangeClassReductive},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ClassifyChange("pv_rightsize", []byte(tt.payload)); got != tt.want {
+				t.Errorf("ClassifyChange(pv_rightsize) = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

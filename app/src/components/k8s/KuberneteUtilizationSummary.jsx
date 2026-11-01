@@ -227,10 +227,10 @@ const GraphSections = ({ accountId, heading = '', id = 'KuberneteUtilizationSumm
 
     for (const item of networkData) {
       if (!item) continue;
-      if (item.metric === 'networkTransferBytes') {
+      if (item.metric === 'networkReceiveBytes') {
         ingressData.push(item.avg_value / (1024 * 1024 * 1024));
         ingressLabels.push(getDateStringFromDateUnit(item.timestamp, chartUnit));
-      } else if (item.metric === 'networkReceiveBytes') {
+      } else if (item.metric === 'networkTransferBytes') {
         egressData.push(item.avg_value / (1024 * 1024 * 1024));
         egressLabels.push(getDateStringFromDateUnit(item.timestamp, chartUnit));
       }

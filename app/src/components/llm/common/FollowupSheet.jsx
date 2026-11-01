@@ -603,6 +603,9 @@ const FollowupSheet = ({ followup, accountId, conversationId, selectedModel, pop
       </Box>
       <DropdownMenu
         align='end'
+        // Portal out of the sheet: it has overflow:hidden and a retained `sheetUp` transform, which
+        // turns it into the containing block for the menu's fixed positioning and clips the menu.
+        disablePortal={false}
         trigger={
           <Box
             component='button'

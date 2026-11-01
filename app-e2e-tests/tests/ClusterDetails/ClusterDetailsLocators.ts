@@ -48,15 +48,36 @@ export class ClusterDetailsLocators extends CommonLocators {
     if (!clusterName) throw new Error("CLUSTER_NAME or CLUSTER env variable is not set");
     console.log(`Opening cluster: ${clusterName}`);
 
+    // The dropdown writes its account into the URL once it resolves, so this is the configured cluster's id.
+    const dropdownValue = await readGlobalClusterValue(this.page, 10000, clusterName);
+    const clusterId = dropdownValue === clusterName ? new URL(this.page.url()).searchParams.get("accountId") : null;
+
     await this.openClustersFromSidenav();
     console.log("Navigated to K8s clusters via Infra sidenav");
 
-    await this.page.waitForURL(/\/kubernetes\/details\/[^/?#]+/, { timeout: 30000 });
-
-    // Redirect follows the dropdown, so a wrong selection would run the spec against another cluster silently.
-    const active = await readGlobalClusterValue(this.page, 30000, clusterName);
-    if (active !== clusterName) {
+    // The /kubernetes redirect can hang or open the first K8s account on a slow app — reopen by id when it does.
+    const reached = await this.page
+      .waitForURL(/\/kubernetes\/details\/[^/?#]+/, { timeout: 20000 })
+      .then(() => true)
+      .catch(() => false);
+    const active = reached ? await readGlobalClusterValue(this.page, 30000, clusterName) : "";
+    if (active === clusterName) {
+      console.log(`Opened cluster: ${clusterName}`);
+      return;
+    }
+    if (!clusterId) {
       throw new Error(`Opened the wrong cluster: dropdown shows "${active || "(empty)"}", expected "${clusterName}"`);
+    }
+
+    console.warn(
+      reached
+        ? `/kubernetes redirect opened "${active || "(empty)"}" instead of "${clusterName}" — opening ${clusterName} by id`
+        : `/kubernetes redirect never reached a cluster page (still on ${this.page.url()}) — opening ${clusterName} by id`
+    );
+    await this.page.goto(`${process.env.BASE_URL}/kubernetes/details/${clusterId}#summary`);
+    const reopened = await readGlobalClusterValue(this.page, 30000, clusterName);
+    if (reopened !== clusterName) {
+      throw new Error(`Opened the wrong cluster: dropdown shows "${reopened || "(empty)"}", expected "${clusterName}"`);
     }
     console.log(`Opened cluster: ${clusterName}`);
   }

@@ -73,7 +73,7 @@
         </td>
         <td style="padding:10px 12px; text-align:center;">
           <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?utm=email"
-            style="font-family:'DM Sans',Arial,sans-serif; font-size:12px; font-weight:500; color:#3B82F6; text-decoration:none;">
+            style="font-family:'DM Sans',Arial,sans-serif; font-size:12px; font-weight:500; color:{{ _primary_color }}; text-decoration:none;">
             View &rarr;
           </a>
         </td>
@@ -140,7 +140,7 @@
       {#- redirect_url is a relative path from computeRedirectURL today; the absolute-URL branch guards a future change to that contract -#}
       {% set insight_href = insight.redirect_url if insight.redirect_url.startswith(('http://', 'https://')) else base_url ~ ('' if insight.redirect_url.startswith('/') else '/') ~ insight.redirect_url %}
       <a href="{{ insight_href }}"
-        style="display:inline-block; background-color:#DBEAFE; color:#3B82F6; text-decoration:none; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:500;">
+        style="display:inline-block; background-color:{{ _primary_tint }}; color:{{ _primary_color }}; text-decoration:none; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:500;">
         {{ insight_cta }} &rarr;
       </a>
       {% endif %}
@@ -183,10 +183,10 @@
         {% set link_hash = 'optimize/summary' %}
       {% endif %}
       <p style="font-family:'DM Sans',Arial,sans-serif; font-size:13.5px; color:#3D3D3D; line-height:1.6; margin:0 0 4px; padding-left:16px;">
-        <span style="color:#3B82F6; margin-right:6px;">&#8226;</span>
+        <span style="color:{{ _primary_color }}; margin-right:6px;">&#8226;</span>
         <strong>{{ recommendation.count }}</strong>
         <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?accountId={{ account.id }}&amp;utm=email#{{ link_hash }}"
-          style="color:#3B82F6; text-decoration:none; font-weight:500;">
+          style="color:{{ _primary_color }}; text-decoration:none; font-weight:500;">
           {{ rule_label }}
         </a>
         {% if savings > 0 %}
@@ -194,7 +194,7 @@
         {% endif %}
         &nbsp;
         <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?accountId={{ account.id }}&amp;utm=email#{{ link_hash }}"
-          style="display:inline-block; background-color:#DBEAFE; color:#3B82F6; text-decoration:none; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:500;">
+          style="display:inline-block; background-color:{{ _primary_tint }}; color:{{ _primary_color }}; text-decoration:none; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:500;">
           {% if 'unused' in rule or 'abandoned' in rule %}Clean up{% elif 'right' in rule or 'replica' in rule %}Apply{% else %}Review{% endif %} &rarr;
         </a>
       </p>
@@ -212,7 +212,7 @@
       {% if current_app_events > 0 %}
       <p style="font-family:'DM Sans',Arial,sans-serif; font-size:13.5px; color:#3D3D3D; line-height:1.6; margin:0 0 4px; padding-left:16px;">
         <span style="color:#6B7280; margin-right:6px;">&#8226;</span>
-        <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?accountId={{ account.id }}&amp;utm=email#events/app-errors" style="color:#3B82F6; text-decoration:none;">Application Errors</a>: {{ current_app_events }}
+        <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?accountId={{ account.id }}&amp;utm=email#events/app-errors" style="color:{{ _primary_color }}; text-decoration:none;">Application Errors</a>: {{ current_app_events }}
         {% set diff_app_events = previous_app_events - current_app_events %}
         {% if previous_app_events == 0 %}
           <span style="color:#6B7280;">(none yesterday)</span>
@@ -228,7 +228,7 @@
       {% if current_node_events > 0 %}
       <p style="font-family:'DM Sans',Arial,sans-serif; font-size:13.5px; color:#3D3D3D; line-height:1.6; margin:0 0 4px; padding-left:16px;">
         <span style="color:#6B7280; margin-right:6px;">&#8226;</span>
-        <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?accountId={{ account.id }}&amp;utm=email#events/node-errors" style="color:#3B82F6; text-decoration:none;">Node Errors</a>: {{ current_node_events }}
+        <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?accountId={{ account.id }}&amp;utm=email#events/node-errors" style="color:{{ _primary_color }}; text-decoration:none;">Node Errors</a>: {{ current_node_events }}
         {% set diff_node_events = previous_node_events - current_node_events %}
         {% if previous_node_events == 0 %}
           <span style="color:#6B7280;">(none yesterday)</span>
@@ -244,7 +244,7 @@
       {% if current_pod_events > 0 %}
       <p style="font-family:'DM Sans',Arial,sans-serif; font-size:13.5px; color:#3D3D3D; line-height:1.6; margin:0 0 4px; padding-left:16px;">
         <span style="color:#6B7280; margin-right:6px;">&#8226;</span>
-        <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?accountId={{ account.id }}&amp;utm=email#events/pod-errors" style="color:#3B82F6; text-decoration:none;">Pod Errors</a>: {{ current_pod_events }}
+        <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?accountId={{ account.id }}&amp;utm=email#events/pod-errors" style="color:{{ _primary_color }}; text-decoration:none;">Pod Errors</a>: {{ current_pod_events }}
         {% set diff_pod_events = previous_pod_events - current_pod_events %}
         {% if previous_pod_events == 0 %}
           <span style="color:#6B7280;">(none yesterday)</span>

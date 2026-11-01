@@ -3,6 +3,9 @@
 # Declare variables to be passed into your templates.
 
 replicaCount: 1
+# Relay pods share direct-mode MCP sessions through Redis by default
+# (docs/mcp-sessions.md). Only an install without Redis should set
+# env.MCP_SESSION_STORE=memory, and then it must run a single replica.
 
 # Ed25519 signing of requests forwarded to native k8s agents, so agents can
 # authorize UI-triggered workload mutations. Additive + backward-compatible
@@ -15,8 +18,8 @@ global:
     registry: 'ghcr.io/nudgebee'
   imagePullSecrets: []
   initImages:
-    postgres: 'ghcr.io/nudgebee/postgres:16.10-alpine'
-    curl: 'ghcr.io/nudgebee/curl:8.10.1'
+    postgres: 'ghcr.io/nudgebee/postgres:16.15-alpine-nb1'
+    curl: 'ghcr.io/nudgebee/curl:8.23.0'
   # `helm test` connection pod (templates/tests/test-connection.yaml). Full ref,
   # like initImages above: a third-party image a private-registry install has to
   # mirror under whatever name that registry uses.
@@ -66,36 +69,24 @@ ingress:
   # -- Ingress [class name](https://kubernetes.io/docs/concepts/services-networking/ingress/#ingress-class).
   className: 'nginx'
   # -- Annotations to be added to the ingress.
-  # The server-snippet keeps the public listener to the only routes that must
-  # reach the relay from outside the cluster: agents and forager dial /register
-  # over WSS, and load balancers probe /status. Every other route — /request,
-  # /prometheus/api/v1/*, /prometheus-v2/*, /grafana/*, /api/proxy/* and
-  # /debug/pprof/* — is called by in-cluster services over
-  # RELAY_SERVER_ENDPOINT (http://relay-server:8080), which does not traverse
-  # this ingress, so denying them at the edge costs nothing.
-  #
-  # This lives here rather than in each environment's values because it is the
-  # safe default: an environment that omits it is silently exposed. Helm
-  # deep-merges annotations, so overrides that set only cert-manager and
-  # force-ssl-redirect still inherit it, and an environment that needs a
-  # different allowlist can replace this key outright.
   annotations:
     cert-manager.io/issuer: cert-letsencrypt-issuer
     nginx.ingress.kubernetes.io/force-ssl-redirect: 'true'
-    # Matches on $uri, not $request_uri: $uri is the normalised path with the
-    # query string stripped, which is what the anchors below need — against
-    # $request_uri a legitimate /register?x=1 would fail (register)($|/) and
-    # 404 the agent fleet. The ($|/) anchors keep the allowlist to whole path
-    # segments so a future route such as /statuspage is not served publicly by
-    # accident.
-    nginx.ingress.kubernetes.io/server-snippet: |
-      if ($uri !~ ^/(\.well-known/acme-challenge/|(register|status)($|/))) {
-        return 404;
-      }
 
   # -- Ingress host configuration.
+  # By default, the chart only exposes the routes required from outside the
+  # cluster: `/register` (WebSocket agent connections) and `/status` (health
+  # checks). Internal routes (`/request`, `/prometheus/*`, `/grafana/*`,
+  # `/debug/pprof/*`, etc.) are consumed in-cluster over RELAY_SERVER_ENDPOINT
+  # (http://relay-server:8080) and are not exposed at the ingress.
   # @default -- See [values.yaml](values.yaml).
   hosts: []
+  # - host: relay.example.com
+  #   paths:
+  #     - path: /register
+  #       pathType: Prefix
+  #     - path: /status
+  #       pathType: Prefix
   # -- Ingress TLS configuration.
   # @default -- See [values.yaml](values.yaml).
   tls: []

@@ -3,7 +3,7 @@ import PropTypes from 'prop-types';
 import { TableContainer, Table, Box, TableHead, TableRow, TableBody, TableCell, Typography } from '@mui/material';
 import { Handle, Position, NodeToolbar } from 'reactflow';
 import Text from '@shared/format/Text';
-import { formatBytes, formatLatencyInServiceMap } from 'src/utils/common';
+import { formatBytes, formatLatencyInServiceMap, formatServiceMapRequests } from 'src/utils/common';
 import { ds } from 'src/utils/colors';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { IncomingIcon, OutgoingIcon } from '@assets';
@@ -284,7 +284,7 @@ const CustomNode = memo(({ data, selected }) => {
                             paddingRight: 'var(--ds-space-3)',
                           }}
                         >
-                          <Typography sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 'var(--ds-font-weight-regular)' }}>Req Count</Typography>
+                          <Typography sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 'var(--ds-font-weight-regular)' }}>Requests</Typography>
                         </TableCell>
                       </TableRow>
                     </TableHead>
@@ -333,7 +333,7 @@ const CustomNode = memo(({ data, selected }) => {
                               paddingRight: 'var(--ds-space-3)',
                             }}
                           >
-                            {item.RequestCount || '-'}
+                            {formatServiceMapRequests(item.RequestCount, data?.requestsPerSecond)}
                           </TableCell>
                         </TableRow>
                       ))}
@@ -412,7 +412,7 @@ const CustomNode = memo(({ data, selected }) => {
                             paddingRight: 'var(--ds-space-3)',
                           }}
                         >
-                          <Typography sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 'var(--ds-font-weight-regular)' }}>Req Count</Typography>
+                          <Typography sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 'var(--ds-font-weight-regular)' }}>Requests</Typography>
                         </TableCell>
                       </TableRow>
                     </TableHead>
@@ -462,7 +462,7 @@ const CustomNode = memo(({ data, selected }) => {
                               paddingRight: 'var(--ds-space-3)',
                             }}
                           >
-                            {item.RequestCount || '-'}
+                            {formatServiceMapRequests(item.RequestCount, data?.requestsPerSecond)}
                           </TableCell>
                         </TableRow>
                       ))}

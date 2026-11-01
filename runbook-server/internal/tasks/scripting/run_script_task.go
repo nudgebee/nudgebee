@@ -10,6 +10,8 @@ import (
 	"nudgebee/runbook/services/relay"
 	"strings"
 	"time"
+
+	"go.temporal.io/sdk/temporal"
 )
 
 // RunScriptTask implements the Task interface for executing shell commands.
@@ -230,11 +232,19 @@ func (t *RunScriptTask) Execute(taskCtx types.TaskContext, params map[string]any
 	// Determine Executor based on account provider
 	if accountId != "" {
 		reqCtx := taskCtx.GetNewRequestContext()
-		provider, err := cloud.GetAccountProvider(reqCtx, accountId)
+		provider, err := getAccountProvider(reqCtx, accountId)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get account provider for account %s: %w", accountId, err)
 		}
 		config.AccountProvider = provider
+	}
+
+	// Saving refuses a pair that cannot work, but workflows saved before that
+	// check still reach here. Fail them with the fix, before building anything,
+	// and without retries: a Kubernetes account will not grow cloud credentials
+	// on the next attempt.
+	if err := executors.CheckAccountSupports(executors.ResolveExecutorType(config), config.AccountProvider); err != nil {
+		return nil, temporal.NewNonRetryableApplicationError(err.Error(), "AccountExecutorMismatch", err)
 	}
 
 	// Instantiate Executor
@@ -439,6 +449,14 @@ func (t *RunScriptTask) RuntimeNotes() []string {
 		"Scripts capture stdout only. Using 'return' without 'print' produces empty output.",
 		"For Python scripts, always use print(json.dumps(...)) to produce output and set parser_type='json' to get structured data.",
 		"Pass task output to scripts via the 'env' parameter: { \"INPUT\": \"{{ Tasks['x'].output.data | to_json }}\" }, then read with json.loads(os.environ['INPUT']). Do NOT embed {{ }} inside the script string — it breaks when data contains quotes.",
+		"Prefer a built-in task when one fits: k8s.cli for kubectl, aws.cli / azure.cli / gcp.cli for cloud CLIs, network.* for DNS/TCP/TLS checks, k8s.workload_restart for restarts. Use a script only for logic those cannot express.",
+		"Where a script runs, and as whom, depends on executor_type and on the account the step names (account_id, else the automation's own). Leave executor_type empty to get the account's default.",
+		"executor_type 'agent': a pod inside the Kubernetes cluster of a Kubernetes account, as the agent's service account. The only executor that reaches cluster DNS (*.svc.cluster.local), pod IPs and private network endpoints. Default for Kubernetes accounts.",
+		"executor_type 'kubernetes': a pod on the platform, signed in to the step's AWS, Azure or GCP account with short-lived credentials. Reaches public endpoints only. Default for cloud accounts. A Kubernetes account cannot use it — it has no cloud credentials.",
+		"executor_type 'aws_ssm' / 'azure_run_command' / 'gcp_compute_ssh': the script runs ON the VM given by target_id (plus region), as that VM's local account, and the step waits for the result. The account must be that VM's cloud. 'ssh' runs on a host from an SSH integration.",
+		"Never sign in inside a script: no 'aws sts assume-role', role ARNs, 'aws eks update-kubeconfig', 'az login', 'gcloud auth', and no access keys in env. The step already runs as its account; validation flags login code.",
+		"One step, one identity: a check that needs both the cluster and a cloud account is two steps, each naming its own account.",
+		"The default container's working directory is read-only; write under /tmp, and set 'image' when a tool (terraform, unzip, …) is not installed.",
 	}
 }
 
@@ -495,6 +513,10 @@ func countMatches(script string, indicators []string) int {
 // getAccountCredentials is a variable so tests can supply credentials without a
 // cloud-collector to call.
 var getAccountCredentials = cloud.GetAccountCredentials
+
+// getAccountProvider is a variable so tests can name an account's provider
+// without a database.
+var getAccountProvider = cloud.GetAccountProvider
 
 // applyAccountCredentials fetches credentials for the account the step names and
 // merges them into the script's environment.

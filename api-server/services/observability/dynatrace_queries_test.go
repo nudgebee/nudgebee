@@ -173,19 +173,10 @@ func TestBuildDynatraceClusterQueries_CpuTotal(t *testing.T) {
 }
 
 func TestBuildDynatraceClusterQueries_CpuRequestLimit(t *testing.T) {
-	queries := buildDynatraceClusterQueries([]string{"cpu_request", "cpu_limit", "mem_request", "mem_limit"})
+	queries := buildDynatraceClusterQueries([]string{"cpu_request", "cpu_limit", "memory_request", "memory_limit"})
 	assert.Contains(t, queries["cpu_request"], ksmPodRequests)
 	assert.Contains(t, queries["cpu_request"], `resource == "cpu"`)
 	assert.Contains(t, queries["cpu_limit"], ksmPodLimits)
-	assert.Contains(t, queries["mem_request"], ksmPodRequests)
-	assert.Contains(t, queries["mem_request"], `resource == "memory"`)
-	assert.Contains(t, queries["mem_limit"], ksmPodLimits)
-}
-
-// The frontend sends "memory_limit" and "memory_request" (not "mem_limit"/"mem_request").
-// These aliases must be handled so the cluster UI populates correctly.
-func TestBuildDynatraceClusterQueries_MemoryAliases(t *testing.T) {
-	queries := buildDynatraceClusterQueries([]string{"memory_request", "memory_limit"})
 	assert.Contains(t, queries["memory_request"], ksmPodRequests)
 	assert.Contains(t, queries["memory_request"], `resource == "memory"`)
 	assert.Contains(t, queries["memory_limit"], ksmPodLimits)

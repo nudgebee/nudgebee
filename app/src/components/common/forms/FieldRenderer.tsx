@@ -4,6 +4,9 @@ import { ContentCopy, InfoOutlined } from '@mui/icons-material';
 import Text from '@shared/format/Text';
 import { ds } from 'src/utils/colors';
 import JsonTreeView from '@shared/viewers/JsonTreeView';
+import { Link } from '@ui/Link';
+
+const URL_PATTERN = /^https?:\/\/\S+$/;
 
 interface FieldRendererProps {
   data: any;
@@ -133,6 +136,16 @@ const FieldRenderer: React.FC<FieldRendererProps> = ({ data, schema, taskType, f
 
           if (isComplexType || isJsonString) {
             return <JsonTreeView data={value} defaultExpanded={2} maxHeight={ds.space.mul(0, 100)} fontSize={ds.text.small} />;
+          }
+
+          if (typeof value === 'string' && URL_PATTERN.test(value.trim())) {
+            return (
+              <Box sx={{ fontSize: 'var(--ds-text-small)' }}>
+                <Link href={value.trim()} openInNew>
+                  {value.trim()}
+                </Link>
+              </Box>
+            );
           }
 
           return (

@@ -17,13 +17,16 @@ export const CellText = ({ text, subtext, mono = false }: { text?: React.ReactNo
   </Box>
 );
 
+/** Severities worth a badge on a summary view — Low/Info are too noisy to be actionable at a glance (#39433). */
+export const VISIBLE_SEVERITIES = SEVERITY_ORDER.filter((severity) => severity !== 'Low' && severity !== 'Info');
+
 /**
  * Severity counts as a row of letter badges, worst first. Severities with no
  * findings are dropped rather than rendered as zeros — a VM with 3 Critical and
- * 0 Low should read "3 C", not "3 C 0 H 0 M 0 L".
+ * 0 Low should read "3 C", not "3 C 0 H 0 M".
  */
 export const SeverityCounts = ({ counts }: { counts?: Record<string, number> }) => {
-  const present = SEVERITY_ORDER.filter((severity) => (counts?.[severity] || 0) > 0);
+  const present = VISIBLE_SEVERITIES.filter((severity) => (counts?.[severity] || 0) > 0);
   if (!present.length) {
     return <Typography sx={{ fontSize: ds.text.small, color: ds.gray[400] }}>—</Typography>;
   }
@@ -37,6 +40,15 @@ export const SeverityCounts = ({ counts }: { counts?: Record<string, number> }) 
 };
 
 export const sumSeverities = (counts?: Record<string, number>) => Object.values(counts || {}).reduce((total, n) => total + (n || 0), 0);
+
+/** Reverse of the severity_weight ranking the grouping query aggregates with — a group carries its worst severity as that weight, not as a name. */
+const WEIGHT_SEVERITY: Array<[number, string]> = [
+  [10, 'Critical'],
+  [8, 'High'],
+  [5, 'Medium'],
+  [2, 'Low'],
+];
+export const severityFromWeight = (weight: number) => WEIGHT_SEVERITY.find(([threshold]) => weight >= threshold)?.[1] || 'Info';
 
 /**
  * Renders a VM's most recent scan outcome next to its Last Scan timestamp,

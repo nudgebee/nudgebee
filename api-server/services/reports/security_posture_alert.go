@@ -42,8 +42,10 @@ func SendSecurityPostureAlert(ctx *security.RequestContext) error {
 		}
 
 		accountNameMap := make(map[string]string)
+		accountTypeMap := make(map[string]string)
 		for _, acc := range accounts {
 			accountNameMap[acc.Id] = acc.AccountName
+			accountTypeMap[acc.Id] = acc.AccountType
 		}
 
 		// True open counts by severity, independent of reminder windows and
@@ -128,7 +130,7 @@ func SendSecurityPostureAlert(ctx *security.RequestContext) error {
 		recsByAccount := make(map[string][]map[string]any)
 		for _, rec := range recs {
 			accID := rec.CloudAccountID
-			recsByAccount[accID] = append(recsByAccount[accID], securityPostureRecMap(rec))
+			recsByAccount[accID] = append(recsByAccount[accID], securityPostureRecMap(rec, accountTypeMap[accID]))
 			if rec.AccountName != "" && rec.AccountName != accID {
 				accountNameMap[accID] = rec.AccountName
 			}
@@ -142,6 +144,7 @@ func SendSecurityPostureAlert(ctx *security.RequestContext) error {
 			}
 			recommendationsByAccount[accID] = map[string]any{
 				"account_name":    name,
+				"account_type":    accountTypeMap[accID],
 				"recommendations": accRecs,
 			}
 		}
@@ -171,7 +174,7 @@ func SendSecurityPostureAlert(ctx *security.RequestContext) error {
 				"high_count":                 highCount,
 				"recommendations_by_account": recommendationsByAccount,
 				"base_url":                   config.Config.BaseUrl,
-				"accounts":                   buildSecurityPostureAccountSections(accountRecs, accountCounts, accountNameMap),
+				"accounts":                   buildSecurityPostureAccountSections(accountRecs, accountCounts, accountNameMap, accountTypeMap),
 			},
 		}
 

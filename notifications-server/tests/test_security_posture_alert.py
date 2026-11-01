@@ -62,28 +62,37 @@ def _rec(i: int, severity: str = "Critical") -> DigestRecommendation:
     )
 
 
-def _params(criticals: int, highs: int, critical_count=None, high_count=None):
+def _params(criticals: int, highs: int, critical_count=None, high_count=None, account_type: str = ""):
     recs = [_rec(i, "Critical") for i in range(criticals)] + [_rec(100 + i, "High") for i in range(highs)]
     return get_security_posture_alert_message_params(
         organization_id="org-1",
         organization_name="TestOrg",
         critical_count=critical_count if critical_count is not None else criticals,
         high_count=high_count if high_count is not None else highs,
-        recommendations_by_account={"acc-1": {"account_name": "prod-aws", "recommendations": [r.dict() for r in recs]}},
+        recommendations_by_account={
+            "acc-1": {
+                "account_name": "prod-aws",
+                "account_type": account_type,
+                "recommendations": [r.dict() for r in recs],
+            }
+        },
         base_url="https://app",
     )
 
 
-def _multi_account_params():
-    rec = _rec(0, "Critical")
+def _multi_account_params(finops_scores=(100, 100), account_types=("", "")):
+    rec1 = _rec(0, "Critical")
+    rec1.finops_score = finops_scores[0]
+    rec2 = _rec(1, "Critical")
+    rec2.finops_score = finops_scores[1]
     return get_security_posture_alert_message_params(
         organization_id="org-1",
         organization_name="TestOrg",
         critical_count=2,
         high_count=0,
         recommendations_by_account={
-            "acc-1": {"account_name": "prod-aws", "recommendations": [rec.dict()]},
-            "acc-2": {"account_name": "prod-gcp", "recommendations": [rec.dict()]},
+            "acc-1": {"account_name": "prod-aws", "account_type": account_types[0], "recommendations": [rec1.dict()]},
+            "acc-2": {"account_name": "prod-gcp", "account_type": account_types[1], "recommendations": [rec2.dict()]},
         },
         base_url="https://app",
     )
@@ -166,10 +175,29 @@ class TestSecurityPostureAlert:
         msg = get_security_posture_alert_message_template(_params(criticals=1, highs=0))
         assert msg["blocks"][0]["type"] == "header"
 
-    def test_multi_account_view_all_links_first_account_image_scan(self):
-        # No cross-account security view exists — must land on a real page, not Home.
-        msg = get_security_posture_alert_message_template(_multi_account_params())
+    def test_multi_account_view_all_links_top_shown_finding_account(self):
+        # acc-2's finding scores higher, so it's shown first in the message —
+        # the footer must follow it there, not an arbitrary/first-inserted account.
+        msg = get_security_posture_alert_message_template(_multi_account_params(finops_scores=(50, 90)))
         text = _text(msg)
         assert "View all findings on <" in text
-        assert "acc-1" in text
+        assert "acc-2" in text
+        assert "acc-1" not in text.split("View all findings on <")[1]
         assert "#security/image-scan" in text
+
+    def test_single_account_vm_routes_to_optimise_vm_tab(self):
+        msg = get_security_posture_alert_message_template(_params(criticals=1, highs=0, account_type="vm"))
+        details = [b for b in _buttons(msg) if b["text"] == "View all findings"][0]
+        assert details["url"] == "https://app/optimise?utm=security-alert#security/vm-vulnerabilities"
+
+    def test_single_account_cloud_routes_to_optimise_cloud_posture_tab(self):
+        msg = get_security_posture_alert_message_template(_params(criticals=1, highs=0, account_type="cloud"))
+        details = [b for b in _buttons(msg) if b["text"] == "View all findings"][0]
+        assert details["url"] == "https://app/optimise?utm=security-alert#security/cloud-posture"
+
+    def test_multi_account_footer_routes_by_top_account_type(self):
+        msg = get_security_posture_alert_message_template(
+            _multi_account_params(finops_scores=(50, 90), account_types=("kubernetes", "vm"))
+        )
+        text = _text(msg)
+        assert "optimise?utm=security-alert#security/vm-vulnerabilities" in text

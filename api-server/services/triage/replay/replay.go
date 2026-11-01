@@ -39,7 +39,7 @@ type GoldenEvent struct {
 	// belongs to. Events with the same Incident are one ground-truth group.
 	Incident string `json:"incident"`
 	// Tier is the incident tier the event belongs to (core | cause | impact |
-	// chronic, or "none" for an in-window distractor that must be excluded). The
+	// chronic | same_node, or "none" for an in-window distractor that must be excluded). The
 	// flat pairwise Score below is tier-agnostic; the seed-relative assembly scorer
 	// (assembly.go) uses it.
 	Tier string `json:"tier"`
@@ -54,6 +54,10 @@ type GoldenEvent struct {
 	// FindingType is the raw events.finding_type ('issue', 'Anomaly', 'SLO', ...).
 	// Derived signals (SLO/Anomaly) are kept out of the cause and impact lanes.
 	FindingType string `json:"finding_type,omitempty"`
+	// NodeMemory is the Kubernetes node the alert says ran out of memory, standing
+	// in for the evidence the production path reads it from. Empty for every other
+	// alert, including an OOM kill of a pod at its own limit.
+	NodeMemory string `json:"node_memory,omitempty"`
 	// Seed marks the canonical event a viewer would open for this incident; the
 	// seed-relative scorer assembles from it. Exactly one per assembly incident.
 	// The flat pairwise corpus leaves it false.

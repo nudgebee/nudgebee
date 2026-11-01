@@ -1,75 +1,157 @@
 package integrations
 
 import (
+	"context"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"nudgebee/services/config"
 	"nudgebee/services/event"
+	"nudgebee/services/security"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestMapGCPSeverityToPriority(t *testing.T) {
-	cases := []struct {
-		in   string
-		want event.EventPriority
-	}{
-		// GCP native policy severities
-		{"CRITICAL", event.EventPriorityHigh},
-		{"ERROR", event.EventPriorityHigh},
-		{"WARNING", event.EventPriorityMedium},
-		// severity user-label style values
-		{"high", event.EventPriorityHigh},
-		{"medium", event.EventPriorityMedium},
-		{"low", event.EventPriorityLow},
-		{"info", event.EventPriorityInfo},
-		{"informational", event.EventPriorityInfo},
-		// case/whitespace insensitivity
-		{"  Critical ", event.EventPriorityHigh},
-		// unset / unknown must default to MEDIUM, not HIGH — an alert with no
-		// configured severity is still a real alert but should not flood HIGH.
-		{"", event.EventPriorityMedium},
-		{"SEVERITY_UNSPECIFIED", event.EventPriorityMedium},
-		{"garbage", event.EventPriorityMedium},
-	}
-	for _, c := range cases {
-		if got := mapGCPSeverityToPriority(c.in); got != c.want {
-			t.Errorf("mapGCPSeverityToPriority(%q) = %q, want %q", c.in, got, c.want)
+// Values are synthetic — real project/instance names must not be committed.
+var sampleNormalizedCloudSQL = gcpNormalizedEvent{
+	Title:            "cloudsql_database: slow-queries",
+	Description:      "Alert policy 'slow-queries' is currently firing.",
+	AggregationKey:   "slow-queries",
+	SubjectName:      "example-project:sample-db",
+	SubjectType:      "cloudsql_database",
+	SubjectNamespace: "Cloud SQL",
+	ServiceKey:       "arn:gcp:cloud sql:us-central:example-project:cloudsql_database:example-project:sample-db",
+	Fingerprint:      "projects/example-project/alertPolicies/1001:cloudsql_database:example-project:sample-db",
+	FindingId:        "projects/example-project/alerts/0.cloudsql1",
+	CloudResourceId:  "00000000-0000-0000-0000-000000000001",
+	Priority:         "MEDIUM",
+	Status:           "FIRING",
+	Labels:           map[string]string{"gcp_event_instance": "example-project:sample-db", "metric_log": "cloudsql.googleapis.com/postgres.log"},
+}
+
+const sampleCloudSQLWebhook = `{"version":"1.2","incident":{"incident_id":"0.cloudsql1","state":"open","started_at":1790670860,
+	"url":"https://console.cloud.google.com/monitoring/alerting/alerts/0.cloudsql1?project=example-project",
+	"resource":{"type":"cloudsql_database","labels":{"database_id":"example-project:sample-db"}},
+	"resource_display_name":"sample-db",
+	"metric":{"type":"logging.googleapis.com/user/slow-queries"},"policy_name":"slow-queries"}}`
+
+// testTenantRequestContext carries a tenant without the DB lookup the tenant-admin
+// constructor does.
+func testTenantRequestContext() *security.RequestContext {
+	return security.NewRequestContext(context.Background(), security.NewSecurityContextForAuditRelay("tenant-1", ""), slog.Default(), nil, nil)
+}
+
+// fakeCollector serves the normalize endpoint and, when asked, records the request it got.
+func fakeCollector(t *testing.T, status int, body any, got *http.Request, gotBody *string) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got != nil {
+			*got = *r.Clone(r.Context())
 		}
+		b, _ := io.ReadAll(r.Body)
+		if gotBody != nil {
+			*gotBody = string(b)
+		}
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(body)
+	}))
+	t.Cleanup(srv.Close)
+
+	prevURL, prevHeader, prevToken := config.Config.CloudCollectorServerUrl, config.Config.CloudCollectorServerTokenHeader, config.Config.CloudCollectorServerToken
+	config.Config.CloudCollectorServerUrl = srv.URL
+	config.Config.CloudCollectorServerTokenHeader = "x-collector-token"
+	config.Config.CloudCollectorServerToken = "secret"
+	t.Cleanup(func() {
+		config.Config.CloudCollectorServerUrl, config.Config.CloudCollectorServerTokenHeader, config.Config.CloudCollectorServerToken = prevURL, prevHeader, prevToken
+	})
+}
+
+func TestNormalizeGCPIncidentAsksCollector(t *testing.T) {
+	var got http.Request
+	var gotBody string
+	fakeCollector(t, http.StatusOK, map[string]any{"data": sampleNormalizedCloudSQL}, &got, &gotBody)
+
+	sc := testTenantRequestContext()
+	n, err := normalizeGCPIncident(sc, "acc-1", sampleCloudSQLWebhook)
+	require.NoError(t, err)
+
+	assert.Equal(t, "/v1/cloud/normalize_gcp_monitoring_webhook", got.URL.Path)
+	assert.Equal(t, "acc-1", got.URL.Query().Get("account_id"))
+	assert.Equal(t, "secret", got.Header.Get("x-collector-token"))
+	assert.Equal(t, "tenant-1", got.Header.Get("x-tenant-id"))
+	assert.JSONEq(t, sampleCloudSQLWebhook, gotBody, "the delivery is forwarded unchanged")
+	assert.Equal(t, sampleNormalizedCloudSQL, n)
+}
+
+func TestNormalizeGCPIncidentFailsWithoutAnIdentity(t *testing.T) {
+	sc := testTenantRequestContext()
+
+	for name, tc := range map[string]struct {
+		status int
+		body   any
+	}{
+		"collector error status": {http.StatusBadRequest, map[string]any{"errors": []map[string]string{{"message": "account is not a GCP account"}}}},
+		"error in envelope":      {http.StatusOK, map[string]any{"errors": []map[string]string{{"message": "boom"}}}},
+		"no finding_id":          {http.StatusOK, map[string]any{"data": gcpNormalizedEvent{SubjectName: "x"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fakeCollector(t, tc.status, tc.body, nil, nil)
+			_, err := normalizeGCPIncident(sc, "acc-1", sampleCloudSQLWebhook)
+			assert.Error(t, err)
+		})
 	}
 }
 
-// TestGCPLogEnrichmentLabels pins the labels the cloud_logs enricher reads. Before
-// #36870 the webhook path set none of them, so a log-based metric alert ingested by
-// webhook could not narrow its log query the way the same alert does when polled.
-// Values are synthetic — real project/instance names must not be committed.
-func TestGCPLogEnrichmentLabels(t *testing.T) {
-	// Log-based metric alert on a Cloud SQL instance. gcpLogRawParams needs
-	// gcp_project_id AND metric_log together to build the log_group_name that narrows
-	// the query to the log the metric counts.
-	logMetric := GCPMonitoringIncident{
-		Metric: GCPMonitoringMetric{
-			Type:   "logging.googleapis.com/user/slow_queries",
-			Labels: map[string]string{"log": "cloudsql.googleapis.com/postgres.log"},
-		},
-	}
-	got := gcpLogEnrichmentLabels(logMetric, "example-project",
-		"projects/example-project/alertPolicies/1234567890123456789")
-	assert.Equal(t, map[string]string{
-		"gcp_project_id": "example-project",
-		"metric_log":     "cloudsql.googleapis.com/postgres.log",
-		"gcp_policy_id":  "projects/example-project/alertPolicies/1234567890123456789",
-	}, got)
+func TestBuildGCPMonitoringWebhookEventUsesCollectorIdentity(t *testing.T) {
+	var payload GCPMonitoringWebhookPayload
+	require.NoError(t, json.Unmarshal([]byte(sampleCloudSQLWebhook), &payload))
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal([]byte(sampleCloudSQLWebhook), &raw))
 
-	// A plain metric alert names no log, so nothing narrows the query and the
-	// collector scopes by the resource instead.
-	plain := GCPMonitoringIncident{
-		Metric: GCPMonitoringMetric{Type: "cloudsql.googleapis.com/database/cpu/utilization"},
-	}
-	got = gcpLogEnrichmentLabels(plain, "example-project", "projects/example-project/alertPolicies/1")
-	assert.NotContains(t, got, "metric_log")
-	assert.Equal(t, "example-project", got["gcp_project_id"])
+	e := buildGCPMonitoringWebhookEvent(payload.Incident, raw, sampleNormalizedCloudSQL)
 
-	// Nothing identifiable: emit no labels rather than empty ones the enricher would
-	// then have to treat as present.
-	assert.Empty(t, gcpLogEnrichmentLabels(GCPMonitoringIncident{}, "", ""))
+	// #34377: the traces enricher scopes Cloud SQL spans by the project:instance subject.
+	assert.Equal(t, "example-project:sample-db", e.EventSubjectName)
+	assert.Equal(t, "cloudsql_database", e.EventSubjectKind)
+	assert.Equal(t, "Cloud SQL", e.EventSubjectNamespace)
+	assert.Equal(t, sampleNormalizedCloudSQL.ServiceKey, e.ServiceKey)
+	assert.Equal(t, sampleNormalizedCloudSQL.Fingerprint, e.Investigation.Fingerprint)
+	assert.Equal(t, sampleNormalizedCloudSQL.FindingId, e.EventId)
+	assert.Equal(t, sampleNormalizedCloudSQL.CloudResourceId, e.CloudResourceId)
+	assert.Equal(t, "slow-queries", e.Investigation.RuleId)
+	assert.Equal(t, sampleNormalizedCloudSQL.Labels, e.Investigation.Labels)
+	assert.Equal(t, "triggered", e.EventStatus)
+	assert.Equal(t, event.EventStatusFiring, e.Investigation.Status)
+	assert.Equal(t, event.EventPriorityMedium, e.Investigation.Severity)
+	assert.Equal(t, int64(1790670860), e.EventCreatedAt.Unix())
+
+	require.Len(t, e.Investigation.Evidences, 1)
+	evidence := e.Investigation.Evidences[0].Data.(map[string]any)
+	assert.Equal(t, raw, evidence["data"], "the evidence keeps the whole delivery")
+
+	resolved := sampleNormalizedCloudSQL
+	resolved.Status = "RESOLVED"
+	e = buildGCPMonitoringWebhookEvent(payload.Incident, raw, resolved)
+	assert.Equal(t, "resolved", e.EventStatus)
+	assert.Equal(t, event.EventStatusResolved, e.Investigation.Status)
+}
+
+func TestProcessEventWebookRejectsBeforeCallingCollector(t *testing.T) {
+	var got http.Request
+	var gotBody string
+	fakeCollector(t, http.StatusOK, map[string]any{"data": sampleNormalizedCloudSQL}, &got, &gotBody)
+	sc := testTenantRequestContext()
+
+	_, err := GCPMonitoringWebhook{}.ProcessEventWebook(sc, nil, "acc-1", `{"incident":{"incident_id":" "}}`)
+	assert.Error(t, err)
+
+	_, err = GCPMonitoringWebhook{}.ProcessEventWebook(sc, nil, "", sampleCloudSQLWebhook)
+	assert.Error(t, err)
+
+	assert.Empty(t, gotBody, "collector must not be called")
 }

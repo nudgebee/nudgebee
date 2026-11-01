@@ -19,8 +19,7 @@ import Currency from '@shared/format/Currency';
 import { snakeToTitleCase, toSeverityLevel } from '@utils/common';
 import { AutoPilotGreyIcon, TicketsIcon } from '@assets';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
-import { snackbar } from '@shared/snackbarService';
-import { useCurrencySymbol } from '@hooks/useCurrencySymbol';
+import { toast as snackbar } from '@ui/Toast';
 import { getTicketDescription } from './common';
 
 const SEVERITY_TOOLTIP =
@@ -82,7 +81,6 @@ const ServiceRecommendations: React.FC<ServiceRecommendationsProps> = ({ account
   const [isTicketCreateFormOpen, setIsTicketCreateFormOpen] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<string>(ALL_CATEGORIES);
   const fetchKeyRef = useRef<string>(''); // Prevent duplicate fetches
-  const currencySymbol = useCurrencySymbol(accountId);
 
   const onCategoryFilterChange = (e: { target: { value: string | null } }) => {
     // Treat "clear" (null) the same as "All Categories" — both mean no specific filter.
@@ -199,7 +197,7 @@ const ServiceRecommendations: React.FC<ServiceRecommendationsProps> = ({ account
           data.push({
             component: (
               <Box display={'flex'} gap={ds.space[2]} alignItems={'center'}>
-                <Currency prefix={currencySymbol} value={item.estimated_savings?.toFixed(2) ?? '0'} suffix='/yr' />
+                <Currency prefix='$' value={item.estimated_savings?.toFixed(2) ?? '0'} suffix='/yr' />
               </Box>
             ),
           });

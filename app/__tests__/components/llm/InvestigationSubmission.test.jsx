@@ -1,5 +1,5 @@
 import React from 'react';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 const noop = jest.fn();
 const mockStart = jest.fn();
@@ -67,11 +67,20 @@ for (const path of [
   '@components/llm/common/JumpToLatestPill',
   '@components/llm/common/QuestionNavigator',
   '@components/llm/common/FollowupSheet',
-  '@components/llm/MessageStream',
   '@components/llm/TroubleshootList',
 ]) {
   jest.doMock(path, () => ({ __esModule: true, default: ({ children }) => <>{children}</> }));
 }
+jest.doMock('@components/llm/MessageStream', () => ({
+  __esModule: true,
+  default: ({ messages }) => (
+    <div data-testid='transcript'>
+      {(messages || []).map((message) => (
+        <p key={message.id}>{message.text}</p>
+      ))}
+    </div>
+  ),
+}));
 jest.doMock('@components/llm/common/TokenUsageDisplay', () => ({ ConversationTokenUsage: () => null }));
 jest.doMock('@components/k8s/KubernetesClusterSummary', () => ({ SummaryBlock: ({ children }) => <div>{children}</div> }));
 const Investigation = require('@components/llm/KubernetesLLMResponseGeneratorV2').default;
@@ -106,14 +115,19 @@ it('clears a normal send and queues another message before the first response re
   fireEvent.click(screen.getByRole('button', { name: 'Send', exact: true }));
   await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue(''));
   expect(mockStart).toHaveBeenCalledTimes(1);
-  expect(screen.getByText('first question')).toBeInTheDocument();
+  // Shown straight away as a question in the transcript, not as a pending queue row.
+  expect(within(screen.getByTestId('transcript')).getByText('first question')).toBeInTheDocument();
+  expect(screen.queryByTestId('queued-messages-banner')).not.toBeInTheDocument();
 
   typeDraft('queued follow-up');
   fireEvent.click(screen.getByRole('button', { name: 'Send', exact: true }));
-  await waitFor(() => expect(mockQueue).toHaveBeenCalledWith({ text: 'queued follow-up', images: undefined }));
   await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue(''));
+  // The server rejects a queued message until the pending send is recorded, so it waits.
+  expect(within(screen.getByTestId('queued-messages-banner')).getByText('queued follow-up')).toBeInTheDocument();
+  expect(mockQueue).not.toHaveBeenCalled();
   typeDraft('unsent draft');
   await act(async () => finish());
+  await waitFor(() => expect(mockQueue).toHaveBeenCalledWith({ text: 'queued follow-up', images: undefined }));
   expect(screen.getByRole('textbox')).toHaveValue('unsent draft');
   expect(mockStart).toHaveBeenCalledTimes(1);
 });
@@ -136,7 +150,9 @@ it('retains a failed normal submission without replacing a newer draft or retryi
   typeDraft('keep my new draft');
   await act(async () => finish());
   expect(screen.getByRole('textbox')).toHaveValue('keep my new draft');
-  expect(screen.getByText('unconfirmed question')).toBeInTheDocument();
+  // The failed send leaves the transcript and is kept in the queue tray for recovery.
+  expect(within(screen.getByTestId('transcript')).queryByText('unconfirmed question')).not.toBeInTheDocument();
+  expect(within(screen.getByTestId('queued-messages-banner')).getByText('unconfirmed question')).toBeInTheDocument();
   expect(screen.getByText('Refresh history')).toBeInTheDocument();
   expect(mockStart).toHaveBeenCalledTimes(1);
   expect(mockQueue).not.toHaveBeenCalled();
@@ -160,7 +176,26 @@ it('keeps pending follow-ups when a conversation-id-only foreground send succeed
   await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue(''));
   typeDraft('pending follow-up');
   fireEvent.click(screen.getByRole('button', { name: 'Send', exact: true }));
-  await waitFor(() => expect(mockQueue).toHaveBeenCalled());
+  await waitFor(() => expect(screen.getByText('pending follow-up')).toBeInTheDocument());
   await act(async () => finish());
+  await waitFor(() => expect(mockQueue).toHaveBeenCalled());
   expect(screen.getByText('pending follow-up')).toBeInTheDocument();
+});
+
+it('retires the question bubble when a superseded normal send is not confirmed', async () => {
+  let finish;
+  // A superseded request resolves false without running onFailure.
+  mockStart.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = () => resolve(false);
+      })
+  );
+  render(<Investigation accountId='account' sessionId='session' popup persistLastSession={false} />);
+  typeDraft('superseded question');
+  fireEvent.click(screen.getByRole('button', { name: 'Send', exact: true }));
+  await waitFor(() => expect(within(screen.getByTestId('transcript')).getByText('superseded question')).toBeInTheDocument());
+  await act(async () => finish());
+  expect(within(screen.getByTestId('transcript')).queryByText('superseded question')).not.toBeInTheDocument();
+  expect(within(screen.getByTestId('queued-messages-banner')).getByText('superseded question')).toBeInTheDocument();
 });

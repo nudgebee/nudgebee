@@ -663,3 +663,19 @@ func TestResolveThinkingBudgetForLevel(t *testing.T) {
 		config.Config.LlmProviderThinkingBudget = -1
 	})
 }
+
+// Anthropic reports 1-hour cache writes separately; they are tracked so cost can
+// bill them at 2x input instead of the 1.25x creation rate.
+func TestGetDetailedTokenInfo_AnthropicOneHourCacheWrites(t *testing.T) {
+	resp := &llms.ContentResponse{Choices: []*llms.ContentChoice{{GenerationInfo: map[string]any{
+		"input_tokens":               4,
+		"output_tokens":              100,
+		"CacheCreationInputTokens":   60000,
+		"CacheCreation1hInputTokens": 58000,
+	}}}}
+
+	info := getDetailedTokenInfo(resp, nil)
+
+	assert.Equal(t, 60000, info.CacheCreationTokens)
+	assert.Equal(t, 58000, info.CacheCreation1hTokens)
+}

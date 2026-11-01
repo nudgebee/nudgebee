@@ -79,6 +79,7 @@ func SetupRouter(cfg *config.Config, tracer *trace.Tracer, meter *metric.Meter, 
 	if err != nil {
 		return nil, fmt.Errorf("db init: %w", err)
 	}
+	handlers.InitMCPSessions(cfg, store, logger)
 
 	connMgr, err := mq.NewConnectionManager(cfg.RabbitMQ.URL)
 	if err != nil {

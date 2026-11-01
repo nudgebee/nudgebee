@@ -336,6 +336,15 @@ query ListVmScanStatuses($accountId: String!) {
   }
 }`;
 
+const LIST_VM_SCAN_DATASOURCES = `
+query ListVmScanDatasources($accountId: String!) {
+  security_list_vm_scan_datasources(object: {
+    account_id: $accountId
+  }) {
+    data
+  }
+}`;
+
 const safeParse = (value: any) => {
   if (typeof value !== 'string') return value;
   try {
@@ -385,7 +394,7 @@ const GROUPING_DIMENSIONS: Record<VmVulnerabilityGrouping, { groupBy: string[]; 
 const resolveVmNames = async (accountId: string | string[], ids: string[]): Promise<Record<string, string>> => {
   if (!ids.length) return {};
   const where = { account: Array.isArray(accountId) ? { _in: accountId } : { _eq: accountId }, id: { _in: ids } };
-  const response = await queryGraphQL(LIST_VMS.replaceAll('__WHERE__', gqlStringify(where)), 'ListVms', { limit: ids.length, offset: 0 });
+  const response = await queryGraphQLCached(LIST_VMS.replaceAll('__WHERE__', gqlStringify(where)), 'ListVms', { limit: ids.length, offset: 0 });
   const rows = response?.data?.data?.vms?.rows || [];
   const nameById: Record<string, string> = {};
   for (const row of rows) {
@@ -468,8 +477,22 @@ const apiVm = {
     return Array.isArray(accounts) ? accounts : [];
   },
 
-  async listVms({ accountId, search, limit = 10, offset = 0 }: { accountId: string; search?: string; limit?: number; offset?: number }) {
+  async listVms({
+    accountId,
+    search,
+    resourceIds,
+    limit = 10,
+    offset = 0,
+  }: {
+    accountId: string;
+    search?: string;
+    /** Narrow to exactly these VMs (e.g. the ones a specific CVE was scoped to) instead of paging the full fleet. */
+    resourceIds?: string[];
+    limit?: number;
+    offset?: number;
+  }) {
     const where: any = { account: { _eq: accountId } };
+    if (resourceIds?.length) where.id = { _in: resourceIds };
     if (search) {
       where._and = [{ _or: [{ name: { _ilike: `%${search}%` } }, { resourse_id: { _ilike: `%${search}%` } }] }];
     }
@@ -751,13 +774,21 @@ const apiVm = {
 
   /**
    * Forager discovery integrations — the pickable `datasource_id`s for a scan.
-   * The relay auto-registers a forager discovery datasource as type `discovery`,
-   * so it must not be looked up as an SSH integration.
+   * Read through the scan's own action, not the integrations list: that one is
+   * tenant-admin only, while account and namespace admins may scan a VM too,
+   * and it left them with an empty picker (#39859). The server returns exactly
+   * the datasources `security_scan_vm` accepts for this account.
    */
   /** Uncached; use listDiscoveryTargets. */
   async fetchDiscoveryTargets(accountId: string): Promise<VmScanTarget[]> {
-    const rows = await listAccountIntegrations(accountId, 'discovery');
-    return rows.map((row: any) => ({
+    const response: any = await queryGraphQL(LIST_VM_SCAN_DATASOURCES, 'ListVmScanDatasources', { accountId });
+    if (!response || response instanceof Error) {
+      throw response || new Error('Failed to list discovery targets');
+    }
+    if (response?.data?.errors?.length) {
+      throw new Error(response.data.errors[0]?.message || 'Failed to list discovery targets');
+    }
+    return (response?.data?.data?.security_list_vm_scan_datasources?.data || []).map((row: any) => ({
       id: row.id,
       name: row.name,
       status: row.status,

@@ -11,6 +11,7 @@ import (
 	"nudgebee/llm/config"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 )
 
 // integrationKBRow is the row shape returned by the integration-KB eligibility
@@ -123,14 +124,10 @@ func syncIntegrationKBs() {
 	}
 
 	// Reconcile: the forward pass above only inserts. Archive integration KBs
-	// whose integration is no longer enabled+syncing, and reactivate ones whose
-	// integration has returned — otherwise a disabled integration leaves its KB
-	// stranded as active.
-	eligibleIDs := make([]string, 0, len(integrations))
-	for _, integration := range integrations {
-		eligibleIDs = append(eligibleIDs, integration.IntegrationID)
-	}
-	archived, reactivated, recovered := reconcileIntegrationKBs(dbms, eligibleIDs)
+	// whose (integration, account) pair is no longer enabled+syncing+linked, and
+	// reactivate ones whose pair has returned — otherwise a disabled integration
+	// or an unlinked account leaves its KB stranded as active.
+	archived, reactivated, recovered := reconcileIntegrationKBs(dbms, integrations)
 
 	slog.Info("kb_sync: completed sync",
 		"total", len(integrations),
@@ -161,37 +158,52 @@ func invalidateKBCachesAfterStatusChange(changed int, reason string) {
 	}
 }
 
-// reconcileIntegrationKBs archives integration KBs whose integration is no
-// longer in the eligible set, reactivates archived KBs whose integration has
-// returned, and recovers KBs of any type stuck in 'processing'. eligibleIDs is
-// the current set of enabled+syncing integration IDs; an empty slice skips the
-// archive/reactivate passes — an empty result is treated as a transient gap,
-// not a genuine "all integrations removed".
-func reconcileIntegrationKBs(dbms *common.DatabaseManager, eligibleIDs []string) (archived, reactivated, recovered int) {
+// reconcileIntegrationKBs archives integration KBs whose (integration,
+// account) pair is no longer in the eligible set, reactivates archived KBs
+// whose pair has returned, and recovers KBs of any type stuck in
+// 'processing'. eligible is the current set of enabled+syncing integration ×
+// linked cloud account rows; an empty slice skips the archive/reactivate
+// passes — an empty result is treated as a transient gap, not a genuine "all
+// integrations removed".
+//
+// The match is on the pair, not the integration id alone: llm_knowledgebases
+// holds one row per (account_id, integration_id) (UNIQUE, V622), and an
+// integration linked to several accounts stays eligible for the others when
+// one account is unlinked. Matching on integration id would reactivate the
+// unlinked account's row every tick, undoing the per-account archive done by
+// EnsureIntegrationKBsForAccount right after the unlink.
+func reconcileIntegrationKBs(dbms *common.DatabaseManager, eligible []integrationKBRow) (archived, reactivated, recovered int) {
 	// Archive / reactivate only when the eligible set is non-empty. An empty
 	// set means the integrations query returned zero rows — far more likely a
 	// transient gap (mid-migration, a brief disable, a JOIN hiccup) than every
 	// integration genuinely removed. Archiving on an empty set would wipe every
 	// integration KB across all tenants, so skip both passes instead.
-	if len(eligibleIDs) > 0 {
-		// Archive integration KBs whose integration dropped out of the eligible set.
-		archiveQ, archiveArgs, err := sqlx.In(`UPDATE llm_knowledgebases SET status = 'archived', updated_at = NOW()
-			WHERE kb_type = 'integration' AND status != 'archived' AND integration_id NOT IN (?)`, eligibleIDs)
-		if err != nil {
-			slog.Error("kb_sync: failed to build archive query", "error", err)
-		} else if res, err := dbms.Db.Exec(dbms.Db.Rebind(archiveQ), archiveArgs...); err != nil {
+	if len(eligible) > 0 {
+		integrationIDs := make([]string, 0, len(eligible))
+		accountIDs := make([]string, 0, len(eligible))
+		for _, row := range eligible {
+			integrationIDs = append(integrationIDs, row.IntegrationID)
+			accountIDs = append(accountIDs, row.CloudAccountID)
+		}
+		// The two arrays are positionally paired; unnest zips them back into
+		// (integration_id, account_id) rows the UPDATEs correlate against.
+		const eligiblePair = `SELECT 1 FROM unnest($1::uuid[], $2::uuid[]) AS e(integration_id, account_id)
+				WHERE e.integration_id = kb.integration_id AND e.account_id = kb.account_id`
+
+		// Archive integration KBs whose pair dropped out of the eligible set.
+		if res, err := dbms.Db.Exec(`UPDATE llm_knowledgebases kb SET status = 'archived', updated_at = NOW()
+			WHERE kb.kb_type = 'integration' AND kb.status != 'archived' AND NOT EXISTS (`+eligiblePair+`)`,
+			pq.Array(integrationIDs), pq.Array(accountIDs)); err != nil {
 			slog.Error("kb_sync: failed to archive stale integration KBs", "error", err)
 		} else {
 			n, _ := res.RowsAffected()
 			archived = int(n)
 		}
 
-		// Reactivate archived KBs whose integration is eligible again.
-		reactQ, reactArgs, err := sqlx.In(`UPDATE llm_knowledgebases SET status = 'active', updated_at = NOW()
-			WHERE kb_type = 'integration' AND status = 'archived' AND integration_id IN (?)`, eligibleIDs)
-		if err != nil {
-			slog.Error("kb_sync: failed to build reactivate query", "error", err)
-		} else if res, err := dbms.Db.Exec(dbms.Db.Rebind(reactQ), reactArgs...); err != nil {
+		// Reactivate archived KBs whose pair is eligible again.
+		if res, err := dbms.Db.Exec(`UPDATE llm_knowledgebases kb SET status = 'active', updated_at = NOW()
+			WHERE kb.kb_type = 'integration' AND kb.status = 'archived' AND EXISTS (`+eligiblePair+`)`,
+			pq.Array(integrationIDs), pq.Array(accountIDs)); err != nil {
 			slog.Error("kb_sync: failed to reactivate integration KBs", "error", err)
 		} else {
 			n, _ := res.RowsAffected()

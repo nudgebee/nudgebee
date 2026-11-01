@@ -83,10 +83,26 @@ def test_add_is_idempotent():
     # Concurrent create-if-not-exists paths may fire add() for the same
     # name from multiple threads after the winner's 200. Second add is
     # dropped rather than duplicating the entry.
+    #
+    # Seeded first because that is the real call path -- the create flow
+    # refreshes the list before adding. Adding to an *empty* cache marks it
+    # stale on purpose, so get() would report a refresh is needed instead of
+    # returning the list; that case is covered separately below.
+    cache = CollectionListCache(ttl_seconds=1800)
+    cache.set([_c("seed")])
+    cache.add(_c("a"))
+    cache.add(_c("a"))
+    names = sorted(c.name for c in cache.get())
+    assert names == ["a", "seed"], f"add() duplicated entry: {names}"
+
+
+def test_add_is_idempotent_on_an_empty_cache_too():
+    # Same guarantee when nothing was cached. get() reports stale here, so
+    # the entry list is checked directly.
     cache = CollectionListCache(ttl_seconds=1800)
     cache.add(_c("a"))
     cache.add(_c("a"))
-    names = [c.name for c in cache.get()]
+    names = [c.name for c in cache._collections]
     assert names == ["a"], f"add() duplicated entry: {names}"
 
 

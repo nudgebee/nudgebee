@@ -79,9 +79,12 @@ func GetVersions(ctx *security.RequestContext) (map[string]string, error) {
 }
 
 const (
-	cleanupBatchSize  = 10000
-	cleanupMaxPerRun  = 100000
-	cleanupMaxBatches = cleanupMaxPerRun / cleanupBatchSize // 10 batches
+	// How long a Microsoft Teams card's buttons stay valid, and so how long its
+	// sent_notifications row is kept.
+	teamsCardRetentionDays = 7
+	cleanupBatchSize       = 10000
+	cleanupMaxPerRun       = 100000
+	cleanupMaxBatches      = cleanupMaxPerRun / cleanupBatchSize // 10 batches
 )
 
 type dataCleanupJob struct {
@@ -156,9 +159,14 @@ func CleanupData(ctx *security.RequestContext, job ...string) {
 				Query:     fmt.Sprintf(`alter table nudgebee.events_shard on cluster 'default' delete WHERE created_at < now() - interval %d day and priority in ('HIGH')`, config.Config.NBRetentionDaysEventsCritical),
 			},
 			{
+				// A row holding a Microsoft Teams card with buttons is what a click on
+				// the card updates, so it is kept while the buttons are valid: 7 days
+				// (MAX_AGE_SECONDS in notifications-server's ms_teams/card_actions.py).
 				Name:      "notifications_sent",
 				Metastore: database.Metastore,
-				Query:     fmt.Sprintf(`DELETE FROM sent_notifications WHERE created_at < now() - interval '%d days'`, config.Config.NBRetentionDaysCronEvents),
+				Query: fmt.Sprintf(`DELETE FROM sent_notifications WHERE created_at < now() - interval '%d days'
+					AND (teams_message_id IS NULL OR created_at < now() - interval '%d days')`,
+					config.Config.NBRetentionDaysCronEvents, teamsCardRetentionDays),
 			},
 			{
 				// Rows carry the full candidate set per search, so this table

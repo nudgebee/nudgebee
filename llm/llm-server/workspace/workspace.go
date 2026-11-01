@@ -560,6 +560,13 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 							Name:  "WORKSPACE_STORAGE_LIMIT_BYTES",
 							Value: strconv.FormatInt(storageLimit.Value(), 10),
 						},
+						{
+							// Every writable volume counts against that one budget,
+							// not just the workspace tree, so the cache GC is told
+							// all of them and measures the total the kubelet enforces.
+							Name:  "WORKSPACE_STORAGE_PATHS",
+							Value: workspaceStoragePaths(volumeMounts),
+						},
 					},
 				},
 			},
@@ -673,6 +680,16 @@ func workspaceWritableLayout(storageLimit *resource.Quantity) ([]corev1.Volume, 
 		{Name: "workspace-storage", MountPath: "/tmp/code-analysis"},
 	}
 	return volumes, mounts
+}
+
+// workspaceStoragePaths lists the mount paths of the pod's writable volumes in
+// PATH-list form. They all draw on the pod's single ephemeral-storage budget.
+func workspaceStoragePaths(mounts []corev1.VolumeMount) string {
+	paths := make([]string, 0, len(mounts))
+	for _, m := range mounts {
+		paths = append(paths, m.MountPath)
+	}
+	return strings.Join(paths, ":")
 }
 
 // extraEnvKeyRe matches valid env var names. Anything else is skipped: an

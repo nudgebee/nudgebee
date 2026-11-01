@@ -2,12 +2,116 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
+
+	"nudgebee/llm/agents"
+	"nudgebee/llm/agents/core"
+	"nudgebee/llm/security"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tmc/langchaingo/llms"
 )
+
+// agentRunDao embeds IConversationDao (nil) and answers only the agent-run
+// lookup, recording what it was asked for.
+type agentRunDao struct {
+	core.IConversationDao
+	err   error
+	calls int
+	asked [3]string
+}
+
+func (d *agentRunDao) GetAgentRunAttribution(agentId, accountId, agentName string) (string, string, string, error) {
+	d.calls++
+	d.asked = [3]string{agentId, accountId, agentName}
+	if d.err != nil {
+		return "", "", "", d.err
+	}
+	return "conv-1", "msg-1", "user-1", nil
+}
+
+func TestWorkspaceUsageLink(t *testing.T) {
+	const runID = "7b0f6a52-1d0e-4a57-9d0c-0a6f1d2b3c4d"
+
+	tests := []struct {
+		name       string
+		req        workspaceLLMRequest
+		daoErr     error
+		wantLinked bool
+		wantLookup bool
+	}{
+		{
+			name:       "run found in the token's account is linked",
+			req:        workspaceLLMRequest{AccountID: "acct-1", AgentRunID: runID, ModelTier: "retrieval", TaskType: "reflection"},
+			wantLinked: true,
+			wantLookup: true,
+		},
+		{
+			name: "no run id is unlinked without a lookup",
+			req:  workspaceLLMRequest{AccountID: "acct-1"},
+		},
+		{
+			name: "malformed run id is unlinked without a lookup",
+			req:  workspaceLLMRequest{AccountID: "acct-1", AgentRunID: "not-a-uuid"},
+		},
+		{
+			// Another account's run, or a run of another agent, matches no row.
+			name:       "run that does not resolve is unlinked",
+			req:        workspaceLLMRequest{AccountID: "acct-1", AgentRunID: runID},
+			daoErr:     errors.New("sql: no rows in result set"),
+			wantLookup: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dao := &agentRunDao{err: tt.daoErr}
+			previous := core.GetConversationDao()
+			core.SetConversationDao(dao)
+			t.Cleanup(func() { core.SetConversationDao(previous) })
+
+			link, userID, linked := workspaceUsageLink(security.NewRequestContextForTenantAdmin("tenant-1"), tt.req)
+
+			assert.Equal(t, tt.wantLinked, linked)
+			if tt.wantLookup {
+				require.Equal(t, 1, dao.calls)
+				assert.Equal(t, [3]string{runID, "acct-1", agents.AgentCodeAnalyzer}, dao.asked)
+			} else {
+				assert.Zero(t, dao.calls)
+			}
+			if !tt.wantLinked {
+				assert.Equal(t, core.UsageLink{}, link)
+				assert.Empty(t, userID)
+				return
+			}
+			assert.Equal(t, core.UsageLink{ConversationID: "conv-1", MessageID: "msg-1", AgentID: runID, ModelTier: "retrieval", TaskType: "reflection"}, link)
+			assert.Equal(t, "user-1", userID)
+		})
+	}
+}
+
+// The reply stays the generation result a workspace on an older image decodes,
+// with the usage receipt as one extra key.
+func TestWorkspaceLLMResponseShape(t *testing.T) {
+	generated := &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: "ok", StopReason: "stop"}}}
+
+	linked, err := json.Marshal(workspaceLLMResponse{ContentResponse: generated, UsageLinked: true})
+	require.NoError(t, err)
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(linked, &decoded))
+	assert.Equal(t, true, decoded["usage_linked"])
+	var plain llms.ContentResponse
+	require.NoError(t, json.Unmarshal(linked, &plain))
+	require.Len(t, plain.Choices, 1)
+	assert.Equal(t, "ok", plain.Choices[0].Content)
+
+	unlinked, err := json.Marshal(workspaceLLMResponse{ContentResponse: generated})
+	require.NoError(t, err)
+	bare, err := json.Marshal(generated)
+	require.NoError(t, err)
+	assert.JSONEq(t, string(bare), string(unlinked))
+}
 
 // workspaceWirePart is a message part as a workspace encodes it: langchaingo's
 // own JSON for the tool call and the tool result.

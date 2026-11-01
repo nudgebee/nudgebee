@@ -100,6 +100,7 @@ func (m AnomalyExecuteTool) InferToolRequestType(_ *security.RequestContext, _, 
 }
 
 func (m AnomalyExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	nbRequestContext = nbRequestContext.ForTarget()
 	// Recover SQL the model may have wrapped in JSON ({"query":...}) or routed
 	// through structured arguments before validating.
 	input.Command = extractAnomalySQL(input.Command, input.Arguments)

@@ -721,6 +721,17 @@ func stepActions(steps []Step) []string {
 	return names
 }
 
+// roundTripGuidance closes every specialist's system prompt. Read-only tool
+// calls sent in one response already run at the same time (executeSteps), and
+// two specialist prompts already ask for that in one line, but the model did
+// it in about a quarter of its turns — every other lookup was its own model
+// round trip, re-sending the whole conversation. This text says why, and what
+// counts as independent; with it the same lookups arrive in about a third
+// fewer round trips. It names lookups only: a response that carries an edit
+// still runs its calls one after another.
+const roundTripGuidance = "\n\n## Round trips\n" +
+	"Every response you send is one full round trip, and each one is slow. When you need several lookups that do not depend on each other — searches, file finds, file reads in different files or different parts of a file — request ALL of them in the same response. They run at the same time and you get every result at once. Send a single lookup only when it depends on the result of the previous one.\n"
+
 // executeSteps runs steps concurrently if ALL are read-only, otherwise serially.
 func (p *ReActPlanner) executeSteps(ctx context.Context, steps []Step) {
 	allReadOnly := true
@@ -903,7 +914,7 @@ func (p *ReActPlanner) Plan(ctx context.Context, query string, systemPrompt stri
 	// LLM can self-check progress instead of relying on the orchestrator's
 	// reactive guardrails (max_iterations + forced submit + Partial fallback).
 	// Specialist prompts continue below as before.
-	mergedSystemPrompt := p.goal.ToPromptBlock() + "\n\n" + systemPrompt
+	mergedSystemPrompt := p.goal.ToPromptBlock() + "\n\n" + systemPrompt + roundTripGuidance
 
 	// Create the initial structured message list for the LLM.
 	// Tools are passed via llms.WithTools() in callLLM(), not in the prompt text.
@@ -1705,7 +1716,7 @@ func (p *ReActPlanner) executeStep(ctx context.Context, step *Step) {
 	if isReadOnly {
 		if obs, firstStep, ok := p.runMemory.LookupRead(hash); ok {
 			step.Status = "completed"
-			step.Observation = fmt.Sprintf("[cached: identical %s call already executed at step %d this run; result unchanged]\n%s", step.Action, firstStep, obs)
+			step.Observation = cachedResultNote(step.Action, firstStep) + obs
 			if p.logger != nil {
 				p.logger.Log(common.EventStepComplete, "Served read-only result from run cache", map[string]any{
 					"tool_name": step.Action, "first_step": firstStep,
@@ -1890,7 +1901,7 @@ func (p *ReActPlanner) executeStep(ctx context.Context, step *Step) {
 
 		// Append dedup warning if this was 2nd identical call
 		if cnt == 2 {
-			step.Observation += "\n\nWARNING: This is the 2nd identical call. A 3rd will be blocked. Try a different approach."
+			step.Observation += repeatCallWarning
 		}
 
 		// REMOVED: Loop counter reset logic
@@ -2020,7 +2031,7 @@ func (p *ReActPlanner) formatObservation(tool core.NBTool, result core.NBToolRes
 	}
 
 	// Apply proportional truncation as final safety net
-	obs = proportionalTruncate(obs, 30000)
+	obs = proportionalTruncate(obs, maxObservationChars-observationNoteReserve)
 
 	return obs
 }
@@ -2598,9 +2609,9 @@ func (p *ReActPlanner) updateConversationMessagesMulti(
 		default:
 			continue
 		}
-		if len(toolOutput) > 15000 {
-			toolOutput = toolOutput[:15000] + "\n[truncated]"
-		}
+		// A no-op for a formatted observation, which is already within this
+		// limit; it bounds error text and anything else that was not formatted.
+		toolOutput = proportionalTruncate(toolOutput, maxObservationChars)
 		toolParts = append(toolParts, llms.ToolCallResponse{
 			ToolCallID: s.ToolCallID,
 			Name:       s.Action,

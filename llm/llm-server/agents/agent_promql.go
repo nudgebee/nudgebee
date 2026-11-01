@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/prometheus/prometheus/promql/parser"
 	"github.com/tmc/langchaingo/llms"
@@ -24,7 +25,7 @@ func init() {
 	toolInput := "Provide a question in natural language to generate a PromQL query."
 	toolOutput := "Returns PromQL queries generated from your question."
 
-	core.RegisterNBAgentFactoryAsTool(PromqlAgentName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAsTool(PromqlAgentName, func(accountId string) (core.NBAgent, error) {
 		return &PromqlAgent{
 			accountId: accountId,
 		}, nil
@@ -40,7 +41,14 @@ var promQLParser = parser.NewParser(parser.Options{})
 
 var staticGroundTruthConstraints = buildGroundTruthConstraints(getPrometheusGroundTruthMetrics())
 
+// AcceptsExecutionTarget: its tools follow a handed target and re-resolve the
+// metrics provider and index for it, so the agent can run for another account.
+func (a *PromqlAgent) AcceptsExecutionTarget() {}
+
 type PromqlAgent struct {
+	// hostsMu guards the per-agent cache of the agent's own account's hosts;
+	// one agent instance can build prompts for concurrent requests.
+	hostsMu             sync.Mutex
 	externalHosts       map[string]string
 	externalHostsCached bool
 	accountId           string
@@ -100,17 +108,26 @@ func (l *PromqlAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 	}
 
 	// otel metrices
-	if !l.externalHostsCached {
-		l.externalHosts = tools.GetCurrentOtelHosts(ctx, query.AccountId)
-		l.externalHostsCached = true
+	var externalHosts map[string]string
+	if accountID := promptAccountID(query, query.AccountId); accountID != query.AccountId {
+		// A handed target's hosts; the cache belongs to this agent's account.
+		externalHosts = tools.GetCurrentOtelHosts(ctx, accountID)
+	} else {
+		l.hostsMu.Lock()
+		if !l.externalHostsCached {
+			l.externalHosts = tools.GetCurrentOtelHosts(ctx, query.AccountId)
+			l.externalHostsCached = true
+		}
+		externalHosts = l.externalHosts
+		l.hostsMu.Unlock()
 	}
 
-	if len(l.externalHosts) > 0 {
+	if len(externalHosts) > 0 {
 		instructions = append(instructions, "**For extarnal nodes/hosts, use otel metrices**")
 		instructions = append(instructions, `   External Node Supported Metrices -  "system.cpu.logical.count", "system.cpu.time", "system.cpu.utilization", "system.filesystem.usage", "system.filesystem.utilization", "system.memory.limit", "system.memory.usage", "system.memory.utilization", "system.network.connections", "system.network.dropped", "system.network.dropped_packets", "system.network.errors", "system.network.io", "system.network.packets", "system.processes.count", "system.processes.created", "system.swap.usage", "system.swap.utilization", "system.thread_count"`)
 		instructions = append(instructions, `   External Node Supported Labels - "host.name", "host.ip"`)
-		hostKeys := make([]string, 0, len(l.externalHosts))
-		for k := range l.externalHosts {
+		hostKeys := make([]string, 0, len(externalHosts))
+		for k := range externalHosts {
 			hostKeys = append(hostKeys, k)
 		}
 		sort.Strings(hostKeys)
@@ -118,7 +135,7 @@ func (l *PromqlAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 		for _, k := range hostKeys {
 			sb.WriteString(k)
 			sb.WriteString("(")
-			sb.WriteString(l.externalHosts[k])
+			sb.WriteString(externalHosts[k])
 			sb.WriteString("), ")
 		}
 		instructions = append(instructions, `   External Hosts - `+sb.String())

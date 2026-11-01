@@ -1,0 +1,35 @@
+{
+ "total_count": 2,
+ "check_runs": [
+  {
+   "id": 4001,
+   "name": "test",
+   "status": "completed",
+   "conclusion": "failure",
+   "started_at": "2026-09-22T10:00:00Z",
+   "completed_at": "2026-09-22T10:05:00Z",
+   "details_url": "https://github.com/nudgebee/nudgebee/actions/runs/4/job/4001",
+   "app": {
+    "id": 15368
+   },
+   "check_suite": {
+    "id": 70
+   }
+  },
+  {
+   "id": 4002,
+   "name": "build",
+   "status": "completed",
+   "conclusion": "in_progress",
+   "started_at": "2026-09-22T10:00:00Z",
+   "completed_at": null,
+   "details_url": "https://github.com/nudgebee/nudgebee/actions/runs/4/job/4002",
+   "app": {
+    "id": 15368
+   },
+   "check_suite": {
+    "id": 70
+   }
+  }
+ ]
+}

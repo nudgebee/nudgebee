@@ -36,12 +36,24 @@ type replayFixture struct {
 	Name      string `json:"name"`
 	Story     string `json:"story"`
 	Namespace string `json:"namespace"`
+	// Shape is "cloud" for a run of cloud alarms that have nothing to do with one
+	// another. Such a run has no single expected incident; what it must not do is
+	// file an alert under another subject's incident unless the two started
+	// together (see lateCross).
+	Shape string `json:"shape,omitempty"`
 	// Maps is the service map stored on each alert, keyed by the alert's subject:
 	// [caller, callee] pairs exactly as recorded. Each is the neighbourhood of its
 	// own subject, so they differ — the seed only ever sees its own.
 	Maps   map[string][][2]string `json:"maps"`
 	Expect struct {
 		HeadSubject string `json:"head_subject"`
+		// TimingWindowS is, for a cloud run, how far from an incident's earliest
+		// alert a member on another subject may have started.
+		TimingWindowS int `json:"timing_window_s,omitempty"`
+		// MinLinked is, for a cloud run, how many alerts must end up filed under
+		// another at the least — the ones that share a subject and start minutes
+		// apart. Without it a run in which nothing grouped at all would pass.
+		MinLinked int `json:"min_linked,omitempty"`
 	} `json:"expect"`
 	Events []replayEvent `json:"events"`
 }
@@ -52,11 +64,14 @@ type replayEvent struct {
 	Kind        string `json:"kind"` // alert | change
 	Path        string `json:"path"` // agent | webhook | cluster
 	SubjectType string `json:"subject_type"`
-	Subject     string `json:"subject"`
-	Fingerprint string `json:"fingerprint"`
-	StartsS     int    `json:"starts_s"`
-	ArrivesS    int    `json:"arrives_s"`
-	EndsS       *int   `json:"ends_s,omitempty"`
+	// SubjectNamespace is set on cloud alarms only: the provider service the
+	// alarm's resource belongs to, which is what a cloud alarm stores there.
+	SubjectNamespace string `json:"subject_namespace,omitempty"`
+	Subject          string `json:"subject"`
+	Fingerprint      string `json:"fingerprint"`
+	StartsS          int    `json:"starts_s"`
+	ArrivesS         int    `json:"arrives_s"`
+	EndsS            *int   `json:"ends_s,omitempty"`
 	// Placed is false for an alert whose labels name no workload: its subject is
 	// the alert name and it has no namespace. Such an alert is not required to
 	// join the incident.
@@ -107,12 +122,32 @@ type replayOutcome struct {
 	retriageMoved      int
 	retriageTwoParents int
 	retriageWrongChild int
+	// crossSubject counts the alerts filed under an incident headed by another
+	// subject. lateCross lists the ones that did not start with that incident —
+	// further than the fixture's timing window from its earliest alert — and
+	// lateCrossAgain counts them once more after everything is triaged again.
+	crossSubject   int
+	lateCross      []string
+	lateCrossAgain int
+	// linked counts the alerts filed under another, on any evidence.
+	linked int
+	// aloneBesideTiming counts the alerts left in no group although an alert on
+	// their own subject started inside the attach window of them — because that
+	// neighbour sits in another subject's incident, on timing, and nothing is
+	// placed through it. Reported, not asserted: it is what that rule costs.
+	aloneBesideTiming int
 }
 
 func (o replayOutcome) ok(f replayFixture) bool {
-	return o.groups == 1 && o.headSubject == f.Expect.HeadSubject && o.twoParents == 0 && o.chains == 0 &&
+	stable := o.twoParents == 0 && o.chains == 0 &&
 		o.retriageMoved == 0 && o.retriageTwoParents == 0 && o.retriageWrongChild == 0
+	if f.Shape == replayShapeCloud {
+		return stable && len(o.lateCross) == 0 && o.lateCrossAgain == 0 && o.linked >= f.Expect.MinLinked
+	}
+	return stable && o.groups == 1 && o.headSubject == f.Expect.HeadSubject
 }
+
+const replayShapeCloud = "cloud"
 
 func loadReplayFixtures(t *testing.T) []replayFixture {
 	t.Helper()
@@ -218,6 +253,9 @@ func TestGroupingReplay_RealRuns(t *testing.T) {
 				if only != "" && !strings.Contains(label, only) {
 					continue
 				}
+				if fx.Shape == replayShapeCloud && v.dropPath != "" {
+					continue // one ingest path only: these would repeat the variants above
+				}
 				fx, v, salt := fx, v, fi*100+vi
 				slot := (fi*len(replayVariants) + vi) % len(accounts)
 				t.Run(label, func(t *testing.T) {
@@ -229,6 +267,18 @@ func TestGroupingReplay_RealRuns(t *testing.T) {
 						out.groups, out.largest, out.required, out.headSubject, out.headAlert,
 						out.twoParents, out.chains, out.unplacedIn, out.unplacedSeen,
 						out.retriageMoved, out.retriageTwoParents, out.retriageWrongChild)
+					if fx.Shape == replayShapeCloud {
+						summary = fmt.Sprintf("linked=%d (at least %d) under_another_subject=%d of which_not_started_together=%d (again: %d) alone_beside_a_neighbour_filed_on_timing=%d two_parents=%d chains=%d again: moved=%d two_parents=%d wrong_child=%d",
+							out.linked, fx.Expect.MinLinked, out.crossSubject, len(out.lateCross), out.lateCrossAgain, out.aloneBesideTiming,
+							out.twoParents, out.chains,
+							out.retriageMoved, out.retriageTwoParents, out.retriageWrongChild)
+						if !out.ok(fx) {
+							t.Errorf("REPLAY FAIL %-58s %s\n      filed under another subject's incident without having started with it:\n        %s", label, summary, strings.Join(out.lateCross, "\n        "))
+							return
+						}
+						t.Logf("REPLAY ok   %-58s %s", label, summary)
+						return
+					}
 					if !out.ok(fx) {
 						t.Errorf("REPLAY FAIL %-58s %s\n      outside the main group:\n        %s", label, summary, strings.Join(out.outside, "\n        "))
 						return
@@ -251,6 +301,13 @@ func replayRun(t *testing.T, ctx context.Context, dbConn *sqlx.DB, tenant, accou
 	serviceMaps := map[string]string{}
 	for subject, calls := range fx.Maps {
 		serviceMaps[subject] = replayServiceMap(ns, calls)
+	}
+	if fx.Shape == replayShapeCloud {
+		for _, e := range fx.Events {
+			if e.ServiceMap {
+				serviceMaps[e.Subject] = replayCloudCard(e.Subject)
+			}
+		}
 	}
 
 	// One path only: drop the other path's copy of an alert that arrived on both.
@@ -416,6 +473,73 @@ func replayRun(t *testing.T, ctx context.Context, dbConn *sqlx.DB, tenant, accou
 		out.outside = append(out.outside, fmt.Sprintf("%s %s on %s (%s, starts %ds) %s", e.ID, e.Alert, e.Subject, e.Path, e.StartsS, lead))
 	}
 
+	// A cloud run: who ended up under another subject's incident, and whether they
+	// started with it. Nothing but the clock connects two subjects in such a run,
+	// so every one of these links was made on timing — or by a later firing
+	// following an earlier one that was.
+	window := time.Duration(fx.Expect.TimingWindowS) * time.Second
+	crossSubject := func(parentOf func(string) string) (int, []string) {
+		root := func(id string) string {
+			seen := map[string]bool{}
+			for !seen[id] {
+				seen[id] = true
+				p := parentOf(id)
+				if p == "" {
+					return id
+				}
+				id = p
+			}
+			return id
+		}
+		earliest := map[string]int{}
+		for _, e := range events {
+			r := root(ids[e.ID])
+			if first, ok := earliest[r]; !ok || e.StartsS < first {
+				earliest[r] = e.StartsS
+			}
+		}
+		n, late := 0, []string(nil)
+		for _, e := range events {
+			r := root(ids[e.ID])
+			re, known := byUUID[r]
+			if r == ids[e.ID] || !known || re.Subject == e.Subject {
+				continue
+			}
+			n++
+			gap := time.Duration(e.StartsS-earliest[r]) * time.Second
+			if gap > window || gap < -window {
+				late = append(late, fmt.Sprintf("%s %s (starts %ds) under %s, whose incident began at %ds — %s apart",
+					e.ID, e.Alert, e.StartsS, re.Alert, earliest[r], gap.Round(time.Second)))
+			}
+		}
+		return n, late
+	}
+	if fx.Shape == replayShapeCloud {
+		out.crossSubject, out.lateCross = crossSubject(parentOf)
+		isHead := map[string]bool{}
+		for _, e := range events {
+			if p := parentOf(ids[e.ID]); p != "" {
+				out.linked++
+				isHead[p] = true
+			}
+		}
+		for _, e := range events {
+			if parentOf(ids[e.ID]) != "" || isHead[ids[e.ID]] {
+				continue
+			}
+			for _, o := range events {
+				gap := time.Duration(o.StartsS-e.StartsS) * time.Second
+				if o.Subject != e.Subject || o.ID == e.ID || gap > IncidentAttachWindow || gap < -IncidentAttachWindow {
+					continue
+				}
+				if r := rootOf(ids[o.ID]); r != ids[o.ID] && byUUID[r].Subject != o.Subject {
+					out.aloneBesideTiming++
+					break
+				}
+			}
+		}
+	}
+
 	// Triage runs again on stored rows. A second pass over every event must leave
 	// every link where it is, and must tell scoring "symptom" for exactly the rows
 	// filed under another alert — never for the head or a further row of it.
@@ -448,7 +572,36 @@ func replayRun(t *testing.T, ctx context.Context, dbConn *sqlx.DB, tenant, accou
 			out.retriageWrongChild++
 		}
 	}
+	if fx.Shape == replayShapeCloud {
+		_, lateAgain := crossSubject(func(id string) string {
+			best := ""
+			for p := range after[id] {
+				if best == "" || p < best {
+					best = p
+				}
+			}
+			return best
+		})
+		out.lateCrossAgain = len(lateAgain)
+	}
 	return out
+}
+
+// replayCloudCard is the stored map of a cloud resource the graph knows and has
+// no dependency edges for: the alarm is placed, with nothing connected to it.
+func replayCloudCard(subject string) string {
+	raw, _ := json.Marshal([]map[string]any{{
+		"type": "knowledge_graph",
+		"nodes": []map[string]any{{
+			"id": subject, "node_type": "ComputeInstance",
+			"properties": map[string]any{
+				"name": subject, "resource_id": subject,
+				"arn": "arn:aws:ec2:us-east-1:000000000000:instance/" + subject,
+			},
+		}},
+		"edges": []map[string]any{},
+	}})
+	return string(raw)
 }
 
 func insertReplayEvent(t *testing.T, ctx context.Context, tx *sqlx.Tx, tenant, account, ns string, anchor time.Time, serviceMap string, e replayEvent) *models.Event {
@@ -484,6 +637,18 @@ func insertReplayEvent(t *testing.T, ctx context.Context, tx *sqlx.Tx, tenant, a
 		subjectNS, subjectType, ownerKind, owner = "", "", "", ""
 		serviceKey = "/" + e.Subject
 	}
+	// A cloud alarm as the cloud collector stores it: the provider service in the
+	// namespace, no owner, a resource identifier for the service key, and — today
+	// — closed on arrival with no duration.
+	status, endsAt := "FIRING", (*time.Time)(nil)
+	if e.Path == "cloud" {
+		source = "AWS_CloudWatch_Alarm"
+		subjectNS, subjectType, ownerKind, owner = e.SubjectNamespace, e.SubjectType, "", ""
+		serviceKey = fmt.Sprintf("arn:aws:replay:us-east-1:000000000000:%s:%s", e.SubjectType, e.Subject)
+		if e.EndsS != nil && *e.EndsS <= e.StartsS {
+			status, endsAt = "CLOSED", &starts
+		}
+	}
 	evidence := "[]"
 	if e.ServiceMap && serviceMap != "" {
 		evidence = serviceMap
@@ -495,14 +660,13 @@ func insertReplayEvent(t *testing.T, ctx context.Context, tx *sqlx.Tx, tenant, a
 		INSERT INTO events (id, tenant, cloud_account_id, aggregation_key, subject_type,
 			subject_namespace, subject_name, subject_owner, subject_owner_kind, service_key,
 			fingerprint, finding_id, finding_type, priority, cluster, starts_at, created_at,
-			status, source, title, evidences)
+			status, source, title, evidences, ends_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'HIGH', 'replay-cluster',
-			$14, $15, 'FIRING', $16, $4, $17::jsonb)`,
+			$14, $15, $18, $16, $4, $17::jsonb, $19)`,
 		id, tenant, account, e.Alert, subjectType, subjectNS, e.Subject, owner, ownerKind, serviceKey,
-		fingerprint, "fid-"+id, findingType, starts, arrives, source, evidence)
+		fingerprint, "fid-"+id, findingType, starts, arrives, source, evidence, status, endsAt)
 	require.NoError(t, err, "%s %s", e.ID, e.Alert)
 
-	status := "FIRING"
 	ev := &models.Event{
 		Id:               id,
 		Tenant:           &tenant,
@@ -520,6 +684,7 @@ func insertReplayEvent(t *testing.T, ctx context.Context, tx *sqlx.Tx, tenant, a
 		StartsAt:         &starts,
 		CreatedAt:        &arrives,
 		Status:           &status,
+		EndsAt:           endsAt,
 	}
 	if evidence != "[]" {
 		var j models.Json

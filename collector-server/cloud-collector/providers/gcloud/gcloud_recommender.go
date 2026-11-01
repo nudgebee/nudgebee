@@ -2,6 +2,7 @@ package gcloud
 
 import (
 	"fmt"
+	"nudgebee/collector/cloud/common"
 	"nudgebee/collector/cloud/providers"
 	"regexp"
 	"sort"
@@ -175,6 +176,113 @@ func stringMeta(meta map[string]interface{}, key string) string {
 	return s
 }
 
+// normalizeGCPResourcePath reduces the shapes a GCP resource reference takes —
+// https selfLink ("https://www.googleapis.com/compute/v1/projects/p/zones/z/instances/x"),
+// recommendation operation resource ("//compute.googleapis.com/projects/p/..."),
+// or bare path — to the shared "projects/..." suffix, lowercased, so references
+// from different APIs land on the same index key. The project segment is
+// canonicalized to "-" because the APIs disagree on it for the same resource
+// (selfLinks carry the project ID, Recommender targets the project number) and
+// the index is built per account, so it carries no information here.
+func normalizeGCPResourcePath(ref string) string {
+	idx := strings.Index(ref, "projects/")
+	if idx < 0 {
+		return ""
+	}
+	path := strings.ToLower(ref[idx:])
+	parts := strings.SplitN(path, "/", 3)
+	if len(parts) < 3 {
+		return path
+	}
+	return "projects/-/" + parts[2]
+}
+
+// overviewTargetClusterURIs pulls clusterUri values out of the recommendation's
+// content overview. GKE DiagnosisRecommender recommendations carry no operation
+// groups at all — their targets live in the overview (and in the top-level
+// target_resources field, which recommender v1.18.0's proto does not expose yet).
+func overviewTargetClusterURIs(rec *recommenderpb.Recommendation) []string {
+	overview := rec.GetContent().GetOverview()
+	if overview == nil {
+		return nil
+	}
+	var uris []string
+	for _, tc := range overview.GetFields()["targetClusters"].GetListValue().GetValues() {
+		if uri := tc.GetStructValue().GetFields()["clusterUri"].GetStringValue(); uri != "" {
+			uris = append(uris, uri)
+		}
+	}
+	return uris
+}
+
+// buildRecommenderResourceIndex maps every normalized reference the collectors
+// store for a resource (Arn, Meta selfLink) to that resource, so a
+// recommendation's operation target can be resolved to the collected row it is
+// about. First writer wins on a key collision, keeping resolution deterministic.
+func buildRecommenderResourceIndex(resources []providers.Resource) map[string]providers.Resource {
+	index := make(map[string]providers.Resource, len(resources)*2)
+	for _, r := range resources {
+		for _, ref := range []string{r.Arn, stringMeta(r.Meta, "selfLink")} {
+			if key := normalizeGCPResourcePath(ref); key != "" {
+				if _, exists := index[key]; !exists {
+					index[key] = r
+				}
+			}
+		}
+	}
+	return index
+}
+
+// resolveRecommenderTarget finds the collected resource a recommendation acts
+// on. Every operation is tried in order and the first whose resource resolves
+// against the index wins — "first operation with a resource" alone would be
+// wrong, e.g. an idle-disk recommendation leads with a create-snapshot
+// operation whose snapshot does not exist yet; resolve-first skips phantoms.
+func resolveRecommenderTarget(rec *recommenderpb.Recommendation, index map[string]providers.Resource) (providers.Resource, bool) {
+	for _, group := range rec.GetContent().GetOperationGroups() {
+		for _, op := range group.GetOperations() {
+			if r, ok := lookupGCPResource(index, op.GetResource()); ok {
+				return r, true
+			}
+		}
+	}
+	for _, uri := range overviewTargetClusterURIs(rec) {
+		if r, ok := lookupGCPResource(index, uri); ok {
+			return r, true
+		}
+	}
+	return providers.Resource{}, false
+}
+
+func lookupGCPResource(index map[string]providers.Resource, ref string) (providers.Resource, bool) {
+	key := normalizeGCPResourcePath(ref)
+	if key == "" {
+		return providers.Resource{}, false
+	}
+	r, ok := index[key]
+	return r, ok
+}
+
+// linkRecommenderTarget stamps ExternalResourceId from the resolved target's
+// own stored fields — the identical construction etl_resources uses when
+// writing cloud_resourses — so the ingestion's preferred linking path
+// populates resource_id and the UI shows the target's name (#39727). The
+// construction cannot be done from the recommendation alone: compute instances
+// are stored under their numeric ID, which the recommendation payload never
+// carries. Mirrors aws_compute_optimizer. ResourceId/account_object_id stay
+// untouched: the upsert conflict key and the alarm creator depend on them.
+func linkRecommenderTarget(mapped providers.Recommendation, rec *recommenderpb.Recommendation, account providers.Account, index map[string]providers.Resource) providers.Recommendation {
+	target, ok := resolveRecommenderTarget(rec, index)
+	if !ok {
+		return mapped
+	}
+	mapped.ExternalResourceId = common.BuildExternalResourceId(account.CloudProvider, account.AccountNumber, target.Region, target.ServiceName, target.Type, target.Id, "")
+	if mapped.Data != nil {
+		mapped.Data["target_resource_name"] = target.Name
+	}
+	return mapped
+}
+
 // locationsForScope expands a recommender's scope bitmask into the concrete
 // locations to query.
 func locationsForScope(scope locationScope, regions, zones []string) []string {
@@ -234,6 +342,9 @@ func (s *gcloudRecommenderService) GetRecommendations(ctx providers.CloudProvide
 	}
 	ctx.GetLogger().Info("resolved recommender locations", "regions", regions, "zones", zones)
 
+	// Read-only after this point, so safe to share across the fetch goroutines.
+	resourceIndex := buildRecommenderResourceIndex(existingResources)
+
 	// Flatten each recommender into its scoped (recommender, location) fetches,
 	// then run them in parallel. The recommender client is safe for concurrent
 	// use, and a bounded semaphore keeps the fan-out from opening an unbounded
@@ -270,7 +381,7 @@ func (s *gcloudRecommenderService) GetRecommendations(ctx providers.CloudProvide
 			defer sem.Release(1)
 
 			parent := fmt.Sprintf("projects/%s/locations/%s/recommenders/%s", projectId, w.location, w.id)
-			recs, err := fetchRecommendations(ctx, client, parent, w.id, w.category, w.location)
+			recs, err := fetchRecommendations(ctx, client, parent, w.id, w.category, w.location, account, resourceIndex)
 			if err != nil {
 				// Permission denied or recommender not available in this location — skip
 				if isGCPPermissionOrNotFoundError(err) {
@@ -291,7 +402,7 @@ func (s *gcloudRecommenderService) GetRecommendations(ctx providers.CloudProvide
 	return recommendations, nil
 }
 
-func fetchRecommendations(ctx providers.CloudProviderContext, client *recommender.Client, parent, recommenderID string, category providers.RecommendationCategory, location string) ([]providers.Recommendation, error) {
+func fetchRecommendations(ctx providers.CloudProviderContext, client *recommender.Client, parent, recommenderID string, category providers.RecommendationCategory, location string, account providers.Account, resourceIndex map[string]providers.Resource) ([]providers.Recommendation, error) {
 	var recommendations []providers.Recommendation
 
 	req := &recommenderpb.ListRecommendationsRequest{
@@ -315,6 +426,7 @@ func fetchRecommendations(ctx providers.CloudProviderContext, client *recommende
 		}
 
 		mapped := mapGCPRecommendation(rec, recommenderID, category, location)
+		mapped = linkRecommenderTarget(mapped, rec, account, resourceIndex)
 		recommendations = append(recommendations, mapped)
 	}
 

@@ -3,8 +3,6 @@ package common
 import (
 	"context"
 	"fmt"
-	"log/slog"
-	"nudgebee/llm/config"
 	"sort"
 	"strings"
 	"sync"
@@ -165,15 +163,8 @@ func ScanPendingTokenEvents(ctx context.Context, cursor uint64) ([]string, uint6
 // cache provider is "redis" and the client has been initialized. Returns
 // false when callers should fall back to the in-memory map.
 func redisClientForPendingTokens() (*redis.Client, bool) {
-	if config.Config.CacheProvider != "redis" {
-		return nil, false
-	}
-	if cacheClient == nil {
-		return nil, false
-	}
-	rc, ok := cacheClient.(*redis.Client)
-	if !ok {
-		slog.Warn("pending_tokens: cacheClient is not *redis.Client even though CacheProvider=redis; falling back to in-memory")
+	rc, err := getRedisClient()
+	if err != nil || rc == nil {
 		return nil, false
 	}
 	return rc, true

@@ -1,8 +1,11 @@
 package core
 
 import (
+	"errors"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	"nudgebee/llm/security/egressfilter"
+	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 	"time"
 
@@ -54,7 +57,26 @@ func CallTool(tc toolcore.NbToolContext, tool toolcore.NBTool, req toolcore.NBTo
 	}
 
 	start := time.Now()
-	resp, callErr := tool.Call(tc, req)
+	var resp toolcore.NBToolResponse
+	tc, callErr := tools.ResolveToolCallTarget(tc, tool, req)
+	if callErr != nil {
+		resp = toolcore.NBToolResponse{Status: toolcore.NBToolResponseStatusError, Data: callErr.Error()}
+		callErr = nil
+	} else {
+		resp, callErr = tool.Call(tc, req)
+		resp = tools.StampExecutedTarget(resp, callErr, tool, tc, toolCallParameters(tc, req))
+		// Same redaction as the planner path: secrets in tool output must not
+		// reach the model or the stored tool call.
+		resp.Data = egressfilter.RedactToolOutput(ctx, "", toolName, resp.Data)
+		if callErr != nil {
+			// Error text often embeds the command's output. A new error is
+			// made only when something was redacted, so wrapping is kept
+			// otherwise.
+			if redacted := egressfilter.RedactToolOutput(ctx, "", toolName, callErr.Error()); redacted != callErr.Error() {
+				callErr = errors.New(redacted)
+			}
+		}
+	}
 	elapsed := time.Since(start)
 
 	status := toolcore.NBToolResponseStatusSuccess

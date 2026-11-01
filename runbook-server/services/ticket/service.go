@@ -555,12 +555,13 @@ type UpdateTicketRequest struct {
 	AccountId     string   `json:"account_id"`
 	Status        string   `json:"status"`
 	Severity      string   `json:"severity"`
-	Impact        string   `json:"impact"`
-	Urgency       string   `json:"urgency"`
 	Assignee      string   `json:"assignee"`
 	Description   string   `json:"description"`
 	Labels        []string `json:"labels"`
 	ProjectKey    string   `json:"project_key"`
+	// AdditionalFields carries platform-specific update fields verbatim (see
+	// buildUpdateAdditionalFields in internal/tasks/tickets/update.go).
+	AdditionalFields map[string]any `json:"-"`
 }
 
 // UpdateTicketResponse represents the response from updating a ticket
@@ -584,12 +585,6 @@ func UpdateTicket(ctx *security.RequestContext, request UpdateTicketRequest) (Up
 	if request.Severity != "" {
 		additionalFields["severity"] = request.Severity
 	}
-	if request.Impact != "" {
-		additionalFields["impact"] = request.Impact
-	}
-	if request.Urgency != "" {
-		additionalFields["urgency"] = request.Urgency
-	}
 	if request.Assignee != "" {
 		additionalFields["assignee"] = request.Assignee
 	}
@@ -598,6 +593,9 @@ func UpdateTicket(ctx *security.RequestContext, request UpdateTicketRequest) (Up
 	}
 	if len(request.Labels) > 0 {
 		additionalFields["labels"] = request.Labels
+	}
+	for key, value := range request.AdditionalFields {
+		additionalFields[key] = value
 	}
 
 	// Build rpc request with update fields in additional_fields

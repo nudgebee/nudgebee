@@ -27,6 +27,10 @@ const SELF_CREATED_AT_SLACK_MS = 1000;
 // "since <date>", so a bounded window states what it counted rather than implying
 // all of history.
 const HISTORY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+// starts_at is grouped on; the query engine truncates a grouped datetime to the day
+// unless told otherwise, which made every same-day firing tie (wrong first/latest
+// firing) and read "Last one" as midnight.
+const STARTS_AT_TO_THE_SECOND = [{ name: 'starts_at', expr: 'date_unit', args: ['second'] }];
 
 // The badge takes over for FIRING/CLOSED — the two statuses the Close/Open
 // toggle actually knows how to act on — so "State" doubles as the Alert
@@ -110,7 +114,8 @@ export const useEventOccurrence = (row) => {
         { account_id: accountId, fingerprint: row.fingerprint, start_date: startDate, end_date: endDate },
         columns,
         columns,
-        { name: 'starts_at', order }
+        { name: 'starts_at', order },
+        STARTS_AT_TO_THE_SECOND
       );
     Promise.all([
       groupings(new Date(createdMs - HISTORY_WINDOW_MS), new Date(createdMs + SELF_CREATED_AT_SLACK_MS), 'asc'),

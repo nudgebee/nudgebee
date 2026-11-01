@@ -1584,6 +1584,26 @@ func UpsertFeatureFlags(ctx *security.RequestContext, request FeatureFlagUpsertR
 
 	tenantId := ctx.GetSecurityContext().GetTenantId()
 
+	// Account rows are stored under the caller's tenant_id, so an account_id
+	// from another tenant would produce a row whose tenant and account disagree,
+	// and readers keyed on either column would apply it to the wrong accounts.
+	accountIds := lo.Uniq(lo.FilterMap(request.Features, func(f FeatureFlagUpsertItem, _ int) (string, bool) {
+		return f.AccountId, f.AccountId != ""
+	}))
+	if len(accountIds) > 0 {
+		var matchedCount int
+		err = manager.Db.Get(&matchedCount,
+			"SELECT count(*) FROM cloud_accounts WHERE tenant = $1 AND id = ANY($2)",
+			tenantId, pq.Array(accountIds))
+		if err != nil {
+			ctx.GetLogger().Error("Error validating feature flag accounts", "error", err)
+			return FeatureFlagUpsertResponse{}, common.ErrorUnauthorized("Account not found in tenant")
+		}
+		if matchedCount != len(accountIds) {
+			return FeatureFlagUpsertResponse{}, common.ErrorUnauthorized("Account not found in tenant")
+		}
+	}
+
 	tx, err := manager.Db.Beginx()
 	if err != nil {
 		return FeatureFlagUpsertResponse{}, common.ErrorInternal("Error starting transaction")

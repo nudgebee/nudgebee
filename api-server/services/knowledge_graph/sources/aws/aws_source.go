@@ -384,6 +384,36 @@ func (s *AWSSource) shouldIncludeResource(resource *sources.CloudResourceRow) bo
 		}
 	}
 
+	// Billing-export rows are cost-report artefacts, not inventory. The cost sync
+	// derives one row for every resource that appeared anywhere in the month's Cost
+	// and Usage Report (cloud-collector account/usage_report_derive.go) and
+	// hardcodes status to Active, so a snapshot deleted on the 3rd is
+	// indistinguishable from one that still exists -- and the row carries no state,
+	// size or volume linkage either way. One account's billing ingest produced
+	// 505,281 of them in a single run, taking one tenant's graph from ~12k nodes to
+	// 731k nodes / 1.48M edges and OOMKilling the shared 4Gi services-server pod
+	// every hour (#40937).
+	//
+	// Snapshots the EC2 API discovered are unaffected: those rows are marked
+	// nb_source="api", and the billing upsert preserves an existing nb_source
+	// rather than overwriting it, so a snapshot we have really seen keeps "api"
+	// even when billing bills it too.
+	//
+	// Deliberately not gated on an empty ARN: the derive step fills arn from the
+	// report's own resource_arn column, so a report that populates it would hand us
+	// the same unbounded row set with ARNs attached.
+	//
+	// Scoped to EC2 snapshots. GCP drops every nb_source="billing" row
+	// (sources/gcp/classify.go, #33308), but that blanket gate is not safe to copy
+	// here: any AWS type only ever discovered via billing would silently vanish
+	// from the graph. Carrying the last-billed date through, so consumers can tell
+	// live from deleted instead of dropping the type wholesale, is tracked in
+	// #41053.
+	if resource.ServiceName == "AmazonEC2" && strings.EqualFold(resource.Type, "snapshot") &&
+		awsResourceMetaSource(resource) == "billing" {
+		return false
+	}
+
 	// If no filter is configured, include all resources
 	if len(s.config.ServiceTypeFilter) == 0 {
 		return true

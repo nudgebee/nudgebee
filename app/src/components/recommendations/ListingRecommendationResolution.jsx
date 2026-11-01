@@ -12,7 +12,6 @@ import Link from 'next/link';
 import PropTypes from 'prop-types';
 import { ds } from 'src/utils/colors';
 import { containsLink, snakeToTitleCase } from 'src/utils/common';
-import useCurrencySymbol from '@hooks/useCurrencySymbol';
 
 import { ListingLayout } from '@ui/ListingLayout';
 import CustomTable2 from '@shared/tables/CustomTable2';
@@ -137,7 +136,6 @@ const ListingRecommendationResolution = ({ accountId }) => {
   const [resolverTypes, setResolverTypes] = useState([]);
   const [selectedRecommendation, setSelectedRecommendation] = useState('');
   const [selectedResolver, setSelectedResolver] = useState('');
-  const currencySymbol = useCurrencySymbol(accountId);
 
   useEffect(() => {
     apiRecommendations.getDistinctResolverTypes('type').then((res) => {
@@ -322,7 +320,7 @@ const ListingRecommendationResolution = ({ accountId }) => {
                   <Currency
                     precison={1}
                     value={rr.recommendation.estimated_savings}
-                    prefix={currencySymbol || '$'}
+                    prefix='$'
                     varient='savings'
                     sx={{
                       fontWeight: ds.weight.medium,
@@ -367,9 +365,8 @@ const ListingRecommendationResolution = ({ accountId }) => {
       });
   };
   useEffect(() => {
-    if (currencySymbol === undefined) return;
     getResolutionListingData();
-  }, [accountId, selectedStatus, rowsPerPage, page, selectedRecommendation, selectedResolver, currencySymbol]);
+  }, [accountId, selectedStatus, rowsPerPage, page, selectedRecommendation, selectedResolver]);
 
   const statusOptions = [
     { label: 'All', value: '' },

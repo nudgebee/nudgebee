@@ -3,12 +3,16 @@ package aws
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"nudgebee/collector/cloud/providers"
+	"slices"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/wafv2"
 	"github.com/aws/aws-sdk-go-v2/service/wafv2/types"
+	"golang.org/x/sync/singleflight"
 )
 
 type awsWAF struct {
@@ -52,9 +56,9 @@ func (a *awsWAF) GetResources(ctx providers.CloudProviderContext, account provid
 	// what regions the customer iterates. The previous implementation gated
 	// CLOUDFRONT scope on `region == "us-east-1"` — accounts whose synced
 	// regions list lacked us-east-1 silently lost every CloudFront WAF. We now
-	// always include CLOUDFRONT scope using a dedicated us-east-1 client; the
-	// downstream resourceMap dedupes by external_resource_id so concurrent
-	// per-region goroutines coalesce to one row per resource.
+	// always include CLOUDFRONT scope using a dedicated us-east-1 client. Its
+	// items are the same for every region, so the per-region calls of one sync
+	// share a single listing (listCloudFrontWafScope).
 	cfClient := svc
 	if region != "us-east-1" {
 		cfCfg := cfg.Copy()
@@ -62,299 +66,308 @@ func (a *awsWAF) GetResources(ctx providers.CloudProviderContext, account provid
 		cfClient = wafv2.NewFromConfig(cfCfg)
 	}
 
-	type scopeClient struct {
-		scope  types.Scope
-		client *wafv2.Client
+	resources, _, err := listWafScope(ctx, account, region, svc, types.ScopeRegional)
+	if err != nil {
+		return resources, err
 	}
-	scopes := []scopeClient{
-		{types.ScopeRegional, svc},
-		{types.ScopeCloudfront, cfClient},
-	}
-	resources := []providers.Resource{}
+	cloudFront, err := listCloudFrontWafScope(account, func() ([]providers.Resource, bool, error) {
+		return listWafScope(ctx, account, region, cfClient, types.ScopeCloudfront)
+	})
+	return append(resources, cloudFront...), err
+}
 
-	for _, sc := range scopes {
-		scope := sc.scope
-		svc := sc.client
-		// List Web ACLs
-		var nextMarker *string
-		for {
-			result, err := svc.ListWebACLs(callCtx, &wafv2.ListWebACLsInput{
-				Scope:      scope,
-				NextMarker: nextMarker,
-				Limit:      aws.Int32(100),
+// listWafScope lists one scope's Web ACLs, IP sets and regex pattern sets. A failed
+// list or describe call is logged and the listing moves on, as before; complete
+// reports whether none failed, so a partial listing is never shared as the scope's
+// contents (listCloudFrontWafScope).
+func listWafScope(ctx providers.CloudProviderContext, account providers.Account, region string, svc *wafv2.Client, scope types.Scope) (resources []providers.Resource, complete bool, err error) {
+	callCtx := ctx.GetContext()
+	resources = []providers.Resource{}
+	complete = true
+	// List Web ACLs
+	var nextMarker *string
+	for {
+		result, err := svc.ListWebACLs(callCtx, &wafv2.ListWebACLsInput{
+			Scope:      scope,
+			NextMarker: nextMarker,
+			Limit:      aws.Int32(100),
+		})
+		if err != nil {
+			if cerr := callCtx.Err(); cerr != nil {
+				return resources, false, cerr
+			}
+			complete = false
+			ctx.GetLogger().Error("failed to fetch WAF web ACLs", "error", err, "accountNumber", account.AccountNumber, "region", region, "scope", scope)
+			break
+		}
+
+		for _, webACL := range result.WebACLs {
+			if webACL.Id == nil || webACL.Name == nil {
+				ctx.GetLogger().Warn("Skipping WAF Web ACL due to missing ID or name")
+				continue
+			}
+
+			// Get detailed information about the Web ACL
+			detailResult, err := svc.GetWebACL(callCtx, &wafv2.GetWebACLInput{
+				Id:    webACL.Id,
+				Name:  webACL.Name,
+				Scope: scope,
 			})
 			if err != nil {
 				if cerr := callCtx.Err(); cerr != nil {
-					return resources, cerr
+					return resources, false, cerr
 				}
-				ctx.GetLogger().Error("failed to fetch WAF web ACLs", "error", err, "accountNumber", account.AccountNumber, "region", region, "scope", scope)
-				break
+				complete = false
+				ctx.GetLogger().Warn("failed to describe web ACL", "error", err, "webACLId", *webACL.Id)
+				continue
 			}
 
-			for _, webACL := range result.WebACLs {
-				if webACL.Id == nil || webACL.Name == nil {
-					ctx.GetLogger().Warn("Skipping WAF Web ACL due to missing ID or name")
-					continue
-				}
+			tags := make(map[string][]string)
 
-				// Get detailed information about the Web ACL
-				detailResult, err := svc.GetWebACL(callCtx, &wafv2.GetWebACLInput{
-					Id:    webACL.Id,
-					Name:  webACL.Name,
-					Scope: scope,
+			// Get tags for the Web ACL
+			if webACL.ARN != nil {
+				tagsResult, err := svc.ListTagsForResource(callCtx, &wafv2.ListTagsForResourceInput{
+					ResourceARN: webACL.ARN,
 				})
 				if err != nil {
-					if cerr := callCtx.Err(); cerr != nil {
-						return resources, cerr
-					}
-					ctx.GetLogger().Warn("failed to describe web ACL", "error", err, "webACLId", *webACL.Id)
-					continue
-				}
-
-				tags := make(map[string][]string)
-
-				// Get tags for the Web ACL
-				if webACL.ARN != nil {
-					tagsResult, err := svc.ListTagsForResource(callCtx, &wafv2.ListTagsForResourceInput{
-						ResourceARN: webACL.ARN,
-					})
-					if err != nil {
-						ctx.GetLogger().Warn("failed to fetch WAF tags", "error", err, "webACLArn", *webACL.ARN)
-					} else if tagsResult.TagInfoForResource != nil && tagsResult.TagInfoForResource.TagList != nil {
-						for _, tag := range tagsResult.TagInfoForResource.TagList {
-							if tag.Key != nil && tag.Value != nil {
-								tags[*tag.Key] = append(tags[*tag.Key], *tag.Value)
-							}
+					ctx.GetLogger().Warn("failed to fetch WAF tags", "error", err, "webACLArn", *webACL.ARN)
+				} else if tagsResult.TagInfoForResource != nil && tagsResult.TagInfoForResource.TagList != nil {
+					for _, tag := range tagsResult.TagInfoForResource.TagList {
+						if tag.Key != nil && tag.Value != nil {
+							tags[*tag.Key] = append(tags[*tag.Key], *tag.Value)
 						}
 					}
 				}
+			}
 
-				metaMap := structToMap(detailResult.WebACL)
+			metaMap := structToMap(detailResult.WebACL)
 
-				// Get logging configuration
-				if webACL.ARN != nil {
-					loggingResult, err := svc.GetLoggingConfiguration(callCtx, &wafv2.GetLoggingConfigurationInput{
-						ResourceArn: webACL.ARN,
-					})
-					if err != nil {
-						ctx.GetLogger().Warn("failed to fetch WAF logging configuration", "error", err, "webACLArn", *webACL.ARN)
-					} else if loggingResult.LoggingConfiguration != nil {
-						metaMap["LoggingConfiguration"] = structToMap(loggingResult.LoggingConfiguration)
-					}
+			// Get logging configuration
+			if webACL.ARN != nil {
+				loggingResult, err := svc.GetLoggingConfiguration(callCtx, &wafv2.GetLoggingConfigurationInput{
+					ResourceArn: webACL.ARN,
+				})
+				if err != nil {
+					ctx.GetLogger().Warn("failed to fetch WAF logging configuration", "error", err, "webACLArn", *webACL.ARN)
+				} else if loggingResult.LoggingConfiguration != nil {
+					metaMap["LoggingConfiguration"] = structToMap(loggingResult.LoggingConfiguration)
 				}
+			}
 
-				// Get associated resources
-				if webACL.ARN != nil {
-					resourcesResult, err := svc.ListResourcesForWebACL(callCtx, &wafv2.ListResourcesForWebACLInput{
-						WebACLArn: webACL.ARN,
-					})
-					if err != nil {
-						ctx.GetLogger().Warn("failed to fetch associated resources", "error", err, "webACLArn", *webACL.ARN)
+			// Get associated resources
+			if webACL.ARN != nil {
+				resourcesResult, err := svc.ListResourcesForWebACL(callCtx, &wafv2.ListResourcesForWebACLInput{
+					WebACLArn: webACL.ARN,
+				})
+				if err != nil {
+					ctx.GetLogger().Warn("failed to fetch associated resources", "error", err, "webACLArn", *webACL.ARN)
+				} else {
+					metaMap["AssociatedResources"] = resourcesResult.ResourceArns
+					metaMap["AssociatedResourceCount"] = len(resourcesResult.ResourceArns)
+				}
+			}
+
+			// Get managed rule group usage
+			if detailResult.WebACL != nil && detailResult.WebACL.Rules != nil {
+				managedRuleCount := 0
+				customRuleCount := 0
+
+				for _, rule := range detailResult.WebACL.Rules {
+					if rule.Statement != nil && rule.Statement.ManagedRuleGroupStatement != nil {
+						managedRuleCount++
 					} else {
-						metaMap["AssociatedResources"] = resourcesResult.ResourceArns
-						metaMap["AssociatedResourceCount"] = len(resourcesResult.ResourceArns)
+						customRuleCount++
 					}
 				}
 
-				// Get managed rule group usage
-				if detailResult.WebACL != nil && detailResult.WebACL.Rules != nil {
-					managedRuleCount := 0
-					customRuleCount := 0
-
-					for _, rule := range detailResult.WebACL.Rules {
-						if rule.Statement != nil && rule.Statement.ManagedRuleGroupStatement != nil {
-							managedRuleCount++
-						} else {
-							customRuleCount++
-						}
-					}
-
-					metaMap["ManagedRuleCount"] = managedRuleCount
-					metaMap["CustomRuleCount"] = customRuleCount
-				}
-
-				createdAt := time.Time{}
-				status := providers.ResourceStatusActive // WAF Web ACLs are active if they exist
-
-				scopeStr := string(scope)
-				effectiveRegion := region
-				if scope == types.ScopeCloudfront {
-					effectiveRegion = "global"
-				}
-
-				resource := providers.Resource{
-					Id:          *webACL.Id,
-					ServiceName: ServiceNameWAF,
-					Name:        *webACL.Name,
-					Status:      status,
-					Region:      effectiveRegion,
-					Tags:        tags,
-					Meta:        metaMap,
-					Arn:         *webACL.ARN,
-					CreatedAt:   createdAt,
-					Type:        getAwsServiceResourceType(ServiceNameWAF, "webacl") + ":" + scopeStr,
-				}
-				resources = append(resources, resource)
+				metaMap["ManagedRuleCount"] = managedRuleCount
+				metaMap["CustomRuleCount"] = customRuleCount
 			}
 
-			if result.NextMarker == nil {
-				break
+			createdAt := time.Time{}
+			status := providers.ResourceStatusActive // WAF Web ACLs are active if they exist
+
+			scopeStr := string(scope)
+			effectiveRegion := region
+			if scope == types.ScopeCloudfront {
+				effectiveRegion = "global"
 			}
-			nextMarker = result.NextMarker
+
+			resource := providers.Resource{
+				Id:          *webACL.Id,
+				ServiceName: ServiceNameWAF,
+				Name:        *webACL.Name,
+				Status:      status,
+				Region:      effectiveRegion,
+				Tags:        tags,
+				Meta:        metaMap,
+				Arn:         *webACL.ARN,
+				CreatedAt:   createdAt,
+				Type:        getAwsServiceResourceType(ServiceNameWAF, "webacl") + ":" + scopeStr,
+			}
+			resources = append(resources, resource)
 		}
 
-		// List IP Sets
-		nextMarker = nil
-		for {
-			result, err := svc.ListIPSets(callCtx, &wafv2.ListIPSetsInput{
-				Scope:      scope,
-				NextMarker: nextMarker,
-				Limit:      aws.Int32(100),
-			})
-			if err != nil {
-				if cerr := callCtx.Err(); cerr != nil {
-					return resources, cerr
-				}
-				ctx.GetLogger().Error("failed to fetch WAF IP sets", "error", err, "accountNumber", account.AccountNumber, "region", region, "scope", scope)
-				break
-			}
-
-			for _, ipSet := range result.IPSets {
-				if ipSet.Id == nil || ipSet.Name == nil {
-					ctx.GetLogger().Warn("Skipping WAF IP Set due to missing ID or name")
-					continue
-				}
-
-				// Get detailed information
-				detailResult, err := svc.GetIPSet(callCtx, &wafv2.GetIPSetInput{
-					Id:    ipSet.Id,
-					Name:  ipSet.Name,
-					Scope: scope,
-				})
-				if err != nil {
-					if cerr := callCtx.Err(); cerr != nil {
-						return resources, cerr
-					}
-					ctx.GetLogger().Warn("failed to describe IP set", "error", err, "ipSetId", *ipSet.Id)
-					continue
-				}
-
-				tags := make(map[string][]string)
-
-				// Get tags for the IP Set
-				if ipSet.ARN != nil {
-					tagsResult, err := svc.ListTagsForResource(callCtx, &wafv2.ListTagsForResourceInput{
-						ResourceARN: ipSet.ARN,
-					})
-					if err != nil {
-						ctx.GetLogger().Warn("failed to fetch WAF IP set tags", "error", err, "ipSetArn", *ipSet.ARN)
-					} else if tagsResult.TagInfoForResource != nil && tagsResult.TagInfoForResource.TagList != nil {
-						for _, tag := range tagsResult.TagInfoForResource.TagList {
-							if tag.Key != nil && tag.Value != nil {
-								tags[*tag.Key] = append(tags[*tag.Key], *tag.Value)
-							}
-						}
-					}
-				}
-
-				metaMap := structToMap(detailResult.IPSet)
-
-				effectiveRegion := region
-				if scope == types.ScopeCloudfront {
-					effectiveRegion = "global"
-				}
-
-				resource := providers.Resource{
-					Id:          *ipSet.Id,
-					ServiceName: ServiceNameWAF,
-					Name:        *ipSet.Name,
-					Status:      providers.ResourceStatusActive,
-					Region:      effectiveRegion,
-					Tags:        tags,
-					Meta:        metaMap,
-					Arn:         *ipSet.ARN,
-					CreatedAt:   time.Time{},
-					Type:        getAwsServiceResourceType(ServiceNameWAF, "ipset"),
-				}
-				resources = append(resources, resource)
-			}
-
-			if result.NextMarker == nil {
-				break
-			}
-			nextMarker = result.NextMarker
+		if result.NextMarker == nil {
+			break
 		}
-
-		// List Regex Pattern Sets
-		nextMarker = nil
-		for {
-			result, err := svc.ListRegexPatternSets(callCtx, &wafv2.ListRegexPatternSetsInput{
-				Scope:      scope,
-				NextMarker: nextMarker,
-				Limit:      aws.Int32(100),
-			})
-			if err != nil {
-				if cerr := callCtx.Err(); cerr != nil {
-					return resources, cerr
-				}
-				ctx.GetLogger().Error("failed to fetch WAF regex pattern sets", "error", err, "accountNumber", account.AccountNumber, "region", region, "scope", scope)
-				break
-			}
-
-			for _, regexSet := range result.RegexPatternSets {
-				if regexSet.Id == nil || regexSet.Name == nil {
-					ctx.GetLogger().Warn("Skipping WAF Regex Pattern Set due to missing ID or name")
-					continue
-				}
-
-				tags := make(map[string][]string)
-
-				// Get tags
-				if regexSet.ARN != nil {
-					tagsResult, err := svc.ListTagsForResource(callCtx, &wafv2.ListTagsForResourceInput{
-						ResourceARN: regexSet.ARN,
-					})
-					if err != nil {
-						ctx.GetLogger().Warn("failed to fetch WAF regex set tags", "error", err, "regexSetArn", *regexSet.ARN)
-					} else if tagsResult.TagInfoForResource != nil && tagsResult.TagInfoForResource.TagList != nil {
-						for _, tag := range tagsResult.TagInfoForResource.TagList {
-							if tag.Key != nil && tag.Value != nil {
-								tags[*tag.Key] = append(tags[*tag.Key], *tag.Value)
-							}
-						}
-					}
-				}
-
-				metaMap := structToMap(regexSet)
-
-				effectiveRegion := region
-				if scope == types.ScopeCloudfront {
-					effectiveRegion = "global"
-				}
-
-				resource := providers.Resource{
-					Id:          *regexSet.Id,
-					ServiceName: ServiceNameWAF,
-					Name:        *regexSet.Name,
-					Status:      providers.ResourceStatusActive,
-					Region:      effectiveRegion,
-					Tags:        tags,
-					Meta:        metaMap,
-					Arn:         *regexSet.ARN,
-					CreatedAt:   time.Time{},
-					Type:        getAwsServiceResourceType(ServiceNameWAF, "regexpatternset"),
-				}
-				resources = append(resources, resource)
-			}
-
-			if result.NextMarker == nil {
-				break
-			}
-			nextMarker = result.NextMarker
-		}
+		nextMarker = result.NextMarker
 	}
 
-	return resources, nil
+	// List IP Sets
+	nextMarker = nil
+	for {
+		result, err := svc.ListIPSets(callCtx, &wafv2.ListIPSetsInput{
+			Scope:      scope,
+			NextMarker: nextMarker,
+			Limit:      aws.Int32(100),
+		})
+		if err != nil {
+			if cerr := callCtx.Err(); cerr != nil {
+				return resources, false, cerr
+			}
+			complete = false
+			ctx.GetLogger().Error("failed to fetch WAF IP sets", "error", err, "accountNumber", account.AccountNumber, "region", region, "scope", scope)
+			break
+		}
+
+		for _, ipSet := range result.IPSets {
+			if ipSet.Id == nil || ipSet.Name == nil {
+				ctx.GetLogger().Warn("Skipping WAF IP Set due to missing ID or name")
+				continue
+			}
+
+			// Get detailed information
+			detailResult, err := svc.GetIPSet(callCtx, &wafv2.GetIPSetInput{
+				Id:    ipSet.Id,
+				Name:  ipSet.Name,
+				Scope: scope,
+			})
+			if err != nil {
+				if cerr := callCtx.Err(); cerr != nil {
+					return resources, false, cerr
+				}
+				complete = false
+				ctx.GetLogger().Warn("failed to describe IP set", "error", err, "ipSetId", *ipSet.Id)
+				continue
+			}
+
+			tags := make(map[string][]string)
+
+			// Get tags for the IP Set
+			if ipSet.ARN != nil {
+				tagsResult, err := svc.ListTagsForResource(callCtx, &wafv2.ListTagsForResourceInput{
+					ResourceARN: ipSet.ARN,
+				})
+				if err != nil {
+					ctx.GetLogger().Warn("failed to fetch WAF IP set tags", "error", err, "ipSetArn", *ipSet.ARN)
+				} else if tagsResult.TagInfoForResource != nil && tagsResult.TagInfoForResource.TagList != nil {
+					for _, tag := range tagsResult.TagInfoForResource.TagList {
+						if tag.Key != nil && tag.Value != nil {
+							tags[*tag.Key] = append(tags[*tag.Key], *tag.Value)
+						}
+					}
+				}
+			}
+
+			metaMap := structToMap(detailResult.IPSet)
+
+			effectiveRegion := region
+			if scope == types.ScopeCloudfront {
+				effectiveRegion = "global"
+			}
+
+			resource := providers.Resource{
+				Id:          *ipSet.Id,
+				ServiceName: ServiceNameWAF,
+				Name:        *ipSet.Name,
+				Status:      providers.ResourceStatusActive,
+				Region:      effectiveRegion,
+				Tags:        tags,
+				Meta:        metaMap,
+				Arn:         *ipSet.ARN,
+				CreatedAt:   time.Time{},
+				Type:        getAwsServiceResourceType(ServiceNameWAF, "ipset"),
+			}
+			resources = append(resources, resource)
+		}
+
+		if result.NextMarker == nil {
+			break
+		}
+		nextMarker = result.NextMarker
+	}
+
+	// List Regex Pattern Sets
+	nextMarker = nil
+	for {
+		result, err := svc.ListRegexPatternSets(callCtx, &wafv2.ListRegexPatternSetsInput{
+			Scope:      scope,
+			NextMarker: nextMarker,
+			Limit:      aws.Int32(100),
+		})
+		if err != nil {
+			if cerr := callCtx.Err(); cerr != nil {
+				return resources, false, cerr
+			}
+			complete = false
+			ctx.GetLogger().Error("failed to fetch WAF regex pattern sets", "error", err, "accountNumber", account.AccountNumber, "region", region, "scope", scope)
+			break
+		}
+
+		for _, regexSet := range result.RegexPatternSets {
+			if regexSet.Id == nil || regexSet.Name == nil {
+				ctx.GetLogger().Warn("Skipping WAF Regex Pattern Set due to missing ID or name")
+				continue
+			}
+
+			tags := make(map[string][]string)
+
+			// Get tags
+			if regexSet.ARN != nil {
+				tagsResult, err := svc.ListTagsForResource(callCtx, &wafv2.ListTagsForResourceInput{
+					ResourceARN: regexSet.ARN,
+				})
+				if err != nil {
+					ctx.GetLogger().Warn("failed to fetch WAF regex set tags", "error", err, "regexSetArn", *regexSet.ARN)
+				} else if tagsResult.TagInfoForResource != nil && tagsResult.TagInfoForResource.TagList != nil {
+					for _, tag := range tagsResult.TagInfoForResource.TagList {
+						if tag.Key != nil && tag.Value != nil {
+							tags[*tag.Key] = append(tags[*tag.Key], *tag.Value)
+						}
+					}
+				}
+			}
+
+			metaMap := structToMap(regexSet)
+
+			effectiveRegion := region
+			if scope == types.ScopeCloudfront {
+				effectiveRegion = "global"
+			}
+
+			resource := providers.Resource{
+				Id:          *regexSet.Id,
+				ServiceName: ServiceNameWAF,
+				Name:        *regexSet.Name,
+				Status:      providers.ResourceStatusActive,
+				Region:      effectiveRegion,
+				Tags:        tags,
+				Meta:        metaMap,
+				Arn:         *regexSet.ARN,
+				CreatedAt:   time.Time{},
+				Type:        getAwsServiceResourceType(ServiceNameWAF, "regexpatternset"),
+			}
+			resources = append(resources, resource)
+		}
+
+		if result.NextMarker == nil {
+			break
+		}
+		nextMarker = result.NextMarker
+	}
+
+	return resources, complete, nil
 }
 
 func (a *awsWAF) GetRecommendations(ctx providers.CloudProviderContext, account providers.Account, filter providers.ListRecommendationsRequest, existingResources []providers.Resource) ([]providers.Recommendation, error) {
@@ -529,4 +542,62 @@ func (a *awsWAF) GetServiceMap(ctx providers.CloudProviderContext, account provi
 	}
 
 	return app, nil
+}
+
+// cloudFrontWafTTL bounds how long one account's CLOUDFRONT-scope WAF listing is
+// shared. A resource sync calls GetResources once per region and every call used
+// to list the same CloudFront Web ACLs, IP sets and regex sets again from
+// us-east-1 — four calls per Web ACL, repeated for each region. The listing is
+// shared for long enough to cover one sync's regions, and short enough that the
+// next sync lists again.
+const cloudFrontWafTTL = time.Minute
+
+type cloudFrontWafEntry struct {
+	resources []providers.Resource
+	fetchedAt time.Time
+}
+
+var (
+	cloudFrontWafMu      sync.Mutex
+	cloudFrontWafEntries = map[string]cloudFrontWafEntry{}
+	cloudFrontWafFlight  singleflight.Group
+)
+
+// listCloudFrontWafScope returns the cloud account's CLOUDFRONT-scope WAF
+// resources, calling list at most once per cloudFrontWafTTL; concurrent callers
+// wait for the one listing in flight. Only a complete listing is kept: after an
+// error or a failed list call, the next caller lists again. It is keyed by the
+// cloud account, not the AWS account number, because two cloud accounts can reach
+// one AWS account with different permissions.
+func listCloudFrontWafScope(account providers.Account, list func() ([]providers.Resource, bool, error)) ([]providers.Resource, error) {
+	key := account.ID + "/" + account.AccountNumber
+	cloudFrontWafMu.Lock()
+	entry, ok := cloudFrontWafEntries[key]
+	cloudFrontWafMu.Unlock()
+	if ok && time.Since(entry.fetchedAt) < cloudFrontWafTTL {
+		return copyWafResources(entry.resources), nil
+	}
+
+	v, err, _ := cloudFrontWafFlight.Do(key, func() (any, error) {
+		resources, complete, err := list()
+		if err == nil && complete {
+			cloudFrontWafMu.Lock()
+			cloudFrontWafEntries[key] = cloudFrontWafEntry{resources: resources, fetchedAt: time.Now()}
+			cloudFrontWafMu.Unlock()
+		}
+		return resources, err
+	})
+	resources, _ := v.([]providers.Resource)
+	return copyWafResources(resources), err
+}
+
+// copyWafResources gives each caller its own Meta and Tags maps: the store writes
+// into Meta (nb_source), and callers sharing one listing may store concurrently.
+func copyWafResources(shared []providers.Resource) []providers.Resource {
+	out := slices.Clone(shared)
+	for i := range out {
+		out[i].Meta = maps.Clone(out[i].Meta)
+		out[i].Tags = maps.Clone(out[i].Tags)
+	}
+	return out
 }

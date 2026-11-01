@@ -31,6 +31,7 @@ import {
   describeUndoTarget,
   describeChoiceTitle,
   cardOffersAction,
+  readableStatusMessage,
 } from '@components/k8s/investigate/resolutionStatus';
 import EventRaisePrPanel from '@components/k8s/investigate/cards/EventRaisePrPanel';
 import { ANNOTATIONS } from '@lib/annotationKeys';
@@ -111,7 +112,9 @@ import EventClassifyModal from '@components/events/EventClassifyModal';
 import { MdOutlineCategory } from 'react-icons/md';
 import DatadogMonitorSearch from '@components/k8s/investigate/cards/DatadogMonitorSearch';
 import SafeIcon from '@shared/icons/SafeIcon';
-import RemediationPanel from '@components/k8s/investigate/cards/RemediationPanel';
+import RemediationPanel, { isRemediationPlan, runnableActionCount } from '@components/k8s/investigate/cards/RemediationPanel';
+import { podDetailsFromEvidence } from '@components/k8s/investigate/podFacts';
+import { uniqueInsightLines } from '@components/k8s/investigate/insightLines';
 import EventAlertControlsSection from '@components/k8s/investigate/EventAlertControlsSection';
 // Cloud-specific card imports
 import CloudTrailEventCard from '@components/cloudaccount/investigate/cards/CloudTrailEventCard';
@@ -829,22 +832,27 @@ const Investigate = () => {
     }
   }, [selectedCluster, isK8s]);
 
-  // tabValue 0 is set optimistically below, before the AskAiCard has necessarily arrived (or when it never
-  // does, e.g. the AI service is down). Tab 0 only exists once that card does, so until then show Evidence
+  // Once the reader has picked a tab or opened a card, the page stops choosing the tab for them:
+  // the switch to the analysis when it is ready used to move the screen under someone already
+  // reading the evidence.
+  const readerChoseViewRef = useRef(false);
+
+  // Tab 0 only exists while the AskAiCard does. If the card goes away with tab 0 selected, show Evidence
   // rather than pointing Tabs at a value it has no child for.
   const hasAskAiTab = matchedOptions.some((option) => option?.id === 'AskAiCard');
   const activeTab = tabValue === 0 && !hasAskAiTab ? 1 : tabValue;
 
   useEffect(() => {
+    if (readerChoseViewRef.current) return;
     if (currentInvestigation) {
       setTabValue(1);
-    } else {
+    } else if (hasAskAiTab) {
       const timer = setTimeout(() => {
-        setTabValue(0);
+        if (!readerChoseViewRef.current) setTabValue(0);
       }, 2000);
       return () => clearTimeout(timer);
     }
-  }, [currentInvestigation]);
+  }, [currentInvestigation, hasAskAiTab]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1551,7 +1559,13 @@ const Investigate = () => {
         let aggregation_key = queryParam.aggregationKey;
         let service_key = queryParam.serviceKey;
         let end_date = queryParam.start_at;
-        const response = await apiKubernetes.getEventsSimilarDataAndInsights(aggregation_key, service_key, id, end_date);
+        const response = await apiKubernetes.getEventsSimilarDataAndInsights(
+          aggregation_key,
+          service_key,
+          id,
+          end_date,
+          row?.cloud_account_id || router.query.accountId
+        );
         let last7Days = response?.data?.similar_issue_on_same_service_in_7days?.aggregate?.count;
         let last1Days = response?.data?.similar_issue_on_same_service_in_1days?.aggregate?.count;
         const othersData = [];
@@ -1564,29 +1578,8 @@ const Investigate = () => {
           othersData.push(`${last1Days} in the day before`);
         }
         setOthersData(othersData);
-        const result = row?.evidences;
-        if (result) {
-          const parsedData = result;
-          if (parsedData) {
-            const filteredData = parsedData.find((item) => {
-              if (item.type === 'json' && typeof item.data === 'string') {
-                try {
-                  let parsedData = JSON.parse(item.data);
-                  if (parsedData.name === 'pod_details') {
-                    return true;
-                  }
-                } catch {
-                  // do nothing
-                }
-              }
-              return false;
-            });
-            if (filteredData?.data) {
-              const jsonData = JSON.parse(filteredData.data);
-              setPodDetails(jsonData);
-            }
-          }
-        }
+        const details = podDetailsFromEvidence(row?.evidences);
+        if (details) setPodDetails(details);
         const insights = (row?.evidences || [])?.reduce((allInsights, evidence) => {
           const messages = evidence.insight?.filter((insight) => insight.severity === 'Critical').map((insight) => insight.message);
           if (messages) {
@@ -1594,7 +1587,7 @@ const Investigate = () => {
           }
           return allInsights;
         }, []);
-        setInsightData(insights.flat());
+        setInsightData(uniqueInsightLines(insights.flat()));
       } catch (error) {
         console.error(error);
       }
@@ -1611,6 +1604,7 @@ const Investigate = () => {
   }, [queryParam?.id, queryParam?.aggregationKey, queryParam?.serviceKey, queryParam?.start_at, source]);
 
   const handleCardClick = useCallback((cardKey) => {
+    readerChoseViewRef.current = true;
     setOpenCardKey((prevOpenCardKey) => {
       const isCurrentlyOpen = prevOpenCardKey === cardKey;
       setCollapsedObj((prevCollapsedObj) => {
@@ -1708,6 +1702,8 @@ const Investigate = () => {
   };
 
   const resetState = () => {
+    readerChoseViewRef.current = false;
+    setTabValue(1);
     cancelGeneration();
     stopRcaPolling();
     setRow({});
@@ -1859,10 +1855,52 @@ const Investigate = () => {
   // its diff too; both open the same modal.
   const shouldShowResolveButton = (option) => cardOffersAction(option) && hasWriteAccess(router.query.accountId);
 
-  // How many ways there are to act on this event right now. Drives the tab badge and the
-  // signpost at the end of the analysis, so both agree without recomputing the filter.
   const remediationRows = matchedOptions.filter(shouldShowResolveButton);
-  const remediationActionCount = remediationRows.length;
+
+  // The assistant's saved plan, held here so the tab can count its actions before the tab is opened.
+  // The page is its one owner: it reads the saved plan when the analysis completes or is refreshed
+  // (a read never generates one), and the panel reports a plan it generates through onPlanChange.
+  const askAiCard = matchedOptions.find((option) => option?.id === 'AskAiCard');
+  const remediationEventId = row?.id || router.query.id;
+  const remediationAccountId = row?.cloud_account_id || router.query.accountId;
+  // Names the analysis the plan belongs to; '' until that analysis is complete, which is also when
+  // the panel is shown. A refresh bumps refreshRenderId, so a plan read for the old analysis is dropped.
+  const remediationPlanKey =
+    askAiCard && !askAiCard.errorMessage && askAiCard.isCompleted?.() && remediationEventId && remediationAccountId
+      ? `${remediationEventId}-${askAiCard.refreshRenderId || 0}`
+      : '';
+  const [savedRemediation, setSavedRemediation] = useState({ key: '', plan: null });
+  useEffect(() => {
+    if (!remediationPlanKey) return undefined;
+    let cancelled = false;
+    apiKubernetes
+      .getRemediation(remediationAccountId, remediationEventId)
+      .catch((err) => {
+        console.error('Failed to load the saved remediation plan', err);
+        return null;
+      })
+      .then((saved) => {
+        if (!cancelled) setSavedRemediation({ key: remediationPlanKey, plan: isRemediationPlan(saved) ? saved : null });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [remediationPlanKey, remediationAccountId, remediationEventId]);
+  const remediationPlanReady = !!remediationPlanKey && savedRemediation.key === remediationPlanKey;
+  const remediationPlan = remediationPlanReady ? savedRemediation.plan : null;
+  const handleRemediationPlanChange = (plan) => {
+    // A plan that finishes generating after the analysis was refreshed belongs to the old analysis.
+    setSavedRemediation((prev) => (prev.key === remediationPlanKey ? { key: remediationPlanKey, plan } : prev));
+  };
+
+  // How many things this user can run from the tab right now: the built-in rows (already limited to
+  // write access) plus the plan's actions that carry something to run. Drives the tab badge and the
+  // signpost at the end of the analysis, so both agree without recomputing the filter.
+  const remediationActionCount = remediationRows.length + (hasWriteAccess(router.query.accountId) ? runnableActionCount(remediationPlan) : 0);
+  // "No fixes are available" is only true once the assistant has nothing to add either: it has no
+  // analysis to plan from, or its plan is known and proposes no action. While a plan is still being
+  // read or generated the line stays off, so it never sits above fixes that are about to appear.
+  const assistantHasNothingToAdd = !askAiCard || !!askAiCard.errorMessage || (!!remediationPlan && remediationPlan.actions.length === 0);
 
   // Undo dispatches through the same apply endpoint as everything else, so it is recorded, audited
   // and polled exactly like the action it reverses — an undo is an action, not a special case.
@@ -2271,6 +2309,13 @@ const Investigate = () => {
                           )
                         )}
                         <Box
+                          // A click on a tab is the reader choosing a view, including a click on the tab
+                          // already selected, which Tabs does not report as a change. A disabled tab is not
+                          // a choice.
+                          onClickCapture={(event) => {
+                            const tab = event.target.closest?.('[role="tab"]');
+                            if (tab && !tab.disabled && tab.getAttribute('aria-disabled') !== 'true') readerChoseViewRef.current = true;
+                          }}
                           sx={{
                             textTransform: 'capitalize',
                             flex: 1,
@@ -2288,7 +2333,9 @@ const Investigate = () => {
                           }}
                         >
                           <Tabs value={activeTab} onChange={handleTabChange} aria-label='basic tabs example'>
-                            {!isGeneratingCards && matchedOptions.some((option) => option?.id === 'AskAiCard') && (
+                            {/* Present from the start, disabled until the analysis card exists, so the tab bar
+                                does not gain a tab partway through loading. */}
+                            {(hasAskAiTab || (isGeneratingCards && isRenderInvestigationCard)) && (
                               <Tab
                                 label={
                                   <Box component='span' sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
@@ -2297,7 +2344,7 @@ const Investigate = () => {
                                   </Box>
                                 }
                                 {...a11yProps(0)}
-                                disabled={!!currentInvestigation}
+                                disabled={!!currentInvestigation || isGeneratingCards || !hasAskAiTab}
                                 value={0}
                               />
                             )}
@@ -2392,6 +2439,9 @@ const Investigate = () => {
                                 component='button'
                                 type='button'
                                 data-testid='linked-ticket-btn'
+                                // The chip is a bare number; say what it is and what a click does.
+                                aria-label={`Linked ticket ${ticketData.ticket_id}${ticketData.url ? ', opens in a new tab' : ''}`}
+                                title={`Linked ticket ${ticketData.ticket_id}${ticketData.url ? ' — open' : ''}`}
                                 sx={{
                                   display: 'inline-flex',
                                   cursor: 'pointer',
@@ -2605,7 +2655,7 @@ const Investigate = () => {
                               );
                             })()}
                           {loading ? (
-                            <ConversationLoader />
+                            <ConversationLoader label='Loading the alert' />
                           ) : (
                             insightData.length > 0 && (
                               <Box>
@@ -2710,7 +2760,8 @@ const Investigate = () => {
                                     {/* What ran, then who ran it and when — the two questions "Command · 1m ago"
                                         left unanswered. A command's own text is the only honest name for it. */}
                                     <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: ds.space[2] }}>
-                                      <Text value='Already done' sx={captionSx} />
+                                      {/* "Already done" above a Failed or Running label claimed the opposite of what the label said. */}
+                                      <Text value={latest?.status === 'Success' ? 'Already done' : 'Last attempt'} sx={captionSx} />
                                       <Label tone={outcome.tone} text={outcome.label} size='sm' />
                                       <Text
                                         value={remediationRunLabel(latest, matchedOptions)}
@@ -2736,11 +2787,11 @@ const Investigate = () => {
                                 );
                               })()}
 
-                            {remediationActionCount === 0 && previousRuns.length === 0 && !hasAlertControls && (
+                            {remediationRows.length === 0 && previousRuns.length === 0 && !hasAlertControls && assistantHasNothingToAdd && (
                               <Text value='No fixes are available for this event yet.' sx={{ fontSize: ds.text.bodyLg, color: ds.gray[600] }} />
                             )}
 
-                            {remediationActionCount > 0 && (
+                            {remediationRows.length > 0 && (
                               <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
                                 <Text value='What you can do' sx={remediationSectionSx} />
                                 {/* One bordered list, one row per action, so a fix that is ready to run and
@@ -3036,25 +3087,24 @@ const Investigate = () => {
                             {/* The generated plan: hypotheses with runnable commands. It used to sit
                                 midway down the Analysis tab, a second remediation surface competing with
                                 the fixes below it. */}
-                            {(() => {
-                              const askAi = matchedOptions.find((option) => option?.id === 'AskAiCard');
-                              const remediationEventId = row?.id || router.query.id;
-                              // Not gated on isK8s: the panel shipped K8s-only, but generate is
-                              // provider-agnostic (it reuses the investigation text, which cloud events
-                              // have too) and #35503 gave execute a credentialed path for aws/az/gcloud.
-                              // The gate was the only thing keeping cloud accounts off the feature.
-                              return askAi && !askAi.errorMessage && askAi.isCompleted?.() ? (
-                                <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
-                                  <Text value={`Suggested by ${toAssistantLabel(assistantName)}`} sx={remediationSectionSx} />
-                                  <RemediationPanel
-                                    key={`remediation-${remediationEventId}-${askAi?.refreshRenderId || 0}`}
-                                    accountId={row?.cloud_account_id || router.query.accountId}
-                                    eventId={remediationEventId}
-                                    nbStatus={row?.nb_status}
-                                  />
-                                </Box>
-                              ) : null;
-                            })()}
+                            {/* Not gated on isK8s: the panel shipped K8s-only, but generate is
+                                provider-agnostic (it reuses the investigation text, which cloud events
+                                have too) and #35503 gave execute a credentialed path for aws/az/gcloud.
+                                The gate was the only thing keeping cloud accounts off the feature. */}
+                            {remediationPlanKey ? (
+                              <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
+                                <Text value={`Suggested by ${toAssistantLabel(assistantName)}`} sx={remediationSectionSx} />
+                                <RemediationPanel
+                                  key={`remediation-${remediationPlanKey}`}
+                                  accountId={remediationAccountId}
+                                  eventId={remediationEventId}
+                                  nbStatus={row?.nb_status}
+                                  savedPlan={remediationPlan}
+                                  savedPlanReady={remediationPlanReady}
+                                  onPlanChange={handleRemediationPlanChange}
+                                />
+                              </Box>
+                            ) : null}
 
                             {previousRuns.length > 0 && (
                               <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
@@ -3072,7 +3122,7 @@ const Investigate = () => {
                                       typeof run.type_reference_id === 'string' && /^https?:\/\//.test(run.type_reference_id)
                                         ? run.type_reference_id
                                         : null;
-                                    const message = run.status_message === 'Configuring' ? '' : run.status_message;
+                                    const message = run.status_message === 'Configuring' ? '' : readableStatusMessage(run.status_message);
                                     return (
                                       <Box
                                         key={`run-${key}`}
@@ -3155,7 +3205,7 @@ const Investigate = () => {
                               ))}
                             {currentInvestigation?.text && (
                               <Card elevation='flat' sx={{ textAlign: 'center' }}>
-                                <ConversationLoader />
+                                <ConversationLoader label={`Loading ${currentInvestigation.text}`} />
                               </Card>
                             )}
                           </Box>

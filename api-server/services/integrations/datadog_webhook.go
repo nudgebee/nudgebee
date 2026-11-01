@@ -16,6 +16,7 @@ import (
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -32,6 +33,10 @@ type DatadogWebhook struct {
 
 var datadogIssueIdRegex = regexp.MustCompile(`{issue.id:(\S+)}`)
 var datadogTitleRegex = regexp.MustCompile(`^(?:\[(P\d+)\]\s)?\[((?:Re-)?Triggered|Recovered|Alert|Warn|No Data)(?: on [^\]]+)?\]\s(.*)`)
+
+// datadogTitleGroupRegex matches a title that names the group a multi-alert
+// monitor fired for: "[Triggered on {host:web-1}] …".
+var datadogTitleGroupRegex = regexp.MustCompile(`\[(?:(?:Re-)?Triggered|Recovered|Alert|Warn|No Data) on [^\]]+\]`)
 var datadogMonitorURLRegex = regexp.MustCompile(`https(://[a-zA-Z0-9.-]+/monitors/(\d+)[^)]*)`)
 var datadogMonitorIDRegex = regexp.MustCompile(`monitor_id=(\d+)`)
 var datadogTagsRegex = regexp.MustCompile(`tags=([^&)]+)`)
@@ -1263,6 +1268,9 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 	}
 
 	var eventURL, monitorID string
+	// Read here, from the webhook's own body: the Events API text that replaces
+	// p.Body below links the monitor by relative URL, which the regex never matches.
+	monitorGroup := datadogMonitorGroup(p.Body)
 	monitorURLMatches := datadogMonitorURLRegex.FindStringSubmatch(p.Body)
 	if len(monitorURLMatches) >= 2 {
 		eventURL = monitorURLMatches[0]
@@ -1970,10 +1978,35 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 	}
 
 	fingerprint := p.Event.AggregKey
+	legacyFingerprint := ""
+	firingKey := ""
 	findingId := p.ID
 	isIncident := false
 	if monitorID != "" && p.EventType != "notification" {
 		fingerprint = fmt.Sprintf("%s-%s", monitorID, p.Event.AggregKey)
+		// $AGGREG_KEY is already one per monitor group. A template without it left
+		// every group of a multi-alert monitor on "<monitorID>-", so one group's
+		// recovery closed them all; key on the group itself instead. Events opened
+		// under the old key still close through legacyFingerprint.
+		if p.Event.AggregKey == "" {
+			if group := firstNonEmpty(monitorGroup, datadogGroupKey(p.Alert.AlertScope)); group != "" {
+				legacyFingerprint = fingerprint
+				fingerprint = fmt.Sprintf("%s-%s", monitorID, group)
+			}
+		}
+		// $ID is new on every notification, so a re-notification of a group that is
+		// still firing ([Re-Triggered], or [Warn] escalating to [Triggered]) opened
+		// an event of its own beside the open one. With a FiringKey it updates the
+		// group's open event instead, and a new event opens only when none is open
+		// (core.firingFindingIDFor). The payload carries no key for one alert from
+		// trigger to recovery, so the delivery's own time stands in: on the
+		// notification that opens an event, that is when the alert began.
+		// A multi-alert monitor whose group could not be derived is still on the
+		// monitor-wide "<monitorID>-", shared by all its groups; folding there would
+		// hide every group but the first, so it keeps one event per notification.
+		if p.Event.AggregKey != "" || legacyFingerprint != "" || !datadogTitleGroupRegex.MatchString(p.Title) {
+			firingKey = core.FiringKeyFromStart(fingerprint, createdAt)
+		}
 	} else if p.Incident.IncidentPublicID != "" {
 		isIncident = true
 		findingId = p.Incident.IncidentUUID
@@ -2127,6 +2160,31 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 		}
 	}
 
+	// Host-scoped titles ("CPU usage is high for host <node>") name a Kubernetes
+	// node directly. Match it against the node inventory before the LLM, which would
+	// only echo the hostname back and, being a node, never validate as a workload.
+	if subjectName == "" && cleanTitle != "" {
+		candidateAccountIds, lookupErr := core.GetLinkedCloudAccountIds(sc, accountId, IntegrationDatadogWebhook)
+		if lookupErr != nil {
+			sc.GetLogger().Warn("failed to expand linked cloud accounts for title node match, falling back to single account",
+				"error", lookupErr, "account_id", accountId)
+		}
+		if len(candidateAccountIds) == 0 {
+			candidateAccountIds = []string{accountId}
+		}
+		if node, nodeAccountId := core.ResolveNodeNameFromTitle(sc, cleanTitle, candidateAccountIds); node != "" {
+			subjectName = node
+			subjectKind = "node"
+			labels["nb_subject_resolution"] = "title_node_name"
+			common.MetricsSubjectResolution(sc.GetContext(), IntegrationDatadogWebhook, "live", "matched_title_node", sc.GetSecurityContext().GetTenantId())
+			if nodeAccountId != "" && nodeAccountId != accountId {
+				sc.GetLogger().Info("rebinding webhook accountId to title-matched node's cloud account",
+					"original_account_id", accountId, "matched_account_id", nodeAccountId, "node", node)
+				accountId = nodeAccountId
+			}
+		}
+	}
+
 	resolvedByLLM := false
 	if subjectName == "" && tenant.IsFeatureEnabled(sc, sc.GetSecurityContext().GetTenantId(), tenant.FEATURE_WEBHOOK_LLM_RESOLUTION) {
 		databaseManager, err := database.GetDatabaseManager(database.Metastore)
@@ -2241,6 +2299,16 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 		subjectOwnerKind = deploymentKind
 	}
 
+	// Only a recovery ends a monitor alert. Datadog sets last_updated to the
+	// notification's own time, equal to date on a firing delivery, and ends_at ==
+	// starts_at makes InsertEvent store the alert CLOSED on arrival (point-in-time).
+	// A one-shot delivery (no monitor, or event_type "notification") never gets a
+	// Recovered that could close it, so it keeps that point-in-time end.
+	var endsAt time.Time
+	if status == string(event.EventStatusResolved) || monitorID == "" || p.EventType == "notification" {
+		endsAt = updatedAt
+	}
+
 	event := core.EventIncomingWebhook{
 		WebhookId:             p.ID,
 		EventType:             p.EventType,
@@ -2249,7 +2317,7 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 		EventStatus:           status,
 		EventPriority:         priority,
 		EventCreatedAt:        createdAt,
-		EventEndsAt:           updatedAt,
+		EventEndsAt:           endsAt,
 		EventTitle:            cleanTitle,
 		EventDescription:      p.Body,
 		EventTags:             allTags,
@@ -2261,8 +2329,42 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 		AccountId:             accountId,
 		EventSubjectOwner:     subjectOwner,
 		EventSubjectOwnerKind: subjectOwnerKind,
+		FiringKey:             firingKey,
+		LegacyFingerprint:     legacyFingerprint,
 	}
 	return []core.EventIncomingWebhook{event}, nil
+}
+
+// datadogMonitorGroup returns the group a monitor notification is about, read from
+// the group parameter of a monitor link in the body ("[[Monitor Status](…/monitors/
+// 123?group=host%3Aweb-1&…)]"), in datadogGroupKey form. Empty for a simple monitor,
+// whose links carry no group.
+func datadogMonitorGroup(body string) string {
+	for _, match := range datadogMonitorURLRegex.FindAllString(body, -1) {
+		link, err := url.Parse(match)
+		if err != nil {
+			continue
+		}
+		if group := datadogGroupKey(link.Query().Get("group")); group != "" {
+			return group
+		}
+	}
+	return ""
+}
+
+// datadogGroupKey is the canonical form of a Datadog monitor group
+// ("key:value,key:value"), so the monitor link's group and $ALERT_SCOPE name one
+// group the same way: tags trimmed and sorted, and the simple-monitor group "*"
+// read as no group.
+func datadogGroupKey(group string) string {
+	var tags []string
+	for _, tag := range strings.Split(group, ",") {
+		if tag = strings.TrimSpace(tag); tag != "" && tag != "*" {
+			tags = append(tags, tag)
+		}
+	}
+	sort.Strings(tags)
+	return strings.Join(tags, ",")
 }
 
 // datadogRuleID picks the event's rule id, which becomes its aggregation key

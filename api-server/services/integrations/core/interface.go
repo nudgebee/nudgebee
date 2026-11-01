@@ -64,6 +64,12 @@ type ConnectionNoter interface {
 	ConnectionNotes(ctx *security.RequestContext, values []IntegrationConfigValue, accountId string) []string
 }
 
+// MultiAccountConnectionTester: a connection test that needs every account the config is
+// saved for, not just the first (LLM: a referenced fallback resolves per account).
+type MultiAccountConnectionTester interface {
+	TestConnectionForAccounts(ctx *security.RequestContext, values []IntegrationConfigValue, accountIds []string) error
+}
+
 // TenantScopedIntegration is an optional capability an Integration may implement to
 // declare that it binds to the tenant directly and needs NO cloud-account mapping (no
 // account_id). The generic create + connection-test paths skip the account_id requirement

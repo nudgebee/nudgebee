@@ -412,6 +412,7 @@ func QueryLogs(ctx security.RequestContext, request LogQueryRequest) (core.Obser
 
 	observabilityResp.Logs = body.Logs
 	observabilityResp.Suggestion = body.Suggestion
+	observabilityResp.Coverage = core.NewObservabilityLogCoverage(body.Logs, request.Limit, request.StartTime, request.EndTime)
 	if body.Query != "" {
 		observabilityResp.Metadata.Query = body.Query
 	}

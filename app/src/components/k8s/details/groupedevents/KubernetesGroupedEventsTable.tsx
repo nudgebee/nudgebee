@@ -19,8 +19,7 @@ import Tooltip from '@ui/Tooltip';
 // DS v2 / component-new
 import NBStatusBadge from '@shared/widgets/NBStatusBadge';
 import Chip from '@ui/Chip';
-import ScoreDisplay from '@shared/widgets/ScoreDisplay';
-import PriorityPinControl from '@shared/widgets/PriorityPinControl';
+import TriageScore from '@shared/widgets/TriageScore';
 import TicketLink from '@shared/links/TicketLink';
 import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import { snackbar } from '@shared/snackbarService';
@@ -34,7 +33,7 @@ import k8sApi from '@api1/kubernetes';
 import apiUser from '@api1/user';
 import ticketsApi from '@api1/tickets';
 import { applyFiltersOnRouter } from '@lib/router';
-import { hasWriteAccess, hasPermission } from '@lib/auth';
+import { hasWriteAccess, hasPermission, getCurrentTenant } from '@lib/auth';
 import {
   convertToReadableFormat,
   titleCaseForAggregationKey,
@@ -45,6 +44,7 @@ import {
 import { Box, Typography } from '@mui/material';
 import useKubernetesEventFilters from '@hooks/useKubernetesEventFilters';
 import { useEventCloudFilter } from '@hooks/useCloudFilters';
+import { readPersistedFilters, writePersistedFilters } from '@hooks/usePersistedFilters';
 import EventClassifyModal, { type ClassifyUpdate } from '@components/events/EventClassifyModal';
 import { CLASSIFICATION_OPTIONS, TRIAGE_SCORE_INFO, getTriageStatusTooltip } from '@api1/triage';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
@@ -199,6 +199,20 @@ const transformTableData = (
       return [
         {
           component: (
+            <TriageScore
+              score={item.latest_computed_score}
+              priority={item.latest_computed_priority}
+              scoreFactors={item.latest_score_factors}
+              confidence={item.latest_score_confidence}
+              eventId={item.latest_event_id}
+              accountId={item.account_id}
+              canWrite={canWrite}
+              onChanged={(newPriority, newScore, newFactors) => onPriorityChange?.(item.latest_event_id, newPriority, newScore, newFactors)}
+            />
+          ),
+        },
+        {
+          component: (
             <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0px' }}>
               <SeverityIcon level={toSeverityLevel(severity)} aria-label={`${severity || 'unknown'}`} />
               <Datetime value={item.max_created_at} sx={{ fontSize: 'var(--ds-text-caption)' }} />
@@ -268,27 +282,6 @@ const transformTableData = (
               <Text showAutoEllipsis value={item.event_count ?? item.fingerprint_event_count} data-testid='inbox-event-count' />
               {/* A run of 1 is just this firing, so it adds nothing to the Count; shown from 2 up. */}
               {runCount >= 2 && <Text secondaryText showAutoEllipsis value={`run of ${runCount}`} data-testid='inbox-run-count' />}
-            </Box>
-          ),
-        },
-        {
-          component: (
-            <Box display='flex' alignItems='center' gap={ds.space[1]}>
-              <ScoreDisplay
-                score={item.latest_computed_score}
-                priority={item.latest_computed_priority}
-                scoreFactors={item.latest_score_factors}
-                confidence={item.latest_score_confidence}
-              />
-              <PriorityPinControl
-                eventId={item.latest_event_id}
-                accountId={item.account_id}
-                currentPriority={item.latest_computed_priority}
-                currentScore={item.latest_computed_score}
-                currentScoreFactors={item.latest_score_factors}
-                canWrite={canWrite}
-                onChanged={(newPriority, newScore, newFactors) => onPriorityChange?.(item.latest_event_id, newPriority, newScore, newFactors)}
-              />
             </Box>
           ),
         },
@@ -452,6 +445,22 @@ const normalizeOptionValue = (entry: any) => {
   return entry.value ?? entry.label ?? null;
 };
 
+// Seeds a multi-select filter's state directly from a raw query/persisted value, before its
+// option list (loaded async via useKubernetesEventFilters) has arrived. FilterDropdown resolves
+// the display label from its `options` prop by value, not from this placeholder, so a bare
+// `{ value }` renders correctly once options load — this just avoids an initial fetch with the
+// filter empty, followed by a second fetch once the matching option object resolves (#40107).
+const toPlaceholderOptions = (raw: string | string[] | undefined | null): Array<{ value: string }> => {
+  if (!raw) return [];
+  const values = Array.isArray(raw) ? raw : raw.split(',');
+  return values.filter(Boolean).map((value) => ({ value }));
+};
+
+// localStorage key for the grouped-events sub-tabs (Triage Inbox, Events by Type, Events by
+// App). They already share one router query-string on Troubleshoot, so the localStorage
+// fallback is shared too, matching KubernetesEvents.jsx's TROUBLESHOOT_EVENTS_FILTER_STORAGE_KEY.
+const TROUBLESHOOT_GROUPED_EVENTS_FILTER_STORAGE_KEY = 'troubleshoot:grouped-events:filters:v1';
+
 const ensureSelectedInOptions = (options: any[] = [], selectedValue: any) => {
   if (selectedValue == null || selectedValue === '') return options;
   const selectedValues = (Array.isArray(selectedValue) ? selectedValue : [selectedValue])
@@ -477,6 +486,13 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
   const componentId = 'Grouped Events';
   const router = useRouter();
 
+  // Persist filters that the URL alone can't survive (#40107): layout/index.jsx strips query
+  // params on sidebar nav to /troubleshoot#all-events, so localStorage is what survives a
+  // "leave + come back" round-trip — same pattern as the sibling Events tab (KubernetesEvents.jsx).
+  const tenantId = getCurrentTenant()?.id;
+  const persistKey = isTroubleshootPage && tenantId ? `${TROUBLESHOOT_GROUPED_EVENTS_FILTER_STORAGE_KEY}:${tenantId}` : null;
+  const persisted = useMemo(() => readPersistedFilters(persistKey), [persistKey]);
+
   // --- State Management ---
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [totalRows, setTotalRows] = useState<number>(0);
@@ -500,17 +516,23 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
     const param = router?.query?.eventSubjectName;
     return (Array.isArray(param) ? param[0] : param) ?? '';
   });
-  const [selectedAggregationKey, setSelectedAggregationKey] = useState<any[]>([]);
+  const [selectedAggregationKey, setSelectedAggregationKey] = useState<any[]>(() =>
+    toPlaceholderOptions(router?.query?.eventAggregationKey as string | string[] | undefined)
+  );
   const [selectedAccountId, setSelectedAccountId] = useState<string[]>(() => {
     const raw = accountId || (router.query.accountIds as string);
     return raw ? raw.split(',').filter(Boolean) : [];
   });
-  const [selectedStatus, setSelectedStatus] = useState<string>('');
-  const [selectedPriority, setSelectedPriority] = useState('');
-  const [selectedNbPriority, setSelectedNbPriority] = useState('');
+  const [selectedStatus, setSelectedStatus] = useState<string>(() => (router?.query?.eventStatus as string) || (persisted?.status as string) || '');
+  const [selectedPriority, setSelectedPriority] = useState(() => (router?.query?.eventPriority as string) || (persisted?.priority as string) || '');
+  const [selectedNbPriority, setSelectedNbPriority] = useState(
+    () => (router?.query?.eventComputedPriority as string) || (persisted?.computedPriority as string) || ''
+  );
 
-  const [selectedSource, setSelectedSource] = useState<any[]>([]);
-  const [selectedNBStatus, setSelectedNBStatus] = useState<Array<{ label: string; value: string }>>([]);
+  const [selectedSource, setSelectedSource] = useState<any[]>(() => toPlaceholderOptions(router?.query?.source as string | string[] | undefined));
+  const [selectedNBStatus, setSelectedNBStatus] = useState<Array<{ value: string }>>(() =>
+    toPlaceholderOptions((router?.query?.nbStatus as string | string[] | undefined) ?? (persisted?.nbStatus as string[] | undefined))
+  );
   const [selectedServiceName, setSelectedServiceName] = useState('');
   const [selectedIssueType, setSelectedIssueType] = useState<string>((router?.query?.issueType as string) || 'all');
 
@@ -573,6 +595,10 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
   }, [accountId, router.query.accountIds]);
 
   useEffect(() => {
+    // Options load async — until they do, keep the placeholder the state was seeded with
+    // (from the URL/persisted value) rather than clobbering it back to empty, which would
+    // cause an extra fetch once the real options resolve a moment later (#40107).
+    if (!aggregationKeyFilter?.length) return;
     setSelectedAggregationKey((prev) => {
       const next = syncFilterFromQuery(aggregationKeyFilter, router?.query?.eventAggregationKey, (f: any) => f.value);
       if (prev.length === next.length && prev.every((item, i) => item?.value === next[i]?.value)) return prev;
@@ -582,6 +608,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
   }, [aggregationKeyFilter]);
 
   useEffect(() => {
+    if (!sourceFilter?.length) return;
     setSelectedSource((prev) => {
       const next = syncFilterFromQuery(sourceFilter, router?.query?.source, (f: any) => f.value);
       if (prev.length === next.length && prev.every((item, i) => item?.value === next[i]?.value)) return prev;
@@ -590,10 +617,30 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceFilter]);
 
+  useEffect(() => {
+    if (!nbStatusFilter?.length) return;
+    setSelectedNBStatus((prev) => {
+      const queryValue = router?.query?.nbStatus as string | string[] | undefined;
+      const persistedValue = Array.isArray(persisted?.nbStatus) ? (persisted.nbStatus as string[]).join(',') : undefined;
+      const next = syncFilterFromQuery(nbStatusFilter, queryValue ?? persistedValue, (f: any) => f.value);
+      if (prev.length === next.length && prev.every((item, i) => item?.value === next[i]?.value)) return prev;
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nbStatusFilter]);
+
   // Sort state
-  const [sortConfig, setSortConfig] = useState<{ name: string; order: 'asc' | 'desc' }>(
-    groupEventType === 'app' || groupEventType === 'event_type' ? { name: 'Event Count', order: 'desc' } : { name: 'Priority', order: 'desc' }
-  );
+  const [sortConfig, setSortConfig] = useState<{ name: string; order: 'asc' | 'desc' }>(() => {
+    const defaultSort =
+      groupEventType === 'app' || groupEventType === 'event_type'
+        ? { name: 'Event Count', order: 'desc' as const }
+        : { name: 'Priority', order: 'desc' as const };
+    const validNames = sortByOptions.map((o) => o.value);
+    const queryName = router?.query?.sortBy as string;
+    const persistedName = persisted?.sortBy as string;
+    const name = [queryName, persistedName].find((n) => n && validNames.includes(n)) || defaultSort.name;
+    return { name, order: defaultSort.order };
+  });
 
   // Classify Modal State
   const [classifyModalOpen, setClassifyModalOpen] = useState(false);
@@ -755,9 +802,15 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
     if (groupEventType === 'fingerprint') {
       return [
         {
-          name: 'Severity',
+          name: 'Triage Score',
           width: '10%',
-          info: "Severity is the original urgency level assigned by the source monitoring/alerting system, based on that tool's built-in rules or your configured thresholds",
+          sortable: true,
+          info: TRIAGE_SCORE_INFO,
+        },
+        {
+          name: 'Source Severity',
+          width: '10%',
+          info: "The original urgency level assigned by the source monitoring/alerting system, based on that tool's built-in rules or your configured thresholds",
           infoPlacement: 'top',
         },
         {
@@ -776,12 +829,6 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
           sortable: true,
           info: 'Number of events in the selected time range. The "run of N" line is how many times this issue has fired in its current run, which continues while it re-fires within 24 hours of the previous firing and so can begin before the selected range.',
         },
-        {
-          name: 'Triage Score',
-          width: '10%',
-          sortable: true,
-          info: TRIAGE_SCORE_INFO,
-        },
         triageStatusHeader,
         {
           name: 'Alert Status',
@@ -795,9 +842,9 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
     if (groupEventType === 'app') {
       return [
         {
-          name: 'Severity',
+          name: 'Source Severity',
           width: '12%',
-          info: "Severity is the original urgency level assigned by the source monitoring/alerting system, based on that tool's built-in rules or your configured thresholds",
+          info: "The original urgency level assigned by the source monitoring/alerting system, based on that tool's built-in rules or your configured thresholds",
           infoPlacement: 'top-start',
         },
         {
@@ -829,9 +876,9 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
     if (groupEventType === 'event_type') {
       return [
         {
-          name: 'Severity',
+          name: 'Source Severity',
           width: '12%',
-          info: "Severity is the original urgency level assigned by the source monitoring/alerting system, based on that tool's built-in rules or your configured thresholds",
+          info: "The original urgency level assigned by the source monitoring/alerting system, based on that tool's built-in rules or your configured thresholds",
           infoPlacement: 'top',
         },
         {
@@ -1118,16 +1165,19 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
   };
 
   const handleSortChange = (sort: { name: string; order: string }) => {
-    setSortConfig({
-      name: sort.name,
-      order: sort.order as 'asc' | 'desc',
-    });
+    const next = { name: sort.name, order: sort.order as 'asc' | 'desc' };
+    setSortConfig(next);
     setCurrentPage(1);
+    applyFiltersOnRouter(router, { sortBy: next.name });
+    writePersistedFilters(persistKey, { sortBy: next.name });
   };
 
   const onSortByChange = (e: any) => {
-    setSortConfig({ name: e.target.value, order: 'desc' });
+    const next = { name: e.target.value, order: 'desc' as const };
+    setSortConfig(next);
     setCurrentPage(1);
+    applyFiltersOnRouter(router, { sortBy: next.name });
+    writePersistedFilters(persistKey, { sortBy: next.name });
   };
 
   const onServiceNamesFilterChange = (e: any) => {
@@ -1240,8 +1290,10 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
             onSelect: (e: any) => {
               setSelectedPriority(e.target.value);
               setCurrentPage(1);
+              applyFiltersOnRouter(router, { eventPriority: e.target.value });
+              writePersistedFilters(persistKey, { priority: e.target.value });
             },
-            label: 'Severity',
+            label: 'Source Severity',
             value: selectedPriority,
           },
           {
@@ -1254,6 +1306,8 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
             onSelect: (e: any) => {
               setSelectedStatus(e.target.value);
               setCurrentPage(1);
+              applyFiltersOnRouter(router, { eventStatus: e.target.value });
+              writePersistedFilters(persistKey, { status: e.target.value });
             },
             label: 'Status',
             value: selectedStatus,
@@ -1272,8 +1326,11 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
               { value: 'P3', label: 'P3' },
             ],
             onSelect: (e: any) => {
-              setSelectedNbPriority(e?.target?.value || '');
+              const next = e?.target?.value || '';
+              setSelectedNbPriority(next);
               setCurrentPage(1);
+              applyFiltersOnRouter(router, { eventComputedPriority: next });
+              writePersistedFilters(persistKey, { computedPriority: next });
             },
             label: 'Triage Priority',
             value: selectedNbPriority,
@@ -1309,8 +1366,11 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
       enabled: true,
       options: nbStatusFilter,
       onSelect: (_e: any, value: any) => {
-        setSelectedNBStatus(value || []);
+        const next = value || [];
+        setSelectedNBStatus(next);
         setCurrentPage(1);
+        applyFiltersOnRouter(router, { nbStatus: next.map((v: any) => v.value).join(',') });
+        writePersistedFilters(persistKey, { nbStatus: next.map((v: any) => v.value) });
       },
       label: 'Triage Status',
       value: selectedNBStatus,
@@ -1371,7 +1431,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
             pageNumber={currentPage}
             sort={sortConfig}
             onSortChange={handleSortChange}
-            tableHeadingCenter={['Severity']}
+            tableHeadingCenter={['Source Severity']}
             showExpandable
             expandable={{
               // Per-row tab order: rows in an alert group open on Grouped

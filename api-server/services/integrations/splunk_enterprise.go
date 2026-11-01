@@ -175,22 +175,30 @@ func (m SplunkEnterprise) ConfigSchema() core.IntegrationSchema {
 					"pinned to this index.",
 				Default:  SplunkEnterpriseDefaultLogIndex,
 				Priority: 78,
+				// Testable because the probe reads this index's datatype and disabled
+				// flag (checkSplunkEnterpriseIndexes). Without the flag the dynamic form
+				// treats an index-only edit as "nothing testable changed" and sends
+				// skip_validation=true, which skips BOTH the probe and ValidateConfig --
+				// so a name that closes the SPL literal would save unvalidated.
+				IsTestable: true,
 			},
 			SplunkEnterpriseConfigMetricIndex: {
 				Type: core.ToolSchemaTypeString,
 				Description: "Metrics index holding Kubernetes metrics (e.g. otel_metrics). Must be an " +
 					"index created with datatype=metric. Leave empty if this Splunk holds no metrics — " +
 					"metric queries stay disabled rather than searching an index that does not exist.",
-				Default:  SplunkEnterpriseDefaultMetricIndex,
-				Priority: 77,
+				Default:    SplunkEnterpriseDefaultMetricIndex,
+				Priority:   77,
+				IsTestable: true,
 			},
 			SplunkEnterpriseConfigTraceIndex: {
 				Type: core.ToolSchemaTypeString,
 				Description: "Index holding OpenTelemetry spans (e.g. otel_traces), as written by the " +
 					"OpenTelemetry Collector's splunk_hec exporter. Leave empty if this Splunk holds no " +
 					"traces — trace queries stay disabled rather than searching an index with no spans.",
-				Default:  SplunkEnterpriseDefaultTraceIndex,
-				Priority: 76,
+				Default:    SplunkEnterpriseDefaultTraceIndex,
+				Priority:   76,
+				IsTestable: true,
 			},
 			SplunkEnterpriseConfigApp: {
 				Type: core.ToolSchemaTypeString,
@@ -198,6 +206,12 @@ func (m SplunkEnterprise) ConfigSchema() core.IntegrationSchema {
 					"are in scope. Leave as 'search' unless your field extractions live in another app.",
 				Default:  SplunkEnterpriseDefaultApp,
 				Priority: 40,
+				// Testable for the validation gate rather than the probe: TestConnection
+				// hits server/info and data/indexes, neither of which is app-scoped, but
+				// the app name is interpolated into SPL exactly like an index name and is
+				// validated by the same IsSafeSplunkIndexName call, so it must not be
+				// editable without re-validating.
+				IsTestable: true,
 			},
 			SplunkEnterpriseConfigInsecure: {
 				Type: core.ToolSchemaTypeBoolean,

@@ -45,7 +45,7 @@ export interface UseQueuedMessagesReturn {
   toggleExpanded: () => void;
   enqueue: (text: string, images?: QueuedMessageAttachment[], config?: any) => string;
   remove: (id: string) => Promise<void> | void;
-  edit: (id: string) => Promise<QueuedMessage | null>;
+  update: (id: string, text: string) => Promise<void>;
   error: string | null;
   sendNow: (id: string) => Promise<void>;
   clear: () => void;
@@ -68,6 +68,8 @@ export const useQueuedMessages = ({
   const [isExpanded, setIsExpanded] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [removedIds, setRemovedIds] = useState<string[]>([]);
+  // Edited text shown until the next conversation fetch carries it from the server.
+  const [textOverrides, setTextOverrides] = useState<Record<string, string>>({});
 
   // When serverQueuedMessages arrives, reconcile localQueue by dropping any local
   // items that the server now reflects (by message identity)
@@ -81,12 +83,14 @@ export const useQueuedMessages = ({
   }, [serverQueuedMessages]);
 
   const queuedMessages = useMemo(() => {
-    const serverList = (serverQueuedMessages || []).filter((m) => !removedIds.includes(m.id));
+    const serverList = (serverQueuedMessages || [])
+      .filter((m) => !removedIds.includes(m.id))
+      .map((m) => (textOverrides[m.id] !== undefined ? { ...m, text: textOverrides[m.id] } : m));
     if (localQueuedMessages.length === 0) return serverList;
     const serverIds = new Set(serverList.map((m) => m.id));
     const remainingLocal = localQueuedMessages.filter((m) => !serverIds.has(m.id));
     return [...serverList, ...remainingLocal];
-  }, [serverQueuedMessages, localQueuedMessages, removedIds]);
+  }, [serverQueuedMessages, localQueuedMessages, removedIds, textOverrides]);
 
   const queuedMessagesRef = useRef(queuedMessages);
   useEffect(() => {
@@ -160,19 +164,33 @@ export const useQueuedMessages = ({
     [accountId, conversationId, onRefresh]
   );
 
-  const edit = useCallback(
-    async (id: string): Promise<QueuedMessage | null> => {
-      const found = queuedMessagesRef.current.find((m) => m.id === id);
-      if (!found) return null;
-      try {
-        await remove(id);
-        return found;
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Unable to edit queued message.');
-        return null;
+  const update = useCallback(
+    async (id: string, text: string) => {
+      const target = queuedMessagesRef.current.find((m) => m.id === id);
+      const message = text.trim();
+      if (!target || !message) return;
+      if (!target.isServer) {
+        setLocalQueuedMessages((prev) => prev.map((m) => (m.id === id ? { ...m, text: message } : m)));
+        return;
       }
+      if (!accountId || !conversationId) throw new Error('Conversation is unavailable.');
+      setError(null);
+      try {
+        await apiAskNudgebee.updateQueuedMessage({ accountId, conversationId, messageId: id, message });
+      } catch (error) {
+        if ((error as { upstreamStatus?: number })?.upstreamStatus === 409) {
+          // The message started running or was removed; show the server's current queue.
+          try {
+            await onRefresh?.();
+          } catch {
+            /* Keep the original operation error. */
+          }
+        }
+        throw error;
+      }
+      setTextOverrides((prev) => ({ ...prev, [id]: message }));
     },
-    [remove]
+    [accountId, conversationId, onRefresh]
   );
 
   const sendNow = useCallback(
@@ -203,6 +221,7 @@ export const useQueuedMessages = ({
   const clear = useCallback(() => {
     setLocalQueuedMessages([]);
     setRemovedIds([]);
+    setTextOverrides({});
     setError(null);
   }, []);
 
@@ -245,7 +264,7 @@ export const useQueuedMessages = ({
       }
     },
     error,
-    edit,
+    update,
     sendNow,
     clear,
     maxQueuedMessages,

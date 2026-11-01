@@ -43,16 +43,18 @@ var webhookFiringIdentity = map[string]firingIdentity{
 	IntegrationGrafanaWebhook:                {firingKeyMode, "startsAt"},
 	// Alertmanager-compatible body: same stable fingerprint, same per-firing startsAt.
 	IntegrationCubeAPMWebhook: {firingKeyMode, "startsAt"},
+	IntegrationSigNozWebhook:  {firingKeyMode, "startsAt"},
 
 	IntegrationZendutyWebhook:       {perFiringEventId, "incident unique_id"},
 	IntegrationPagerdutyWebhook:     {perFiringEventId, "incident id"},
 	IntegrationGCPMonitoringWebhook: {perFiringEventId, "incident.incident_id"},
-	IntegrationDatadogWebhook:       {perFiringEventId, "event id ($ID) per notification; incident_uuid for incidents"},
+	IntegrationDatadogWebhook:       {perFiringEventId, "event id ($ID) per notification, with a FiringKey so a re-notification updates its group's open event; incident_uuid for incidents"},
 	IntegrationDynatraceWebhook:     {perFiringEventId, "problem id / davis event id"},
 	IntegrationAzureMonitorWebhook:  {perFiringEventId, "essentials.alertId (one per fired alert instance)"},
 	IntegrationNewRelicWebhook:      {perFiringEventId, "issue id / incident id"},
 	IntegrationSplunkWebhook:        {perFiringEventId, "sid (search job id); falls back to search_name, which is per alert"},
 	IntegrationGenericWebhook:       {perFiringEventId, "random id per delivery"},
+	IntegrationEventWebhook:         {perFiringEventId, "sender's id, required to name one firing (contract)"},
 
 	IntegrationElasticsearchWebhook: {noFiringIdentity, "rule id + alert id are per alert; the documented template carries no per-firing field ({{alert.uuid}} would be one)"},
 	IntegrationOpenObserveWebhook:   {noFiringIdentity, "fingerprint is derived from alert identity and OpenObserve sends no resolve"},
@@ -121,6 +123,10 @@ var firingKeyParsers = map[string]firingKeySequence{
 	IntegrationCubeAPMWebhook: func(status, startsAt, fingerprint string) (core.EventIncomingWebhook, error) {
 		sc := security.NewRequestContextForSuperAdmin(nil, nil, nil)
 		return singleEvent(CubeAPMWebhook{}.ProcessEventWebook(sc, nil, "acct-1", alertmanagerStyleBody(status, startsAt, fingerprint)))
+	},
+	IntegrationSigNozWebhook: func(status, startsAt, fingerprint string) (core.EventIncomingWebhook, error) {
+		sc := security.NewRequestContextForSuperAdmin(nil, nil, nil)
+		return singleEvent(SigNozWebhook{}.ProcessEventWebook(sc, nil, "acct-1", alertmanagerStyleBody(status, startsAt, fingerprint)))
 	},
 	IntegrationGrafanaWebhook: func(status, startsAt, fingerprint string) (core.EventIncomingWebhook, error) {
 		event, err := mapGrafanaAlertToEvent("acct-1", map[string]any{

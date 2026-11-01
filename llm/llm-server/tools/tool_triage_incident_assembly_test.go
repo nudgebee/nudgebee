@@ -133,3 +133,57 @@ func TestBoundIncidentAssemblyKeepsCoFiring(t *testing.T) {
 		t.Errorf("an assembly holding only co-firing alerts must not get the empty-window caveat: %q", note)
 	}
 }
+
+// The same_node lane reaches the model, with one line saying what it is, only when
+// it holds something. An output without it must not carry the key or mention it:
+// most investigations have no such entries, and text about an absent lane is noise.
+func TestBoundIncidentAssemblySameNodeOnlyWhenPresent(t *testing.T) {
+	decode := func(data string) map[string]any {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(boundIncidentAssembly(data)), &m); err != nil {
+			t.Fatalf("output is not JSON: %v", err)
+		}
+		return m
+	}
+
+	with := decode(`{"event_id":"seed-1","coverage_confidence":"none","assembly":{"root_identity":"agents|log-agent",
+		"same_incident":[],"cause":{"config_changes":[],"upstream":[]},"impact":[],"chronic":[],"co_firing":[],
+		"same_node":[{"event_id":"db-1","title":"metrics-db alert","relation":"same_node","dt_seconds":-10}]}}`)
+	if got, ok := with["same_node"].([]any); !ok || len(got) != 1 {
+		t.Fatalf("same_node not passed through: %v", with["same_node"])
+	}
+	note, _ := with["note"].(string)
+	if !strings.HasPrefix(note, assemblyCaveat) || !strings.HasSuffix(note, assemblySameNodeNote) {
+		t.Errorf("an output holding only same_node entries needs the caveat plus the lane note, got %q", note)
+	}
+
+	for name, data := range map[string]string{
+		"empty lane":   `{"event_id":"seed-1","assembly":{"same_incident":[{"event_id":"a"}],"same_node":[]}}`,
+		"older server": `{"event_id":"seed-1","assembly":{"same_incident":[{"event_id":"a"}]}}`,
+	} {
+		without := decode(data)
+		if _, present := without["same_node"]; present {
+			t.Errorf("%s: same_node key must be omitted when there is nothing in it", name)
+		}
+		if note, _ := without["note"].(string); strings.Contains(note, "same_node") {
+			t.Errorf("%s: note mentions a lane the output does not have: %q", name, note)
+		}
+	}
+}
+
+// Text every investigation reads stays as it was: the lane is not advertised in the
+// standing caveat or the tool description. The one line that does describe it names
+// no particular resource, so it needs no edit when another kind of shortage is added.
+func TestIncidentAssemblyTextStaysGeneric(t *testing.T) {
+	for name, text := range map[string]string{"caveat": assemblyCaveat, "description": IncidentAssemblyTool{}.Description()} {
+		if strings.Contains(text, "same_node") {
+			t.Errorf("%s mentions same_node; it belongs only in the note added when the lane is present", name)
+		}
+	}
+	lower := strings.ToLower(assemblySameNodeNote)
+	for _, word := range []string{"memory", "oom", "cpu", "disk", "kill"} {
+		if strings.Contains(lower, word) {
+			t.Errorf("the same_node note names a specific scenario (%q)", word)
+		}
+	}
+}

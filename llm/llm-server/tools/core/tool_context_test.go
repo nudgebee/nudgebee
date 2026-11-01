@@ -181,3 +181,38 @@ func TestIsEmpty_SkipHistoryOnlyConfigIsNotEmpty(t *testing.T) {
 		t.Fatal("a skip-history-only config must not read as empty")
 	}
 }
+
+func TestNBQueryConfig_DiscoveredTools(t *testing.T) {
+	// IsEmpty checks DiscoveredTools
+	if (NBQueryConfig{DiscoveredTools: []string{"postgres_query_execute"}}).IsEmpty() {
+		t.Fatal("IsEmpty: config with DiscoveredTools should not be empty")
+	}
+
+	// MergeFrom accumulates and deduplicates DiscoveredTools
+	dst := NBQueryConfig{DiscoveredTools: []string{"tool_a"}}
+	src := NBQueryConfig{DiscoveredTools: []string{"tool_b", "tool_a"}}
+	dst.MergeFrom(src)
+
+	if len(dst.DiscoveredTools) != 2 {
+		t.Fatalf("expected 2 unique tools, got %d: %v", len(dst.DiscoveredTools), dst.DiscoveredTools)
+	}
+	if dst.DiscoveredTools[0] != "tool_a" || dst.DiscoveredTools[1] != "tool_b" {
+		t.Fatalf("unexpected DiscoveredTools contents: %v", dst.DiscoveredTools)
+	}
+}
+
+func TestNBQueryConfig_KnowledgeHints(t *testing.T) {
+	if (NBQueryConfig{KnowledgeHints: []string{"ci"}}).IsEmpty() {
+		t.Fatal("IsEmpty: config with KnowledgeHints should not be empty")
+	}
+	dst := NBQueryConfig{}
+	dst.MergeFrom(NBQueryConfig{KnowledgeHints: []string{"ci"}})
+	if len(dst.KnowledgeHints) != 1 || dst.KnowledgeHints[0] != "ci" {
+		t.Fatalf("MergeFrom: expected hints copied, got %v", dst.KnowledgeHints)
+	}
+	keep := NBQueryConfig{KnowledgeHints: []string{"keep"}}
+	keep.MergeFrom(NBQueryConfig{KnowledgeHints: []string{"other"}})
+	if keep.KnowledgeHints[0] != "keep" {
+		t.Fatalf("MergeFrom: existing hints must be preserved, got %v", keep.KnowledgeHints)
+	}
+}

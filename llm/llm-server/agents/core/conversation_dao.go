@@ -255,6 +255,10 @@ type IConversationDao interface {
 	ListConversationMessages(status ConversationStatus, workerName string, conversationId string, deadWorker bool) ([]ConversationMessage, error)
 	SaveConversationMessage(id, conversationId, accountID, userId string, role MessageRole, messageType MessageType, message, response, agentName string, parentAgentId uuid.UUID, messageConfig any, messageContext string, llmProvider, llmModel string, status ConversationStatus) (uuid.UUID, error)
 	GetConversationMessage(id, accountId, conversationId string) (ConversationMessage, error)
+	// GetConversationMessageStatus reads only a message's status. A sub-agent
+	// that queries a delegated target runs under that target's account, which
+	// is not the message's account (see CheckMessageTerminationStatus).
+	GetConversationMessageStatus(id, conversationId string) (ConversationStatus, error)
 	CleanupConversationMessage(id, accountId string) error
 	UpdateConversationMessageContext(messageId string, context map[string]any) error
 	UpdateConversationMessage(id, response string, status ConversationStatus) error
@@ -286,6 +290,9 @@ type IConversationDao interface {
 	UpdateConversationToolResponse(toolId, messageId, conversationId, accountId, response string, status toolcore.NBToolResponseStatus) error
 	GetConversationMessageByAgentId(agentId string) (string, error)
 	GetAgentNameFromAgentId(agentId string) (string, error)
+	// GetAgentRunAttribution returns the conversation, message and user of the
+	// agent run agentId, provided it is an agentName run in accountId.
+	GetAgentRunAttribution(agentId, accountId, agentName string) (conversationId, messageId, userId string, err error)
 	UpdateConversationAgentThought(agentId, thought string) error
 	GetConversationAgentInput(agentId, accountId string) (string, error)
 	SaveConversationToolCall(conversationID, accountID, userID, messageId, agenId, toolId, toolName, toolArgs, thought, toolArgsSql, toolResult string, status toolcore.NBToolResponseStatus, toolType toolcore.NBToolType, childAgentId *string, references []toolcore.NBToolResponseReference, metadata []byte, memoryRefs []byte) error
@@ -1591,6 +1598,19 @@ func (chat *ConversationDao) GetAgentNameFromAgentId(agentId string) (string, er
 	return agentName, nil
 }
 
+func (chat *ConversationDao) GetAgentRunAttribution(agentId, accountId, agentName string) (string, string, string, error) {
+	query := `SELECT conversation_id::text, message_id::text, COALESCE(user_id::text, '') FROM llm_conversation_agent WHERE id = $1 AND account_id = $2 AND agent_name = $3`
+	var conversationId, messageId *string
+	var userId string
+	if err := chat.dbManager.Db.QueryRow(query, agentId, accountId, agentName).Scan(&conversationId, &messageId, &userId); err != nil {
+		return "", "", "", fmt.Errorf("history: failed to get agent run attribution: %w", err)
+	}
+	if conversationId == nil || messageId == nil {
+		return "", "", "", fmt.Errorf("history: agent run %s has no conversation or message", agentId)
+	}
+	return *conversationId, *messageId, userId, nil
+}
+
 func (chat *ConversationDao) GetConversationAgentParentAgentIdAndPreviousState(agenId string) (string, string) {
 	agentQuery := `SELECT parent_agent_id::text, state FROM llm_conversation_agent WHERE id = $1`
 	var parentAgentId, state sql.NullString
@@ -1859,7 +1879,7 @@ func (chat *ConversationDao) SaveConversationMessage(id, conversationId, account
 		if err = tx.Get(&currentStatus, `SELECT status FROM llm_conversations WHERE id = $1 AND account_id = $2 FOR UPDATE`, conversationId, accountID); err != nil {
 			return uuid.Nil, fmt.Errorf("history: lock queue conversation: %w", err)
 		}
-		if currentStatus != ConversationStatusInProgress {
+		if !QueueAcceptsStatus(currentStatus) {
 			return uuid.Nil, ErrQueueInactive
 		}
 		var count int
@@ -1972,7 +1992,9 @@ func (chat *ConversationDao) ClaimNextQueuedMessage(ctx context.Context, convers
 	if err := tx.GetContext(ctx, &status, `SELECT status FROM llm_conversations WHERE id = $1 FOR UPDATE`, conversationID); err != nil {
 		return nil, err
 	}
-	if status != ConversationStatusCompleted {
+	// A failed turn still advances the queue; a stopped or swept one (KILLED,
+	// TERMINATED) pauses it until the user sends a queued message explicitly.
+	if status != ConversationStatusCompleted && status != ConversationStatusFailed {
 		return nil, nil
 	}
 	var msg ConversationMessage
@@ -2261,6 +2283,7 @@ func (chat *ConversationDao) terminateConversation(ctx *security.RequestContext,
 // The code agent is the only thing that resolves a repo, so the stored value is
 // authoritative once set.
 func (chat *ConversationDao) UpdateConversationMessageConfig(id string, config toolcore.NBQueryConfig) error {
+	config = messageQueryConfig(config)
 	configJson, _ := common.MarshalJson(config)
 
 	query := `UPDATE llm_conversation_messages
@@ -2289,6 +2312,12 @@ func (chat *ConversationDao) UpdateConversationMessageGitRepo(id, gitRepo string
 		return fmt.Errorf("history: failed to update message git repo: %w", err)
 	}
 	return nil
+}
+
+func messageQueryConfig(config toolcore.NBQueryConfig) toolcore.NBQueryConfig {
+	// A delegated target belongs to its child agent row, not the shared turn.
+	config.DelegatedTarget = nil
+	return config
 }
 
 // UpdateConversationMessageFollowupConfig updates only the followup-specific fields in message_config.
@@ -2373,6 +2402,15 @@ func (chat *ConversationDao) CleanupConversationMessage(id, accountId string) er
 		return fmt.Errorf("history: failed to update message: %w", err)
 	}
 	return nil
+}
+
+func (chat *ConversationDao) GetConversationMessageStatus(id, conversationId string) (ConversationStatus, error) {
+	var status ConversationStatus
+	err := chat.dbManager.Db.QueryRowx(`select status from llm_conversation_messages WHERE id = $1 and conversation_id = $2`, id, conversationId).Scan(&status)
+	if err != nil {
+		return "", fmt.Errorf("history: failed to read message status: %w", err)
+	}
+	return status, nil
 }
 
 func (chat *ConversationDao) GetConversationMessage(id, accountId, conversationId string) (ConversationMessage, error) {
@@ -2704,7 +2742,10 @@ func (chat *ConversationDao) LoadConversationMessages(accountID, conversationID,
 	var args []interface{}
 	args = append(args, conversationID, accountID)
 
-	query := `SELECT role, message, response, id::text, message_type FROM llm_conversation_messages 
+	// message_config is only needed on followup rows (it names the followup type).
+	query := `SELECT role, message, response, id::text, message_type,
+		CASE WHEN message_type = 'followup' THEN COALESCE(message_config, '') ELSE '' END
+		FROM llm_conversation_messages
 		WHERE conversation_id = $1 AND account_id = $2 AND status <> 'QUEUED'`
 
 	if userID != "" {
@@ -2732,8 +2773,8 @@ func (chat *ConversationDao) LoadConversationMessages(accountID, conversationID,
 
 	var messages []map[string]string
 	for rows.Next() {
-		var role, message, response, id, mType string
-		if err := rows.Scan(&role, &message, &response, &id, &mType); err != nil {
+		var role, message, response, id, mType, mConfig string
+		if err := rows.Scan(&role, &message, &response, &id, &mType, &mConfig); err != nil {
 			slog.Info("history: failed to scan row:", "error:", err)
 			continue
 		}
@@ -2743,6 +2784,7 @@ func (chat *ConversationDao) LoadConversationMessages(accountID, conversationID,
 		msg["response"] = response
 		msg["id"] = id
 		msg["message_type"] = mType
+		msg["message_config"] = mConfig
 		messages = append(messages, msg)
 	}
 	if err := rows.Err(); err != nil {

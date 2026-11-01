@@ -29,7 +29,11 @@ import { ds } from '@utils/colors';
 // this set silently renders an empty builder with no suggestions rather than erroring.
 const PROMQL_METRIC_PROVIDERS = ['prometheus', 'chronosphere', 'victoria-metrics', 'openobserve', 'cubeapm'];
 
-const isPromQLMetricProvider = (provider) => PROMQL_METRIC_PROVIDERS.includes(provider);
+// SigNoz serves logs too, so it is a PromQL provider only on the metrics side.
+const PROMQL_METRICS_ONLY_PROVIDERS = ['signoz'];
+
+const isPromQLMetricProvider = (provider, providerType) =>
+  PROMQL_METRIC_PROVIDERS.includes(provider) || (providerType === 'metrics' && PROMQL_METRICS_ONLY_PROVIDERS.includes(provider));
 
 export const chipsToBlockLabelMatchers = (block) => {
   const labelMatchers = [];
@@ -197,7 +201,7 @@ const QueryModeSwitcher = ({
   // and a new array identity that made CodeMirror reconfigure itself each time.
   const extensions = useMemo(() => {
     const list = [EditorView.lineWrapping, cmPlaceholder(codeSample)];
-    if (!isPromQLMetricProvider(logProvider)) {
+    if (!isPromQLMetricProvider(logProvider, providerType)) {
       return list;
     }
     list.push(
@@ -505,7 +509,7 @@ const QueryModeSwitcher = ({
   };
 
   useEffect(() => {
-    if (isPromQLMetricProvider(logProvider)) {
+    if (isPromQLMetricProvider(logProvider, providerType)) {
       const fetchMetrics = async () => {
         try {
           // Keyed by provider: the old `${accountId}.prometheus.labels` key was shared

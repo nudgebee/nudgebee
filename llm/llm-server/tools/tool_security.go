@@ -164,6 +164,7 @@ func (m SecurityExecuteTool) InputSchema() core.ToolSchema {
 }
 
 func (m SecurityExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	nbRequestContext = nbRequestContext.ForTarget()
 	// check if input has security_view or cis_scan
 	if strings.Contains(input.Command, "cis_scan") {
 		resp, _, err := sqlToolCall(nbRequestContext, input.Command, "security_view", cisScanView, 10, nil)

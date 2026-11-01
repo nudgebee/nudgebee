@@ -29,6 +29,7 @@ import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import FilterCenterFocusIcon from '@mui/icons-material/FilterCenterFocus';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
+import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
 import 'reactflow/dist/style.css';
 import { ds } from 'src/utils/colors';
 import FilterDropdown from '@ui/FilterDropdown';
@@ -45,10 +46,12 @@ import { Modal } from '@ui/Modal';
 import ServiceMapLegends from '@components/k8s/details/ServiceMapLegends';
 import Tooltip from '@ui/Tooltip';
 import { Button } from '@ui/Button';
+import { DropdownMenu } from '@ui/DropdownMenu';
 import LogQueryBuilderAutocomplete, { PropertyFilterHelp } from '@components/k8s/common/LogQueryBuilderAutocomplete';
 import EdgeDetails from '@components/k8s/details/EdgeDetails';
 import Datetime from '@shared/format/Datetime';
 import KGSettings from './KGSettings';
+import { downloadRelationshipsCsv, downloadGraphImage, IMAGE_MAX_NODES } from './kgExport';
 import { parseUniqueKey, formatTypeBadge, decodeFilterOptions, computeFilterOptionsClientSide } from './kgFilterCascade';
 import { isTenantAdmin } from '@lib/auth';
 import PropTypes from 'prop-types';
@@ -923,6 +926,9 @@ const ServiceMapContent = ({ cardElevation }) => {
   const [searchResetKey, setSearchResetKey] = useState(0);
   const [focusedNodeId, setFocusedNodeId] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // True while the PNG export runs: ReactFlow renders every node (not just the
+  // on-screen ones) so the capture includes the whole visible graph.
+  const [isExportingImage, setIsExportingImage] = useState(false);
   // Collapse the left filter sidebar to give the graph canvas more room.
   const [isFilterCollapsed, setIsFilterCollapsed] = useState(false);
 
@@ -1285,6 +1291,9 @@ const ServiceMapContent = ({ cardElevation }) => {
           if (abortController.signal.aborted) return;
           console.error('Failed to fetch knowledge graph:', error);
           snackbar.error('Failed to load knowledge graph data.');
+          // Same as the error paths above: drop the previous filters' graph so
+          // it can't be shown or downloaded as this request's result.
+          setRawData({ nodes: [], edges: [] });
           setIsGraphLoading(false);
         });
     },
@@ -1478,6 +1487,17 @@ const ServiceMapContent = ({ cardElevation }) => {
   }, []);
 
   const { initialNodes, initialEdges } = useGraphBuilder(rawData, handleInfoClick, accountLookup, stableEnterFocusMode);
+
+  // Download: CSV only needs the graph response, so it stays available when the
+  // filtered result is over the render limit (nothing drawn). The image needs the
+  // drawn canvas. Without filters on a tenant over the limit the graph is never
+  // fetched, so there is nothing to export — the tooltip says why.
+  const isGraphRendered = !isLimitExceeded && nodes.length > 0;
+  let downloadDisabledReason = '';
+  if (isGraphLoading) downloadDisabledReason = 'Loading the graph…';
+  else if (!hasUserFilters && isLimitExceeded)
+    downloadDisabledReason = `The whole graph has ${kgNodeCount.toLocaleString()} nodes, too many to load. Apply a filter to download.`;
+  else if (!initialNodes.length) downloadDisabledReason = hasUserFilters ? 'No nodes match your filters.' : 'The knowledge graph is empty.';
 
   const adjacencyMap = useMemo(() => {
     const map = new Map();
@@ -1805,6 +1825,36 @@ const ServiceMapContent = ({ cardElevation }) => {
     };
     runLayout();
   }, [initialNodes, initialEdges, fitView, setNodes, setEdges, isLimitExceeded]);
+
+  // PNG export: isExportingImage turned off onlyRenderVisibleElements; wait two
+  // frames for the off-screen nodes to reach the DOM, then capture.
+  useEffect(() => {
+    if (!isExportingImage) return;
+    // The menu closes over the canvas, so the pointer usually rests on a node and its
+    // hover dimming would be baked into the image. Drop it (hover is re-armed after
+    // export; a pinned node keeps its highlight).
+    graphWrapperRef.current?.classList.remove('kg-hover-active');
+    let cancelled = false;
+    let innerFrame;
+    const outerFrame = window.requestAnimationFrame(() => {
+      innerFrame = window.requestAnimationFrame(async () => {
+        try {
+          const viewportEl = graphWrapperRef.current?.querySelector('.react-flow__viewport');
+          await downloadGraphImage(viewportEl, getNodes());
+        } catch (error) {
+          console.error('Error generating knowledge graph image:', error);
+          snackbar.error('Failed to generate the graph image.');
+        } finally {
+          if (!cancelled) setIsExportingImage(false);
+        }
+      });
+    });
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(outerFrame);
+      window.cancelAnimationFrame(innerFrame);
+    };
+  }, [isExportingImage, getNodes]);
 
   // Precompute edge index: nodeId -> Set of edge IDs connected to that node (for O(1) hover lookup)
   useEffect(() => {
@@ -2611,6 +2661,50 @@ const ServiceMapContent = ({ cardElevation }) => {
               </span>
             </Tooltip>
 
+            <Tooltip title={downloadDisabledReason} placement='bottom-end'>
+              <span>
+                <DropdownMenu
+                  align='end'
+                  size='sm'
+                  items={[
+                    {
+                      id: 'kg-download-csv',
+                      label: 'CSV',
+                      // Over the render limit nothing is drawn, so there is no "on screen":
+                      // export the whole response the filters returned instead.
+                      description: isGraphRendered
+                        ? 'Relationships on screen'
+                        : `All ${initialNodes.length.toLocaleString()} nodes matching your filters`,
+                      onSelect: () =>
+                        isGraphRendered ? downloadRelationshipsCsv(getNodes(), getEdges()) : downloadRelationshipsCsv(initialNodes, initialEdges),
+                    },
+                    {
+                      id: 'kg-download-image',
+                      label: 'Image (PNG)',
+                      ...(!isGraphRendered
+                        ? { description: 'Graph too large to draw — use CSV', disabled: true }
+                        : nodes.filter((n) => !n.hidden).length > IMAGE_MAX_NODES
+                        ? { description: `Up to ${IMAGE_MAX_NODES} nodes — filter further, or use CSV`, disabled: true }
+                        : { description: 'Graph on screen' }),
+                      onSelect: () => setIsExportingImage(true),
+                    },
+                  ]}
+                  trigger={
+                    <Button
+                      id='kg-download-btn'
+                      tone='secondary'
+                      size='sm'
+                      icon={<FileDownloadOutlinedIcon sx={{ width: '16px' }} />}
+                      disabled={!!downloadDisabledReason}
+                      loading={isExportingImage}
+                    >
+                      Download
+                    </Button>
+                  }
+                />
+              </span>
+            </Tooltip>
+
             {isTenantAdmin() && (
               <Button
                 id='kg-settings-btn'
@@ -2898,9 +2992,9 @@ const ServiceMapContent = ({ cardElevation }) => {
                   onEdgeMouseEnter={handleEdgeMouseEnter}
                   onEdgeMouseLeave={handleEdgeMouseLeave}
                   onPaneClick={handlePaneClick}
-                  onlyRenderVisibleElements={true}
+                  onlyRenderVisibleElements={!isExportingImage}
                   nodeTypes={STABLE_NODE_TYPES}
-                  onNodeMouseEnter={handleNodeMouseEnter}
+                  onNodeMouseEnter={isExportingImage ? undefined : handleNodeMouseEnter}
                   onNodeMouseLeave={handleNodeMouseLeave}
                   fitView
                   fitViewOptions={{ minZoom: FIT_VIEW_MIN_ZOOM }}

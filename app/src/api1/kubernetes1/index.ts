@@ -1894,6 +1894,7 @@ const apiKubernetes1 = {
           }
           impact { event_id title subject aggregation_key priority sources occurrence_count relation starts_at dt_seconds evidence { expected_in_window observed_in_window } }
           chronic { event_id title subject aggregation_key priority sources occurrence_count relation starts_at dt_seconds evidence { expected_in_window observed_in_window } }
+          same_node { event_id title subject aggregation_key priority sources occurrence_count relation starts_at dt_seconds evidence { expected_in_window observed_in_window } }
         }
       }
     }

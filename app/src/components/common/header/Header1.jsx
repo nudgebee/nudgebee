@@ -70,13 +70,45 @@ import Link from 'next/link';
 import apiAccount from '@api1/account';
 import { useTenantBranding } from '@hooks/useTenantBranding';
 import { docsUrl } from '@lib/externalUrls';
-import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import CampaignOutlinedIcon from '@mui/icons-material/CampaignOutlined';
 import CustomDrawer from '@shared/CustomDrawer';
 import ProductUpdatesDrawerContent from '@shared/widgets/ProductUpdatesDrawerContent';
 import { useProductUpdates } from '@hooks/useProductUpdates';
 
 const AGENT_UPGRADE_DOCS_URL = docsUrl('/docs/installation/agent/installation/upgrade/');
+
+// Top-of-page banners are full-width bars, not cards: square, bottom border only,
+// content centred on the bar's midline. Banner has no prop for this, so the frame
+// overrides its root through the class it accepts (the descendant selector
+// out-ranks Banner's own single-class rule).
+const GLOBAL_BANNER_FRAME_SX = {
+  '& .global-banner': { borderRadius: 0, borderWidth: '0 0 1px 0', alignItems: 'center' },
+  '& a': { color: ds.blue[600], textDecoration: 'underline', '&:hover': { textDecoration: 'none' } },
+};
+
+/**
+ * Banner for the top of the page. Unlike Banner's stacked `title`, the title is a
+ * lead-in on the same line as the message. `html` is the message as a (sanitised)
+ * HTML string, for callers whose copy carries a link.
+ */
+const GlobalBanner = ({ title, html, testId, ...bannerProps }) => (
+  <Box data-testid={testId} sx={GLOBAL_BANNER_FRAME_SX}>
+    <Banner
+      {...bannerProps}
+      className='global-banner'
+      message={
+        <>
+          {title && (
+            <Box component='span' sx={{ fontWeight: 'var(--ds-font-weight-semibold)', color: ds.gray[700], mr: ds.space[2] }}>
+              {title}
+            </Box>
+          )}
+          <span dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'rel'] }) }} />
+        </>
+      }
+    />
+  </Box>
+);
 
 const Header1 = ({ showBorder = false }) => {
   const { data } = useSession({ required: true });
@@ -116,6 +148,7 @@ const Header1 = ({ showBorder = false }) => {
 
   const [anchorActiveTab, setAnchorActiveTab] = useState('');
   const [snackbarOpen, setSnackbarOpen] = useState(false);
+  const [snackbarTitle, setSnackbarTitle] = useState('');
   const [snackbarMsg, setSnackbarMsg] = useState('');
   // A disconnected agent makes the whole page stale, so its banner is rendered
   // critical (red) and non-dismissible. The version-update banner stays warning.
@@ -490,6 +523,7 @@ const Header1 = ({ showBorder = false }) => {
 
   useEffect(() => {
     setSnackbarOpen(false);
+    setSnackbarTitle('');
     setSnackbarMsg('');
     setSnackbarCritical(false);
 
@@ -503,7 +537,8 @@ const Header1 = ({ showBorder = false }) => {
     if (selectedCluster?.agent?.status === 'NOT_CONNECTED') {
       setSnackbarCritical(true);
       setSnackbarOpen(true);
-      setSnackbarMsg(`The ${baseTitle} Agent is disconnected. The data shown may be stale — do not rely on it until the agent reconnects.`);
+      setSnackbarTitle('Agent disconnected');
+      setSnackbarMsg('The data shown may be stale — do not rely on it until the agent reconnects.');
       return;
     }
 
@@ -524,7 +559,8 @@ const Header1 = ({ showBorder = false }) => {
         let snackMessage = '';
         let disconnectedService = [];
         setSnackbarOpen(true);
-        snackMessage = `<span>Update the ${baseTitle} Agent Version to ${res.data?.nudgebee_list_versions.agent_version_latest}. Refer to <a href="${AGENT_UPGRADE_DOCS_URL}" target="_blank" rel="noopener noreferrer">this document</a> for instructions on how to update the agent.</span>`;
+        setSnackbarTitle('Agent update available');
+        snackMessage = `<span>Version ${res.data?.nudgebee_list_versions?.agent_version_latest} of the ${baseTitle} agent is available. Follow <a href="${AGENT_UPGRADE_DOCS_URL}" target="_blank" rel="noopener noreferrer">the upgrade guide</a> to update.</span>`;
         if (cluster.agent?.connection_status) {
           const connectionStatus = cluster.agent?.connection_status;
           if (!connectionStatus.relayConnection) {
@@ -606,7 +642,7 @@ const Header1 = ({ showBorder = false }) => {
     const bootedVersion = sessionStorage.getItem('appVersion');
     if (data?.appVersion && bootedVersion && data.appVersion !== bootedVersion) {
       setShowReloadNotification(true);
-      setReloadMsg('A new Application version is deployed. Please consider refreshing the page');
+      setReloadMsg('Please consider refreshing the page to get the latest changes.');
     } else {
       setShowReloadNotification(false);
       setReloadMsg('');
@@ -627,7 +663,10 @@ const Header1 = ({ showBorder = false }) => {
     // account-scoped page lands there, and picking anything else while on /vm
     // has to leave. Falling through to the branches below would push a
     // SelfHosted id at /cloud-account/details/, which has no provider to render.
-    if (e.cloud_provider === 'SelfHosted') {
+    //
+    // Home is the exception: it renders a VM fleet's overview itself, so the
+    // pick stays there like any other account's does.
+    if (e.cloud_provider === 'SelfHosted' && currentRouter.pathname !== '/home') {
       updateClusterState(e);
       // Preserve the tab when already on /vm; enter on Summary otherwise.
       currentRouter.push(`/vm?accountId=${e.value}${currentRouter.pathname === '/vm' ? hashString || '#summary' : '#summary'}`);
@@ -679,6 +718,7 @@ const Header1 = ({ showBorder = false }) => {
   // Helper to reduce repetitive state updates
   const updateClusterState = (_e) => {
     setSnackbarOpen(false);
+    setSnackbarTitle('');
     setSnackbarMsg('');
     setSnackbarCritical(false);
   };
@@ -705,96 +745,39 @@ const Header1 = ({ showBorder = false }) => {
         <ServiceNowAccountModal openModal={showServiceNowAccountModal} handleClose={() => setShowServiceNowAccountModal(false)} />
       )}
       {snackbarOpen && (
-        <Banner
+        <GlobalBanner
           tone={snackbarCritical ? 'critical' : 'warning'}
           dismissible={!snackbarCritical}
           onDismiss={handleCloseSnackbar}
-          message={
-            <span
-              dangerouslySetInnerHTML={{
-                __html: DOMPurify.sanitize(snackbarMsg, { ADD_ATTR: ['target', 'rel'] }),
-              }}
-            />
-          }
+          title={snackbarTitle}
+          html={snackbarMsg}
         />
       )}
       {showReloadNotification && (
-        <Banner
-          tone='warning'
-          dismissible
-          onDismiss={() => setShowReloadNotification(false)}
-          message={
-            <span
-              dangerouslySetInnerHTML={{
-                __html: DOMPurify.sanitize(reloadMsg),
-              }}
-            />
-          }
-        />
+        <GlobalBanner tone='warning' dismissible onDismiss={() => setShowReloadNotification(false)} title='New version deployed' html={reloadMsg} />
       )}
       {!setupLocked && allCluster && allCluster.length > 0 && !allCluster.some((c) => c.value !== 'demo') && !loading && (
-        <Box
-          data-testid='demo-account-banner'
-          sx={{
-            width: '100%',
-            background: ds.amber[100],
-            borderBottom: `1px solid ${ds.amber[300]}`,
-          }}
-        >
-          <Box
-            sx={{
-              px: ds.space[4],
-              py: ds.space[3],
-              display: 'flex',
-              alignItems: 'center',
-              gap: ds.space[3],
-              flexWrap: { xs: 'wrap', md: 'nowrap' },
-            }}
-          >
-            <Box
-              sx={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: ds.space[3],
-                color: ds.amber[700],
-                fontSize: ds.text.small,
-                fontWeight: ds.weight.regular,
-                flex: 1,
-                lineHeight: 1.5,
-                '& b': { fontWeight: ds.weight.semibold },
-              }}
-            >
-              <InfoOutlinedIcon sx={{ fontSize: 18, color: ds.amber[500], flexShrink: 0 }} />
-              <span>
-                <b>Demo data shown.</b> Connect your AWS, Azure, GCP, or Kubernetes account to see your own infrastructure.
-              </span>
-            </Box>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[3], flexShrink: 0 }}>
-              <DsButton
-                size='sm'
-                tone='primary'
-                data-testid='demo-banner-connect-account'
-                onClick={() => router.push('/user-management?integration=account#integrations')}
-              >
-                Connect Account
-              </DsButton>
-              <Typography
-                component='span'
-                data-testid='demo-banner-help'
-                sx={{
-                  fontSize: ds.text.caption,
-                  color: ds.amber[700],
-                  cursor: 'pointer',
-                  textDecoration: 'underline',
-                  '&:hover': { color: ds.amber[700] },
-                }}
-                onClick={() => window.open(docsUrl('/docs/features/'), '_blank', 'noopener')}
-              >
-                Need help?
-              </Typography>
-            </Box>
-          </Box>
-        </Box>
+        <GlobalBanner
+          testId='demo-account-banner'
+          tone='warning'
+          actionsPlacement='inline'
+          title='Demo data shown'
+          html='Connect your AWS, Azure, GCP, or Kubernetes account to see your own infrastructure.'
+          actions={[
+            {
+              id: 'demo-banner-connect-account',
+              label: 'Connect Account',
+              tone: 'primary',
+              onClick: () => router.push('/user-management?integration=account#integrations'),
+            },
+            {
+              id: 'demo-banner-help',
+              label: 'Need help?',
+              tone: 'link',
+              onClick: () => window.open(docsUrl('/docs/features/'), '_blank', 'noopener'),
+            },
+          ]}
+        />
       )}
 
       <Box
@@ -1017,6 +1000,8 @@ const Header1 = ({ showBorder = false }) => {
                       href={
                         selectedCluster?.cloud_provider === 'K8s'
                           ? `/kubernetes/details/${selectedCluster?.value}#summary`
+                          : selectedCluster?.cloud_provider === 'SelfHosted'
+                          ? `/vm?accountId=${selectedCluster?.value}#summary`
                           : `/cloud-account/details/${selectedCluster?.value}#summary`
                       }
                       target='_blank'

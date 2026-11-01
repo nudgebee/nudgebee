@@ -24,6 +24,7 @@ import Tooltip from '@ui/Tooltip';
 import QueryModeSwitcher from '@components/k8s/common/QueryModeSwitcher';
 import { Button as DsButton } from '@ui/Button';
 import { ds } from '@utils/colors';
+import { inferPromqlUnit, scaleSeriesToUnit } from '@lib/promqlUnit';
 
 interface KubernetesPrometheusProps {
   accountId: string;
@@ -38,6 +39,8 @@ interface KubernetesPrometheusProps {
     startTime: number;
     endTime: number;
   };
+  /** Read each chart's unit off its PromQL and print it on the axis, tooltip and legend. */
+  inferUnits?: boolean;
 }
 
 interface Header {
@@ -59,6 +62,7 @@ const KubernetesPrometheus: React.FC<KubernetesPrometheusProps> = ({
     startTime: 0,
     endTime: 0,
   },
+  inferUnits = false,
 }) => {
   const router = useRouter();
   const k8sProm = 'k8sProm';
@@ -73,6 +77,8 @@ const KubernetesPrometheus: React.FC<KubernetesPrometheusProps> = ({
     endDate: dateTime.endTime > 0 ? dateTime.endTime : new Date().getTime(),
   });
   const [showChartView, setShowChartView] = useState<boolean>(chartView);
+  // Charts (by position) whose other objects were asked for, beside the alerting one.
+  const [showAllObjects, setShowAllObjects] = useState<Record<number, boolean>>({});
   const [conversationId, setConversationId] = useState('');
   const [query, setQuery] = useState('');
   const [llmQueryResponse, setLlmQueryResponse] = useState('');
@@ -133,6 +139,7 @@ const KubernetesPrometheus: React.FC<KubernetesPrometheusProps> = ({
       setErrorMsg('');
       setData([]);
       setChartData([]);
+      setShowAllObjects({});
       const queries: { [key: string]: string } = {};
       const evidences: { [key: number]: any } = {};
       preparedEvidences.forEach((evidence, index) => {
@@ -229,11 +236,16 @@ const KubernetesPrometheus: React.FC<KubernetesPrometheusProps> = ({
                   values.push(0);
                 }
               });
+              // The prometheus_enricher flags the series of the object the alert
+              // fired for and puts it first; say so, as other objects share the result.
+              // The chart draws only the flagged series until asked for the rest.
+              const metricLabel = Object.entries(item.metric)
+                .map(([key, value]) => `${key}=${value}`)
+                .join('\n');
               chartDataDataset.push({
-                label: Object.entries(item.metric)
-                  .map(([key, value]) => `${key}=${value}`)
-                  .join('\n'),
+                label: item.alerting ? `Alerting object\n${metricLabel}` : metricLabel,
                 data: values,
+                alerting: Boolean(item.alerting),
               });
               const metricData = metricKeys.map((h, i) => {
                 if (item.metric[h]) {
@@ -377,7 +389,16 @@ const KubernetesPrometheus: React.FC<KubernetesPrometheusProps> = ({
       }
     });
 
-    return { tableData, graphData };
+    if (!inferUnits) {
+      return { tableData, graphData };
+    }
+    return {
+      tableData,
+      graphData: graphData.map((entry: any) => {
+        const { datasets, formatValue } = scaleSeriesToUnit(entry.data.data, inferPromqlUnit(entry.query));
+        return { ...entry, data: { ...entry.data, data: datasets }, formatValue };
+      }),
+    };
   };
 
   const handleSubmit = (
@@ -561,31 +582,60 @@ const KubernetesPrometheus: React.FC<KubernetesPrometheusProps> = ({
           {loading ? (
             <Skeleton shape='rect' width='98%' height={ds.space.mul(0, 200)} />
           ) : showChartView ? (
-            chartData.map((cd: any, index: number) => (
-              <Box sx={{ mb: ds.space[2] }} key={`chart-${cd.id || index}`}>
-                <Divider sx={{ mt: ds.space[6] }} />
-                {cd.title && (
-                  <Typography variant='body1' sx={{ mb: ds.space[4], fontWeight: 'var(--ds-font-weight-semibold)' }}>
-                    {cd.title}
+            chartData.map((cd: any, index: number) => {
+              // An alert rule returns every object that matches it. When the alert's
+              // own series is flagged, draw only that and count the rest.
+              const alertingSeries = cd.data.data.filter((series: any) => series.alerting);
+              const otherCount = cd.data.data.length - alertingSeries.length;
+              const hasOtherObjects = alertingSeries.length > 0 && otherCount > 0;
+              const onlyAlerting = hasOtherObjects && !showAllObjects[index];
+              return (
+                <Box sx={{ mb: ds.space[2] }} key={`chart-${cd.id || index}`}>
+                  <Divider sx={{ mt: ds.space[6] }} />
+                  {cd.title && (
+                    <Typography variant='body1' sx={{ mb: ds.space[4], fontWeight: 'var(--ds-font-weight-semibold)' }}>
+                      {cd.title}
+                    </Typography>
+                  )}
+                  <Typography variant='body1' sx={{ mb: ds.space[4] }}>
+                    Query: {cd.query}
+                    {cd.helperText && <Typography sx={{ color: 'var(--ds-red-500)' }}>{cd.helperText}</Typography>}
                   </Typography>
-                )}
-                <Typography variant='body1' sx={{ mb: ds.space[4] }}>
-                  Query: {cd.query}
-                  {cd.helperText && <Typography sx={{ color: 'var(--ds-red-500)' }}>{cd.helperText}</Typography>}
-                </Typography>
-                <Chart.Line
-                  id={`k8sPromChart-${cd.id || index}`}
-                  dataset={cd.data.data}
-                  labels={cd.data.labels}
-                  legendOptions={{
-                    renderer: 'html',
-                  }}
-                  interactionOptions={{
-                    enabled: false,
-                  }}
-                />
-              </Box>
-            ))
+                  {/* Remounted on toggle: the chart colours series only when it is created, so
+                      series added to a live chart would all draw in the default grey. */}
+                  <Chart.Line
+                    key={onlyAlerting ? 'alerting' : 'all'}
+                    id={`k8sPromChart-${cd.id || index}`}
+                    dataset={onlyAlerting ? alertingSeries : cd.data.data}
+                    labels={cd.data.labels}
+                    legendOptions={{
+                      renderer: 'html',
+                    }}
+                    interactionOptions={{
+                      enabled: false,
+                    }}
+                    formatValue={cd.formatValue}
+                  />
+                  {hasOtherObjects && (
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mt: ds.space[2] }}>
+                      <Typography variant='body2' sx={{ color: ds.gray[600] }} data-testid={`prom-other-objects-${index}`}>
+                        {onlyAlerting
+                          ? `${otherCount} other ${otherCount === 1 ? 'object' : 'objects'} also matched this alert's query.`
+                          : `Showing all ${cd.data.data.length} objects that matched this alert's query.`}
+                      </Typography>
+                      <DsButton
+                        tone='link'
+                        size='sm'
+                        data-testid={`prom-other-objects-toggle-${index}`}
+                        onClick={() => setShowAllObjects((shown) => ({ ...shown, [index]: !shown[index] }))}
+                      >
+                        {onlyAlerting ? 'Show all' : 'Show only the alerting object'}
+                      </DsButton>
+                    </Box>
+                  )}
+                </Box>
+              );
+            })
           ) : (
             data.map((cd: any, index: number) => (
               <Box sx={{ mb: ds.space[6] }} key={`${uuidv4()}`}>

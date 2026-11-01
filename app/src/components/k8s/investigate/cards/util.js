@@ -3,6 +3,7 @@ import Datetime from '@shared/format/Datetime';
 import { Typography } from '@mui/material';
 import { formatDurationInTrace, getMsInTimestamp, redK8sErrorCodes as redBanner, snakeToTitleCase } from 'src/utils/common';
 import zlib from 'zlib';
+import { summarizeAlertLabels } from './cardSummaries';
 
 export const getTableData = (t) => {
   const headers = t.data.headers || t.data.rows?.[0]?.map((_, i) => `Column ${i + 1}`);
@@ -54,6 +55,10 @@ export const getTableData = (t) => {
       if (message?.trim() || '') {
         tableInsight.push({ message: message, severity: 'Critical' });
       }
+    }
+    // Otherwise the card still says which alert its labels describe.
+    if (tableInsight.length === 0) {
+      tableInsight.push(...summarizeAlertLabels(convertedJson));
     }
   }
   if (t.data.table_name.includes('Pod events') || t.data.table_name.includes('Related Events')) {

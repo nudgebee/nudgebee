@@ -440,3 +440,28 @@ func TestQueueOnlyRequestCannotFallThroughToForeground(t *testing.T) {
 		}
 	}
 }
+
+func TestQueueAdmits(t *testing.T) {
+	cases := []struct {
+		status    core.ConversationStatus
+		messageId string
+		want      bool
+	}{
+		{core.ConversationStatusInProgress, "", true},
+		{core.ConversationStatusInProgress, "message", true},
+		// A turn resumed from a followup answer runs while the conversation stays WAITING.
+		{core.ConversationStatusWaiting, "", true},
+		{core.ConversationStatusWaitingForClientTool, "", true},
+		// A named message on a waiting conversation is that turn's own retry or resume.
+		{core.ConversationStatusWaiting, "message", false},
+		{core.ConversationStatusCompleted, "", false},
+		{core.ConversationStatusFailed, "", false},
+		{core.ConversationStatusTerminated, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.status)+"/"+tc.messageId, func(t *testing.T) {
+			got := queueAdmits(core.Conversation{Status: tc.status}, &ConversationApiRequest{MessageId: tc.messageId})
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}

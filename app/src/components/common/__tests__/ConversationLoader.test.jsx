@@ -18,3 +18,10 @@ describe('ConversationLoader elapsed timer', () => {
     expect(screen.queryByRole('timer')).toBeNull();
   });
 });
+
+describe('ConversationLoader label', () => {
+  it('shows the given line instead of a rotating phrase', () => {
+    render(<ConversationLoader label='Step 2 of 4 · Investigating: collecting and reading the evidence' />);
+    expect(screen.getByRole('status').textContent).toBe('Step 2 of 4 · Investigating: collecting and reading the evidence');
+  });
+});

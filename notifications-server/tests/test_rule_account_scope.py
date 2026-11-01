@@ -35,6 +35,7 @@ ALL_COLUMNS = [c.name for c in NotificationRules.__table__.columns]
 def _rule(**overrides):
     base = dict(
         id="rule-1",
+        name="rule-1",
         source="troubleshoot",
         account_id=None,
         scope_mode=SCOPE_ALL,

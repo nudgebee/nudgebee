@@ -49,12 +49,13 @@ const Answer: React.FC<{ answer: NotificationRouteCheck; type: RuleTypeKey; onSh
     ) : (
       'Sent to each app’s default channel'
     );
-    why =
-      answer.reason === 'rule' ? (
-        <>By {joinNodes(answer.rules.map((r) => <RuleLink key={r.id} rule={r} onShowRule={onShowRule} />))}.</>
-      ) : (
-        'No rule covers it, so “When no rule matches” decides.'
-      );
+    if (answer.reason === 'rule') {
+      why = <>By {joinNodes(answer.rules.map((r) => <RuleLink key={r.id} rule={r} onShowRule={onShowRule} />))}.</>;
+    } else if (answer.reason === 'always_sent') {
+      why = 'Approval requests always go out, whatever the rules say.';
+    } else {
+      why = 'No rule covers it, so “When no rule matches” decides.';
+    }
   } else if (answer.result === 'held') {
     head = 'Held for the hourly summary';
     why = 'A rule groups these into one Slack message per hour, in Slack’s default channel.';
@@ -142,7 +143,10 @@ const TestNotificationModal: React.FC<Props> = ({ open, defaultType, accounts, o
   }, [open, def.workloads, account]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setAnswer(null);
+      return;
+    }
     const current = ++request.current;
     setLoading(true);
     setError('');
@@ -246,7 +250,7 @@ const TestNotificationModal: React.FC<Props> = ({ open, defaultType, accounts, o
           <Typography role='alert' sx={{ fontSize: ds.text.body, color: ds.red[600] }}>
             {error}
           </Typography>
-        ) : loading && !answer ? (
+        ) : loading ? (
           <Skeleton height={72} />
         ) : answer ? (
           <Answer answer={answer} type={type} onShowRule={onShowRule} />

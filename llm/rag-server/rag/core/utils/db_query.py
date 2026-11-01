@@ -603,3 +603,175 @@ def get_servicenow_kb_integrations_for_tenant(tenant_id):
     except Exception as e:
         logger.exception("Error fetching ServiceNow KB integrations for tenant %s: %s", tenant_id, e)
         return []
+
+
+# Single-entry cache for the platform_capability half of llm_kb_capability_entries:
+# global, not account-keyed (see the migration comment — the capability set
+# is a property of what's deployed, not of any one account), so there's only
+# ever one cache slot rather than the per-account dicts above.
+_capability_catalog_cache: dict | None = None
+_capability_catalog_cache_lock = threading.Lock()
+_CAPABILITY_CATALOG_CACHE_TTL_SECONDS = 300
+
+
+def get_capability_catalog() -> list[dict]:
+    """Return the platform's real, classified capabilities (agent tools +
+    workflow tasks) — the entry_type = 'platform_capability' rows of
+    ``llm_kb_capability_entries``, written by llm-server
+    (tools/core/capability_catalog.go), read here directly over this
+    module's existing metastore connection rather than a call back into
+    llm-server (no reverse-direction HTTP dependency exists anywhere in this
+    codebase; see the migration's comment for why this mirrors the
+    integrations-config reads above instead of introducing one).
+
+    llm_kb_capability_entries also holds this module's own entry_type =
+    'kb_collection' rows (see set_kb_collection_summary below) and llm-server's
+    entry_type = 'kb_document_mark' rows (a user's Fact/SOP decision, never
+    read or written from here) — the WHERE clause is what keeps this call's
+    result to platform_capability rows alone.
+
+    A capability with scope 'unclassified' is included, not filtered out —
+    callers must treat it the same as 'no capability exists', never as
+    narrow. On any read failure, returns an empty list (fail closed: no
+    known capabilities to ground a mention against is safer than a partial
+    or stale list silently standing in for the real one).
+    """
+    global _capability_catalog_cache
+    now = time.time()
+    if _capability_catalog_cache and now - _capability_catalog_cache["time"] < _CAPABILITY_CATALOG_CACHE_TTL_SECONDS:
+        fresh: list[dict] = _capability_catalog_cache["data"]
+        return fresh
+
+    with _capability_catalog_cache_lock:
+        if (
+            _capability_catalog_cache
+            and time.time() - _capability_catalog_cache["time"] < _CAPABILITY_CATALOG_CACHE_TTL_SECONDS
+        ):
+            cached: list[dict] = _capability_catalog_cache["data"]
+            return cached
+        try:
+            with engine.connect() as connection:
+                query = text(
+                    "SELECT name, surface, scope, description FROM llm_kb_capability_entries "
+                    "WHERE entry_type = 'platform_capability'"
+                )
+                rows = connection.execute(query)
+                catalog = [
+                    {"name": row.name, "surface": row.surface, "scope": row.scope, "description": row.description}
+                    for row in rows
+                ]
+            _capability_catalog_cache = {"data": catalog, "time": time.time()}
+            logger.info(f"Loaded {len(catalog)} capabilities from llm_kb_capability_entries")
+            return catalog
+        except Exception as e:
+            logger.exception("Error fetching capability catalog: %s", e)
+            return []
+
+
+def set_kb_collection_summary(
+    collection_name: str, kinds: list[str], shapes: list[str], capabilities: list[str]
+) -> None:
+    """Write a collection's entry_type = 'kb_collection' rollup row of
+    ``llm_kb_capability_entries``: every kind, shape and grounded capability the
+    labelled chunks of the collection carry. A collection with no labelled chunk
+    has no row, so an empty rollup deletes it.
+
+    The row is derived data, recomputed by documents/processing.py
+    refresh_kb_collection_summary from the labels on the chunks' vector payload
+    (which is what says whether a chunk is classified, and what RAG's
+    metadata_filter matches at query time) — it only feeds the Knowledge Base
+    tab. Best-effort: a failure is logged and swallowed rather than failing
+    ingestion; the row is rebuilt by the next refresh or the backfill.
+    """
+    try:
+        with engine.connect() as connection:
+            with connection.begin():
+                if not (kinds or shapes or capabilities):
+                    connection.execute(
+                        text(
+                            "DELETE FROM llm_kb_capability_entries "
+                            "WHERE entry_type = 'kb_collection' AND collection_name = :collection_name"
+                        ),
+                        {"collection_name": collection_name},
+                    )
+                    return
+                connection.execute(
+                    text("""
+                        INSERT INTO llm_kb_capability_entries
+                            (entry_type, collection_name, kinds, shapes, capabilities, updated_at)
+                        VALUES
+                            ('kb_collection', :collection_name, :kinds, :shapes, :capabilities, NOW())
+                        ON CONFLICT (collection_name) WHERE entry_type = 'kb_collection' DO UPDATE
+                        SET kinds = EXCLUDED.kinds,
+                            shapes = EXCLUDED.shapes,
+                            capabilities = EXCLUDED.capabilities,
+                            updated_at = NOW()
+                        """),
+                    {
+                        "collection_name": collection_name,
+                        "kinds": kinds,
+                        "shapes": shapes,
+                        "capabilities": capabilities,
+                    },
+                )
+    except Exception as e:
+        logger.exception("Error writing the KB classification summary of collection %s: %s", collection_name, e)
+
+
+def get_kb_summary_collection_names() -> set[str]:
+    """Every collection that has an entry_type = 'kb_collection' row. The backfill
+    uses it to find collections whose chunks are labelled but whose row is missing.
+
+    Raises on a database error: an empty set is a meaningful answer ("no rollups
+    yet"), so a failed read must not be mistaken for one.
+    """
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text("SELECT collection_name FROM llm_kb_capability_entries WHERE entry_type = 'kb_collection'")
+        )
+        return {row.collection_name for row in rows}
+
+
+def has_kb_collection_summary(collection_name: str) -> bool:
+    """Whether a collection has a rollup row. False on a database error: the
+    caller only uses it to decide whether a row needs correcting, and leaving
+    a stale row is the harmless side of a failed read."""
+    try:
+        with engine.connect() as connection:
+            return (
+                connection.execute(
+                    text(
+                        "SELECT 1 FROM llm_kb_capability_entries "
+                        "WHERE entry_type = 'kb_collection' AND collection_name = :collection_name"
+                    ),
+                    {"collection_name": collection_name},
+                ).first()
+                is not None
+            )
+    except Exception as e:
+        logger.exception("Error checking the KB classification summary of collection %s: %s", collection_name, e)
+        return False
+
+
+def delete_kb_capabilities(collection_name: str) -> None:
+    """Drop a knowledge-base collection's entry_type = 'kb_collection' row.
+
+    Called when the collection itself is deleted (a KB delete, an integration KB
+    delete, or the delete-then-recreate an edit performs), so a recreated
+    collection never shows the labels of the one it replaced.
+
+    Best-effort: the collection is already gone by the time this runs, so a
+    failure is logged rather than failing the delete.
+    """
+    try:
+        with engine.connect() as connection:
+            with connection.begin():
+                connection.execute(
+                    text(
+                        "DELETE FROM llm_kb_capability_entries "
+                        "WHERE entry_type = 'kb_collection' AND collection_name = :collection_name"
+                    ),
+                    {"collection_name": collection_name},
+                )
+    except Exception as e:
+        logger.exception("Error deleting the KB classification summary of collection %s: %s", collection_name, e)

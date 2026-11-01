@@ -91,7 +91,7 @@ var providerDefaultServices = map[string][]string{
 		"AmazonEFS",
 		"AmazonBedrock",
 		"AWSCloudFormation",
-		"AmazonXray",
+		"AWSXRay",
 		"AWSBackup",
 		"AWSCloudShell",
 		"AmazonCloudFront",
@@ -107,7 +107,6 @@ var providerDefaultServices = map[string][]string{
 		"AWSConfig",
 		"AWSSystemsManager",
 		"AWSFargate",
-		"AWSECS",
 	},
 	"azure": {
 		"microsoft.compute/virtualmachines",

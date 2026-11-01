@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/prompts"
+	"nudgebee/llm/security"
 	"nudgebee/llm/security/egressfilter"
 	toolscore "nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
@@ -65,7 +67,25 @@ var logger = slog.New(
 func authHandlerMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 
-		if c.Request.URL.Path == "/health" || strings.HasPrefix(c.Request.URL.Path, "/debug") || strings.HasPrefix(c.Request.URL.Path, "/swagger") || c.Request.URL.Path == "/openapi.json" {
+		// pprof (heap dumps, goroutine stacks) can expose secrets held in memory,
+		// and workspace pods can reach this port, so /debug always needs the
+		// service token — as the token header or "Authorization: Bearer", which
+		// profiling scrapers can send — and is refused when no token is set (#33912).
+		if c.Request.URL.Path == "/debug" || strings.HasPrefix(c.Request.URL.Path, "/debug/") {
+			if !debugRequestAuthorized(c.Request) {
+				if config.Config.LlmServerToken == "" {
+					c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"message": "debug endpoints are disabled until LLM_SERVER_TOKEN is configured"})
+				} else {
+					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"message": "invalid " + config.Config.LlmServerTokenHeader})
+				}
+				return
+			}
+			c.Set(CTX_IS_PUBLIC, false)
+			c.Next()
+			return
+		}
+
+		if c.Request.URL.Path == "/health" || strings.HasPrefix(c.Request.URL.Path, "/swagger") || c.Request.URL.Path == "/openapi.json" {
 			c.Set(CTX_IS_PUBLIC, true)
 			c.Next()
 			return
@@ -95,6 +115,43 @@ func authHandlerMiddleware() gin.HandlerFunc {
 		c.Set(CTX_IS_PUBLIC, false)
 		c.Next()
 	}
+}
+
+// debugRequestAuthorized reports whether a /debug request carries the
+// service token, as the configured token header or as a bearer token.
+// Always false when no token is configured.
+func debugRequestAuthorized(req *http.Request) bool {
+	token := config.Config.LlmServerToken
+	if token == "" {
+		return false
+	}
+	// Length check first so an oversized header is never copied for comparison.
+	headerToken := req.Header.Get(config.Config.LlmServerTokenHeader)
+	if len(headerToken) == len(token) && subtle.ConstantTimeCompare([]byte(headerToken), []byte(token)) == 1 {
+		return true
+	}
+	bearer, ok := strings.CutPrefix(req.Header.Get("Authorization"), "Bearer ")
+	return ok && len(bearer) == len(token) && subtle.ConstantTimeCompare([]byte(bearer), []byte(token)) == 1
+}
+
+// newRouter builds the engine with every global middleware attached. Gin only
+// applies middleware to routes registered after r.Use, so pprof is registered
+// last: registered first, it bypassed auth entirely (#33912).
+func newRouter() *gin.Engine {
+	r := gin.New()
+	r.Use(gin.Recovery())
+	// otelgin must run before sloggin so the server span is on the request
+	// context when the access log line is emitted with trace_id/span_id.
+	r.Use(otelgin.Middleware(config.SERVICE_NAME))
+	slogginConfig := sloggin.DefaultConfig()
+	slogginConfig.WithTraceID = true
+	slogginConfig.WithSpanID = true
+	slogginConfig.Filters = []sloggin.Filter{sloggin.IgnorePath("/health")}
+	r.Use(sloggin.NewWithConfig(logger, slogginConfig))
+	r.Use(traceResponseHeaderMiddleware())
+	r.Use(authHandlerMiddleware())
+	pprof.Register(r)
+	return r
 }
 
 func traceResponseHeaderMiddleware() gin.HandlerFunc {
@@ -203,19 +260,7 @@ func main() {
 	egressfilter.InitTenantConfigLoader()
 
 	gin.SetMode(gin.ReleaseMode)
-	r := gin.New()
-	pprof.Register(r)
-	r.Use(gin.Recovery())
-	// otelgin must run before sloggin so the server span is on the request
-	// context when the access log line is emitted with trace_id/span_id.
-	r.Use(otelgin.Middleware(config.SERVICE_NAME))
-	slogginConfig := sloggin.DefaultConfig()
-	slogginConfig.WithTraceID = true
-	slogginConfig.WithSpanID = true
-	slogginConfig.Filters = []sloggin.Filter{sloggin.IgnorePath("/health")}
-	r.Use(sloggin.NewWithConfig(logger, slogginConfig))
-	r.Use(traceResponseHeaderMiddleware())
-	r.Use(authHandlerMiddleware())
+	r := newRouter()
 
 	var tracer = otel.Tracer(config.SERVICE_NAME)
 	var meter = otel.Meter(config.SERVICE_NAME)
@@ -236,6 +281,29 @@ func main() {
 	egressfilter.StartTenantConfigCacheCleanup(syncCtx)
 	go toolscore.StartIntegrationKBSync(syncCtx)
 	slog.Info("main: started integration KB sync background thread")
+
+	// One-time sync of the capability catalog (agent tools + runbook-server
+	// workflow tasks, classified narrow/pass_through) into the shared table
+	// rag-server reads directly. Startup-only: the underlying catalog only
+	// changes on deploy, not per-request. See tools/core/capability_catalog.go.
+	// Backgrounded with a bounded timeout so a slow/unreachable runbook-server
+	// cannot block this process's own startup past its readiness probe;
+	// deliberately single-attempt (no retry loop) per the "not on a timer"
+	// design above — a failed sync is logged and picked up by the next deploy.
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("main: recovered from panic in capability catalog sync", "panic", r)
+			}
+		}()
+		syncTimeoutCtx, cancel := context.WithTimeout(syncCtx, 30*time.Second)
+		defer cancel()
+		reqCtx := security.NewRequestContextForSuperAdmin()
+		reqCtx.SetContext(syncTimeoutCtx)
+		if err := toolscore.SyncCapabilityCatalog(reqCtx); err != nil {
+			slog.Error("main: failed to sync capability catalog", "error", err)
+		}
+	}()
 
 	// Clean up stale workspace pods on startup, and keep sweeping periodically:
 	// the lazy-create path never re-checks a healthy pod's image, so without

@@ -2,6 +2,7 @@ package triage
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -50,16 +51,20 @@ type SuggestionRisk struct {
 	Warnings []string `json:"warnings"` // human-readable warnings for the user
 }
 
+// labelMatchersRe matches the {label="value"} selectors of a metric expression.
+var labelMatchersRe = regexp.MustCompile(`\{[^}]*\}`)
+
 // metricHint captures semantic knowledge about a metric that the statistical
 // algorithm can't infer on its own.
 type metricHint struct {
-	isBounded      bool    // true for percentage/ratio metrics (0-100 or 0-1)
-	upperBound     float64 // maximum possible value (e.g., 100 for percentage)
-	lowerBound     float64 // minimum possible value (e.g., 0)
-	isMonotonic    bool    // true for time-since or counter metrics
-	isBoolean      bool    // true for == comparisons that return matching values
-	metricCategory string  // "percentage", "time_since", "counter", "rate", "gauge", "boolean", "unknown"
-	humanUnit      string  // "%" , "seconds", "count", etc.
+	isBounded       bool    // true for percentage/ratio metrics (0-100 or 0-1)
+	upperBound      float64 // maximum possible value (e.g., 100 for percentage)
+	lowerBound      float64 // minimum possible value (e.g., 0)
+	isMonotonic     bool    // true for time-since or counter metrics
+	isBoolean       bool    // true for == comparisons that return matching values
+	isCapacityLimit bool    // true when the threshold is the margin before a resource runs out
+	metricCategory  string  // "percentage", "time_since", "counter", "rate", "gauge", "boolean", "unknown"
+	humanUnit       string  // "%" , "seconds", "count", etc.
 }
 
 // detectMetricHints analyzes the metric expression and threshold to infer semantic properties.
@@ -143,6 +148,24 @@ func detectMetricHints(alertDef *AlertDefinition) *metricHint {
 	if hint.metricCategory == "unknown" && (strings.Contains(metricName, " == ") || operator == "==") {
 		hint.isBoolean = true
 		hint.metricCategory = "boolean"
+	}
+
+	// --- Capacity limits (free space, quota, expiry) ---
+	// The threshold here is the margin left before a resource runs out, not a noise boundary.
+	// Matched on metric names only — a label value such as path="/expired" says nothing about
+	// what the metric measures.
+	capacityPatterns := []string{
+		"available_bytes", "avail_bytes", "free_bytes", "files_free", "inodes_free",
+		"freestoragespace", "freeablememory", "volume_stats", "resourcequota",
+		"not_after", "cert_expiry", "certificate_expiration", "expiration_timestamp", "expire_time",
+		"burstbalance", "creditbalance",
+	}
+	metricNamesOnly := labelMatchersRe.ReplaceAllString(metricName, "")
+	for _, p := range capacityPatterns {
+		if strings.Contains(metricNamesOnly, p) {
+			hint.isCapacityLimit = true
+			break
+		}
 	}
 
 	// --- Rate metrics from Prometheus ---
@@ -328,6 +351,22 @@ func ValidateSuggestion(suggestion *ThresholdSuggestion, alertDef *AlertDefiniti
 			if suggestion.Confidence == "high" {
 				suggestion.Confidence = "medium"
 			}
+		}
+	}
+
+	// --- Gate 7: Loosened capacity limit ---
+	// Moving a free-space, quota or expiry threshold further from where it fires today leaves
+	// less time to react before the resource runs out, so it is never surfaced as clean advice.
+	loosened := (isGreaterThanOperator(alertDef.Operator) && suggestion.SuggestedThreshold > alertDef.CurrentThreshold) ||
+		(isLessThanOperator(alertDef.Operator) && suggestion.SuggestedThreshold < alertDef.CurrentThreshold)
+	if hint.isCapacityLimit && loosened {
+		if risk.Level != "dangerous" {
+			risk.Level = "review"
+		}
+		risk.Warnings = append(risk.Warnings,
+			"This alert guards a capacity limit (free space, quota or expiry). Loosening it leaves less time to react before the resource runs out — change it only if the current margin is more than you need.")
+		if suggestion.Confidence == "high" {
+			suggestion.Confidence = "medium"
 		}
 	}
 

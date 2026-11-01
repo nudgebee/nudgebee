@@ -479,7 +479,7 @@ deploy/kubernetes/
 │   │   ├── app-0.1.tgz
 │   │   ├── rag-server-0.1.tgz
 │   │   ├── nudgebee-qdrant-server-1.0.0.tgz
-│   │   ├── postgresql-13.2.25.tgz    # External (Bitnami)
+│   │   ├── clickhouse-4.1.14.tgz     # External (Bitnami)
 │   │   └── ...
 │   └── templates/                     # Common resources
 │       ├── secret.yaml

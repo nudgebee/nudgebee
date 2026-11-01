@@ -443,6 +443,7 @@ func UpdateTicket(ctx *gin.Context) {
 			}
 			updateFields.Impact = selectValue(fields["impact"])
 			updateFields.Urgency = selectValue(fields["urgency"])
+			updateFields.Raw = fields
 			if labelsRaw, ok := fields["labels"].([]any); ok {
 				labels := make([]string, 0, len(labelsRaw))
 				for _, l := range labelsRaw {

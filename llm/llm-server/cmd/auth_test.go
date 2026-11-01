@@ -78,3 +78,43 @@ func TestAuthHandlerMiddleware(t *testing.T) {
 		assert.Equal(t, http.StatusOK, do(r, "GET", "/api/v1/workspace/anything", ""))
 	})
 }
+
+// pprof can leak secrets held in memory and workspace pods can reach this
+// port (#33912). These use the real router so they also pin that pprof is
+// registered after the auth middleware — registered first, it bypassed auth.
+func TestDebugEndpointsRequireServiceToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	prevToken := config.Config.LlmServerToken
+	prevHeader := config.Config.LlmServerTokenHeader
+	t.Cleanup(func() {
+		config.Config.LlmServerToken = prevToken
+		config.Config.LlmServerTokenHeader = prevHeader
+	})
+	config.Config.LlmServerTokenHeader = "X-ACTION-TOKEN"
+
+	get := func(headers map[string]string) int {
+		req := httptest.NewRequest(http.MethodGet, "/debug/pprof/", nil)
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		w := httptest.NewRecorder()
+		newRouter().ServeHTTP(w, req)
+		return w.Code
+	}
+
+	t.Run("token configured", func(t *testing.T) {
+		config.Config.LlmServerToken = "secret"
+		assert.Equal(t, http.StatusUnauthorized, get(nil), "no credentials")
+		assert.Equal(t, http.StatusUnauthorized, get(map[string]string{"X-ACTION-TOKEN": "wrong"}), "wrong header token")
+		assert.Equal(t, http.StatusUnauthorized, get(map[string]string{"Authorization": "Bearer wrong"}), "wrong bearer token")
+		assert.Equal(t, http.StatusOK, get(map[string]string{"X-ACTION-TOKEN": "secret"}), "token header")
+		assert.Equal(t, http.StatusOK, get(map[string]string{"Authorization": "Bearer secret"}), "bearer token")
+	})
+
+	t.Run("no token configured: debug endpoints refused", func(t *testing.T) {
+		config.Config.LlmServerToken = ""
+		assert.Equal(t, http.StatusForbidden, get(nil))
+		assert.Equal(t, http.StatusForbidden, get(map[string]string{"Authorization": "Bearer anything"}))
+	})
+}

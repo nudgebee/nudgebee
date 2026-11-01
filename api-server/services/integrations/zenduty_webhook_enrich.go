@@ -126,6 +126,10 @@ type zendutyEnrichResult struct {
 	// alert-payload endpoint, already flattened into the same key vocabulary
 	// parseFiringLabels produces for PagerDuty.
 	PayloadLabels map[string]string `json:"payload_labels,omitempty"`
+	// PayloadSchema is azureCommonAlertSchemaID when the stored payload was an
+	// Azure Monitor alert, empty for Alertmanager. It decides merge precedence in
+	// applyZendutyEnrichResult.
+	PayloadSchema string `json:"payload_schema,omitempty"`
 }
 
 // zendutyAlert is the subset of an alert object we consume from
@@ -234,7 +238,7 @@ func enrichWithZendutyAPI(sc *security.RequestContext, alert *core.EventIncoming
 	// Recover the raw Alertmanager labels. Skipped when the webhook summary
 	// already carried them, since they'd only be a non-clobber no-op.
 	if !hadSummaryLabels {
-		labels, payloadErr := fetchZendutyAlertPayloadLabels(sc, selected, tenantId, apiKey, deadline)
+		labels, schema, payloadErr := fetchZendutyAlertPayloadLabels(sc, selected, tenantId, apiKey, deadline)
 		if payloadErr != nil {
 			if httpErr, limited := isRateLimited(payloadErr); limited {
 				noteZendutyRateLimit(sc, tenantId, httpErr)
@@ -243,6 +247,7 @@ func enrichWithZendutyAPI(sc *security.RequestContext, alert *core.EventIncoming
 				"incident", incidentID, "alert", selected.UniqueID, "error", payloadErr)
 		} else {
 			result.PayloadLabels = labels
+			result.PayloadSchema = schema
 		}
 	}
 
@@ -292,6 +297,16 @@ func applyZendutyEnrichResult(alert *core.EventIncomingWebhookInvestigation, r z
 		alert.Labels = map[string]string{}
 	}
 
+	// For an Azure Monitor payload the alerts API's entity_id is an md5 of the
+	// per-instance alertId and the integration name is whatever the user called
+	// it, so the payload's own rule name and source must beat both. Merging the
+	// payload first gives it that precedence while webhook-summary values still
+	// win. Alertmanager payloads keep the original order below.
+	azurePayload := r.PayloadSchema == azureCommonAlertSchemaID
+	if azurePayload {
+		mergePayloadLabels(alert.Labels, r.PayloadLabels)
+	}
+
 	if r.EntityID != "" {
 		if alert.Labels["alertname"] == "" {
 			alert.Labels["alertname"] = r.EntityID
@@ -316,13 +331,21 @@ func applyZendutyEnrichResult(alert *core.EventIncomingWebhookInvestigation, r z
 
 	// Raw Alertmanager labels last, still non-clobber: anything already derived
 	// from the webhook summary or from entity_id above stays authoritative.
-	for k, v := range r.PayloadLabels {
-		if v != "" && alert.Labels[k] == "" {
-			alert.Labels[k] = v
-		}
+	if !azurePayload {
+		mergePayloadLabels(alert.Labels, r.PayloadLabels)
 	}
 	if len(r.PayloadLabels) > 0 {
 		alert.Labels["nb_zenduty_payload_recovered"] = "true"
+	}
+}
+
+// mergePayloadLabels copies payload labels into dst without overwriting any key
+// dst already holds.
+func mergePayloadLabels(dst, payload map[string]string) {
+	for k, v := range payload {
+		if v != "" && dst[k] == "" {
+			dst[k] = v
+		}
 	}
 }
 
@@ -575,56 +598,90 @@ func fetchZendutyAccountID(sc *security.RequestContext, tenantId, teamID, apiKey
 	return "", fmt.Errorf("team %s not found in account teams", teamID)
 }
 
-// fetchZendutyAlertPayloadLabels recovers the raw Alertmanager body for an alert
-// and flattens it into labels. Two hops: the v2 endpoint returns a presigned S3
+// fetchZendutyAlertPayloadLabels recovers the raw upstream body for an alert and
+// flattens it into labels, returning which schema it was (see
+// decodeZendutyStoredPayload). Two hops: the v2 endpoint returns a presigned S3
 // URL, which is then fetched without auth.
-func fetchZendutyAlertPayloadLabels(sc *security.RequestContext, a zendutyAlert, tenantId, apiKey string, deadline time.Time) (map[string]string, error) {
+func fetchZendutyAlertPayloadLabels(sc *security.RequestContext, a zendutyAlert, tenantId, apiKey string, deadline time.Time) (map[string]string, string, error) {
 	if a.UniqueID == "" {
-		return nil, errors.New("alert has no unique_id")
+		return nil, "", errors.New("alert has no unique_id")
 	}
 	account, err := fetchZendutyAccountID(sc, tenantId, a.IntegrationObject.Team, apiKey, deadline)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	url, err := zendutyAlertPayloadURL(a, account)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	presignBytes, err := zendutyGet(url, apiKey, "zenduty alert payload API", deadline)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	var presigned struct {
 		URL string `json:"url"`
 	}
 	if err := json.Unmarshal(presignBytes, &presigned); err != nil {
-		return nil, fmt.Errorf("unmarshal presigned response: %w", err)
+		return nil, "", fmt.Errorf("unmarshal presigned response: %w", err)
 	}
 	if presigned.URL == "" {
-		return nil, errors.New("alert payload response carried no url")
+		return nil, "", errors.New("alert payload response carried no url")
 	}
 
 	// Presigned — an Authorization header would conflict with the signature.
 	payloadBytes, err := zendutyGet(presigned.URL, "", zendutyPayloadObjectCall, deadline)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
+	return decodeZendutyStoredPayload(payloadBytes)
+}
 
+// decodeZendutyStoredPayload flattens the body Zenduty archived for an alert.
+// Zenduty stores whatever the upstream integration posted: an Alertmanager
+// webhook body for Prometheus-family sources, the common alert schema for Azure
+// Monitor. The schema is returned so the caller can apply the right merge
+// precedence; it is empty for Alertmanager.
+func decodeZendutyStoredPayload(payloadBytes []byte) (map[string]string, string, error) {
 	var stored struct {
-		Payload alertmanagerPayload `json:"payload"`
+		Payload json.RawMessage `json:"payload"`
 	}
 	if err := json.Unmarshal(payloadBytes, &stored); err != nil {
-		return nil, fmt.Errorf("unmarshal alert payload: %w", err)
+		return nil, "", fmt.Errorf("unmarshal alert payload: %w", err)
 	}
 
-	labels := alertmanagerPayloadToLabels(stored.Payload)
-	if len(labels) == 0 {
-		return nil, errors.New("alert payload carried no labels")
+	var probe struct {
+		SchemaID string `json:"schemaId"`
 	}
-	return labels, nil
+	// A payload that is not an object (or is absent) simply has no schemaId and
+	// falls through to the Alertmanager decode, which reports it as label-less.
+	_ = json.Unmarshal(stored.Payload, &probe)
+
+	var labels map[string]string
+	schema := ""
+	if probe.SchemaID == azureCommonAlertSchemaID {
+		var azureAlert AzureMonitorAlert
+		if err := json.Unmarshal(stored.Payload, &azureAlert); err != nil {
+			return nil, "", fmt.Errorf("unmarshal azure alert payload: %w", err)
+		}
+		labels = azureCommonSchemaToLabels(azureAlert)
+		schema = azureCommonAlertSchemaID
+	} else {
+		var am alertmanagerPayload
+		if len(stored.Payload) > 0 {
+			if err := json.Unmarshal(stored.Payload, &am); err != nil {
+				return nil, "", fmt.Errorf("unmarshal alert payload: %w", err)
+			}
+		}
+		labels = alertmanagerPayloadToLabels(am)
+	}
+
+	if len(labels) == 0 {
+		return nil, "", errors.New("alert payload carried no labels")
+	}
+	return labels, schema, nil
 }
 
 // zendutyAlertPayloadURL builds the undocumented alert-payload path. The date

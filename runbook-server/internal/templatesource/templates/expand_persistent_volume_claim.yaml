@@ -43,14 +43,14 @@ definition:
     - id: "expand"
       type: "cloud.k8s.cli"
       params:
-        command: "kubectl patch pvc {{ Inputs.pvc_name }} -n {{ Inputs.namespace }} -p {\"spec\":{\"resources\":{\"requests\":{\"storage\":\"{{ Inputs.new_size }}\"}}}}"
+        command: "kubectl patch pvc {{ Inputs.pvc_name }} -n {{ Inputs.namespace }} -p '{\"spec\":{\"resources\":{\"requests\":{\"storage\":\"{{ Inputs.new_size }}\"}}}}'"
         account_id: "{{ Inputs.account_id }}"
       depends_on:
         - "approve"
     - id: "verify"
       type: "cloud.k8s.cli"
       params:
-        command: "kubectl get pvc {{ Inputs.pvc_name }} -n {{ Inputs.namespace }} -o wide"
+        command: "kubectl get pvc {{ Inputs.pvc_name }} -n {{ Inputs.namespace }} -o 'custom-columns=NAME:.metadata.name,REQUESTED:.spec.resources.requests.storage,CAPACITY:.status.capacity.storage,CONDITIONS:.status.conditions[*].type'"
         account_id: "{{ Inputs.account_id }}"
       depends_on:
         - "expand"

@@ -38,7 +38,7 @@ Fact-checks all claims before responding.`
 	toolInput := "Natural language query about AWS observability issues (CloudWatch Logs, Metrics, Alarms, X-Ray, CloudTrail)"
 	toolOutput := "Structured diagnosis with evidence, confidence level, and remediation recommendations"
 
-	core.RegisterNBAgentFactoryAndTool(AgentAwsObservabilityName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAndTool(AgentAwsObservabilityName, func(accountId string) (core.NBAgent, error) {
 		return newAwsObservabilityAgent(accountId), nil
 	}, toolDescription, toolInput, toolOutput)
 
@@ -72,6 +72,8 @@ type AwsObservabilityAgent struct {
 func (a *AwsObservabilityAgent) GetName() string {
 	return AgentAwsObservabilityName
 }
+
+func (a *AwsObservabilityAgent) AcceptsExecutionTarget() {}
 
 func (a *AwsObservabilityAgent) GetNameAliases() []string {
 	return []string{"AWS Observability Investigator", "aws_obs", "cloudwatch_agent", "observability_troubleshoot"}

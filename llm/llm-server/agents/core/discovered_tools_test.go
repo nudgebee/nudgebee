@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	toolcore "nudgebee/llm/tools/core"
 )
 
 func TestDiscoveredTools_RecordAndCheck(t *testing.T) {
@@ -42,4 +44,41 @@ func TestDiscoveredTools_AccumulatesAcrossCalls(t *testing.T) {
 	RecordDiscoveredTools("conv-D", []string{"rabbitmq"})
 	assert.True(t, IsDiscoveredTool("conv-D", "helm"))
 	assert.True(t, IsDiscoveredTool("conv-D", "rabbitmq"))
+}
+
+func TestQueryConfigDiscoveredToolCanonicalName(t *testing.T) {
+	qc := toolcore.NBQueryConfig{
+		DiscoveredTools: []string{"postgres_query_execute", "Redis_Command"},
+		ToolConfigs: map[string]string{
+			"kubectl_execute": "k8s-dev",
+		},
+	}
+
+	// Tool in DiscoveredTools matches case-insensitively and returns canonical
+	canonical, ok := QueryConfigDiscoveredToolCanonicalName(qc, "postgres_query_execute")
+	assert.True(t, ok)
+	assert.Equal(t, "postgres_query_execute", canonical)
+
+	canonical, ok = QueryConfigDiscoveredToolCanonicalName(qc, "redis_command")
+	assert.True(t, ok)
+	assert.Equal(t, "Redis_Command", canonical)
+
+	// Tool in ToolConfigs matches case-insensitively and returns canonical
+	canonical, ok = QueryConfigDiscoveredToolCanonicalName(qc, "kubectl_execute")
+	assert.True(t, ok)
+	assert.Equal(t, "kubectl_execute", canonical)
+
+	canonical, ok = QueryConfigDiscoveredToolCanonicalName(qc, "KUBECTL_EXECUTE")
+	assert.True(t, ok)
+	assert.Equal(t, "kubectl_execute", canonical)
+
+	// Tool neither discovered nor configured returns false
+	canonical, ok = QueryConfigDiscoveredToolCanonicalName(qc, "unauthorized_tool")
+	assert.False(t, ok)
+	assert.Empty(t, canonical)
+
+	// Empty inputs return false
+	canonical, ok = QueryConfigDiscoveredToolCanonicalName(qc, "")
+	assert.False(t, ok)
+	assert.Empty(t, canonical)
 }

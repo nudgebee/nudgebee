@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// incident_tiers.go is the deterministic four-tier incident assembly (#34658,
+// incident_tiers.go is the deterministic tiered incident assembly (#34658,
 // Step 3). Given the alert a viewer opened (the seed) and the surrounding window
 // of alerts, plus who-calls-whom (from the knowledge-graph walk) and each alert's
 // trailing firing rate (from the rarity query), AssembleTiers sorts every other
@@ -18,6 +18,9 @@ import (
 //	          rare for it.
 //	chronic — a would-be core/impact member that fires so often it was going to be
 //	          in any window; folded as background noise, never shown as related.
+//	same_node — another memory failure of the node the seed ran out of memory on:
+//	          a pod it killed, or the node's own MemoryPressure. Related by
+//	          evidence on both alerts, not by topology — see NodeMemory.
 //
 // It is pure (no I/O): the caller (api.handleEventGetImpact) fetches the window,
 // resolves the topology, and runs the rarity query, then calls this. The replay
@@ -34,6 +37,9 @@ const (
 	TierCause   = "cause"
 	TierImpact  = "impact"
 	TierChronic = "chronic"
+	// TierSameNode is its own tier rather than a kind of core: core means "the
+	// subject you opened", and every consumer of that lane says so.
+	TierSameNode = "same_node"
 )
 
 const (
@@ -55,6 +61,11 @@ const (
 	// the subject is bursting far past its own baseline — a real incident on a noisy
 	// subject — so it is NOT folded.
 	chronicBurstFactor = 3.0
+	// NodeMemoryWindowSeconds bounds the same_node tier to memory failures within
+	// this long of the root, either side: a node that runs out kills pods and
+	// reports MemoryPressure in no fixed order. Same length as the attach window
+	// incident grouping uses for these alerts.
+	NodeMemoryWindowSeconds = 15 * 60
 )
 
 // podTemplateHashSuffix matches a trailing ReplicaSet/pod-template hash (e.g.
@@ -84,6 +95,10 @@ type AlertIdentity struct {
 	// FindingType is the raw events.finding_type ('issue', 'Anomaly', 'SLO',
 	// 'configuration_change'), used to keep derived signals out of the causal lanes.
 	FindingType string
+	// NodeMemory is the Kubernetes node this alert says ran out of memory, and ""
+	// for every other alert (NodeMemoryNode). Two alerts naming the same node are
+	// two symptoms of that node, whatever their subjects.
+	NodeMemory string
 }
 
 // isDerivedSignal reports whether an alert is a statistical/derived signal (an SLO
@@ -186,6 +201,15 @@ func AssembleTiers(seed AlertIdentity, candidates []AlertIdentity, dependsOn map
 			continue
 		}
 
+		// Another memory failure of the node the seed ran out of memory on. Not
+		// folded as chronic: each side carries evidence that the node was out of
+		// memory at that moment, which a firing rate cannot contradict.
+		if seed.NodeMemory != "" && e.NodeMemory == seed.NodeMemory &&
+			absInt(e.TsOffsetS) <= NodeMemoryWindowSeconds {
+			out[e.ID] = TierSameNode
+			continue
+		}
+
 		chronic := rates[rateKey(e)].IsChronic()
 
 		// Derived signals (SLO / anomaly) are excluded from both causal lanes — see
@@ -285,6 +309,7 @@ const (
 	RelationCallsSeed = "calls_seed" // this service calls the seed (a dependent)
 	RelationMutual    = "mutual"     // edges exist in both directions
 	RelationCoFiring  = "co_firing"  // no topology link; only the account and the window are shared
+	RelationSameNode  = "same_node"  // no topology link; both are memory failures of one node
 )
 
 // RelationTo reports how cand is connected to seed. Empty when there is no direct

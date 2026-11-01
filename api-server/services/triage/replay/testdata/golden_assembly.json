@@ -1,6 +1,6 @@
 {
   "name": "incident-assembly-2026-07-22",
-  "_comment": "Seed-relative corpus for the four-tier assembly (#34658), drawn from blast-radius-correlation-audit.md. Two incidents, each with a canonical seed (the alert a viewer would open). depends_on is a fixture call-graph; rates are fixture trailing firing rates keyed 'SubjectKey|aggregation_key'. Workload subjects only — database-family grouping is a data-blocked follow-up. ts_offset_s is seconds from the incident root.",
+  "_comment": "Seed-relative corpus for the tiered incident assembly (#34658), drawn from blast-radius-correlation-audit.md. Three incidents, each with a canonical seed (the alert a viewer would open). depends_on is a fixture call-graph; rates are fixture trailing firing rates keyed 'SubjectKey|aggregation_key'. Workload subjects only — database-family grouping is a data-blocked follow-up. ts_offset_s is seconds from the incident root. node_memory is the node an alert's evidence says ran out of memory; the node-out-of-memory incident has no topology edge between its members.",
 
   "depends_on": {
     "nudgebee|llm-server": ["nudgebee|workflow-server"],
@@ -30,6 +30,13 @@
     {"id": "sd-app-impact", "subject_type": "deployment", "subject_name": "app-prod", "subject_namespace": "nudgebee", "subject_owner": "app-prod", "aggregation_key": "HighP95Latency", "ts_offset_s": 300, "incident": "services-degradation", "tier": "impact"},
     {"id": "sd-cc-chronic", "subject_type": "deployment", "subject_name": "cloud-collector-server", "subject_namespace": "nudgebee", "subject_owner": "cloud-collector-server", "aggregation_key": "HighP95Latency", "ts_offset_s": 120, "incident": "services-degradation", "tier": "chronic"},
     {"id": "sd-relay-distractor", "subject_type": "deployment", "subject_name": "relay-server", "subject_namespace": "nudgebee", "subject_owner": "relay-server", "aggregation_key": "ApplicationAPIFailures", "ts_offset_s": 45, "incident": "services-degradation", "tier": "none"},
-    {"id": "sd-app-slo-distractor", "subject_type": "deployment", "subject_name": "app-prod", "subject_namespace": "nudgebee", "subject_owner": "app-prod", "aggregation_key": "SLOViolation", "finding_type": "SLO", "ts_offset_s": 400, "incident": "services-degradation", "tier": "none"}
+    {"id": "sd-app-slo-distractor", "subject_type": "deployment", "subject_name": "app-prod", "subject_namespace": "nudgebee", "subject_owner": "app-prod", "aggregation_key": "SLOViolation", "finding_type": "SLO", "ts_offset_s": 400, "incident": "services-degradation", "tier": "none"},
+
+    {"id": "nm-agent-oom", "subject_type": "pod", "subject_name": "log-agent-x7k2p", "subject_namespace": "agents", "subject_owner": "log-agent", "aggregation_key": "pod_oom_killer_enricher", "node_memory": "node-1", "ts_offset_s": 0, "seed": true, "incident": "node-out-of-memory", "tier": "core"},
+    {"id": "nm-db-oom", "subject_type": "pod", "subject_name": "metrics-db-6b84b8b59-62sbn", "subject_namespace": "monitoring", "subject_owner": "metrics-db", "aggregation_key": "pod_oom_killer_enricher", "node_memory": "node-1", "ts_offset_s": -10, "incident": "node-out-of-memory", "tier": "same_node"},
+    {"id": "nm-node-pressure", "subject_type": "node", "subject_name": "node-1", "subject_namespace": "", "aggregation_key": "node_pressure", "node_memory": "node-1", "ts_offset_s": 40, "incident": "node-out-of-memory", "tier": "same_node"},
+    {"id": "nm-own-limit-oom", "subject_type": "pod", "subject_name": "billing-api-5cbd8ddb97-q2w4z", "subject_namespace": "billing", "subject_owner": "billing-api", "aggregation_key": "pod_oom_killer_enricher", "ts_offset_s": 20, "incident": "node-out-of-memory", "tier": "none"},
+    {"id": "nm-other-node-oom", "subject_type": "pod", "subject_name": "indexer-7d9f8c6b54-m3n8v", "subject_namespace": "search", "subject_owner": "indexer", "aggregation_key": "pod_oom_killer_enricher", "node_memory": "node-2", "ts_offset_s": 30, "incident": "node-out-of-memory", "tier": "none"},
+    {"id": "nm-hour-later-oom", "subject_type": "pod", "subject_name": "cache-58d7c9f6b8-t5r2x", "subject_namespace": "cache", "subject_owner": "cache", "aggregation_key": "pod_oom_killer_enricher", "node_memory": "node-1", "ts_offset_s": 3600, "incident": "node-out-of-memory", "tier": "none"}
   ]
 }

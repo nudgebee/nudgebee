@@ -55,8 +55,14 @@ const (
 )
 
 const (
-	// azureCostManagementWarningMsg is the message shown when Azure credentials lack Cost Management API access
-	azureCostManagementWarningMsg = "Azure account created successfully, but the credentials do not have permission to access the Azure Cost Management API. Please grant the 'Cost Management Reader' role or equivalent to enable cost tracking. You can update the permissions in the Azure Portal and the system will automatically detect the change on the next sync."
+	// azureCostWarningPrefix starts the message shown when an Azure account is
+	// created but its credentials can't read cost data. The reason that follows
+	// comes from the collector, which names the cause and who can fix it.
+	azureCostWarningPrefix = "Azure account created, but its cost data can't be read yet, so spend and cost recommendations stay empty. "
+	// azureCostWarningFallback is used when the collector gave no reason.
+	azureCostWarningFallback = "Check that the service principal has the Reader or Cost Management Reader role on the subscription."
+	// azureCostWarningSuffix ends the Azure cost warning.
+	azureCostWarningSuffix = " The next daily sync picks up the change once it is fixed."
 
 	// awsNoCurWarningMsg is the message shown when an AWS account is created
 	// without a usable Cost & Usage Report. Onboarding no longer blocks on this
@@ -959,15 +965,7 @@ func CreateAccount(context *security.RequestContext, query AccountCreateRequest)
 				}
 
 				// Check if cost management permission is missing (non-blocking)
-				hasCostManagement := false
-				for _, perm := range validationResult.PermissionDetails {
-					if perm.Permission == "Cost Management" && perm.HasAccess {
-						hasCostManagement = true
-						break
-					}
-				}
-				if !hasCostManagement {
-					azureCostManagementWarning = azureCostManagementWarningMsg
+				if azureCostManagementWarning = azureCostWarning(validationResult); azureCostManagementWarning != "" {
 					context.GetLogger().Warn("azure: account will be created without cost management access", "subscription_id", query.AssumeRole)
 				}
 			} else if query.AccountNumber != "" {
@@ -1017,15 +1015,7 @@ func CreateAccount(context *security.RequestContext, query AccountCreateRequest)
 					validationResult := validateAzureCredentialsInternal(context.GetContext(),
 						query.AccountNumber, query.AccessKey, query.AccessSecret, subscriptionIDs[0])
 
-					hasCostManagement := false
-					for _, perm := range validationResult.PermissionDetails {
-						if perm.Permission == "Cost Management" && perm.HasAccess {
-							hasCostManagement = true
-							break
-						}
-					}
-					if !hasCostManagement {
-						azureCostManagementWarning = azureCostManagementWarningMsg
+					if azureCostManagementWarning = azureCostWarning(validationResult); azureCostManagementWarning != "" {
 						context.GetLogger().Warn("azure: account will be created without cost management access",
 							"tenant_id", query.AccountNumber,
 							"subscriptions_count", len(subscriptionIDs),
@@ -1493,7 +1483,7 @@ func AwsOnboardStatus(ctx *security.RequestContext, req AwsOnboardStatusRequest)
 	}, nil
 }
 
-const latestTemplateVersion = "2"
+const latestTemplateVersion = "4"
 
 func CloudUpdateCloudformationPermissions(context *security.RequestContext, req CloudUpdateCloudformationPermissionsRequest) (CloudUpdateCloudformationPermissionsResponse, error) {
 	err := common.ValidateStruct(req)
@@ -2434,6 +2424,7 @@ func AzureBulkOnboard(context *security.RequestContext, query AzureBulkOnboardRe
 		SubscriptionID: firstSub.SubscriptionID,
 		AccountID:      firstResp.Id,
 		Status:         "created",
+		Warning:        firstResp.Warning,
 	})
 
 	// Create remaining subscriptions as children concurrently
@@ -2476,6 +2467,7 @@ func AzureBulkOnboard(context *security.RequestContext, query AzureBulkOnboardRe
 				} else {
 					result.AccountID = createResp.Id
 					result.Status = "created"
+					result.Warning = createResp.Warning
 				}
 				results[idx] = result
 			}(i, sub)
@@ -2616,6 +2608,9 @@ func UpsertAccountAttrs(context *security.RequestContext, request AccountAttrUps
 
 	for _, attr := range request.Objects {
 		if err := validateKnowledgePolicyAttribute(context.GetSecurityContext(), attr); err != nil {
+			return AccountAttrUpsertResponse{}, err
+		}
+		if err := validateEventAnalysisAttribute(context.GetSecurityContext(), attr); err != nil {
 			return AccountAttrUpsertResponse{}, err
 		}
 	}

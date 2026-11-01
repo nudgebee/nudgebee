@@ -35,13 +35,15 @@ import (
 // savingsPlan/TotalCommitmentToDate,savingsPlan/SavingsPlanARN,savingsPlan/SavingsPlanRate,savingsPlan/UsedCommitment,savingsPlan/SavingsPlanEffectiveCost,savingsPlan/AmortizedUpfrontCommitmentForBillingPeriod,savingsPlan/RecurringCommitmentForBillingPeriod,
 // resourceTags/aws:autoscaling:groupName,resourceTags/aws:cloudformation:logical-id,resourceTags/aws:cloudformation:stack-id,resourceTags/aws:cloudformation:stack-name,resourceTags/aws:createdBy,resourceTags/aws:ec2:fleet-id,resourceTags/aws:ec2launchtemplate:id,resourceTags/aws:ec2launchtemplate:version,resourceTags/aws:eks:cluster-name,resourceTags/user:AWS.SSM.AppManager.EKS.Cluster.ARN,resourceTags/user:CSIVolumeName,resourceTags/user:KubernetesCluster,resourceTags/user:Name,resourceTags/user:aws-node-termination-handler/managed,resourceTags/user:cluster.k8s.amazonaws.com/name,resourceTags/user:created_by,resourceTags/user:ebs.csi.aws.com/cluster,resourceTags/user:eks:cluster-name,resourceTags/user:eks:nodegroup-name,resourceTags/user:k8s.io/cluster-autoscaler/enabled,resourceTags/user:k8s.io/cluster-autoscaler/nudgebee-dev,resourceTags/user:karpenter.sh/provisioner-name,resourceTags/user:kubernetes.io/cluster/nudgebee-dev,resourceTags/user:kubernetes.io/created-for/pv/name,resourceTags/user:kubernetes.io/created-for/pvc/name,resourceTags/user:kubernetes.io/created-for/pvc/namespace,resourceTags/user:kubernetes.io/service-name,resourceTags/user:node.k8s.amazonaws.com/instance_id,resourceTags/user:test,resourceTags/user:updated_by,resourceTags/user:velero.io/backup,resourceTags/user:velero.io/pv,resourceTags/user:velero.io/schedule-name,resourceTags/user:velero.io/storage-location
 
-func convertToUsageReportItem(header []string, row []string) (providers.UsageReportItem, error) {
+// lowerHeader is header lowercased once per file by the caller; the switch
+// matches on it so column names aren't re-lowercased for every row.
+func convertToUsageReportItem(header []string, lowerHeader []string, row []string) (providers.UsageReportItem, error) {
 	item := providers.UsageReportItem{}
 	tags := map[string][]string{}
 	for i, value := range row {
-		switch strings.ToLower(header[i]) {
+		switch lowerHeader[i] {
 		case "lineitem/lineitemtype":
-			item.CostCategory = providers.UsageReportCostCategory(value)
+			item.CostCategory = providers.UsageReportCostCategory(strings.Clone(value))
 		case "lineitem/usagestartdate":
 			parsedDate, err := time.Parse("2006-01-02T15:04:05Z", value)
 			if err != nil {
@@ -55,32 +57,32 @@ func convertToUsageReportItem(header []string, row []string) (providers.UsageRep
 			}
 			item.EndDate = parsedDate
 		case "lineitem/productcode":
-			item.ProductCode = value
+			item.ProductCode = strings.Clone(value)
 		case "lineitem/usagetype":
-			item.CostSubCategory = value
+			item.CostSubCategory = strings.Clone(value)
 		case "lineitem/operation":
-			item.ResourceOperation = value
+			item.ResourceOperation = strings.Clone(value)
 		case "lineitem/resourceid":
-			item.ResourceId = value
+			item.ResourceId = strings.Clone(value)
 		case "lineitem/unblendedcost":
 			data, err := strconv.ParseFloat(value, 64)
 			if err == nil {
 				item.Cost = data
 			}
 		case "lineitem/currencycode":
-			item.CostCurrency = value
+			item.CostCurrency = strings.Clone(value)
 		case "lineitem/taxtype":
-			item.CostSubCategory = value
+			item.CostSubCategory = strings.Clone(value)
 		case "product/region":
-			item.ResourceRegionCode = value
+			item.ResourceRegionCode = strings.Clone(value)
 		case "product/servicecode":
-			item.ProductServiceCode = value
+			item.ProductServiceCode = strings.Clone(value)
 		case "product/productfamily":
-			item.ResourceType = value
+			item.ResourceType = strings.Clone(value)
 		default:
 			if value != "" && strings.HasPrefix(header[i], "resourceTags/") {
 				tagsSplits := strings.SplitN(header[i], "/", 2)
-				tags[tagsSplits[1]] = append(tags[tagsSplits[1]], value)
+				tags[tagsSplits[1]] = append(tags[tagsSplits[1]], strings.Clone(value))
 			}
 		}
 	}
@@ -155,6 +157,15 @@ func scanAwsBillingReport(data io.Reader, fn func(providers.UsageReportItem) err
 	if err != nil {
 		return err
 	}
+	// Reuse the record slice across rows: every value kept from a row is cloned
+	// in convertToUsageReportItem. The header must be copied first, or the next
+	// Read overwrites it.
+	headers = slices.Clone(headers)
+	reader.ReuseRecord = true
+	lowerHeaders := make([]string, len(headers))
+	for i, h := range headers {
+		lowerHeaders[i] = strings.ToLower(h)
+	}
 	for {
 		row, err := reader.Read()
 		if err == io.EOF {
@@ -163,7 +174,7 @@ func scanAwsBillingReport(data io.Reader, fn func(providers.UsageReportItem) err
 		if err != nil {
 			return err
 		}
-		item, err := convertToUsageReportItem(headers, row)
+		item, err := convertToUsageReportItem(headers, lowerHeaders, row)
 		if err != nil {
 			return err
 		}

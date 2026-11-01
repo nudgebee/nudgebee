@@ -136,3 +136,18 @@ func TestTruncateRecommendationJSON(t *testing.T) {
 		})
 	}
 }
+
+// TestRecommendationViewScopesEveryRankingToTheAccount pins the account scope
+// on the view's own rows and on both subqueries that rank a branch's rows: an
+// unscoped ranking subquery would rank every tenant's recommendations.
+func TestRecommendationViewScopesEveryRankingToTheAccount(t *testing.T) {
+	const acct = "00000000-0000-4000-8000-000000000001"
+	view := recommendationViewFor(acct)
+
+	assert.NotContains(t, view, "__ACCOUNT_ID__")
+	assert.Contains(t, view, "WHERE r.cloud_account_id = '"+acct+"'::uuid")
+	assert.Equal(t, 2, strings.Count(view, "WHERE s.cloud_account_id = '"+acct+"'::uuid"),
+		"the dedupe_group and Azure rankings must each be scoped to the account")
+	assert.Equal(t, recommendationView, recommendationViewFor("x' OR '1'='1"),
+		"a non-UUID account must not be substituted into the SQL")
+}

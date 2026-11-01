@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/wagslane/go-rabbitmq"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
@@ -22,7 +23,7 @@ import (
 var (
 	rbmqConnMux        sync.Mutex
 	rbmqConn           *rabbitmq.Conn
-	rbmqConsumers      = make(map[string]*rabbitmq.Consumer)
+	rbmqConsumers      = make(map[string]*managedConsumer)
 	rbmqConsumersMux   sync.Mutex
 	rbmqPublishers     = make(map[string]*rabbitmq.Publisher)
 	rbmqPublishersMux  sync.Mutex
@@ -124,6 +125,144 @@ const MaxMqPayloadSize = 10 * 1024 * 1024 // 10MB
 
 var ErrRbmqNoConn = fmt.Errorf("rbmq: unable to connect to rabbitmq")
 
+// Broker-restart recovery. go-rabbitmq restarts a consumer in place after it
+// reconnects, and when that restart fails it can wait for a "next reconnect"
+// that never comes on a healthy connection: Run stays blocked and the queue is
+// never consumed again. So consumers are never trusted across a reconnect —
+// pollConnection closes every consumer built before the connection went down,
+// which makes Run return and the MqConsume loop rebuild it (re-declaring its
+// exchange, queue and binding).
+const (
+	rbmqDialTimeout          = 5 * time.Second
+	rbmqConnPollInterval     = time.Second
+	rbmqConnDownResetAfter   = 5 * time.Minute
+	rbmqConsumerCloseTimeout = 10 * time.Second
+)
+
+// Connection state maintained by pollConnection.
+var (
+	rbmqWatchOnce     sync.Once
+	rbmqConnUp        atomic.Bool
+	rbmqConnDownSince atomic.Int64 // unix nanos the connection was first seen down; 0 while up
+)
+
+// managedConsumer makes closing a consumer idempotent and bounded: go-rabbitmq's
+// Close must be called only once and waits for in-flight handlers, while the
+// MqConsume loop, pollConnection and MqClose all close consumers.
+type managedConsumer struct {
+	*rabbitmq.Consumer
+	conn      *rabbitmq.Conn // the connection it was built on
+	createdAt time.Time
+	once      sync.Once
+}
+
+func (c *managedConsumer) close() {
+	c.once.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), rbmqConsumerCloseTimeout)
+		defer cancel()
+		c.CloseWithContext(ctx)
+	})
+}
+
+// startConnectionWatcher starts the pollConnection loop once per process.
+func startConnectionWatcher() {
+	rbmqWatchOnce.Do(func() {
+		go func() {
+			t := time.NewTicker(rbmqConnPollInterval)
+			defer t.Stop()
+			for now := range t.C {
+				pollConnection(now)
+			}
+		}()
+	})
+}
+
+// pollConnection records connection up/down transitions. On down->up it
+// restarts every consumer built before the outage. A connection that stays
+// closed for rbmqConnDownResetAfter is rebuilt: go-rabbitmq stops reconnecting
+// for good if the new connection closes before it re-arms its close listener.
+func pollConnection(now time.Time) {
+	rbmqConnMux.Lock()
+	conn := rbmqConn
+	rbmqConnMux.Unlock()
+
+	if conn != nil && !conn.IsClosed() {
+		if rbmqConnUp.Swap(true) {
+			return
+		}
+		if downSince := rbmqConnDownSince.Swap(0); downSince != 0 {
+			slog.Info("rbmq: connection re-established", "down_for", now.Sub(time.Unix(0, downSince)).String())
+			outage := time.Unix(0, downSince)
+			restartConsumers("connection re-established", func(c *managedConsumer) bool { return c.createdAt.Before(outage) })
+		}
+		return
+	}
+
+	rbmqConnUp.Store(false)
+	downSince := rbmqConnDownSince.Load()
+	if downSince == 0 {
+		rbmqConnDownSince.Store(now.UnixNano())
+		return
+	}
+	if conn != nil && now.Sub(time.Unix(0, downSince)) >= rbmqConnDownResetAfter {
+		resetSharedConnection(fmt.Sprintf("connection closed for %s", now.Sub(time.Unix(0, downSince)).Round(time.Second)))
+		rbmqConnDownSince.Store(now.UnixNano())
+	}
+}
+
+// restartConsumers closes every live consumer isStale picks, so its MqConsume
+// loop rebuilds it. Closes run in the background: each waits up to
+// rbmqConsumerCloseTimeout for in-flight handlers.
+func restartConsumers(reason string, isStale func(*managedConsumer) bool) {
+	rbmqConsumersMux.Lock()
+	var stale []*managedConsumer
+	for _, c := range rbmqConsumers {
+		if isStale(c) {
+			stale = append(stale, c)
+		}
+	}
+	rbmqConsumersMux.Unlock()
+	if len(stale) == 0 {
+		return
+	}
+	slog.Warn("rbmq: restarting consumers", "count", len(stale), "reason", reason)
+	for _, c := range stale {
+		go c.close()
+	}
+}
+
+// resetSharedConnection drops the shared connection (and the publishers cached
+// on it) so the next getConnection dials a new one, then restarts the consumers
+// that were built on it.
+func resetSharedConnection(reason string) {
+	rbmqConnMux.Lock()
+	old := rbmqConn
+	rbmqConn = nil
+	rbmqConnMux.Unlock()
+	if old == nil {
+		return
+	}
+	slog.Warn("rbmq: rebuilding shared connection", "reason", reason)
+	if err := old.Close(); err != nil {
+		slog.Error("rbmq: error closing shared connection during reset", "error", err)
+	}
+
+	// Swap the map out under the lock and close outside it: publisher.Close()
+	// can block on the network, and holding rbmqPublishersMux would stall publishes.
+	rbmqPublishersMux.Lock()
+	oldPublishers := rbmqPublishers
+	rbmqPublishers = make(map[string]*rabbitmq.Publisher)
+	rbmqPublishersMux.Unlock()
+	for _, publisher := range oldPublishers {
+		publisher.Close()
+	}
+
+	// Matched by connection, not by age: a consumer loop that fetched the old
+	// connection just before the swap can finish building on it afterwards, and
+	// nothing would ever reconnect it.
+	restartConsumers(reason, func(c *managedConsumer) bool { return c.conn == old })
+}
+
 func init() {
 	// todo close connections on exit gracefully
 	// currently this is blocking testcase execution
@@ -149,6 +288,9 @@ func getConnection() *rabbitmq.Conn {
 		fmt.Sprintf("amqp://%s:%s@%s:%d", config.Config.RabbitMqUsername, config.Config.RabbitMqPassword, config.Config.RabbitMqHost, config.Config.RabbitMqPort),
 		rabbitmq.WithConnectionOptionsLogging,
 		rabbitmq.WithConnectionOptionsBaseReconnectInterval(reconnectTimeDelay),
+		// Bounded so an unreachable broker can't hold rbmqConnMux (or the library's
+		// own connection lock during a redial) for amqp's 30s default.
+		rabbitmq.WithConnectionOptionsConfig(rabbitmq.Config{Dial: amqp.DefaultDial(rbmqDialTimeout)}),
 	)
 	if err != nil {
 		slog.Default().Error("Error connecting to RabbitMQ", "error", err)
@@ -179,10 +321,18 @@ func isRabbitMQConnectionError(err error) bool {
 
 func MqClose() {
 	rbmqConsumersMux.Lock()
+	// In parallel: each close waits up to rbmqConsumerCloseTimeout for in-flight
+	// handlers, and shutdown has to fit the pod's termination grace period.
+	var wg sync.WaitGroup
 	for _, consumer := range rbmqConsumers {
-		consumer.Close()
+		wg.Add(1)
+		go func(c *managedConsumer) {
+			defer wg.Done()
+			c.close()
+		}(consumer)
 	}
-	rbmqConsumers = make(map[string]*rabbitmq.Consumer)
+	wg.Wait()
+	rbmqConsumers = make(map[string]*managedConsumer)
 	rbmqConsumersMux.Unlock()
 
 	rbmqPublishersMux.Lock()
@@ -331,6 +481,9 @@ func MqConsume(exchangeName string, routingKey string, queue string, concurrency
 		slog.Error("rbmq: initial connection to rabbitmq failed for consumer setup, retrying in background",
 			"queue", queue, "exchange", exchangeName)
 	}
+	// Started on every pod: API pods have no consumers to restart, but they do
+	// need a connection that has stopped reconnecting to be rebuilt.
+	startConnectionWatcher()
 
 	if !config.RunsBackgroundJobs() {
 		slog.Info("rbmq: consumer not started on this pod (SERVER_ROLE=api); the worker deployment drains this queue",
@@ -339,7 +492,7 @@ func MqConsume(exchangeName string, routingKey string, queue string, concurrency
 	}
 
 	go func() {
-		var currentConsumer *rabbitmq.Consumer
+		var currentConsumer *managedConsumer
 		consumerKey := queue
 
 		// Ensure consumer is closed and removed from map when this goroutine exits
@@ -351,7 +504,7 @@ func MqConsume(exchangeName string, routingKey string, queue string, concurrency
 			}
 			rbmqConsumersMux.Unlock()
 			if currentConsumer != nil {
-				currentConsumer.Close()
+				currentConsumer.close()
 			}
 			slog.Info("rbmq: consumer goroutine shut down", "queue", queue, "exchange", exchangeName)
 		}()
@@ -374,7 +527,6 @@ func MqConsume(exchangeName string, routingKey string, queue string, concurrency
 				continue
 			}
 
-			var err error
 			consumerOptions := []func(*rabbitmq.ConsumerOptions){
 				rabbitmq.WithConsumerOptionsRoutingKey(routingKey),
 				rabbitmq.WithConsumerOptionsExchangeName(exchangeName),
@@ -389,11 +541,12 @@ func MqConsume(exchangeName string, routingKey string, queue string, concurrency
 				consumerOptions = append(consumerOptions, rabbitmq.WithConsumerOptionsQueueDurable)
 			}
 
-			currentConsumer, err = rabbitmq.NewConsumer(conn, queue, consumerOptions...)
+			built, err := rabbitmq.NewConsumer(conn, queue, consumerOptions...)
 			if err != nil {
 				slog.Error("rbmq: error creating consumer", "error", err, "queue", queue, "attempt", attempt+1)
 				continue
 			}
+			currentConsumer = &managedConsumer{Consumer: built, conn: conn, createdAt: time.Now()}
 
 			rbmqConsumersMux.Lock()
 			rbmqConsumers[consumerKey] = currentConsumer
@@ -418,8 +571,12 @@ func MqConsume(exchangeName string, routingKey string, queue string, concurrency
 			if runErr != nil {
 				slog.Warn("rbmq: consumer.Run exited", "error", runErr, "queue", queue, "exchange", exchangeName, "attempt", attempt+1)
 			} else {
-				// consumer.Run exited cleanly, possibly due to connection closure not handled by library's auto-reconnect
+				// Run returns nil only after Close: restartConsumers (a reconnect
+				// or connection rebuild) or MqClose.
 				slog.Info("rbmq: consumer.Run exited cleanly, will attempt to restart", "queue", queue, "exchange", exchangeName, "attempt", attempt+1)
+				// A deliberate restart is not a failure: rebuild after the base delay
+				// rather than wherever the backoff had climbed to.
+				attempt = 0
 			}
 
 			// Clean up current consumer before retrying
@@ -428,7 +585,7 @@ func MqConsume(exchangeName string, routingKey string, queue string, concurrency
 				delete(rbmqConsumers, consumerKey)
 			}
 			rbmqConsumersMux.Unlock()
-			currentConsumer.Close()
+			currentConsumer.close()
 			// Ensure it's nil for the next iteration
 			currentConsumer = nil
 		}

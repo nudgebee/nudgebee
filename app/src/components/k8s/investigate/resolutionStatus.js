@@ -59,6 +59,17 @@ export const describeResolution = (resolution, now = Date.now()) => {
   return { label: 'Running', tone: 'info', actor, isSlow };
 };
 
+/**
+ * The reason a failed attempt recorded, as text. A failed agent task used to be stored as the
+ * agent's whole response — {"msg": "...", "success": false, ...} — and those rows cannot be
+ * rewritten, so the reason is read out of them here. Anything else is returned unchanged.
+ * @param {string} message
+ */
+export const readableStatusMessage = (message) => {
+  const msg = safeJSONParse(message)?.msg;
+  return typeof msg === 'string' && msg.trim() ? msg : message;
+};
+
 // Card ids are not uniform: some carry a positional suffix (LastDeploymentCard_0) and some do not
 // (MemoryAllocationCard). Every per-card lookup here must key on the stable part, or it silently
 // misses exactly the cards that are numbered — which is how the revert card lost its Fix label,

@@ -218,9 +218,7 @@ func (a *ErrorRCAAgent) Execute(ctx context.Context, sessionCtx *session.Session
 
 func (a *ErrorRCAAgent) buildEnhancedQuery(ctx context.Context, sessionCtx *session.SessionContext) string {
 	var data strings.Builder
-	data.WriteString("=== USER QUERY ===\n")
-	data.WriteString(sessionCtx.OriginalQuery)
-	data.WriteString("\n\n")
+	data.WriteString(sessionCtx.FormatQuerySection())
 
 	// Include repository information if available
 	if sessionCtx.RepoContext != nil && sessionCtx.RepoContext.URL != "" {

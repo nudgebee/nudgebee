@@ -117,10 +117,7 @@ func (a *PerformanceDebuggerAgent) Execute(ctx context.Context, sessionCtx *sess
 
 func (a *PerformanceDebuggerAgent) buildEnhancedQuery(ctx context.Context, sessionCtx *session.SessionContext) string {
 	var data strings.Builder
-	data.WriteString("=== USER QUERY ===\n")
-	data.WriteString(sessionCtx.OriginalQuery)
-	data.WriteString("\n\n")
-
+	data.WriteString(sessionCtx.FormatQuerySection())
 	data.WriteString(buildEvidenceBlock(ctx, a.llmClient, a.logger, "RELEVANT LOGS", sessionCtx.InitialLogs))
 
 	return data.String()

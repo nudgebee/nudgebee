@@ -172,6 +172,7 @@ const CloudOptimizeRecommendationsTable = (props: {
   const ticketReferenceMapRef = useRef<Map<string, any>>(new Map());
   const buildRowDataRef = useRef<((items: any[], map: Map<string, any>) => ICustomTableRow[][]) | null>(null);
   const currencySymbol = useCurrencySymbol(selectedAccountId);
+  const billedOutsideUsd = currencySymbol !== undefined && currencySymbol !== '$';
   const [serviceNamesFilterWithRuleName, setServiceNamesFilterWithRuleName] = useState([] as { label: string; value: string }[]);
 
   const { ruleNamesFilter, serviceNamesFilter, severityFilter } = useRecommendationCloudFilter(selectedAccountId, {
@@ -506,8 +507,9 @@ const CloudOptimizeRecommendationsTable = (props: {
     // Savings (RightSizing and InfraUpgrade only). estimated_savings is stored
     // per month (see SavingsFooter "Projected Monthly Savings" in the drilldown);
     // the summary card above annualizes it, so label rows /mo — not /yr.
+    // Savings are USD from every producer, whatever the account bills in.
     if (config.showSavings) {
-      data.push({ component: <Currency value={item.estimated_savings} precison={1} prefix={currencySymbol || '$'} suffix='/mo' /> });
+      data.push({ component: <Currency value={item.estimated_savings} precison={1} prefix='$' suffix='/mo' /> });
     }
 
     // Actions menu (Ask NuBi + per-row dropdown)
@@ -615,7 +617,6 @@ const CloudOptimizeRecommendationsTable = (props: {
     selectedServiceName,
     selectedSeverity,
     selectedStatus,
-    currencySymbol,
     refreshKey,
     props.category,
     props.isOptimisePage,
@@ -718,8 +719,8 @@ const CloudOptimizeRecommendationsTable = (props: {
                     size='lg'
                     tone='high-savings'
                     value={totalEstimatedSavings * 12}
-                    currency={currencySymbol === '₹' ? 'INR' : 'USD'}
-                    period='/ yr'
+                    currency='USD'
+                    period={billedOutsideUsd ? '/ yr · USD' : '/ yr'}
                   />
                 )
               }

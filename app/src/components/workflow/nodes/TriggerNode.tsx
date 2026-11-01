@@ -167,7 +167,7 @@ const TriggerNode = ({ id, data, isConnectable, selected, onTriggerRun, onAddFro
             cursor: 'help',
           }}
         >
-          Server Error
+          Validation Error
         </div>
       )}
       <BaseNode

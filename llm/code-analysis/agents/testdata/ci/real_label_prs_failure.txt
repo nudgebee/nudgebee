@@ -1,0 +1,61 @@
+﻿2026-09-30T07:06:25.6934035Z Current runner version: '2.337.0'
+2026-09-30T07:06:25.6956641Z ##[group]Runner Image Provisioner
+2026-09-30T07:06:25.6957399Z Hosted Compute Agent
+2026-09-30T07:06:25.6958009Z Version: 20260901.588
+2026-09-30T07:06:25.6958601Z Commit: f88ec8081b781fac6c440065ac7ff9e710ce3d0b
+2026-09-30T07:06:25.6959284Z Build Date: 2026-09-01T19:56:44Z
+2026-09-30T07:06:25.6959916Z Worker ID: {9456613a-d545-42eb-901c-93c4b2a9b696}
+2026-09-30T07:06:25.6960568Z Azure Region: westus3
+2026-09-30T07:06:25.6961164Z ##[endgroup]
+2026-09-30T07:06:25.6962266Z ##[group]Operating System
+2026-09-30T07:06:25.6962903Z Ubuntu
+2026-09-30T07:06:25.6963365Z 24.04.5
+2026-09-30T07:06:25.6963809Z LTS
+2026-09-30T07:06:25.6964351Z ##[endgroup]
+2026-09-30T07:06:25.6964873Z ##[group]Runner Image
+2026-09-30T07:06:25.6965708Z Image: ubuntu-24.04
+2026-09-30T07:06:25.6966289Z Version: 20260927.320.1
+2026-09-30T07:06:25.6967458Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20260927.320/images/ubuntu/Ubuntu2404-Readme.md
+2026-09-30T07:06:25.6968801Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20260927.320
+2026-09-30T07:06:25.6969691Z ##[endgroup]
+2026-09-30T07:06:25.6970740Z ##[group]GITHUB_TOKEN Permissions
+2026-09-30T07:06:25.6972739Z Contents: read
+2026-09-30T07:06:25.6973265Z Metadata: read
+2026-09-30T07:06:25.6973830Z Packages: read
+2026-09-30T07:06:25.6974313Z ##[endgroup]
+2026-09-30T07:06:25.6976540Z Secret source: Actions
+2026-09-30T07:06:25.6977398Z Cache mode: read
+2026-09-30T07:06:25.6978164Z Prepare workflow directory
+2026-09-30T07:06:25.7253829Z Prepare all required actions
+2026-09-30T07:06:25.7360842Z Complete job name: label-prs
+2026-09-30T07:06:25.8055638Z ##[group]Run curl https://api.github.com/repos/nudgebee/github-labeler/releases/assets/1 -L \
+2026-09-30T07:06:25.8057609Z [36;1mcurl https://api.github.com/repos/nudgebee/github-labeler/releases/assets/1 -L \[0m
+2026-09-30T07:06:25.8059055Z [36;1m  -H 'Accept: application/octet-stream' \[0m
+2026-09-30T07:06:25.8060836Z [36;1m  -H "Authorization: ***" \[0m
+2026-09-30T07:06:25.8061855Z [36;1m  -o github-labeler-0.0.5[0m
+2026-09-30T07:06:25.8062737Z [36;1mchmod +x github-labeler-0.0.5[0m
+2026-09-30T07:06:25.8965830Z shell: /usr/bin/bash -e {0}
+2026-09-30T07:06:25.8966979Z ##[endgroup]
+2026-09-30T07:06:25.9270320Z   % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+2026-09-30T07:06:25.9271226Z                                  Dload  Upload   Total   Spent    Left  Speed
+2026-09-30T07:06:25.9271640Z 
+2026-09-30T07:06:26.2833345Z   0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+2026-09-30T07:06:26.2834531Z   0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+2026-09-30T07:06:26.5155319Z 
+2026-09-30T07:06:26.5156927Z 100 16.6M  100 16.6M    0     0  28.4M      0 --:--:-- --:--:-- --:--:-- 28.4M
+2026-09-30T07:06:26.5276497Z ##[group]Run ./github-labeler-0.0.5
+2026-09-30T07:06:26.5277134Z [36;1m./github-labeler-0.0.5[0m
+2026-09-30T07:06:26.5331296Z shell: /usr/bin/bash -e {0}
+2026-09-30T07:06:26.5331990Z env:
+2026-09-30T07:06:26.5332899Z   GITHUB_TOKEN: ***
+2026-09-30T07:06:26.5333607Z   AWS_ACCESS_KEY_ID: ***
+2026-09-30T07:06:26.5334517Z   AWS_SECRET_ACCESS_KEY: ***
+2026-09-30T07:06:26.5335282Z   AWS_REGION: us-west-2
+2026-09-30T07:06:26.5336164Z ##[endgroup]
+2026-09-30T07:06:26.5700363Z time="2026-09-30T07:06:26Z" level=info msg="Processing event" data="{\"action\": \"edited\"}"
+2026-09-30T07:06:26.5827457Z time="2026-09-30T07:06:26Z" level=info msg="executing with owner=nudgebee repo=nudgebee event=pull_request_target"
+2026-09-30T07:06:27.2668535Z time="2026-09-30T07:06:27Z" level=info msg="Parsed \".github/labeler.yml\"" .github/labeler.yml="&{...}"
+2026-09-30T07:06:27.6237190Z time="2026-09-30T07:06:27Z" level=info msg="Found ([app/src/x.tsx]) updated files"
+2026-09-30T07:06:28.2213599Z time="2026-09-30T07:06:28Z" level=fatal msg="Failed to execute please add screenshots for UI changes in PR Template"
+2026-09-30T07:06:28.2238076Z ##[error]Process completed with exit code 1.
+2026-09-30T07:06:28.2320033Z Cleaning up orphan processes

@@ -1007,6 +1007,92 @@ const KnowledgeBaseTab = ({ accountId }) => {
             </Typography>
           ),
       },
+      {
+        key: 'classification',
+        label: 'Classification',
+        type: 'text-short',
+        render: (kb) => {
+          const kinds = kb.kinds || [];
+          const shapes = kb.shapes || [];
+          const capabilities = kb.capabilities || [];
+          const capabilityDetails = kb.capability_details || [];
+          if (kinds.length === 0 && shapes.length === 0) {
+            return <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>—</Typography>;
+          }
+          const formatShape = (shape) => {
+            if (typeof shape !== 'string') return '';
+            return shape
+              .split('_')
+              .filter(Boolean)
+              .map((word) => word[0].toUpperCase() + word.slice(1))
+              .join(' ');
+          };
+          const visibleShapes = shapes.slice(0, 2);
+          const overflowShapes = shapes.slice(2);
+          return (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
+              {kinds.length > 0 && (
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: ds.space[1] }}>
+                  {kinds.map((kind) => (
+                    <Label key={kind} text={kind === 'sop' ? 'SOP' : 'Knowledge'} tone={kind === 'sop' ? 'info' : 'neutral'} />
+                  ))}
+                </Box>
+              )}
+              {shapes.length > 0 && (
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: ds.space[1] }}>
+                  {visibleShapes.map((shape) => (
+                    <Chip
+                      key={shape}
+                      variant='tag'
+                      size='xs'
+                      hue='blue'
+                      sx={{ fontSize: 'var(--ds-text-caption)' }}
+                      displayTooltip
+                      tooltipCharLimit={30}
+                    >
+                      {formatShape(shape)}
+                    </Chip>
+                  ))}
+                  {overflowShapes.length > 0 && (
+                    <Tooltip title={overflowShapes.map(formatShape).join(', ')} placement='top'>
+                      <Box component='span' tabIndex={0} aria-label={`${overflowShapes.length} more shapes`} sx={{ display: 'inline-flex' }}>
+                        <Chip variant='count' size='xs' tone='info' sx={{ fontSize: 'var(--ds-text-caption)' }}>
+                          +{overflowShapes.length}
+                        </Chip>
+                      </Box>
+                    </Tooltip>
+                  )}
+                </Box>
+              )}
+              {capabilities.length > 0 && (
+                <Tooltip
+                  title={
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
+                      {capabilities.map((cap) => {
+                        const detail = capabilityDetails.find((d) => d.name === cap);
+                        return (
+                          <Box key={cap}>
+                            <Typography sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 'var(--ds-font-weight-medium)' }}>
+                              {cap}
+                              {detail?.surface ? ` (${detail.surface}${detail.scope ? `, ${detail.scope}` : ''})` : ''}
+                            </Typography>
+                            {detail?.description && <Typography sx={{ fontSize: 'var(--ds-text-caption)' }}>{detail.description}</Typography>}
+                          </Box>
+                        );
+                      })}
+                    </Box>
+                  }
+                  placement='top'
+                >
+                  <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)', cursor: 'help', width: 'fit-content' }}>
+                    {capabilities.length} capabilit{capabilities.length === 1 ? 'y' : 'ies'}
+                  </Typography>
+                </Tooltip>
+              )}
+            </Box>
+          );
+        },
+      },
       ...(isTenantWide
         ? [
             {

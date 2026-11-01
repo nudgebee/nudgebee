@@ -72,6 +72,9 @@ import { FiArrowRight } from 'react-icons/fi';
 import useCurrencySymbol from '@hooks/useCurrencySymbol';
 import PendingFollowUps from '@components/home/PendingFollowUps';
 import VmOverviewCard from '@components/home/VmOverviewCard';
+import { isSelfHostedProvider } from '@components/overview/providers';
+import { clearSavedWorkflowFilters } from '@components/workflow/utils/listingFilterPersistence';
+import { VmServerIcon, RecommendationIcon, OptimizeSummaryIcon } from '@assets';
 
 const replaceCurrencyInText = (text, targetCurrencySymbol) => {
   if (!text || targetCurrencySymbol === '$') return text;
@@ -105,10 +108,23 @@ const getApplicationLink = (rule, workloadFqdn) => {
   return `${url.pathname}?${url.searchParams.toString()}${url.hash}`;
 };
 
-// The backend (Go computeRedirectURL) is the single source of truth for insight
-// deep-links: it emits a complete, filter-applied relative URL, recomputed live
-// on the insight-list endpoint. Consume it verbatim.
-const buildInsightLink = (item) => item?.rule?.redirect_url || null;
+// VM insights (insight_rules.json unique_id 131/132) are CVE rows for a self-hosted
+// fleet, not k8s workload rows.
+const isSelfHostedVmRule = (rule) =>
+  Array.isArray(rule?.cloud_providers) && rule.cloud_providers.some((p) => String(p).toLowerCase() === 'selfhosted');
+
+// The backend (Go computeRedirectURL) emits a complete, filter-applied relative URL
+// and stores it on the insight row, so consume it verbatim — except for a VM fleet's
+// "N <severity> CVEs" rows, which open the Vulnerabilities tab narrowed to that
+// severity. Built here rather than from the stored URL, which for rows generated
+// earlier still points at the unfiltered Instances tab.
+const buildInsightLink = (item) => {
+  const rule = item?.rule;
+  if (isSelfHostedVmRule(rule) && rule?.severity && item?.account_id) {
+    return `/vm?accountId=${item.account_id}&severity=${encodeURIComponent(rule.severity)}#vulnerabilities`;
+  }
+  return rule?.redirect_url || null;
+};
 
 const getInsightSeverity = (item) => {
   const cat = item?.rule?.category || item?.type;
@@ -349,6 +365,10 @@ const ServiceChipRow = ({ applications, rule, accountId, maxShown = 4 }) => {
   if (!Array.isArray(apps) || apps.length === 0) return null;
   const shown = apps.slice(0, maxShown);
   const overflow = apps.length - maxShown;
+  // VM insights (insight_rules.json unique_id 131/132) carry a CVE id as `name` rather
+  // than a k8s workload — route those to the Instances tab scoped to that CVE instead of
+  // the workload-chip link, which assumes a name:namespace pair.
+  const isVmVulnChip = isSelfHostedVmRule(rule);
   return (
     // Stop chip clicks from bubbling to the parent insight row, whose onClick
     // window.opens the rule's redirect_url (the events page for Event-source
@@ -359,9 +379,12 @@ const ServiceChipRow = ({ applications, rule, accountId, maxShown = 4 }) => {
         // Event-source insights carry an event_id per application — prefer routing to
         // the investigate page for that event; otherwise fall back to the rule link.
         const investigateId = app.event_id && accountId ? app.event_id : null;
-        const href = investigateId ? null : getApplicationLink(rule, `${app.name}:${app.namespace}`);
+        const vmVulnHref = isVmVulnChip && accountId ? `/vm?accountId=${accountId}&vulnId=${encodeURIComponent(app.name)}#instances` : null;
+        const href = investigateId || vmVulnHref ? null : getApplicationLink(rule, `${app.name}:${app.namespace}`);
         const onClick = investigateId
           ? () => router.push(`/investigate?id=${investigateId}&accountId=${accountId}`)
+          : vmVulnHref
+          ? () => window.open(vmVulnHref, '_blank')
           : href
           ? () => window.open(href, '_blank')
           : undefined;
@@ -427,7 +450,8 @@ const InsightRow = React.memo(({ item = {}, type = '', currencySymbol = '$' }) =
   const label = getActionLabel(item);
   const apps = item.applications;
   const hasApps = apps && apps !== 'null' && (typeof apps === 'string' ? apps.length > 0 : apps.length > 0);
-  const displayTitle = item.rawTitle ? replaceCurrencyInText(item.rawTitle, currencySymbol) : item.title;
+  // Only spend insights are in the billing currency; savings insights are USD.
+  const displayTitle = item.rawTitle ? replaceCurrencyInText(item.rawTitle, item.rule?.source === 'Spends' ? currencySymbol : '$') : item.title;
   return (
     <Box
       onClick={link ? () => window.open(link, '_blank') : undefined}
@@ -631,7 +655,7 @@ const AutomationsCard = ({ workflowData, accountId, onManage, onViewWorkflows })
           label='Triggered (24h)'
           value={String(actionedCount)}
           id='automations-triggered-stat'
-          onClick={actionedCount > 0 ? () => viewWorkflows({ status: 'Active', last_execution_status: 'Completed' }) : undefined}
+          onClick={actionedCount > 0 ? () => viewWorkflows({ status: 'All', last_execution_status: 'All' }) : undefined}
         />
         <Stat
           size='sm'
@@ -1041,6 +1065,17 @@ const CardsBlock = ({
       return renderSkeletonRows(4);
     }
     if (shouldShowEmptyState) {
+      // VM accounts have no trend-based recommendations pipeline behind this card, so their
+      // "no data" state is never actually temporary (#39433) — an open-CVE fleet surfaces
+      // via items (insight_rules.json unique_id 131/132) above; this only shows once that's
+      // genuinely empty too.
+      if (title === 'Optimize' && isSelfHostedProvider(cloudProvider)) {
+        return (
+          <Typography sx={{ px: 'var(--ds-space-3)', py: 'var(--ds-space-2)', fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-500)' }}>
+            No Critical or High severity vulnerabilities open on this fleet.
+          </Typography>
+        );
+      }
       return renderContent(title, accountId, cloudProvider, isStale);
     }
     return generateRows(items);
@@ -1089,10 +1124,13 @@ const buildUrl = (selectedCluster, id, fragment, navigate, additionalQuery = {})
 
   if (navigate === 'details') {
     const isK8s = selectedCluster?.cloud_provider === 'K8s';
+    const isSelfHosted = isSelfHostedProvider(selectedCluster?.cloud_provider);
     const base = isK8s ? '/kubernetes/details' : '/cloud-account/details';
 
     // Construct Query Params
     const params = new URLSearchParams();
+    // /vm has no path segment for the account — it reads it from ?accountId= instead.
+    if (isSelfHosted) params.set('accountId', id);
 
     if (additionalQuery && Object.keys(additionalQuery).length > 0) {
       Object.entries(additionalQuery).forEach(([key, value]) => {
@@ -1106,8 +1144,8 @@ const buildUrl = (selectedCluster, id, fragment, navigate, additionalQuery = {})
     const queryPart = queryString ? `?${queryString}` : '';
     const fragmentPart = fragment ? `#${fragment}` : '';
 
-    // Construct Full URL: /path/id?query=params#fragment
-    route = `${base}/${id}${queryPart}${fragmentPart}`;
+    // Construct Full URL: /path/id?query=params#fragment (or /vm?accountId=id#fragment for self-hosted)
+    route = isSelfHosted ? `/vm${queryPart}${fragmentPart}` : `${base}/${id}${queryPart}${fragmentPart}`;
   } else if (navigate === 'auto-pilot') {
     route = `/automation?accountId=${id}`;
   }
@@ -1525,6 +1563,17 @@ const QUICK_LINKS_CONFIG = [
     loading: false,
     cloudProvider: 'CloudFoundry',
   },
+  // --- SelfHosted (VM) ---
+  {
+    links: [
+      { name: 'Summary', fragment: '', icon: OptimizeSummaryIcon },
+      { name: 'Vulnerabilities', fragment: 'vulnerabilities', icon: RecommendationIcon },
+      { name: 'Virtual Machines', fragment: 'instances', icon: VmServerIcon },
+    ],
+    navigate: 'details',
+    loading: false,
+    cloudProvider: 'SelfHosted',
+  },
 ];
 
 // React.memo: HomeWidgets receives only reference-stable props (selectedCluster
@@ -1911,32 +1960,34 @@ const Home = () => {
         <Grid item xs={12} lg={9} sx={{ pt: '0px !important' }}>
           <K8sAccountModal openModal={showModal} handleClose={closeModal} />
           <>
-            <CardsBlock
-              title='Troubleshoot'
-              subtitle={troubleshootSubtitle}
-              icon={ErrorOutlineIcon}
-              tone='critical'
-              items={troubleshootItems}
-              type={'troubleshooting'}
-              accountId={selectedCluster.value || ''}
-              loadingInsights={loadingInsights.troubleshooting}
-              connectedAt={selectedCluster?.created_at || ''}
-              currencySymbol={currencySymbol || '$'}
-              cloudProvider={selectedCluster?.cloud_provider || ''}
-              footer={
-                <Button
-                  tone='ghost'
-                  size='xs'
-                  icon={<KeyboardArrowRightIcon />}
-                  iconPlacement='end'
-                  onClick={() =>
-                    window.open(`/troubleshoot?accountId=${selectedCluster?.value || ''}&accountIds=${selectedCluster?.value || ''}`, '_blank')
-                  }
-                >
-                  View all issues
-                </Button>
-              }
-            />
+            {!isSelfHostedProvider(selectedCluster?.cloud_provider) && (
+              <CardsBlock
+                title='Troubleshoot'
+                subtitle={troubleshootSubtitle}
+                icon={ErrorOutlineIcon}
+                tone='critical'
+                items={troubleshootItems}
+                type={'troubleshooting'}
+                accountId={selectedCluster.value || ''}
+                loadingInsights={loadingInsights.troubleshooting}
+                connectedAt={selectedCluster?.created_at || ''}
+                currencySymbol={currencySymbol || '$'}
+                cloudProvider={selectedCluster?.cloud_provider || ''}
+                footer={
+                  <Button
+                    tone='ghost'
+                    size='xs'
+                    icon={<KeyboardArrowRightIcon />}
+                    iconPlacement='end'
+                    onClick={() =>
+                      window.open(`/troubleshoot?accountId=${selectedCluster?.value || ''}&accountIds=${selectedCluster?.value || ''}`, '_blank')
+                    }
+                  >
+                    View all issues
+                  </Button>
+                }
+              />
+            )}
             {selectedCluster?.cloud_provider !== 'CloudFoundry' && (
               <CardsBlock
                 title='Optimize'
@@ -1957,7 +2008,13 @@ const Home = () => {
                     icon={<KeyboardArrowRightIcon />}
                     iconPlacement='end'
                     onClick={() =>
-                      window.open(`/optimise?accountId=${selectedCluster?.value || ''}&account=${selectedCluster?.value || ''}#cost`, '_blank')
+                      // A VM fleet's rows here are vulnerabilities, which the Optimize page doesn't list.
+                      window.open(
+                        isSelfHostedProvider(selectedCluster?.cloud_provider)
+                          ? `/vm?accountId=${selectedCluster?.value || ''}#vulnerabilities`
+                          : `/optimise?accountId=${selectedCluster?.value || ''}&account=${selectedCluster?.value || ''}#cost`,
+                        '_blank'
+                      )
                     }
                   >
                     View all recommendations
@@ -1993,6 +2050,10 @@ const Home = () => {
                   <>
                     {imageScanData && Object.keys(imageScanData).length > 0 ? (
                       <Box
+                        onClick={() =>
+                          selectedCluster?.value &&
+                          window.open(`/kubernetes/details/${selectedCluster.value}?status=Open&severity=Critical#security/image-scan`, '_blank')
+                        }
                         sx={{
                           display: 'flex',
                           alignItems: 'center',
@@ -2001,6 +2062,9 @@ const Home = () => {
                           px: 'var(--ds-space-3)',
                           mx: 'var(--ds-space-2)',
                           borderBottom: '1px solid var(--ds-gray-100)',
+                          cursor: 'pointer',
+                          transition: 'background-color 120ms ease',
+                          '&:hover': { backgroundColor: 'var(--ds-background-200)' },
                         }}
                       >
                         <Box sx={{ flexShrink: 0 }}>
@@ -2009,21 +2073,28 @@ const Home = () => {
                         <Typography sx={{ flex: 1, minWidth: 0, fontSize: 'var(--ds-text-body)', lineHeight: 1.5, color: 'var(--ds-gray-800)' }}>
                           {`${imageScanData.appCount} apps have ${imageScanData.totalCritical} critical CVEs in ${imageScanData.imageCount} images`}
                         </Typography>
-                        <Button
-                          tone='ghost'
-                          size='xs'
-                          icon={<AgentSparkleIcon />}
-                          iconPlacement='start'
-                          onClick={() =>
-                            window.open(`/kubernetes/details/${selectedCluster?.value}?status=Open&severity=Critical#security/image-scan`, '_blank')
-                          }
-                        >
-                          Review
-                        </Button>
+                        <Box sx={{ flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
+                          <Button
+                            tone='ghost'
+                            size='xs'
+                            icon={<AgentSparkleIcon />}
+                            iconPlacement='start'
+                            onClick={() =>
+                              selectedCluster?.value &&
+                              window.open(`/kubernetes/details/${selectedCluster.value}?status=Open&severity=Critical#security/image-scan`, '_blank')
+                            }
+                          >
+                            Review
+                          </Button>
+                        </Box>
                       </Box>
                     ) : null}
                     {certificateData && Object.keys(certificateData).length > 0 ? (
                       <Box
+                        onClick={() =>
+                          selectedCluster?.value &&
+                          window.open(`/kubernetes/details/${selectedCluster.value}#security/ssl-certificate-issues`, '_blank')
+                        }
                         sx={{
                           display: 'flex',
                           alignItems: 'center',
@@ -2033,6 +2104,9 @@ const Home = () => {
                           mx: 'var(--ds-space-2)',
                           borderBottom: '1px solid var(--ds-gray-100)',
                           '&:last-child': { borderBottom: 'none' },
+                          cursor: 'pointer',
+                          transition: 'background-color 120ms ease',
+                          '&:hover': { backgroundColor: 'var(--ds-background-200)' },
                         }}
                       >
                         <Box sx={{ flexShrink: 0 }}>
@@ -2041,15 +2115,20 @@ const Home = () => {
                         <Typography sx={{ flex: 1, minWidth: 0, fontSize: 'var(--ds-text-body)', lineHeight: 1.5, color: 'var(--ds-gray-800)' }}>
                           {`${certificateData.expiringSoon} certificates expiring in less than 30 days`}
                         </Typography>
-                        <Button
-                          tone='ghost'
-                          size='xs'
-                          icon={<AgentSparkleIcon />}
-                          iconPlacement='start'
-                          onClick={() => window.open(`/kubernetes/details/${selectedCluster?.value}#security/ssl-certificate-issues`, '_blank')}
-                        >
-                          Review
-                        </Button>
+                        <Box sx={{ flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
+                          <Button
+                            tone='ghost'
+                            size='xs'
+                            icon={<AgentSparkleIcon />}
+                            iconPlacement='start'
+                            onClick={() =>
+                              selectedCluster?.value &&
+                              window.open(`/kubernetes/details/${selectedCluster.value}#security/ssl-certificate-issues`, '_blank')
+                            }
+                          >
+                            Review
+                          </Button>
+                        </Box>
                       </Box>
                     ) : null}
                   </>
@@ -2067,8 +2146,16 @@ const Home = () => {
           <AutomationsCard
             workflowData={workflowData}
             accountId={selectedCluster?.value || ''}
-            onManage={(id) => window.open(`/automation?accountId=${id}&status=Active`, '_blank')}
-            onViewWorkflows={(query) => router.push({ pathname: '/automation', query })}
+            // Each of these promises the listing behind a count, so drop any
+            // filters the listing saved on an earlier visit before opening it.
+            onManage={(id) => {
+              clearSavedWorkflowFilters();
+              window.open(`/automation?accountId=${id}&status=Active`, '_blank');
+            }}
+            onViewWorkflows={(query) => {
+              clearSavedWorkflowFilters();
+              router.push({ pathname: '/automation', query });
+            }}
           />
           <VmOverviewCard
             accountId={selectedCluster?.value || ''}

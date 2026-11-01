@@ -397,15 +397,12 @@ func buildEventContext(event *models.Event, facts workloadFacts) string {
 	fmt.Fprintf(&b, "- source: %s\n", get(event.Source))
 	fmt.Fprintf(&b, "- finding_type: %s\n", get(event.FindingType))
 	fmt.Fprintf(&b, "- priority(source): %s\n", get(event.Priority))
-	scope := get(event.SubjectOwner)
-	if scope == "" {
-		scope = get(event.SubjectNamespace)
-	}
+	kind, name, _ := classSubjectOf(event).identity()
 	// Cluster is deliberately omitted: it is NOT part of the class key (signal_class.go), so a
 	// verdict minted from one cluster is served to every cluster in the tenant. Feeding the concrete
 	// cluster name only invited the classifier to echo it into the (cross-cluster) cached reasoning.
 	fmt.Fprintf(&b, "- subject: %s %s in namespace %s\n",
-		get(event.SubjectOwnerKind), scope, get(event.SubjectNamespace))
+		kind, name, get(event.SubjectNamespace))
 	if d := get(event.Description); d != "" {
 		if len(d) > 300 {
 			d = d[:300]

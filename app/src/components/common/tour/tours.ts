@@ -562,7 +562,7 @@ const troubleshootTour: TourDef = {
       element: '#all-events thead',
       title: 'What does each column mean?',
       description:
-        'Not sure what a column shows? Hover the ⓘ next to any header — Severity, Triage Score, Alert Status and more each explain themselves. Use the column menu to add or remove columns.',
+        'Not sure what a column shows? Hover the ⓘ next to any header — Source Severity, Triage Score, Alert Status and more each explain themselves. Use the column menu to add or remove columns.',
       side: 'bottom',
       align: 'center',
     },

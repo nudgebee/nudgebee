@@ -255,7 +255,7 @@ const ExecutionDashboard: React.FC = () => {
                 minDate={dayjs().subtract(retentionDays > 0 ? retentionDays : 60, 'day')}
                 onChange={(passed: any) => {
                   const range = passed?.selection || passed;
-                  updateFilters({ startDate: new Date(range.startTime), endDate: new Date(range.endTime) });
+                  updateFilters({ startDate: new Date(range.startTime), endDate: new Date(range.endTime) }, range.shortcutClickTime);
                 }}
                 sx={{ height: ds.space[6] }}
               />

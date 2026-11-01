@@ -1549,6 +1549,8 @@ func UpdateUserAccessed(context *security.RequestContext, request UserUpdateAcce
 	}
 
 	var result sql.Result
+	// API keys (provider 'token') keep the tenant they were created in; moving them made them
+	// spend, bill and obey rules in whichever tenant their owner last opened (#40623).
 	if request.AuthId != "" {
 		// Lazily backfill token_sha256 for tokens created before the column existed.
 		// NULLIF('' -> NULL) + COALESCE keeps the existing hash, so this writes only
@@ -1556,11 +1558,11 @@ func UpdateUserAccessed(context *security.RequestContext, request UserUpdateAcce
 		// caller (token.ts login, super_admin via server bypass) has the plaintext token
 		// and computes the same lowercase-hex sha256 the gateway resolves by.
 		result, err = manager.Db.Exec(
-			`UPDATE user_auths SET accessed_at = NOW(), tenant_id = $1, token_sha256 = COALESCE(token_sha256, NULLIF($2, '')) WHERE id = $3`,
+			`UPDATE user_auths SET accessed_at = NOW(), tenant_id = CASE WHEN provider = 'token' THEN tenant_id ELSE $1 END, token_sha256 = COALESCE(token_sha256, NULLIF($2, '')) WHERE id = $3`,
 			request.TenantId, request.TokenSha256, request.AuthId)
 	} else {
 		result, err = manager.Db.Exec(
-			`UPDATE user_auths SET accessed_at = NOW(), tenant_id = $1 WHERE "user" IN (SELECT id FROM users WHERE username = $2)`,
+			`UPDATE user_auths SET accessed_at = NOW(), tenant_id = $1 WHERE "user" IN (SELECT id FROM users WHERE username = $2) AND provider <> 'token'`,
 			request.TenantId, request.Username)
 	}
 	if err != nil {

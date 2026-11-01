@@ -1,0 +1,16 @@
+﻿2026-09-30T07:00:00.0000001Z Current runner version: '2.337.0'
+2026-09-30T07:00:00.0000002Z ##[group]Runner Image
+2026-09-30T07:00:00.0000003Z Image: ubuntu-24.04
+2026-09-30T07:00:00.0000004Z ##[endgroup]
+2026-09-30T07:00:00.0000005Z ##[group]Run actions/checkout@v4
+2026-09-30T07:00:00.0000006Z syncing repository: nudgebee/nudgebee
+2026-09-30T07:00:00.0000007Z ##[endgroup]
+2026-09-30T07:00:00.0000008Z ##[group]Run go build ./...
+2026-09-30T07:00:00.0000009Z [36;1mgo build ./...[0m
+2026-09-30T07:00:00.0000010Z shell: /usr/bin/bash -e {0}
+2026-09-30T07:00:00.0000011Z ##[endgroup]
+2026-09-30T07:00:00.0000012Z # nudgebee/code-analysis-agent/agents
+2026-09-30T07:00:00.0000013Z agents/ci_log_summary.go:42:13: undefined: renderThing
+2026-09-30T07:00:00.0000014Z agents/ci_log_summary.go:57:2: declared and not used: x
+2026-09-30T07:00:00.0000015Z ##[error]Process completed with exit code 1.
+2026-09-30T07:00:00.0000016Z Post job cleanup.

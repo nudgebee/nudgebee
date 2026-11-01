@@ -46,6 +46,20 @@ function queryCloudAccountsOnce(query: string): Promise<any> {
   return pending;
 }
 
+// Lists getCloudAccounts returned because the request failed: empty, or Demo only. A tenant with no
+// accounts gets a list that looks the same, so a caller that must tell "could not load" from "has no
+// accounts" asks isCloudAccountsLoadFailure(list).
+const failedCloudAccountLists = new WeakSet<object>();
+
+function asLoadFailure<T extends object>(list: T): T {
+  failedCloudAccountLists.add(list);
+  return list;
+}
+
+export function isCloudAccountsLoadFailure(list: unknown): boolean {
+  return typeof list === 'object' && list !== null && failedCloudAccountLists.has(list);
+}
+
 const apiDashboard = {
   getCloudAccounts: async function (cloud_provider = '', refresh = false, includeDemoAccount = false) {
     const cacheKeyWithDemo = (cloud_provider ? 'accounts-' + cloud_provider : 'all-accounts') + '-demo';
@@ -124,18 +138,18 @@ const apiDashboard = {
       // retries fresh. If the caller wants the demo account, still surface it so the UI
       // isn't left with zero accounts to select from.
       if (!includeDemoAccount) {
-        return [];
+        return asLoadFailure([]);
       }
       try {
         const mockData = await getMockData('home');
         const mockAccount = mockData.GetCloudAccount;
         if (mockAccount && mockAccount.status === 'active' && (!cloud_provider || mockAccount.cloud_provider === cloud_provider)) {
-          return [mockAccount];
+          return asLoadFailure([mockAccount]);
         }
       } catch (mockErr) {
         console.log('Failed to fetch demo account, skipping:', mockErr);
       }
-      return [];
+      return asLoadFailure([]);
     }
   },
 

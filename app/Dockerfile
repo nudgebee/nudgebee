@@ -1,10 +1,13 @@
 # syntax=docker/dockerfile:1.7
-FROM node:25-alpine AS base
+FROM node:26-alpine AS base
 # Refresh the base image's Alpine OS packages to the latest patch level. The
-# node:25-alpine tag lags Alpine security releases (e.g. openssl/libssl3), so
+# node:26-alpine tag lags Alpine security releases (e.g. openssl/libssl3), so
 # without this the runtime inherits fixed-upstream OS CVEs. Applied on the shared
-# base so deps/builder/runner all get the patched packages.
-RUN apk upgrade --no-cache
+# base so deps/builder/runner all get the patched packages. Bumping OS_PKG_EPOCH
+# changes this layer's cache key so the registry cache can't serve a stale
+# package layer (same convention as api-server/services/Dockerfile).
+ARG OS_PKG_EPOCH=2026-W44
+RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" && apk upgrade --no-cache
 
 # Install dependencies only when needed
 FROM base AS deps
@@ -82,4 +85,8 @@ ENV PORT 3000
 # set hostname to localhost
 ENV HOSTNAME "0.0.0.0"
 
-CMD ["node", "server.js"]
+# Trust the OS CA bundle (refreshed by apk upgrade above) instead of Node's
+# compiled-in roots, which still include the distrusted emSign ECC Root CA - G3.
+# A CLI flag, not NODE_OPTIONS, so a deployment's own NODE_OPTIONS can't drop it.
+# --use-system-ca would add the OS roots on top of the bundled ones, not replace them.
+CMD ["node", "--use-openssl-ca", "server.js"]

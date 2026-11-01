@@ -15,12 +15,17 @@ func init() {
 	toolInput := "Provide a question in natural language to investigate, query, or troubleshoot MySQL."
 	toolOutput := "Returns query results and summaries for MySQL operations."
 
-	core.RegisterNBAgentFactoryAndTool(MySQLAgentName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAndTool(MySQLAgentName, func(accountId string) (core.NBAgent, error) {
 		return MySQLDebugAgent{
 			accountId: accountId,
 		}, nil
 	}, toolDescription, toolInput, toolOutput)
 }
+
+// AcceptsExecutionTarget: mysql_query_execute follows a handed target and picks among
+// the target account's own integrations, so the agent can run for another
+// account.
+func (l MySQLDebugAgent) AcceptsExecutionTarget() {}
 
 type MySQLDebugAgent struct {
 	accountId string

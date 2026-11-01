@@ -13,4 +13,14 @@ type EventPostProcessMessage struct {
 	// event whose ON CONFLICT update flipped it to RESOLVED. Repeated resolve
 	// webhooks re-publish; notifications-server dedupes per delivered thread.
 	NotifyResolved bool `json:"notify_resolved,omitempty"`
+	// Phase names a transition of an existing event that the consumer handles on
+	// its own, in place of one more boolean per transition. It is checked before
+	// the booleans above; empty, as in every message published before it
+	// existed, leaves them in charge.
+	Phase string `json:"phase,omitempty"`
 }
+
+// EventPostProcessPhaseReturned marks an event that had cleared and fired
+// again. The consumer delivers the returned notification only: the full
+// pipeline ran on first insert.
+const EventPostProcessPhaseReturned = "returned"

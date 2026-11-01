@@ -181,18 +181,24 @@ func executeFetchLogs(ctx core.NbToolContext, logProvider services_server.Observ
 	// Leave an empty source empty: api-server re-resolves it from the account's
 	// integration. Forcing "agent" here would pin SaaS providers to the wrong backend.
 
+	queryAccountId := ctx.AccountId
+	if target := ctx.QueryConfig.DelegatedTarget; target != nil && target.AccountID != "" {
+		queryAccountId = target.AccountID
+	}
+
 	logRequest := services_server.LogQueryRequest{
 		Query:             query,
 		Limit:             p.limit,
 		StartTime:         p.startTime,
 		EndTime:           p.endTime,
-		AccountId:         ctx.AccountId,
+		AccountId:         queryAccountId,
 		LogProvider:       logProvider.Provider,
 		LogProviderSource: logProvider.IntegrationSource,
 		Offset:            p.offset,
 		Request:           p.request,
 		Index:             p.index,
 	}
+
 	setRequestIndex(&logRequest, p.index)
 
 	logs, err := services_server.QueryLogs(*ctx.Ctx, logRequest)
@@ -244,12 +250,17 @@ func executeFetchLogsCanonical(ctx core.NbToolContext, logProvider services_serv
 		idx = logProvider.DefaultIndex
 	}
 
+	queryAccountId := ctx.AccountId
+	if target := ctx.QueryConfig.DelegatedTarget; target != nil && target.AccountID != "" {
+		queryAccountId = target.AccountID
+	}
+
 	logRequest := services_server.LogQueryRequest{
 		Query:             "",
 		Limit:             p.limit,
 		StartTime:         p.startTime,
 		EndTime:           p.endTime,
-		AccountId:         ctx.AccountId,
+		AccountId:         queryAccountId,
 		LogProvider:       logProvider.Provider,
 		LogProviderSource: logProvider.IntegrationSource,
 		Offset:            p.offset,
@@ -472,8 +483,12 @@ func executeFetchTrace(ctx core.NbToolContext, traceProvider string, traceProvid
 	}
 	queryBuilder.Offset = offset
 	queryBuilder.Limit = limit
+	queryAccountId := ctx.AccountId
+	if target := ctx.QueryConfig.DelegatedTarget; target != nil && target.AccountID != "" {
+		queryAccountId = target.AccountID
+	}
 	traceRequest := core.ObservabilityTracesV3Request{
-		AccountId:      ctx.AccountId,
+		AccountId:      queryAccountId,
 		ProviderType:   traceProvider,
 		ProviderSource: traceProviderSource,
 		StartTime:      startTime,
@@ -482,6 +497,7 @@ func executeFetchTrace(ctx core.NbToolContext, traceProvider string, traceProvid
 		Offset:         offset,
 		QueryRequest:   queryBuilder,
 		Query:          query,
+
 		// Only the free-form ClickHouse SQL path (traces_execute) asks for the raw column/row
 		// table, so aggregation / custom-projection queries keep their real values instead of
 		// being zeroed by the fixed span-schema mapping. Other providers and the structured
@@ -628,7 +644,7 @@ func getActiveCloudProvider(accountId string) (string, error) {
 	return cloudProviders[0], nil
 }
 
-func isCloudObservabilityProvider(provider string) bool {
+func IsCloudObservabilityProvider(provider string) bool {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "aws", "gcp", "azure":
 		return true
@@ -637,12 +653,20 @@ func isCloudObservabilityProvider(provider string) bool {
 	}
 }
 
-func hasActiveCloudProvider(accountId, requestedProvider string) bool {
+func isCloudObservabilityProvider(provider string) bool {
+	return IsCloudObservabilityProvider(provider)
+}
+
+func HasActiveCloudProvider(accountId, requestedProvider string) bool {
 	activeProvider, err := getActiveCloudProvider(accountId)
 	if err != nil {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(activeProvider), strings.TrimSpace(requestedProvider))
+}
+
+func hasActiveCloudProvider(accountId, requestedProvider string) bool {
+	return HasActiveCloudProvider(accountId, requestedProvider)
 }
 
 // cloudProviderToObservabilityFallback maps a cloud_accounts.cloud_provider value
@@ -676,7 +700,7 @@ func cloudProviderToObservabilityFallback(cloudProvider string) string {
 // query: that is the same lookup gating relay calls, so two copies could drift
 // into answering differently about the same account. It also adds the per-account
 // cache this had none of — every call used to hit the metastore.
-func hasConnectedK8sAgent(accountId string) bool {
+func HasConnectedK8sAgent(accountId string) bool {
 	// This caller's own precondition, not the relay gate's: an account id that
 	// is not a uuid cannot name a cloud account, and for the hijack guard the
 	// safe answer is "no k8s agent". relay.AgentConnected deliberately lets a
@@ -685,6 +709,10 @@ func hasConnectedK8sAgent(accountId string) bool {
 		return false
 	}
 	return relay.AgentConnected(accountId)
+}
+
+func hasConnectedK8sAgent(accountId string) bool {
+	return HasConnectedK8sAgent(accountId)
 }
 
 // logProviderCacheNS caches the resolved observability log provider per account.

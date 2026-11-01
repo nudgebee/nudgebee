@@ -36,6 +36,12 @@ const maxChronosphereTraceDuration = 120 * time.Minute
 // spawns one goroutine per connected account across every tenant.
 const traceAggregationConcurrency = 4
 
+// maxInsightApplications caps how many per-item chips (e.g. individual CVEs)
+// an insight's applications_query can populate, independent of any LIMIT the
+// rule's own SQL applies — a defense-in-depth cap so a rule author forgetting
+// LIMIT can't balloon the stored JSONB payload.
+const maxInsightApplications = 5
+
 // Pre-compiled — called per row in insight processing loops.
 var insightTitlePlaceholderRe = regexp.MustCompile(`\{([a-zA-Z_]+)\}`)
 
@@ -180,7 +186,18 @@ func computeRedirectURL(rule InsightRule, insightTitle string, accountID string,
 	if cp == "k8s" {
 		return computeK8sRedirectURL(rule, insightTitle, id)
 	}
+	if cp == "selfhosted" {
+		return computeVmRedirectURL(id)
+	}
 	return computeCloudRedirectURL(rule, id)
+}
+
+// computeVmRedirectURL builds the base link for a self-hosted VM account's
+// insights — the Instances tab, unscoped. A CVE-scoped link (?vulnId=...) is
+// appended client-side per application chip (ServiceChipRow in home/index.jsx),
+// since that scope lives in a query param the frontend adds, not in the rule.
+func computeVmRedirectURL(id string) string {
+	return "/vm?accountId=" + id + "#instances"
 }
 
 func computeK8sRedirectURL(rule InsightRule, insightTitle string, id string) string {
@@ -735,16 +752,17 @@ func (re *ruleExecutor) processAdditionRule(rule InsightRule, accountId []string
 			}
 			title := formatInsightTitle(rule.InsightFormat, value, values)
 			insights = append(insights, Insight{
-				Title:      title,
-				Type:       rule.InsightCategory,
-				Source:     rule.Source,
-				AccountID:  accountId,
-				Tenant:     tenantId,
-				UniqueID:   rule.UniqueID,
-				ResourceID: resourceId,
-				Status:     InsightStatusOpen,
-				Severity:   rule.Severity,
-				Rule:       rule,
+				Title:        title,
+				Type:         rule.InsightCategory,
+				Source:       rule.Source,
+				AccountID:    accountId,
+				Tenant:       tenantId,
+				UniqueID:     rule.UniqueID,
+				ResourceID:   resourceId,
+				Status:       InsightStatusOpen,
+				Severity:     rule.Severity,
+				Rule:         rule,
+				Applications: re.fetchApplications(rule, accountId),
 			})
 		}
 	}
@@ -754,6 +772,43 @@ func (re *ruleExecutor) processAdditionRule(rule InsightRule, accountId []string
 	}
 
 	return insights, nil
+}
+
+// fetchApplications runs a rule's optional applications_query — a single-
+// account SELECT with one placeholder and one "name" column — to populate
+// per-item chips (e.g. one per CVE) on an otherwise-aggregate insight. Rules
+// that leave applications_query empty are unaffected; this only runs for the
+// ones that opt in.
+func (re *ruleExecutor) fetchApplications(rule InsightRule, accountId string) []RelevantApplications {
+	if rule.ApplicationsQuery == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), insightQueryTimeout)
+	defer cancel()
+	rows, err := re.db.Db.QueryxContext(ctx, re.db.Db.Rebind(rule.ApplicationsQuery), accountId)
+	if err != nil {
+		re.ctx.GetLogger().Error("Failed to run applications_query", "rule", rule.UniqueID, "error", err)
+		return nil
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			re.ctx.GetLogger().Error("Failed to close applications_query rows", "rule", rule.UniqueID, "error", err)
+		}
+	}()
+
+	applications := make([]RelevantApplications, 0, maxInsightApplications)
+	for rows.Next() {
+		if len(applications) >= maxInsightApplications {
+			break
+		}
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			re.ctx.GetLogger().Error("Failed to scan applications_query row", "rule", rule.UniqueID, "error", err)
+			continue
+		}
+		applications = append(applications, RelevantApplications{Name: name})
+	}
+	return applications
 }
 
 func (re *ruleExecutor) processDiffRule(rule InsightRule, accountIds []string) ([]Insight, error) {

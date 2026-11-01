@@ -731,6 +731,95 @@ func windowFromTimestampBounds(where core.QueryWhereClause, now time.Time) (time
 	return time.Time{}, time.Time{}, false
 }
 
+// LogQueryWindow is the time window a canonical log query asks for.
+type LogQueryWindow struct {
+	Start time.Time
+	End   time.Time
+	// EndsNow means the query named no end: End is the `now` it was resolved
+	// with, and the query's real end is whenever it runs.
+	EndsNow bool
+	// Range is set, with EndsNow, when the window is a bare relative range
+	// ("last 30m"): Start is Range before End.
+	Range time.Duration
+}
+
+// ResolveLogQueryWindow resolves the window a canonical log query states, in
+// every form a query can carry it:
+//
+//   - a start_time/end_time pair, or a start_time alone (it runs to now);
+//   - a relative range, ending now or at an explicit end_time, or running
+//     forward from a start_time;
+//   - an ISO-8601 interval in the range slot ("A/B");
+//   - timestamp bounds in the filter, when no window control is given.
+//
+// args are window controls passed beside the query (a tool call's arguments);
+// they win over the query's own. ok is false when nothing states a window, and
+// the caller applies its own fallback.
+//
+// logs_execute_v2 runs a query over this window and the log query plan's
+// validation bounds a plan by it. Both must read a plan's window the same way:
+// a form only one of them understood is how a fetch came to run over a window
+// nobody asked for.
+func ResolveLogQueryWindow(query core.QueryBuilder, args map[string]any, now time.Time) (LogQueryWindow, bool) {
+	controls := make(map[string]any, len(args)+3)
+	for k, v := range args {
+		controls[k] = v
+	}
+	if _, ok := controls["range"]; !ok && query.TimeRange != "" {
+		controls["range"] = query.TimeRange
+	}
+	if _, ok := controls["start_time"]; !ok && query.StartTime != "" {
+		controls["start_time"] = query.StartTime
+	}
+	if _, ok := controls["end_time"]; !ok && query.EndTime != "" {
+		controls["end_time"] = query.EndTime
+	}
+
+	if !hasWindowArgs(controls) {
+		// A window written into the filter (timestamp bounds) is still the window asked for;
+		// without this the search ran over the default last hour and missed it entirely.
+		if from, to, ok := windowFromTimestampBounds(query.Where, now); ok {
+			return LogQueryWindow{Start: from, End: to}, true
+		}
+		return LogQueryWindow{}, false
+	}
+
+	_, hasStart := firstTimeValue(controls, "start_time", "start", "starttime")
+	_, hasEnd := firstTimeValue(controls, "end_time", "end", "endtime")
+	if start, end, ok := resolveWindowFromLabelsAt(controls, now); ok {
+		window := LogQueryWindow{Start: start.UTC(), End: end.UTC()}
+		if !hasStart && !hasEnd {
+			if d, ok := relativeRange(controls); ok {
+				window.EndsNow, window.Range = true, d
+			}
+		}
+		return window, true
+	}
+	// A start with no end and no range runs to now.
+	if start, ok := firstTimeValue(controls, "start_time", "start", "starttime"); ok && !hasEnd && start.Before(now) {
+		return LogQueryWindow{Start: start.UTC(), End: now.UTC(), EndsNow: true}, true
+	}
+	return LogQueryWindow{}, false
+}
+
+// relativeRange returns the duration in the range slot. An ISO interval there
+// is not a duration and reports false.
+func relativeRange(labels map[string]any) (time.Duration, bool) {
+	for _, k := range []string{"range", "duration"} {
+		valStr, ok := labels[k].(string)
+		if !ok {
+			continue
+		}
+		if d, err := ParseDuration(valStr); err == nil {
+			if d < 0 {
+				d = -d
+			}
+			return d, true
+		}
+	}
+	return 0, false
+}
+
 // ExtractStartEndtimeFromLabels extracts start and end times from a map of labels.
 // It checks for common key pairs like (start_time, end_time) and (start, end).
 // It also checks for a 'range' or 'duration' key to calculate start time relative to end time (defaults to Now).
@@ -764,6 +853,13 @@ func ExtractStartEndtimeFromLabels(nbRequestContext core.NbToolContext, labels m
 // now. Returns ok=false when the set holds no usable time information so the
 // caller can fall back to another source (e.g. event labels).
 func resolveWindowFromLabels(labels map[string]any) (time.Time, time.Time, bool) {
+	return resolveWindowFromLabelsAt(labels, time.Now().UTC())
+}
+
+// resolveWindowFromLabelsAt is resolveWindowFromLabels with the instant "now"
+// stands for supplied, so a caller resolving two windows compares them against
+// the same instant.
+func resolveWindowFromLabelsAt(labels map[string]any, now time.Time) (time.Time, time.Time, bool) {
 	if labels == nil {
 		return time.Time{}, time.Time{}, false
 	}
@@ -848,7 +944,6 @@ func resolveWindowFromLabels(labels map[string]any) (time.Time, time.Time, bool)
 	if endTime, ok := firstTimeValue(labels, "end_time", "end", "endtime"); ok {
 		return endTime.Add(-duration), endTime, true
 	}
-	now := time.Now().UTC()
 	if startTime, ok := firstTimeValue(labels, "start_time", "start", "starttime"); ok && startTime.Before(now) {
 		endTime := startTime.Add(duration)
 		if endTime.After(now) {

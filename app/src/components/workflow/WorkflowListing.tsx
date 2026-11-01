@@ -21,9 +21,10 @@ import CloudProviderIcon from '@shared/icons/CloudIcon';
 import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import { Modal } from '@ui/Modal';
 import { toast as snackbar } from '@ui/Toast';
-import { hasWriteAccess, hasPermission, missingPermissionMessage, getUserSession, getCurrentTenant } from '@lib/auth';
+import { hasWriteAccess, hasPermission, missingPermissionMessage, getUserSession } from '@lib/auth';
 import { readPersistedFilters, writePersistedFilters } from '@hooks/usePersistedFilters';
 import { readPersistedAccounts, writePersistedAccounts } from './utils/accountFilterPersistence';
+import { workflowFilterKey, type PersistedWorkflowFilters } from './utils/listingFilterPersistence';
 import { parseHttpResponseBodyMessage } from 'src/utils/common';
 import { action } from 'src/utils/actionStyles';
 import TriggerWorkflowModal from './components/TriggerWorkflowModal';
@@ -132,22 +133,6 @@ const renderUserTooltip = (user?: { display_name?: string; username?: string } |
     </Box>
   );
 };
-
-// Filters the user picked here, remembered across visits. The sidebar links
-// back to a bare /automation, so without this every return trip resets the
-// view. Same mechanism the troubleshoot Events table uses.
-const WORKFLOW_FILTER_STORAGE_KEY = 'automation:workflows:filters:v1';
-
-interface PersistedWorkflowFilters {
-  // Index signature so this satisfies the helpers' Record<string, unknown>.
-  [key: string]: unknown;
-  status?: string;
-  last_execution_status?: string;
-  type?: string;
-  name?: string;
-  tags?: string;
-  created_by?: string;
-}
 
 interface WorkflowActionsCellProps {
   workflow: any;
@@ -304,13 +289,7 @@ const WorkflowListing: React.FC = () => {
   const [selectedWorkflow, setSelectedWorkflow] = useState<any>({ id: '', name: '' });
   const [triggerLoading, setTriggerLoading] = useState<boolean>(false);
   const router = useRouter();
-  // Scoped by tenant: an account or created-by filter from one tenant is
-  // meaningless after switching to another. No tenant yet ⇒ null key ⇒ every
-  // read/write below is a no-op.
-  const persistKey = useMemo(() => {
-    const tenantId = getCurrentTenant()?.id;
-    return tenantId ? `${WORKFLOW_FILTER_STORAGE_KEY}:${tenantId}` : null;
-  }, []);
+  const persistKey = useMemo(() => workflowFilterKey(), []);
   // The "Created By" filter is sourced from the tenant user list
   // (users_list_by_tenant), which only tenant-level roles can read. Hide it for
   // everyone else (e.g. account_admin) instead of rendering an empty, broken

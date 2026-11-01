@@ -986,127 +986,113 @@ func (p *AnthropicCacheProvider) GetProviderName() string {
 	return "anthropic"
 }
 
-// ApplyCache modifies the message list to include Anthropic's inline cache control directives.
+// ApplyCache marks Anthropic cache breakpoints (inline cache_control) on the request.
 //
-// Anthropic supports up to 4 cache breakpoints. Placing cache_control at multiple strategic points
-// (e.g. system instructions, tools block, and the last stable turn) allows partial cache hits
-// even when conversation history evolves.
+// Anthropic caches the prompt prefix up to each marked block, in the order
+// tools → system → messages, and allows at most 4 markers. Breakpoints:
+//  1. The system prompt — tools + system, shared by every run of the agent.
+//  2. The tail: the last non-assistant message (a tool result or human turn).
+//     The next step of the tool loop sends this request again plus the new
+//     assistant turn and tool results, so it reads this whole prefix.
+//  3. The previous step's tail: the last non-assistant message before the last
+//     assistant turn — exactly where the previous request wrote its tail. This
+//     reads it even when a step adds more than Anthropic's 20-block lookback
+//     (a wide parallel batch).
+//
+// Anthropic's cache is content-addressed, so the marks apply in every scope;
+// scope only keys Google AI cache slots. Assistant messages are never marked:
+// the tail and the previous tail always fall on a human or tool message.
 func (p *AnthropicCacheProvider) ApplyCache(ctx context.Context, req *CacheRequest) *CacheResponse {
-	// Anthropic uses inline cache control - modify messages directly
-	cacheableMessages, nonCacheableMessages := identifyCacheableMessages(req.Messages, req.Scope)
+	messages := req.Messages
 
-	if len(cacheableMessages) == 0 {
+	lastPart := func(i int) int {
+		for j := len(messages[i].Parts) - 1; j >= 0; j-- {
+			if isAnthropicCacheablePart(messages[i].Parts[j]) {
+				return j
+			}
+		}
+		return -1
+	}
+	// lastNonAI returns the last message before end that is not an assistant
+	// message and has a cacheable part.
+	lastNonAI := func(end int) int {
+		for i := end - 1; i >= 0; i-- {
+			if messages[i].Role != llms.ChatMessageTypeAI && lastPart(i) >= 0 {
+				return i
+			}
+		}
+		return -1
+	}
+
+	var targets []int
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == llms.ChatMessageTypeSystem && lastPart(i) >= 0 {
+			targets = append(targets, i)
+			break
+		}
+	}
+	targets = append(targets, lastNonAI(len(messages)))
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == llms.ChatMessageTypeAI {
+			targets = append(targets, lastNonAI(i))
+			break
+		}
+	}
+
+	marked := make(map[int]bool, len(targets))
+	modifiedMessages := make([]llms.MessageContent, len(messages))
+	copy(modifiedMessages, messages)
+	for _, i := range targets {
+		if i < 0 || marked[i] {
+			continue
+		}
+		marked[i] = true
+		j := lastPart(i)
+		parts := make([]llms.ContentPart, len(messages[i].Parts))
+		copy(parts, messages[i].Parts)
+		cc := &llms.CacheControl{Type: "ephemeral"}
+		if i == targets[0] && messages[i].Role == llms.ChatMessageTypeSystem {
+			cc.Duration = anthropicSystemCacheTTL(req.Scope)
+		}
+		parts[j] = llms.WithCacheControl(parts[j], cc)
+		modifiedMessages[i] = llms.MessageContent{Role: messages[i].Role, Parts: parts}
+		slog.Debug("Added Anthropic cache control", "messageIndex", i, "partIndex", j, "conversationId", req.ConversationId)
+	}
+
+	if len(marked) == 0 {
 		slog.Debug("No cacheable messages for Anthropic", "conversationId", req.ConversationId)
-		return &CacheResponse{
-			Messages: req.Messages,
-			CacheHit: false,
-		}
 	}
-
-	// Constraints:
-	//  1. Only TextContent/BinaryContent can be wrapped — ToolCall/ToolCallResponse crash
-	//     the Anthropic handler with "unsupported cached content part type".
-	//  2. Only Human and System message handlers support CachedContent. The AI message
-	//     handler (handleAIMessage) does NOT handle CachedContent and would error with
-	//     ErrInvalidContentType.
-	//  3. Parts already wrapped in CachedContent are skipped to prevent double-wrapping
-	//     (which causes "unsupported cached content part type: llms.CachedContent").
-	const maxBreakpoints = 3
-	type targetLocation struct {
-		msgIdx  int
-		partIdx int
-	}
-	var targets []targetLocation
-	seenMsgs := make(map[int]bool)
-
-	// Target 1: Last part of the last System message (so static prompt/tools are cached independently)
-	for i := len(cacheableMessages) - 1; i >= 0; i-- {
-		if cacheableMessages[i].Role == llms.ChatMessageTypeSystem {
-			found := false
-			for j := len(cacheableMessages[i].Parts) - 1; j >= 0; j-- {
-				if isAnthropicCacheablePart(cacheableMessages[i].Parts[j]) {
-					targets = append(targets, targetLocation{msgIdx: i, partIdx: j})
-					seenMsgs[i] = true
-					found = true
-					break
-				}
-			}
-			if found {
-				break
-			}
-		}
-	}
-
-	// Target 2 & 3: Walk remaining cacheableMessages in reverse to find other eligible Human/System messages
-	for i := len(cacheableMessages) - 1; i >= 0 && len(targets) < maxBreakpoints; i-- {
-		if seenMsgs[i] {
-			continue
-		}
-		role := cacheableMessages[i].Role
-		if role != llms.ChatMessageTypeHuman && role != llms.ChatMessageTypeSystem {
-			continue
-		}
-		for j := len(cacheableMessages[i].Parts) - 1; j >= 0; j-- {
-			if isAnthropicCacheablePart(cacheableMessages[i].Parts[j]) {
-				targets = append(targets, targetLocation{msgIdx: i, partIdx: j})
-				seenMsgs[i] = true
-				break
-			}
-		}
-	}
-
-	// Build lookup map for fast checking
-	targetMap := make(map[int]map[int]bool)
-	for _, t := range targets {
-		if targetMap[t.msgIdx] == nil {
-			targetMap[t.msgIdx] = make(map[int]bool)
-		}
-		targetMap[t.msgIdx][t.partIdx] = true
-	}
-
-	modifiedMessages := make([]llms.MessageContent, 0, len(req.Messages))
-
-	for i, msg := range cacheableMessages {
-		if partsMap, hasTarget := targetMap[i]; hasTarget {
-			cachedParts := make([]llms.ContentPart, 0, len(msg.Parts))
-			for j, part := range msg.Parts {
-				if partsMap[j] {
-					if _, isAlreadyCached := part.(llms.CachedContent); !isAlreadyCached {
-						cachedParts = append(cachedParts, llms.WithCacheControl(part, &llms.CacheControl{
-							Type: "ephemeral",
-						}))
-						slog.Debug("Added Anthropic cache control", "messageIndex", i, "partIndex", j, "conversationId", req.ConversationId)
-						continue
-					}
-				}
-				cachedParts = append(cachedParts, part)
-			}
-			modifiedMessages = append(modifiedMessages, llms.MessageContent{
-				Role:  msg.Role,
-				Parts: cachedParts,
-			})
-		} else {
-			modifiedMessages = append(modifiedMessages, msg)
-		}
-	}
-
-	// Add non-cacheable messages
-	modifiedMessages = append(modifiedMessages, nonCacheableMessages...)
 
 	return &CacheResponse{
-		Messages:  modifiedMessages,
-		Options:   nil,
-		CacheHit:  false, // Anthropic doesn't tell us about cache hits upfront
-		CacheInfo: nil,
+		Messages: modifiedMessages,
+		CacheHit: false, // Anthropic doesn't tell us about cache hits upfront
 	}
 }
 
+// anthropicSystemCacheTTL is the TTL of the system-prompt marker. Global and
+// Account scope declare the system prompt shared across conversations, so it is
+// kept for an hour (2x write cost) to survive gaps between runs; everything
+// else uses the 5-minute default, which every read within a run refreshes.
+// Anthropic requires longer TTLs before shorter ones; the system prompt comes
+// first, so a 1h system marker before 5m tool-loop markers is valid.
+func anthropicSystemCacheTTL(scope CacheScope) time.Duration {
+	if (scope == CacheScopeGlobal || scope == CacheScopeAccount) && config.Config.LlmServerAnthropicSystemCacheTTL == "1h" {
+		return time.Hour
+	}
+	return 0
+}
+
+// isAnthropicCacheablePart reports whether the llms/anthropic adapter can put
+// cache_control on the block this part becomes. Parts already wrapped in
+// CachedContent are skipped so a marker is never nested.
 func isAnthropicCacheablePart(part llms.ContentPart) bool {
 	switch p := part.(type) {
 	case llms.TextContent:
 		return strings.TrimSpace(p.Text) != ""
 	case llms.BinaryContent:
 		return len(p.Data) > 0
+	case llms.ToolCallResponse:
+		return true
 	default:
 		return false
 	}

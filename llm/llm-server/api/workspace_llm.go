@@ -8,8 +8,10 @@ import (
 	"github.com/tmc/langchaingo/llms"
 	"nudgebee/llm/agents"
 	"nudgebee/llm/agents/core"
+	"nudgebee/llm/security"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -18,12 +20,25 @@ import (
 // send the same message/tool representation regardless of the configured
 // provider; llm-server owns provider resolution, caching, retries and usage.
 type workspaceLLMRequest struct {
-	AccountID      string                `json:"account_id"`
-	UserID         string                `json:"user_id"`
-	ConversationID string                `json:"conversation_id"`
-	MessageID      string                `json:"message_id"`
-	Messages       []workspaceLLMMessage `json:"messages"`
-	Tools          []workspaceLLMTool    `json:"tools,omitempty"`
+	AccountID string `json:"account_id"`
+	// AgentRunID is the agent run llm-server named when it dispatched the
+	// analysis; the workspace returns it so the call's usage is recorded against
+	// that run's conversation. It is the only attribution a workspace supplies.
+	AgentRunID string `json:"agent_run_id,omitempty"`
+	// ModelTier and TaskType label the usage row; they do not select the model.
+	ModelTier string                `json:"model_tier,omitempty"`
+	TaskType  string                `json:"task_type,omitempty"`
+	Messages  []workspaceLLMMessage `json:"messages"`
+	Tools     []workspaceLLMTool    `json:"tools,omitempty"`
+}
+
+// workspaceLLMResponse is the generation result plus a receipt for its usage.
+type workspaceLLMResponse struct {
+	*llms.ContentResponse
+	// UsageLinked reports that this call's usage is recorded against the
+	// conversation of the agent run the workspace named, so the workspace must
+	// not report its own estimate for the call.
+	UsageLinked bool `json:"usage_linked,omitempty"`
 }
 
 type workspaceLLMMessage struct {
@@ -95,12 +110,16 @@ func handleWorkspaceLLM(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) 
 		if len(tools) > 0 {
 			options = append(options, llms.WithTools(tools))
 		}
-		response, err := core.GenerateAndTrackLLMContent(ctx, req.UserID, req.AccountID, req.ConversationID, req.MessageID, agents.AgentCodeAnalyzer, false, messages, false, options...)
+		link, userID, linked := workspaceUsageLink(ctx, req)
+		if linked {
+			ctx = core.WithUsageLink(ctx, link)
+		}
+		response, err := core.GenerateAndTrackLLMContent(ctx, userID, req.AccountID, "", "", agents.AgentCodeAnalyzer, false, messages, false, options...)
 		if err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(http.StatusOK, response)
+		c.JSON(http.StatusOK, workspaceLLMResponse{ContentResponse: response, UsageLinked: linked})
 	})
 }
 
@@ -142,6 +161,38 @@ func workspaceLLMMessages(wire []workspaceLLMMessage) ([]llms.MessageContent, er
 		messages = append(messages, llms.MessageContent{Role: role, Parts: parts})
 	}
 	return messages, nil
+}
+
+// workspaceUsageLink resolves the agent run a workspace names into the usage
+// attribution for its call. The conversation, message and user are read from
+// llm-server's own row for that run, within the account the workspace token is
+// bound to, so a workspace cannot attribute usage to a conversation that is not
+// its own. A run that does not resolve leaves the call unlinked.
+func workspaceUsageLink(ctx *security.RequestContext, req workspaceLLMRequest) (core.UsageLink, string, bool) {
+	if req.AgentRunID == "" {
+		return core.UsageLink{}, "", false
+	}
+	if _, err := uuid.Parse(req.AgentRunID); err != nil {
+		ctx.GetLogger().Warn("workspace: llm usage not linked, agent run id is not a uuid", "account_id", req.AccountID, "agent_run_id", req.AgentRunID)
+		return core.UsageLink{}, "", false
+	}
+	dao := core.GetConversationDao()
+	if dao == nil {
+		ctx.GetLogger().Warn("workspace: llm usage not linked, conversation DAO unavailable", "account_id", req.AccountID, "agent_run_id", req.AgentRunID)
+		return core.UsageLink{}, "", false
+	}
+	conversationID, messageID, userID, err := dao.GetAgentRunAttribution(req.AgentRunID, req.AccountID, agents.AgentCodeAnalyzer)
+	if err != nil {
+		ctx.GetLogger().Warn("workspace: llm usage not linked, failed to get agent run attribution", "account_id", req.AccountID, "agent_run_id", req.AgentRunID, "error", err)
+		return core.UsageLink{}, "", false
+	}
+	return core.UsageLink{
+		ConversationID: conversationID,
+		MessageID:      messageID,
+		AgentID:        req.AgentRunID,
+		ModelTier:      req.ModelTier,
+		TaskType:       req.TaskType,
+	}, userID, true
 }
 
 func returnBadWorkspaceLLM(c *gin.Context, message string) {

@@ -123,4 +123,8 @@ def _post_audit(audit: Audit) -> None:
     """Synchronous audit POST — designed to be called via asyncio.to_thread or directly."""
     url = settings.services.api_server + AUDIT_URL
     headers = {"X-ACTION-TOKEN": settings.action_api_server_token}
-    requests.post(url, json={"audits": [audit.model_dump()]}, headers=headers, timeout=10)
+    # mode="json" so nested Any fields (event_state/event_prev_state/event_attr) that hold
+    # a datetime (e.g. a rule's expires_at) serialize to a string instead of crashing
+    # requests' json.dumps, which has no default() handler for datetime.
+    response = requests.post(url, json={"audits": [audit.model_dump(mode="json")]}, headers=headers, timeout=10)
+    response.raise_for_status()

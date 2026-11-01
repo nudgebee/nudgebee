@@ -12,7 +12,23 @@ import (
 	"nudgebee/code-analysis-agent/tools/core"
 )
 
-const maxLinesDefault = 500 // Max lines returned in one chunk (bounded; page with start_line/end_line)
+// maxLinesDefault and maxCharsDefault bound what one read returns. Both sit
+// under the planner's own limits on any tool output (500 lines; 15,000
+// characters less what the planner reserves for its own notes — planners
+// maxObservationChars, observationNoteReserve), with room for the header and
+// the notes this tool adds. A read that fits here reaches the model whole, so
+// the "lines X-Y of N" header describes exactly what the model got; one that
+// did not fit was cut again by the planner after this tool had already
+// described it.
+const (
+	maxLinesDefault = 480
+	maxCharsDefault = 13500
+)
+
+// maxLineBytes is the longest single line the tool will read. The scanner's
+// default of 64KB makes a minified file unreadable; counting the file's lines
+// and reading them have to use the same limit, or the count fails first.
+const maxLineBytes = 4 * 1024 * 1024
 
 type FileViewTool struct {
 	workspaceDir string
@@ -43,9 +59,11 @@ func (t *FileViewTool) IsReadOnly() bool { return true }
 func (t *FileViewTool) Description() string {
 	return `Reads and displays file content with line numbers. Use for reading complete functions, classes, or specific code sections.
 
+A read (with or without start_line/end_line) starts with "[lines X-Y of N]", so you always know how long the file is and how much of it you have. One call returns at most 480 lines.
+
 USAGE PATTERNS:
 
-1. **Read entire small file** (< 2000 lines):
+1. **Read a file** (the whole file if it has up to 480 lines, otherwise its first 480):
    {"file_path": "utils.py"}
 
 2. **Read specific line range** (functions, classes):
@@ -59,7 +77,7 @@ USAGE PATTERNS:
 IMPORTANT:
 - search_pattern shows 10 lines of context around matches (good for locating, NOT for reading full implementations)
 - After finding a match, ALWAYS use start_line/end_line to read the complete function/class
-- For large files (> 2000 lines), you MUST use start_line/end_line
+- A file longer than 480 lines needs start_line/end_line for anything past line 480; the header tells you N
 
 EXAMPLES:
 
@@ -221,29 +239,27 @@ func (t *FileViewTool) Execute(ctx context.Context, input map[string]any) core.N
 	// Bound the read instead of rejecting it. Erroring on a too-large request forces
 	// the agent to spend another step re-requesting a smaller chunk; clamping to the
 	// cap and telling it how to page returns useful content immediately.
-	truncatedNote := ""
-	if startLine == 0 && endLine == 0 && lineCount > maxLinesDefault {
-		startLine = 1
-		endLine = maxLinesDefault
-		truncatedNote = fmt.Sprintf("\n\n[TRUNCATED: file has %d lines; showing 1-%d. Request the next chunk with start_line=%d, end_line=...]", lineCount, maxLinesDefault, maxLinesDefault+1)
-	} else if endLine > 0 && startLine > 0 && (endLine-startLine+1) > maxLinesDefault {
-		requested := endLine - startLine + 1
-		endLine = startLine + maxLinesDefault - 1
-		truncatedNote = fmt.Sprintf("\n\n[TRUNCATED: requested %d lines; showing %d-%d (max %d per call). Request the next chunk with start_line=%d.]", requested, startLine, endLine, maxLinesDefault, endLine+1)
-	}
+	first, wanted := readWindow(startLine, endLine, lineCount)
 
-	// Read the specified lines
 	scanner := bufio.NewScanner(file)
-	var content string
-	currentLine := 1
-	for scanner.Scan() {
-		if (startLine == 0 && endLine == 0) || (currentLine >= startLine && (endLine == 0 || currentLine <= endLine)) {
-			content += fmt.Sprintf("%d: %s\n", currentLine, scanner.Text())
+	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
+	var content strings.Builder
+	last := first - 1
+	for currentLine := 1; scanner.Scan(); currentLine++ {
+		if currentLine < first {
+			continue
 		}
-		if endLine > 0 && currentLine >= endLine {
+		if currentLine > wanted {
 			break
 		}
-		currentLine++
+		line := fmt.Sprintf("%d: %s\n", currentLine, scanner.Text())
+		// Stop on a line boundary rather than let the planner cut the output
+		// mid-file. The first line is always returned, however long.
+		if content.Len() > 0 && content.Len()+len(line) > maxCharsDefault {
+			break
+		}
+		content.WriteString(line)
+		last = currentLine
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -258,28 +274,73 @@ func (t *FileViewTool) Execute(ctx context.Context, input map[string]any) core.N
 		t.readTracker.RecordRead(filePath)
 	}
 
-	// Include actual file path in observation when it differs from requested path
-	observation := content + truncatedNote
-	originalPath := input["file_path"].(string)
+	observation := readHeader(first, last, lineCount) + content.String() + readMoreNote(startLine, endLine, last, lineCount)
 
-	// Get the relative path from working directory
-	var actualRelativePath string
-	if workingDir, ok := input["working_directory"].(string); ok {
-		if strings.HasPrefix(filePath, workingDir+"/") {
-			actualRelativePath = strings.TrimPrefix(filePath, workingDir+"/")
+	// If the file was found at a different path than the one asked for, say so.
+	originalPath := input["file_path"].(string)
+	if workingDir, ok := input["working_directory"].(string); ok && strings.HasPrefix(filePath, workingDir+"/") {
+		if actual := strings.TrimPrefix(filePath, workingDir+"/"); actual != originalPath {
+			observation = fmt.Sprintf("File found at: %s\n\n%s", actual, observation)
 		}
 	}
 
-	// If we found the file at a different path, inform the agent
-	if actualRelativePath != "" && actualRelativePath != originalPath {
-		observation = fmt.Sprintf("File found at: %s\n\n%s", actualRelativePath, content)
+	data := map[string]any{"file_path": filePath, "lines_read": 0, "start_line": 0, "end_line": 0, "total_lines": lineCount}
+	if last >= first {
+		data["lines_read"], data["start_line"], data["end_line"] = last-first+1, first, last
 	}
+	return core.NBToolResponse{Status: "success", Observation: observation, Data: data}
+}
 
-	return core.NBToolResponse{
-		Status:      "success",
-		Observation: observation,
-		Data:        map[string]any{"file_path": filePath, "lines_read": currentLine - 1},
+// readWindow turns the requested range into the first line to return and the
+// last line wanted, bounded by the file and by maxLinesDefault. A missing
+// start means line 1; a missing end means "to the end of the file".
+func readWindow(startLine, endLine, lineCount int) (first, wanted int) {
+	first = startLine
+	if first < 1 {
+		first = 1
 	}
+	wanted = endLine
+	if wanted < first || wanted > lineCount {
+		wanted = lineCount
+	}
+	if wanted-first+1 > maxLinesDefault {
+		wanted = first + maxLinesDefault - 1
+	}
+	return first, wanted
+}
+
+// readHeader states which lines follow and how long the file is. Without it
+// the agent cannot tell whether it has seen the whole file, and asks for
+// another slice to find out.
+func readHeader(first, last, lineCount int) string {
+	switch {
+	case lineCount == 0:
+		return "[empty file]\n"
+	case last < first:
+		return fmt.Sprintf("[no lines returned: the file has %d lines]\n", lineCount)
+	case first == 1 && last == lineCount:
+		return fmt.Sprintf("[lines 1-%d of %d: the whole file]\n", last, lineCount)
+	default:
+		return fmt.Sprintf("[lines %d-%d of %d]\n", first, last, lineCount)
+	}
+}
+
+// readMoreNote is appended when the read stopped short of what was asked for,
+// so a bounded read is never mistaken for the end of the file.
+func readMoreNote(startLine, endLine, last, lineCount int) string {
+	// Same reading of the range as readWindow: an end before the start, or
+	// past the file, means "to the end of the file".
+	asked := endLine
+	if asked < 1 || asked < startLine || asked > lineCount {
+		asked = lineCount
+	}
+	if last >= asked {
+		return ""
+	}
+	if startLine == 0 && endLine == 0 {
+		return fmt.Sprintf("\n[TRUNCATED: file has %d lines; showing 1-%d. Request the next chunk with start_line=%d, end_line=...]", lineCount, last, last+1)
+	}
+	return fmt.Sprintf("\n[TRUNCATED: showing up to line %d of the %d asked for (one call returns at most %d lines or %d characters). Request the next chunk with start_line=%d.]", last, asked, maxLinesDefault, maxCharsDefault, last+1)
 }
 
 func countLines(filePath string) (int, error) {
@@ -290,6 +351,7 @@ func countLines(filePath string) (int, error) {
 	defer func() { _ = file.Close() }()
 
 	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
 	count := 0
 	for scanner.Scan() {
 		count++

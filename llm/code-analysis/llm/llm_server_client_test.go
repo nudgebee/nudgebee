@@ -99,3 +99,96 @@ func TestLLMServerModelKeepsToolCalls(t *testing.T) {
 	require.Equal(t, "call-0", replayed.ToolCall.ToolCall.ID)
 	require.Equal(t, llms.FunctionCall{Name: "file_find", Arguments: `{"name":"*.go"}`}, replayed.ToolCall.ToolCall.Function)
 }
+
+// A call llm-server recorded against the run's conversation is not recorded
+// again here. Without that receipt (an llm-server that does not send it, or a
+// run it could not resolve) the estimate is recorded exactly as before.
+func TestBridgeCallUsageIsRecordedOnce(t *testing.T) {
+	generate := map[string]func(*Client, context.Context, []llms.MessageContent) (*llms.ContentResponse, error){
+		"retry": func(c *Client, ctx context.Context, messages []llms.MessageContent) (*llms.ContentResponse, error) {
+			return c.GenerateContent(ctx, messages)
+		},
+		"no retry": func(c *Client, ctx context.Context, messages []llms.MessageContent) (*llms.ContentResponse, error) {
+			return c.GenerateContentNoRetry(ctx, messages)
+		},
+	}
+	replies := map[string]struct {
+		body      string
+		wantCalls int
+	}{
+		"usage linked":   {body: `{"Choices":[{"Content":"ok","StopReason":"stop"}],"usage_linked":true}`, wantCalls: 0},
+		"usage unlinked": {body: `{"Choices":[{"Content":"ok","StopReason":"stop"}]}`, wantCalls: 1},
+	}
+
+	for path, call := range generate {
+		for name, reply := range replies {
+			t.Run(path+"/"+name, func(t *testing.T) {
+				var request llmServerRequest
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(reply.body))
+				}))
+				defer server.Close()
+
+				client := NewUsageRecorder("model-1", "custom")
+				client.llm = &llmServerModel{baseURL: server.URL, token: "workspace-token", accountID: "account-1", client: server.Client()}
+				client.SetModelTier(ModelTierRetrieval)
+
+				ctx := WithCallPhase(WithAgentRunID(context.Background(), "run-1"), CallPhaseReflection)
+				response, err := call(client, ctx, []llms.MessageContent{
+					{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("hello there")}},
+				})
+
+				require.NoError(t, err)
+				require.Equal(t, "ok", response.Choices[0].Content)
+				require.Equal(t, "run-1", request.AgentRunID)
+				require.Equal(t, ModelTierRetrieval, request.ModelTier)
+				require.Equal(t, CallPhaseReflection, request.TaskType)
+
+				calls, _ := client.SnapshotCalls()
+				require.Len(t, calls, reply.wantCalls)
+				if reply.wantCalls == 0 {
+					require.Zero(t, client.SnapshotTokenUsage().TotalTokens)
+					return
+				}
+				require.True(t, calls[0].Estimated)
+				require.Equal(t, CallPhaseReflection, calls[0].TaskType)
+			})
+		}
+	}
+}
+
+func TestBridgeTaggingToleratesNilContext(t *testing.T) {
+	var none context.Context
+
+	tagged := WithAgentRunID(none, "run-1")
+	require.NotNil(t, tagged)
+	require.Equal(t, "run-1", tagged.Value(agentRunIDKey{}))
+	require.NotNil(t, WithAgentRunID(none, ""))
+
+	ctx, call := NewUsageRecorder("model-1", "custom").withBridgeCall(none)
+	require.NotNil(t, ctx)
+	require.NotNil(t, call)
+}
+
+// An analysis dispatched without an agent run sends none, so llm-server leaves
+// the call unlinked.
+func TestBridgeCallWithoutAgentRun(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		_, _ = w.Write([]byte(`{"Choices":[{"Content":"ok"}]}`))
+	}))
+	defer server.Close()
+
+	model := &llmServerModel{baseURL: server.URL, token: "workspace-token", accountID: "account-1", client: server.Client()}
+	_, err := model.GenerateContent(WithAgentRunID(context.Background(), ""), []llms.MessageContent{
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("hello")}},
+	})
+
+	require.NoError(t, err)
+	require.NotContains(t, body, "agent_run_id")
+	require.NotContains(t, body, "model_tier")
+	require.NotContains(t, body, "task_type")
+}

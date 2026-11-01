@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
@@ -170,6 +171,109 @@ func (a *WorkflowBuilderAgent) resolveToolLoopOutcome(answer, beforeSnapshot str
 		}
 	}
 	return "", answer
+}
+
+// toolLoopEnvironment is the account data the build and edit loops need to pick
+// the right account and executor for each step: the connected accounts with
+// their kind and id, the registered task types, and the account behind every
+// step of the automation being worked on. Before this, only the clarification
+// and planning prompts carried any of it, and the edit loop called a valid
+// cluster account "nonexistent".
+func (a *WorkflowBuilderAgent) toolLoopEnvironment(ctx *security.RequestContext) string {
+	var b strings.Builder
+	b.WriteString(a.buildEnvironmentContext(ctx, true))
+	if names := a.fetchTaskTypeNames(ctx); names != "" {
+		b.WriteString("\n" + names)
+	}
+	if steps := a.stepAccountsSection(ctx); steps != "" {
+		b.WriteString("\n\n" + steps)
+	}
+	return b.String()
+}
+
+// stepAccountsSection names the account, and its kind, that each step of the
+// working automation runs against — including the automation's own account for
+// steps without account_id. An error about credentials reads very differently
+// once the step is known to name a Kubernetes cluster rather than a cloud account.
+func (a *WorkflowBuilderAgent) stepAccountsSection(ctx *security.RequestContext) string {
+	configs, err := toolcore.ListAllToolConfigs(ctx, a.accountId)
+	if err != nil {
+		return ""
+	}
+	label := map[string]string{}
+	for _, cfg := range configs {
+		if cloudAccountConfigTypes[strings.ToLower(cfg.Schema.ConfigType)] {
+			if id := cloudAccountId(cfg); id != "" {
+				label[id] = fmt.Sprintf("%s (%s)", cfg.Name, cfg.Schema.ConfigType)
+			}
+		}
+	}
+	describe := func(id string) string {
+		if l, ok := label[id]; ok {
+			return l
+		}
+		return id + " (not a connected account)"
+	}
+
+	lines := []string{"ACCOUNTS THIS AUTOMATION'S STEPS RUN AGAINST:",
+		"- steps without account_id: " + describe(a.accountId)}
+	definition, _ := a.state.WorkingWorkflow["definition"].(map[string]interface{})
+	tasks, _ := definition["tasks"].([]interface{})
+	var steps []string
+	walkTaskMaps(tasks, func(task map[string]interface{}) {
+		params, _ := task["params"].(map[string]interface{})
+		accountId, _ := params["account_id"].(string)
+		if accountId == "" || strings.Contains(accountId, "{{") {
+			return
+		}
+		line := fmt.Sprintf("- task '%v' (%v): %s", task["id"], task["type"], describe(accountId))
+		if executor, _ := params["executor_type"].(string); executor != "" {
+			line += ", executor_type " + executor
+		}
+		steps = append(steps, line)
+	})
+	const maxStepLines = 40
+	if len(steps) > maxStepLines {
+		steps = append(steps[:maxStepLines], fmt.Sprintf("- … and %d more", len(steps)-maxStepLines))
+	}
+	return strings.Join(append(lines, steps...), "\n")
+}
+
+// recentConversation keeps the tail of the conversation history the executor
+// attaches to the request, enough to resolve "yes" against the proposal it
+// answers without re-sending a long session.
+func recentConversation(history string) string {
+	const maxRecentBytes = 4000
+	history = strings.TrimSpace(history)
+	if history == "" || history == "No additional context provided." {
+		return ""
+	}
+	if len(history) > maxRecentBytes {
+		cut := len(history) - maxRecentBytes
+		for cut < len(history) && !utf8.RuneStart(history[cut]) {
+			cut++
+		}
+		history = "…" + history[cut:]
+	}
+	return history
+}
+
+// finalizedAfterFailure returns the automation as it stood at the loop's last
+// finalize when a later model call failed. finalize is the loop's commit point —
+// the definition had passed validate — so losing only the closing turn (a
+// timed-out final answer) must not discard a finished change. Restores the
+// working state to that definition, since anything after finalize was never
+// validated.
+func (a *WorkflowBuilderAgent) finalizedAfterFailure(beforeSnapshot string) (string, bool) {
+	if !a.loopFinalized || a.finalizedSnapshot == "" || a.finalizedSnapshot == beforeSnapshot {
+		return "", false
+	}
+	var finalized map[string]interface{}
+	if err := json.Unmarshal([]byte(a.finalizedSnapshot), &finalized); err != nil {
+		return "", false
+	}
+	a.state.WorkingWorkflow = finalized
+	return a.toolFinalize(), true
 }
 
 // parseAgentId safely parses an agent ID string into a uuid.UUID, returning
@@ -741,7 +845,7 @@ INSTRUCTIONS:
 - Explain/summarize questions: describe the trigger, tasks, and flow from the definition above.
 - Capability/greeting questions: briefly say you can build, modify, explain, diagnose, and dry-run automations.
 - TONE: be a proactive collaborator, not a dead-end. After answering, close by conversationally offering the single most useful next step for where the user is (e.g. dry-run to verify it works, fix a failing task, publish a version) phrased as a brief question — keep the conversation moving. Suggest only what actually fits the situation; never invent steps.
-- When you have the answer, emit a <final_answer> whose <content> is your prose answer in Markdown. Do NOT output a workflow JSON definition. Do NOT call finalize.`, userQuery, defSection)
+- When you have the answer, give it as your final answer, written as prose in Markdown. Do NOT output a workflow JSON definition. Do NOT call finalize.`, userQuery, defSection)
 }
 
 // parseDelegationCommand interprets a builder delegation command. The WorkflowAgent is instructed to
@@ -1283,6 +1387,19 @@ func (a *WorkflowBuilderAgent) buildClarificationContext() string {
 }
 
 // getBuildSystemPrompt returns the system prompt for the agentic build mode.
+// executionIdentityRules is the builder's short rule set for steps that touch a
+// cluster or a cloud. The detail — where each executor runs and as whom — lives
+// in scripting.run_script's runtime notes (get_task_schema), and validate
+// enforces what can be checked, so these stay few and generic.
+const executionIdentityRules = `
+STEPS THAT TOUCH A CLUSTER OR A CLOUD:
+1. Prefer a built-in task over scripting.run_script whenever one fits: k8s.cli for kubectl, cloud.aws.cli / cloud.azure.cli / cloud.gcp.cli for cloud CLIs, network.* for DNS/TCP/TLS checks, k8s.workload_restart for restarts. Before using scripting.run_script, read its runtime_notes (get_task_schema): they say where each executor_type runs and as whom.
+2. Never sign in inside a script: no "aws sts assume-role", role ARNs, "aws eks update-kubeconfig", "az login", "gcloud auth", or access keys in env. Every step already runs as the account it names; validate reports login code.
+3. One step, one identity: each step names the account whose API it calls (see ACCOUNT ENVIRONMENT). Work on a cluster and work in a cloud account are separate steps.
+4. If a step needs an account that is not in ACCOUNT ENVIRONMENT, or one that lacks what the step needs, ask the user to connect or extend it — never work around it with credentials.
+5. Never invent input values. Give any input a caller may leave out a default.
+`
+
 func getBuildSystemPrompt(intent string, plan string, schema string) string {
 	planSection := ""
 	if plan != "" {
@@ -1393,10 +1510,11 @@ REGRESSION PREVENTION:
 - Before calling finalize, call list_tasks to verify ALL tasks still have correct output references.
 - When fixing one task, do NOT change other tasks unless directly affected.
 
+`+executionIdentityRules+`
 CLOUD ACCOUNT IDs (account_id parameter):
 - MANY task types take an optional params.account_id — the CLI tasks (k8s.cli, cloud.*.cli) but also tickets.*, dbms.*, observability.*, scripting.run_script, scm.github, mq.rabbitmqadmin and others. These rules apply wherever you set it, not just to CLI tasks. Call get_task_schema if you are unsure whether a task takes one.
-- account_id is OPTIONAL and defaults to the account the automation itself runs in — which is the account the user selected. If the task should target that account, PREFER OMITTING account_id entirely. Do not set it just to be explicit.
-- If you DO set it (only when targeting a DIFFERENT account than the automation's own), it MUST be the UUID shown as id=<uuid> in the ACCOUNT ENVIRONMENT block above, written as a literal string. NEVER the display name — the runbook server validates account_id as a UUID and rejects the save with "invalid input syntax for type uuid".
+- account_id is OPTIONAL and defaults to the account the automation itself runs in — which is the account the user selected. If the task should target that account, PREFER OMITTING account_id entirely — but only when that account is the right kind for the step (a cloud CLI step needs a cloud account, kubectl needs a cluster account). A step whose work belongs to another account names that account.
+- If you DO set it (only when targeting a DIFFERENT account than the automation's own), it MUST be the UUID shown as id=<uuid> in the ACCOUNT ENVIRONMENT block, written as a literal string. NEVER the display name — the runbook server validates account_id as a UUID and rejects the save with "invalid input syntax for type uuid".
 - NEVER point account_id at a config: "{{ Configs.some_account_id }}" is NOT acceptable. It is a value the builder already knows, and deferring it either saves the automation INACTIVE until someone creates the config, or resolves to a placeholder string at run time. Inline the UUID or omit the parameter.`, intent, planSection, schema)
 }
 
@@ -1436,8 +1554,8 @@ AUTOMATION SCHEMA REFERENCE:
 FIRST, DECIDE THE INTENT:
 - DEBUG signals: "fix", "it's failing", "error", "why broken", an ERROR CONTEXT, LAST RECORDED FAILURE or TARGET EXECUTION ID above.
 - CHANGE signals: "add", "also", "include", "remove", "rename", "change", "update", "instead", "as well", a new capability.
-- VERIFY signals: the user asks to run, test, try, or dry-run the automation without changing it. If the automation contains only side-effect-free tasks (e.g. core.print, read-only queries), call dry_run and report the overall result and any failing task's id + error in your <final_answer>. If it contains tasks with external side effects (notifications, mutating CLI commands, scripts, tickets), do NOT run it — answer that a dry-run executes those effects for real and ask the user to confirm. Either way make NO modifications, and do NOT claim the automation "has no dry-run mode".
-- If the request is purely a question with no change asked, briefly answer in <final_answer> and make no modifications.
+- VERIFY signals: the user asks to run, test, try, or dry-run the automation without changing it. If the automation contains only side-effect-free tasks (e.g. core.print, read-only queries), call dry_run — passing any input values the user gave in "inputs" — and report the overall result and any failing task's id + error in your final answer. If it contains tasks with external side effects (notifications, mutating CLI commands, scripts, tickets), do NOT run it — answer that a dry-run executes those effects for real and ask the user to confirm. Either way make NO modifications, and do NOT claim the automation "has no dry-run mode".
+- If the request is purely a question with no change asked, briefly answer in your final answer and make no modifications.
 
 IF DEBUGGING (gather evidence FIRST, then fix):
 1. If a TARGET EXECUTION ID is given, get_execution on it. Otherwise, if a LAST RECORDED FAILURE is shown above and it already tells you what broke, act on it and skip straight to step 3 — call list_executions/get_execution only when you need the failing task's id, rendered_params or output. If neither is available, list_executions(status="FAILED", limit=10), pick the most recent failed run, then get_execution on it.
@@ -1474,10 +1592,12 @@ TASK DEPENDENCIES (depends_on) — CRITICAL:
 core.foreach — ITEM VARIABLE:
 - The "item" param sets the loop variable name (default: "item"). ALWAYS set it explicitly. Variable names are CASE-SENSITIVE: if item="issue", use {{ issue.title }}, NOT {{ Issue.title }}.
 
+`+executionIdentityRules+`
 CLOUD ACCOUNT IDs (account_id parameter):
 - MANY task types take an optional params.account_id, not just the CLI tasks: tickets.*, dbms.*, observability.*, scripting.run_script, scm.github, mq.rabbitmqadmin and others. These rules apply wherever it appears.
-- Wherever params.account_id is set, it MUST be a literal UUID. If you see a non-UUID value (a display name, or a "{{ Configs.* }}" reference), replace it with the matching UUID from the account environment, or delete the parameter if the task should run against the automation's own account.
-- account_id is optional and defaults to the automation's own account, so REMOVING it is a legitimate fix when that is the intended target. It is not a way to silence an error about a DIFFERENT account you were asked to target.`, errorSection, targetSection, schema)
+- Wherever params.account_id is set, it MUST be a literal UUID. If you see a non-UUID value (a display name, or a "{{ Configs.* }}" reference), replace it with the matching UUID from the ACCOUNT ENVIRONMENT, or delete the parameter if the task should run against the automation's own account.
+- account_id is optional and defaults to the automation's own account, so REMOVING it is a legitimate fix when that is the intended target. It is not a way to silence an error about a DIFFERENT account you were asked to target.
+- Before removing or changing an account_id, look up that account's kind under ACCOUNTS THIS AUTOMATION'S STEPS RUN AGAINST. An error about credentials or where a script runs is usually fixed by the step's executor_type (see scripting.run_script runtime_notes), not by moving the step to another account.`, errorSection, targetSection, schema)
 }
 
 // buildAndValidate builds the workflow JSON from the approved plan using the agentic tool loop.
@@ -1486,12 +1606,17 @@ func (a *WorkflowBuilderAgent) buildAndValidate(ctx *security.RequestContext, re
 	a.state.WorkingWorkflow = map[string]interface{}{}
 
 	schema := getWorkflowSchema()
-	systemPrompt := getBuildSystemPrompt(intent, plan, schema)
+	systemPrompt := getBuildSystemPrompt(intent, plan, schema) + a.toolLoopEnvironment(ctx)
 
 	before := a.workflowSnapshot()
 	answer, err := a.runToolLoop(ctx, request, systemPrompt, fmt.Sprintf("Build the automation now based on the plan. Original request: %s", request.Query))
 	if err != nil {
-		return core.NBAgentResponse{}, fmt.Errorf("agentic build failed: %w", err)
+		finalized, ok := a.finalizedAfterFailure(before)
+		if !ok {
+			return core.NBAgentResponse{}, fmt.Errorf("agentic build failed: %w", err)
+		}
+		ctx.GetLogger().Warn("workflow_builder: tool loop failed after finalize; keeping the finalized automation", "error", err)
+		return a.checkMissingConfigs(ctx, request, finalized)
 	}
 
 	// Persist what the loop built (from state when the echo is not valid workflow JSON);
@@ -2776,6 +2901,13 @@ AVAILABLE CONFIGS ON THIS ACCOUNT (use {{ Configs.<key> }} to reference these in
 
 // generatePlan creates a human-readable workflow plan for user approval.
 // clarificationContext contains user's answers to clarifying questions (empty if none were asked).
+// planIntegrationAndAccountRule tells the planner how integration and account
+// references differ. It used to say both take {{ Configs.* }}, which the build
+// and edit prompts forbid for account_id — plans then carried config references
+// the builder had to undo.
+const planIntegrationAndAccountRule = "- For integration_id fields: use {{ Configs.<type>_integration_id }} (e.g., {{ Configs.jira_integration_id }}), an account-level stored value that resolves at runtime. " +
+	"account_id is different: a literal account UUID from the ACCOUNT ENVIRONMENT, or omitted for the automation's own account — never a {{ Configs.* }} reference. NEVER use fake UUIDs."
+
 func (a *WorkflowBuilderAgent) generatePlan(ctx *security.RequestContext, request core.NBAgentRequest, intent string, clarificationContext string) (string, error) {
 	taskTypesInfo := a.fetchTaskRegistry(ctx)
 	if taskTypesInfo == "" {
@@ -2870,7 +3002,7 @@ RULES:
 - For event triggers without an event_type, the filter is REQUIRED (engine rejects events lacking both)
 - For optimization triggers: use the category/rule_name enum values exactly as listed in the planning context; never invent new ones
 - Use {{ Configs.xxx }} for environment-specific values the user shouldn't hardcode
-- For integration_id and account_id fields: use {{ Configs.<type>_integration_id }} (e.g., {{ Configs.jira_integration_id }}). These are account-level stored values that resolve at runtime. NEVER use fake UUIDs.
+`+planIntegrationAndAccountRule+`
 - Do NOT generate JSON — this is a plan description only
 
 PREREQUISITES:
@@ -3009,6 +3141,11 @@ func getWorkflowToolDescriptions() string {
 			Params:      `{"task_id": "task-id", "id": "task-id", "type": "task.type", "params": {...}}`,
 		},
 		{
+			Name:        "set_task_params",
+			Description: "Set or remove individual params on one or more tasks without resending each whole task — e.g. change executor_type or account_id on many script steps in one call. 'set' merges into each task's params; 'unset' removes param names.",
+			Params:      `{"task_ids": ["task-a", "task-b"], "set": {"executor_type": "agent"}, "unset": ["image"]}`,
+		},
+		{
 			Name:        "delete_task",
 			Description: "Remove a task from the automation by its ID.",
 			Params:      `{"task_id": "task-id"}`,
@@ -3035,8 +3172,8 @@ func getWorkflowToolDescriptions() string {
 		},
 		{
 			Name:        "dry_run",
-			Description: "Execute the current automation via the engine's dry-run; returns per-task status and errors. ONLY call this when the user explicitly asked to run/test/dry-run the automation — never on your own initiative. CAUTION: most task types execute for REAL during dry-run (notifications send, mutating CLI commands apply, scripts run); if the automation contains such side-effect tasks, do NOT call this — instead explain that a dry-run will execute those effects for real and ask the user to confirm first. It never modifies the saved definition.",
-			Params:      `{}`,
+			Description: "Execute the current automation via the engine's dry-run; returns per-task status and errors. ONLY call this when the user explicitly asked to run/test/dry-run the automation — never on your own initiative. Pass the values the user gave in 'inputs', keyed by input id; inputs left out use their defaults. CAUTION: most task types execute for REAL during dry-run (notifications send, mutating CLI commands apply, scripts run); if the automation contains such side-effect tasks, do NOT call this — instead explain that a dry-run will execute those effects for real and ask the user to confirm first. It never modifies the saved definition.",
+			Params:      `{"inputs": {"namespace": "kube-system"}}`,
 		},
 		{
 			Name:        "finalize",
@@ -3263,6 +3400,99 @@ func (a *WorkflowBuilderAgent) toolModifyTask(ctx *security.RequestContext, args
 	result += a.validateTaskHints(taskType, newTask, a.cachedTaskTypes)
 
 	return result
+}
+
+// walkTaskMaps calls fn for every task in a definition's task list, including
+// tasks nested in a group ("tasks") or a foreach body ("params.tasks").
+func walkTaskMaps(tasks []interface{}, fn func(task map[string]interface{})) {
+	for _, t := range tasks {
+		task, ok := t.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		fn(task)
+		if nested, ok := task["tasks"].([]interface{}); ok {
+			walkTaskMaps(nested, fn)
+		}
+		if params, ok := task["params"].(map[string]interface{}); ok {
+			if nested, ok := params["tasks"].([]interface{}); ok {
+				walkTaskMaps(nested, fn)
+			}
+		}
+	}
+}
+
+// toolSetTaskParams sets or removes individual params on one or more tasks without
+// restating the rest of each task. Changing one field across twenty script steps
+// with modify_task means re-sending every script in full, which spent the loop's
+// whole iteration budget with only a third of the steps changed.
+func (a *WorkflowBuilderAgent) toolSetTaskParams(ctx *security.RequestContext, args map[string]interface{}) string {
+	if a.state.WorkingWorkflow == nil {
+		return "Error: automation not initialized."
+	}
+	var ids []string
+	if raw, ok := args["task_ids"].([]interface{}); ok {
+		for _, v := range raw {
+			if id, ok := v.(string); ok && id != "" {
+				ids = append(ids, id)
+			}
+		}
+	}
+	if len(ids) == 0 {
+		return missingKeyError(ctx, "set_task_params", "task_ids", args)
+	}
+	set, _ := args["set"].(map[string]interface{})
+	var unset []string
+	if raw, ok := args["unset"].([]interface{}); ok {
+		for _, v := range raw {
+			if name, ok := v.(string); ok && name != "" {
+				unset = append(unset, name)
+			}
+		}
+	}
+	if len(set) == 0 && len(unset) == 0 {
+		return "Error: provide 'set' (params to set) and/or 'unset' (param names to remove)."
+	}
+
+	definition, ok := a.state.WorkingWorkflow["definition"].(map[string]interface{})
+	if !ok {
+		return "Error: automation definition is invalid"
+	}
+	tasks, _ := definition["tasks"].([]interface{})
+	byID := map[string]map[string]interface{}{}
+	walkTaskMaps(tasks, func(task map[string]interface{}) {
+		if id, _ := task["id"].(string); id != "" {
+			byID[id] = task
+		}
+	})
+	var missing []string
+	for _, id := range ids {
+		if _, ok := byID[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Sprintf("Error: task(s) not found: %s. Nothing was changed.", strings.Join(missing, ", "))
+	}
+
+	var hints strings.Builder
+	for _, id := range ids {
+		task := byID[id]
+		params, _ := task["params"].(map[string]interface{})
+		if params == nil {
+			params = map[string]interface{}{}
+		}
+		for k, v := range set {
+			params[k] = v
+		}
+		for _, k := range unset {
+			delete(params, k)
+		}
+		task["params"] = params
+		taskType, _ := task["type"].(string)
+		hints.WriteString(a.validateTaskHints(taskType, task, a.cachedTaskTypes))
+	}
+	return fmt.Sprintf("Updated params on %d task(s): %s.", len(ids), strings.Join(ids, ", ")) + hints.String()
 }
 
 // knownTemplateFilters is the set of valid Gonja template filter names.
@@ -3607,7 +3837,7 @@ func (a *WorkflowBuilderAgent) toolGetTaskSchema(args map[string]interface{}, ca
 		if result := findInList(wrapped.Tasks); result != "" {
 			return result
 		}
-		return fmt.Sprintf("Error: task type '%s' is not registered on this account. Use one of the types listed under REGISTERED TASK TYPES in your instructions — do not invent type names.", taskType)
+		return fmt.Sprintf("Error: task type '%s' is not registered on this account. Use one of the task types listed in your instructions (AVAILABLE TASK TYPES / REGISTERED TASK TYPES) — do not invent type names.", taskType)
 	}
 
 	// Try bare array
@@ -3618,7 +3848,7 @@ func (a *WorkflowBuilderAgent) toolGetTaskSchema(args map[string]interface{}, ca
 		}
 	}
 
-	return fmt.Sprintf("Error: task type '%s' is not registered on this account. Use one of the types listed under REGISTERED TASK TYPES in your instructions — do not invent type names.", taskType)
+	return fmt.Sprintf("Error: task type '%s' is not registered on this account. Use one of the task types listed in your instructions (AVAILABLE TASK TYPES / REGISTERED TASK TYPES) — do not invent type names.", taskType)
 }
 
 // getEventTriggerSchemaReference returns the authoritative, hand-maintained reference for what an
@@ -4073,7 +4303,7 @@ func (a *WorkflowBuilderAgent) toolValidate(ctx *security.RequestContext) string
 	// non-existent fields (which save as ACTIVE-but-dead). Surface those so the agent fixes them.
 	triggerIssues := lintEventTriggers(a.state.WorkingWorkflow)
 
-	_, err := tools.DoRunbookRequest("POST", "workflows/validate", a.state.WorkingWorkflow, a.accountId, ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId())
+	validateResp, err := tools.DoRunbookRequest("POST", "workflows/validate", a.state.WorkingWorkflow, a.accountId, ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId())
 	if err != nil {
 		errMsg := common.SanitizeErrorMessage(err.Error())
 
@@ -4119,10 +4349,101 @@ func (a *WorkflowBuilderAgent) toolValidate(ctx *security.RequestContext) string
 		return fmt.Sprintf("Validation FAILED: %s", errMsg)
 	}
 
+	if msg := blockingLintMessage(validateResp, a.runsOnCustomerSide(ctx)); msg != "" {
+		return msg
+	}
 	if len(triggerIssues) > 0 {
 		return eventTriggerLintMessage(triggerIssues)
 	}
 	return "Validation OK. The automation is valid."
+}
+
+// blockingLintWarningCodes are the runbook-server lint warnings the builder must
+// clear before finishing. For a person they are warnings — the definition saves
+// and may run — but an automation the builder hands over with one of these runs
+// as nobody intended: a script that signs itself in, or a switch branch that
+// fails on a dependency it can never see.
+var blockingLintWarningCodes = map[string]bool{
+	"script_login_code":        true,
+	"switch_target_depends_on": true,
+}
+
+// blockingLintMessage turns the known warnings in a successful validate response
+// into a validation failure the loop must fix. "" when there are none.
+//
+// Login code only blocks on Nudgebee's own executor, where the step already runs
+// as its account and a second sign-in cannot work. On the agent or a VM the
+// script runs as that machine, and assuming another role there can be deliberate,
+// so it stays a warning. runsOnCustomerSide reports that for a task id.
+func blockingLintMessage(validateResp []byte, runsOnCustomerSide func(taskID string) bool) string {
+	var body struct {
+		Warnings []struct {
+			Code    string `json:"code"`
+			TaskID  string `json:"task_id"`
+			Message string `json:"message"`
+		} `json:"warnings"`
+	}
+	if err := json.Unmarshal(validateResp, &body); err != nil {
+		return ""
+	}
+	var lines []string
+	for _, w := range body.Warnings {
+		if !blockingLintWarningCodes[w.Code] {
+			continue
+		}
+		if w.Code == "script_login_code" && runsOnCustomerSide != nil && runsOnCustomerSide(w.TaskID) {
+			continue
+		}
+		lines = append(lines, "- "+w.Message)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "Validation FAILED:\n" + strings.Join(lines, "\n") +
+		"\n\nFix each named task (set_task_params or modify_task), then call validate again."
+}
+
+// customerSideExecutors run a script on the customer's own machines — the agent
+// inside their cluster, or a VM — rather than on Nudgebee's executor.
+var customerSideExecutors = map[string]bool{
+	"agent": true, "ssh": true, "aws_ssm": true, "azure_run_command": true, "gcp_compute_ssh": true,
+}
+
+// runsOnCustomerSide reports, per task id of the working automation, whether the
+// step runs on the customer's side. An empty executor_type takes the account's
+// default: the agent for a Kubernetes account, Nudgebee's executor for a cloud one.
+func (a *WorkflowBuilderAgent) runsOnCustomerSide(ctx *security.RequestContext) func(taskID string) bool {
+	kind := map[string]string{}
+	if configs, err := toolcore.ListAllToolConfigs(ctx, a.accountId); err == nil {
+		for _, cfg := range configs {
+			if cloudAccountConfigTypes[strings.ToLower(cfg.Schema.ConfigType)] {
+				if id := cloudAccountId(cfg); id != "" {
+					kind[id] = strings.ToLower(cfg.Schema.ConfigType)
+				}
+			}
+		}
+	}
+	params := map[string]map[string]interface{}{}
+	definition, _ := a.state.WorkingWorkflow["definition"].(map[string]interface{})
+	tasks, _ := definition["tasks"].([]interface{})
+	walkTaskMaps(tasks, func(task map[string]interface{}) {
+		if id, _ := task["id"].(string); id != "" {
+			p, _ := task["params"].(map[string]interface{})
+			params[id] = p
+		}
+	})
+	return func(taskID string) bool {
+		p := params[taskID]
+		executor, _ := p["executor_type"].(string)
+		if executor != "" {
+			return customerSideExecutors[strings.ToLower(executor)]
+		}
+		accountId, _ := p["account_id"].(string)
+		if accountId == "" {
+			accountId = a.accountId
+		}
+		return kind[accountId] == "k8s"
+	}
 }
 
 // dryRunBuilderTimeout bounds the synchronous dry-run call from the builder loop. The
@@ -4135,7 +4456,7 @@ const dryRunBuilderTimeout = 3 * time.Minute
 // editor's assistant verifies an automation works and diagnoses a failure with real
 // execution evidence (the engine supports dry-run even though there is no "dry-run
 // mode" baked into the definition). The dry-run endpoint takes the inner definition.
-func (a *WorkflowBuilderAgent) toolDryRun(ctx *security.RequestContext) string {
+func (a *WorkflowBuilderAgent) toolDryRun(ctx *security.RequestContext, args map[string]interface{}) string {
 	if a.state.WorkingWorkflow == nil {
 		return "Error: automation not initialized."
 	}
@@ -4150,6 +4471,11 @@ func (a *WorkflowBuilderAgent) toolDryRun(ctx *security.RequestContext) string {
 	body := map[string]any{"definition": definition}
 	if name, ok := a.state.WorkingWorkflow["name"].(string); ok && name != "" {
 		body["name"] = name
+	}
+	// "Test it with namespace=X" is only testable if X reaches the run; without
+	// inputs every dry-run used the defaults, whatever the user asked for.
+	if inputs, ok := args["inputs"].(map[string]interface{}); ok && len(inputs) > 0 {
+		body["inputs"] = inputs
 	}
 
 	reqCtx, cancel := context.WithTimeout(context.Background(), dryRunBuilderTimeout)
@@ -4260,7 +4586,27 @@ func (a *WorkflowBuilderAgent) toolGetExecution(ctx *security.RequestContext, ar
 	if err != nil {
 		return fmt.Sprintf("Error fetching execution %s: %v", executionId, err)
 	}
-	return compactExecutionJSON(resp, 4096)
+	return compactExecutionJSON(withoutDefinition(resp), 4096)
+}
+
+// withoutDefinition drops the automation definition a run echoes back. The loop
+// already holds the working definition, and on an automation of long scripts the
+// echo alone made single observations hundreds of KB — enough to time out the
+// next model call.
+func withoutDefinition(raw []byte) []byte {
+	var data map[string]any
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return raw
+	}
+	if _, ok := data["definition"]; !ok {
+		return raw
+	}
+	delete(data, "definition")
+	out, err := json.Marshal(data)
+	if err != nil {
+		return raw
+	}
+	return out
 }
 
 // compactExecutionJSON truncates oversized string fields in an execution detail blob
@@ -4330,6 +4676,8 @@ func (a *WorkflowBuilderAgent) executeWorkflowTool(ctx *security.RequestContext,
 		return a.toolGetTask(args)
 	case "modify_task":
 		return a.toolModifyTask(ctx, args)
+	case "set_task_params":
+		return a.toolSetTaskParams(ctx, args)
 	case "delete_task":
 		return a.toolDeleteTask(args)
 	case "list_tasks":
@@ -4341,7 +4689,7 @@ func (a *WorkflowBuilderAgent) executeWorkflowTool(ctx *security.RequestContext,
 	case "validate":
 		return a.toolValidate(ctx)
 	case "dry_run":
-		return a.toolDryRun(ctx)
+		return a.toolDryRun(ctx, args)
 	case "finalize":
 		// Capture the agent's plain-language explanation of the change so finalizeWithAutoSave can
 		// surface the reasoning/approach in the summary instead of just "has been updated".
@@ -4371,7 +4719,7 @@ func (a *WorkflowBuilderAgent) executeWorkflowTool(ctx *security.RequestContext,
 	case "get_execution":
 		return a.toolGetExecution(ctx, args)
 	default:
-		return fmt.Sprintf("Unknown tool: '%s'. Available tools: init_workflow, add_task, get_task, modify_task, delete_task, list_tasks, get_task_schema, get_event_trigger_schema, validate, dry_run, finalize, list_executions, get_execution", toolName)
+		return fmt.Sprintf("Unknown tool: '%s'. Available tools: init_workflow, add_task, get_task, modify_task, set_task_params, delete_task, list_tasks, get_task_schema, get_event_trigger_schema, validate, dry_run, finalize, list_executions, get_execution", toolName)
 	}
 }
 
@@ -4611,9 +4959,9 @@ RULES:
 		nudge := ""
 		switch {
 		case toolCallSeen[sig] >= 2:
-			nudge = "\nNOTE: you already ran this exact tool call — the result is unchanged. Do NOT repeat it. Take the next concrete step now: apply the requested change (add_task / modify_task / delete_task), then validate, then finalize. If no change is needed, emit your <final_answer>."
+			nudge = "\nNOTE: you already ran this exact tool call — the result is unchanged. Do NOT repeat it. Take the next concrete step now: apply the requested change (add_task / modify_task / delete_task), then validate, then finalize. If no change is needed, give your final answer now."
 		case readOnlyToolStreak >= readOnlyToolStreakThreshold:
-			nudge = "\nNOTE: you have gathered enough information. Stop inspecting and act now: apply the requested change (add_task / modify_task / delete_task), then validate, then finalize. If no change is needed, emit your <final_answer>."
+			nudge = "\nNOTE: you have gathered enough information. Stop inspecting and act now: apply the requested change (add_task / modify_task / delete_task), then validate, then finalize. If no change is needed, give your final answer now."
 		}
 
 		// Trim content to just the tool call XML before appending to message history.
@@ -4741,10 +5089,16 @@ func (a *WorkflowBuilderAgent) runEditToolLoop(ctx *security.RequestContext, req
 	// of making the model spend list_executions + get_execution to rediscover it. Deliberately NOT
 	// written back to a.state.ExecutionError — that field means "the user is debugging a specific
 	// failure" and gates the ambiguity check in handleEditEntry.
-	systemPrompt := getEditSystemPrompt(a.state.ExecutionError, a.state.ExecutionId, workflowLastExecutionError(a.state.WorkingWorkflow), schema)
+	systemPrompt := getEditSystemPrompt(a.state.ExecutionError, a.state.ExecutionId, workflowLastExecutionError(a.state.WorkingWorkflow), schema) +
+		a.toolLoopEnvironment(ctx)
 	// Use OriginalQuery (the change request), not request.Query — on a clarification resume the latter
 	// is the user's option answer, not the original instruction.
 	userMessage := fmt.Sprintf("Apply the user's request to the existing automation: %s", a.state.OriginalQuery)
+	// A reply like "yes" or "do it" only means something next to what was proposed
+	// before it; without the recent turns the loop finalized "no changes needed".
+	if recent := recentConversation(request.ConversationContext); recent != "" {
+		userMessage = "Earlier in this conversation (most recent last):\n" + recent + "\n\n" + userMessage
+	}
 	if cc := strings.TrimSpace(clarificationContext); cc != "" {
 		userMessage += "\n" + cc
 	}
@@ -4752,7 +5106,12 @@ func (a *WorkflowBuilderAgent) runEditToolLoop(ctx *security.RequestContext, req
 	before := a.workflowSnapshot()
 	answer, err := a.runToolLoop(ctx, request, systemPrompt, userMessage)
 	if err != nil {
-		return core.NBAgentResponse{}, fmt.Errorf("agentic edit failed: %w", err)
+		finalized, ok := a.finalizedAfterFailure(before)
+		if !ok {
+			return core.NBAgentResponse{}, fmt.Errorf("agentic edit failed: %w", err)
+		}
+		ctx.GetLogger().Warn("workflow_builder: tool loop failed after finalize; keeping the finalized edit", "error", err)
+		return a.checkMissingConfigs(ctx, request, finalized)
 	}
 
 	// The loop legitimately ends two ways (the edit prompt allows a prose answer when no change

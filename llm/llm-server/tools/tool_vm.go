@@ -67,11 +67,52 @@ func vmAccount(ctx core.NbToolContext) (string, error) {
 	return tenantID, nil
 }
 
+// VMAccountTargetByName resolves a connected VM account by name for a
+// per-call or handed target, among the active VM accounts of the caller's
+// tenant that the caller can read.
+func VMAccountTargetByName(ctx *security.RequestContext, accountID, requested string) (core.ToolConfig, error) {
+	if ctx == nil || ctx.GetSecurityContext() == nil {
+		return core.ToolConfig{}, errors.New("vm account lookup: caller security context is required")
+	}
+	sc := ctx.GetSecurityContext()
+	tenantID := sc.GetTenantId()
+	if tenantID == "" || !security.IsAccountInTenant(accountID, tenantID) {
+		return core.ToolConfig{}, errors.New("vm account lookup: caller tenant is required")
+	}
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return core.ToolConfig{}, fmt.Errorf("vm account lookup: database: %w", err)
+	}
+	accounts := []struct {
+		ID   string `db:"id"`
+		Name string `db:"account_name"`
+	}{}
+	if err := dbms.Db.SelectContext(ctx.GetContext(), &accounts, `SELECT id::text AS id, account_name FROM cloud_accounts
+		WHERE tenant = $1 AND status = 'active' AND account_type = 'vm' ORDER BY account_name`, tenantID); err != nil {
+		return core.ToolConfig{}, fmt.Errorf("vm account lookup: %w", err)
+	}
+	names := make([]string, 0, len(accounts))
+	for _, a := range accounts {
+		if !sc.HasAccountAccess(a.ID, security.SecurityAccessTypeRead) {
+			continue
+		}
+		if strings.EqualFold(a.Name, requested) {
+			return core.ToolConfig{Name: a.Name, Values: []core.ToolConfigValue{{Name: "id", Value: a.ID}}}, nil
+		}
+		names = append(names, a.Name)
+	}
+	if len(names) == 0 {
+		return core.ToolConfig{}, fmt.Errorf("VM account %q is not connected or you do not have access to it; no VM accounts are available to you", requested)
+	}
+	return core.ToolConfig{}, fmt.Errorf("VM account %q is not connected or you do not have access to it; available VM accounts: %s", requested, strings.Join(names, ", "))
+}
+
 func vmToolError(err error) (core.NBToolResponse, error) {
 	return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
 }
 
 func (VMListTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	ctx = ctx.ForTarget()
 	tenantID, err := vmAccount(ctx)
 	if err != nil {
 		return vmToolError(err)
@@ -262,6 +303,7 @@ func chooseVMSSHSource(sources []vmSSHSource, requestedID string, addresses []ne
 }
 
 func (VMExecuteTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	ctx = ctx.ForTarget()
 	tenantID, err := vmAccount(ctx)
 	if err != nil {
 		return vmToolError(err)

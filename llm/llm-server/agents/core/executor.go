@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"nudgebee/llm/common"
@@ -366,14 +367,7 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 		}, errors.New("conversation terminated")
 	}
 
-	// Remove the routed-to @agent mention from the query. By default only the FIRST
-	// mention is dropped so a "@a @b q" run keeps "@b q" for the agent; set
-	// DropExtraAgentMentions to strip every leading mention ("q").
-	if config.Config.DropExtraAgentMentions {
-		request.Query = common.StripLeadingAgentMention(request.Query)
-	} else {
-		request.Query = common.StripFirstAgentMention(request.Query)
-	}
+	request.Query = stripRoutedAgentMention(request.Query)
 
 	// Stamp the agent's declared model category onto the context so every LLM
 	// call it makes resolves the category-specific model. Sub-operations may
@@ -612,14 +606,23 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// Preserve the user's original question across delegation. Knowledge discovery
 	// combines it with each agent's delegated task, so every agent gets a fresh,
 	// task-specific account-wide search without losing the user's intent.
-	isTopLevelInvocation := request.OriginalQuery == ""
-	if isTopLevelInvocation {
-		request.OriginalQuery = request.Query
+	isTopLevelInvocation := seedOriginalQuery(&request)
+	// turnRequest is the request as the turn's question sees it, for knowledge
+	// discovery and memory. On a followup resume Query is the user's answer
+	// ("yes") until refine restores it below, and resumeFollowupLocked already
+	// restored OriginalQuery (#40085). Retrieving on the answer changed the
+	// opening human message (KB and memory blocks) and lost its prompt cache.
+	turnRequest := request
+	if isResumedTopLevelInvocation(request) {
+		isTopLevelInvocation = true
+		turnRequest.Query = request.OriginalQuery
 	}
+	// Used up here; it must not travel with anything built from this request.
+	request.TopLevelResume = false
 
 	kbChan := make(chan kbAssemblyResult, 1)
 	go func(prompt NBAgentPrompt) {
-		discover := knowledgeMode != AgentKnowledgeDisabled && shouldDiscoverKnowledge(policy, request)
+		discover := knowledgeMode != AgentKnowledgeDisabled && shouldDiscoverKnowledge(policy, turnRequest)
 		ctx.GetLogger().Info("knowledge: discovery decision", "policy", policy, "discover", discover, "agent", agent.GetName())
 		if !discover {
 			kbChan <- kbAssemblyResult{prompt: prompt}
@@ -628,9 +631,9 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 		// Mapped KBs are attribution fallbacks for legacy documents. Discovery
 		// itself is account-wide and relevance-ranked, never mapping-gated.
 		mappingStarted := time.Now()
-		kbs := fetchAgentKBs(ctx, request.AccountId, ownSkillNames, request.InheritSkillsFromAgents, nil)
+		kbs := fetchAgentKBs(ctx, turnRequest.AccountId, ownSkillNames, turnRequest.InheritSkillsFromAgents, nil)
 		ctx.GetLogger().Info("knowledge: mappings resolved", "duration", time.Since(mappingStarted).String(), "count", len(kbs))
-		discovery := retrieveRelevantKB(ctx, request, kbs)
+		discovery := retrieveRelevantKB(ctx, turnRequest, kbs)
 		if knowledgeMode == AgentKnowledgeAutoChunks {
 			kbChan <- kbAssemblyResult{prompt: prompt, prestepBlock: strings.TrimSpace(discovery.content), kbRefs: discovery.references}
 			return
@@ -663,11 +666,11 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	} else if memoryModuleActive {
 		memChan <- ""
 		go func() {
-			memV2Chan <- composeMemoryV2BlockFn(ctx, request, agent)
+			memV2Chan <- composeMemoryV2BlockFn(ctx, turnRequest, agent)
 		}()
 	} else {
 		go func(cf []string) {
-			memChan <- retrieveAndBuildMemoryNotebook(ctx, request, agent, cf)
+			memChan <- retrieveAndBuildMemoryNotebook(ctx, turnRequest, agent, cf)
 		}(convFacts)
 		memV2Chan <- ""
 	}
@@ -710,13 +713,8 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// Compute the effective planner type for prompt rendering. Orchestrating and
 	// ReAct agents always run as react_3 at runtime, so their prompt uses react-style formatting.
 	effectivePlannerType := resolveEffectivePlannerType(agent.GetPlannerType())
-	// The ReAct planners render RAG examples into the human message; they vary
-	// per query and would otherwise end the system prompt with a per-query block.
-	systemPrompt := basePrompt
-	if effectivePlannerType == AgentPlannerTypeReAct3 {
-		request.RAGExamples = strings.TrimSpace(renderRAGExamples(basePrompt, request, effectivePlannerType))
-		systemPrompt.Rag = NBAgentPromptRag{}
-	}
+	var systemPrompt NBAgentPrompt
+	systemPrompt, request = moveRAGExamplesToHumanMessage(basePrompt, request, effectivePlannerType)
 	systemMessage, sysFmtErr := GetPromptTemplate(systemPrompt, request, effectivePlannerType).Format(map[string]any{"history": messageFormatterToString(messageHistoryFomatter)})
 	// Surface template-render failures: a Format error here yields an empty system prompt, which Bedrock Converse rejects with a 400 (issue #30120).
 	if sysFmtErr != nil {
@@ -1114,6 +1112,12 @@ func refineAgentQuestionAndHandleFollowups(ctx *security.RequestContext, request
 			if request.ParentAgentId == "" && previousQuestion.ParentAgentId != "" {
 				request.ParentAgentId = previousQuestion.ParentAgentId
 			}
+			// The followup context snapshots this specific agent invocation.
+			// Keep its target across legacy resumes without making it a sticky
+			// conversation-level setting via MergeFrom/message_config.
+			if request.QueryConfig.DelegatedTarget == nil {
+				request.QueryConfig.DelegatedTarget = previousQuestion.QueryConfig.DelegatedTarget
+			}
 
 			for k, v := range previousQuestion.QueryConfig.ToolConfigs {
 				existingToolConfigs[k] = v
@@ -1182,7 +1186,11 @@ func getExistingHistory(request NBAgentRequest, ctx *security.RequestContext) ([
 	if request.QueryConfig.SkipConversationHistory {
 		return []prompts.MessageFormatter{}, nil
 	}
-	chatHistory, err := GetConversationDao().LoadConversationMessages(request.AccountId, request.ConversationId, "", "", config.Config.ConversationHistoryWindowSize)
+	dao := GetConversationDao()
+	if dao == nil {
+		return []prompts.MessageFormatter{}, nil
+	}
+	chatHistory, err := dao.LoadConversationMessages(request.AccountId, request.ConversationId, "", "", config.Config.ConversationHistoryWindowSize)
 	if err != nil {
 		ctx.GetLogger().Error("agentexecutor: unable to load chat history", "error", err)
 		return nil, err
@@ -1211,9 +1219,12 @@ func getExistingHistory(request NBAgentRequest, ctx *security.RequestContext) ([
 
 	// collect existing history
 	messageHistoryFomatter := []prompts.MessageFormatter{}
+	// Rows after the current turn's message belong to this turn (its followups).
+	inCurrentTurn := false
 	// Handle formatting of the message history
 	for _, chat := range chatHistory {
 		if chat["id"] == request.MessageId {
+			inCurrentTurn = true
 			continue
 		}
 
@@ -1236,6 +1247,13 @@ func getExistingHistory(request NBAgentRequest, ctx *security.RequestContext) ([
 				}
 			}
 		case MessageTypeFollowup:
+			// This turn's own approval reaches the planner as the action's result
+			// (it runs, or reports "User rejected approval"). Replaying it here
+			// changed the opening human message after every approval, which lost
+			// that message's prompt cache (#40085).
+			if inCurrentTurn && followupTypeOf(chat["message_config"]) == FollowupTypeToolConfirmation {
+				continue
+			}
 			// For followups, 'content' is the AI question, 'response' is user answer
 			if chat["content"] != "" {
 				aiQuestion := escapeTemplateSyntax(chat["content"])
@@ -1248,6 +1266,20 @@ func getExistingHistory(request NBAgentRequest, ctx *security.RequestContext) ([
 		}
 	}
 	return messageHistoryFomatter, nil
+}
+
+// followupTypeOf reads followupType from a followup message's message_config.
+func followupTypeOf(messageConfig string) FollowupType {
+	if messageConfig == "" {
+		return ""
+	}
+	var cfg struct {
+		FollowupType FollowupType `json:"followupType"`
+	}
+	if err := json.Unmarshal([]byte(messageConfig), &cfg); err != nil {
+		return ""
+	}
+	return cfg.FollowupType
 }
 
 // formatAttachmentDescriptions builds a text summary of image attachments for history replay.
@@ -1279,12 +1311,43 @@ type NBMultiOptionClassificationAgent interface {
 	AllowsMultipleOptions() bool
 }
 
+// stripRoutedAgentMention removes the routed-to @agent mention from a query. By
+// default only the FIRST mention is dropped so a "@a @b q" run keeps "@b q" for
+// the agent; set DropExtraAgentMentions to strip every leading mention ("q").
+func stripRoutedAgentMention(query string) string {
+	if config.Config.DropExtraAgentMentions {
+		return common.StripLeadingAgentMention(query)
+	}
+	return common.StripFirstAgentMention(query)
+}
+
+// isResumedTopLevelInvocation reports the turn's top-level agent resuming after a
+// followup with its original question restored (so seedOriginalQuery reports
+// false for it).
+func isResumedTopLevelInvocation(request NBAgentRequest) bool {
+	return request.TopLevelResume && request.OriginalQuery != ""
+}
+
 // resolveEffectivePlannerType maps an agent's *declared* planner type to the
 // planner that actually runs it. Orchestrating and ReAct agents both execute
 // via the ReAct3 planner (see createAgentPlanner), so they resolve to
 // AgentPlannerTypeReAct3; every other type runs as declared. Callers that need
 // to reason about runtime behavior (prompt style, DisplayID assignment, response
 // formatting) must use this rather than GetPlannerType() directly.
+// moveRAGExamplesToHumanMessage retrieves the RAG examples into
+// request.RAGExamples and drops them from the system prompt for the ReAct
+// planners (ReAct3 and ReAct4 both run with effective type ReAct3), which render
+// them into the human message. They vary per query, so in the system prompt they
+// would make it differ on every query. Other planner types are unchanged.
+func moveRAGExamplesToHumanMessage(p NBAgentPrompt, request NBAgentRequest, effectivePlannerType AgentPlannerType) (NBAgentPrompt, NBAgentRequest) {
+	if effectivePlannerType != AgentPlannerTypeReAct3 {
+		return p, request
+	}
+	request.RAGExamples = strings.TrimSpace(renderRAGExamples(p, request, effectivePlannerType))
+	p.Rag = NBAgentPromptRag{}
+	return p, request
+}
+
 func resolveEffectivePlannerType(declared AgentPlannerType) AgentPlannerType {
 	if declared == AgentPlannerTypeOrchestrating || declared == AgentPlannerTypeReAct {
 		return AgentPlannerTypeReAct3
@@ -1492,7 +1555,7 @@ func nbToolsToLlmTools(tools []toolcore.NBTool) []llms.Tool {
 	for _, t := range tools {
 
 		properties := map[string]any{}
-		for k, p := range t.InputSchema().Properties {
+		for k, p := range toolcore.ModelInputSchema(t).Properties {
 			prop := map[string]any{}
 			// string(p.Type), not p.Type: ToolSchemaType is a NAMED string type, and
 			// provider schema converters type-assert this value as a plain `string`
@@ -1528,7 +1591,7 @@ func nbToolsToLlmTools(tools []toolcore.NBTool) []llms.Tool {
 			properties[k] = prop
 		}
 
-		rawRequired := t.InputSchema().Required
+		rawRequired := toolcore.ModelInputSchema(t).Required
 		// Providers like OpenAI and Python-based LLM validators reject "required": null
 		// with "400: Invalid schema for function '...': None is not of type 'array'",
 		// and reject any required property not declared in properties.

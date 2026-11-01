@@ -230,9 +230,9 @@ func (m mcpIntegrationTool) CircuitBreakerKey(ctx NbToolContext, _ NBToolCallReq
 // relay transport failure, HTTP/JSON-RPC decode failure, upstream MCP
 // server unreachable — which is exactly the "infra is broken" signal
 // the breaker is designed to short-circuit on. A logical failure (the
-// LLM picking a tool that's not registered with the server, say) is
-// reported back through the JSON-RPC payload as a successful Call with
-// a normal NBToolResponse; that path stays unaffected.
+// LLM picking a tool that's not registered with the server, or the tool
+// returning result.isError) comes back with a nil error and an
+// NBToolResponseStatusError response; it does not trip the breaker.
 func (m mcpIntegrationTool) IsInfrastructureFailure(err error, _ NBToolResponse) bool {
 	return err != nil
 }
@@ -257,7 +257,15 @@ func (m mcpIntegrationTool) Call(ctx NbToolContext, input NBToolCallRequest) (NB
 		"arguments": args,
 	}
 
-	response, err := executeMCPViaRelay(ctx.GoContext(), ctx.AccountId, m.config, "tools/call", callParams, time.Duration(config.Config.LlmServerMCPExecutionTimeoutSeconds)*time.Second)
+	// Scope the upstream MCP session to this conversation so stateful servers
+	// (browser, shell, DB session) don't share state across concurrent chats.
+	// SessionId is inherited by sub-agents, so a delegate sees its parent's state.
+	sessionKey := ctx.SessionId
+	if sessionKey == "" {
+		sessionKey = ctx.ConversationId
+	}
+
+	response, err := executeMCPViaRelay(ctx.GoContext(), ctx.AccountId, m.config, "tools/call", callParams, sessionKey, time.Duration(config.Config.LlmServerMCPExecutionTimeoutSeconds)*time.Second)
 	if err != nil {
 		log.Error("mcp-integration: tool call failed", "error", err)
 		// Emit the failure as JSON so the tool response is consistently JSON
@@ -276,11 +284,91 @@ func (m mcpIntegrationTool) Call(ctx NbToolContext, input NBToolCallRequest) (NB
 		}, err
 	}
 
+	// The MCP server answered, but the answer can still be a failure: a
+	// tool-level error (result.isError, e.g. "connection refused" from the
+	// server's own backend) or a JSON-RPC error object (unknown tool, bad
+	// params). Report those as errors so the stored status, tool-health
+	// metrics and the planner's evidence accounting see them. err stays nil:
+	// the integration itself is reachable, so the circuit breaker must not trip.
+	status := NBToolResponseStatusSuccess
+	data := mcpToolResultText(response)
+	if isMCPToolCallError(response) {
+		log.Warn("mcp-integration: tool returned an error result")
+		status = NBToolResponseStatusError
+		// Once unwrapped, an isError result is bare text ("connect: connection
+		// refused") and the planner does not tell the model a step failed, so
+		// say so in the text. A JSON-RPC error object is not unwrapped and
+		// already reads as an error.
+		if data != response {
+			data = "MCP tool returned an error: " + data
+		}
+	}
+
 	return NBToolResponse{
-		Status: NBToolResponseStatusSuccess,
-		Data:   response,
+		Status: status,
+		Data:   data,
 		Type:   NBToolResponseTypeText,
 	}, nil
+}
+
+// mcpToolResultText returns what the model should read from a tools/call
+// reply: the tool's text content, not the JSON-RPC envelope around it. The
+// envelope (`{"result":{"content":[{"type":"text","text":"..."}]}}`) escapes
+// every quote and newline of the real output and adds nothing the model can
+// use. Text parts are joined with newlines; any other part (image, resource)
+// is kept as its JSON, matching nbCustomMCPTool.Call. A result with no
+// content returns its structuredContent JSON if it has one, else "" — the
+// executor classifies "" as an empty result and gives the model its
+// no-output message. A reply without a result (a JSON-RPC error object,
+// non-JSON text) is returned unchanged.
+func mcpToolResultText(response string) string {
+	var rpcResp struct {
+		Result *struct {
+			Content           []json.RawMessage `json:"content"`
+			StructuredContent json.RawMessage   `json:"structuredContent"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(unwrapSSEIfPresent(response)), &rpcResp); err != nil || rpcResp.Result == nil {
+		return response
+	}
+	if len(rpcResp.Result.Content) == 0 {
+		if len(rpcResp.Result.StructuredContent) > 0 && string(rpcResp.Result.StructuredContent) != "null" {
+			return string(rpcResp.Result.StructuredContent)
+		}
+		return ""
+	}
+	parts := make([]string, 0, len(rpcResp.Result.Content))
+	for _, raw := range rpcResp.Result.Content {
+		var item struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(raw, &item); err == nil && item.Type == "text" {
+			parts = append(parts, item.Text)
+			continue
+		}
+		parts = append(parts, string(raw))
+	}
+	return strings.Join(parts, "\n")
+}
+
+// isMCPToolCallError reports whether a tools/call JSON-RPC reply carries a
+// failure: either a JSON-RPC error object or a result with isError set. A reply
+// that isn't parseable JSON-RPC is not classified as an error here.
+func isMCPToolCallError(response string) bool {
+	var rpcResp struct {
+		Result *struct {
+			IsError bool `json:"isError"`
+		} `json:"result"`
+		Error *json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(unwrapSSEIfPresent(response)), &rpcResp); err != nil {
+		return false
+	}
+	if rpcResp.Error != nil {
+		return true
+	}
+	return rpcResp.Result != nil && rpcResp.Result.IsError
 }
 
 // classifyMCPError buckets an MCP/relay failure into a short reason tag so the
@@ -305,18 +393,27 @@ func classifyMCPError(err error) string {
 // executeMCPViaRelay sends an MCP JSON-RPC request through the relay server.
 // For direct mode: relay handles the HTTP call to the MCP server.
 // For vm_agent mode: relay routes to forager via RabbitMQ.
-func executeMCPViaRelay(ctx context.Context, accountID string, cfg mcpIntegrationConfig, method string, params map[string]any, timeout time.Duration) (string, error) {
+// sessionKey, when set, gives the call its own upstream MCP session in the relay
+// instead of the account-wide shared one.
+func executeMCPViaRelay(ctx context.Context, accountID string, cfg mcpIntegrationConfig, method string, params map[string]any, sessionKey string, timeout time.Duration) (string, error) {
 	actionParams := map[string]any{
 		"method": method,
 	}
 	if params != nil {
 		actionParams["params"] = params
 	}
+	if sessionKey != "" {
+		actionParams["session_id"] = sessionKey
+	}
 
 	var agentType string
+	noAgent := false
 
 	if cfg.ConnectionMode == "direct" {
 		actionParams["connection_mode"] = "direct"
+		// Lets any relay pod reload credentials to end this session later
+		// (docs/mcp-sessions.md).
+		actionParams["integration_id"] = cfg.IntegrationID
 		actionParams["url"] = cfg.URL
 		actionParams["auth_type"] = cfg.AuthType
 		if cfg.AuthType == "none" {
@@ -344,6 +441,7 @@ func executeMCPViaRelay(ctx context.Context, accountID string, cfg mcpIntegratio
 			actionParams["auth_credentials"] = authCreds
 		}
 		// No agent type needed for direct mode — relay handles it
+		noAgent = true
 	} else {
 		// vm_agent mode — route to forager
 		actionParams["connection_mode"] = "vm_agent"
@@ -365,6 +463,7 @@ func executeMCPViaRelay(ctx context.Context, accountID string, cfg mcpIntegratio
 		ActionName:   "mcp_request",
 		ActionParams: actionParams,
 		AgentType:    agentType,
+		NoAgent:      noAgent,
 		Timeout:      duration,
 	}
 
@@ -643,7 +742,7 @@ func discoverMCPTools(accountId string, cfg mcpIntegrationConfig) []NBTool {
 		common.MetricsToolDiscoveryLatency(mcpImplType, accountId, cfg.IntegrationID, time.Since(start).Seconds())
 	}()
 
-	response, err := executeMCPViaRelay(context.Background(), accountId, cfg, "tools/list", nil, time.Duration(config.Config.LlmServerMCPDiscoveryTimeoutSeconds)*time.Second)
+	response, err := executeMCPViaRelay(context.Background(), accountId, cfg, "tools/list", nil, "", time.Duration(config.Config.LlmServerMCPDiscoveryTimeoutSeconds)*time.Second)
 	if err != nil {
 		toolCircuitBreakerInstance.RecordFailure(mcpDiscoveryImplType, CircuitBreakerKey{AccountId: accountId, InstanceId: cfg.IntegrationID})
 		common.MetricsToolDiscovery(mcpImplType, accountId, cfg.IntegrationID, "failure")

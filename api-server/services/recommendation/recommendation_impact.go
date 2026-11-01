@@ -41,6 +41,67 @@ func resolveK8sWorkloadNodeID(kg *core.Service, tenantID, accountID string, ref 
 	return res.Nodes[0].ID, true
 }
 
+// k8sVolumeRules maps each k8s volume rule to the node its action changes:
+// unused_pvc reclaims the PersistentVolume, pv_rightsize resizes the claim.
+// These rules carry no resource_id, so their identity comes from the payload
+// (a PV object: metadata.name, spec.claimRef) rather than the cloud_resourses
+// join, and they never fall through to the workload or cloud lookups — a PVC
+// can share its name with a workload in the same namespace.
+var k8sVolumeRules = map[string]core.NodeType{
+	"unused_pvc":   core.NodeTypePV,
+	"pv_rightsize": core.NodeTypePVC,
+}
+
+// k8sVolumeRef is a volume recommendation's identity: the PV its payload
+// describes and the claim bound to it.
+type k8sVolumeRef struct {
+	PVName         string
+	ClaimNamespace string
+	ClaimName      string
+}
+
+// resolveK8sVolumeNodeID finds the PV or PVC node for a volume recommendation,
+// trying the node its action changes first and the other end of the binding
+// second: a reclaimed PV whose claim is gone still resolves by its own name,
+// and a claim whose PV the graph never built still resolves by the claim.
+// A PV is cluster-scoped, so it is looked up by name alone within the account.
+func resolveK8sVolumeNodeID(kg *core.Service, tenantID, accountID string, primary core.NodeType, v k8sVolumeRef) (string, bool) {
+	byPV := func() (string, bool) {
+		if v.PVName == "" {
+			return "", false
+		}
+		return searchUniqueNode(kg, tenantID, accountID, core.SearchNodesParams{Name: v.PVName, NodeTypes: []core.NodeType{core.NodeTypePV}})
+	}
+	byClaim := func() (string, bool) {
+		if v.ClaimNamespace == "" || v.ClaimName == "" {
+			return "", false
+		}
+		return searchUniqueNode(kg, tenantID, accountID, core.SearchNodesParams{Name: v.ClaimName, Namespace: v.ClaimNamespace, NodeTypes: []core.NodeType{core.NodeTypePVC}})
+	}
+	first, second := byPV, byClaim
+	if primary == core.NodeTypePVC {
+		first, second = byClaim, byPV
+	}
+	if id, ok := first(); ok {
+		return id, true
+	}
+	return second()
+}
+
+// searchUniqueNode returns the one node matching params within the account;
+// no match or an ambiguous match is unresolved.
+func searchUniqueNode(kg *core.Service, tenantID, accountID string, params core.SearchNodesParams) (string, bool) {
+	params.Limit = 2
+	if accountID != "" {
+		params.AccountIDs = []string{accountID}
+	}
+	res, err := kg.SearchNodes(tenantID, params)
+	if err != nil || res == nil || len(res.Nodes) != 1 {
+		return "", false
+	}
+	return res.Nodes[0].ID, true
+}
+
 // blastRadiusCloudNodeTypes are the cloud resource node types a recommendation
 // can resolve to for impact scoring. Databases/caches/queues carry the services
 // observed calling them; a compute instance carries its callers plus a hosted-
@@ -211,6 +272,22 @@ func resolveK8sRecommendationImpact(kg *core.Service, tenantID, accountID string
 	return impact, true
 }
 
+// resolveK8sVolumeRecommendationImpact resolves a volume recommendation to its
+// PV or PVC node and computes the blast radius: the traversal walks the binding
+// up to the workloads that mount the volume. ok=false means unresolved.
+func resolveK8sVolumeRecommendationImpact(kg *core.Service, tenantID, accountID string, primary core.NodeType, v k8sVolumeRef) (*core.ImpactSummary, bool) {
+	nodeID, ok := resolveK8sVolumeNodeID(kg, tenantID, accountID, primary, v)
+	if !ok {
+		return nil, false
+	}
+	impact, err := kg.GetImpactedServices(tenantID, nodeID, nil, 0)
+	if err != nil || impact == nil {
+		return nil, false
+	}
+	impact.RetainDirectDependents()
+	return impact, true
+}
+
 // resolveCloudRecommendationImpact resolves a cloud recommendation to its resource
 // node by resource_id and computes the blast radius. Restricted to the cloud
 // resource types whose graph edges expose real dependents (see
@@ -235,7 +312,9 @@ func resolveCloudRecommendationImpact(kg *core.Service, tenantID, accountID, res
 // safety_band + change_class + impact_summary into the score breakdown map.
 // Identity comes from the cloud_resourses join the recommendations view uses — NOT
 // the raw recommendation JSONB, whose shape varies per rule type and frequently
-// omits the namespace. A recommendation carrying a k8s namespace is resolved by
+// omits the namespace. The exception is a k8s volume rule, which has no
+// cloud_resourses row: it is resolved from the payload's volume identity to its
+// PV or PVC node (see k8sVolumeRules). A recommendation carrying a k8s namespace is resolved by
 // (namespace, workload) to its Workload node; otherwise a cloud resource
 // recommendation is resolved by resource_id to its cloud node. Both paths fail
 // safe: a misrouted recommendation resolves to no node (wrong node type / missing
@@ -245,7 +324,7 @@ func resolveCloudRecommendationImpact(kg *core.Service, tenantID, accountID, res
 //
 // The graph traversal is memoized per resolved identity via cache; the band is
 // derived per call because it also depends on this recommendation's change class.
-func annotateBreakdownWithImpact(kg *core.Service, tenantID, accountID, namespace, workload, resourceID, ruleName string, class ChangeClass, breakdown map[string]any, cache map[string]*core.ImpactSummary) {
+func annotateBreakdownWithImpact(kg *core.Service, tenantID, accountID, namespace, workload, resourceID, ruleName string, volume k8sVolumeRef, class ChangeClass, breakdown map[string]any, cache map[string]*core.ImpactSummary) {
 	if kg == nil || breakdown == nil {
 		return
 	}
@@ -257,7 +336,21 @@ func annotateBreakdownWithImpact(kg *core.Service, tenantID, accountID, namespac
 		key     string
 		resolve func() (*core.ImpactSummary, bool)
 	)
+	volume = k8sVolumeRef{
+		PVName:         strings.TrimSpace(volume.PVName),
+		ClaimNamespace: strings.TrimSpace(volume.ClaimNamespace),
+		ClaimName:      strings.TrimSpace(volume.ClaimName),
+	}
+	volumePrimary, isVolumeRule := k8sVolumeRules[ruleName]
 	switch {
+	case isVolumeRule:
+		if volume.PVName == "" && (volume.ClaimNamespace == "" || volume.ClaimName == "") {
+			return
+		}
+		key = tenantID + "|" + accountID + "|k8s-volume|" + string(volumePrimary) + "|" + volume.PVName + "|" + volume.ClaimNamespace + "|" + volume.ClaimName
+		resolve = func() (*core.ImpactSummary, bool) {
+			return resolveK8sVolumeRecommendationImpact(kg, tenantID, accountID, volumePrimary, volume)
+		}
 	case namespace != "" && workload != "":
 		key = tenantID + "|" + accountID + "|k8s|" + namespace + "|" + workload
 		resolve = func() (*core.ImpactSummary, bool) {

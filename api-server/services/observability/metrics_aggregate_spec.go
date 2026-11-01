@@ -89,12 +89,12 @@ func promQLOverTime(agg ParsedAggregate, expr, window, step string) string {
 // construction and cpu_real rates across the whole window, so wrapping them again
 // would take a statistic of a statistic — a max_over_time of a max_over_time. For
 // these the key's own definition wins and the request's aggregate is a no-op.
-var promSelfWindowedKeys = map[string]bool{
-	"cpu_real":      true,
-	"p50_cpu":       true,
-	"p90_cpu":       true,
-	"max_usage_cpu": true,
-	"max_usage_mem": true,
+var promSelfWindowedKeys = map[UtilisationKey]bool{
+	KeyCPUReal:     true,
+	KeyP50CPU:      true,
+	KeyP90CPU:      true,
+	KeyMaxUsageCPU: true,
+	KeyMaxUsageMem: true,
 }
 
 // promApplyAggregate collapses every built query to one point of the requested
@@ -116,7 +116,7 @@ func promApplyAggregate(queries map[string]string, agg ParsedAggregate, rangeW, 
 		return
 	}
 	for key, expr := range queries {
-		if promSelfWindowedKeys[key] {
+		if promSelfWindowedKeys[UtilisationKey(key)] {
 			continue
 		}
 		queries[key] = promQLOverTime(agg, expr, rangeW, stepW)

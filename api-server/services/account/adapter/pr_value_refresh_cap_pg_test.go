@@ -107,7 +107,7 @@ func TestValueRefreshFailureIsBoundedByTheCadence_DB(t *testing.T) {
 	require.True(t, stamped,
 		"the failure must keep the cadence stamp, or the next run claims again immediately")
 	require.Equal(t, 0, count,
-		"an infra failure must not spend the rewrite budget — that budget is for rewrites that landed")
+		"an infra failure must not spend the rewrite budget — that budget is for agent runs that finished")
 
 	again, err := claimValueRefreshCadence(dbms, "res-1", 5, 6*time.Hour)
 	require.NoError(t, err)
@@ -126,8 +126,8 @@ func TestValueRefreshFailureIsBoundedByTheCadence_DB(t *testing.T) {
 	require.True(t, retried, "once the cooldown elapses the refresh must be retried")
 }
 
-// TestValueRefreshBudgetCountsLandedRewrites_DB pins the cap against the budget
-// it is named for: rewrites that actually landed.
+// TestValueRefreshBudgetCountsLandedRewrites_DB pins that an exhausted budget
+// refuses the claim without charging or stamping anything.
 func TestValueRefreshBudgetCountsLandedRewrites_DB(t *testing.T) {
 	dbms := cadenceTestManager(t)
 
@@ -179,4 +179,80 @@ func TestValueRefreshClaimStampsNaiveUTC_DB(t *testing.T) {
 	require.Lessf(t, skewSeconds, 60.0,
 		"the claim must stamp naive UTC; it is %.0fs off, which is a session-timezone offset, "+
 			"and it silently lengthens the cooldown this same statement checks", skewSeconds)
+}
+
+// TestValueRefreshNotLandedSpendsTheBudget_DB covers an agent that finishes its
+// run while the values are still not on the branch. Charging those runs is what
+// ends the loop: otherwise the same request goes to the same agent once per
+// cooldown for as long as the pull request stays open.
+func TestValueRefreshNotLandedSpendsTheBudget_DB(t *testing.T) {
+	dbms := cadenceTestManager(t)
+
+	_, err := dbms.Db.Exec(`INSERT INTO recommendation_resolution (id, pr_lifecycle_state) VALUES ('res-4', 'created')`)
+	require.NoError(t, err)
+
+	claimed, err := claimValueRefreshCadence(dbms, "res-4", 5, 6*time.Hour)
+	require.NoError(t, err)
+	require.True(t, claimed)
+	recordValueRefreshNotLanded(dbms, "res-4", "cpu request 265m is not in the pull request's changes")
+
+	count, stamped := cadenceState(t, dbms, "res-4")
+	require.Equal(t, 1, count, "a run that finished without the values is charged")
+	require.True(t, stamped, "and it keeps the cooldown stamp like any other failure")
+
+	for i := 0; i < 4; i++ {
+		recordValueRefreshNotLanded(dbms, "res-4", "still missing")
+	}
+	_, err = dbms.Db.Exec(`UPDATE recommendation_resolution
+		SET last_value_refresh_at = (now() AT TIME ZONE 'UTC') - interval '7 hours' WHERE id='res-4'`)
+	require.NoError(t, err)
+
+	again, err := claimValueRefreshCadence(dbms, "res-4", 5, 6*time.Hour)
+	require.NoError(t, err)
+	require.False(t, again, "after five runs that never landed the pull request is left for a person")
+}
+
+// TestValueRefreshWaitsForARunningFollowup_DB covers a review followup already
+// running on the pull request. There is no way to stop that agent's job, so a
+// refresh that claimed over it would put two agents on one branch.
+func TestValueRefreshWaitsForARunningFollowup_DB(t *testing.T) {
+	dbms := cadenceTestManager(t)
+
+	_, err := dbms.Db.Exec(`CREATE TABLE pr_followup (
+		id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+		pr_url text NOT NULL UNIQUE,
+		tenant_id text NOT NULL,
+		pr_lifecycle_state text NOT NULL DEFAULT 'created',
+		pr_followup_pending boolean NOT NULL DEFAULT false,
+		last_pr_check_at timestamptz,
+		addressed_comments jsonb NOT NULL DEFAULT '[]'::jsonb,
+		created_at timestamptz NOT NULL DEFAULT now()
+	)`)
+	require.NoError(t, err)
+
+	const prURL = "https://github.com/acme/infra/pull/42"
+	busy, err := prFollowupRunInFlight(dbms, prURL)
+	require.NoError(t, err)
+	require.False(t, busy, "a pull request with no followup row has nothing running")
+
+	_, err = dbms.Db.Exec(`INSERT INTO pr_followup (pr_url, tenant_id, pr_lifecycle_state) VALUES ($1, 't', 'addressing')`, prURL)
+	require.NoError(t, err)
+
+	busy, err = prFollowupRunInFlight(dbms, prURL)
+	require.NoError(t, err)
+	require.True(t, busy)
+
+	_, _, claimed, err := claimPRFollowupForValueRefresh(dbms, prURL, "t", time.Time{})
+	require.NoError(t, err)
+	require.False(t, claimed, "a running review followup must not be taken over")
+
+	_, err = dbms.Db.Exec(`UPDATE pr_followup SET pr_lifecycle_state = 'needs_followup' WHERE pr_url = $1`, prURL)
+	require.NoError(t, err)
+	_, _, claimed, err = claimPRFollowupForValueRefresh(dbms, prURL, "t", time.Time{})
+	require.NoError(t, err)
+	require.True(t, claimed, "once the followup has finished the refresh may claim the pull request")
+
+	var state string
+	require.NoError(t, dbms.Db.QueryRow(`SELECT pr_lifecycle_state FROM pr_followup WHERE pr_url = $1`, prURL).Scan(&state))
+	require.Equal(t, "addressing", state)
 }

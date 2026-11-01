@@ -20,30 +20,35 @@
 # infra-mirrors workflow but unused here — the image is distroless, there is
 # nothing to apt-upgrade; freshness comes from bumping the pinned tag.
 #
-# -nb1 swaps in the exporter rebuilt on Go 1.26.5. v0.20.1 is the newest upstream
-# release and its published binary is built on Go 1.26.4, which carries the
-# stdlib pair CVE-2026-39822 (HIGH, os.Root symlink traversal) / CVE-2026-42505
-# (MEDIUM, crypto/tls ECH) — the only fixable findings left in this image. No tag
-# bump clears them because there is no newer release, so rebuild the SAME version
-# from source on the patched toolchain. Same technique as the redis
-# wait-for-port / postgres gosu / llm-server gh rebuilds.
+# -nb2 swaps in the exporter rebuilt on Go 1.26.10 with x/text 0.42.0. v0.20.1 is
+# the newest upstream release, so no tag bump clears those findings, and rebuilds
+# the SAME version from source. Same technique as the redis wait-for-port /
+# postgres gosu / llm-server gh rebuilds. The runtime moves from upstream's
+# busybox image to distroless static, which drops busybox's unfixed CVEs: the
+# exporter needs no shell, and the chart's probes are HTTP.
 #
 # The ldflags mirror what upstream's promu build stamps, so
 # `postgres_exporter_build_info` keeps reporting version 0.20.1 rather than an
-# empty string — dashboards and alerts key on that label. PGEXP_REVISION is the
-# commit the v0.20.1 tag points at; bump both together.
-FROM golang:1.26.6-alpine AS exporter-build
+# empty string, since dashboards and alerts key on that label. PGEXP_REVISION is
+# the commit the v0.20.1 tag points at; bump both together.
+FROM ghcr.io/nudgebee/golang:1.26.10-alpine AS exporter-build
 ENV GOTOOLCHAIN=local CGO_ENABLED=0
 ARG PGEXP_VERSION=v0.20.1
 ARG PGEXP_REVISION=eeda61f11c918c1b8c0d410b911e4b004669e57a
-RUN go install \
+RUN apk add --no-cache git \
+    && git clone --depth 1 --branch "${PGEXP_VERSION}" \
+        https://github.com/prometheus-community/postgres_exporter /src
+WORKDIR /src
+RUN go get golang.org/x/text@v0.42.0 && go mod tidy
+RUN go build -trimpath \
       -ldflags="-X github.com/prometheus/common/version.Version=${PGEXP_VERSION#v} \
                 -X github.com/prometheus/common/version.Revision=${PGEXP_REVISION} \
                 -X github.com/prometheus/common/version.Branch=HEAD \
                 -X github.com/prometheus/common/version.BuildUser=nudgebee-mirror" \
-      "github.com/prometheus-community/postgres_exporter/cmd/postgres_exporter@${PGEXP_VERSION}"
+      -o /postgres_exporter ./cmd/postgres_exporter
 
 ARG OS_PKG_EPOCH
-FROM quay.io/prometheuscommunity/postgres-exporter:v0.20.1
-# Upstream ENTRYPOINT is ["/bin/postgres_exporter"] — overwrite in place.
-COPY --from=exporter-build /go/bin/postgres_exporter /bin/postgres_exporter
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=exporter-build /postgres_exporter /bin/postgres_exporter
+EXPOSE 9187
+ENTRYPOINT ["/bin/postgres_exporter"]

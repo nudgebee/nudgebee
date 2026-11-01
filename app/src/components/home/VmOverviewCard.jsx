@@ -5,13 +5,12 @@ import DSCard from '@ui/Card';
 import { Stat } from '@ui/Stat';
 import { Button } from '@ui/Button';
 import { Skeleton } from '@ui/Skeleton';
-import SeverityIcon from '@ui/SeverityIcon';
 import SafeIcon from '@shared/icons/SafeIcon';
 import KeyboardArrowRightIcon from '@mui/icons-material/KeyboardArrowRight';
 import { VmIcon } from '@assets';
-import apiVm, { SEVERITY_ORDER } from '@api1/vm';
-import { toSeverityLevel } from '@utils/common';
+import apiVm from '@api1/vm';
 import { isSelfHostedProvider } from '@components/overview/providers';
+import { SeverityCounts, VISIBLE_SEVERITIES } from '@components/vm/common';
 
 /**
  * Home page's self-hosted VM fleet summary (#38461) — mirrors AutomationsCard's
@@ -66,7 +65,7 @@ const VmOverviewCard = ({ accountId, cloudProvider, onViewAll }) => {
 
   if (!isSelfHosted) return null;
 
-  const presentSeverities = SEVERITY_ORDER.filter((severity) => (summary?.severities?.[severity] || 0) > 0);
+  const presentSeverities = VISIBLE_SEVERITIES.filter((severity) => (summary?.severities?.[severity] || 0) > 0);
 
   const header = (
     <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--ds-space-3)' }}>
@@ -129,9 +128,7 @@ const VmOverviewCard = ({ accountId, cloudProvider, onViewAll }) => {
         ) : presentSeverities.length > 0 ? (
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--ds-space-2)', alignItems: 'center' }}>
             <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)' }}>Open Vulnerabilities:</Typography>
-            {presentSeverities.map((severity) => (
-              <SeverityIcon key={severity} level={toSeverityLevel(severity)} size={14} count={summary.severities[severity]} aria-label={severity} />
-            ))}
+            <SeverityCounts counts={summary.severities} />
           </Box>
         ) : (
           <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-400)' }}>No open package vulnerabilities.</Typography>

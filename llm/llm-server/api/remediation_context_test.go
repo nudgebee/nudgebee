@@ -123,13 +123,26 @@ func TestRenderAttemptReportsAMergedFix(t *testing.T) {
 	line := renderAttempt(attempt{Kind: "PullRequest", Ref: "https://github.com/acme/app/pull/37143",
 		Status: "Success", Lifecycle: "merged", SameEvent: true, At: time.Now()})
 	require.Contains(t, line, "on this incident")
-	require.True(t, strings.HasSuffix(line, "-> merged"), line)
+	require.Contains(t, line, "-> merged (whether the merge is deployed is not recorded)")
 }
 
 func TestRenderAttemptCarriesAFailedVerification(t *testing.T) {
 	line := renderAttempt(attempt{Kind: "CommandExecution", Ref: "kubectl rollout restart deployment/app -n web",
 		Status: "Success", Data: []byte(`{"verify":{"ran":true,"passed":false,"output":"0/3 ready"}}`), At: time.Now()})
 	require.Contains(t, line, "ran kubectl rollout restart deployment/app -n web -> success, verification FAILED: 0/3 ready")
+}
+
+// Rows from the dev audit: kubectl runs in demo recorded against a nudgebee/benchmark-server alert.
+func TestAttemptInScopeDropsKubectlRunInAnotherNamespace(t *testing.T) {
+	cmd := func(ref string) attempt { return attempt{Kind: "CommandExecution", Ref: ref} }
+	require.False(t, attemptInScope(cmd(`kubectl patch deployment cart -n demo -p '{}'`), "nudgebee"))
+	require.False(t, attemptInScope(cmd("kubectl get pods --namespace=demo"), "nudgebee"))
+	require.True(t, attemptInScope(cmd("kubectl set resources deployment benchmark-server -n nudgebee --limits=memory=4Gi"), "nudgebee"))
+	require.True(t, attemptInScope(cmd("kubectl get nodes"), "nudgebee"), "no namespace: cannot tell, keep it")
+	require.True(t, attemptInScope(cmd("aws ssm send-command --instance-ids i-0150dbd583caa0e69 --region us-east-1"), "AmazonEC2"),
+		"a cloud command may legitimately act on a dependency")
+	require.True(t, attemptInScope(cmd("kubectl delete pod x -n demo"), ""), "event without a namespace keeps everything")
+	require.True(t, attemptInScope(attempt{Kind: "PullRequest", Ref: "https://github.com/acme/app/pull/1"}, "nudgebee"))
 }
 
 // A Kubernetes event's subject_node is a node name, and k8s inventory rows carry region 'global',
@@ -160,10 +173,10 @@ func TestFactLookupsAreScopedToTheAccountAndSubjectType(t *testing.T) {
 
 	// Fingerprints are shared across accounts, so the duplicate row itself must be account-scoped.
 	mock.ExpectQuery(`FROM event_duplicates d.+d\.cloud_account_id = e\.cloud_account_id`).
-		WithArgs("event-1", "account-1").
+		WithArgs("event-1", "account-1", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"occurrence_number", "absolute_first_seen_at"}).
 			AddRow(4, time.Now().Add(-2*time.Hour)))
-	require.Contains(t, occurrenceLine(nil, dbms, "account-1", "event-1"), "fired 4 times")
+	require.Contains(t, occurrenceLine(nil, dbms, "account-1", "event-1", time.Now()), "at least 4 recorded firings")
 
 	// The subject's type ranks a name collision; it is bound, never interpolated.
 	mock.ExpectQuery(`FROM cloud_resourses.+ORDER BY \(lower\(COALESCE\(type,''\)\) = lower\(\$4\)\) DESC`).
@@ -186,13 +199,14 @@ func TestLoadEventFactsSurvivesANullStartTime(t *testing.T) {
 
 	mock.ExpectQuery(`FROM events WHERE id`).WithArgs("evt-1", "acc-1").
 		WillReturnRows(sqlmock.NewRows([]string{"title", "aggregation_key", "subject_type", "subject_name",
-			"subject_namespace", "subject_node", "fingerprint", "starts_at", "ends_at", "labels"}).
-			AddRow("OOMKilled: cart", "OOMKilled: cart", "pod", "cart", "demo", "", "fp-1", nil, nil, []byte(`{}`)))
+			"subject_namespace", "subject_node", "fingerprint", "starts_at", "ends_at", "labels", "subject_owner", "subject_owner_kind"}).
+			AddRow("OOMKilled: cart", "OOMKilled: cart", "pod", "cart-6d4f", "demo", "", "fp-1", nil, nil, []byte(`{}`), "cart", "Deployment"))
 
 	facts := loadEventFacts(nil, &common.DatabaseManager{Db: sqlx.NewDb(db, "sqlmock")}, "acc-1", "evt-1")
 
 	require.NotNil(t, facts, "a null start time must not cost us the rest of the incident")
-	require.Equal(t, "cart", facts.SubjectName)
+	require.Equal(t, "cart-6d4f", facts.SubjectName)
+	require.Equal(t, "cart", facts.Owner, "a pod's owner is what a command changes")
 	require.True(t, facts.StartsAt.IsZero(), "an unknown start time is reported as unknown, not invented")
 }
 

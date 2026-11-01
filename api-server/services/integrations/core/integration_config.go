@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"nudgebee/services/audit"
 	"nudgebee/services/common"
 	"nudgebee/services/query"
@@ -67,7 +68,10 @@ const (
 	DefaultLLMProvider    = "default_llm_provider"
 	AccountId             = "account_id"
 	IntegrationConfigName = "integration_config_name"
-	AuthType              = "auth_type"
+	// IntegrationID is added to the validation-only view on an update (never
+	// persisted), so ValidateConfig can recognise a reference to the row itself.
+	IntegrationID = "integration_id"
+	AuthType      = "auth_type"
 
 	// IntegrationConfigRCAWritebackEnabled is the per-tenant toggle that opts a
 	// ticketing integration (e.g. ZenDuty) into posting NudgeBee RCA analysis
@@ -396,6 +400,9 @@ func CreateIntegrationConfig(
 				Name:  IntegrationConfigName,
 				Value: integrationConfigName,
 			})
+			if isUpdate {
+				configForValidation = append(configForValidation, IntegrationConfigValue{Name: IntegrationID, Value: integrationId})
+			}
 			validationErrors := integration.ValidateConfig(ctx.GetSecurityContext(), configForValidation, accId)
 			if len(validationErrors) > 0 {
 				return IntegrationDto{}, validationErrors[0]
@@ -436,9 +443,11 @@ func CreateIntegrationConfig(
 		source = "user"
 	}
 
-	// Wrap the name-uniqueness check and INSERT/UPDATE in a transaction.
-	// SELECT ... FOR UPDATE locks any existing row with the same name, preventing
-	// concurrent requests from both passing the check and creating duplicates.
+	// One transaction covers every write of the save — the integrations row,
+	// account links, config values and default-provider flags — so a failure
+	// part-way leaves the pre-save state intact. SELECT ... FOR UPDATE locks any
+	// existing row with the same name, preventing concurrent requests from both
+	// passing the check and creating duplicates.
 	tx, txErr := dbms.BeginTx()
 	if txErr != nil {
 		return IntegrationDto{}, fmt.Errorf("failed to begin transaction: %w", txErr)
@@ -555,7 +564,9 @@ func CreateIntegrationConfig(
 		isNewIntegration = false
 	} else {
 		newId := uuid.NewString()
-		integrationResult, err := tx.Query(`
+		// QueryRow, not Query: an unclosed Rows would hold the transaction's
+		// connection and fail every later statement in this same tx.
+		err := tx.QueryRow(`
 			INSERT INTO integrations(id, tenant_id, type, source, name, status, created_at, updated_at, created_by, updated_by, labels)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 			RETURNING id::text`,
@@ -570,7 +581,7 @@ func CreateIntegrationConfig(
 			ctx.GetSecurityContext().GetUserId(),
 			ctx.GetSecurityContext().GetUserId(),
 			string(labelsJson),
-		)
+		).Scan(&configId)
 		if err != nil {
 			var pqErr *pq.Error
 			if errors.As(err, &pqErr) && pqErr.Code == "23505" {
@@ -578,27 +589,8 @@ func CreateIntegrationConfig(
 			}
 			return IntegrationDto{}, fmt.Errorf("failed to create integration: %w", err)
 		}
-		defer func() {
-			if closeErr := integrationResult.Close(); closeErr != nil {
-				slog.Error("Error closing response body", "error", closeErr)
-			}
-		}()
-		configId = newId
-		if integrationResult.Next() {
-			if err := integrationResult.Scan(&configId); err != nil {
-				return IntegrationDto{}, fmt.Errorf("failed to scan integration id: %w", err)
-			}
-		}
-		if err := integrationResult.Err(); err != nil {
-			return IntegrationDto{}, fmt.Errorf("failed to iterate integration result: %w", err)
-		}
 		isNewIntegration = true
 	}
-
-	if err := tx.Commit(); err != nil {
-		return IntegrationDto{}, fmt.Errorf("failed to commit integration transaction: %w", err)
-	}
-	committed = true
 
 	if len(accountIds) > 0 {
 		query, args, err := sqlx.In(`
@@ -611,7 +603,7 @@ func CreateIntegrationConfig(
 		}
 		query = dbms.Db.Rebind(query)
 
-		_, err = dbms.Exec(query, args...)
+		_, err = tx.Exec(query, args...)
 		if err != nil {
 			return IntegrationDto{}, fmt.Errorf("failed to delete stale accounts: %w", err)
 		}
@@ -644,7 +636,7 @@ func CreateIntegrationConfig(
 		// integration is loaded. Secrets are handled by the omit-to-keep
 		// guard above and never reach here with value="".
 		if isUpdate && intgerationType == "llm" && value == "" && isLLMOverrideKeyForDelete(v.Name) {
-			if _, delErr := dbms.Exec(
+			if _, delErr := tx.Exec(
 				`DELETE FROM integration_config_values WHERE integration_id = $1 AND name = $2`,
 				configId, v.Name,
 			); delErr != nil {
@@ -660,7 +652,7 @@ func CreateIntegrationConfig(
 			// every external system pointed at that URL.
 			if isUpdate {
 				var existingToken string
-				scanErr := dbms.Db.QueryRow(`
+				scanErr := tx.QueryRow(`
 					SELECT value FROM integration_config_values
 					WHERE integration_id = $1 AND name = 'token'
 					LIMIT 1
@@ -678,7 +670,7 @@ func CreateIntegrationConfig(
 		// the filter_expression doesn't silently unbind the automation.
 		if value == "" && v.Name == "workflow_id" && isUpdate {
 			var existingWorkflowId string
-			scanErr := dbms.Db.QueryRow(`
+			scanErr := tx.QueryRow(`
 				SELECT value FROM integration_config_values
 				WHERE integration_id = $1 AND name = 'workflow_id'
 				LIMIT 1
@@ -697,7 +689,7 @@ func CreateIntegrationConfig(
 			// soon as Scan runs, so it needs no defer'd Close (a defer here binds
 			// to the whole function, not this loop iteration).
 			var dupID string
-			dupErr := dbms.Db.QueryRow(`
+			dupErr := tx.QueryRow(`
 				SELECT integration_id
 				FROM integration_config_values
 				WHERE value = $1 AND name = 'token'
@@ -736,7 +728,7 @@ func CreateIntegrationConfig(
 		}
 
 		if !slices.Contains(parameters, v.Name) {
-			_, err = dbms.Exec(`
+			_, err = tx.Exec(`
 			INSERT INTO integration_config_values(
 				id, integration_id, name, value, is_encrypted, created_at, updated_at, created_by, updated_by
 			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
@@ -775,7 +767,7 @@ func CreateIntegrationConfig(
 			column = "default_llm_provider"
 		}
 		if column == "default_llm_provider" {
-			skipAccountFlags, err := applyLLMTenantDefault(dbms, ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId(), configId, value)
+			skipAccountFlags, err := applyLLMTenantDefault(tx, ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId(), configId, value)
 			if err != nil {
 				return IntegrationDto{}, err
 			}
@@ -804,10 +796,14 @@ func CreateIntegrationConfig(
 				}
 			}
 
-			for accId, accValue := range perAccountValues {
+			// Sorted, not map order: these row locks are held until COMMIT, so
+			// concurrent saves over overlapping accounts must take them in the
+			// same order or Postgres deadlocks one of them.
+			for _, accId := range slices.Sorted(maps.Keys(perAccountValues)) {
+				accValue := perAccountValues[accId]
 				if accValue == "true" {
 					// upsert true
-					_, err = dbms.Exec(fmt.Sprintf(`
+					_, err = tx.Exec(fmt.Sprintf(`
 						INSERT INTO integrations_cloud_accounts (
 							integration_id, cloud_account_id, tenant_id, link_role, %s
 						)
@@ -824,7 +820,7 @@ func CreateIntegrationConfig(
 					}
 
 					// reset others
-					_, err = dbms.Exec(fmt.Sprintf(`
+					_, err = tx.Exec(fmt.Sprintf(`
 						UPDATE integrations_cloud_accounts
 						SET %s=false
 						WHERE cloud_account_id=$1 AND integration_id != $2`,
@@ -837,7 +833,7 @@ func CreateIntegrationConfig(
 					}
 				} else {
 					// explicitly set to false
-					_, err = dbms.Exec(fmt.Sprintf(`
+					_, err = tx.Exec(fmt.Sprintf(`
 						UPDATE integrations_cloud_accounts
 						SET %s=false
 						WHERE integration_id=$1 AND cloud_account_id=$2`,
@@ -855,7 +851,7 @@ func CreateIntegrationConfig(
 
 	if len(accountIds) > 0 {
 		for _, accId := range accountIds {
-			_, err = dbms.Exec(`
+			_, err = tx.Exec(`
 				INSERT INTO integrations_cloud_accounts (
 					integration_id, cloud_account_id, tenant_id, link_role
 				) VALUES ($1, $2, $3, 'own')
@@ -870,6 +866,13 @@ func CreateIntegrationConfig(
 			}
 		}
 	}
+
+	// Commit only once every account link, config value and default-provider
+	// flag is written: a multi-account save must land whole or not at all (#39690).
+	if err := tx.Commit(); err != nil {
+		return IntegrationDto{}, fmt.Errorf("failed to commit integration transaction: %w", err)
+	}
+	committed = true
 
 	// Link agent-sourced proxy datasources to their vm_agent integration
 	if source == "agent" {
@@ -1005,7 +1008,7 @@ func CreateIntegrationConfig(
 // was not the tenant default: that save is not an un-marking, so the
 // per-account flags it would otherwise clear are kept. A per-account JSON map
 // is the API-only form and leaves the tenant default untouched.
-func applyLLMTenantDefault(dbms *database.DatabaseManager, tenantId, userId, integrationId, value string) (skipAccountFlags bool, err error) {
+func applyLLMTenantDefault(dbms sqlx.Execer, tenantId, userId, integrationId, value string) (skipAccountFlags bool, err error) {
 	if strings.HasPrefix(strings.TrimSpace(value), "{") {
 		return false, nil
 	}
@@ -1335,6 +1338,70 @@ func loadIntegrationConfigValues(dbms *database.DatabaseManager, integrationId s
 	return values, nil
 }
 
+// checkLLMFallbackNotReferenced blocks delete/disable of an LLM integration another one
+// uses as its fallback (#36339) — else that fallback breaks unnoticed until the outage.
+// Edits are deliberately not blocked, even ones that stop serving a referenced model:
+// the dependent goes stale, llm-server skips it at runtime ("Configured fallback
+// unavailable"), and the dependent's next save rejects it by name. Covered by
+// TestReferencedIntegrationEditLeavesDependentStaleUntilResaved.
+func checkLLMFallbackNotReferenced(tx *sqlx.Tx, integrationType, integrationId, tenantId, action string) error {
+	if integrationType != "llm" {
+		return nil
+	}
+	var name string
+	err := tx.QueryRowx(`
+		SELECT i.name FROM integrations i
+		JOIN integration_config_values icv ON icv.integration_id = i.id
+		WHERE i.tenant_id = $2::uuid AND i.type = 'llm' AND i.status = 'enabled' AND i.id <> $1::uuid
+		  AND icv.name LIKE 'llm_fallback_ref_source%'
+		  AND (icv.value = 'db:' || $1 OR icv.value LIKE 'db:' || $1 || ':%')
+		LIMIT 1
+	`, integrationId, tenantId).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("cannot %s this LLM integration: %q uses it as its fallback model. Change that integration's fallback first", action, name)
+}
+
+// LLMFallbackRefConfig returns the name & non-secret config of a referenced LLM integration
+// if accountId can use it — llm-server getLLMIntegrationsForAccount's visibility rule.
+func LLMFallbackRefConfig(tenantId, integrationId, accountId string) (string, map[string]string, error) {
+	if _, err := uuid.Parse(integrationId); err != nil {
+		return "", nil, fmt.Errorf("not an integration id: %q", integrationId)
+	}
+	if _, err := uuid.Parse(accountId); err != nil {
+		return "", nil, fmt.Errorf("not an account id: %q", accountId)
+	}
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return "", nil, err
+	}
+	var name string
+	err = dbms.Db.QueryRowx(`
+		SELECT i.name FROM integrations i
+		WHERE i.id = $1::uuid AND i.tenant_id = $2::uuid AND i.type = 'llm' AND i.status = 'enabled'
+		  AND (EXISTS (SELECT 1 FROM integrations_cloud_accounts ia WHERE ia.integration_id = i.id AND ia.cloud_account_id = $3::uuid)
+		       OR NOT EXISTS (SELECT 1 FROM integrations_cloud_accounts ia WHERE ia.integration_id = i.id))
+	`, integrationId, tenantId, accountId).Scan(&name)
+	if err != nil {
+		return "", nil, err
+	}
+	values, err := loadIntegrationConfigValues(dbms, integrationId)
+	if err != nil {
+		return "", nil, err
+	}
+	cfg := map[string]string{}
+	for _, v := range values {
+		if !IsLLMSecretFieldName(v.Name) {
+			cfg[v.Name] = v.Value
+		}
+	}
+	return name, cfg, nil
+}
+
 // checkWorkflowWebhookNotInUse blocks delete/disable of a workflow_webhook
 // integration when the workflow it references still exists. The frontend has
 // the same guard but is bypassable via direct GraphQL calls.
@@ -1494,6 +1561,9 @@ func DeleteIntegrationConfig(
 		return err
 	}
 
+	if err = checkLLMFallbackNotReferenced(tx, integrationType, integrationId, tenantId, "delete"); err != nil {
+		return err
+	}
 	if err = checkWorkflowWebhookNotInUse(tx, integrationType, integrationId, tenantId, "delete"); err != nil {
 		return err
 	}
@@ -1727,6 +1797,7 @@ func UpdateIntegrationConfigStatus(
 	integrationType string,
 	integrationConfigName string,
 	integrationStatus string,
+	source string,
 ) (err error) {
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -1759,15 +1830,18 @@ func UpdateIntegrationConfigStatus(
 
 	tenantId := ctx.GetSecurityContext().GetTenantId()
 
-	// Find integration id
-	var integrationId string
+	// Find integration id. A name is unique per (tenant, source, type), so the
+	// agent's own row and a hand-added one can share type and name; the source
+	// says which of the two the caller means.
+	var integrationId, integrationSource string
 	err = tx.QueryRowx(`
-        SELECT id
+        SELECT id, source
         FROM integrations
         WHERE tenant_id = $1
           AND lower(type) = lower($2)
           AND lower(name) = lower($3)
-    `, tenantId, integrationType, integrationConfigName).Scan(&integrationId)
+          AND ($4 = '' OR source = $4)
+    `, tenantId, integrationType, integrationConfigName, source).Scan(&integrationId, &integrationSource)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return errors.New("integrations: integration not found for given tenant and config")
@@ -1777,6 +1851,9 @@ func UpdateIntegrationConfigStatus(
 	}
 
 	if integrationStatus == "disabled" {
+		if err = checkLLMFallbackNotReferenced(tx, integrationType, integrationId, tenantId, "disable"); err != nil {
+			return err
+		}
 		if err = checkWorkflowWebhookNotInUse(tx, integrationType, integrationId, tenantId, "disable"); err != nil {
 			return err
 		}
@@ -1847,6 +1924,31 @@ func UpdateIntegrationConfigStatus(
 	if err != nil {
 		slog.Error("integrations: failed to update integration status", "error", err)
 		return err
+	}
+
+	// An agent-source row is shared by every cluster in the tenant, and the
+	// collector's heartbeat keeps its status in step with this marker: disabled
+	// while the marker exists, enabled otherwise. So for those rows the marker,
+	// not the status written above, is what makes a user's Disable last.
+	if integrationSource == "agent" {
+		if integrationStatus == string(IntegrationStatusDisabled) {
+			_, err = tx.Exec(`
+				INSERT INTO integration_config_values(
+					id, integration_id, name, value, is_encrypted, created_at, updated_at, created_by, updated_by
+				) VALUES ($1, $2, $3, 'true', false, $4, $4, NULLIF($5, '')::uuid, NULLIF($5, '')::uuid)
+				ON CONFLICT(integration_id, name)
+				DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
+				uuid.NewString(), integrationId, AgentIntegrationUserDisabledConfigName,
+				time.Now(), ctx.GetSecurityContext().GetUserId())
+		} else {
+			_, err = tx.Exec(`
+				DELETE FROM integration_config_values WHERE integration_id = $1 AND name = $2`,
+				integrationId, AgentIntegrationUserDisabledConfigName)
+		}
+		if err != nil {
+			slog.Error("integrations: failed to record the user's switch on an agent integration", "error", err)
+			return err
+		}
 	}
 
 	// Commit before the audit write. audit.CreateAudit does not take this tx — it
@@ -2058,6 +2160,9 @@ func TestIntegrationConnectionByConfig(
 		slog.Warn("integrations: dual-mode type routed to K8s validation instead of proxy test",
 			"type", integrationType, "source", source)
 	}
+	if integrationID != "" {
+		configValues = append(configValues, IntegrationConfigValue{Name: IntegrationID, Value: integrationID})
+	}
 	validationErrors := integration.ValidateConfig(ctx.GetSecurityContext(), configValues, accountID)
 	if len(validationErrors) > 0 {
 		return nil, validationErrors[0]
@@ -2067,7 +2172,11 @@ func TestIntegrationConnectionByConfig(
 	// TestableIntegration interface), run it on top of structural validation.
 	// Today only LLM uses this — for everything else this is a no-op cast and
 	// we keep the prior "validation == success" behaviour.
-	if testable, ok := integration.(TestableIntegration); ok {
+	if multi, ok := integration.(MultiAccountConnectionTester); ok {
+		if testErr := multi.TestConnectionForAccounts(ctx, configValues, accountIds); testErr != nil {
+			return nil, testErr
+		}
+	} else if testable, ok := integration.(TestableIntegration); ok {
 		if testErr := testable.TestConnection(ctx, configValues, accountID); testErr != nil {
 			return nil, testErr
 		}
@@ -2663,8 +2772,7 @@ func GetIntegrationByType(
 }
 
 // HasAccountSourceIntegration reports whether an integration of the given type
-// and source is linked to the account at all, regardless of status or the
-// per-account default-provider flag.
+// and source is linked to the account.
 func HasAccountSourceIntegration(
 	context *security.RequestContext,
 	accountId string,
@@ -2680,8 +2788,7 @@ func HasAccountSourceIntegration(
 		return false, err
 	}
 
-	var exists bool
-	err = dbms.Db.Get(&exists, `
+	query := `
 		SELECT EXISTS (
 			SELECT 1
 			FROM integrations i
@@ -2690,14 +2797,92 @@ func HasAccountSourceIntegration(
 			  AND i.tenant_id = $2
 			  AND i.type = $3
 			  AND i.source = $4
-		)
-	`, accountId, context.GetSecurityContext().GetTenantId(), integrationType, source)
+		)`
+	args := []any{accountId, context.GetSecurityContext().GetTenantId(), integrationType, source}
+
+	var exists bool
+	err = dbms.Db.Get(&exists, query, args...)
 	if err != nil {
 		context.GetLogger().Error("integrations: failed to check account-source integration existence",
 			"account_id", accountId, "type", integrationType, "source", source, "error", err)
 		return false, err
 	}
 	return exists, nil
+}
+
+// AgentIntegrationUserDisabledConfigName names the integration_config_values row
+// that records a user's Disable of an agent-source integration. The collector
+// reads it on every heartbeat to set the row's status, so the name is shared
+// with collector-server/k8s-collector/app/handlers/telemetry_handler.py.
+const AgentIntegrationUserDisabledConfigName = "user_disabled"
+
+// AgentIntegrationState answers, for one account and the agent's own
+// integration of one type (the row the collector registers under the provider's
+// name; datasources the relay registers under their own name are not it), the
+// two questions that shared row cannot answer by its status:
+//
+//   - configured: the account is linked to that integration, and no user has
+//     disabled it. The link is kept while the cluster's agent names the provider,
+//     whether the provider is up or down.
+//   - usable: configured, and the account's own agent is connected and reports
+//     at least one of healthFlags true in its connection_status.
+//
+// Both are read straight from the database. The row's status is deliberately
+// not consulted: it is tenant-wide, and an older collector wrote it from
+// whichever cluster reported last.
+func AgentIntegrationState(
+	context *security.RequestContext,
+	accountId string,
+	integrationType string,
+	healthFlags ...string,
+) (configured bool, usable bool, err error) {
+	if context == nil || context.GetSecurityContext() == nil {
+		return false, false, errors.New("integrations: request context and security context are required")
+	}
+
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return false, false, err
+	}
+
+	query := `
+		WITH linked AS (
+			SELECT ica.cloud_account_id
+			FROM integrations i
+			JOIN integrations_cloud_accounts ica ON i.id = ica.integration_id
+			WHERE ica.cloud_account_id = $1
+			  AND i.tenant_id = $2
+			  AND i.type = $3
+			  AND i.name = i.type
+			  AND i.source = 'agent'
+			  AND NOT EXISTS (
+				SELECT 1 FROM integration_config_values m
+				WHERE m.integration_id = i.id AND m.name = $4
+			  )
+		)
+		SELECT
+			EXISTS (SELECT 1 FROM linked),
+			EXISTS (
+				SELECT 1
+				FROM linked l
+				JOIN agent a ON a.cloud_account_id = l.cloud_account_id AND a.type != 'proxy'
+				WHERE a.status = 'CONNECTED'
+				  AND EXISTS (
+					SELECT 1 FROM unnest($5::text[]) AS flag
+					WHERE a.connection_status ->> flag = 'true'
+				  )
+			)`
+	args := []any{
+		accountId, context.GetSecurityContext().GetTenantId(), integrationType,
+		AgentIntegrationUserDisabledConfigName, pq.Array(healthFlags),
+	}
+
+	if err = dbms.Db.QueryRowx(query, args...).Scan(&configured, &usable); err != nil {
+		context.GetLogger().Error("integrations: failed to read agent integration state",
+			"account_id", accountId, "type", integrationType, "error", err)
+		return false, false, err
+	}
+	return configured, usable, nil
 }
 
 // GetIntegrationConfigValueByName returns the value of a single config entry

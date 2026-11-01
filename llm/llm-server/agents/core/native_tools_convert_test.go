@@ -63,6 +63,23 @@ func TestNbToolsToLlmTools_RendersSchema(t *testing.T) {
 	assert.Equal(t, []any{"default", "kube-system"}, namespace["enum"])
 }
 
+func TestAgentHandoffTargetNativeSchema(t *testing.T) {
+	tool := &nbAgentTool{name: "targeted_agent", input: "investigate", output: "result", targetSupported: true}
+	require.NoError(t, ValidateNativeToolSchemas([]toolcore.NBTool{tool}))
+}
+
+type customTargetTestAgent struct{ NBAgent }
+
+func (customTargetTestAgent) GetName() string                  { return "custom_agent" }
+func (customTargetTestAgent) GetPlannerType() AgentPlannerType { return AgentPlannerTypeCustom }
+
+func TestTargetedCustomAgentFailsBeforeExecution(t *testing.T) {
+	_, err := ExecuteAgentToolCall(toolcore.NbToolContext{}, customTargetTestAgent{}, toolcore.NBToolCallRequest{
+		Arguments: map[string]any{"target": map[string]any{"provider": "aws", "name": "prod"}},
+	})
+	require.ErrorContains(t, err, "does not support a delegated execution target")
+}
+
 // TestNbToolsToLlmTools_NilRequiredRendersEmptySlice verifies that when a tool's
 // InputSchema has a nil Required slice, nbToolsToLlmTools defensively normalizes it
 // to an empty slice ([]string{}) rather than serializing as "required": null in JSON.

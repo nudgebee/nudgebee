@@ -56,6 +56,8 @@ func newAzureOrchestratorAgent(accountId string) core.NBAgent {
 
 func (a *AzureOrchestratorAgent) GetName() string { return AgentAzureOrchestratorName }
 
+func (a *AzureOrchestratorAgent) AcceptsExecutionTarget() {}
+
 func (a *AzureOrchestratorAgent) GetNameAliases() []string {
 	return []string{"Azure Troubleshooter", "azure debug", "microsoft_azure_debug", "azure_debug"}
 }

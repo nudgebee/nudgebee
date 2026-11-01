@@ -584,10 +584,13 @@ const CustomTable = ({
   stickyFirstColumn = false,
   stickyHeader = false,
   resetPage = '',
+  expandAllInitially = false,
 }) => {
   const isExpandableRows = expandable?.tabs?.length > 0 || showExpandable;
   const tableContainerRef = useRef(null);
-  const [collapsedObj, setCollapsedObj] = useState(Object.fromEntries(Array.from({ length: rowsPerPage }, (_, index) => [index, false])));
+  const [collapsedObj, setCollapsedObj] = useState(
+    Object.fromEntries(Array.from({ length: rowsPerPage }, (_, index) => [index, expandAllInitially]))
+  );
 
   // --- Column visibility feature ---
   const hasDefaultVisibleConfig = useMemo(() => headers.some((h) => typeof h === 'object' && h.defaultVisible !== undefined), [headers]);
@@ -694,11 +697,16 @@ const CustomTable = ({
   }, [resetPage]);
 
   useEffect(() => {
+    const pageSize = isClientPaginated ? clientRowPerPage : rowsPerPage;
     if (loading) {
-      const pageSize = isClientPaginated ? clientRowPerPage : rowsPerPage;
       setCollapsedObj(Object.fromEntries(Array.from({ length: pageSize }, (_, index) => [index, false])));
+    } else if (expandAllInitially) {
+      // Re-applied once loading finishes: without this, the pre-expanded seed set at mount
+      // (see the collapsedObj useState initializer) gets wiped by the branch above as soon
+      // as the caller's fetch flips `loading` true, and never comes back.
+      setCollapsedObj(Object.fromEntries(Array.from({ length: pageSize }, (_, index) => [index, true])));
     }
-  }, [loading]);
+  }, [loading, expandAllInitially, isClientPaginated, clientRowPerPage, rowsPerPage]);
 
   const handleCollapseOnRow = useCallback((expanded, index) => {
     setCollapsedObj((prevCollapsedObj) => {
@@ -1434,6 +1442,7 @@ CustomTable.propTypes = {
   borderSpacing: PropTypes.string,
   checkForTabsWithData: PropTypes.func,
   showExpandable: PropTypes.bool,
+  expandAllInitially: PropTypes.bool,
   loading: PropTypes.bool,
   errorMessage: PropTypes.string,
   pageNumber: PropTypes.number,

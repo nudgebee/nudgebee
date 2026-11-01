@@ -1,0 +1,37 @@
+{
+ "total_count": 2,
+ "check_runs": [
+  {
+   "id": 106770146426,
+   "name": "lint (1.26.x)",
+   "status": "completed",
+   "conclusion": "success",
+   "details_url": "https://github.com/nudgebee/nudgebee/actions/runs/1/job/106770146426",
+   "started_at": "2026-09-22T13:42:04Z",
+   "completed_at": "2026-09-22T13:46:58Z",
+   "app": {
+    "id": 15368,
+    "slug": "github-actions"
+   },
+   "check_suite": {
+    "id": 96753207193
+   }
+  },
+  {
+   "id": 106770130714,
+   "name": "lint (1.26.x)",
+   "status": "completed",
+   "conclusion": "failure",
+   "details_url": "https://github.com/nudgebee/nudgebee/actions/runs/2/job/106770130714",
+   "started_at": "2026-09-22T13:41:39Z",
+   "completed_at": "2026-09-22T13:49:13Z",
+   "app": {
+    "id": 15368,
+    "slug": "github-actions"
+   },
+   "check_suite": {
+    "id": 96753207431
+   }
+  }
+ ]
+}

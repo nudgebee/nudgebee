@@ -38,6 +38,7 @@ func (t DatadogResourceSearchTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
 		Properties: map[string]core.ToolSchemaProperty{
+			"instance": instanceProperty,
 			"resource_type": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "The type of resource to search for. Supported values: 'services', 'containers', 'apm_entities'.",

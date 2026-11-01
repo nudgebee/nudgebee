@@ -100,7 +100,7 @@ func UpdatePromptForMultiCommandTool(query NBAgentRequest, tools []toolcore.NBTo
 			}
 		} else {
 			// Handle standard single-command tools
-			schema := tool.InputSchema()
+			schema := toolcore.ModelInputSchema(tool)
 			if len(schema.Properties) > 0 {
 				usage = append(usage, "**Input Schema:**")
 				propNames := lo.Keys(schema.Properties)
@@ -515,14 +515,18 @@ func GetPromptTemplate(p NBAgentPrompt, query NBAgentRequest, plannerType AgentP
 			sb.WriteString("Examples:\n")
 		}
 		for _, example := range p.Examples {
-			if example.Question == "" {
+			if example.Question == "" && example.Answer == "" && len(example.AnswerSteps) == 0 {
 				continue
 			}
 			if isReActStylePlanner(plannerType) {
 				sb.WriteString("<example>\n")
-				fmt.Fprintf(&sb, "<question>%s</question>\n", example.Question)
+				if example.Question != "" {
+					fmt.Fprintf(&sb, "<question>%s</question>\n", example.Question)
+				}
 			} else {
-				fmt.Fprintf(&sb, "question: %s\n", example.Question)
+				if example.Question != "" {
+					fmt.Fprintf(&sb, "question: %s\n", example.Question)
+				}
 			}
 			if example.Answer != "" {
 				if isReActStylePlanner(plannerType) {

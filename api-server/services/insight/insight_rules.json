@@ -406,7 +406,7 @@
     "type": "Ratio",
     "source": "Spends",
     "view_name": "weekly_cost_status",
-    "with": "WITH all_accounts AS (\n  SELECT DISTINCT cloud_account AS cloud_account_id, tenant AS tenant_id\n  FROM spends\n  WHERE exclude_aggregate = false\n    AND date >= DATE_TRUNC('week', NOW()) - INTERVAL '1 week'\n),\ncurrent_week AS (\n  SELECT cloud_account AS cloud_account_id, tenant AS tenant_id, SUM(amount) AS current_cost\n  FROM spends\n  WHERE date >= DATE_TRUNC('week', NOW())\n    AND date < DATE_TRUNC('week', NOW()) + INTERVAL '1 week'\n    AND exclude_aggregate = false\n  GROUP BY cloud_account, tenant\n),\nweekly_cost_status AS (\n  SELECT a.cloud_account_id, a.tenant_id,\n    ROUND(GREATEST(COALESCE(cw.current_cost, 0), 0)::numeric, 2) AS current_week_spend\n  FROM all_accounts a\n  LEFT JOIN current_week cw\n    ON a.cloud_account_id = cw.cloud_account_id\n    AND a.tenant_id = cw.tenant_id\n)",
+    "with": "WITH all_accounts AS (\n  SELECT DISTINCT cloud_account AS cloud_account_id, tenant AS tenant_id\n  FROM spends\n  WHERE exclude_aggregate = false\n    AND date >= DATE_TRUNC('week', NOW()) - INTERVAL '1 week'\n),\ncurrent_week AS (\n  SELECT cloud_account_id, tenant_id, SUM(amount) AS current_cost\n  FROM (SELECT cloud_account AS cloud_account_id, tenant AS tenant_id, date, amount, exclude_aggregate FROM spends) s\n  WHERE date >= DATE_TRUNC('week', NOW())\n    AND date < DATE_TRUNC('week', NOW()) + INTERVAL '1 week'\n    AND exclude_aggregate = false\n    AND {{ACCOUNT_FILTER}}\n  GROUP BY cloud_account_id, tenant_id\n),\nweekly_cost_status AS (\n  SELECT a.cloud_account_id, a.tenant_id,\n    ROUND(GREATEST(COALESCE(cw.current_cost, 0), 0)::numeric, 2) AS current_week_spend\n  FROM all_accounts a\n  LEFT JOIN current_week cw\n    ON a.cloud_account_id = cw.cloud_account_id\n    AND a.tenant_id = cw.tenant_id\n)",
     "grouped_by": [
       "cloud_account_id",
       "tenant_id"
@@ -858,7 +858,7 @@
     "type": "Ratio",
     "source": "Spends",
     "view_name": "monthly_spend_forecast",
-    "with": "WITH all_accounts AS (\n  SELECT DISTINCT cloud_account AS cloud_account_id, tenant AS tenant_id\n  FROM spends\n  WHERE exclude_aggregate = false\n    AND date >= DATE_TRUNC('month', NOW()) - INTERVAL '1 month'\n),\nmonth_to_date AS (\n  SELECT cloud_account AS cloud_account_id, tenant AS tenant_id,\n    SUM(amount) AS mtd_spend,\n    COUNT(DISTINCT DATE(date)) AS days_elapsed\n  FROM spends\n  WHERE date >= DATE_TRUNC('month', NOW())\n    AND exclude_aggregate = false\n  GROUP BY cloud_account, tenant\n),\nmonthly_spend_forecast AS (\n  SELECT a.cloud_account_id, a.tenant_id,\n    ROUND(GREATEST(COALESCE(\n      (mtd.mtd_spend / NULLIF(mtd.days_elapsed, 0) *\n       EXTRACT(DAY FROM (DATE_TRUNC('month', NOW()) + INTERVAL '1 month' - INTERVAL '1 day')::date)),\n      0), 0)::numeric, 2) AS estimated_monthly_spend\n  FROM all_accounts a\n  LEFT JOIN month_to_date mtd\n    ON a.cloud_account_id = mtd.cloud_account_id\n    AND a.tenant_id = mtd.tenant_id\n  WHERE COALESCE(mtd.days_elapsed, 0) >= 1 OR mtd.days_elapsed IS NULL\n)",
+    "with": "WITH all_accounts AS (\n  SELECT DISTINCT cloud_account AS cloud_account_id, tenant AS tenant_id\n  FROM spends\n  WHERE exclude_aggregate = false\n    AND date >= DATE_TRUNC('month', NOW()) - INTERVAL '1 month'\n),\nmonth_to_date AS (\n  SELECT cloud_account_id, tenant_id,\n    SUM(amount) AS mtd_spend,\n    COUNT(DISTINCT DATE(date)) AS days_elapsed\n  FROM (SELECT cloud_account AS cloud_account_id, tenant AS tenant_id, date, amount, exclude_aggregate FROM spends) s\n  WHERE date >= DATE_TRUNC('month', NOW())\n    AND exclude_aggregate = false\n    AND {{ACCOUNT_FILTER}}\n  GROUP BY cloud_account_id, tenant_id\n),\nmonthly_spend_forecast AS (\n  SELECT a.cloud_account_id, a.tenant_id,\n    ROUND(GREATEST(COALESCE(\n      (mtd.mtd_spend / NULLIF(mtd.days_elapsed, 0) *\n       EXTRACT(DAY FROM (DATE_TRUNC('month', NOW()) + INTERVAL '1 month' - INTERVAL '1 day')::date)),\n      0), 0)::numeric, 2) AS estimated_monthly_spend\n  FROM all_accounts a\n  LEFT JOIN month_to_date mtd\n    ON a.cloud_account_id = mtd.cloud_account_id\n    AND a.tenant_id = mtd.tenant_id\n  WHERE COALESCE(mtd.days_elapsed, 0) >= 1 OR mtd.days_elapsed IS NULL\n)",
     "grouped_by": [
       "cloud_account_id",
       "tenant_id"
@@ -1168,5 +1168,41 @@
     "cloud_providers": [
       "k8s"
     ]
+  },
+  {
+    "unique_id": "131",
+    "insight_format": "{} Critical severity CVEs open on your VM fleet",
+    "type": "Addition",
+    "source": "Recommendation",
+    "category": "Security",
+    "range": -1,
+    "filters": [
+      { "column": "rule_name", "value": "vm_package_vulnerability", "operator": "=" },
+      { "column": "status", "value": ["Open", "InProgress"], "operator": "in" },
+      { "column": "severity", "value": "Critical", "operator": "=" }
+    ],
+    "account_column": "cloud_account_id",
+    "threshold": 0,
+    "severity": "Critical",
+    "cloud_providers": ["selfhosted"],
+    "applications_query": "SELECT DISTINCT COALESCE(v.vuln_id, r.recommendation ->> 'vuln_id') AS name FROM recommendation r LEFT JOIN vulnerabilities v ON v.id = r.vulnerability_id WHERE r.cloud_account_id = ? AND r.rule_name = 'vm_package_vulnerability' AND r.status IN ('Open', 'InProgress') AND r.severity = 'Critical' ORDER BY name LIMIT 5"
+  },
+  {
+    "unique_id": "132",
+    "insight_format": "{} High severity CVEs open on your VM fleet",
+    "type": "Addition",
+    "source": "Recommendation",
+    "category": "Security",
+    "range": -1,
+    "filters": [
+      { "column": "rule_name", "value": "vm_package_vulnerability", "operator": "=" },
+      { "column": "status", "value": ["Open", "InProgress"], "operator": "in" },
+      { "column": "severity", "value": "High", "operator": "=" }
+    ],
+    "account_column": "cloud_account_id",
+    "threshold": 0,
+    "severity": "High",
+    "cloud_providers": ["selfhosted"],
+    "applications_query": "SELECT DISTINCT COALESCE(v.vuln_id, r.recommendation ->> 'vuln_id') AS name FROM recommendation r LEFT JOIN vulnerabilities v ON v.id = r.vulnerability_id WHERE r.cloud_account_id = ? AND r.rule_name = 'vm_package_vulnerability' AND r.status IN ('Open', 'InProgress') AND r.severity = 'High' ORDER BY name LIMIT 5"
   }
 ]

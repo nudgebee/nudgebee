@@ -272,6 +272,49 @@ func handleRecommendationAction(actionPayload *ActionRequest, c *gin.Context, tr
 		}
 		c.JSON(200, vmpackage.ListScanStatusesResponse{Data: data})
 		return
+	case "security_list_vm_scan_datasources":
+		var request vmpackage.ListScanDatasourcesRequest
+		var err error
+		if mlRequest["object"] == nil {
+			err = common.UnmarshalMapToStruct(mlRequest, &request)
+		} else if objMap, ok := mlRequest["object"].(map[string]interface{}); ok {
+			err = common.UnmarshalMapToStruct(objMap, &request)
+		} else {
+			c.JSON(400, common.ErrorActionBadRequest("invalid object format"))
+			return
+		}
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		// Same access the scan itself needs (vmpackage.ScanPackages): this
+		// list only feeds the dialog that starts one.
+		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) {
+			c.JSON(403, common.ErrorActionForbidden("unauthorized"))
+			return
+		}
+
+		options, err := vmpackage.ListScanDatasources(request.AccountId, ctx.GetSecurityContext().GetTenantId())
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		data := make([]map[string]any, 0, len(options))
+		for _, o := range options {
+			data = append(data, map[string]any{
+				"id":     o.ID,
+				"name":   o.Name,
+				"status": o.Status,
+			})
+		}
+		c.JSON(200, vmpackage.ListScanDatasourcesResponse{Data: data})
+		return
 	case "recommendation_job_create":
 		var request recommendation.RecommendationJobCreateRequest
 		var err error

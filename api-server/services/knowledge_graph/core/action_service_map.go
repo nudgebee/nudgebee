@@ -448,10 +448,15 @@ func findNodesByProviderIdentifierInTable(dbManager *database.DatabaseManager, t
 	if resourceID == "" {
 		return nil, nil
 	}
+	// The arn index (V945) is on lower(arn). Naming that expression lets the
+	// planner answer each side of the OR from its own index; with a bare
+	// properties->>'arn' it could use neither and walked every node in the
+	// account. The exact comparison stays, so matching is still case-sensitive.
 	query := `
 		SELECT id FROM ` + table + `
 		WHERE tenant_id = $1
-		  AND (properties->>'resource_id' = $2 OR properties->>'arn' = $2)
+		  AND (properties->>'resource_id' = $2
+		       OR (lower(properties->>'arn') = lower($2) AND properties->>'arn' = $2))
 		  AND node_type = ANY($3)
 		  AND level = 'Tenant'
 		  AND is_active = true

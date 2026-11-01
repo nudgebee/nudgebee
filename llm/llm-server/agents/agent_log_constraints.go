@@ -3,7 +3,6 @@ package agents
 import (
 	"encoding/json"
 	"fmt"
-	"nudgebee/llm/common"
 	"regexp"
 	"strconv"
 	"strings"
@@ -123,33 +122,4 @@ func parseExplicitLogQueryConstraints(query string) (limit int, timeRange string
 	}
 
 	return limit, timeRange, hasLimit, hasRange
-}
-
-// enforceCanonicalLogConstraints ensures that explicit limit and time window
-// constraints from the request query override any widened defaults emitted by
-// the translation LLM.
-func enforceCanonicalLogConstraints(jsonQuery string, requestQuery string) string {
-	limit, timeRange, hasLimit, hasRange := parseExplicitLogQueryConstraints(requestQuery)
-	if !hasLimit && !hasRange {
-		return jsonQuery
-	}
-
-	var parsed map[string]any
-	if err := common.ExtractAndUnmarshalJSON([]byte(jsonQuery), &parsed); err != nil || parsed == nil {
-		return jsonQuery
-	}
-
-	if hasLimit {
-		parsed["limit"] = limit
-	}
-	if hasRange {
-		parsed["time_range"] = timeRange
-		delete(parsed, "range")
-	}
-
-	out, err := json.Marshal(parsed)
-	if err != nil {
-		return jsonQuery
-	}
-	return string(out)
 }

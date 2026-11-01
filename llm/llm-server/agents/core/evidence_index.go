@@ -14,6 +14,15 @@ import (
 // long conversation cannot grow the (uncached) human message without limit.
 const fsEvidenceIndexMaxFiles = 20
 
+// fsEvidenceIndexMaxAgeHours bounds the evidence index to files saved recently
+// enough to still be on disk. The workspace removes a conversation's folder
+// once nothing in it has changed for 7 days (execWorkspaceMaxIdle in
+// code-analysis), so an older reference may point at a file that is gone, and
+// the index tells the model not to re-run the tool. Keep this at or below that
+// value: a reference inside the window was written inside it, so its folder
+// cannot have been idle long enough to be removed.
+const fsEvidenceIndexMaxAgeHours = 7 * 24
+
 // FileEvidenceRef is a workspace file a tool saved during the conversation — the
 // durable pointer half of the FS evidence layer. The raw bytes live in the
 // ephemeral workspace file; this record survives in the DB and is what a later
@@ -28,9 +37,9 @@ type FileEvidenceRef struct {
 
 // ListConversationFileRefs returns the workspace files saved by tools across a
 // conversation (Type:"file" references on tool calls), most-recent first, capped
-// at limit. Sources the file_refs the fetch tools already persist so a later
-// message or iteration can grep them by their EXACT name instead of re-fetching
-// or guessing.
+// at limit and at fsEvidenceIndexMaxAgeHours. Sources the file_refs the fetch
+// tools already persist so a later message or iteration can grep them by their
+// EXACT name instead of re-fetching or guessing.
 func (chat *ConversationDao) ListConversationFileRefs(accountId, conversationId string, limit int) ([]FileEvidenceRef, error) {
 	if _, err := uuid.Parse(conversationId); err != nil {
 		return nil, nil
@@ -44,9 +53,10 @@ func (chat *ConversationDao) ListConversationFileRefs(accountId, conversationId 
 		CROSS JOIN LATERAL jsonb_array_elements(COALESCE(NULLIF(t."references", ''), '[]')::jsonb) ref
 		WHERE t.conversation_id = $1 AND t.account_id = $2 AND t.metadata->>'parent_tool_call_id' IS NULL
 		  AND ref->>'type' = 'file' AND COALESCE(ref->>'url', '') <> ''
+		  AND t.created_at > NOW() - ($4 || ' hours')::interval
 		ORDER BY t.created_at DESC
 		LIMIT $3`
-	rows, err := chat.dbManager.Db.Queryx(query, conversationId, accountId, limit)
+	rows, err := chat.dbManager.Db.Queryx(query, conversationId, accountId, limit, fsEvidenceIndexMaxAgeHours)
 	if err != nil {
 		return nil, fmt.Errorf("evidence index: failed to list file refs: %w", err)
 	}

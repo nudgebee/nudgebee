@@ -61,7 +61,7 @@ import Header1 from '@shared/header/Header1';
 import ErrorBoundary from '@shared/ErrorBoundary';
 import SafeIcon from '@shared/icons/SafeIcon';
 import FirstLoginTour from '@components/onboarding/FirstLoginTour';
-import PendingAgentInstallBanner from '@components/integrations/PendingAgentInstallBanner';
+import PendingAgentInstallBanner, { PendingAgentInstallBannerHostContext } from '@components/integrations/PendingAgentInstallBanner';
 import SectionFirstVisitTour from '@components/onboarding/SectionFirstVisitTour';
 import Tooltip from '@ui/Tooltip';
 import ApiTokens from '@shared/settings/ApiTokens';
@@ -330,6 +330,17 @@ const PageLayout = ({ children }) => {
   // State
   const [anchorElUser, setAnchorElUser] = useState(null);
   const [openSwitchAccount, setOpenSwitchAccount] = useState(false);
+  // Count of mounted tab strips that render the pending-agent reminder themselves.
+  const [bannerClaims, setBannerClaims] = useState(0);
+  const bannerHost = useMemo(
+    () => ({
+      claim: () => {
+        setBannerClaims((n) => n + 1);
+        return () => setBannerClaims((n) => n - 1);
+      },
+    }),
+    []
+  );
   const [openApiTokens, setOpenApiTokens] = useState(false);
   // Which nav item's sub-section flyout is open, and the rail button it hangs
   // off. One flyout for the whole rail, re-anchored per item.
@@ -978,7 +989,6 @@ const PageLayout = ({ children }) => {
                   {/* Reminder for a Kubernetes account whose install command was never
                       run. Lives here, not on one page: the add-cluster modal is reachable
                       from the header everywhere, so the reminder has to follow the user.
-
                       Suppressed on /setup specifically — not on `navLocked`, which is not
                       the same condition. The K8s wizard's own account-create callback
                       (`refreshReadiness` in SetupCenter) re-reads the gate the instant step
@@ -987,13 +997,16 @@ const PageLayout = ({ children }) => {
                       Gating on navLocked would let this banner render at exactly that
                       moment, stacked on the card's own "waiting for agent" state for the
                       same account. The route is the one thing that stays true for as long
-                      as the duplicate would. */}
-                  {router.pathname !== SETUP_ROUTE && (
+                      as the duplicate would.
+                      A page with a tab strip claims it and renders it below the tabs. */}
+                  {bannerClaims === 0 && router.pathname !== SETUP_ROUTE && (
                     <ErrorBoundary resetKey={router.asPath}>
                       <PendingAgentInstallBanner />
                     </ErrorBoundary>
                   )}
-                  <ErrorBoundary resetKey={router.asPath}>{children}</ErrorBoundary>
+                  <PendingAgentInstallBannerHostContext.Provider value={bannerHost}>
+                    <ErrorBoundary resetKey={router.asPath}>{children}</ErrorBoundary>
+                  </PendingAgentInstallBannerHostContext.Provider>
                 </Container>
               </Box>
             </Box>

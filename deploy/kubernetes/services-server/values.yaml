@@ -18,8 +18,8 @@ global:
     registry: 'ghcr.io/nudgebee'
   imagePullSecrets: []
   initImages:
-    postgres: 'ghcr.io/nudgebee/postgres:16.10-alpine'
-    curl: 'ghcr.io/nudgebee/curl:8.10.1'
+    postgres: 'ghcr.io/nudgebee/postgres:16.15-alpine-nb1'
+    curl: 'ghcr.io/nudgebee/curl:8.23.0'
   # `helm test` connection pod (templates/tests/test-connection.yaml). Full ref,
   # like initImages above: a third-party image a private-registry install has to
   # mirror under whatever name that registry uses.
@@ -54,6 +54,22 @@ securityContext:
 service:
   type: ClusterIP
   port: 8000
+
+# Keeps a terminating pod serving until it has left the Service's endpoints.
+# Without it the process exits on SIGTERM while kube-proxy still routes new
+# connections to the pod's IP, and callers (every app request's session check)
+# sit out a 10s connect timeout. The image is alpine, so `sleep` exists; an
+# exec hook also works on clusters older than the native sleep action (1.30).
+lifecycle:
+  preStop:
+    exec:
+      command: ['sleep', '10']
+
+# Time from the pod being told to stop until SIGKILL. It has to cover the
+# preStop sleep (10s), the server's drain of in-flight requests (up to 15s,
+# shutdownTimeout in cmd/main.go), closing DB/MQ, and the telemetry flush (up
+# to 5s). The Kubernetes default of 30s leaves almost no headroom for that.
+terminationGracePeriodSeconds: 45
 
 ingress:
   # -- Enable [ingress](https://kubernetes.io/docs/concepts/services-networking/ingress/).
@@ -127,6 +143,9 @@ worker:
   # worker only needs to override what genuinely differs from the API pods.
   resources: {}
   podAnnotations: {}
+  # lifecycle is different: an empty value is not a fallback. Leave it unset
+  # to inherit the top-level hook, or set `lifecycle: {}` to drop the preStop
+  # on the worker only.
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -156,7 +175,7 @@ annotations: {}
 # api-server/services/scan_orchestrator/images.go — scanner-images-verify.yaml
 # fails the build if a tag here doesn't resolve on its registry.
 env:
-  NOVA_IMAGE: 'ghcr.io/nudgebee/nova:2026-05-22T07-15-34_decaacbbf56e1789c3299a89f790b8e824ab741c'
-  TRIVY_IMAGE: 'ghcr.io/nudgebee/trivy:0.58.0'
-  POPEYE_IMAGE: 'ghcr.io/nudgebee/popeye:v0.11.1-nudgebee.1'
-  KUBE_BENCH_IMAGE: 'ghcr.io/nudgebee/kube-bench:v0.10.4'
+  NOVA_IMAGE: 'ghcr.io/nudgebee/nova:2026-11-01T06-52-28_672e9c0c399afd5b92709ce34a52434e6f05d603'
+  TRIVY_IMAGE: 'ghcr.io/nudgebee/trivy:0.76.1-nb2'
+  POPEYE_IMAGE: 'ghcr.io/nudgebee/popeye:v0.11.1-nudgebee.2'
+  KUBE_BENCH_IMAGE: 'ghcr.io/nudgebee/kube-bench:v0.16.0-nb2'

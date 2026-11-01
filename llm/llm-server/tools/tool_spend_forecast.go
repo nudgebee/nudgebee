@@ -55,6 +55,7 @@ func (t SpendForecastTool) InferToolRequestType(_ *security.RequestContext, _, _
 }
 
 func (t SpendForecastTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	nbCtx = nbCtx.ForTarget()
 	accountId := ""
 	if v, ok := input.Arguments["account_id"].(string); ok && v != "" {
 		accountId = v

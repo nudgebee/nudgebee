@@ -207,6 +207,22 @@ func TestSelectSeriesForEvent_MatchesLabels(t *testing.T) {
 	}
 }
 
+func TestSelectSeriesForEvent_PodAlertUsesTheKeptPod(t *testing.T) {
+	// Workload matching rewrote the event's pod label to the workload's name; the pod the alert
+	// named is kept beside it. The noisier sibling pod must not be the one analyzed.
+	noisy := &MetricHistory{Labels: map[string]string{"namespace": "shop", "pod": "cart-5d9f7c6b8-abcde"}, Values: []float64{5, 6, 7}}
+	fired := &MetricHistory{Labels: map[string]string{"namespace": "shop", "pod": "orders-86c5cc649d-xbdz4"}, Values: []float64{1, 2, 1}}
+	event := map[string]interface{}{"namespace": "shop", "pod": "orders", "kind": "Deployment", "nb_alert_pod": "orders-86c5cc649d-xbdz4"}
+	if got := selectSeriesForEvent([]*MetricHistory{noisy, fired}, event, 0.5, true); got != fired {
+		t.Error("expected the series of the pod the alert named")
+	}
+	// Without the kept pod nothing matches and the top-violating series is the fallback.
+	delete(event, "nb_alert_pod")
+	if got := selectSeriesForEvent([]*MetricHistory{noisy, fired}, event, 0.5, true); got != noisy {
+		t.Error("expected fallback to the top-violating series when the pod label is the workload name")
+	}
+}
+
 func TestIsHistogramSaturated(t *testing.T) {
 	adH := &AlertDefinition{MetricName: "histogram_quantile(0.95, sum by (le) (rate(x_bucket[5m])))"}
 	adG := &AlertDefinition{MetricName: "rate(errors_total[5m])"}

@@ -421,7 +421,9 @@ const RDSUtilizationAndHealth = ({ accountId, clusterSummary = {}, serviceName }
             id='rds-summary-fired-alarm-count'
             size='md'
             label='Fired Alarm Count'
-            value={clusterSummary?.events_aggregate?.aggregate?.count ?? '-'}
+            // Pre-stringified: Stat's number path renders a numeric 0 as '-' (formatNumber),
+            // and the ticket's standard for empty counts is 0.
+            value={String(clusterSummary?.events_aggregate?.aggregate?.count ?? 0)}
           />
         </DSCard>
         <DSCard size='md' elevation='flat' header={<SectionTitle>Optimizations</SectionTitle>}>
@@ -431,7 +433,7 @@ const RDSUtilizationAndHealth = ({ accountId, clusterSummary = {}, serviceName }
             label='Optimize Count'
             value={
               <Box component='span' className='stat-value-affordance' sx={{ transition: `color ${ds.motion.micro} ${ds.motion.ease}` }}>
-                {clusterSummary?.recommendation_aggregate?.aggregate?.count ?? '-'}
+                {clusterSummary?.recommendation_aggregate?.aggregate?.count ?? 0}
               </Box>
             }
             onClick={handleOptimizeClick}

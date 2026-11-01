@@ -76,6 +76,26 @@ var canonicalMetricLabels = map[string]map[string]string{
 		// dimension arrives under a different name.
 		"workload_name": CanonicalWorkload,
 	},
+	// OTel resource attributes, which survive HEC with their dots intact. Only the
+	// per-container keys carry labels; the summed keys have none to rename.
+	"splunk_enterprise": {
+		"k8s.namespace.name": CanonicalNamespace,
+		"k8s.pod.name":       CanonicalPod,
+		"k8s.container.name": CanonicalContainer,
+		"k8s.node.name":      CanonicalNode,
+	},
+	// SigNoz keeps the OTel resource attributes' dotted names as PromQL labels.
+	"signoz": {
+		"k8s.namespace.name":   CanonicalNamespace,
+		"k8s.pod.name":         CanonicalPod,
+		"k8s.container.name":   CanonicalContainer,
+		"k8s.node.name":        CanonicalNode,
+		"k8s.deployment.name":  CanonicalWorkload,
+		"k8s.statefulset.name": CanonicalWorkload,
+		"k8s.daemonset.name":   CanonicalWorkload,
+		"k8s.job.name":         CanonicalWorkload,
+		"k8s.cronjob.name":     CanonicalWorkload,
+	},
 }
 
 // canonicalSourcePriority breaks a tie when a series carries two labels that map to
@@ -94,6 +114,8 @@ var canonicalSourcePriority = map[string][]string{
 		"kube_replica_set", "kube_replication_controller", "kube_job", "kube_cronjob",
 	},
 	"newrelic": {"deploymentName", "daemonsetName"},
+	// Outermost controller first, as for Datadog: a CronJob's pod carries both.
+	"signoz": {"k8s.deployment.name", "k8s.statefulset.name", "k8s.daemonset.name", "k8s.cronjob.name", "k8s.job.name"},
 }
 
 // canonicalSourceRank returns a sort key for a provider's source label: lower wins.

@@ -39,6 +39,18 @@ const (
 	// release inverts the conclusion.
 	memoryTrendRestartFloor = 0.1
 
+	// memoryTrendGrowthRatio: the rise, last sample over first, before a
+	// series counts as growing — and the band a series must stay inside to
+	// read as flat. The window is about ten minutes, so "ended above where it
+	// started" alone fired the retention reading on series that rose by a
+	// single MiB, or sat flat with a few percent of jitter.
+	memoryTrendGrowthRatio = 1.10
+
+	// memoryTrendGrowthFloorMiB: the rise must also be this large in absolute
+	// terms. On a small container 10% is a few MiB — one GC cycle or a file
+	// read into page cache — not something being held.
+	memoryTrendGrowthFloorMiB = 10
+
 	bytesPerMiB = 1024 * 1024
 )
 
@@ -71,11 +83,20 @@ func memoryTrendInsight(entry podMetricEntry) (playbooks.PlaybookActionResponseI
 	}
 
 	first, last := samples[0], samples[len(samples)-1]
-	peak, dropped := first, false
+	peak, low, dropped, reset := first, first, false, false
 	prev := first
 	for _, mb := range samples[1:] {
 		if mb > peak {
 			peak = mb
+		}
+		if mb < low {
+			low = mb
+		}
+		// The restart the floor below excludes from "dropped" is still a fall:
+		// whatever climbs after it is a container starting up, and the series
+		// did not hold near its peak.
+		if mb < prev && mb <= peak*memoryTrendRestartFloor {
+			reset = true
 		}
 		// Three conditions, each ruling out a different false reading:
 		//   mb < prev             — still falling. Without it, a container
@@ -110,12 +131,29 @@ func memoryTrendInsight(entry podMetricEntry) (playbooks.PlaybookActionResponseI
 		summary += fmt.Sprintf(", against a combined %.0fMiB limit", limitMiB)
 	}
 
+	// With neither a drop nor a reset, every sample sits at or above
+	// memoryTrendDropRatio of the peak before it — the first sample to go
+	// lower would have been a fall and set one of the two — which is exactly
+	// what the message claims.
+	grew := first > 0 && last >= first*memoryTrendGrowthRatio && last-first >= memoryTrendGrowthFloorMiB
 	switch {
-	case !dropped && last > first:
+	case grew && !dropped && !reset:
+		// A rising total is also what a pod or container starting mid-window
+		// looks like on a series summed across pods, so say so rather than
+		// presenting retention as the only reading.
 		return playbooks.PlaybookActionResponseInsight{
-			Message: summary + ". It grew without ever falling back, so the working set is being " +
-				"retained rather than churned — find what sets that retention before changing the limit.",
+			Message: summary + fmt.Sprintf(". It rose %.0f%% and never fell more than %.0f%% below its running peak — "+
+				"memory being held rather than churned, unless a pod or container started mid-window, which this "+
+				"series cannot tell apart. Find what holds it before changing the limit.",
+				(last/first-1)*100, (1-memoryTrendDropRatio)*100),
 			Severity: "High",
+		}, true
+	case peak <= low*memoryTrendGrowthRatio:
+		// Inside this band no sample is 10% below the peak, so it never
+		// shadows the fall-back reading below.
+		return playbooks.PlaybookActionResponseInsight{
+			Message:  summary + fmt.Sprintf(". It held flat, between %.0fMiB and %.0fMiB, for the whole window.", low, peak),
+			Severity: "Info",
 		}, true
 	case dropped:
 		// Deliberately not "the workload releases memory". On a total summed

@@ -197,6 +197,21 @@ type Knowledgebase struct {
 	// column when no single account is in scope; per-account list calls
 	// leave it empty (the page already knows which account it's on).
 	AccountName string `json:"account_name,omitempty" db:"account_name"`
+	// Merged in by attachCapabilitySummaries after the main query, not by
+	// StructScan.
+	Kinds        []string `json:"kinds,omitempty"`
+	Shapes       []string `json:"shapes,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
+	// CapabilityDetails resolves each name in Capabilities against the
+	// platform_capability rows of llm_kb_capability_entries.
+	CapabilityDetails []CapabilityDetail `json:"capability_details,omitempty"`
+}
+
+type CapabilityDetail struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Surface     string `json:"surface,omitempty"`
+	Scope       string `json:"scope,omitempty"`
 }
 
 // UsableForAgents reports whether this KB may supply content to an agent.
@@ -629,6 +644,7 @@ func ListKnowledgebasesForTenant(sc *security.RequestContext) ([]Knowledgebase, 
 		slog.Error(logKBFailedQuery, "error", err, "tenant_id", tenantID, "sees_all", seesAllAccountsInTenant)
 		return nil, err
 	}
+	attachCapabilitySummaries(sc.GetContext(), dbms, kbs)
 	return kbs, nil
 }
 
@@ -672,6 +688,7 @@ func ListKnowledgebases(sc *security.RequestContext, accountId string) ([]Knowle
 		return nil, err
 	}
 
+	attachCapabilitySummaries(sc.GetContext(), dbms, kbs)
 	return kbs, nil
 }
 
@@ -1131,6 +1148,104 @@ func kbCollectionName(kbType string, integrationID *string, kbId string) string 
 // KnowledgebaseCollectionName returns the RAG collection backing a KB.
 func KnowledgebaseCollectionName(kb Knowledgebase) string {
 	return kbCollectionName(kb.KBType, kb.IntegrationId, kb.Id)
+}
+
+// kbCapabilitySummary is one collection's rollup row of
+// llm_kb_capability_entries (entry_type = 'kb_collection'): every kind/shape a
+// labelled chunk of the collection carries, and every capability tag it grants
+// an agent. rag-server derives the row from the labels on the chunks' vector
+// payload and refreshes it after ingest, prune and backfill.
+type kbCapabilitySummary struct {
+	Kinds             []string
+	Shapes            []string
+	Capabilities      []string
+	CapabilityDetails []CapabilityDetail
+}
+
+// getKBCapabilitySummaries batches the rollup lookup for every collection in
+// collectionNames into one query, keyed by collection name. A collection name is
+// derived from a UUID (kb_<kb id>, <integration id>_knowledge_base), so it is
+// unique across accounts and tenants; only the names of KBs the caller has
+// already been allowed to list are ever asked for. An integration collection is
+// shared by every KB row of its integration, so they all read the same row.
+func getKBCapabilitySummaries(ctx context.Context, dbms *common.DatabaseManager, collectionNames []string) (map[string]kbCapabilitySummary, error) {
+	if len(collectionNames) == 0 {
+		return nil, nil
+	}
+
+	rows, err := dbms.Db.QueryContext(ctx, `
+		SELECT e.collection_name, e.kinds, e.shapes, e.capabilities,
+		       COALESCE(
+		           jsonb_agg(DISTINCT jsonb_build_object(
+		               'name', pc.name, 'description', pc.description, 'surface', pc.surface, 'scope', pc.scope
+		           )) FILTER (WHERE pc.name IS NOT NULL),
+		           jsonb_build_array()
+		       ) AS capability_details
+		FROM llm_kb_capability_entries e
+		LEFT JOIN LATERAL unnest(e.capabilities) AS cap ON true
+		LEFT JOIN llm_kb_capability_entries pc ON pc.entry_type = 'platform_capability' AND pc.name = cap
+		WHERE e.entry_type = 'kb_collection' AND e.collection_name = ANY($1::text[])
+		GROUP BY e.collection_name, e.kinds, e.shapes, e.capabilities`, pq.Array(collectionNames))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	summaries := make(map[string]kbCapabilitySummary)
+	for rows.Next() {
+		var collectionName string
+		var kinds, shapes, capabilities pq.StringArray
+		var detailsJSON []byte
+		if err := rows.Scan(&collectionName, &kinds, &shapes, &capabilities, &detailsJSON); err != nil {
+			return nil, err
+		}
+		var details []CapabilityDetail
+		if err := json.Unmarshal(detailsJSON, &details); err != nil {
+			return nil, err
+		}
+		summaries[collectionName] = kbCapabilitySummary{
+			Kinds:             []string(kinds),
+			Shapes:            []string(shapes),
+			Capabilities:      []string(capabilities),
+			CapabilityDetails: details,
+		}
+	}
+	return summaries, rows.Err()
+}
+
+// attachCapabilitySummaries merges each KB's collection rollup onto it in
+// place. Best-effort: a lookup failure logs and leaves every KB's
+// Kinds/Shapes/Capabilities empty rather than failing the whole list.
+func attachCapabilitySummaries(ctx context.Context, dbms *common.DatabaseManager, kbs []Knowledgebase) {
+	if len(kbs) == 0 {
+		return
+	}
+
+	collectionSet := make(map[string]struct{}, len(kbs))
+	for _, kb := range kbs {
+		collectionSet[KnowledgebaseCollectionName(kb)] = struct{}{}
+	}
+	collectionNames := make([]string, 0, len(collectionSet))
+	for name := range collectionSet {
+		collectionNames = append(collectionNames, name)
+	}
+	// Map iteration order is randomized per run; a stable order is what keeps
+	// this function's own tests from flaking on argument order.
+	slices.Sort(collectionNames)
+
+	summaries, err := getKBCapabilitySummaries(ctx, dbms, collectionNames)
+	if err != nil {
+		slog.Error("kb: failed to load capability summaries", "error", err)
+		return
+	}
+	for i := range kbs {
+		if summary, ok := summaries[KnowledgebaseCollectionName(kbs[i])]; ok {
+			kbs[i].Kinds = summary.Kinds
+			kbs[i].Shapes = summary.Shapes
+			kbs[i].Capabilities = summary.Capabilities
+			kbs[i].CapabilityDetails = summary.CapabilityDetails
+		}
+	}
 }
 
 // GetKBLoadHistory returns the load history for a knowledge base by querying rag_embedding_token_usage.

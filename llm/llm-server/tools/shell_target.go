@@ -2,6 +2,7 @@ package tools
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
@@ -10,10 +11,43 @@ import (
 	"strings"
 )
 
+// ErrAmbiguousShellTarget marks an aws script whose remote invocations cannot
+// be tied to one explicit target (the aws call is not the leading command).
+// Approval and write paths must refuse it; execution treats it as naming no
+// explicit target, so each invocation's own --profile or the default applies.
+var ErrAmbiguousShellTarget = errors.New("aws shell target requires an aws-led command; run other shell steps separately")
+
+// variableShellTarget is an ErrAmbiguousShellTarget for a target chosen by a
+// shell variable (`for c in a b; do kubectl --context $c ...`). The command
+// text names no target. Reads run like a Python script that switches
+// contexts: the workspace proxy authorizes each invocation with the value the
+// shell expanded. Writes are refused, since no single target can be approved.
+type variableShellTarget struct{ flag string }
+
+func (e variableShellTarget) Error() string {
+	return fmt.Sprintf("%s is set through a shell variable, so a write cannot be approved for one target; run each write as a single command with a literal %s", e.flag, e.flag)
+}
+
+func (variableShellTarget) Is(target error) bool { return target == ErrAmbiguousShellTarget }
+
 // ShellConfigToolName uses the existing detector; script/AST detection is separate work.
 func ShellConfigToolName(input string) string {
 	_, owner := detectCloudCLI(extractCommandFromToolInput(input))
 	return owner
+}
+
+func delegatedTargetMatchesShellOwner(provider, owner string) bool {
+	switch provider {
+	case "kubernetes":
+		return owner == ToolExecuteKubectlCommand || owner == ToolExecuteHelmCommand
+	case "aws":
+		return owner == ToolExecuteAwsCliCommand
+	case "gcp":
+		return owner == ToolExecuteGcpCliCommand
+	case "azure":
+		return owner == ToolExecuteAzureCliCommand
+	}
+	return false
 }
 
 // ShellTargetConfigs filters cached tenant inventory for the current caller, on every use.
@@ -196,6 +230,19 @@ func requestedTarget(command string, args map[string]any, argName, flag, noun st
 	fromFlag := ""
 	values, _ := scanValueFlags(command, flag)
 	for _, value := range values {
+		if strings.ContainsAny(value, "$`") {
+			return "", variableShellTarget{flag: flag}
+		}
+		if flag == "--profile" {
+			// One aws invocation uses its last --profile, as the CLI does. Across
+			// several invocations, approving the last profile would let an earlier
+			// command write to another account, so that is ambiguous instead.
+			if fromFlag != "" && !strings.EqualFold(fromFlag, value) && strings.ContainsAny(command, ";|&\n") {
+				return "", ErrAmbiguousShellTarget
+			}
+			fromFlag = value
+			continue
+		}
 		if fromFlag != "" && !strings.EqualFold(fromFlag, value) {
 			return "", fmt.Errorf("the command names two %ss (%q and %q); run one command per %s", noun, fromFlag, value, noun)
 		}
@@ -279,11 +326,17 @@ func RequestedShellTarget(owner, command string) (string, error) {
 	if owner == ToolExecuteKubectlCommand {
 		return RequestedKubernetesCluster(command, nil)
 	}
+	if owner == ToolExecuteHelmCommand {
+		return RequestedHelmCluster(command, nil)
+	}
 	if owner == ToolExecuteAwsCliCommand {
-		values, _ := scanValueFlags(command, "--profile")
-		if len(values) > 0 {
-			return values[len(values)-1], nil
+		// A --profile on an earlier shell segment must not become the approval
+		// target for a later aws invocation. Keep this bounded to an aws-led
+		// command; scripts should collect from one target per remote call.
+		if firstShellToken(strings.ToLower(command)) != "aws" {
+			return "", ErrAmbiguousShellTarget
 		}
+		return requestedTarget(command, nil, "account", "--profile", "account")
 	}
 	return "", nil
 }
@@ -291,14 +344,51 @@ func RequestedShellTarget(owner, command string) (string, error) {
 // RequestedShellTargetFromInput is RequestedShellTarget for a raw
 // shell_execute tool input; it also returns the owning tool name.
 func RequestedShellTargetFromInput(toolInput string) (string, string, error) {
-	req := core.ParseNBToolCallRequestFromInput(toolInput)
+	return RequestedShellTargetFromCall(core.ParseNBToolCallRequestFromInput(toolInput))
+}
+
+// RequestedShellTargetFromCall keeps approval and execution on the same
+// selector, including a delegated default materialized in the tool input.
+func RequestedShellTargetFromCall(req core.NBToolCallRequest) (string, string, error) {
 	owner := ShellConfigToolName(req.Command)
+	// Helm is recognized for delegated-target preparation and approval keys, but
+	// not as a config-backed shell owner: Helm's shim resolves its cluster at
+	// the workspace proxy without a separate origin-account integration.
+	if owner == "" && firstShellToken(strings.ToLower(req.Command)) == "helm" {
+		owner = ToolExecuteHelmCommand
+	}
 	if requested := RequestedCloudAccount(req.Arguments); requested != "" &&
 		(owner == ToolExecuteGcpCliCommand || owner == ToolExecuteAzureCliCommand || owner == ToolExecuteAwsCliCommand) {
+		if owner == ToolExecuteAwsCliCommand {
+			// The shim lets an invocation's own --profile override the account
+			// default, so a differing --profile would run somewhere other than
+			// the account that was authorized and approved.
+			profiles, _ := scanValueFlags(req.Command, "--profile")
+			for _, profile := range profiles {
+				if !strings.EqualFold(profile, requested) {
+					return owner, "", ErrAmbiguousShellTarget
+				}
+			}
+		}
 		return owner, requested, nil
 	}
-	requested, err := RequestedShellTarget(owner, req.Command)
-	return owner, requested, err
+	switch owner {
+	case ToolExecuteGcpCliCommand, ToolExecuteAzureCliCommand:
+		return owner, RequestedCloudAccount(req.Arguments), nil
+	case ToolExecuteKubectlCommand:
+		requested, err := RequestedKubernetesCluster(req.Command, req.Arguments)
+		return owner, requested, err
+	case ToolExecuteHelmCommand:
+		requested, err := RequestedHelmCluster(req.Command, req.Arguments)
+		return owner, requested, err
+	case ToolExecuteAwsCliCommand:
+		if firstShellToken(strings.ToLower(req.Command)) != "aws" {
+			return owner, "", ErrAmbiguousShellTarget
+		}
+		requested, err := requestedTarget(req.Command, req.Arguments, "account", "--profile", "account")
+		return owner, requested, err
+	}
+	return owner, "", nil
 }
 
 // TenantAccountLister lists every connected account of a tool's provider in

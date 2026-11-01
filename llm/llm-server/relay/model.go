@@ -9,6 +9,9 @@ type ActionExecuteBody struct {
 	Origin       string         `json:"origin,omitempty"`
 	Timeout      time.Duration  `json:"timeout,omitempty"`
 	AgentType    string         `json:"-"`
+	// NoAgent marks an action the relay serves itself, without any agent
+	// (direct-mode MCP), so Execute must not gate it on k8s agent connectivity.
+	NoAgent bool `json:"-"`
 }
 
 type RelayExecuteRequest struct {

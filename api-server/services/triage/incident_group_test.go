@@ -3,6 +3,7 @@ package triage
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -384,7 +385,7 @@ func TestAttachUnlocatedIncident_Scoped_E2E(t *testing.T) {
 	local := mkEvent(incidentNS, "inventory", "DiskPressure", anchor.Add(5*time.Minute))
 	localChild, err := attachSameSubjectIncident(ctx, tx, local)
 	require.NoError(t, err)
-	assert.True(t, localChild, "same namespace, sole open incident — still attaches")
+	assert.True(t, localChild, "same namespace, the one incident that began with it — still attaches")
 	leader, linked := leaderLinkOf(local.Id)
 	require.True(t, linked)
 	assert.Equal(t, oom.Id, leader, "joins the open incident's leader")
@@ -451,6 +452,161 @@ func TestAttachUnlocatedIncident_Scoped_E2E(t *testing.T) {
 	deployChild, err := attachSameSubjectIncident(ctx, tx, deploy)
 	require.NoError(t, err)
 	assert.False(t, deployChild, "a configuration change never groups on timing alone")
+
+	// Timing is evidence about how an incident BEGAN. The cases below are hours
+	// apart: the AWS scope is the whole account, so two of them inside one window
+	// would be each other's "second incident".
+	const aws = "AWS_CloudWatch_Alarm"
+	attach := func(ev *models.Event) bool {
+		t.Helper()
+		child, err := attachSameSubjectIncident(ctx, tx, ev)
+		require.NoError(t, err)
+		return child
+	}
+	// incident opens one: two alarms on one host, a minute apart, both stored
+	// before either is triaged — the way one poll delivers them. Triaged one at a
+	// time, the first would be an alarm on its own and would itself join an
+	// incident that began a minute earlier.
+	incident := func(host string, at time.Time) *models.Event {
+		t.Helper()
+		head := mkSourced(aws, "AmazonEC2", host, host+"-cpu-high", at)
+		second := mkSourced(aws, "AmazonEC2", host, host+"-status-check", at.Add(time.Minute))
+		attach(head)
+		require.True(t, attach(second), "precondition: an incident is open on %s", host)
+		return head
+	}
+	lone := func(name string, at time.Time) *models.Event {
+		return mkSourced(aws, "AWSELB", name, name+"-5xx", at)
+	}
+
+	// An alarm that started two minutes into a cloud incident joins it; one that
+	// started six minutes in does not — although the first joiner fired four
+	// minutes before it, which used to keep the incident open for it.
+	t1 := anchor.Add(2 * time.Hour)
+	headA := incident("i-0e2e00000000000a1", t1)
+	early := lone("app/e2e-early/1", t1.Add(2*time.Minute))
+	require.True(t, attach(early), "started two minutes after the incident began")
+	leader, linked = leaderLinkOf(early.Id)
+	require.True(t, linked)
+	assert.Equal(t, headA.Id, leader)
+	late := lone("app/e2e-late/1", t1.Add(6*time.Minute))
+	assert.False(t, attach(late), "started six minutes after the incident began: not part of how it began")
+	_, linked = leaderLinkOf(late.Id)
+	assert.False(t, linked, "no link row for an alarm that did not start with the incident")
+
+	// Nothing is placed through an alert that is there on timing. A second alarm
+	// on the early joiner's own resource is judged on its own start: a minute
+	// later it started with the incident too and joins; twelve minutes in it did
+	// not, though it shares a subject with an alert that is in the group.
+	sibling := mkSourced(aws, "AWSELB", "app/e2e-early/1", "app/e2e-early/1-latency", t1.Add(3*time.Minute))
+	require.True(t, attach(sibling), "same resource as the early joiner, and itself three minutes into the incident")
+	leader, linked = leaderLinkOf(sibling.Id)
+	require.True(t, linked)
+	assert.Equal(t, headA.Id, leader)
+	lateSibling := mkSourced(aws, "AWSELB", "app/e2e-early/1", "app/e2e-early/1-rejected", t1.Add(12*time.Minute))
+	assert.False(t, attach(lateSibling), "same resource as the early joiner, but twelve minutes into the incident")
+	_, linked = leaderLinkOf(lateSibling.Id)
+	assert.False(t, linked)
+
+	// The alarm that started FIRST and is triaged last joins too: which of them
+	// is triaged first must not decide it.
+	t2 := anchor.Add(4 * time.Hour)
+	before := lone("app/e2e-before/1", t2)
+	headB := incident("i-0e2e00000000000b1", t2.Add(4*time.Minute))
+	require.True(t, attach(before), "started four minutes before the incident's first alert")
+	leader, linked = leaderLinkOf(before.Id)
+	require.True(t, linked)
+	assert.Equal(t, headB.Id, leader)
+
+	// An incident that began twenty minutes ago and is still collecting its own
+	// host's alarms neither takes a new alarm nor stops it joining the incident
+	// that has just begun. It used to do the second: two open incidents, decline.
+	t3 := anchor.Add(6 * time.Hour)
+	headC := mkSourced(aws, "AmazonEC2", "i-0e2e00000000000c1", "c1-cpu-high", t3)
+	attach(headC)
+	require.True(t, attach(mkSourced(aws, "AmazonEC2", "i-0e2e00000000000c1", "c1-status-check", t3.Add(10*time.Minute))))
+	require.True(t, attach(mkSourced(aws, "AmazonEC2", "i-0e2e00000000000c1", "c1-disk-low", t3.Add(20*time.Minute))),
+		"precondition: the old incident has a member from a minute ago")
+	headD := incident("i-0e2e00000000000d1", t3.Add(19*time.Minute))
+	fresh := lone("app/e2e-fresh/1", t3.Add(21*time.Minute))
+	require.True(t, attach(fresh), "one incident began with it; the older one is not a candidate")
+	leader, linked = leaderLinkOf(fresh.Id)
+	require.True(t, linked)
+	assert.Equal(t, headD.Id, leader, "joins the incident that began with it, not the old one")
+	assert.NotEqual(t, headC.Id, leader)
+
+	// Two incidents began with it: timing cannot say which.
+	t4 := anchor.Add(8 * time.Hour)
+	incident("i-0e2e00000000000e1", t4)
+	incident("i-0e2e00000000000f1", t4.Add(time.Minute))
+	torn := lone("app/e2e-torn/1", t4.Add(3*time.Minute))
+	assert.False(t, attach(torn), "two incidents began in the window — decline")
+
+	// A link made on timing places that firing only. The same alarm firing again
+	// ten minutes later — same fingerprint, new start, as a cloud alarm's next
+	// firing is — did not start with the incident, and must not follow its
+	// earlier firing in while the host's own alarms keep the incident alive.
+	t5 := anchor.Add(10 * time.Hour)
+	incident("i-0e2e0000000000a11", t5)
+	repeater := func(at time.Time) *models.Event {
+		ev := lone("app/e2e-repeater/1", at)
+		_, err := tx.ExecContext(ctx, `UPDATE events SET fingerprint = $2 WHERE id = $1`, ev.Id, "fp-e2e-repeater")
+		require.NoError(t, err)
+		ev.Fingerprint = strPtr("fp-e2e-repeater")
+		return ev
+	}
+	first := repeater(t5.Add(2 * time.Minute))
+	require.True(t, attach(first), "precondition: the first firing joined on timing")
+	// A second stored row of that SAME firing — a re-delivery — is the same
+	// firing, and goes where it went, on the same evidence: its link is a timing
+	// link too, so it cannot place the next firing either.
+	copyOfFirst := repeater(t5.Add(2 * time.Minute))
+	assert.True(t, attach(copyOfFirst), "another row of the firing that joined follows it")
+	var copyReason string
+	require.NoError(t, tx.GetContext(ctx, &copyReason, `
+		SELECT correlation_reason FROM event_correlations
+		WHERE event_id = $1 AND correlation_type = $2`, copyOfFirst.Id, SameIncidentCorrelationType))
+	assert.True(t, strings.HasPrefix(copyReason, timingOnlyReasonPrefix), "the copy's link says timing, as the firing's does: %q", copyReason)
+	assert.Contains(t, copyReason, "within 5 minutes")
+	require.True(t, attach(mkSourced(aws, "AmazonEC2", "i-0e2e0000000000a11", "a11-disk-low", t5.Add(10*time.Minute))),
+		"precondition: the host's own alarms keep the incident alive")
+	second := repeater(t5.Add(12 * time.Minute))
+	assert.False(t, attach(second), "a later firing does not follow a firing that was filed on timing")
+	_, linked = leaderLinkOf(second.Id)
+	assert.False(t, linked)
+
+	// Kubernetes keeps the fifteen-minute window, measured from the incident's
+	// first alert rather than from its latest member.
+	const anchoredNS = "ns-e2e-unlocated-anchored"
+	t6 := anchor.Add(12 * time.Hour)
+	headK := mkEvent(anchoredNS, "checkout", "KubeContainerOOMKilled", t6)
+	attach(headK)
+	require.True(t, attach(mkEvent(anchoredNS, "checkout", "KubePodCrashLooping", t6.Add(2*time.Minute))))
+	require.True(t, attach(mkEvent(anchoredNS, "checkout", "KubePodNotReady", t6.Add(12*time.Minute))),
+		"precondition: the incident has a member from a few minutes ago")
+	inside := mkEvent(anchoredNS, "inventory", "DiskPressure", t6.Add(14*time.Minute))
+	require.True(t, attach(inside), "fourteen minutes after the incident began: inside the namespace window")
+	leader, linked = leaderLinkOf(inside.Id)
+	require.True(t, linked)
+	assert.Equal(t, headK.Id, leader)
+	outside := mkEvent(anchoredNS, "billing", "DiskPressure", t6.Add(16*time.Minute))
+	assert.False(t, attach(outside), "sixteen minutes after it began — a member four minutes ago does not renew it")
+}
+
+func TestGroupLinks_PlacingFirings(t *testing.T) {
+	links := groupLinks{
+		parent: map[string]string{"by-subject": "head", "by-timing": "head"},
+		leads:  map[string]bool{"head": true},
+		timing: map[string]bool{"by-subject": false, "by-timing": true},
+	}
+	assert.True(t, links.filedOnTiming([]string{"unfiled", "by-timing", "by-subject"}), "the row that places the alert is the first filed one")
+	assert.False(t, links.filedOnTiming([]string{"by-subject", "by-timing"}))
+	assert.False(t, links.filedOnTiming([]string{"unfiled"}), "an alert in no group is not there on timing")
+	assert.False(t, links.filedOnTiming([]string{"head"}), "nor is a head")
+	assert.Equal(t, []string{"unfiled", "by-subject"}, links.placingFirings([]string{"unfiled", "by-timing", "by-subject"}),
+		"a firing filed on timing alone does not place the alert's next firing; order is kept")
+	assert.Equal(t, []string{"a", "b"}, groupLinks{}.placingFirings([]string{"a", "b"}),
+		"nothing filed on timing: every firing counts")
 }
 
 func TestSubjectKey_OwnerHashStripped(t *testing.T) {

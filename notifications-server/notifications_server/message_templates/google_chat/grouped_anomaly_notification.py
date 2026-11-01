@@ -4,7 +4,14 @@ from datetime import datetime
 
 from notifications_server.configs.settings import public_ip
 from notifications_server.message_templates.base import Emojis
-from notifications_server.message_templates.slack.grouped_anomaly_notification import AnomalyAlertParams
+from notifications_server.message_templates.slack.grouped_anomaly_notification import (
+    MAX_RESOLVED_ITEMS,
+    AnomalyAlertParams,
+    counts_phrase,
+    resolved_line,
+    returned_label,
+    split_resolved,
+)
 
 MAX_TEXT_LENGTH = 3800
 
@@ -28,14 +35,17 @@ def get_grouped_anomaly_alerts_gchat_template(input_data: Any) -> Dict[str, Any]
     else:
         raise TypeError("Expected AnomalyAlertSummaryParams or list[AnomalyAlertParams]")
 
+    firing, resolved = split_resolved(alerts)
     grouped: Dict[str, List[AnomalyAlertParams]] = defaultdict(list)
-    for alert in alerts:
+    for alert in firing:
         grouped[alert.cloud_account_id].append(alert)
 
-    total_alerts = len(alerts)
-    total_accounts = len(grouped)
+    resolved_only = bool(resolved) and not firing
+    emoji = Emojis.Resolved.value if resolved_only else Emojis.Alert.value
+    counts = counts_phrase(len(firing), len(resolved), "Anomalies")
+    total_accounts = len({alert.cloud_account_id for alert in alerts})
 
-    lines.append(f"{Emojis.Alert.value} *{total_alerts} Anomalies detected across {total_accounts} accounts*\n")
+    lines.append(f"{emoji} *{counts} across {total_accounts} accounts*\n")
 
     for cloud_account_id, acct_alerts in grouped.items():
         cluster_name = acct_alerts[0].cluster or "Cluster"
@@ -51,13 +61,26 @@ def get_grouped_anomaly_alerts_gchat_template(input_data: Any) -> Dict[str, Any]
 
             title = alert.title or f"{alert.subject_name} anomaly"
 
-            lines.append(f"• *{title}*")
+            lines.append(f"• *{title}*{returned_label(alert, '*')}")
             lines.append(f"  - Namespace: *{alert.subject_namespace}* | Type: *{alert.subject_type or 'N/A'}*")
             lines.append(f"  - Priority: *{alert.priority}* | Status: *{alert.status}*")
             lines.append(f"  - Started at: {human}")
             lines.append("")
 
-    lines.append(f"{Emojis.Event.value} Review detected anomalies and investigate impacted workloads in your clusters.")
+    if not resolved_only:
+        lines.append(
+            f"{Emojis.Event.value} Review detected anomalies and investigate impacted workloads in your clusters."
+        )
 
     message = "\n".join(lines)
-    return {"text": truncate_text(message)}
+    if not resolved:
+        return {"text": truncate_text(message)}
+
+    # The section is short and bounded (capped items, clipped lines), so it is
+    # held back whole and only the firing part above it is ever truncated.
+    section = [f"{Emojis.Resolved.value} *Resolved*"]
+    section += [f"• {resolved_line(alert, '*')}" for alert in resolved[:MAX_RESOLVED_ITEMS]]
+    if len(resolved) > MAX_RESOLVED_ITEMS:
+        section.append(f"+{len(resolved) - MAX_RESOLVED_ITEMS} more resolved")
+    tail = "\n\n" + "\n".join(section)
+    return {"text": truncate_text(message.rstrip("\n"), MAX_TEXT_LENGTH - len(tail)) + tail}

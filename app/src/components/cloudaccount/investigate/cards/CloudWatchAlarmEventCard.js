@@ -2,6 +2,8 @@
 import CubeIcon from '@assets/kubernetes/cube-icon.svg';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import { Box } from '@mui/material';
+import { safeJSONParse } from 'src/utils/common';
+import { summarizeCloudWatchAlarm } from '@components/k8s/investigate/cards/cardSummaries';
 
 class CloudWatchAlarmEventCard {
   constructor(evidenceData, index) {
@@ -18,8 +20,11 @@ class CloudWatchAlarmEventCard {
     return false;
   }
 
+  // The raw alarm is stored without a summary; its own reason for the state is the finding.
   getHighLightsData = () => {
-    return this.enricherData?.insight || [];
+    const stored = this.enricherData?.insight;
+    const data = this.enricherData?.data;
+    return stored?.length > 0 ? stored : summarizeCloudWatchAlarm(typeof data === 'string' ? safeJSONParse(data) : data);
   };
 
   getContentComponents = () => {

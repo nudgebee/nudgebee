@@ -1,5 +1,10 @@
 package core
 
+import (
+	"strings"
+	"time"
+)
+
 type ObservabilityLog struct {
 	Timestamp string         `json:"timestamp"`
 	Message   string         `json:"message"`
@@ -30,6 +35,86 @@ type ObservabilityLogResponse struct {
 	// (unknown label name / unknown label value) when a canonical query matched nothing.
 	// Empty when the diagnosis found nothing actionable (a genuinely empty result).
 	Suggestion string `json:"suggestion,omitempty"`
+	// Coverage is set when the read stopped at its line limit. Nil means only
+	// that the limit asked for was not reached — a backend that lowers the
+	// limit on its own gives no sign of it here.
+	Coverage *ObservabilityLogCoverage `json:"coverage,omitempty"`
+}
+
+// ObservabilityLogCoverage says a log read returned as many lines as its
+// limit, and what those lines cover. The backend returns the lines it reaches
+// first — the newest, on most — so on a busy workload a read of an incident
+// window stops minutes short of the window's start, and nothing else in the
+// response shows it: the lines look like the whole window.
+type ObservabilityLogCoverage struct {
+	Limit    int `json:"limit"`
+	Returned int `json:"returned"`
+	// Oldest and Newest bound the returned lines, RFC3339 UTC. Empty unless
+	// every line carried a timestamp that could be read: a span drawn from
+	// some of the lines would understate what was returned.
+	Oldest string `json:"oldest,omitempty"`
+	Newest string `json:"newest,omitempty"`
+	// RequestedStart and RequestedEnd are the window that was asked for.
+	RequestedStart string `json:"requested_start,omitempty"`
+	RequestedEnd   string `json:"requested_end,omitempty"`
+}
+
+// logTimestampLayouts are the timestamp forms log backends return.
+var logTimestampLayouts = []string{
+	time.RFC3339Nano,
+	"2006-01-02T15:04:05.999999999",
+	"2006-01-02 15:04:05.999999999Z07:00",
+	"2006-01-02 15:04:05.999999999",
+}
+
+// NewObservabilityLogCoverage returns the coverage of a read that reached its
+// limit, or nil when it did not. startMs and endMs are the requested window in
+// epoch milliseconds; zero leaves that bound out.
+func NewObservabilityLogCoverage(logs []ObservabilityLog, limit int, startMs, endMs int64) *ObservabilityLogCoverage {
+	if limit <= 0 || len(logs) < limit {
+		return nil
+	}
+	coverage := &ObservabilityLogCoverage{Limit: limit, Returned: len(logs)}
+	// The lines are not sorted: several backends return them grouped by stream.
+	var oldest, newest time.Time
+	spanKnown := true
+	for _, entry := range logs {
+		at, ok := parseLogTimestamp(entry.Timestamp)
+		if !ok {
+			spanKnown = false
+			break
+		}
+		if oldest.IsZero() || at.Before(oldest) {
+			oldest = at
+		}
+		if newest.IsZero() || at.After(newest) {
+			newest = at
+		}
+	}
+	if spanKnown && !oldest.IsZero() {
+		coverage.Oldest = oldest.UTC().Format(time.RFC3339)
+		coverage.Newest = newest.UTC().Format(time.RFC3339)
+	}
+	if startMs > 0 {
+		coverage.RequestedStart = time.UnixMilli(startMs).UTC().Format(time.RFC3339)
+	}
+	if endMs > 0 {
+		coverage.RequestedEnd = time.UnixMilli(endMs).UTC().Format(time.RFC3339)
+	}
+	return coverage
+}
+
+func parseLogTimestamp(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range logTimestampLayouts {
+		if at, err := time.Parse(layout, value); err == nil {
+			return at, true
+		}
+	}
+	return time.Time{}, false
 }
 
 type ObservabilityTraceResponse struct {

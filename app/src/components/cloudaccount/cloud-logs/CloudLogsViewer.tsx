@@ -14,6 +14,7 @@ import CloudProviderIcon from '@shared/icons/CloudIcon';
 import QueryModeSwitcher from '@components/k8s/common/QueryModeSwitcher';
 import { OperatorDescriptor } from '@components/k8s/common/operatorCatalog';
 import observability from '@api1/observability';
+import { unwrapGraphQL } from '@lib/HttpService';
 import apiAccount from '@api1/account';
 import { safeJSONParse, snakeToTitleCase } from 'src/utils/common';
 import { ds } from '@utils/colors';
@@ -251,9 +252,21 @@ const CloudLogsViewer: React.FC<CloudLogsViewerProps> = ({ accountId, provider }
 
     try {
       const response = await observability.fetchLogs(requestPayload);
-      const logs = response?.data?.data?.logs_list?.logs || [];
+      // The gateway answers HTTP 200 with a top-level `errors` array for a failed
+      // query (e.g. a syntax error), so reading `data.data` straight through would
+      // render "No log entries" and hide the reason. unwrapGraphQL throws on that
+      // top-level error; the catch below surfaces its message so the user can fix
+      // the query.
+      const result = unwrapGraphQL(response, 'Failed to fetch logs');
+      // A non-GraphQL failure (502/504, network) leaves result undefined with no
+      // errors[] for unwrapGraphQL to throw on — treat that as a failure too rather
+      // than falling through to an empty "No log entries".
+      if (!result) {
+        throw new Error('Failed to fetch logs');
+      }
+      const logs = result?.logs_list?.logs || [];
       setData(logs);
-      setExecutedQuery(response?.data?.data?.logs_list?.query || '');
+      setExecutedQuery(result?.logs_list?.query || '');
 
       if (logs.length === 0) {
         setError(null);

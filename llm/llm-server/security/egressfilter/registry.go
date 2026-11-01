@@ -3,6 +3,7 @@ package egressfilter
 import (
 	"log/slog"
 	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -84,9 +85,23 @@ func (r *regexFilter) Detect(payload string) []Hit {
 	}
 	hits := make([]Hit, 0, len(matches))
 	for _, m := range matches {
+		if IsMaskedPlaceholder(payload[m[0]:m[1]]) {
+			continue // `ghp_xxxx…` — a docs/config placeholder, not a token
+		}
 		hits = append(hits, Hit{RuleID: r.id, Start: m[0], End: m[1]})
 	}
 	return hits
+}
+
+// IsMaskedPlaceholder: all mask chars (`xxxx`, `****`) or a 6+ mask last segment
+// (`ghp_xxxx…`, `sk-ant-xxxxxxxx`).
+func IsMaskedPlaceholder(v string) bool {
+	const mask = "xX*•#."
+	if strings.Trim(v, mask+"-_") == "" {
+		return true
+	}
+	last := v[strings.LastIndexAny(v, "-_")+1:]
+	return len(last) >= 6 && strings.Trim(last, mask) == ""
 }
 
 // RegexFilter constructs a Filter from a (id, *regexp.Regexp) pair. The id

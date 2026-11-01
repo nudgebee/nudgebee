@@ -1,4 +1,9 @@
 rules:
+# ORDER MATTERS: for each event, the first matching emitting rule wins and
+# the emitting rules after it are skipped (their actions do not run). Put a
+# specific rule above any catch-all it overlaps with. actions_only rules are
+# not affected by order. event_rule_precedence_test.go checks this.
+
 ########## ECS #############
 
   - name: "ECS_Service_Health_Check_Failure_EventBridge"
@@ -29,7 +34,7 @@ rules:
         template: >-
           {{ $fc := pickFailingContainer (index .Detail "containers") .TaskDefContainerDefs }}
           ECS Task {{ (index .Detail "taskArn") }} in cluster {{ (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}
-          (part of service {{ (index .Detail "group") | str | default "" | replace "service:" "" | default "N/A" }})
+          (part of service {{ $group := (index .Detail "group") | str }}{{ if hasPrefix $group "service:" }}{{ $group | splitList ":" | last }}{{ else }}N/A{{ end }})
           was stopped, likely due to health check failures (Region: {{ (index .Event "region") }}).
           Stopped Reason: {{ (index .Detail "stoppedReason") }}.
           Container '{{ safeIndex $fc "name" }}' last status: {{ safeIndex $fc "lastStatus" }}.
@@ -79,11 +84,15 @@ rules:
         params:
           service_name: "ecs" # Changed to ecs to use enhanced aws_get_resource
           resource_type: "service" # To trigger GetECSServiceDetails
-          resource_identifier: "arn:aws:ecs:{{ (index .Event \"region\") }}:{{ (index .Event \"account\") }}:service/{{ (index .Detail \"clusterArn\") | str | default \"\" | splitList \"/\" | last }}/{{ (index .Detail \"group\") | str | default \"\" | replace \"service:\" \"\" }}"
+          resource_identifier: "arn:aws:ecs:{{ (index .Event \"region\") }}:{{ (index .Event \"account\") }}:service/{{ (index .Detail \"clusterArn\") | str | default \"\" | splitList \"/\" | last }}/{{ (index .Detail \"group\") | str | default \"\" | splitList \":\" | last }}"
           identifier_type: "arn"
           region: "{{ (index .Event \"region\") }}"
 
   - name: "ECS_Service_Deployment_Failed_EventBridge"
+    # AWS sends the service only as the ARN in resources[0]
+    # (arn:aws:ecs:<region>:<account>:service/<cluster>/<service>); detail has
+    # no serviceName or clusterName. Services created before the long ARN
+    # format have service/<service>, with no cluster.
     triggers:
       source: "AWS_EventBridge"
       alert_name: "aws.ecs"
@@ -94,18 +103,21 @@ rules:
           description: "Deployment eventName is SERVICE_DEPLOYMENT_FAILED"
     event_template:
       title:
-        template: "ECS Deployment FAILED for service {{ (index .Detail \"serviceName\") }}"
+        template: '{{ $arn := "" }}{{ if (index .Event "resources") }}{{ $arn = (index .Event "resources" 0) | str }}{{ end }}{{ $p := $arn | splitList "/" }}ECS Deployment FAILED for service {{ if ge (len $p) 3 }}{{ index $p 2 }}{{ else if eq (len $p) 2 }}{{ index $p 1 }}{{ end }}'
       severity: "Critical"
       fingerprint:
-        template: "ecs-deploy-failed:{{ (index .Detail \"clusterName\") }}:{{ (index .Detail \"serviceName\") }}"
+        # One alert per failed deployment, so a second failure of the same
+        # service is not folded into the first.
+        template: '{{ $arn := "" }}{{ if (index .Event "resources") }}{{ $arn = (index .Event "resources" 0) | str }}{{ end }}{{ $p := $arn | splitList "/" }}ecs-deploy-failed:{{ if ge (len $p) 3 }}{{ index $p 1 }}:{{ index $p 2 }}{{ else if eq (len $p) 2 }}:{{ index $p 1 }}{{ end }}:{{ (index .Detail "deploymentId") }}'
       description:
         template: >-
-          ECS deployment for service {{ (index .Detail "serviceName") }} in cluster {{ (index .Detail "clusterName") }} (Account: {{ (index .Event "account") }}) has FAILED.
+          {{ $arn := "" }}{{ if (index .Event "resources") }}{{ $arn = (index .Event "resources" 0) | str }}{{ end }}{{ $p := $arn | splitList "/" }}
+          ECS deployment for service {{ if ge (len $p) 3 }}{{ index $p 2 }} in cluster {{ index $p 1 }}{{ else if eq (len $p) 2 }}{{ index $p 1 }}{{ end }} (Account: {{ (index .Event "account") }}) has FAILED.
           Reason: {{ (index .Detail "reason") }}.
           Deployment ID: {{ (index .Detail "deploymentId") }}.
       status: "FIRING"
-      resource_id: # Service name, possibly with cluster prefix if not globally unique
-        template: "{{ (index .Detail \"clusterName\") }}/{{ (index .Detail \"serviceName\") }}"
+      resource_id:
+        template: '{{ if (index .Event "resources") }}{{ (index .Event "resources" 0) }}{{ end }}'
       resource_type:
         value: "service"
       resource_service_name:
@@ -114,32 +126,12 @@ rules:
         template: "{{ (index .Event \"region\") }}"
     actions:
       - name: "ecs_service_details_on_deployment_failure"
-        type: "aws_get_resource" # Should fetch service details, including deployment info
-        params:
-          service_name: "ecs"
-          resource_type: "service"
-          # Service ARN might be constructed or found in a different field depending on the exact event structure
-          resource_identifier: "arn:aws:ecs:{{ (index .Event \"region\") }}:{{ (index .Event \"account\") }}:service/{{ (index .Detail \"clusterName\") }}/{{ (index .Detail \"serviceName\") }}"
-          identifier_type: "arn"
-          region: "{{ (index .Event \"region\") }}"
-        description: "Fetch ECS service details, focusing on the failed deployment."
-      - name: "ecs_deployment_events_on_failure" # Placeholder for fetching service events
-        type: "aws_get_log" # Or a custom action to get ECS service events
-        params:
-          # This is a placeholder; actual ECS service events are not typically in CloudWatch Logs Insights this way.
-          # You might need a custom action to call ecs:DescribeServices and look at the 'events' array.
-          log_group_name: "/aws/ecs/service_events" # Hypothetical
-          query: "fields @timestamp, @message | filter serviceName = '{{ (index .Detail \"serviceName\") }}' and deploymentId = '{{ (index .Detail \"deploymentId\") }}' | sort @timestamp desc | limit 20"
-          start_time_offset: "-1h"
-          end_time_offset: "+5m"
-        description: "Placeholder: Fetch recent ECS service events related to the deployment."
-      - name: "get_ecs_service_events_on_failure" # Fetch service events using the enhanced aws_get_resource
         type: "aws_get_resource"
-        description: "Fetch ECS service details to inspect deployment events."
+        description: "Fetch ECS service details, including its deployments and recent service events."
         params:
           service_name: "ecs"
           resource_type: "service"
-          resource_identifier: "arn:aws:ecs:{{ (index .Event \"region\") }}:{{ (index .Event \"account\") }}:service/{{ (index .Detail \"clusterName\") }}/{{ (index .Detail \"serviceName\") }}"
+          resource_identifier: '{{ if (index .Event "resources") }}{{ (index .Event "resources" 0) }}{{ end }}'
           identifier_type: "arn"
           region: "{{ (index .Event \"region\") }}"
 
@@ -164,8 +156,9 @@ rules:
       fingerprint:
         template: 'ecs-created:{{ safeIndex .Detail "responseElements" "service" "serviceArn" }}'
       description:
+        # serviceName is expected string
         template: >-
-          New ECS service '{{ safeIndex .Detail "responseElements" "service" "serviceName" }}' # serviceName is expected string
+          New ECS service '{{ safeIndex .Detail "responseElements" "service" "serviceName" }}'
           in cluster '{{ safeIndex .Detail "responseElements" "service" "clusterArn" | str | default "" | splitList "/" | last }}'
           has been created. Initiating alarm setup.
           Task Definition: {{ safeIndex .Detail "responseElements" "service" "taskDefinition" }}
@@ -362,16 +355,20 @@ rules:
         value: "ecs"
       resource_region:
         template: "{{ (index .Event \"region\") }}"
+    # Cluster and service come from the alarm's ClusterName / ServiceName
+    # dimensions. The alarms aws_create_alarm makes have no dimensions: they are
+    # named "<cluster>-<service>-TaskLogErrors-Auto" with namespace
+    # "ECS/<service>/Logs-Auto", so for those the service comes from the
+    # namespace and the cluster is what is left of the alarm name. Names can
+    # contain "-", so the alarm name is never split on it.
     actions:
       - name: "get_ecs_service_logs_on_log_alarm"
         type: "aws_get_log"
         description: "Fetch logs for the ECS service that triggered the log alarm."
         params:
-          log_group_name: | # Assumes log group name convention /ecs/<service-name>
-            {{ $alarmNameParts := (index .Detail "alarmName") | str | default "" | splitList "-" }}
-            {{ $serviceName := "" }}
-            {{ if ge (len $alarmNameParts) 4 }}{{ $serviceName = (index $alarmNameParts 1) }}{{ end }}
-            /ecs/{{ $serviceName }}
+          auto_detect_log_group: true # Same log group the alarm's metric filter was created on
+          cluster_name: '{{ $d := alarmDimension .Detail "ClusterName" }}{{ if $d }}{{ $d }}{{ else }}{{ $ns := (alarmNamespace .Detail) | str | splitList "/" }}{{ if ge (len $ns) 3 }}{{ replace ((index .Detail "alarmName") | str) (printf "-%s-TaskLogErrors-Auto" (index $ns 1)) "" }}{{ end }}{{ end }}'
+          service_name: '{{ $d := alarmDimension .Detail "ServiceName" }}{{ if $d }}{{ $d }}{{ else }}{{ $ns := (alarmNamespace .Detail) | str | splitList "/" }}{{ if ge (len $ns) 3 }}{{ index $ns 1 }}{{ end }}{{ end }}'
           query: "fields @timestamp, @message | filter @message like /error|Error|exception|Exception|EXCEPTION|Warning/ | sort @timestamp desc | limit 200"
           start_time_offset: "-1h" # Look back further for log errors
           end_time_offset: "+5m"
@@ -382,14 +379,7 @@ rules:
         params:
           service_name: "ecs"
           resource_type: "service"
-          resource_identifier: | # Construct service ARN
-            {{ $alarmNameParts := (index .Detail "alarmName") | str | default "" | splitList "-" }}
-            {{ $clusterName := "" }}{{ $serviceName := "" }}
-            {{ if ge (len $alarmNameParts) 4 }}
-              {{ $clusterName = (index $alarmNameParts 0) }}
-              {{ $serviceName = (index $alarmNameParts 1) }}
-            {{ end }}
-            arn:aws:ecs:{{ (index .Event "region") }}:{{ (index .Event "account") }}:service/{{ $clusterName }}/{{ $serviceName }}
+          resource_identifier: 'arn:aws:ecs:{{ (index .Event "region") }}:{{ (index .Event "account") }}:service/{{ $d := alarmDimension .Detail "ClusterName" }}{{ if $d }}{{ $d }}{{ else }}{{ $ns := (alarmNamespace .Detail) | str | splitList "/" }}{{ if ge (len $ns) 3 }}{{ replace ((index .Detail "alarmName") | str) (printf "-%s-TaskLogErrors-Auto" (index $ns 1)) "" }}{{ end }}{{ end }}/{{ $d := alarmDimension .Detail "ServiceName" }}{{ if $d }}{{ $d }}{{ else }}{{ $ns := (alarmNamespace .Detail) | str | splitList "/" }}{{ if ge (len $ns) 3 }}{{ index $ns 1 }}{{ end }}{{ end }}'
           identifier_type: "arn"
           region: "{{ (index .Event \"region\") }}"
 
@@ -525,14 +515,15 @@ rules:
               AttributeValue: "{{ alarmDimension .Detail \"ServiceName\" }}"
           max_results: 20
 
-# Rule for all ECS Task State Change events
-  - name: "ECS_Task_All_Events_EventBridge"
-    # Service-level fingerprint + TTL: a service's tasks emit 5-7 lifecycle
-    # events each, so per-delivery execution flooded events (tens of thousands
-    # per week on busy clusters). Dedup runs before enrichment, so suppressed
-    # deliveries cost nothing; at most one emission per service+status per
-    # window, and a status change starts a new dedup key so transitions always
-    # emit immediately.
+  # NOTE: the former ECS_Task_Stuck_In_Pending_EventBridge rule was removed.
+  # ECS emits a PENDING transition once for EVERY task launch and nothing
+  # periodic afterwards, so a transition-triggered rule cannot express
+  # "stuck" — it fired a Warning (plus a CloudWatch metric fetch) on every
+  # healthy launch (~15k events/week on one busy account). Genuine
+  # stuck-in-PENDING detection needs a duration signal (e.g. a CloudWatch
+  # alarm on pending task count), which can feed the alarm rules instead.
+
+  - name: "ECS_Task_Stopped_OutOfMemory_EventBridge"
     dedup_ttl_seconds: 900
     triggers:
       source: "AWS_EventBridge"
@@ -541,41 +532,35 @@ rules:
         - template: '{{ eq (index .Event "detailType") "ECS Task State Change" }}'
           description: "Event detailType is 'ECS Task State Change'"
         - template: '{{ eq (index .Detail "lastStatus") "STOPPED" }}'
-          description: "Only STOPPED emits an event. Intermediate lifecycle transitions (PROVISIONING/PENDING/RUNNING/DEACTIVATING/...) arrive 5-7 times per task and carry no incident signal; resource bookkeeping for them is handled by the actions-only Resource_Sync_ECS_Task_State_Change rule"
+          description: "Task lastStatus is STOPPED"
+        - template: |
+            {{ $fc := pickFailingContainer (index .Detail "containers") .TaskDefContainerDefs }}
+            {{ or (containsStr ((index .Detail "stoppedReason") | str) "OutOfMemory") (containsStr ((safeIndex $fc "reason") | str) "OutOfMemory") }}
+          description: "task-level stoppedReason or the failing container's own reason mentions OutOfMemory — a container can be OOM-killed without ECS surfacing that at the task level"
     event_template:
       title:
         template: |
-          ECS Task Event: {{ (index .Detail "lastStatus") }} for {{ (index .Detail "group") | default ((index .Detail "taskArn") | str | default "" | splitList "/" | last) }}
-      severity: "Info" # Default severity for all events
+          ECS Task Stopped: OutOfMemory: {{ (index .Detail "group") | default ((index .Detail "taskArn") | str | default "" | splitList "/" | last) }}
+      severity: "Critical"
+      fingerprint:
+        # Service-level (cluster + group). See note on ecs-task-stopped fingerprint above.
+        template: "ecs-task-oom:{{ (index .Detail \"clusterArn\") | str | default \"\" | splitList \"/\" | last }}:{{ (index .Detail \"group\") | default ((index .Detail \"taskArn\") | str | default \"\" | splitList \"/\" | last) }}"
       description:
         template: |
           ECS Task {{ (index .Detail "taskArn") }} in cluster {{ (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}
-          changed state to {{ (index .Detail "lastStatus") }}. Desired: {{ (index .Detail "desiredStatus") }}.
-          Event ID: {{ (index .Event "id") }}.
-          Detail: {{ toJson .Detail }}
-      status: "CLOSED" # Default status for all events
-      fingerprint:
-        # Service-level (cluster + group + status), NOT taskArn: task-level
-        # fingerprints are unique on every run, so replacement tasks of the
-        # same service never dedup and each one becomes a fresh event. The
-        # earlier concern about wasted enrichment on a shared fingerprint is
-        # gone now that dedup_ttl_seconds suppresses repeats before actions run.
-        template: "ecs-task:{{ (index .Detail \"clusterArn\") | str | default \"\" | splitList \"/\" | last }}:{{ (index .Detail \"group\") | default ((index .Detail \"taskArn\") | str | default \"\" | splitList \"/\" | last) }}:{{ (index .Detail \"lastStatus\") }}"
+          stopped due to OutOfMemoryError.
+          Task Definition: {{ (index .Detail "taskDefinitionArn") }}.
+      status: "FIRING"
       resource_id:
-        # Attach the event to the durable ECS service when the task belongs
-        # to one (group "service:<name>") — the ephemeral task is usually
-        # gone minutes after the event fires, leaving the subject pointing
-        # at a dead resource. Standalone/scheduled (family:) tasks keep the
-        # task id.
+        # Durable ECS service when the task belongs to one; see the note on
+        # the same block in ECS_Task_All_Events_EventBridge.
         template: |
           {{ $group := (index .Detail "group") | str }}
           {{ $cluster := (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}
           {{ if and (hasPrefix $group "service:") $cluster }}
             arn:aws:ecs:{{ (index .Event "region") }}:{{ (index .Event "account") }}:service/{{ $cluster }}/{{ $group | splitList ":" | last }}
-          {{ else if (index .Event "resources") }}
-            {{ (index .Event "resources" 0) | str | default "" | splitList "/" | last }}
           {{ else }}
-            {{ (index .Detail "taskArn") | str | default "" | splitList "/" | last | default "N/A" }}
+            {{ (index .Detail "taskArn") | str | default "" | splitList "/" | last }}
           {{ end }}
       resource_type:
         template: '{{ $g := (index .Detail "group") | str }}{{ $c := (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}{{ if and (hasPrefix $g "service:") $c }}service{{ else }}task{{ end }}'
@@ -584,39 +569,140 @@ rules:
       resource_region:
         template: "{{ (index .Event \"region\") }}"
     actions:
-      # NOTE: no aws_get_resource task fetch here. The Task State Change event's
-      # .Detail already carries the full task object (and the description embeds
-      # it), so a per-event DescribeTasks added nothing — and running it on EVERY
-      # task state change throttled the ECS API (ThrottlingException retries) and
-      # backed up the EventBridge SQS queue. Tasks are also frequently gone by the
-      # time the event is processed (CloudTrail delivery lag), so the fetch mostly
-      # produced "target resource gone" noise.
-      - name: "get_task_metrics_on_any_event"
-        type: "aws_get_metric"
-        description: "Fetch CPU and Memory utilization metrics for the task."
+      - name: "get_task_definition_for_oom"
+        type: "aws_get_resource"
+        description: "Fetch task definition details to check memory limits."
         params:
-          namespace: "AWS/ECS" # Or AWS/ECS/ContainerInsights
-          metric_name: "CPUUtilization" # Fetch both CPU and Memory
+          service_name: "ecs"
+          resource_type: "task-definition"
+          resource_identifier: "{{ (index .Detail \"taskDefinitionArn\") }}"
+          identifier_type: "arn"
+          region: "{{ (index .Event \"region\") }}"
+      - name: "get_task_memory_metrics_for_oom"
+        type: "aws_get_metric"
+        # AWS/ECS has no per-task metrics (no TaskId dimension), so this is the
+        # memory of the service the task belongs to, taken from group
+        # ("service:<name>"). A standalone task has no service: its empty
+        # ServiceName is dropped and the graph is the cluster's memory.
+        description: "Fetch memory utilization metrics for the task's service."
+        params:
+          namespace: "AWS/ECS"
+          metric_name: "MemoryUtilization"
           dimensions:
             - Name: "ClusterName"
               Value: |
                 {{ (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}
-            - Name: "TaskId"
+            - Name: "ServiceName"
               Value: |
-                {{ (index .Detail "taskArn") | str | default "" | splitList "/" | last }}
+                {{ $group := (index .Detail "group") | str }}{{ if hasPrefix $group "service:" }}{{ $group | splitList ":" | last }}{{ end }}
           period_seconds: 300
           statistic: "Average"
+          start_time_offset: "-1h"
+          end_time_offset: "+5m"
+      - name: "get_container_logs_for_oom"
+        type: "aws_get_log"
+        description: "Fetch logs for the container, looking for OOM messages."
+        params:
+          log_group_name: >-
+            {{ printf "/ecs/%s" (index (splitList "/" (index ((index .Detail "taskDefinitionArn") | splitList ":") 5)) 1) }}
+          task_definition_arn: "{{ (index .Detail \"taskDefinitionArn\") }}"
+          container_name: >-
+            {{ $fc := pickFailingContainer (index .Detail "containers") .TaskDefContainerDefs }}
+            {{ safeIndex $fc "name" }}
+          query: "fields @timestamp, @message | filter @message like /oom|out of memory/i | sort @timestamp desc | limit 100"
+          start_time_offset: "-30m"
+          end_time_offset: "+5m"
+
+  # Rule for tasks stopped due to CannotPullContainerError
+  - name: "ECS_Task_Stopped_CannotPullContainerError_EventBridge"
+    dedup_ttl_seconds: 900
+    triggers:
+      source: "AWS_EventBridge"
+      alert_name: "aws.ecs"
+      event_filters:
+        - template: '{{ eq (index .Event "detailType") "ECS Task State Change" }}'
+          description: "Event detailType is 'ECS Task State Change'"
+        - template: '{{ eq (index .Detail "lastStatus") "STOPPED" }}'
+          description: "Task lastStatus is STOPPED"
+        - template: '{{ containsStr ((index .Detail "stoppedReason") | str) "CannotPullContainerError" }}'
+          description: "stoppedReason contains 'CannotPullContainerError'"
+    event_template:
+      title:
+        template: |
+          ECS Task Stopped: CannotPullContainerError: {{ (index .Detail "group") | default ((index .Detail "taskArn") | str | default "" | splitList "/" | last) }}
+      severity: "Error"
+      fingerprint:
+        # Service-level (cluster + group). See note on ecs-task-stopped fingerprint above.
+        template: "ecs-task-pull-error:{{ (index .Detail \"clusterArn\") | str | default \"\" | splitList \"/\" | last }}:{{ (index .Detail \"group\") | default ((index .Detail \"taskArn\") | str | default \"\" | splitList \"/\" | last) }}"
+      description:
+        template: |
+          {{ $fc := pickFailingContainer (index .Detail "containers") .TaskDefContainerDefs }}
+          ECS Task {{ (index .Detail "taskArn") }} in cluster {{ (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}
+          stopped due to CannotPullContainerError.
+          Task Definition: {{ (index .Detail "taskDefinitionArn") }}.
+          Container: {{ safeIndex $fc "name" }}.
+          Image: {{ safeIndex $fc "image" }}.
+      status: "FIRING"
+      resource_id:
+        # Durable ECS service when the task belongs to one; see the note on
+        # the same block in ECS_Task_All_Events_EventBridge.
+        template: |
+          {{ $group := (index .Detail "group") | str }}
+          {{ $cluster := (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}
+          {{ if and (hasPrefix $group "service:") $cluster }}
+            arn:aws:ecs:{{ (index .Event "region") }}:{{ (index .Event "account") }}:service/{{ $cluster }}/{{ $group | splitList ":" | last }}
+          {{ else }}
+            {{ (index .Detail "taskArn") | str | default "" | splitList "/" | last }}
+          {{ end }}
+      resource_type:
+        template: '{{ $g := (index .Detail "group") | str }}{{ $c := (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}{{ if and (hasPrefix $g "service:") $c }}service{{ else }}task{{ end }}'
+      resource_service_name: 
+        value: "ecs"
+      resource_region: 
+        template: |
+          {{ (index .Event "region") }}
+    actions:
+      - name: "get_task_definition_for_image_pull"
+        type: "aws_get_resource"
+        description: "Fetch task definition details to verify image."
+        params:
+          service_name: "ecs"
+          resource_type: "task-definition"
+          resource_identifier: "{{ (index .Detail \"taskDefinitionArn\") }}"
+          identifier_type: "arn"
+          region: "{{ (index .Event \"region\") }}"
+      - name: "get_ecr_repository_details_for_image_pull"
+        type: "aws_get_resource"
+        description: "Fetch ECR repository details."
+        params:
+          service_name: "ecr"
+          # Repository is everything after the registry host, up to :tag or @digest:
+          # 123456789012.dkr.ecr.us-east-1.amazonaws.com/team/web:v9 -> team/web.
+          # Non-ECR images (e.g. nginx:latest) render empty, so no lookup runs.
+          resource_identifier: >-
+            {{ $fc := pickFailingContainer (index .Detail "containers") .TaskDefContainerDefs }}
+            {{ $image := index ((safeIndex $fc "image") | str | splitList "@") 0 }}
+            {{ $host := index ($image | splitList "/") 0 }}
+            {{ if and (containsStr $host ".dkr.ecr.") (ne $host $image) }}{{ index (splitList ":" (replace $image (printf "%s/" $host) "")) 0 }}{{ end }}
+          identifier_type: "name"
+          region: "{{ (index .Event \"region\") }}"
+      - name: "get_cloudtrail_for_ecr_pull_errors"
+        type: "aws_get_cloudtrail_events"
+        description: "Fetch recent CloudTrail events related to ECR or IAM for potential permission issues."
+        params:
           start_time_offset: "-15m"
           end_time_offset: "+5m"
-      # NOTE: get_task_logs is intentionally NOT run here. Fetching logs requires a
-      # CloudWatch Logs Insights query (StartQuery + 3s poll loop, up to 60s) which
-      # dominates per-event processing time. Running it on EVERY task state change
-      # (the vast majority are healthy RUNNING/PENDING/clean-STOP transitions) was the
-      # primary throughput bottleneck for the EventBridge SQS consumer. Logs are only
-      # useful on FAILURE, and failing stops are already covered with richer log
-      # queries by the dedicated rules: ECS_Task_Stopped_Unexpectedly (non-zero exit),
-      # ECS_Task_Stopped_OutOfMemory, ECS_Task_Stopped_CannotPullContainerError, and
-      # the ELB-health-check stop rule.
+          region: "{{ (index .Event \"region\") }}"
+          lookup_attributes:
+            - AttributeKey: "EventSource"
+              AttributeValue: "ecr.amazonaws.com"
+              event_names: # Common ECR pull API calls; filtered client-side since LookupEvents allows only one AttributeKey per call
+                - "BatchCheckLayerAvailability"
+                - "GetDownloadUrlForLayer"
+                - "GetAuthorizationToken" # Related to login
+            - AttributeKey: "EventSource"
+              AttributeValue: "iam.amazonaws.com" # Look for IAM errors around this time
+          max_results: 50
 
   - name: "ECS_Task_Stopped_Unexpectedly_EventBridge"
     # A crash-looping service otherwise fires (and enriches) once per
@@ -736,189 +822,6 @@ rules:
       #     start_time_offset: "-15m"
       #     end_time_offset: "0m"
 
-  # NOTE: the former ECS_Task_Stuck_In_Pending_EventBridge rule was removed.
-  # ECS emits a PENDING transition once for EVERY task launch and nothing
-  # periodic afterwards, so a transition-triggered rule cannot express
-  # "stuck" — it fired a Warning (plus a CloudWatch metric fetch) on every
-  # healthy launch (~15k events/week on one busy account). Genuine
-  # stuck-in-PENDING detection needs a duration signal (e.g. a CloudWatch
-  # alarm on pending task count), which can feed the alarm rules instead.
-
-  - name: "ECS_Task_Stopped_OutOfMemory_EventBridge"
-    dedup_ttl_seconds: 900
-    triggers:
-      source: "AWS_EventBridge"
-      alert_name: "aws.ecs"
-      event_filters:
-        - template: '{{ eq (index .Event "detailType") "ECS Task State Change" }}'
-          description: "Event detailType is 'ECS Task State Change'"
-        - template: '{{ eq (index .Detail "lastStatus") "STOPPED" }}'
-          description: "Task lastStatus is STOPPED"
-        - template: |
-            {{ $fc := pickFailingContainer (index .Detail "containers") .TaskDefContainerDefs }}
-            {{ or (containsStr ((index .Detail "stoppedReason") | str) "OutOfMemory") (containsStr ((safeIndex $fc "reason") | str) "OutOfMemory") }}
-          description: "task-level stoppedReason or the failing container's own reason mentions OutOfMemory — a container can be OOM-killed without ECS surfacing that at the task level"
-    event_template:
-      title:
-        template: |
-          ECS Task Stopped: OutOfMemory: {{ (index .Detail "group") | default ((index .Detail "taskArn") | str | default "" | splitList "/" | last) }}
-      severity: "Critical"
-      fingerprint:
-        # Service-level (cluster + group). See note on ecs-task-stopped fingerprint above.
-        template: "ecs-task-oom:{{ (index .Detail \"clusterArn\") | str | default \"\" | splitList \"/\" | last }}:{{ (index .Detail \"group\") | default ((index .Detail \"taskArn\") | str | default \"\" | splitList \"/\" | last) }}"
-      description:
-        template: |
-          ECS Task {{ (index .Detail "taskArn") }} in cluster {{ (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}
-          stopped due to OutOfMemoryError.
-          Task Definition: {{ (index .Detail "taskDefinitionArn") }}.
-      status: "FIRING"
-      resource_id:
-        # Durable ECS service when the task belongs to one; see the note on
-        # the same block in ECS_Task_All_Events_EventBridge.
-        template: |
-          {{ $group := (index .Detail "group") | str }}
-          {{ $cluster := (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}
-          {{ if and (hasPrefix $group "service:") $cluster }}
-            arn:aws:ecs:{{ (index .Event "region") }}:{{ (index .Event "account") }}:service/{{ $cluster }}/{{ $group | splitList ":" | last }}
-          {{ else }}
-            {{ (index .Detail "taskArn") | str | default "" | splitList "/" | last }}
-          {{ end }}
-      resource_type:
-        template: '{{ $g := (index .Detail "group") | str }}{{ $c := (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}{{ if and (hasPrefix $g "service:") $c }}service{{ else }}task{{ end }}'
-      resource_service_name:
-        value: "ecs"
-      resource_region:
-        template: "{{ (index .Event \"region\") }}"
-    actions:
-      - name: "get_task_definition_for_oom"
-        type: "aws_get_resource"
-        description: "Fetch task definition details to check memory limits."
-        params:
-          service_name: "ecs"
-          resource_type: "task-definition"
-          resource_identifier: "{{ (index .Detail \"taskDefinitionArn\") }}"
-          identifier_type: "arn"
-          region: "{{ (index .Event \"region\") }}"
-      - name: "get_task_memory_metrics_for_oom"
-        type: "aws_get_metric"
-        description: "Fetch memory utilization metrics for the task."
-        params:
-          namespace: "AWS/ECS" # Or AWS/ECS/ContainerInsights
-          metric_name: "MemoryUtilization"
-          dimensions:
-            - Name: "ClusterName"
-              Value: |
-                {{ (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}
-            - Name: "TaskId"
-              Value: |
-                {{ (index .Detail "taskArn") | str | default "" | splitList "/" | last }}
-          period_seconds: 300
-          statistic: "Average"
-          start_time_offset: "-1h"
-          end_time_offset: "+5m"
-      - name: "get_container_logs_for_oom"
-        type: "aws_get_log"
-        description: "Fetch logs for the container, looking for OOM messages."
-        params:
-          log_group_name: >-
-            {{ printf "/ecs/%s" (index (splitList "/" (index ((index .Detail "taskDefinitionArn") | splitList ":") 5)) 1) }}
-          task_definition_arn: "{{ (index .Detail \"taskDefinitionArn\") }}"
-          container_name: >-
-            {{ $fc := pickFailingContainer (index .Detail "containers") .TaskDefContainerDefs }}
-            {{ safeIndex $fc "name" }}
-          query: "fields @timestamp, @message | filter @message like /oom|out of memory/i | sort @timestamp desc | limit 100"
-          start_time_offset: "-30m"
-          end_time_offset: "+5m"
-
-  # Rule for tasks stopped due to CannotPullContainerError
-  - name: "ECS_Task_Stopped_CannotPullContainerError_EventBridge"
-    dedup_ttl_seconds: 900
-    triggers:
-      source: "AWS_EventBridge"
-      alert_name: "aws.ecs"
-      event_filters:
-        - template: '{{ eq (index .Event "detailType") "ECS Task State Change" }}'
-          description: "Event detailType is 'ECS Task State Change'"
-        - template: '{{ eq (index .Detail "lastStatus") "STOPPED" }}'
-          description: "Task lastStatus is STOPPED"
-        - template: '{{ containsStr ((index .Detail "stoppedReason") | str) "CannotPullContainerError" }}'
-          description: "stoppedReason contains 'CannotPullContainerError'"
-    event_template:
-      title:
-        template: |
-          ECS Task Stopped: CannotPullContainerError: {{ (index .Detail "group") | default ((index .Detail "taskArn") | str | default "" | splitList "/" | last) }}
-      severity: "Error"
-      fingerprint:
-        # Service-level (cluster + group). See note on ecs-task-stopped fingerprint above.
-        template: "ecs-task-pull-error:{{ (index .Detail \"clusterArn\") | str | default \"\" | splitList \"/\" | last }}:{{ (index .Detail \"group\") | default ((index .Detail \"taskArn\") | str | default \"\" | splitList \"/\" | last) }}"
-      description:
-        template: |
-          {{ $fc := pickFailingContainer (index .Detail "containers") .TaskDefContainerDefs }}
-          ECS Task {{ (index .Detail "taskArn") }} in cluster {{ (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}
-          stopped due to CannotPullContainerError.
-          Task Definition: {{ (index .Detail "taskDefinitionArn") }}.
-          Container: {{ safeIndex $fc "name" }}.
-          Image: {{ safeIndex $fc "image" }}.
-      status: "FIRING"
-      resource_id:
-        # Durable ECS service when the task belongs to one; see the note on
-        # the same block in ECS_Task_All_Events_EventBridge.
-        template: |
-          {{ $group := (index .Detail "group") | str }}
-          {{ $cluster := (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}
-          {{ if and (hasPrefix $group "service:") $cluster }}
-            arn:aws:ecs:{{ (index .Event "region") }}:{{ (index .Event "account") }}:service/{{ $cluster }}/{{ $group | splitList ":" | last }}
-          {{ else }}
-            {{ (index .Detail "taskArn") | str | default "" | splitList "/" | last }}
-          {{ end }}
-      resource_type:
-        template: '{{ $g := (index .Detail "group") | str }}{{ $c := (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}{{ if and (hasPrefix $g "service:") $c }}service{{ else }}task{{ end }}'
-      resource_service_name: 
-        value: "ecs"
-      resource_region: 
-        template: |
-          {{ (index .Event "region") }}
-    actions:
-      - name: "get_task_definition_for_image_pull"
-        type: "aws_get_resource"
-        description: "Fetch task definition details to verify image."
-        params:
-          service_name: "ecs"
-          resource_type: "task-definition"
-          resource_identifier: "{{ (index .Detail \"taskDefinitionArn\") }}"
-          identifier_type: "arn"
-          region: "{{ (index .Event \"region\") }}"
-      - name: "get_ecr_repository_details_for_image_pull"
-        type: "aws_get_resource"
-        description: "Fetch ECR repository details."
-        params:
-          service_name: "ecr"
-          # Attempt to parse repo name from image string (e.g., account.dkr.ecr.region.amazonaws.com/repo:tag)
-          resource_identifier: | # Ensure $image is a string before splitList
-            {{ $fc := pickFailingContainer (index .Detail "containers") .TaskDefContainerDefs }}
-            {{ $image := safeIndex $fc "image" | str | default "" }}
-            {{ $parts := $image | splitList "/" }}
-            {{ if ge (len $parts) 2 }}{{ index (splitList ":" (index $parts 1)) 0 }}{{ else }}{{ $image }}{{ end }} # Basic parsing
-          identifier_type: "name" # Assuming repo name is the identifier
-          region: "{{ (index .Event \"region\") }}" # ECR repo is regional
-      - name: "get_cloudtrail_for_ecr_pull_errors"
-        type: "aws_get_cloudtrail_events"
-        description: "Fetch recent CloudTrail events related to ECR or IAM for potential permission issues."
-        params:
-          start_time_offset: "-15m"
-          end_time_offset: "+5m"
-          region: "{{ (index .Event \"region\") }}"
-          lookup_attributes:
-            - AttributeKey: "EventSource"
-              AttributeValue: "ecr.amazonaws.com"
-              event_names: # Common ECR pull API calls; filtered client-side since LookupEvents allows only one AttributeKey per call
-                - "BatchCheckLayerAvailability"
-                - "GetDownloadUrlForLayer"
-                - "GetAuthorizationToken" # Related to login
-            - AttributeKey: "EventSource"
-              AttributeValue: "iam.amazonaws.com" # Look for IAM errors around this time
-          max_results: 50
-
 
 # Rule for ECS Application (ALB Target) HTTP 5xx Errors
   - name: "ECS_ALB_Target_5XX_Errors_Alarm"
@@ -964,20 +867,8 @@ rules:
       resource_region:
         template: "{{ (index .Event \"region\") }}"
     actions:
-      - name: "get_ecs_service_logs_on_alb_5xx"
-        type: "aws_get_log"
-        description: "Fetch application logs from the ECS service associated with the Target Group."
-        params:
-          auto_detect_log_group: true # Requires cluster_name and service_name
-          # These need to be derived. This is the tricky part: mapping TargetGroup ARN to ECS Service/Cluster.
-          # Option 1: If alarm tags or description contains ECS cluster/service name.
-          # Option 2: A new action `aws_get_ecs_service_for_target_group` to find the service.
-          # For now, placeholder - assuming you might tag alarms or have a convention.
-          cluster_name: "{{ index ((index .Detail \"alarmName\") | str | default \"\" | splitList \"-\") 0 }}" # Placeholder: Assumes alarm name format like MyCluster-MyService-ALB-5XX
-          service_name: "{{ index ((index .Detail \"alarmName\") | str | default \"\" | splitList \"-\") 1 }}" # Placeholder: Assumes alarm name format
-          query: "fields @timestamp, @message | filter @message like /error|exception/i | sort @timestamp desc | limit 200"
-          start_time_offset: "-15m" # Look at logs around the time the alarm triggered
-          end_time_offset: "+5m"
+      # No ECS log fetch: nothing on the alarm says which ECS service owns the
+      # target group, and guessing it from the alarm name returned nothing.
       - name: "get_alb_metrics_on_5xx"
         type: "aws_get_metric"
         description: "Fetch related ALB metrics (TargetResponseTime, RequestCount)."
@@ -997,6 +888,85 @@ rules:
       # Add aws_get_cloudtrail_events for recent ECS deployments/updates.
 
 ## fallback rules
+# Rule for all ECS Task State Change events
+  - name: "ECS_Task_All_Events_EventBridge"
+    # Service-level fingerprint + TTL: a service's tasks emit 5-7 lifecycle
+    # events each, so per-delivery execution flooded events (tens of thousands
+    # per week on busy clusters). Dedup runs before enrichment, so suppressed
+    # deliveries cost nothing; at most one emission per service+status per
+    # window, and a status change starts a new dedup key so transitions always
+    # emit immediately.
+    dedup_ttl_seconds: 900
+    triggers:
+      source: "AWS_EventBridge"
+      alert_name: "aws.ecs"
+      event_filters:
+        - template: '{{ eq (index .Event "detailType") "ECS Task State Change" }}'
+          description: "Event detailType is 'ECS Task State Change'"
+        - template: '{{ eq (index .Detail "lastStatus") "STOPPED" }}'
+          description: "Only STOPPED emits an event. Intermediate lifecycle transitions (PROVISIONING/PENDING/RUNNING/DEACTIVATING/...) arrive 5-7 times per task and carry no incident signal; resource bookkeeping for them is handled by the actions-only Resource_Sync_ECS_Task_State_Change rule"
+    event_template:
+      title:
+        template: |
+          ECS Task Event: {{ (index .Detail "lastStatus") }} for {{ (index .Detail "group") | default ((index .Detail "taskArn") | str | default "" | splitList "/" | last) }}
+      severity: "Info" # Default severity for all events
+      description:
+        template: |
+          ECS Task {{ (index .Detail "taskArn") }} in cluster {{ (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}
+          changed state to {{ (index .Detail "lastStatus") }}. Desired: {{ (index .Detail "desiredStatus") }}.
+          Event ID: {{ (index .Event "id") }}.
+          Detail: {{ toJson .Detail }}
+      status: "CLOSED" # Default status for all events
+      fingerprint:
+        # Service-level (cluster + group + status), NOT taskArn: task-level
+        # fingerprints are unique on every run, so replacement tasks of the
+        # same service never dedup and each one becomes a fresh event. The
+        # earlier concern about wasted enrichment on a shared fingerprint is
+        # gone now that dedup_ttl_seconds suppresses repeats before actions run.
+        template: "ecs-task:{{ (index .Detail \"clusterArn\") | str | default \"\" | splitList \"/\" | last }}:{{ (index .Detail \"group\") | default ((index .Detail \"taskArn\") | str | default \"\" | splitList \"/\" | last) }}:{{ (index .Detail \"lastStatus\") }}"
+      resource_id:
+        # Attach the event to the durable ECS service when the task belongs
+        # to one (group "service:<name>") — the ephemeral task is usually
+        # gone minutes after the event fires, leaving the subject pointing
+        # at a dead resource. Standalone/scheduled (family:) tasks keep the
+        # task id.
+        template: |
+          {{ $group := (index .Detail "group") | str }}
+          {{ $cluster := (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}
+          {{ if and (hasPrefix $group "service:") $cluster }}
+            arn:aws:ecs:{{ (index .Event "region") }}:{{ (index .Event "account") }}:service/{{ $cluster }}/{{ $group | splitList ":" | last }}
+          {{ else if (index .Event "resources") }}
+            {{ (index .Event "resources" 0) | str | default "" | splitList "/" | last }}
+          {{ else }}
+            {{ (index .Detail "taskArn") | str | default "" | splitList "/" | last | default "N/A" }}
+          {{ end }}
+      resource_type:
+        template: '{{ $g := (index .Detail "group") | str }}{{ $c := (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}{{ if and (hasPrefix $g "service:") $c }}service{{ else }}task{{ end }}'
+      resource_service_name:
+        value: "ecs"
+      resource_region:
+        template: "{{ (index .Event \"region\") }}"
+    actions:
+      # NOTE: no aws_get_resource task fetch here. The Task State Change event's
+      # .Detail already carries the full task object (and the description embeds
+      # it), so a per-event DescribeTasks added nothing — and running it on EVERY
+      # task state change throttled the ECS API (ThrottlingException retries) and
+      # backed up the EventBridge SQS queue. Tasks are also frequently gone by the
+      # time the event is processed (CloudTrail delivery lag), so the fetch mostly
+      # produced "target resource gone" noise.
+      # NOTE: no per-task metric fetch here either. AWS/ECS has no TaskId
+      # dimension, so it always came back empty, and it ran on every task
+      # state change.
+      # NOTE: get_task_logs is intentionally NOT run here. Fetching logs requires a
+      # CloudWatch Logs Insights query (StartQuery + 3s poll loop, up to 60s) which
+      # dominates per-event processing time. Running it on EVERY task state change
+      # (the vast majority are healthy RUNNING/PENDING/clean-STOP transitions) was the
+      # primary throughput bottleneck for the EventBridge SQS consumer. Logs are only
+      # useful on FAILURE, and failing stops are already covered with richer log
+      # queries by the dedicated rules: ECS_Task_Stopped_Unexpectedly (non-zero exit),
+      # ECS_Task_Stopped_OutOfMemory, ECS_Task_Stopped_CannotPullContainerError, and
+      # the ELB-health-check stop rule.
+
   # Rule for all ECS Service or Deployment State Change events
   - name: "ECS_Service_All_Events_EventBridge"
     # SERVICE_STEADY_STATE alone fires thousands of times per week per busy
@@ -1019,12 +989,14 @@ rules:
         template: "ECS Service Event: {{ (index .Event \"detailType\") }} for {{ (index .Detail \"serviceName\") | default ((index .Detail \"clusterName\") | default \"Unknown Cluster\") }}"
       severity: "Info"
       description:
+        # Reason: ensure reason is string or handled by default.
+        # Cluster / Service: ensure input to splitList is string.
         template: |
           ECS Service event of type '{{ (index .Event "detailType") }}' occurred.
           Event Name: {{ (index .Detail "eventName") | default "N/A" }}.
-          Reason: {{ (index .Detail "reason") | default "N/A" }}. # Ensure reason is string or handled by default
-          Cluster: {{ (index .Detail "clusterArn") | str | default "" | splitList "/" | last | default ((index .Detail "clusterName") | default "N/A") }}. # Ensure input to splitList is string
-          Service: {{ (index .Detail "serviceArn") | str | default "" | splitList "/" | last | default ((index .Detail "serviceName") | default "N/A") }}. # Ensure input to splitList is string
+          Reason: {{ (index .Detail "reason") | default "N/A" }}.
+          Cluster: {{ (index .Detail "clusterArn") | str | default "" | splitList "/" | last | default ((index .Detail "clusterName") | default "N/A") }}.
+          Service: {{ (index .Detail "serviceArn") | str | default "" | splitList "/" | last | default ((index .Detail "serviceName") | default "N/A") }}.
           Event ID: {{ (index .Event "id") }}.
           Detail: {{ toJson .Detail }}
       status: "CLOSED" # Default status
@@ -1172,38 +1144,6 @@ rules:
         description: "Fetch details of the ECR repository."
 
 ########## EC2 #############
-  - name: "EC2_All_Events_EventBridge"
-    triggers:
-      source: "AWS_EventBridge"
-      alert_name: "aws.ec2"
-      event_filters:
-        - template: '{{ ne (index .Event "detailType") "AWS API Call via CloudTrail" }}'
-          description: "Exclude CloudTrail API call events - they are high volume noise (DescribeInstances, etc.) and lack instanceId for proper processing"
-    event_template:
-      title:
-        template: |
-          EC2 Event: {{ (index .Event "detailType") }} for {{ with (safeIndex .Detail "instanceId") }}{{ . }}{{ else }}{{ $res := safeIndex .Event "resources" }}{{ if $res }}{{ index $res 0 | str | default "" | splitList "/" | last }}{{ else }}{{ safeIndex .Detail "eventName" }}{{ end }}{{ end }}
-      severity: "Info"
-      description:
-        template: |
-          EventBridge event from aws.ec2: {{ (index .Event "detailType") }} for resource(s) {{ (index .Event "resources") }}. Detail: {{ toJson .Detail }}
-      status: "CLOSED"
-      fingerprint:
-        template: "{{ with (safeIndex .Detail \"instanceId\") }}{{ . }}{{ else }}{{ safeIndex .Detail \"eventName\" }}-{{ safeIndex .Detail \"requestID\" }}{{ end }}:{{ (index .Event \"region\") }}:{{ (index .Event \"account\") }}"
-      # For generic events, relying on default derivation from event.resources might be best,
-      # but we can provide templates as a best effort.
-      resource_id:
-        template: |
-          {{ $iid := safeIndex .Detail "instanceId" }}{{ if $iid }}{{ $iid }}{{ else }}{{ $res := safeIndex .Event "resources" }}{{ if $res }}{{ index $res 0 | str | default "" | splitList "/" | last }}{{ else }}{{ safeIndex .Detail "eventName" }}{{ end }}{{ end }}
-      resource_type: # e.g., ec2-instance, ec2-volume. This template tries to derive the type part.
-        template: |
-          {{ $iid := safeIndex .Detail "instanceId" }}{{ if $iid }}ec2-instance{{ else }}{{ $res := safeIndex .Event "resources" }}{{ if $res }}{{ $arnType := index (splitList "/" (index (index $res 0 | str | default "" | splitList ":") 5)) 0 | default "resource" }}ec2-{{ $arnType }}{{ else }}ec2-resource{{ end }}{{ end }}
-      resource_service_name:
-        value: "ec2"
-      resource_region:
-        template: "{{ (index .Event \"region\") }}"
-    actions: []
-
   - name: "EC2_Instance_Unexpected_Stop_Terminate_EventBridge"
     triggers:
       source: "AWS_EventBridge"
@@ -1293,6 +1233,38 @@ rules:
           start_time_offset: "-1h"
           end_time_offset: "0m"
         description: "Fetch Instance Status Check failures for the instance."
+
+  - name: "EC2_All_Events_EventBridge"
+    triggers:
+      source: "AWS_EventBridge"
+      alert_name: "aws.ec2"
+      event_filters:
+        - template: '{{ ne (index .Event "detailType") "AWS API Call via CloudTrail" }}'
+          description: "Exclude CloudTrail API call events - they are high volume noise (DescribeInstances, etc.) and lack instanceId for proper processing"
+    event_template:
+      title:
+        template: |
+          EC2 Event: {{ (index .Event "detailType") }} for {{ with (safeIndex .Detail "instanceId") }}{{ . }}{{ else }}{{ $res := safeIndex .Event "resources" }}{{ if $res }}{{ index $res 0 | str | default "" | splitList "/" | last }}{{ else }}{{ safeIndex .Detail "eventName" }}{{ end }}{{ end }}
+      severity: "Info"
+      description:
+        template: |
+          EventBridge event from aws.ec2: {{ (index .Event "detailType") }} for resource(s) {{ (index .Event "resources") }}. Detail: {{ toJson .Detail }}
+      status: "CLOSED"
+      fingerprint:
+        template: "{{ with (safeIndex .Detail \"instanceId\") }}{{ . }}{{ else }}{{ safeIndex .Detail \"eventName\" }}-{{ safeIndex .Detail \"requestID\" }}{{ end }}:{{ (index .Event \"region\") }}:{{ (index .Event \"account\") }}"
+      # For generic events, relying on default derivation from event.resources might be best,
+      # but we can provide templates as a best effort.
+      resource_id:
+        template: |
+          {{ $iid := safeIndex .Detail "instanceId" }}{{ if $iid }}{{ $iid }}{{ else }}{{ $res := safeIndex .Event "resources" }}{{ if $res }}{{ index $res 0 | str | default "" | splitList "/" | last }}{{ else }}{{ safeIndex .Detail "eventName" }}{{ end }}{{ end }}
+      resource_type: # e.g., ec2-instance, ec2-volume. This template tries to derive the type part.
+        template: |
+          {{ $iid := safeIndex .Detail "instanceId" }}{{ if $iid }}ec2-instance{{ else }}{{ $res := safeIndex .Event "resources" }}{{ if $res }}{{ $arnType := index (splitList "/" (index (index $res 0 | str | default "" | splitList ":") 5)) 0 | default "resource" }}ec2-{{ $arnType }}{{ else }}ec2-resource{{ end }}{{ end }}
+      resource_service_name:
+        value: "ec2"
+      resource_region:
+        template: "{{ (index .Event \"region\") }}"
+    actions: []
 
 ########## RESOURCE SYNC RULES #############
 # These rules update cloud_resourses table in real-time based on EventBridge events
@@ -1878,3 +1850,286 @@ rules:
             last_modified_time: "{{ (index .Event \"time\") }}"
             last_modified_by: "{{ safeIndex .Detail \"userIdentity\" \"principalId\" }}"
         description: "Update cloud_resourses table for Lambda function"
+
+########## ELB (aws.elasticloadbalancing) RULES #############
+# ELB (ALB/NLB/Gateway LB) has no native EventBridge state-change events, so
+# lifecycle/config visibility comes entirely from CloudTrail API calls.
+
+  - name: "ELB_CloudTrail_Events"
+    # Visible/incident-worthy subset only. Everything else (create, modify,
+    # register/deregister, listener changes, etc.) is routine and is synced
+    # silently by ELB_CloudTrail_Resource_Sync below instead of alerting.
+    triggers:
+      source: "AWS_EventBridge"
+      alert_name: "aws.elasticloadbalancing"
+      event_filters:
+        - template: '{{ eq (index .Event "detailType") "AWS API Call via CloudTrail" }}'
+          description: "CloudTrail API call event"
+        - template: '{{ eq (index .Detail "eventSource") "elasticloadbalancing.amazonaws.com" }}'
+          description: "Event source is Elastic Load Balancing"
+        - template: '{{ eq (index .Detail "eventName") "DeleteLoadBalancer" }}'
+          description: "Event name is DeleteLoadBalancer — a load balancer disappearing is incident-worthy"
+    event_template:
+      title:
+        # Classic ELB's DeleteLoadBalancer has no loadBalancerArn, only
+        # loadBalancerName — construct the same ARN format aws_elb.go uses
+        # so Classic deletes get a real, unique identifier instead of "".
+        template: 'ELB DeleteLoadBalancer: {{ default (printf "arn:aws:elasticloadbalancing:%s:%s:loadbalancer/%s" (index .Event "region") (index .Event "account") (safeIndex .Detail "requestParameters" "loadBalancerName")) (safeIndex .Detail "requestParameters" "loadBalancerArn") }}'
+      severity: "Info"
+      description:
+        template: |
+          ELB event {{ (index .Detail "eventName") }} by {{ safeIndex .Detail "userIdentity" "principalId" }} in account {{ (index .Event "account") }} (region {{ (index .Event "region") }}). Detail: {{ toJson .Detail }}
+      status: "Closed"
+      fingerprint:
+        template: '{{ default (printf "arn:aws:elasticloadbalancing:%s:%s:loadbalancer/%s" (index .Event "region") (index .Event "account") (safeIndex .Detail "requestParameters" "loadBalancerName")) (safeIndex .Detail "requestParameters" "loadBalancerArn") }}:{{ (index .Event "region") }}:{{ (index .Event "account") }}'
+      resource_id:
+        template: '{{ default (printf "arn:aws:elasticloadbalancing:%s:%s:loadbalancer/%s" (index .Event "region") (index .Event "account") (safeIndex .Detail "requestParameters" "loadBalancerName")) (safeIndex .Detail "requestParameters" "loadBalancerArn") }}'
+      resource_type:
+        value: "loadbalancer"
+      resource_service_name:
+        value: "AWSELB"
+      resource_region:
+        template: "{{ (index .Event \"region\") }}"
+    actions: []
+
+  - name: "ELB_CloudTrail_Resource_Sync"
+    # Silent inventory sync for load-balancer-level lifecycle/config calls
+    # (including DeleteLoadBalancer, which ELB_CloudTrail_Events above also
+    # matches independently to raise the visible event). Routine activity
+    # like creating a load balancer is not an incident and must not alert.
+    #
+    # Target group and listener events (ModifyTargetGroup*, Register/
+    # DeregisterTargets, Create/Modify/DeleteListener) are deliberately NOT
+    # listed here, even though they're high-frequency (fired constantly by
+    # the AWS LB Controller, ECS, and ASGs) and would otherwise be no-ops:
+    # target groups/listeners aren't inventoried (serviceResourceTypeMap for
+    # AWSELB only knows *loadbalancer types), so there's nothing for
+    # update_cloud_resource to do with them.
+    #
+    # Eligible() (event_eventbridge_processor.go) is derived from exactly
+    # this rule's own event-name filter and runs before Process(), in the
+    # SQS receive loop (event_eventbridge.go:841). No other rule in this
+    # runbook claims "aws.elasticloadbalancing", so an event name listed in
+    # neither ELB rule is ack-deleted there and never reaches any processor,
+    # default included — listing these here would only add a full
+    # filter+action render to reach the same no-op outcome.
+    actions_only: true
+    triggers:
+      source: "AWS_EventBridge"
+      alert_name: "aws.elasticloadbalancing"
+      event_filters:
+        - template: '{{ eq (index .Event "detailType") "AWS API Call via CloudTrail" }}'
+          description: "CloudTrail API call event"
+        - template: '{{ eq (index .Detail "eventSource") "elasticloadbalancing.amazonaws.com" }}'
+          description: "Event source is Elastic Load Balancing"
+        - template: '{{ $en := (index .Detail "eventName") }}{{ or (eq $en "CreateLoadBalancer") (eq $en "DeleteLoadBalancer") (eq $en "SetSecurityGroups") }}'
+          description: "Event name is one of the tracked ELB lifecycle/config calls"
+    actions:
+      - name: "update_elb_resource"
+        type: "update_cloud_resource"
+        params:
+          # ELBv2 (ALB/NLB/GWLB) events always carry loadBalancerArn, which is the
+          # stored Id (aws_elb.go). Classic ELB events carry only loadBalancerName —
+          # on Create it is in requestParameters, the response is just dNSName — and
+          # Classic rows are stored with Id = name, so the bare name is the key.
+          # Never build an ARN from a possibly-empty name: a bare
+          # "...:loadbalancer/" prefix is non-blank and would match every LB.
+          resource_id: |
+            {{ $en := (index .Detail "eventName") }}{{ $arn := "" }}{{ $name := "" }}{{ if eq $en "CreateLoadBalancer" }}{{ $arn = safeIndex .Detail "responseElements" "loadBalancers" 0 "loadBalancerArn" | str }}{{ $name = safeIndex .Detail "requestParameters" "loadBalancerName" | str }}{{ else if eq $en "DeleteLoadBalancer" }}{{ $arn = safeIndex .Detail "requestParameters" "loadBalancerArn" | str }}{{ $name = safeIndex .Detail "requestParameters" "loadBalancerName" | str }}{{ else if eq $en "SetSecurityGroups" }}{{ $arn = safeIndex .Detail "requestParameters" "loadBalancerArn" | str }}{{ end }}{{ default $name $arn }}
+          service_name: "AWSELB"
+          # aws_elb.go stores Classic ELBs as "loadbalancer" but ALB/NLB/GWLB as
+          # "application_loadbalancer"/"network_loadbalancer"/"gateway_loadbalancer"
+          # (common.go:349, getAwsServiceResourceType). A hardcoded "loadbalancer"
+          # here would miss every non-Classic row in the pre-reconcile's
+          # "type = $4" match and orphan a duplicate row. Modern ARNs encode the
+          # kind as the segment right after "loadbalancer/" (app/net/gwy);
+          # Classic keys are plain names with no "/".
+          resource_type: |
+            {{ $en := (index .Detail "eventName") }}{{ $arn := "" }}{{ $name := "" }}{{ if eq $en "CreateLoadBalancer" }}{{ $arn = safeIndex .Detail "responseElements" "loadBalancers" 0 "loadBalancerArn" | str }}{{ $name = safeIndex .Detail "requestParameters" "loadBalancerName" | str }}{{ else if eq $en "DeleteLoadBalancer" }}{{ $arn = safeIndex .Detail "requestParameters" "loadBalancerArn" | str }}{{ $name = safeIndex .Detail "requestParameters" "loadBalancerName" | str }}{{ else if eq $en "SetSecurityGroups" }}{{ $arn = safeIndex .Detail "requestParameters" "loadBalancerArn" | str }}{{ end }}{{ $parts := splitList "/" (default $name $arn) }}{{ if lt (len $parts) 4 }}loadbalancer{{ else }}{{ $t := index $parts 1 }}{{ if eq $t "app" }}application_loadbalancer{{ else if eq $t "net" }}network_loadbalancer{{ else if eq $t "gwy" }}gateway_loadbalancer{{ else }}loadbalancer{{ end }}{{ end }}
+          region: "{{ (index .Event \"region\") }}"
+          new_status: |
+            {{ $en := (index .Detail "eventName") }}{{ if eq $en "CreateLoadBalancer" }}Active{{ else if eq $en "DeleteLoadBalancer" }}Deleted{{ end }}
+          update_last_seen: true
+          update_meta: true
+          meta_updates:
+            last_api_call: "{{ (index .Detail \"eventName\") }}"
+            last_modified_by: '{{ safeIndex .Detail "userIdentity" "principalId" }}'
+            last_modified_time: "{{ (index .Event \"time\") }}"
+        description: "Update cloud_resourses table for ELB lifecycle/config change"
+
+########## SQS (aws.sqs) RULES #############
+# SQS has no native EventBridge state-change events, so queue lifecycle/config
+# visibility comes entirely from CloudTrail API calls.
+
+  - name: "SQS_CloudTrail_Events"
+    # Visible/incident-worthy subset only: a queue disappearing, its redrive
+    # policy or other attributes changing, or its messages being purged.
+    # CreateQueue is routine and is synced silently by
+    # SQS_CloudTrail_Resource_Sync below instead of alerting.
+    triggers:
+      source: "AWS_EventBridge"
+      alert_name: "aws.sqs"
+      event_filters:
+        - template: '{{ eq (index .Event "detailType") "AWS API Call via CloudTrail" }}'
+          description: "CloudTrail API call event"
+        - template: '{{ eq (index .Detail "eventSource") "sqs.amazonaws.com" }}'
+          description: "Event source is Simple Queue Service"
+        - template: '{{ $en := (index .Detail "eventName") }}{{ or (eq $en "DeleteQueue") (eq $en "SetQueueAttributes") (eq $en "PurgeQueue") }}'
+          description: "Event name is DeleteQueue, SetQueueAttributes, or PurgeQueue — queue disappearing, redrive/config change, or message loss"
+    event_template:
+      title:
+        # Inventory sync (aws_queueservice.go) stores the queue by name, not
+        # by queueUrl — derive the name (the URL's last path segment) so this
+        # lands on the same identifier as the synced row.
+        template: |
+          {{ $en := (index .Detail "eventName") }}SQS {{ $en }}: {{ safeIndex .Detail "requestParameters" "queueUrl" | str | default "" | splitList "/" | last }}
+      severity: "Info"
+      description:
+        template: |
+          SQS event {{ (index .Detail "eventName") }} by {{ safeIndex .Detail "userIdentity" "principalId" }} in account {{ (index .Event "account") }} (region {{ (index .Event "region") }}). Detail: {{ toJson .Detail }}
+      status: "Closed"
+      fingerprint:
+        template: |
+          {{ safeIndex .Detail "requestParameters" "queueUrl" | str | default "" | splitList "/" | last }}:{{ (index .Event "region") }}:{{ (index .Event "account") }}
+      resource_id:
+        template: |
+          {{ safeIndex .Detail "requestParameters" "queueUrl" | str | default "" | splitList "/" | last }}
+      resource_type:
+        value: "queue"
+      resource_service_name:
+        value: "AWSQueueService"
+      resource_region:
+        template: "{{ (index .Event \"region\") }}"
+    actions: []
+
+  - name: "SQS_CloudTrail_Resource_Sync"
+    # Silent inventory sync for all 4 tracked SQS lifecycle/config calls
+    # (including DeleteQueue/SetQueueAttributes/PurgeQueue, which
+    # SQS_CloudTrail_Events above also matches independently to raise the
+    # visible event). Creating a queue is not an incident and must not alert.
+    actions_only: true
+    triggers:
+      source: "AWS_EventBridge"
+      alert_name: "aws.sqs"
+      event_filters:
+        - template: '{{ eq (index .Event "detailType") "AWS API Call via CloudTrail" }}'
+          description: "CloudTrail API call event"
+        - template: '{{ eq (index .Detail "eventSource") "sqs.amazonaws.com" }}'
+          description: "Event source is Simple Queue Service"
+        - template: '{{ $en := (index .Detail "eventName") }}{{ or (eq $en "CreateQueue") (eq $en "DeleteQueue") (eq $en "SetQueueAttributes") (eq $en "PurgeQueue") }}'
+          description: "Event name is one of the tracked SQS lifecycle/config calls"
+    actions:
+      - name: "update_sqs_resource"
+        type: "update_cloud_resource"
+        params:
+          resource_id: |
+            {{ $en := (index .Detail "eventName") }}{{ if eq $en "CreateQueue" }}{{ safeIndex .Detail "responseElements" "queueUrl" | str | default "" | splitList "/" | last }}{{ else }}{{ safeIndex .Detail "requestParameters" "queueUrl" | str | default "" | splitList "/" | last }}{{ end }}
+          service_name: "AWSQueueService"
+          resource_type: "queue"
+          region: "{{ (index .Event \"region\") }}"
+          new_status: |
+            {{ $en := (index .Detail "eventName") }}{{ if eq $en "CreateQueue" }}Active{{ else if eq $en "DeleteQueue" }}Deleted{{ end }}
+          update_last_seen: true
+          update_meta: true
+          meta_updates:
+            last_api_call: "{{ (index .Detail \"eventName\") }}"
+            last_modified_by: '{{ safeIndex .Detail "userIdentity" "principalId" }}'
+            last_modified_time: "{{ (index .Event \"time\") }}"
+        description: "Update cloud_resourses table for SQS lifecycle/config change"
+
+########## SNS (aws.sns) RULES #############
+# SNS has no native EventBridge state-change events, so topic lifecycle/
+# config visibility comes entirely from CloudTrail API calls. Subscriptions
+# are not tracked (see SNS_CloudTrail_Resource_Sync below for why).
+
+  - name: "SNS_CloudTrail_Events"
+    # Visible/incident-worthy subset only: a topic disappearing or its
+    # attributes changing. CreateTopic is routine and is synced silently by
+    # SNS_CloudTrail_Resource_Sync below instead of alerting.
+    triggers:
+      source: "AWS_EventBridge"
+      alert_name: "aws.sns"
+      event_filters:
+        - template: '{{ eq (index .Event "detailType") "AWS API Call via CloudTrail" }}'
+          description: "CloudTrail API call event"
+        - template: '{{ eq (index .Detail "eventSource") "sns.amazonaws.com" }}'
+          description: "Event source is Simple Notification Service"
+        - template: '{{ $en := (index .Detail "eventName") }}{{ or (eq $en "DeleteTopic") (eq $en "SetTopicAttributes") }}'
+          description: "Event name is DeleteTopic or SetTopicAttributes — topic disappearing or config change"
+    event_template:
+      title:
+        template: |
+          {{ $en := (index .Detail "eventName") }}SNS {{ $en }}: {{ safeIndex .Detail "requestParameters" "topicArn" }}
+      severity: "Info"
+      description:
+        template: |
+          SNS event {{ (index .Detail "eventName") }} by {{ safeIndex .Detail "userIdentity" "principalId" }} in account {{ (index .Event "account") }} (region {{ (index .Event "region") }}). Detail: {{ toJson .Detail }}
+      status: "Closed"
+      fingerprint:
+        template: |
+          {{ safeIndex .Detail "requestParameters" "topicArn" }}:{{ (index .Event "region") }}:{{ (index .Event "account") }}
+      resource_id:
+        # Inventory (aws_sns.go) stores topics by name, not ARN — use the same
+        # name extraction as the sync action below so this lines up with the
+        # stored resourse_id for any "view resource" linking.
+        template: |
+          {{ safeIndex .Detail "requestParameters" "topicArn" | str | default "" | splitList ":" | last }}
+      resource_type:
+        value: "topic"
+      resource_service_name:
+        value: "AmazonSNS"
+      resource_region:
+        template: "{{ (index .Event \"region\") }}"
+    actions: []
+
+  - name: "SNS_CloudTrail_Resource_Sync"
+    # Silent inventory sync for topic-level lifecycle/config calls (including
+    # DeleteTopic/SetTopicAttributes, which SNS_CloudTrail_Events above also
+    # matches independently to raise the visible event). Creating a topic is
+    # not an incident and must not alert.
+    #
+    # Subscribe/Unsubscribe are deliberately NOT listed here, even though
+    # subscription lifecycle is otherwise invisible: subscriptions aren't
+    # inventoried (serviceResourceTypeMap for AWSSNS only knows "topic"), so
+    # there's nothing for update_cloud_resource to do with them — a real
+    # lookup would find nothing (or, for pending email/HTTP(S) confirmations,
+    # collapse every one onto a single "PendingConfirmation" row) and
+    # insert/collide on a cloud_resourses row that no bulk sync would ever
+    # own.
+    #
+    # Eligible() (event_eventbridge_processor.go) is derived from exactly
+    # this rule's own event-name filter and runs before Process(), in the
+    # SQS receive loop (event_eventbridge.go:841). No other rule in this
+    # runbook claims "aws.sns", so an event name listed in neither SNS rule
+    # is ack-deleted there and never reaches any processor, default
+    # included — listing Subscribe/Unsubscribe here would only add a full
+    # filter+action render to reach the same no-op outcome.
+    actions_only: true
+    triggers:
+      source: "AWS_EventBridge"
+      alert_name: "aws.sns"
+      event_filters:
+        - template: '{{ eq (index .Event "detailType") "AWS API Call via CloudTrail" }}'
+          description: "CloudTrail API call event"
+        - template: '{{ eq (index .Detail "eventSource") "sns.amazonaws.com" }}'
+          description: "Event source is Simple Notification Service"
+        - template: '{{ $en := (index .Detail "eventName") }}{{ or (eq $en "CreateTopic") (eq $en "DeleteTopic") (eq $en "SetTopicAttributes") }}'
+          description: "Event name is one of the tracked SNS lifecycle/config calls"
+    actions:
+      - name: "update_sns_resource"
+        type: "update_cloud_resource"
+        params:
+          resource_id: |
+            {{ $en := (index .Detail "eventName") }}{{ if eq $en "CreateTopic" }}{{ safeIndex .Detail "responseElements" "topicArn" | str | default "" | splitList ":" | last }}{{ else }}{{ safeIndex .Detail "requestParameters" "topicArn" | str | default "" | splitList ":" | last }}{{ end }}
+          service_name: "AmazonSNS"
+          resource_type: "topic"
+          region: "{{ (index .Event \"region\") }}"
+          new_status: |
+            {{ $en := (index .Detail "eventName") }}{{ if eq $en "CreateTopic" }}Active{{ else if eq $en "DeleteTopic" }}Deleted{{ end }}
+          update_last_seen: true
+          update_meta: true
+          meta_updates:
+            last_api_call: "{{ (index .Detail \"eventName\") }}"
+            last_modified_by: '{{ safeIndex .Detail "userIdentity" "principalId" }}'
+            last_modified_time: "{{ (index .Event \"time\") }}"
+        description: "Update cloud_resourses table for SNS lifecycle/config change"

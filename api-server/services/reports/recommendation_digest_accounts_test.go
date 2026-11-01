@@ -46,7 +46,7 @@ func TestAccountSectionsKeepAccountsWithOnlyHeaderNumbers(t *testing.T) {
 	assert.Empty(t, quiet["recommendations"])
 	assert.Equal(t, 40, quiet["totals"].(map[string]any)["carryover_count"])
 
-	security := buildSecurityPostureAccountSections(nil, map[string]securityPostureCounts{"cooling": {Critical: 5}}, nil)
+	security := buildSecurityPostureAccountSections(nil, map[string]securityPostureCounts{"cooling": {Critical: 5}}, nil, nil)
 	cooling := security["cooling"].(map[string]any)
 	assert.Equal(t, "cooling", cooling["account_name"])
 	assert.Equal(t, 5, cooling["totals"].(map[string]any)["critical_count"])

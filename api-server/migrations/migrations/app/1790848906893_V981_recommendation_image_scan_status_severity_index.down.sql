@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_recommendation_image_scan_acct_img_status_sev;

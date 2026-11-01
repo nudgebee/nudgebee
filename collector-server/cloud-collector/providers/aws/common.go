@@ -55,6 +55,26 @@ func isRegionUnreachable(err error) bool {
 	return false
 }
 
+// isGatewayFailureWithoutRequestID reports whether err is a 5xx response that did
+// not come from AWS. Every AWS API response carries a request id; a 5xx without one
+// (an HTML 504 page, say) was produced by something between the collector and the
+// regional endpoint. It is the same condition as a failed dial — the region cannot
+// be reached — seen from a network path where a gateway answers on the region's
+// behalf, after the SDK has retried it (~30s per attempt). A 5xx from AWS itself
+// has a request id and still surfaces.
+func isGatewayFailureWithoutRequestID(err error) bool {
+	var respErr *awshttp.ResponseError
+	if !errors.As(err, &respErr) {
+		return false
+	}
+	if respErr.HTTPStatusCode() < 500 || respErr.ServiceRequestID() != "" {
+		return false
+	}
+	// An AWS error code means AWS answered, whatever the headers say.
+	var apiErr smithy.APIError
+	return !errors.As(err, &apiErr) || apiErr.ErrorCode() == ""
+}
+
 // isServiceUnavailableInRegion reports whether err is an API-level rejection that
 // means the service has no functional endpoint in the target region, even though
 // DNS resolved and the TCP connection succeeded. DescribeRegions returns every
@@ -304,6 +324,7 @@ const (
 	ServiceNameBackup           = "AWSBackup"
 	ServiceNameBedrock          = "AmazonBedrock"
 	ServiceNameEFS              = "AmazonEFS"
+	ServiceNameFSx              = "AmazonFSx"
 	ServiceNameES               = "AmazonES"
 	ServiceNameSageMaker        = "AmazonSageMaker"
 	ServiceNameCloudFront       = "AmazonCloudFront"

@@ -4,8 +4,8 @@
 # and the laptop's network, all of which would otherwise be what gets measured.
 #
 #   loadtest/run.sh <script> [profile]
-#     script   services-server-api | services-server-worker | llm-server | rag-server | app
-#     profile  smoke (default) | baseline | stress | soak | spike   (the worker ignores it)
+#     script   services-server-api | services-server-metrics | services-server-worker | llm-server | rag-server | app
+#     profile  smoke (default) | baseline | stress | soak | spike | users   (the worker ignores it)
 #
 # Test parameters (TENANT_ID, RATE, ...) come from this shell's environment; see README.md.
 # While the test runs, k6's live dashboard is at http://localhost:$DASHBOARD_PORT (5665);
@@ -32,9 +32,9 @@ PF_PID=""
 # Only test parameters are forwarded. Service URLs are deliberately not: a local shell
 # often exports LLM_SERVER_URL=http://localhost:..., which is wrong inside the cluster,
 # and the scripts already default to the in-cluster Service names.
-PARAMS=(TENANT_ID USER_ID ROLE ACCOUNT_ID ACCOUNT_IDS RATE TIME_UNIT DURATION MAX_VUS P95_MS
+PARAMS=(TENANT_ID USER_ID ROLE ACCOUNT_ID ACCOUNT_IDS RATE TIME_UNIT DURATION MAX_VUS VUS THINK_TIME P95_MS
   CRONS REPEAT INTERVAL QUERY POLL_INTERVAL MAX_WAIT CONVERSATION_P95_MS LLM_SERVER_TOKEN_HEADER
-  MODULES K UNIQUE_QUERIES APP_URL API_TOKEN K6_PROMETHEUS_RW_SERVER_URL)
+  MODULES K UNIQUE_QUERIES APP_URL API_TOKEN K6_PROMETHEUS_RW_SERVER_URL ACTIONS SWEEP POOL_SIZE)
 ENV_FILE=$(mktemp)
 echo "PROFILE=$PROFILE" >"$ENV_FILE"
 for p in "${PARAMS[@]}"; do

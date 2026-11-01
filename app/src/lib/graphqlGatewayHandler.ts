@@ -101,10 +101,8 @@ export async function handleGatewayRequest(req: NextApiRequest, res: NextApiResp
 
       // --- Step 1: Authentication (NextAuth cookie OR Bearer token) ---
       // Two callers in practice: browser frontend (NextAuth session cookie)
-      // and non-browser callers like nbctl (encrypted bearer token from
-      // /api/auth/token). authenticateRequest resolves both flows to the
-      // same shape; for Bearer the JWT is synthesized from the decrypted
-      // token's claims.
+      // and non-browser callers presenting a raw `sk-nb-…` API token as a
+      // Bearer. authenticateRequest resolves both flows to the same shape.
       const authSpan = tracer.startSpan('authenticateUser', undefined, trace.setSpan(context.active(), span));
       const tGetToken = performance.now();
       const auth = await authenticateRequest(req);

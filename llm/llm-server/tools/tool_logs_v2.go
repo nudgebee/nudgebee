@@ -95,9 +95,24 @@ func (t *NBLogToolV2) InputSchema() core.ToolSchema {
 // an empty Query (executeFetchLogsCanonical). One path serves every provider;
 // services-server owns the canonical→provider resolution and native query build.
 func (t *NBLogToolV2) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	// A targeted child's call reads the target's account throughout (views,
+	// provider, routing), exactly as inside the metrics/traces sub-agents.
+	nbRequestContext = nbRequestContext.ForTarget()
+	// Account-driven provider — resolved once at tool construction and shared
+	// across requests via the 30-min tool cache.
+	resolvedProvider := t.logProvider
+	if nbRequestContext.AccountId != t.accountId {
+		// The tool was built for the conversation's account; a target may use
+		// a different log backend.
+		provider, err := GetLogProvider(nbRequestContext.AccountId)
+		if err != nil {
+			return core.NBToolResponse{Status: core.NBToolResponseStatusError, Data: fmt.Sprintf("no log provider for the target account: %v", err)}, nil
+		}
+		resolvedProvider = provider
+	}
 	// Local, never written back to the receiver: this tool instance is cached and
 	// shared across requests, so a write would pin one request's override for all.
-	logProvider := EffectiveLogProvider(t.logProvider, nbRequestContext.QueryConfig.LogProviderOverride)
+	logProvider := EffectiveLogProvider(resolvedProvider, nbRequestContext.QueryConfig.LogProviderOverride)
 
 	nbRequestContext.Ctx.GetLogger().Info("logs_v2: executing canonical getLogs tool call", "query", input.Command, "provider", logProvider.Provider)
 
@@ -113,29 +128,15 @@ func (t *NBLogToolV2) Call(nbRequestContext core.NbToolContext, input core.NBToo
 	if args == nil {
 		args = make(map[string]any)
 	}
-	if _, ok := args["range"]; !ok && queryBuilder.TimeRange != "" {
-		args["range"] = queryBuilder.TimeRange
-	}
-	if _, ok := args["start_time"]; !ok && queryBuilder.StartTime != "" {
-		args["start_time"] = queryBuilder.StartTime
-	}
-	if _, ok := args["end_time"]; !ok && queryBuilder.EndTime != "" {
-		args["end_time"] = queryBuilder.EndTime
-	}
-	// A window written into the filter (timestamp bounds) is still the window asked for;
-	// without this the search ran over the default last hour and missed it entirely.
-	if !hasWindowArgs(args) {
-		if from, to, ok := windowFromTimestampBounds(queryBuilder.Where, time.Now()); ok {
-			args["start_time"] = from.Format(time.RFC3339Nano)
-			args["end_time"] = to.Format(time.RFC3339Nano)
-		}
-	}
 
-	start := time.Now().Add(-1 * time.Hour)
-	end := time.Now()
-	if t1, t2, err := ExtractStartEndtimeFromLabels(nbRequestContext, args); err == nil {
-		start = t1
-		end = t2
+	// The query's own window, then the event's when this is an event-triggered
+	// conversation, then the last hour.
+	now := time.Now()
+	start, end := now.Add(-1*time.Hour), now
+	if window, ok := ResolveLogQueryWindow(queryBuilder, args, now); ok {
+		start, end = window.Start, window.End
+	} else if t1, t2, ok := resolveWindowFromLabelsAt(nbRequestContext.QueryConfig.Labels, now.UTC()); ok {
+		start, end = t1.UTC(), t2.UTC()
 	}
 	start, end = ExpandNarrowTimeWindow(nbRequestContext.Ctx.GetLogger(), start, end)
 

@@ -407,7 +407,7 @@ const KubernetesGroupedApplications: React.FC<KubernetesGroupedApplicationsProps
                     enableFilters={false}
                     tableColumns={
                       [
-                        { name: 'Severity', width: '10%' },
+                        { name: 'Source Severity', width: '10%' },
                         { name: 'Message', width: '40%' },
                         { name: 'Alert Status', width: '4%' },
                         { name: 'Error Type', width: '20%' },

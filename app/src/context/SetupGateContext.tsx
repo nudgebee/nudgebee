@@ -63,6 +63,19 @@ import { accountRowState, type OnboardingAccount } from '@lib/onboardingReadines
  *   out, and nothing re-checks in the background — if an admin fixes the
  *   tenant a minute later, this non-admin's own tab won't notice until they
  *   reload. Accepted, not fixed here.
+ *
+ * **`UI_ENABLE_SETUP_CENTER` wraps all of it.** Off: `locked` is always
+ * `false` — no redirect, no dimmed rail, no Home progress banner, no account
+ * lookup even attempted (nothing to spend a request on). The feature is
+ * inert, not merely hidden, so a deployment can run with it off exactly as
+ * if it had never shipped. Read straight off the session
+ * (`session.uiFeatures.setupCenter`), the same way `canManageSetup` reads
+ * `session.roles` directly — not through `isUiFeatureEnabled()`, whose
+ * `userData` dependency is populated by `withAuth`, which wraps neither
+ * `/setup` nor `/home` (see `canManageSetup`'s own comment below for the
+ * identical reasoning). The flag living on the session rather than behind
+ * that helper is what makes it readable on the two pages this file actually
+ * needs it to work on.
  */
 
 /** The one route a gated tenant may open. */
@@ -86,6 +99,10 @@ interface SetupGateValue {
    * tenant apart from a non-admin just read-only browsing one that already
    * has an account, without computing that a second way. */
   hasConnectedAccount: boolean | null;
+  /** The `UI_ENABLE_SETUP_CENTER` deployment flag — see the file doc comment.
+   * Exposed so `/setup` and the Home progress banner can stay inert too, not
+   * just the redirect. */
+  setupCenterEnabled: boolean;
   /** Re-reads accounts (and agent health). Call it after connecting one, or
    * after an agent checks in, so the gate lifts without a page reload. */
   refresh: () => void;
@@ -96,6 +113,7 @@ const SetupGateContext = React.createContext<SetupGateValue>({
   locked: false,
   canManageSetup: false,
   hasConnectedAccount: null,
+  setupCenterEnabled: false,
   refresh: () => {},
 });
 
@@ -147,6 +165,7 @@ export const SetupGateProvider = ({ children }: { children: React.ReactNode }): 
 
   const tenantId = (session as { tenant?: { id?: string } } | null)?.tenant?.id;
   const canManageSetup = Boolean((session as { roles?: string[] } | null)?.roles?.includes('tenant_admin'));
+  const setupCenterEnabled = Boolean((session as { uiFeatures?: { setupCenter?: boolean } } | null)?.uiFeatures?.setupCenter);
 
   // Keyed on the tenant, so switching tenants re-reads rather than carrying the
   // previous tenant's answer across — which would drop an admin into a
@@ -156,6 +175,16 @@ export const SetupGateProvider = ({ children }: { children: React.ReactNode }): 
     // arrives with it, so firing early costs a second round trip for an answer
     // that is about to be re-fetched anyway.
     if (sessionStatus === 'loading') return undefined;
+
+    // Off: `locked` (below) ignores `hasConnectedAccount` entirely, so there is
+    // nothing to spend a request finding out. Every page load for every user
+    // would otherwise cost a real account (and possibly agent-health) lookup
+    // for an answer nothing reads.
+    if (!setupCenterEnabled) {
+      setHasConnectedAccount(null);
+      setAccountsLoading(false);
+      return undefined;
+    }
 
     let cancelled = false;
 
@@ -214,7 +243,7 @@ export const SetupGateProvider = ({ children }: { children: React.ReactNode }): 
     return () => {
       cancelled = true;
     };
-  }, [sessionStatus, tenantId, reloadToken]);
+  }, [sessionStatus, tenantId, reloadToken, setupCenterEnabled]);
 
   const refresh = React.useCallback(() => setReloadToken((n) => n + 1), []);
 
@@ -222,8 +251,9 @@ export const SetupGateProvider = ({ children }: { children: React.ReactNode }): 
   // `hasConnectedAccount === false` and not merely falsy: `null` is the
   // unknown case, and unknown must never lock. No `&& canManageSetup` here
   // any more — a non-admin is locked too now, see the file doc comment above
-  // for why that stopped being the trap it used to be.
-  const locked = !loading && hasConnectedAccount === false;
+  // for why that stopped being the trap it used to be. `setupCenterEnabled`
+  // short-circuits everything else when the deployment flag is off.
+  const locked = setupCenterEnabled && !loading && hasConnectedAccount === false;
 
   // Dimming the nav rail stops the rail and nothing else: a typed URL, a
   // bookmark or browser Back all reach the page regardless. This redirect is the
@@ -251,8 +281,8 @@ export const SetupGateProvider = ({ children }: { children: React.ReactNode }): 
   }, [loading, locked, pathname]);
 
   const value = React.useMemo(
-    () => ({ loading, locked, canManageSetup, hasConnectedAccount, refresh }),
-    [loading, locked, canManageSetup, hasConnectedAccount, refresh]
+    () => ({ loading, locked, canManageSetup, hasConnectedAccount, setupCenterEnabled, refresh }),
+    [loading, locked, canManageSetup, hasConnectedAccount, setupCenterEnabled, refresh]
   );
 
   return <SetupGateContext.Provider value={value}>{children}</SetupGateContext.Provider>;

@@ -223,6 +223,21 @@ func stripClusterPlaceholder(expr string) string {
 // inside. If it contains a range selector [Xm], a new {} is inserted before
 // it. Otherwise selectors are appended at the end.
 func injectPromQLMatchers(expr string, matchers []LabelMatcher, legacyLabels map[string]string) (string, error) {
+	return injectPromQLMatchersWith(expr, matchers, legacyLabels, legacyPromQLLabelName)
+}
+
+// legacyPromQLLabelName accepts only classic Prometheus label names and writes
+// them bare.
+func legacyPromQLLabelName(name string) (string, error) {
+	if !promqlLabelNameRe.MatchString(name) {
+		return "", fmt.Errorf("invalid label name %q", name)
+	}
+	return name, nil
+}
+
+// injectPromQLMatchersWith is injectPromQLMatchers with the label-name rule
+// supplied by the caller, for engines that accept more than classic names.
+func injectPromQLMatchersWith(expr string, matchers []LabelMatcher, legacyLabels map[string]string, labelName func(string) (string, error)) (string, error) {
 	if len(matchers) == 0 && len(legacyLabels) == 0 {
 		return expr, nil
 	}
@@ -241,20 +256,22 @@ func injectPromQLMatchers(expr string, matchers []LabelMatcher, legacyLabels map
 
 	parts := make([]string, 0, len(sorted)+len(legacyLabels))
 	for _, m := range sorted {
-		if !promqlLabelNameRe.MatchString(m.Label) {
-			return "", fmt.Errorf("invalid label name %q", m.Label)
+		name, err := labelName(m.Label)
+		if err != nil {
+			return "", err
 		}
 		op, err := promqlMatcherOp(m.Operator)
 		if err != nil {
 			return "", err
 		}
-		parts = append(parts, fmt.Sprintf(`%s%s"%s"`, m.Label, op, escapePromQLString(m.Value)))
+		parts = append(parts, fmt.Sprintf(`%s%s"%s"`, name, op, escapePromQLString(m.Value)))
 	}
 	for _, k := range sortedKeys(legacyLabels) {
-		if !promqlLabelNameRe.MatchString(k) {
-			return "", fmt.Errorf("invalid label name %q", k)
+		name, err := labelName(k)
+		if err != nil {
+			return "", err
 		}
-		parts = append(parts, fmt.Sprintf(`%s="%s"`, k, escapePromQLString(legacyLabels[k])))
+		parts = append(parts, fmt.Sprintf(`%s="%s"`, name, escapePromQLString(legacyLabels[k])))
 	}
 	newSelector := strings.Join(parts, ",")
 
@@ -435,6 +452,8 @@ func getTraceSource(provider, integrationSource string) (TraceSource, error) {
 		return &SplunkTraceSource{}, nil
 	case provider == "splunk_enterprise" && integrationSource == "user":
 		return &SplunkEnterpriseTraceSource{}, nil
+	case provider == "grafana_tempo" && integrationSource == "user":
+		return &GrafanaTempoTraceSource{}, nil
 	case provider == "cubeapm" && integrationSource == "user":
 		return &CubeAPMTraceSource{}, nil
 	case provider == "ES" && integrationSource == "user":
@@ -510,11 +529,46 @@ func getMetricsSource(provider, integrationSource string) (MetricSource, error) 
 		return &SolarWindsMetricSource{}, nil
 	case provider == "openobserve" && integrationSource == "user":
 		return &OpenObserveMetricSource{}, nil
+	case provider == "signoz" && integrationSource == "user":
+		return &SignozMetricSource{}, nil
 	default:
 		return nil, fmt.Errorf(
 			"unsupported metric provider/source combination: provider=%s, integrationSource=%s",
 			provider, integrationSource,
 		)
+	}
+}
+
+// explicitDefaultOnly lists, per telemetry kind, providers that serve it only when
+// their integration is marked as the account's default for it. SigNoz was
+// connected for logs alone until it could serve metrics, so a SigNoz row says
+// nothing about where an account's metrics live: picking it by elimination would
+// move charts and new alert rules onto it for every account whose own Prometheus
+// is down or absent.
+var explicitDefaultOnly = map[string]map[string]bool{
+	"metrics": {"signoz": true},
+}
+
+// servesOnlyAsExplicitDefault reports whether provider must be the marked default
+// to serve providerType.
+func servesOnlyAsExplicitDefault(provider, providerType string) bool {
+	return explicitDefaultOnly[providerType][provider]
+}
+
+// isSupportedTelemetryProvider checks if a provider and source pair is valid for the given telemetry kind.
+func isSupportedTelemetryProvider(provider, source, providerType string) bool {
+	switch providerType {
+	case "metrics":
+		_, err := getMetricsSource(provider, source)
+		return err == nil
+	case "logs":
+		_, err := getLogSource(provider, source)
+		return err == nil
+	case "traces":
+		_, err := getTraceSource(provider, source)
+		return err == nil
+	default:
+		return false
 	}
 }
 
@@ -617,6 +671,32 @@ func logAgentLookupFailure(logger *slog.Logger, accountId string, err error) {
 	logger.Log(context.Background(), level, fmt.Sprintf("unable to get agent details, for account %s", accountId), "error", err)
 }
 
+// isAgentOwnProvider tells the agent's own logs / metrics / traces provider, which
+// the collector registers under the provider's name, from a datasource the relay
+// registers with the same "agent" source under the datasource's own name. Only the
+// former follows the agent's health flags.
+func isAgentOwnProvider(dto *core.IntegrationDto) bool {
+	return dto.Source == "agent" && dto.Name == dto.Type
+}
+
+// builtInHealthFlags lists the flags in an agent's connection_status that say its
+// own provider for a signal is up. Chronosphere serves traces from the metrics
+// backend and older agents report its traces as off, so either flag counts there.
+func builtInHealthFlags(providerType, provider string) []string {
+	switch providerType {
+	case "logs":
+		return []string{"logsConnection"}
+	case "metrics":
+		return []string{"prometheusConnection"}
+	case "traces":
+		if provider == "chronosphere" {
+			return []string{"tracesEnabled", "prometheusConnection"}
+		}
+		return []string{"tracesEnabled"}
+	}
+	return nil
+}
+
 func getLogsMetricsTracesProviderWithIntegration(ctx *security.RequestContext, accountId, logProviderFromRequest, providerType string, logSourceFromRequest string) (string, string, *core.IntegrationDto, error) {
 	if ctx == nil || ctx.GetSecurityContext() == nil {
 		return "", "", nil, ErrNoTenantContext
@@ -642,26 +722,44 @@ func getLogsMetricsTracesProviderWithIntegration(ctx *security.RequestContext, a
 			return "", "", nil, err
 		}
 
+		// The agent's own provider is one row shared by every cluster in the tenant.
+		// A cluster keeps its link to it through outages, so the link says the
+		// provider is configured here, not that it works. It is used only while this
+		// account's own agent reports it up, and that holds wherever it would be
+		// picked: as the account's default, or as the agent's provider below.
+		// builtInDown remembers a provider that is configured here but down.
+		builtInDown := ""
+		builtInUsable := func(provider string) (bool, error) {
+			configured, usable, sErr := core.AgentIntegrationState(ctx, accountId, provider, builtInHealthFlags(providerType, provider)...)
+			if sErr != nil {
+				ctx.GetLogger().Error("getLogsMetricsTracesProviderWithIntegration: failed to read the agent integration's state",
+					"account_id", accountId, "provider", provider, "error", sErr)
+				return false, sErr
+			}
+			if configured && !usable {
+				builtInDown = provider
+			}
+			return usable, nil
+		}
+
+		if integrationDto != nil && isAgentOwnProvider(integrationDto) {
+			usable, uErr := builtInUsable(integrationDto.Type)
+			if uErr != nil {
+				return "", "", nil, uErr
+			}
+			if !usable {
+				integrationDto = nil
+			}
+		}
+
 		if integrationDto != nil {
 			defaultProvider = integrationDto.Type
 			defaultSource = integrationDto.Source
 			matchedIntegration = integrationDto
 		} else {
+			// 1. Try resolving to the agent's own provider.
 			agentDetails, err := account.GetAgentConnectionDetails(accountId)
-			if err != nil {
-				// GCP cloud accounts have no agent; their traces come from Cloud Trace.
-				// Resolve them to the gcp trace source before treating the missing agent
-				// as an error — this is the only trace path for a GCP cloud account.
-				if providerType == "traces" {
-					if cp, cErr := cloud.GetCloudAccountProvider(accountId, ctx.GetSecurityContext().GetTenantId()); cErr == nil && strings.EqualFold(cp, "gcp") {
-						return "gcp", "user", nil, nil
-					}
-				}
-				logAgentLookupFailure(ctx.GetLogger(), accountId, err)
-				return "", "", nil, err
-			}
-			// Agent-reported features go stale once it disconnects; only trust them while live.
-			if agentDetails.Status == "CONNECTED" {
+			if err == nil {
 				candidateProvider := ""
 				switch {
 				case providerType == "logs" && agentDetails.Features.LogsConnectionProvider != nil:
@@ -680,19 +778,76 @@ func getLogsMetricsTracesProviderWithIntegration(ctx *security.RequestContext, a
 					}
 				}
 
-				if candidateProvider != "" {
-					// Don't resurrect a provider the account has an explicit (possibly disabled) record for.
-					// Fail closed on lookup error — silently continuing here is exactly the bug this guards against.
-					hasExistingRecord, hErr := core.HasAccountSourceIntegration(ctx, accountId, candidateProvider, "agent")
-					if hErr != nil {
-						ctx.GetLogger().Error("getLogsMetricsTracesProviderWithIntegration: failed to check for a disabled account-level record",
-							"account_id", accountId, "provider", candidateProvider, "error", hErr)
-						return "", "", nil, hErr
+				// Already found down as the account's default: no need to ask again.
+				if candidateProvider != "" && candidateProvider != builtInDown {
+					usable, uErr := builtInUsable(candidateProvider)
+					if uErr != nil {
+						return "", "", nil, uErr
 					}
-					if !hasExistingRecord {
+					if usable {
 						defaultProvider = candidateProvider
 						defaultSource = "agent"
 					}
+				}
+			}
+
+			// 2. Only if the agent's own provider was not resolved: check the other
+			// integrations. The agent's own rows were decided above, and counting
+			// one that is down here would turn "exactly one other provider, use it"
+			// into the choose-a-default error.
+			if defaultProvider == "" {
+				var candidates []*core.IntegrationDto
+				if activeIntegrations, aErr := core.ListActiveIntegrationsForAccount(ctx, accountId); aErr == nil {
+					for i := range activeIntegrations {
+						dto := &activeIntegrations[i]
+						if !isAgentOwnProvider(dto) && isSupportedTelemetryProvider(dto.Type, dto.Source, providerType) &&
+							!servesOnlyAsExplicitDefault(dto.Type, providerType) {
+							candidates = append(candidates, dto)
+						}
+					}
+				}
+
+				switch len(candidates) {
+				case 1:
+					defaultProvider = candidates[0].Type
+					defaultSource = candidates[0].Source
+					matchedIntegration = candidates[0]
+				case 0:
+					// GCP cloud accounts have no agent; their traces come from Cloud Trace.
+					if providerType == "traces" {
+						if cp, cErr := cloud.GetCloudAccountProvider(accountId, ctx.GetSecurityContext().GetTenantId()); cErr == nil && strings.EqualFold(cp, "gcp") {
+							return "gcp", "user", nil, nil
+						}
+					}
+					if err != nil {
+						logAgentLookupFailure(ctx.GetLogger(), accountId, err)
+						return "", "", nil, err
+					}
+					// Nothing else serves this signal. Say that the agent's own provider
+					// exists but is down, rather than leaving the caller to report that
+					// no provider is configured.
+					if builtInDown != "" {
+						return "", "", nil, fmt.Errorf("observability: the built-in %s provider (%s) is configured on this cluster but is not reachable right now", providerType, builtInDown)
+					}
+				default:
+					// Multiple enabled integrations without default -> prompt the user to choose.
+					var names []string
+					for _, c := range candidates {
+						if c.Name != "" {
+							names = append(names, c.Name)
+						} else {
+							names = append(names, c.Type)
+						}
+					}
+					sort.Strings(names)
+					paramName := providerType
+					switch providerType {
+					case "logs":
+						paramName = "log"
+					case "traces":
+						paramName = "trace"
+					}
+					return "", "", nil, fmt.Errorf("observability: multiple %s providers are configured (%s), but none is marked as default; please specify %s_provider or choose a default in Settings", providerType, strings.Join(names, ", "), paramName)
 				}
 			}
 		}
@@ -2149,6 +2304,16 @@ var allProviderCaps = map[string]providerStaticCaps{
 		SupportsTraceGrouping: false,
 		TraceSource:           "otel",
 	},
+	// Traces only. Grouping is computed by Tempo itself (TraceQL metrics, ≤24h); the
+	// waterfall is trace-by-id. ServiceMap stays false for v1: edges would need a TraceQL
+	// structural query, deferred (spec §1).
+	"grafana_tempo": {
+		SupportsServiceMap:    false,
+		SupportsTraceGrouping: true,
+		SupportsHeatmap:       true,
+		SupportsRawQuery:      true,
+		TraceSource:           "otel",
+	},
 	// GCP Cloud Trace: no other capability is declared for it.
 	"gcp": {
 		TraceSourcePassthrough: true,
@@ -3376,7 +3541,7 @@ func FetchMetricLabelsList(ctx *security.RequestContext, fetchMetricLabelListReq
 	return output, nil
 }
 
-func FetchMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTrendRequest) (OutputMetricQuery, error) {
+func FetchMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTrendRequest) (result OutputMetricQuery, retErr error) {
 	// Fail fast rather than resolving a provider for nothing. Every caller already
 	// checks this (the RPC handler 400s, both eventrule actions return early), and
 	// the integration lookup filters on cloud_account_id unconditionally — so an
@@ -3395,14 +3560,41 @@ func FetchMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTren
 		return OutputMetricQuery{}, err
 	}
 	if metricsProvider == "" {
-		return OutputMetricQuery{}, nil
+		// Still answer every key with a reason, and log: this path returns before the
+		// "utilisation served" line below is registered.
+		meta, err := parseRequestMetadata(req.Request)
+		if err != nil {
+			return OutputMetricQuery{}, err
+		}
+		logUnknownUtilisationKeys(ctx, req.AccountId, meta.RequestedMetrics)
+		ctx.GetLogger().Info("observability: utilisation has no metrics provider",
+			"account_id", req.AccountId, "keys", len(meta.RequestedMetrics))
+		return OutputMetricQuery{Results: completeUtilisationResults(nil, meta.RequestedMetrics, nil, "", esUtilisationScope(meta))}, nil
 	}
+
+	// One line per call naming the provider that served it and how long it took.
+	// Without it a slow utilisation chart cannot be attributed: the gateway logs
+	// only the operation name, and most providers log nothing on success.
+	start := time.Now()
+	defer func() {
+		failedKeys := 0
+		for _, r := range result.Results {
+			if r.Error != nil && *r.Error != "" {
+				failedKeys++
+			}
+		}
+		ctx.GetLogger().Info("observability: utilisation served",
+			"provider", metricsProvider, "source", integrationSource, "account_id", req.AccountId,
+			"keys", len(result.Results), "failed_keys", failedKeys,
+			"duration", time.Since(start), "error", retErr)
+	}()
 
 	// --- 1. Extract Metadata ---
 	meta, err := parseRequestMetadata(req.Request)
 	if err != nil {
 		return OutputMetricQuery{}, err
 	}
+	logUnknownUtilisationKeys(ctx, req.AccountId, meta.RequestedMetrics)
 
 	instant := false
 	if v, ok := req.Request["instant"].(bool); ok {
@@ -3432,6 +3624,15 @@ func FetchMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTren
 
 	// The helper functions return a fully initialized map, so we don't need to allocate one here.
 	var queries map[string]string
+
+	// A defer so it covers the early-return arms too; it runs before the logging defer.
+	defer func() {
+		if retErr != nil {
+			return
+		}
+		result.Results = completeUtilisationResults(result.Results, meta.RequestedMetrics, queries, metricsProvider, esUtilisationScope(meta))
+	}()
+
 	// swRequest carries SolarWinds-specific filter/groupBy params passed as FetchMetricsRequest.Request.
 	// Nil for all other providers (safe — no other MetricSource reads req.Request).
 	var swRequest map[string]any
@@ -3518,6 +3719,14 @@ func FetchMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTren
 		canonicaliseUtilisationLabels(out.Results, metricsProvider)
 		return out, err
 
+	// SigNoz's Kubernetes collector publishes OTel names (container.cpu.usage, gauges in
+	// cores and bytes), so none of the Prometheus builders apply.
+	case "signoz":
+		out, rendered, err := fetchSignozUtilisation(ctx, req, meta, integrationSource, instant)
+		queries = rendered
+		canonicaliseUtilisationLabels(out.Results, metricsProvider)
+		return out, err
+
 	default:
 		return OutputMetricQuery{}, fmt.Errorf("not supporting this metrics provider: %v", metricsProvider)
 	}
@@ -3553,10 +3762,10 @@ func FetchMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTren
 		output.Results = datadogNoteUnanswerableKeys(output.Results, meta.RequestedMetrics)
 		percentileKeys := make(map[string]float64)
 		for _, m := range meta.RequestedMetrics {
-			switch m {
-			case "p90_mem", "p90_cpu":
+			switch UtilisationKey(m) {
+			case KeyP90Mem, KeyP90CPU:
 				percentileKeys[m] = 0.90
-			case "p50_mem", "p50_cpu":
+			case KeyP50Mem, KeyP50CPU:
 				percentileKeys[m] = 0.50
 			}
 		}
@@ -3577,12 +3786,12 @@ func FetchMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTren
 			if len(qr.Payload) == 0 {
 				continue
 			}
-			switch qr.QueryKey {
-			case "p90_cpu", "p90_mem":
+			switch UtilisationKey(qr.QueryKey) {
+			case KeyP90CPU, KeyP90Mem:
 				output.Results[i].Payload = []Result{computePercentileFromSeries(qr.Payload, 0.90)}
-			case "p50_cpu", "p50_mem":
+			case KeyP50CPU, KeyP50Mem:
 				output.Results[i].Payload = []Result{computePercentileFromSeries(qr.Payload, 0.50)}
-			case "max_usage_cpu", "max_usage_mem":
+			case KeyMaxUsageCPU, KeyMaxUsageMem:
 				output.Results[i].Payload = []Result{computePercentileFromSeries(qr.Payload, 1.0)}
 			}
 		}

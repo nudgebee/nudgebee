@@ -39,7 +39,7 @@ export interface TimeSeriesChartProps {
   format?: (value: number) => string;
   /** Compact formatter — y-axis ticks, on-bar totals, average line. Default: compactCurrency. */
   compactFormat?: (value: number) => string;
-  /** Integer y-axis (e.g. call counts). */
+  /** Integer y-axis (e.g. call counts): whole-number tick steps; labels use `compactFormat` when given. */
   integerY?: boolean;
   /** Colour per series key. Default: built-in categorical ramp by index. */
   colorFor?: (key: string, index: number) => string;
@@ -87,7 +87,7 @@ export function TimeSeriesChart({
   series,
   shape = 'bar',
   format = roundedFormat,
-  compactFormat = compactCurrency,
+  compactFormat: compactFormatProp,
   integerY = false,
   colorFor = paletteColorFor,
   showLegend = true,
@@ -139,7 +139,9 @@ export function TimeSeriesChart({
     return totals;
   }, [series]);
 
-  const yTickFormat: YTickFormat = integerY ? 'int' : compactFormat;
+  const compactFormat = compactFormatProp ?? compactCurrency;
+  // A caller's compact formatter wins over plain 'int' labels (200M, not 200000000).
+  const yTickFormat: YTickFormat = compactFormatProp ?? (integerY ? 'int' : compactCurrency);
   const base = baseChartOptions((raw) => format(Number(raw)), { stacked, integerY, yTickFormat });
   // A single column (e.g. one selected day) otherwise pins its point/bar to the
   // y-axis edge — offset the category axis so it sits centered in its band. Only

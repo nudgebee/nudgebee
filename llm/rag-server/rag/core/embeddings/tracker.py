@@ -123,6 +123,64 @@ def persist_figure_description_usage(
         logger.error(f"[EmbeddingTracker] Failed to persist figure description usage: {e}")
 
 
+def persist_kb_classification_usage(
+    account_id: str,
+    collection_name: str,
+    provider: str,
+    model: str,
+    total_tokens: int,
+    document_count: int,
+    duration_seconds: float,
+    status: str = "success",
+    error_message: Optional[str] = None,
+) -> None:
+    """Track what the KB capability-catalog classification LLM calls cost
+    (documents/processing.py:_classify_source_documents) — one row per
+    process_documents call, aggregated across every source document
+    classified in it (one LLM call each).
+
+    Same table/pattern as persist_figure_description_usage above: written to
+    rag_embedding_token_usage under its own operation_type so it doesn't
+    appear as an extra "load" to the load-history query (which reads
+    operation_type='batch_embedding' only), while still being queryable for
+    cost/duration on its own.
+    """
+    try:
+        with engine.connect() as connection:
+            with connection.begin():
+                connection.execute(
+                    text("""
+                        INSERT INTO rag_embedding_token_usage (
+                            account_id, is_global, collection_name,
+                            embedding_provider, embedding_model,
+                            total_tokens, document_count,
+                            operation_type, request_status, error_message,
+                            load_duration_seconds
+                        ) VALUES (
+                            :account_id, :is_global, :collection_name,
+                            :provider, :model,
+                            :total_tokens, :document_count,
+                            'kb_metadata_classification', :status, :error_message,
+                            :duration_seconds
+                        );
+                        """),
+                    {
+                        "account_id": account_id or "global",
+                        "is_global": not bool(account_id) or account_id == "global",
+                        "collection_name": collection_name,
+                        "provider": provider,
+                        "model": model,
+                        "total_tokens": total_tokens,
+                        "document_count": document_count,
+                        "status": status,
+                        "error_message": error_message,
+                        "duration_seconds": duration_seconds,
+                    },
+                )
+    except Exception as e:
+        logger.error(f"[EmbeddingTracker] Failed to persist KB classification usage: {e}")
+
+
 class EmbeddingTracker:
     def __init__(
         self,

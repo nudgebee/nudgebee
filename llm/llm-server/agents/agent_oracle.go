@@ -14,7 +14,7 @@ func init() {
 	toolInput := "Provide a question in natural language to investigate, query, or troubleshoot Oracle Database."
 	toolOutput := "Returns query results and summaries for Oracle Database operations."
 
-	core.RegisterNBAgentFactoryAndTool(OracleAgentName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAndTool(OracleAgentName, func(accountId string) (core.NBAgent, error) {
 		return newOracleAgent(accountId), nil
 	}, toolDescription, toolInput, toolOutput)
 }
@@ -24,6 +24,11 @@ func newOracleAgent(accountId string) OracleDebugAgent {
 		accountId: accountId,
 	}
 }
+
+// AcceptsExecutionTarget: oracle_query_execute follows a handed target and picks among
+// the target account's own integrations, so the agent can run for another
+// account.
+func (l OracleDebugAgent) AcceptsExecutionTarget() {}
 
 type OracleDebugAgent struct {
 	accountId string

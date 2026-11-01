@@ -1509,7 +1509,7 @@ func TestBuildLokiQuery(t *testing.T) {
 // query yields the correct — and Loki-parseable — LogQL.
 func TestCanonicalToLokiQuery(t *testing.T) {
 	s := &LokiSource{}
-	mapping := s.GetLabelMapping() // canonical → loki: {"content"|"message" → "log"}
+	mapping := s.GetLabelMapping() // canonical → loki: {"content"|"_body"|"message" → "log"}
 
 	bin := func(m map[string]map[query.BinaryWhereClauseType]interface{}) query.QueryWhereClause {
 		return query.QueryWhereClause{Binary: m}
@@ -1530,6 +1530,33 @@ func TestCanonicalToLokiQuery(t *testing.T) {
 				"content":   {query.ILike: "%error%"},
 			}),
 			expected: `{app="relay-server", namespace="nudgebee"} |~ "^(?i).*error.*$"`,
+		},
+		{
+			// `_body` is llm-server's canonical log-text token, advertised on every
+			// provider (tool_logs.go QueryLabels) and emitted far more often than
+			// `content` — it MUST resolve to the same line filter. Unmapped it renders
+			// as `{_body=~"..."}`, a stream-label matcher that silently returns nothing.
+			// Verbatim shape of a real logs_execute_v2 call captured on dev.
+			name:     "pod + namespace + _body like (llm-server's canonical body token)",
+			question: "stderr lines from pod app-dev-c6b96cd79-2fwpv in namespace nudgebee",
+			canonical: bin(map[string]map[query.BinaryWhereClauseType]interface{}{
+				"pod":       {query.Eq: "app-dev-c6b96cd79-2fwpv"},
+				"namespace": {query.Eq: "nudgebee"},
+				"_body":     {query.Like: "%stderr%"},
+			}),
+			expected: `{namespace="nudgebee", pod="app-dev-c6b96cd79-2fwpv"} |~ "^.*stderr.*$"`,
+		},
+		{
+			// Same question, same expected LogQL, via the other spelling — pins that the
+			// two tokens are interchangeable rather than two independent code paths.
+			name:     "_body and content are interchangeable",
+			question: "stderr lines from pod app-dev-c6b96cd79-2fwpv in namespace nudgebee",
+			canonical: bin(map[string]map[query.BinaryWhereClauseType]interface{}{
+				"pod":       {query.Eq: "app-dev-c6b96cd79-2fwpv"},
+				"namespace": {query.Eq: "nudgebee"},
+				"content":   {query.Like: "%stderr%"},
+			}),
+			expected: `{namespace="nudgebee", pod="app-dev-c6b96cd79-2fwpv"} |~ "^.*stderr.*$"`,
 		},
 		{
 			// `message` is the canonical spelling every producer converges on (#39573).

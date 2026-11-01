@@ -113,7 +113,7 @@ describe('AskAiCard analysis history', () => {
     const Content = card.getContentComponents()[0];
     render(<Content />);
 
-    expect(screen.getByText('A new analysis is in progress. Showing the most recent completed version.')).toBeInTheDocument();
+    expect(screen.getByText('A new analysis is in progress (Summarising the alert). Showing the most recent completed version.')).toBeInTheDocument();
     expect(screen.getByText('Previous recurring-event root cause')).toBeInTheDocument();
     expect(apiKubernetes.generateAiRecommendation).toHaveBeenCalledTimes(1);
   });

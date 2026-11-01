@@ -13,7 +13,6 @@ import (
 	"nudgebee/relay-server/pkg/safehttp"
 	"nudgebee/relay-server/pkg/server/metrics"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -27,39 +26,18 @@ var mcpHTTPClient = &http.Client{
 	CheckRedirect: safehttp.SafeCheckRedirect,
 }
 
-const mcpSessionTTL = 30 * time.Minute
-
-type mcpSessionEntry struct {
-	sessionID string
-	expiry    time.Time
-}
-
-// mcpSessionCache caches MCP session IDs per (URL, account, caller session) tuple.
-// Entries expire after mcpSessionTTL. Expired entries are evicted lazily on read
-// and periodically by a background sweeper to prevent unbounded growth.
-var mcpSessionCache = struct {
-	sync.RWMutex
-	sessions map[string]mcpSessionEntry // "URL|accountID[|session_id]" -> MCP session entry
-}{sessions: make(map[string]mcpSessionEntry)}
-
-func init() {
-	go mcpSessionCacheSweeper()
-}
-
-// mcpSessionCacheSweeper periodically removes expired entries to prevent unbounded growth.
-func mcpSessionCacheSweeper() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-	for range ticker.C {
-		now := time.Now()
-		mcpSessionCache.Lock()
-		for key, entry := range mcpSessionCache.sessions {
-			if now.After(entry.expiry) {
-				delete(mcpSessionCache.sessions, key)
-			}
-		}
-		mcpSessionCache.Unlock()
+// mcpAuthSnapshot extracts only the auth fields from a relay request body, in
+// the same shape injectMCPAuth reads, so they can be reused for a later DELETE
+// without retaining the rest of the request.
+func mcpAuthSnapshot(rawBody []byte) []byte {
+	actionParams := map[string]any{
+		"auth_type": gjson.GetBytes(rawBody, "body.action_params.auth_type").String(),
 	}
+	if creds := gjson.GetBytes(rawBody, "body.action_params.auth_credentials"); creds.Exists() {
+		actionParams["auth_credentials"] = json.RawMessage(creds.Raw)
+	}
+	b, _ := json.Marshal(map[string]any{"body": map[string]any{"action_params": actionParams}})
+	return b
 }
 
 // handleDirectMCP handles MCP requests in direct mode (no agent needed).
@@ -109,22 +87,16 @@ func handleDirectMCP(c *gin.Context, rawBody []byte, logger *slog.Logger, start 
 		return true
 	}
 
-	// Cache key always includes accountID to prevent cross-tenant session sharing.
-	// Optional session_id provides per-conversation isolation within an account.
-	callerSessionID := gjson.GetBytes(rawBody, "body.action_params.session_id").String()
-	cacheKey := mcpURL + "|" + accountID
-	if callerSessionID != "" {
-		cacheKey += "|" + callerSessionID
-	}
+	key, integrationID := mcpSessionKeyFromRequest(rawBody, accountID, mcpURL)
 
 	// Ensure we have a session for Streamable HTTP servers
-	sessionID, err := ensureMCPSession(c.Request.Context(), cacheKey, mcpURL, rawBody, logger)
+	sessionID, err := ensureMCPSession(c.Request.Context(), key, integrationID, rawBody, logger)
 	if err != nil {
 		logger.Warn("MCP session init failed, proceeding without session", "url", mcpURL, "error", err)
 	}
 
 	// Execute the actual MCP request
-	responseData, statusCode, err := doMCPRequest(c.Request.Context(), cacheKey, mcpURL, mcpBody, sessionID, rawBody, logger)
+	responseData, statusCode, err := doMCPRequest(c.Request.Context(), key, integrationID, mcpBody, sessionID, rawBody, logger)
 	if err != nil {
 		logger.Error("direct MCP request failed", "url", mcpURL, "error", err)
 		c.JSON(502, gin.H{"error": fmt.Sprintf("MCP server request failed: %v", err)})
@@ -140,48 +112,17 @@ func handleDirectMCP(c *gin.Context, rawBody []byte, logger *slog.Logger, start 
 	return true
 }
 
-// ensureMCPSession returns a cached session ID or performs an initialize handshake.
-// Uses double-checked locking to prevent redundant handshakes from concurrent goroutines.
-// cacheKey isolates sessions per (URL, caller) pair; mcpURL is the actual MCP server endpoint.
-func ensureMCPSession(ctx context.Context, cacheKey string, mcpURL string, rawBody []byte, logger *slog.Logger) (string, error) {
-	// Fast path: check cache with read lock
-	mcpSessionCache.RLock()
-	if entry, ok := mcpSessionCache.sessions[cacheKey]; ok && time.Now().Before(entry.expiry) {
-		mcpSessionCache.RUnlock()
-		return entry.sessionID, nil
-	}
-	mcpSessionCache.RUnlock()
-
-	// Slow path: acquire write lock and re-check before performing handshake
-	mcpSessionCache.Lock()
-	if entry, ok := mcpSessionCache.sessions[cacheKey]; ok && time.Now().Before(entry.expiry) {
-		mcpSessionCache.Unlock()
-		return entry.sessionID, nil
-	}
-	// Evict expired entry if present
-	delete(mcpSessionCache.sessions, cacheKey)
-	mcpSessionCache.Unlock()
-
-	// Perform initialize handshake (outside lock to avoid blocking other keys)
-	sessionID, err := performMCPInitialize(ctx, mcpURL, rawBody)
-	if err != nil {
-		return "", err
-	}
-	if sessionID == "" {
-		// Server doesn't require sessions — that's fine
-		return "", nil
-	}
-
-	logger.Info("MCP session initialized", "url", mcpURL)
-
-	mcpSessionCache.Lock()
-	mcpSessionCache.sessions[cacheKey] = mcpSessionEntry{
-		sessionID: sessionID,
-		expiry:    time.Now().Add(mcpSessionTTL),
-	}
-	mcpSessionCache.Unlock()
-
-	return sessionID, nil
+// mcpSessionKeyFromRequest builds the session key for a direct MCP request. The
+// key always includes accountID to prevent cross-tenant session sharing;
+// session_id (the caller's chat or run) gives each one its own session; the
+// returned integration_id lets any relay pod reload credentials to end it.
+func mcpSessionKeyFromRequest(rawBody []byte, accountID, mcpURL string) (mcpSessionKey, string) {
+	params := gjson.GetBytes(rawBody, "body.action_params")
+	return mcpSessionKey{
+		Account: accountID,
+		Session: params.Get("session_id").String(),
+		URL:     mcpURL,
+	}, params.Get("integration_id").String()
 }
 
 // performMCPInitialize sends the MCP initialize handshake and returns the session ID.
@@ -225,22 +166,35 @@ func performMCPInitialize(ctx context.Context, mcpURL string, rawBody []byte) (s
 	return resp.Header.Get("Mcp-Session-Id"), nil
 }
 
+// isMCPSessionGone reports whether a response means the upstream server has
+// dropped the session we sent. Only 404, as the MCP spec prescribes: guessing
+// from a 400's text would drop a live session and replay a tool call on an
+// ordinary tool error.
+func isMCPSessionGone(statusCode int, sessionID string) bool {
+	return sessionID != "" && statusCode == http.StatusNotFound
+}
+
 // doMCPRequest sends the actual MCP JSON-RPC request with session and SSE handling.
-// If the server returns 400 with "session" in the error, it retries with a fresh session.
-func doMCPRequest(ctx context.Context, cacheKey string, mcpURL string, mcpBody []byte, sessionID string, rawBody []byte, logger *slog.Logger) (string, int, error) {
+// If the server reports the session is gone, it retries once with a fresh session.
+func doMCPRequest(ctx context.Context, key mcpSessionKey, integrationID string, mcpBody []byte, sessionID string, rawBody []byte, logger *slog.Logger) (string, int, error) {
+	mcpURL := key.URL
 	responseData, statusCode, err := executeMCPHTTP(ctx, mcpURL, mcpBody, sessionID, rawBody)
 	if err != nil {
 		return "", 0, err
 	}
 
-	// If we got a 400 with session-related error, invalidate and retry once
-	if statusCode == 400 && strings.Contains(strings.ToLower(responseData), "session") {
-		logger.Info("MCP session expired, re-initializing", "url", mcpURL)
-		mcpSessionCache.Lock()
-		delete(mcpSessionCache.sessions, cacheKey)
-		mcpSessionCache.Unlock()
+	// A key cached as sessionless whose server now rejects the call may have
+	// started requiring sessions: forget it so the next call re-initializes.
+	if sessionID == "" && (statusCode == http.StatusBadRequest || statusCode == http.StatusNotFound) {
+		dropMCPSession(ctx, key, "")
+	}
 
-		newSessionID, err := ensureMCPSession(ctx, cacheKey, mcpURL, rawBody, logger)
+	// The server no longer knows our session (404): re-initialize and retry once.
+	if isMCPSessionGone(statusCode, sessionID) {
+		logger.Info("MCP session expired, re-initializing", "url", mcpURL, "status", statusCode)
+		dropMCPSession(ctx, key, sessionID)
+
+		newSessionID, err := ensureMCPSession(ctx, key, integrationID, rawBody, logger)
 		if err != nil {
 			return "", 0, fmt.Errorf("session re-init failed: %w", err)
 		}

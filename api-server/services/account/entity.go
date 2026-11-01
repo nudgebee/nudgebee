@@ -351,6 +351,9 @@ type AzureBulkOnboardAccountResult struct {
 	AccountID      string `json:"account_id" mapstructure:"account_id"`
 	Status         string `json:"status" mapstructure:"status"`
 	Error          string `json:"error,omitempty" mapstructure:"error,omitempty"`
+	// Warning is set when the subscription was created but something optional
+	// is missing, such as access to its cost data.
+	Warning string `json:"warning,omitempty" mapstructure:"warning,omitempty"`
 }
 
 // AzureBulkOnboardResponse contains results of bulk Azure onboarding

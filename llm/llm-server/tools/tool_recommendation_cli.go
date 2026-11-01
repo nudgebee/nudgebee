@@ -168,7 +168,7 @@ func recommendationSafetyFacts(nbCtx core.NbToolContext, recommendationId string
 	query := fmt.Sprintf(
 		"SELECT rule_name, status, safety_band, safety_reason, dependent_count, production_dependents, estimated_saving FROM recommendation_view WHERE id = '%s'",
 		recommendationId)
-	_, rows, err := sqlToolCall(nbCtx, query, "recommendation_view", recommendationView, 1, nil)
+	_, rows, err := sqlToolCall(nbCtx, query, "recommendation_view", recommendationViewFor(nbCtx.AccountId), 1, nil)
 	if err != nil {
 		return recommendationSafety{}, err
 	}

@@ -42,6 +42,14 @@ var (
 	// up: these never reached an agent at all. A non-zero rate means the
 	// session's prefetch window is saturated for that tenant.
 	RequestsExpiredInQueue metric.Int64Counter
+
+	// MCPSessionStoreFallbacks counts direct-MCP session-store operations that
+	// failed on Redis and ran on the pod's own memory instead. Non-zero on a
+	// multi-pod relay means chats may lose MCP session state across calls.
+	MCPSessionStoreFallbacks metric.Int64Counter
+	// MCPSessionCloseFailures counts upstream MCP sessions the relay could not
+	// end (no credentials, request error, or rejected), labelled by reason.
+	MCPSessionCloseFailures metric.Int64Counter
 )
 
 // requestBuckets are the explicit bucket boundaries for every per-request
@@ -159,6 +167,22 @@ func Init(meter metric.Meter) error {
 	RequestsExpiredInQueue, err = meter.Int64Counter(
 		"nb_relay_requests_expired_in_queue_total",
 		metric.WithDescription("Requests dead-lettered by the queue TTL before any agent session took them"),
+	)
+	if err != nil {
+		return err
+	}
+
+	MCPSessionStoreFallbacks, err = meter.Int64Counter(
+		"nb_relay_mcp_session_store_fallbacks_total",
+		metric.WithDescription("Direct-MCP session store operations that fell back from Redis to per-pod memory"),
+	)
+	if err != nil {
+		return err
+	}
+
+	MCPSessionCloseFailures, err = meter.Int64Counter(
+		"nb_relay_mcp_session_close_failures_total",
+		metric.WithDescription("Upstream MCP sessions the relay could not end, by reason"),
 	)
 	if err != nil {
 		return err

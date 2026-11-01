@@ -54,6 +54,18 @@ func (d *claimCaptureDAO) InsertTokenUsage(r *TokenUsageRecord) error {
 	}
 	return nil
 }
+
+// pinClaimAuditOnly keeps a test on the audit-only path it was written for:
+// the default mode (continuation) also turns on guidance and continuation calls.
+func pinClaimAuditOnly(t *testing.T) {
+	t.Helper()
+	guidance, continuation := config.Config.ClaimCritiqueActionableFeedbackEnabled, config.Config.CritiqueContinuationEnabled
+	t.Cleanup(func() {
+		config.Config.ClaimCritiqueActionableFeedbackEnabled, config.Config.CritiqueContinuationEnabled = guidance, continuation
+	})
+	config.Config.ClaimCritiqueActionableFeedbackEnabled, config.Config.CritiqueContinuationEnabled = false, false
+}
+
 func installClaimCaptureDAO(t *testing.T, d *claimCaptureDAO) {
 	t.Helper()
 	previous := GetConversationDao()
@@ -65,6 +77,7 @@ func installClaimCaptureDAO(t *testing.T, d *claimCaptureDAO) {
 }
 
 func TestClaimCapturePersistsWithTracingDisabled(t *testing.T) {
+	pinClaimAuditOnly(t)
 	previous, tracing := config.Config.ClaimCritiqueFeedbackEnabled, config.Config.LlmTraceEnabled
 	config.Config.ClaimCritiqueFeedbackEnabled, config.Config.LlmTraceEnabled = true, false
 	t.Cleanup(func() { config.Config.ClaimCritiqueFeedbackEnabled, config.Config.LlmTraceEnabled = previous, tracing })
@@ -76,7 +89,7 @@ func TestClaimCapturePersistsWithTracingDisabled(t *testing.T) {
 			withFakeLLMModel(t, fake)
 			request := NBAgentRequest{AccountId: uuid.NewString(), ConversationId: uuid.NewString(), MessageId: uuid.NewString(), AgentId: uuid.NewString()}
 			runClaimCritiqueShadow(llmOverrideContext(), request, "react4", "test_agent", "accept", "baseline feedback", "why", "answer", "notes",
-				[]NBAgentPlannerToolActionStep{{Action: NBAgentPlannerToolAction{Tool: "metrics"}, Observation: "CPU high"}})
+				[]NBAgentPlannerToolActionStep{{Action: NBAgentPlannerToolAction{Tool: "metrics"}, Observation: "CPU high"}}, false, nil)
 			require.Equal(t, 1, fake.callCount())
 			require.Len(t, dao.rows, 2)
 			initial, final := dao.rows[0], dao.rows[1]
@@ -118,7 +131,7 @@ func TestClaimCaptureStorageFailureSkipsInference(t *testing.T) {
 	installClaimCaptureDAO(t, dao)
 	fake := &fakeLLMModel{}
 	withFakeLLMModel(t, fake)
-	runClaimCritiqueShadow(llmOverrideContext(), NBAgentRequest{}, "react3", "test_agent", "accept", "", "why", "answer", "", nil)
+	runClaimCritiqueShadow(llmOverrideContext(), NBAgentRequest{}, "react3", "test_agent", "accept", "", "why", "answer", "", nil, false, nil)
 	require.Zero(t, fake.callCount())
 	require.Empty(t, dao.rows)
 }
@@ -135,7 +148,7 @@ func TestClaimCaptureOversizeAndCancellationRemainVisible(t *testing.T) {
 	cancelled, cancel := context.WithCancel(base.GetContext())
 	cancel()
 	ctx := security.NewRequestContext(cancelled, base.GetSecurityContext(), base.GetLogger(), base.GetTracer(), base.GetMeter())
-	runClaimCritiqueShadow(ctx, NBAgentRequest{}, "react3", "test_agent", "accept", "", "why", strings.Repeat("x", claimCritiqueInputLimit), "", nil)
+	runClaimCritiqueShadow(ctx, NBAgentRequest{}, "react3", "test_agent", "accept", "", "why", strings.Repeat("x", claimCritiqueInputLimit), "", nil, false, nil)
 	require.Zero(t, fake.callCount())
 	require.Len(t, dao.rows, 2)
 	require.Equal(t, "input_limit", dao.rows[1].Status)
@@ -155,13 +168,30 @@ func TestClaimCaptureDAOAndUsageID(t *testing.T) {
 	record := &ClaimCritiqueAuditRecord{ID: uuid.NewString(), TokenUsageID: uuid.NewString(), Status: "started"}
 	mock.ExpectExec("INSERT INTO llm_conversation_agent_critiques").WithArgs(record.ID, record.TokenUsageID, "", "", "", "", "", "", claimShadowCritiqueType, "skipped", "", claimMetadataArgument{status: "started"}).WillReturnResult(sqlmock.NewResult(0, 1))
 	require.NoError(t, dao.SaveClaimCritiqueAudit(context.Background(), record))
-	record.Status, record.Decision, record.Completed = "ok", "refine", true
-	mock.ExpectExec("INSERT INTO llm_conversation_agent_critiques").WithArgs(record.ID, record.TokenUsageID, "", "", "", "", "", "", claimShadowCritiqueType, "refine", "", claimMetadataArgument{status: "ok", completed: true}).WillReturnResult(sqlmock.NewResult(0, 1))
+	// A fallback audit runs under a new usage id; the completed row must point at it.
+	record.Status, record.Decision, record.Completed, record.TokenUsageID = "ok", "refine", true, uuid.NewString()
+	mock.ExpectExec(`INSERT INTO llm_conversation_agent_critiques[\s\S]*DO UPDATE SET token_usage_id=EXCLUDED\.token_usage_id`).WithArgs(record.ID, record.TokenUsageID, "", "", "", "", "", "", claimShadowCritiqueType, "refine", "", claimMetadataArgument{status: "ok", completed: true}).WillReturnResult(sqlmock.NewResult(0, 1))
 	require.NoError(t, dao.SaveClaimCritiqueAudit(context.Background(), record))
 	mock.ExpectExec("INSERT INTO llm_conversation_token_usage").WithArgs(
 		nil, nil, nil, "", nil, nil, "", "", 0, 0, 0, 0, false, nil, 0, nil, nil, nil, "", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, record.TokenUsageID,
 	).WillReturnResult(sqlmock.NewResult(0, 1))
 	require.NoError(t, dao.InsertTokenUsage(&TokenUsageRecord{ID: record.TokenUsageID}))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A completed review without a verdict is stored apart from a review that never
+// ran because the refinement budget was spent (#40236).
+func TestClaimCaptureNoVerdictDecision(t *testing.T) {
+	dao, mock := setupConversationDAOMock(t)
+	for _, c := range []struct{ status, want string }{
+		{"generation_error", claimDecisionNoVerdict},
+		{"input_limit", claimDecisionNoVerdict},
+		{"budget_exhausted", "skipped"},
+	} {
+		record := &ClaimCritiqueAuditRecord{ID: uuid.NewString(), TokenUsageID: uuid.NewString(), Status: c.status, Completed: true}
+		mock.ExpectExec("INSERT INTO llm_conversation_agent_critiques").WithArgs(record.ID, record.TokenUsageID, "", "", "", "", "", "", claimShadowCritiqueType, c.want, "", claimMetadataArgument{status: c.status, completed: true}).WillReturnResult(sqlmock.NewResult(0, 1))
+		require.NoError(t, dao.SaveClaimCritiqueAudit(context.Background(), record), c.status)
+	}
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -185,6 +215,7 @@ func TestClaimCaptureFailureUsageID(t *testing.T) {
 }
 
 func TestClaimCaptureCompletionFailureLeavesStarted(t *testing.T) {
+	pinClaimAuditOnly(t)
 	previous := config.Config.ClaimCritiqueFeedbackEnabled
 	config.Config.ClaimCritiqueFeedbackEnabled = true
 	t.Cleanup(func() { config.Config.ClaimCritiqueFeedbackEnabled = previous })
@@ -193,7 +224,7 @@ func TestClaimCaptureCompletionFailureLeavesStarted(t *testing.T) {
 	fake := &fakeLLMModel{turns: []fakeTurn{{content: validClaimAudit}}}
 	withFakeLLMModel(t, fake)
 	runClaimCritiqueShadow(llmOverrideContext(), NBAgentRequest{}, "react3", "test_agent", "accept", "", "why", "answer", "",
-		[]NBAgentPlannerToolActionStep{{Action: NBAgentPlannerToolAction{Tool: "metrics"}, Observation: "CPU high"}})
+		[]NBAgentPlannerToolActionStep{{Action: NBAgentPlannerToolAction{Tool: "metrics"}, Observation: "CPU high"}}, false, nil)
 	require.Equal(t, 1, fake.callCount())
 	require.Len(t, dao.rows, 1)
 	require.Equal(t, "started", dao.rows[0].Status)

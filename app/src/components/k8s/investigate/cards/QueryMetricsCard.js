@@ -1,8 +1,15 @@
 import { MetricsInvestigateIcon } from '@assets';
 import QueryMetrics from '@components/k8s/details/QueryMetrics';
 import { formatDateForPlusMinusDuration, safeJSONParse } from 'src/utils/common';
+import { formatMetricValue } from '@lib/promqlUnit';
+import { summarizeQueryMetrics } from './cardSummaries';
 
 let queryMetricsCardIdx = 0;
+
+// This evidence does not record which query language produced it (PromQL, NRQL,
+// Datadog, Elasticsearch), so no unit is read from its query; the numbers are
+// only made readable: 0.0004 stays 0.0004 rather than 0.00.
+const formatUnitless = (value) => formatMetricValue(value, null);
 
 class QueryMetricsCard {
   constructor(query, evidenceData, event) {
@@ -30,6 +37,7 @@ class QueryMetricsCard {
         );
         if (hasData) {
           this.preparedEvidences = (parsedJson?.data || parsedJson).results;
+          this.insightData = summarizeQueryMetrics(this.preparedEvidences);
           this.renderContent = true;
         }
       }
@@ -50,6 +58,7 @@ class QueryMetricsCard {
     const plusMinus30MinDuration = formatDateForPlusMinusDuration(new Date(startDate).getTime(), 30);
     return (
       <QueryMetrics
+        formatValue={formatUnitless}
         showDrilldown={true}
         preparedEvidences={this.preparedEvidences}
         showExtraOptions={false}

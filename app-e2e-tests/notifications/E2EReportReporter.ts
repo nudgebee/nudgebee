@@ -4,6 +4,7 @@ import type {
   TestResult,
   TestStep,
   FullConfig,
+  FullResult,
 } from "@playwright/test/reporter";
 import { writeFileSync, mkdirSync } from "fs";
 import path from "path";
@@ -23,6 +24,8 @@ interface ReportAttachment {
 
 interface ReportStep {
   name: string;
+  category: string;
+  at: string;
   status: string;
   start: number;
   stop: number;
@@ -33,6 +36,7 @@ interface ReportStep {
 interface ReportAttempt {
   name: string;
   suite: string;
+  line: number;
   tags: string[];
   status: string;
   retry: number;
@@ -74,6 +78,12 @@ export default class E2EReportReporter implements Reporter {
     const start = step.startTime ? step.startTime.getTime() : 0;
     return {
       name: step.title,
+      // "fixture" and "hook" steps (Worker Cleanup, beforeEach) are not the
+      // spec's own steps; the report needs to tell them apart.
+      category: step.category,
+      // Newer Playwright titles an action just "Click"; where it was called
+      // from is what says which click it was.
+      at: step.location ? `${path.basename(step.location.file)}:${step.location.line}` : "",
       status: step.error ? "failed" : "passed",
       start,
       stop: start + (step.duration >= 0 ? step.duration : 0),
@@ -95,6 +105,7 @@ export default class E2EReportReporter implements Reporter {
       // admin/Audits/Audits.spec.ts: the report names each module after this
       // path's folders, and a leading "tests/" would prefix every one of them.
       suite: path.relative(test.parent.project()?.testDir || this.rootDir, test.location.file),
+      line: test.location.line,
       // Playwright hands back "@dev"; the report's tag table labels them bare.
       tags: (test.tags || []).map((t) => t.replace(/^@/, "")),
       status: E2EReportReporter.status(result.status),
@@ -110,10 +121,17 @@ export default class E2EReportReporter implements Reporter {
     });
   }
 
-  onEnd(): void {
+  onEnd(result: FullResult): void {
     // The HTML reporter empties playwright-report/ when the run starts, so this
     // has to be written at the end rather than incrementally.
     mkdirSync(PLAYWRIGHT_REPORT_DIR, { recursive: true });
-    writeFileSync(E2E_RESULTS_FILE, JSON.stringify(this.attempts), "utf8");
+    // The run's own clock, not the sum of test durations: tests run on several
+    // workers at once, so adding them up overstates the wall time.
+    const run = {
+      start: result.startTime ? result.startTime.getTime() : 0,
+      duration: result.duration >= 0 ? result.duration : 0,
+      status: result.status,
+    };
+    writeFileSync(E2E_RESULTS_FILE, JSON.stringify({ run, attempts: this.attempts }), "utf8");
   }
 }

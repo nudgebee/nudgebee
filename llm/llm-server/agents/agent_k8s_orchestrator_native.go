@@ -63,6 +63,8 @@ func newK8sNativeAgentNamed(accountId, name string) *K8sNativeAgent {
 
 func (a *K8sNativeAgent) GetName() string { return a.name }
 
+func (a *K8sNativeAgent) AcceptsExecutionTarget() {}
+
 // GetNameAliases: aliases[0] is what the app/@-picker shows as the friendly
 // display name (useAgentConfiguration.ts:98). Put the human label first,
 // technical short-form second so @-invocation via `@k8s_debug_native`

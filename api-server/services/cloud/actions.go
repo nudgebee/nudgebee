@@ -193,10 +193,17 @@ func getVpcIdForResource(resourceId, tenantId string) string {
 		return ""
 	}
 	var vpcId string
+	// No index leads with (tenant, resourse_id), so tenant = $2 alone scanned the
+	// tenant's whole cloud_resourses set (~0.5s warm, 39s cold on dev). The
+	// account IN (...) predicate reaches cloud_resourses_account_resourse_service_type_region_key
+	// (account, resourse_id, ...) once per tenant account instead. It drops no rows
+	// while every writer stores a resource under an account of its own tenant; no
+	// composite FK enforces that, so a writer that broke it would hide the resource here.
 	err = dbms.Db.QueryRowx(
 		`SELECT (regexp_match(meta::text, '"VpcId":\s*"(vpc-[a-f0-9]+)"'))[1]
 		 FROM cloud_resourses
-		 WHERE resourse_id = $1 AND tenant = $2 AND cloud_provider = 'AWS'
+		 WHERE account IN (SELECT id FROM cloud_accounts WHERE tenant = $2)
+		 AND resourse_id = $1 AND tenant = $2 AND cloud_provider = 'AWS'
 		 AND meta::text ~ '"VpcId":\s*"vpc-'
 		 LIMIT 1`,
 		resourceId, tenantId,

@@ -35,6 +35,57 @@ export const describeChangeTiming = (changeAt, alertAt) => {
   return gap >= 0 ? `${span} before the alert` : `${span} after the alert started`;
 };
 
+// The longest value a row states in full; an image reference or a command is left to the dialog.
+const ROW_VALUE_MAX = 32;
+
+// One side of a change as a row can state it: '(not set)' when the field is absent on that side,
+// undefined when the value is an object or too long to read in a row.
+const rowValue = (value) => {
+  if (value === null || value === undefined) return '(not set)';
+  if (typeof value === 'object') return undefined;
+  const text = String(value).trim();
+  if (!text || text.length > ROW_VALUE_MAX || text.startsWith('{') || text.startsWith('[')) return undefined;
+  return text;
+};
+
+const CONTAINER_PREFIX = /^(init)?[cC]ontainers\[[^\]]+\]\./;
+
+const withoutSpecPrefix = (path) =>
+  path
+    .replace(/^spec\.template\.spec\./, '')
+    .replace(/^spec\.template\.metadata\./, '')
+    .replace(/^spec\.template\./, '')
+    .replace(/^spec\./, '');
+
+/**
+ * What rolling a change back writes, field by field, as "running now → after rollback". The row
+ * used to say only which fields a change touched ("changes resources"), so a rollback that lowers
+ * a memory limit on an out-of-memory alert read the same as one that raises it. Only short plain
+ * values are stated; the rest are counted and left to the dialog, which shows every field.
+ *
+ * @param {{path?: string, old?: *, new?: *}[]} fields the change's recorded fields
+ * @param {number} limit how many fields to state
+ */
+export const describeRollbackWrites = (fields, limit = 2) => {
+  const changed = (Array.isArray(fields) ? fields : [])
+    .map((f) => ({ path: withoutSpecPrefix(normalizePath(f?.path)), now: rowValue(f?.new), after: rowValue(f?.old) }))
+    .filter((f) => f.path && !isRolloutOnlyKey(f.path));
+  // The container is dropped from the label only when every field is in the same one; with two
+  // containers "resources.limits.memory" twice would not say which value belongs to which.
+  const containers = new Set(changed.map((f) => CONTAINER_PREFIX.exec(f.path)?.[0]).filter(Boolean));
+  const stated = [];
+  let more = 0;
+  changed.forEach(({ path, now, after }) => {
+    if (now === undefined || after === undefined || stated.length >= limit) {
+      more += 1;
+      return;
+    }
+    stated.push(`${containers.size > 1 ? path : path.replace(CONTAINER_PREFIX, '')} ${now} → ${after}`);
+  });
+  if (stated.length === 0) return '';
+  return more > 0 ? `${stated.join(', ')} and ${more} more` : stated.join(', ');
+};
+
 // "deployment/<namespace>/<name>.yaml" → "Deployment <namespace>/<name>", naming the kind the revert
 // acts on — a DaemonSet revert restarts a pod on every node, which "Deployment" does not suggest.
 export const revertTargetLabel = (resourceName) => {

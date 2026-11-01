@@ -9,6 +9,7 @@ import { safeJSONParse } from 'src/utils/common';
 import { Box, Typography } from '@mui/material';
 import { useMemo, useState } from 'react';
 import { ds } from '@utils/colors';
+import { mentionsContainer, summarizeAllocation } from './cardSummaries';
 
 // Owner kinds as events store them (the Go agent writes them lowercase) → the
 // k8s_workloads.kind spelling the workload lookup and the apply path match on.
@@ -79,6 +80,11 @@ const TuneResourceForm = ({ card, open, onClose }) => {
   );
 };
 
+// Kubernetes admits no request above its limit, so a current request above the
+// current limit means the evidence counted it wrong (a second exporter publishing
+// the same series doubled it). Propose from the limit rather than from that.
+const requestWithinLimit = (request, limit) => (request > 0 && limit > 0 ? Math.min(request, limit) : request);
+
 class MemoryAllocationCard {
   constructor() {
     this.id = 'MemoryAllocationCard';
@@ -95,7 +101,8 @@ class MemoryAllocationCard {
     this.openKubernetesRightSizingUpdateForm = false;
     this.podMemoryAllocationItem = [];
     this.memLimit = [];
-    this.resourceType = '';
+    // node_request_memory_metric draws on the node chart without a node_metric.
+    this.nodeResourceType = 'memory';
     this.onDataUpdate = null;
     this.refreshRenderId = 0;
   }
@@ -189,7 +196,9 @@ class MemoryAllocationCard {
         }
       } else if (jsonData.name === 'pod_metric') {
         if (jsonData.data.length > 0) {
-          this.resourceType = jsonData?.resource_type ?? 'memory';
+          // Per blob: an event carries a cpu and a memory pod_metric, and one
+          // must not relabel the other.
+          const resourceType = String(jsonData?.resource_type ?? 'memory').toLowerCase();
           const occurredAt = new Date(row?.starts_at + 'Z').toLocaleTimeString();
           for (const element of jsonData.data) {
             const podMetricObject = {};
@@ -207,11 +216,13 @@ class MemoryAllocationCard {
               return '';
             });
             podMetricObject.labels.splice(insertIndex, 0, occurredAt);
+            // Bytes → MiB and cores → millicores, unrounded: a sub-unit value is
+            // not zero.
             let values = element.values;
-            if (this.resourceType === 'memory') {
-              values = element.values?.map((val) => (val / (1024 * 1024)).toFixed());
-            } else if (this.resourceType === 'cpu') {
-              values = element.values?.map((val) => (val * 1000).toFixed());
+            if (resourceType === 'memory') {
+              values = element.values?.map((val) => val / (1024 * 1024));
+            } else if (resourceType === 'cpu') {
+              values = element.values?.map((val) => val * 1000);
             }
             podMetricObject.data = values;
             podMetricObject.data.splice(insertIndex, 0, podMetricObject.data[insertIndex + 1]);
@@ -231,7 +242,7 @@ class MemoryAllocationCard {
               limits: element.metric?.limits?.memory,
               cpu_limit: element.metric?.limits?.cpu,
               cpu_request: element.metric?.requests?.cpu,
-              resource_type: this.resourceType,
+              resource_type: resourceType,
               peakUsage,
               // The raw series, for the tune form's "what it actually used" view.
               samples: numericValues,
@@ -256,7 +267,8 @@ class MemoryAllocationCard {
           };
         }
       } else if (jsonData.name === 'node_metric') {
-        this.resourceType = jsonData?.resource_type ?? 'memory';
+        // Stored as "Memory" / "CPU" as well as lowercase.
+        this.nodeResourceType = String(jsonData?.resource_type ?? 'memory').toLowerCase();
         if (jsonData?.data[0]?.timestamps?.length > 0) {
           const labelLength = jsonData.data[0].timestamps.length;
           newobject2.labels = jsonData.data[0].timestamps.map((timestamp, i) => {
@@ -266,7 +278,9 @@ class MemoryAllocationCard {
             }
             return '';
           });
-          newobject2.data = jsonData.data[0].values?.map((val) => parseFloat(formatMemory(val, 'bytes', 'gb', false)));
+          // Memory arrives in bytes and is drawn in GiB; CPU arrives in cores.
+          // (Not formatMemory: its "1,536.5" string parses back as 1.)
+          newobject2.data = jsonData.data[0].values?.map((val) => (this.nodeResourceType === 'cpu' ? parseFloat(val) : parseFloat(val) / 1024 ** 3));
         }
         if (item?.insight && item.insight.length > 0) {
           this.insightData = this.insightData.concat(...item.insight);
@@ -320,8 +334,16 @@ class MemoryAllocationCard {
     return this.renderContent;
   };
 
+  // The stored summary when the evidence has one, otherwise the first container's peak against its
+  // limit. When a container was killed and the stored summary is about another one, the killed
+  // container's line leads: on #38638 the summary described a sidecar while the container that
+  // died had no samples at all.
   getHighLightsData = () => {
-    return this.insightData;
+    const stored = this.insightData?.length > 0 ? this.insightData : [];
+    const killed = this.oomKilledContainer();
+    if (stored.length > 0 && (!killed || stored.some((line) => mentionsContainer(line, killed)))) return stored;
+    const items = killed ? (this.podMemoryAllocationItem || []).filter((i) => i?.container === killed) : this.podMemoryAllocationItem;
+    return [...summarizeAllocation(items), ...stored];
   };
 
   // The workload behind the event's pod. The event's own owner fields are the
@@ -442,7 +464,10 @@ class MemoryAllocationCard {
           },
         },
         memory: {
-          request: formatMemory(containerItem?.request?.memory * 1.1, 'bytes', 'mb')?.replace(',', ''),
+          request: formatMemory(requestWithinLimit(containerItem?.request?.memory, containerItem?.limits?.memory) * 1.1, 'bytes', 'mb')?.replace(
+            ',',
+            ''
+          ),
           limit: formatMemory(containerItem?.limits?.memory * 1.1, 'bytes', 'mb')?.replace(',', ''),
           oldRequest: formatMemory(containerItem?.request?.memory, 'bytes', 'mb')?.replace(',', ''),
           oldLimit: formatMemory(containerItem?.limits?.memory, 'bytes', 'mb')?.replace(',', ''),
@@ -484,8 +509,12 @@ class MemoryAllocationCard {
       if (!bytes) return 0;
       return formatMemory(bytes, 'bytes', 'mb')?.replace(',', '');
     };
-    const reqBase = memoryObject?.request > 0 ? memoryObject.request : memPeak;
-    const limitBase = memoryObject?.limits > 0 ? memoryObject.limits : memPeak;
+    // Only a recorded request can be a miscount; a peak stands in for a request that
+    // was never set and is real usage, so it is left as measured.
+    const reqBase = memoryObject?.request > 0 ? requestWithinLimit(memoryObject.request, memoryObject?.limits) : memPeak;
+    // Never propose a limit below the request: with no limit set, the peak can sit
+    // under a generous request, and Kubernetes refuses that pair.
+    const limitBase = Math.max(memoryObject?.limits > 0 ? memoryObject.limits : memPeak, reqBase);
     // Always present, so the memory section renders for a container the metrics
     // missed; the form then takes current values from the workload spec.
     // nbalgoBase is the unbuffered MB base the popup's algo/buffer toggles
@@ -547,6 +576,7 @@ class MemoryAllocationCard {
       const podItems = this.podMemoryAllocationItem;
       const podGraphData = this.podGraphData;
       const nodeGraphData = this.nodeGraphData;
+      const nodeResourceType = this.nodeResourceType;
 
       // Group cards by resource_type so a row never mixes CPU with Memory.
       // Each group is a flex-wrap row where every card has flex: 1 1 420px:
@@ -614,6 +644,7 @@ class MemoryAllocationCard {
                           labelsP={podGraphData[originalIndex].labels}
                           podLimitRequest={pod}
                           resourceType={pod.resource_type}
+                          nodeResourceType={nodeResourceType}
                         />
                       </>
                     )}
@@ -645,7 +676,7 @@ class MemoryAllocationCard {
               dataP={[]}
               labelsP={[]}
               podLimitRequest={this.podMemoryAllocationItem}
-              resourceType={this.resourceType}
+              nodeResourceType={this.nodeResourceType}
             />
           )
         );
@@ -666,11 +697,16 @@ class MemoryAllocationCard {
           labelsN={this.nodeGraphData?.labels}
           dataRequestN={this.nodeGraphData?.requestData}
           dataRequestL={this.nodeGraphData?.requestDataLabels}
-          resourceType={this.resourceType}
+          nodeResourceType={this.nodeResourceType}
         />
       ));
     }
-    if (this.resourceType === 'memory') {
+    // Whenever memory is charted — not whichever evidence happened to be read last.
+    const chartsMemory =
+      this.memoryAllocationItem.length > 0 ||
+      this.podMemoryAllocationItem.some((item) => item.resource_type === 'memory') ||
+      (this.nodeGraphData?.data?.length > 0 && this.nodeResourceType === 'memory');
+    if (chartsMemory) {
       components.push(() => <RenderMemoryLeakData />);
     }
     return components;

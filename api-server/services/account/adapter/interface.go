@@ -46,6 +46,11 @@ type ApplyRecommendationResponse struct {
 type GetRecommendationResolutionStatusResponse struct {
 	Status        RecommendationResolutionStatus
 	StatusMessage string
+	// Unverified means the provider could not be asked, or did not answer, so
+	// Status is not an observation — the pull request is kept as it was (see
+	// unverifiedPRStatus). Pollers stamp last_pr_check_at only on a verified
+	// answer, which is what bounds how long a pull request may stay unverified.
+	Unverified bool
 }
 
 type AccountAdapterContext interface {

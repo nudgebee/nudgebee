@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"nudgebee/llm/agents/aws"
 	"nudgebee/llm/common"
-	"strings"
+	toolcore "nudgebee/llm/tools/core"
 	"sync"
 )
 
@@ -55,15 +55,14 @@ func GetDebugAgentName(accountId string) string {
 }
 
 func debugAgentForAccount(cloudProvider, accountType string) string {
-	if strings.EqualFold(accountType, "vm") {
+	switch toolcore.AccountTargetProvider(cloudProvider, accountType) {
+	case "vm":
 		return AgentVMOrchestratorName
-	}
-	switch {
-	case strings.EqualFold(cloudProvider, "aws"):
+	case "aws":
 		return aws.AgentAwsOrchestratorName
-	case strings.EqualFold(cloudProvider, "gcp"):
+	case "gcp":
 		return AgentGcpOrchestratorName
-	case strings.EqualFold(cloudProvider, "azure"):
+	case "azure":
 		return AgentAzureOrchestratorName
 	default:
 		return AgentK8sOrchestratorName

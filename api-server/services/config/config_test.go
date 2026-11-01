@@ -2,7 +2,10 @@ package config
 
 import (
 	"os"
+	"slices"
 	"testing"
+
+	"github.com/spf13/viper"
 )
 
 // The API/worker split hangs entirely off this predicate: it decides whether a
@@ -80,5 +83,21 @@ func TestInventoryChangeDetectionDisabledByDefault(t *testing.T) {
 	}
 	if Config.KGInventoryChangeDetectionEnabled {
 		t.Error("default kg_inventory_change_detection_enabled = true, want false")
+	}
+}
+
+// Announcing a returned anomaly is opt-in, and the switch has to be reachable.
+// viper's Unmarshal only fills keys it knows, and AutomaticEnv does not make a
+// key known: a flag with no default is never read from the environment, so it
+// could not be turned on at all.
+func TestAnomalyReturnedDigestIsOffByDefaultAndReadFromTheEnvironment(t *testing.T) {
+	if !slices.Contains(viper.AllKeys(), "feature_anomaly_returned_digest_enabled") {
+		t.Error("feature_anomaly_returned_digest_enabled has no viper default, so FEATURE_ANOMALY_RETURNED_DIGEST_ENABLED is ignored")
+	}
+	if v, ok := os.LookupEnv("FEATURE_ANOMALY_RETURNED_DIGEST_ENABLED"); ok {
+		t.Skipf("FEATURE_ANOMALY_RETURNED_DIGEST_ENABLED=%q is set in the environment; the compiled-in default is not observable here", v)
+	}
+	if Config.FeatureAnomalyReturnedDigestEnabled {
+		t.Error("default feature_anomaly_returned_digest_enabled = true, want false")
 	}
 }

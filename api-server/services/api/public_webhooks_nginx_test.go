@@ -48,6 +48,9 @@ func TestNginxRoutesEveryPublicWebhook(t *testing.T) {
 				require.True(t, location.MatchString(path),
 					"%s is registered in handlePublicWebhooksApis but not routed by %s — add it to the location regex", path, file)
 			}
+
+			require.Contains(t, string(raw), "access_log off;",
+				"%s must configure 'access_log off;' for webhooks to prevent leaking tokens", file)
 		})
 	}
 }

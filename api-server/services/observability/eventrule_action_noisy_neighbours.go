@@ -63,6 +63,24 @@ var noisyNeighboursAggKeys = map[string]bool{
 const (
 	noisyNeighboursTopN            = 15
 	noisyNeighboursLookbackMinutes = 10
+
+	// nodeMemoryShortPct is the share of allocatable at which the node itself ran
+	// out of memory. The card's "peaked at N%" reading and oomCause's node verdict
+	// both key on it, so the insight and the verdict cannot disagree.
+	nodeMemoryShortPct = 85
+	// subjectAtOwnLimitPct is how close to its own limit a container must peak to
+	// count as having hit it. Below 100 because the peak is the last scrape before
+	// the kill, not the allocation that triggered it.
+	subjectAtOwnLimitPct = 90
+)
+
+// oom_cause values on the card for OOM-kill events. Incident grouping reads the
+// field (triage.oomCauseFromEvidence) to decide whether a kill belongs to its
+// node's incident, so a renamed value silently stops that grouping.
+const (
+	oomCauseNodeMemory   = "node_memory"
+	oomCauseOwnLimit     = "own_limit"
+	oomCauseUndetermined = "undetermined"
 )
 
 // Indirected so a test can exercise the card's ranking and payload without a live
@@ -130,8 +148,44 @@ func (a *noisyNeighboursAction) Execute(ctx playbooks.PlaybookActionContext, raw
 	// what hid the second victim in the case this was reported for. The events
 	// table is the only record that it happened. See #39083.
 	data.CoKilled = coLocatedOOMKills(ctx, nodeName, podName, end)
+	if isCoLocatedOOMKey(ctx.GetEvent().AggregationKey) {
+		data.OOMCause = oomCause(data)
+	}
 
 	return noisyNeighboursResponse(podName, namespace, rawParams, data)
+}
+
+// oomCause says whether the subject was killed because its node ran out of memory
+// or because one of its containers hit its own limit, and declines to guess
+// otherwise.
+//
+// own_limit wins whenever any of the subject's containers peaked near its own
+// limit: the card does not know which container the kernel killed, so a pod with
+// one container at its limit is never blamed on the node. node_memory needs
+// evidence on both sides — the pod was measured with no container near its
+// limit, and the node's containers peaked at nodeMemoryShortPct of allocatable.
+//
+// Other pods dying on the same node are deliberately not an input. Grouping reads
+// this verdict to decide whether those kills are one incident, so the verdict
+// cannot be derived from them.
+func oomCause(d *noisyNeighbourData) string {
+	for _, row := range d.Neighbours {
+		if row["is_subject"] != true {
+			continue
+		}
+		used, _ := row["memory_used"].(float64)
+		limit, _ := row["memory_limit"].(float64)
+		if limit > 0 && used >= limit*subjectAtOwnLimitPct/100 {
+			return oomCauseOwnLimit
+		}
+	}
+	if !d.SubjectMeasured || d.NodeAllocatable <= 0 {
+		return oomCauseUndetermined
+	}
+	if d.NodeUsed/d.NodeAllocatable*100 >= nodeMemoryShortPct {
+		return oomCauseNodeMemory
+	}
+	return oomCauseUndetermined
 }
 
 type noisyNeighbourData struct {
@@ -141,7 +195,8 @@ type noisyNeighbourData struct {
 	TotalRequested  float64
 	// TotalLimits is the sum of every container's memory limit on the node. Above
 	// allocatable the node is oversubscribed: the pods may collectively take more
-	// than the machine has, and the kernel settles it by killing one.
+	// than the machine has, and if they actually do, the kernel settles it by
+	// killing one. It is a risk, not a measurement — see noisyNeighboursInsights.
 	TotalLimits float64
 	Neighbours  []map[string]any
 
@@ -167,6 +222,9 @@ type noisyNeighbourData struct {
 	// CoKilled are the other pods this node killed in the same window, read from
 	// the events table because metrics cannot see them. See #39083.
 	CoKilled []coKilledPod
+
+	// OOMCause is oomCause's verdict, set only for OOM-kill events.
+	OOMCause string
 }
 
 // noisyNeighbourKeys are the two families the card ranks, each fetched with the
@@ -272,8 +330,8 @@ func buildNoisyNeighbourData(nodeName, podName, namespace string, results map[st
 	// The sum of every container's memory limit on the node. Requests are what the
 	// scheduler reserved; limits are what the pods are allowed to actually take,
 	// and a node whose limits exceed its allocatable is oversubscribed — the pods
-	// can collectively ask for more than the machine has, and the kernel resolves
-	// that by killing one. `kubectl describe node` reports both for this reason;
+	// can collectively ask for more than the machine has, and if they do, the kernel
+	// resolves that by killing one. `kubectl describe node` reports both for this reason;
 	// the card reported only requests, so the condition that explains the kill was
 	// the one number missing. Measured on the node from #39083: requests 50% of
 	// allocatable, limits 145%.
@@ -480,6 +538,9 @@ func noisyNeighboursResponse(podName, namespace string, rawParams map[string]any
 	if len(d.CoKilled) > 0 {
 		data["co_killed"] = coKilledPayload(d.CoKilled)
 	}
+	if d.OOMCause != "" {
+		data["oom_cause"] = d.OOMCause
+	}
 	// Only when we actually measured CPU. On a provider that cannot report it,
 	// omitting the keys says "unknown"; a zero would say "nothing is using CPU",
 	// which is a different and much more misleading claim.
@@ -532,33 +593,53 @@ func noisyNeighboursInsights(d *noisyNeighbourData) []playbooks.PlaybookActionRe
 		requestedPct := d.TotalRequested / d.NodeAllocatable * 100
 		usedPct := d.NodeUsed / d.NodeAllocatable * 100
 		limitsPct := d.TotalLimits / d.NodeAllocatable * 100
+		// Only usage, or another pod dying here, shows the machine actually ran out.
+		// Requests and limits are what the pods reserved and are allowed to take, not
+		// what they took, and the kernel kills on physical shortage: a node can carry
+		// limits at 209% of allocatable while using 8% of it. Limits exceed allocatable
+		// on almost every node, so keying the claim on them alone put it on nearly every
+		// card — including nodes with memory to spare, where it told the reader, and the
+		// investigation agent, that oversubscription killed the pod.
+		nodeShort := usedPct >= nodeMemoryShortPct || len(d.CoKilled) > 0
 		switch {
-		// Oversubscribed beats every other reading: the pods on this node are
-		// allowed to take more memory than it has, so the kernel settling it with
-		// a kill is the expected outcome, not a surprise. `kubectl describe node`
-		// puts requests and limits side by side for exactly this reason.
-		case limitsPct > 100:
+		// Oversubscribed beats every other reading once the node did run out: the
+		// pods on it are allowed to take more memory than it has, which is how it got
+		// there. `kubectl describe node` puts requests and limits side by side for
+		// exactly this reason.
+		case nodeShort && limitsPct > 100:
 			insights = append(insights, playbooks.PlaybookActionResponseInsight{
 				Message: fmt.Sprintf("This node is oversubscribed: the memory limits of the pods on it add up to %.0f%% of allocatable (%s of %s). They cannot all use what they are allowed, so the kernel resolves it by killing one.",
 					limitsPct, formatBytesGiB(d.TotalLimits), formatBytesGiB(d.NodeAllocatable)),
 				Severity: "HIGH",
 			})
-		case requestedPct >= 95:
+		case nodeShort && requestedPct >= 95:
 			insights = append(insights, playbooks.PlaybookActionResponseInsight{
 				Message: fmt.Sprintf("Node memory is committed to %.0f%% of allocatable (%s requested of %s) — there is no headroom on this machine for a pod to grow into.",
 					requestedPct, formatBytesGiB(d.TotalRequested), formatBytesGiB(d.NodeAllocatable)),
 				Severity: "HIGH",
 			})
-		case usedPct >= 85:
+		case usedPct >= nodeMemoryShortPct:
 			insights = append(insights, playbooks.PlaybookActionResponseInsight{
 				Message: fmt.Sprintf("Node memory peaked at %.0f%% of allocatable (%s of %s) in the window before the kill.",
 					usedPct, formatBytesGiB(d.NodeUsed), formatBytesGiB(d.NodeAllocatable)),
 				Severity: "MEDIUM",
 			})
-		case len(d.CoKilled) == 0:
+		case !nodeShort:
+			message := fmt.Sprintf("The node was not short of memory — it peaked at %.0f%% of allocatable (%s of %s) and no other pod was killed here in the same window. Look at this pod's own limit before its neighbours.",
+				usedPct, formatBytesGiB(d.NodeUsed), formatBytesGiB(d.NodeAllocatable))
+			// The reservation figures sit beside usage in the card and are the ones
+			// that look alarming, so say outright that they are not the cause. Each is
+			// explained on its own: the card highlights both, and both are often high.
+			if limitsPct > 100 {
+				message += fmt.Sprintf(" The pods' memory limits add up to %.0f%% of allocatable (%s), but a limit is a ceiling, not usage: that oversubscription is a risk, not what killed this pod.",
+					limitsPct, formatBytesGiB(d.TotalLimits))
+			}
+			if requestedPct >= 95 {
+				message += fmt.Sprintf(" Requests reserve %.0f%% of allocatable (%s), but reserved is not used: that stops the scheduler placing more pods here, not this pod from growing.",
+					requestedPct, formatBytesGiB(d.TotalRequested))
+			}
 			insights = append(insights, playbooks.PlaybookActionResponseInsight{
-				Message: fmt.Sprintf("The node was not short of memory — it peaked at %.0f%% of allocatable (%s of %s) and no other pod was killed here in the same window. Look at this pod's own limit before its neighbours.",
-					usedPct, formatBytesGiB(d.NodeUsed), formatBytesGiB(d.NodeAllocatable)),
+				Message:  message,
 				Severity: "INFO",
 			})
 		}

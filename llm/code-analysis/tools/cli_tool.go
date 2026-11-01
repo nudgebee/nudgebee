@@ -694,11 +694,17 @@ func extractPipeStatus(output []byte) ([]byte, []int) {
 	return []byte(cleaned), codes
 }
 
+// ToolOutputSpillDir is where spillFullOutput writes its files. Exported so the
+// workspace cleanup can reclaim them; nothing else deletes them.
+func ToolOutputSpillDir() string {
+	return filepath.Join(os.TempDir(), "nb-tool-output")
+}
+
 // spillFullOutput writes the complete command output to a pod-local temp file
 // (never inside the repo workspace — that would pollute git status and diffs)
 // and returns its path, or "" if writing failed.
 func spillFullOutput(command, stdout, stderr string) string {
-	dir := filepath.Join(os.TempDir(), "nb-tool-output")
+	dir := ToolOutputSpillDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return ""
 	}

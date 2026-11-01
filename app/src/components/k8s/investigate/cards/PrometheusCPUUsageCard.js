@@ -1,5 +1,6 @@
 import PrometheusCPUUsageCardComponent, { getDataFromProemtheus } from './PrometheusCPUUsageCardComponent';
 import CPUUsageIcon from '@assets/investigation/cpu-usage.svg';
+import { summarizeCpu } from './cardSummaries';
 
 class PrometheusCPUUsageCard {
   constructor() {
@@ -23,6 +24,7 @@ class PrometheusCPUUsageCard {
       this.prometheusCPUUsage = result;
       if (result) {
         this.renderContent = true;
+        this.insightData = summarizeCpu(result.series);
       }
     }
     return this.renderContent;

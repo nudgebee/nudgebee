@@ -324,6 +324,13 @@ type MemoryExtractionStats struct {
 
 func extractLongTermMemory(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest, response string, notebook string, toolCallCount int) MemoryExtractionStats {
 	var stats MemoryExtractionStats
+	// A request that asked for no memory must not leave any behind either.
+	// Reading and writing are the same switch: a turn run with memory off is an
+	// experiment or a diagnostic, and it would be surprising — and unauditable —
+	// for it to still deposit facts that shape later turns.
+	if !request.QueryConfig.MemoryWriteAllowed() {
+		return stats
+	}
 	// When the Memory Module is enabled for this tenant, skip legacy extraction
 	// entirely. Extracted facts go to the new typed stores via the bridge; the
 	// legacy llm_conversation_memory table and its RAG index are not written.

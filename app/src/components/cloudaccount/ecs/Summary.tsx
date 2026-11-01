@@ -34,9 +34,11 @@ const ECSResourceCounts = ({ ecsSummaryData = {} }: any) => {
   return (
     <DSCard size='md' elevation='flat' header={<SectionTitle>Summary</SectionTitle>}>
       <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: ds.space[6], flexWrap: 'wrap' }}>
-        <Stat size='md' label='Total Clusters' value={totalClusters} />
-        <Stat size='md' label='Total Services' value={totalServices} />
-        <Stat size='md' label='Total Tasks' value={totalTasks} />
+        {/* Pre-stringified: Stat's number path renders a numeric 0 as '-' (formatNumber),
+            and the ticket's standard for empty counts is 0. */}
+        <Stat size='md' label='Total Clusters' value={String(totalClusters)} />
+        <Stat size='md' label='Total Services' value={String(totalServices)} />
+        <Stat size='md' label='Total Tasks' value={String(totalTasks)} />
       </Box>
     </DSCard>
   );
@@ -70,7 +72,7 @@ const ECSUtilizationAndHealth = ({ accountId, clusterSummary = {}, serviceName }
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[3], width: '100%', minWidth: 0, overflow: 'hidden' }}>
       <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', columnGap: ds.space[4], rowGap: ds.space[5], mb: ds.space[3] }}>
         <DSCard size='md' elevation='flat' header={<SectionTitle>Errors</SectionTitle>}>
-          <Stat id='ecs-summary-failed-task-count' size='md' label='Failed Task Count' value={failedTaskCount} />
+          <Stat id='ecs-summary-failed-task-count' size='md' label='Failed Task Count' value={String(failedTaskCount)} />
         </DSCard>
         <DSCard size='md' elevation='flat' header={<SectionTitle>Optimizations</SectionTitle>}>
           <Stat

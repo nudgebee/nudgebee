@@ -2,11 +2,14 @@ package llm
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"nudgebee/services/common"
 	"nudgebee/services/config"
 	"nudgebee/services/event/lifecycle"
+	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 	"strings"
@@ -139,6 +142,13 @@ func ProcessEvent(ctx *security.RequestContext, event map[string]any) (err error
 	if !tenant.IsFeatureEnabledByDefaultForAccount(ctx, tenantId, accountId, tenant.FEATURE_EVENT_AUTO_AI_SUMMARY) {
 		ctx.GetLogger().Info("llms: event auto-analysis disabled for this scope, skipping",
 			"tenant", tenantId, "account", accountId)
+		return nil
+	}
+
+	subjectNamespace, _ := event["subject_namespace"].(string)
+	if isNamespaceExcludedFromAutoAnalysis(ctx, accountId, subjectNamespace) {
+		ctx.GetLogger().Info("llms: namespace excluded from auto-analysis by account settings, skipping",
+			"account", accountId, "namespace", subjectNamespace)
 		return nil
 	}
 
@@ -320,4 +330,75 @@ func getTenantAllowedSources(ctx *security.RequestContext, tenantId string) ([]b
 	val := []byte(strings.Join(normalized, "\x00"))
 	_ = common.CacheSet(eventAnalysisTenantCfgNamespace, tenantId, val)
 	return val, true
+}
+
+// accountAttrEventAnalysis is the cloud_account_attrs key for per-account AI
+// event analysis settings (see account.validateEventAnalysisAttribute).
+const accountAttrEventAnalysis = "event_analysis"
+
+// isNamespaceExcludedFromAutoAnalysis reports whether the account's
+// event_analysis settings list namespace under excluded_namespaces. Only
+// automatic analysis is gated; a user can still investigate the event from the
+// UI.
+func isNamespaceExcludedFromAutoAnalysis(ctx *security.RequestContext, accountId, namespace string) bool {
+	target := []byte(strings.TrimSpace(namespace))
+	if len(target) == 0 {
+		return false
+	}
+	for _, ns := range bytes.Split(getAccountExcludedNamespaces(ctx, accountId), []byte{0x00}) {
+		if bytes.Equal(ns, target) {
+			return true
+		}
+	}
+	return false
+}
+
+// getAccountExcludedNamespaces returns the account's excluded namespaces as a
+// null-separated, trimmed byte blob (nil when none). Cached like
+// getTenantAllowedSources, since ProcessEvent is on the per-event hot path; a
+// settings change takes effect within tenantCfgCacheTTL. Fails open (nothing
+// excluded) on a DB or parse error, and errors are not cached.
+func getAccountExcludedNamespaces(ctx *security.RequestContext, accountId string) []byte {
+	key := "excluded_namespaces:" + accountId
+	if cached, hit := common.CacheGet(eventAnalysisTenantCfgNamespace, key); hit {
+		if bytes.Equal(cached, emptyAllowlistSentinel) {
+			return nil
+		}
+		return cached
+	}
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		ctx.GetLogger().Error("llms: reading event analysis settings", "error", err, "account", accountId)
+		return nil
+	}
+	var raw string
+	if err := dbms.Db.Get(&raw, `SELECT value FROM cloud_account_attrs WHERE cloud_account_id = $1 AND name = $2`, accountId, accountAttrEventAnalysis); err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			ctx.GetLogger().Error("llms: reading event analysis settings", "error", err, "account", accountId)
+			return nil
+		}
+		raw = ""
+	}
+	var settings struct {
+		ExcludedNamespaces []string `json:"excluded_namespaces"`
+	}
+	if strings.TrimSpace(raw) != "" {
+		if err := json.Unmarshal([]byte(raw), &settings); err != nil {
+			ctx.GetLogger().Error("llms: event analysis settings are not valid JSON", "error", err, "account", accountId)
+			return nil
+		}
+	}
+	namespaces := make([][]byte, 0, len(settings.ExcludedNamespaces))
+	for _, ns := range settings.ExcludedNamespaces {
+		if ns = strings.TrimSpace(ns); ns != "" {
+			namespaces = append(namespaces, []byte(ns))
+		}
+	}
+	if len(namespaces) == 0 {
+		_ = common.CacheSet(eventAnalysisTenantCfgNamespace, key, emptyAllowlistSentinel)
+		return nil
+	}
+	joined := bytes.Join(namespaces, []byte{0x00})
+	_ = common.CacheSet(eventAnalysisTenantCfgNamespace, key, joined)
+	return joined
 }

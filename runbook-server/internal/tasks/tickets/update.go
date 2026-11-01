@@ -9,13 +9,31 @@ import (
 // TicketsUpdateTask defines a task for updating ticket fields.
 type TicketsUpdateTask struct{}
 
+// updateUniversalParams are the params with a shared meaning across ticket
+// platforms; everything else is platform-specific and goes through AdditionalFields.
+var updateUniversalParams = map[string]bool{
+	"account_id": true, "integration_id": true, "ticket_tool": true, "ticket_id": true,
+	"project_key": true, "status": true, "severity": true, "assignee": true,
+	"description": true, "labels": true,
+}
+
+func buildUpdateAdditionalFields(params map[string]any) map[string]any {
+	additionalFields := map[string]any{}
+	for key, value := range params {
+		if !updateUniversalParams[key] {
+			additionalFields[key] = value
+		}
+	}
+	return additionalFields
+}
+
 func (t *TicketsUpdateTask) GetName() string {
 	return "tickets.update"
 }
 
 // GetDescription returns a brief description of the task.
 func (t *TicketsUpdateTask) GetDescription() string {
-	return "Updates ticket fields such as status, severity (Jira) or impact and urgency (ServiceNow), assignee, description, or labels."
+	return "Updates ticket fields such as status, severity (Jira) or impact/urgency/resolution (ServiceNow), assignee, description, or labels."
 }
 
 // GetDisplayName returns a human-readable name for the task.
@@ -50,16 +68,6 @@ func (t *TicketsUpdateTask) Execute(taskCtx types.TaskContext, params map[string
 		return nil, err
 	}
 
-	impact, err := extractOptionalString(params, "impact")
-	if err != nil {
-		return nil, err
-	}
-
-	urgency, err := extractOptionalString(params, "urgency")
-	if err != nil {
-		return nil, err
-	}
-
 	assignee, err := extractOptionalString(params, "assignee")
 	if err != nil {
 		return nil, err
@@ -85,9 +93,11 @@ func (t *TicketsUpdateTask) Execute(taskCtx types.TaskContext, params map[string
 		return nil, err
 	}
 
+	additionalFields := buildUpdateAdditionalFields(params)
+
 	// Validate that at least one field is being updated
-	if status == "" && severity == "" && impact == "" && urgency == "" && assignee == "" && description == "" && len(labels) == 0 {
-		return nil, errors.New("at least one of status, severity, impact, urgency, assignee, description, or labels must be provided")
+	if status == "" && severity == "" && assignee == "" && description == "" && len(labels) == 0 && len(additionalFields) == 0 {
+		return nil, errors.New("at least one field to update must be provided")
 	}
 
 	if taskCtx.IsDryRun() {
@@ -100,17 +110,16 @@ func (t *TicketsUpdateTask) Execute(taskCtx types.TaskContext, params map[string
 	}
 
 	request := ticket.UpdateTicketRequest{
-		TicketId:      ticketId,
-		IntegrationId: integrationId,
-		AccountId:     accountId,
-		ProjectKey:    projectKey,
-		Status:        status,
-		Severity:      severity,
-		Impact:        impact,
-		Urgency:       urgency,
-		Assignee:      assignee,
-		Description:   description,
-		Labels:        labels,
+		TicketId:         ticketId,
+		IntegrationId:    integrationId,
+		AccountId:        accountId,
+		ProjectKey:       projectKey,
+		Status:           status,
+		Severity:         severity,
+		Assignee:         assignee,
+		Description:      description,
+		Labels:           labels,
+		AdditionalFields: additionalFields,
 	}
 
 	requestContext := taskCtx.GetNewRequestContext()
@@ -213,6 +222,40 @@ func (t *TicketsUpdateTask) InputSchema() *types.Schema {
 				Required:    false,
 				Order:       7,
 				Options:     []string{"High", "Medium", "Low"},
+				DependsOn:   []string{"integration_id", "ticket_tool"},
+				VisibleWhen: &types.VisibleWhen{
+					Field: "ticket_tool",
+					Value: []string{"servicenow"},
+				},
+			},
+			"resolution_code": {
+				Type: types.PropertyTypeString,
+				Description: "Resolution code (ServiceNow's Resolution code / close_code). Many instances require this — and Resolution notes — " +
+					"before status can become Resolved/Closed; the exact accepted values are set per instance (ServiceNow: Incident > Resolution code choice list).",
+				Required:  false,
+				Order:     11,
+				DependsOn: []string{"integration_id", "ticket_tool"},
+				VisibleWhen: &types.VisibleWhen{
+					Field: "ticket_tool",
+					Value: []string{"servicenow"},
+				},
+			},
+			"resolution_notes": {
+				Type:        types.PropertyTypeString,
+				Description: "Resolution notes (ServiceNow's close_notes). Required alongside Resolution code on instances that enforce it.",
+				Required:    false,
+				Order:       12,
+				DependsOn:   []string{"integration_id", "ticket_tool"},
+				VisibleWhen: &types.VisibleWhen{
+					Field: "ticket_tool",
+					Value: []string{"servicenow"},
+				},
+			},
+			"work_notes": {
+				Type:        types.PropertyTypeString,
+				Description: "Internal work note (ServiceNow's work_notes). Not customer-visible; independent of any status change.",
+				Required:    false,
+				Order:       13,
 				DependsOn:   []string{"integration_id", "ticket_tool"},
 				VisibleWhen: &types.VisibleWhen{
 					Field: "ticket_tool",

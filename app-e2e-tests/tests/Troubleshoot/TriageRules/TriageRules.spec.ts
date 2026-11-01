@@ -681,7 +681,7 @@ test(
 
 test(
   "Triage Rules - apply a rule to a real open backlog, verify the Matches count is recorded and consistent across the scoped and global views, then re-save the rule and verify the count does not double",
-  { tag: ["@dev", "@regression", "@functional", "@crud"] },
+  { tag: ["@dev", "@test", "@regression", "@functional", "@crud"] },
   async ({ page }) => {
     const accountId = await resolveAccountId(page);
     const fixtureEventIds = await findOpenFixtureEventIds(page, accountId);

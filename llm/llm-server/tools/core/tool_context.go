@@ -41,6 +41,10 @@ type NBQueryConfig struct {
 	// Observability/event context
 	EventId          string `json:"event_id,omitempty"`
 	RecommendationId string `json:"recommendation_id,omitempty"`
+	// KnowledgeHints are short identifiers of the subject (e.g. an event's
+	// title, category, finding type) that knowledge discovery adds to its search
+	// query. The investigation prompt itself is too long to search with.
+	KnowledgeHints []string `json:"knowledge_hints,omitempty"`
 
 	// Kubernetes resource context
 	Namespace string `json:"namespace,omitempty"`
@@ -113,23 +117,129 @@ type NBQueryConfig struct {
 	// conversation's next turn (see handleConversationRequest).
 	SkipConversationHistory bool `json:"skip_conversation_history,omitempty"`
 
+	// Memory overrides the server-wide memory settings for this one request.
+	// Grouped rather than three flat flags because they are one concern, and a
+	// reader should not have to know that a "rerank" flag relates to a "memory"
+	// one.
+	Memory *MemoryOverrides `json:"memory,omitempty"`
+
 	// Tool infrastructure (managed by executor/planner)
-	ToolConfigs        map[string]string `json:"tool_configs,omitempty"`
+	ToolConfigs map[string]string `json:"tool_configs,omitempty"`
+	// DelegatedTarget is scoped to one child agent invocation. It is saved on
+	// the agent row for resume, never in the conversation's message_config.
+	DelegatedTarget    *ExecutionTarget  `json:"delegated_target,omitempty"`
 	ClientTools        []NBToolCommand   `json:"client_tools,omitempty"`
 	Capabilities       AgentCapabilities `json:"capabilities,omitzero"`
 	ToolConfirmations  map[string]string `json:"tool_confirmations,omitempty"`
 	ToolConfigMetadata map[string]any    `json:"tool_config_metadata,omitempty"`
+	DiscoveredTools    []string          `json:"discovered_tools,omitempty"`
 }
 
 // IsEmpty returns true when the config has no meaningful values set.
 func (q NBQueryConfig) IsEmpty() bool {
-	return q.EventId == "" && q.RecommendationId == "" && q.Namespace == "" &&
+	return q.EventId == "" && q.RecommendationId == "" && len(q.KnowledgeHints) == 0 && q.Namespace == "" &&
 		q.Workload == "" && q.GitRepo == "" && q.AccountId == "" &&
 		q.WorkflowId == "" && q.ExecutionId == "" && len(q.WorkflowDefinition) == 0 && len(q.Labels) == 0 &&
 		q.CurrentCluster == "" && q.CurrentClusterId == "" && q.K8sOrchestratorMode == "" &&
-		q.LlmProvider == "" && q.LlmModelName == "" && len(q.LlmTierModels) == 0 && q.LlmConfigSource == "" && !q.LlmConfigReset && len(q.ToolConfigs) == 0 &&
+		q.LlmProvider == "" && q.LlmModelName == "" && len(q.LlmTierModels) == 0 && q.LlmConfigSource == "" && !q.LlmConfigReset && len(q.ToolConfigs) == 0 && q.DelegatedTarget == nil &&
 		len(q.ClientTools) == 0 && q.Capabilities.IsEmpty() && len(q.ToolConfirmations) == 0 &&
-		len(q.ToolConfigMetadata) == 0 && q.LogProviderOverride == "" && !q.SkipConversationHistory
+		len(q.ToolConfigMetadata) == 0 && q.LogProviderOverride == "" && !q.SkipConversationHistory &&
+		len(q.DiscoveredTools) == 0 && q.Memory.IsEmpty()
+}
+
+// MemoryOverrides narrows what memory may do for one request. The three
+// switches are independent — reading, writing and reranking are separate
+// decisions, and a caller commonly wants one off without the others (a
+// benchmark reads real memory but must not add to it; a cost experiment keeps
+// memory but drops the reranker).
+//
+// Every field is a pointer because the server defaults are ON. A plain bool
+// cannot tell "the caller asked for off" apart from "the caller said nothing",
+// and the second must leave the deployment's setting alone — the same reason
+// an empty K8sOrchestratorMode defers to the boot-time default.
+//
+// Off-only: these narrow, never widen. A request cannot switch on what the
+// deployment, the tenant's enrolment or the user's consent has switched off.
+// Enabling a licensed capability is not a caller's decision.
+type MemoryOverrides struct {
+	// Read injects stored memory into the prompt and serves the memory tool.
+	Read *bool `json:"read,omitempty"`
+	// Write records what this turn learned. Off leaves the store untouched, so
+	// a diagnostic or benchmark turn cannot contaminate what it is measuring.
+	Write *bool `json:"write,omitempty"`
+	// Rerank scores retrieved candidates with an LLM before injection. Off
+	// falls back to cosine order, and also skips the overfetch that exists only
+	// to feed the reranker.
+	Rerank *bool `json:"rerank,omitempty"`
+}
+
+// Clone returns an independent copy, including the switches themselves. Merging
+// must never alias: src is usually the conversation's stored config, inherited
+// by sub-agents that the planner runs concurrently, so a shared pointer would
+// let one action's merge mutate another's view — and the executor already lost a
+// process to shared request state being written from parallel actions.
+func (m *MemoryOverrides) Clone() *MemoryOverrides {
+	if m == nil {
+		return nil
+	}
+	return &MemoryOverrides{Read: cloneBool(m.Read), Write: cloneBool(m.Write), Rerank: cloneBool(m.Rerank)}
+}
+
+// cloneBool copies the pointed-to value so two configs never share a switch.
+func cloneBool(p *bool) *bool {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
+// ReadSwitch and RerankSwitch expose one switch for the context carrier,
+// nil-safe on an absent block so callers need no guard of their own.
+func (m *MemoryOverrides) ReadSwitch() *bool {
+	if m == nil {
+		return nil
+	}
+	return m.Read
+}
+
+func (m *MemoryOverrides) RerankSwitch() *bool {
+	if m == nil {
+		return nil
+	}
+	return m.Rerank
+}
+
+// IsEmpty reports whether the caller set no override at all.
+func (m *MemoryOverrides) IsEmpty() bool {
+	return m == nil || (m.Read == nil && m.Write == nil && m.Rerank == nil)
+}
+
+// allowed resolves one switch: unset defers, set narrows.
+func allowed(p *bool) bool { return p == nil || *p }
+
+// MemoryReadAllowed reports whether THIS REQUEST allows memory to be read.
+//
+// Request scope only. Whether the deployment, the tenant's enrolment and the
+// user's consent allow it is a separate question, answered by each gate's own
+// config check before it asks this one. An earlier version took the deployment
+// default as an argument, but every caller passed a literal true — so it
+// enforced nothing while reading as though it did.
+func (q NBQueryConfig) MemoryReadAllowed() bool {
+	return q.Memory == nil || allowed(q.Memory.Read)
+}
+
+// MemoryWriteAllowed reports whether this request allows memory to be recorded.
+// Reading off implies writing off: a turn that ran without memory should not
+// shape later turns with what it produced.
+func (q NBQueryConfig) MemoryWriteAllowed() bool {
+	return q.MemoryReadAllowed() && (q.Memory == nil || allowed(q.Memory.Write))
+}
+
+// MemoryRerankAllowed reports whether this request allows retrieved memory to
+// be LLM-reranked. Reading off implies no rerank: there is nothing to rank.
+func (q NBQueryConfig) MemoryRerankAllowed() bool {
+	return q.MemoryReadAllowed() && (q.Memory == nil || allowed(q.Memory.Rerank))
 }
 
 // MergeFrom copies fields from src into q only when q's field is the zero value.
@@ -140,6 +250,9 @@ func (q *NBQueryConfig) MergeFrom(src NBQueryConfig) {
 	}
 	if q.RecommendationId == "" {
 		q.RecommendationId = src.RecommendationId
+	}
+	if q.KnowledgeHints == nil {
+		q.KnowledgeHints = src.KnowledgeHints
 	}
 	if q.Namespace == "" {
 		q.Namespace = src.Namespace
@@ -214,6 +327,22 @@ func (q *NBQueryConfig) MergeFrom(src NBQueryConfig) {
 	if q.LogProviderOverride == "" {
 		q.LogProviderOverride = src.LogProviderOverride
 	}
+	if q.Memory == nil {
+		q.Memory = src.Memory.Clone()
+	} else if src.Memory != nil {
+		// Per-switch fill-if-unset, matching every other field: a turn that set
+		// only one switch must still inherit the others. Copied by value, so the
+		// two configs never share a switch.
+		if q.Memory.Read == nil {
+			q.Memory.Read = cloneBool(src.Memory.Read)
+		}
+		if q.Memory.Write == nil {
+			q.Memory.Write = cloneBool(src.Memory.Write)
+		}
+		if q.Memory.Rerank == nil {
+			q.Memory.Rerank = cloneBool(src.Memory.Rerank)
+		}
+	}
 	if !q.SkipConversationHistory {
 		q.SkipConversationHistory = src.SkipConversationHistory
 	}
@@ -232,10 +361,22 @@ func (q *NBQueryConfig) MergeFrom(src NBQueryConfig) {
 	if src.ToolConfigMetadata != nil {
 		q.ToolConfigMetadata = lo.Assign(src.ToolConfigMetadata, q.ToolConfigMetadata)
 	}
+	if len(src.DiscoveredTools) > 0 {
+		q.DiscoveredTools = lo.Uniq(append(q.DiscoveredTools, src.DiscoveredTools...))
+	}
 }
 
 type NbToolContext struct {
-	AccountId      string
+	// AccountId is the account the conversation belongs to (the origin): it
+	// owns the workspace, conversation records and billing.
+	AccountId string
+	// TargetAccountId is the account whose data this call reads. It equals
+	// AccountId unless the call is about another connected cluster or
+	// account. Read it through DataAccountID().
+	TargetAccountId string
+	// ExecutedTarget is the resolved target when TargetAccountId is another
+	// account; it is recorded on the tool call (MetadataExecutedTarget).
+	ExecutedTarget *ExecutionTarget
 	UserId         string
 	Query          string
 	QueryContext   string
@@ -272,6 +413,13 @@ type NbToolContext struct {
 	// selection across delegation. See NBAgentRequest field comments for semantics.
 	OriginalQuery    string
 	SelectedSkillIds []string
+	// OriginalQueryFromUser mirrors NBAgentRequest.OriginalQueryFromUser.
+	OriginalQueryFromUser bool
+	// FollowupAnswer is the user's answer to a question this tool's sub-agent
+	// asked. It is set only when a paused tool resumes after that question, so a
+	// tool that runs a sub-agent can hand the answer to it instead of treating it
+	// as the tool's own input.
+	FollowupAnswer string
 	// KBPrestepContent, KBPrestepExecuted, and KBReferences carry the pre-step retrieval results
 	// across delegation so sub-agents can reuse them without triggering redundant RAG executions.
 	KBPrestepContent  string
@@ -351,22 +499,50 @@ func NewNbToolContext(ctx *security.RequestContext, tool NBTool, accountId strin
 		}
 	}
 
+	targetAccountID := accountId
+	if target := queryConfig.DelegatedTarget; target != nil && target.AccountID != "" {
+		targetAccountID = target.AccountID
+	}
+
 	toolContext := NbToolContext{
-		AccountId:      accountId,
-		UserId:         userId,
-		Query:          query,
-		History:        history,
-		ConversationId: conversationId,
-		ParentAgentId:  agenId,
-		MessageId:      messageId,
-		QueryConfig:    queryConfig,
-		QueryContext:   queryContext,
-		Ctx:            ctx,
-		ToolConfig:     toolConfig,
-		ToolCallId:     toolCallId,
-		Source:         conversationSource,
+		AccountId:       accountId,
+		TargetAccountId: targetAccountID,
+		UserId:          userId,
+		Query:           query,
+		History:         history,
+		ConversationId:  conversationId,
+		ParentAgentId:   agenId,
+		MessageId:       messageId,
+		QueryConfig:     queryConfig,
+		QueryContext:    queryContext,
+		Ctx:             ctx,
+		ToolConfig:      toolConfig,
+		ToolCallId:      toolCallId,
+		Source:          conversationSource,
 	}
 	return toolContext
+}
+
+// DataAccountID is the account this call reads data from: the target when
+// the call is about another account, otherwise the conversation's own.
+// Contexts built without NewNbToolContext leave TargetAccountId empty.
+func (c NbToolContext) DataAccountID() string {
+	if c.TargetAccountId != "" {
+		return c.TargetAccountId
+	}
+	return c.AccountId
+}
+
+// ForTarget returns the context a follows-target tool reads data with: its
+// AccountId is the call's data account. Keep the original context for
+// anything that belongs to the conversation (workspace files, references to
+// the conversation). The executor has already resolved and access-checked
+// TargetAccountId.
+func (c NbToolContext) ForTarget() NbToolContext {
+	c.AccountId = c.DataAccountID()
+	c.TargetAccountId = c.AccountId
+	c.QueryConfig.DelegatedTarget = nil
+	return c
 }
 
 // updateMessageHistory updates the message history with the assistant's

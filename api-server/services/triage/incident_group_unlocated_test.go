@@ -73,13 +73,16 @@ func TestUnlocatedScopeFor(t *testing.T) {
 	k8s := unlocatedScopeFor(&models.Event{Source: src("kubernetes_api_server"), SubjectNamespace: src(" Benchmark-Scenarios ")})
 	assert.Contains(t, k8s.leaderPredicate, "subject_namespace")
 	assert.Equal(t, "benchmark-scenarios", k8s.arg, "namespace normalised the way the SQL side is")
+	assert.Equal(t, IncidentAttachWindow, k8s.window, "a namespace is a narrow boundary: the ordinary window")
 
 	for _, s := range awsAlarmSources {
 		aws := unlocatedScopeFor(&models.Event{Source: src(s), SubjectNamespace: src("AWSELB")})
 		assert.Contains(t, aws.leaderPredicate, "l.source", "%s is scoped by source, not by service code", s)
 		assert.NotContains(t, aws.leaderPredicate, "subject_namespace", "%s may cross AWS services", s)
 		assert.Equal(t, "AWS", aws.label)
+		assert.Equal(t, timingOnlyCloudWindow, aws.window, "%s: a whole account is the widest boundary, so the shortest window", s)
 	}
+	assert.Less(t, timingOnlyCloudWindow, IncidentAttachWindow)
 
 	// A real Kubernetes namespace that merely looks like AWS stays a namespace.
 	lookalike := unlocatedScopeFor(&models.Event{Source: src("prometheus"), SubjectNamespace: src("amazon-cloudwatch")})
@@ -109,6 +112,7 @@ func TestUnlocatedScopeForNodeAlerts(t *testing.T) {
 	assert.Contains(t, node.leaderPredicate, "subject_node")
 	assert.NotContains(t, node.leaderPredicate, "subject_namespace")
 	assert.Equal(t, "gke-pool-abc", node.arg, "node normalised the way the SQL side is")
+	assert.Equal(t, IncidentAttachWindow, node.window)
 
 	// A node-typed event with no node name has nothing better than the namespace
 	// rule — it must not produce a predicate matching on an empty node.

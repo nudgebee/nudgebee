@@ -10,9 +10,13 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
+from rag.core.cache_backend import get_cache_backend
 from utils.config import Config
 
 logger = logging.getLogger(__name__)
+
+# One shared snapshot of the whole collection list, published after a refresh.
+_SHARED_SNAPSHOT_KEY = "collection_list:snapshot"
 
 
 class CollectionListCache:
@@ -55,18 +59,125 @@ class CollectionListCache:
 
         Returns None if cache is expired and needs refresh.
 
+        Falls back to the shared snapshot before giving up, so a freshly
+        started process -- or a second replica -- can start warm instead of
+        paying a full Qdrant refresh.
+
         Returns:
             List of CollectionInfo objects or None if expired
         """
         with self._lock:
-            # Check if cache is expired
-            if time.time() - self._timestamp > self.ttl_seconds:
-                logger.debug("Collection list cache expired, needs refresh")
-                return None
-
-            if self._collections is not None:
+            if time.time() - self._timestamp <= self.ttl_seconds and self._collections is not None:
                 logger.debug(f"Collection list cache HIT: {len(self._collections)} collections")
-            return self._collections
+                return self._collections
+
+        adopted = self._adopt_shared_snapshot()
+        if adopted is not None:
+            return adopted
+
+        logger.debug("Collection list cache expired, needs refresh")
+        return None
+
+    # --- shared snapshot -----------------------------------------------------
+    #
+    # The generation/stale-merge logic above stays process-local on purpose:
+    # the Qdrant fetch it reconciles against is itself per-process, and that
+    # logic is the subtle part. Redis holds only the *result* of a refresh, so
+    # another process can skip doing its own.
+
+    def _snapshot_payload(self) -> Optional[Dict[str, Any]]:
+        """Serialise the current list, under the lock.
+
+        Publishing happens after each mutating method has released the lock,
+        so without taking it here another thread's add() can mutate the list
+        mid-iteration -- RuntimeError at best, a half-written snapshot at
+        worst. Returns None when nothing is cached, which the caller turns
+        into a delete.
+        """
+        with self._lock:
+            if self._collections is None:
+                return None
+            return {
+                "timestamp": self._timestamp,
+                "collections": [
+                    {"name": c.name, "metadata": c.metadata, "points_count": c.points_count} for c in self._collections
+                ],
+            }
+
+    def _publish_shared_snapshot(self) -> None:
+        """Best-effort. A failure here costs sharing, never correctness."""
+        try:
+            payload = self._snapshot_payload()
+            if payload is None:
+                get_cache_backend().delete(_SHARED_SNAPSHOT_KEY)
+            else:
+                get_cache_backend().set(_SHARED_SNAPSHOT_KEY, payload, ttl_seconds=self.ttl_seconds)
+        except Exception:
+            logger.warning("Collection list cache: could not publish shared snapshot", exc_info=True)
+
+    def _adopt_shared_snapshot(self) -> Optional[List[Any]]:
+        """Adopt another process's refresh if it is still fresh."""
+        try:
+            payload = get_cache_backend().get(_SHARED_SNAPSHOT_KEY)
+        except Exception:
+            logger.warning("Collection list cache: could not read shared snapshot", exc_info=True)
+            return None
+
+        if not payload or not isinstance(payload, dict):
+            return None
+
+        # Imported here: rag.qdrant.client imports this module.
+        from rag.qdrant.client import CollectionInfo
+
+        # Anything could be under this key: a payload written by an older or
+        # newer build, or a partial write. A snapshot we cannot parse is a
+        # cache miss, never an exception thrown at whoever called get().
+        try:
+            # Parsed in here too: a non-numeric timestamp used to raise
+            # straight out of the age check above.
+            snapshot_timestamp = float(payload["timestamp"])
+            entries = payload["collections"]
+            if not isinstance(entries, list):
+                raise TypeError(f"collections is {type(entries).__name__}, expected list")
+            collections = [
+                CollectionInfo(
+                    name=entry["name"],
+                    metadata=entry.get("metadata") or {},
+                    points_count=entry.get("points_count") or 0,
+                )
+                for entry in entries
+            ]
+        except Exception:
+            logger.warning("Collection list cache: shared snapshot is unreadable, ignoring it", exc_info=True)
+            return None
+
+        age = time.time() - snapshot_timestamp
+        if age > self.ttl_seconds:
+            return None
+
+        with self._lock:
+            # A local refresh may have landed while we were reading; it wins.
+            if time.time() - self._timestamp <= self.ttl_seconds and self._collections is not None:
+                return self._collections
+            self._generation += 1
+            self._collections = collections
+            self._collection_generations = {c.name: self._generation for c in collections}
+            self._timestamp = snapshot_timestamp
+
+        # Warm the local metadata tier too. A refreshing process gets this for
+        # free via update_from_collections; an adopting one would otherwise
+        # hold a warm list and an empty metadata cache, and answer "not found"
+        # the moment Redis went away. Caught live with two replicas.
+        from rag.core.metadata_cache import get_metadata_cache
+
+        # local_only: these came from the shared tier, so writing all of them
+        # straight back to it is a wasted round trip.
+        get_metadata_cache().update_from_collections(collections, local_only=True)
+
+        logger.info(
+            f"Collection list cache adopted shared snapshot: {len(collections)} collections " f"({age:.0f}s old)"
+        )
+        return collections
 
     def begin_refresh(self) -> int:
         """
@@ -128,6 +239,7 @@ class CollectionListCache:
                 )
             else:
                 logger.info(f"Collection list cache refreshed: {len(collections)} collections")
+        self._publish_shared_snapshot()
 
     def add(self, collection_info) -> None:
         """Add a new collection to the cache without invalidating.
@@ -140,26 +252,59 @@ class CollectionListCache:
         upstream.
         """
         with self._lock:
+            # Whether this process holds the whole picture, decided before the
+            # add. Only a complete list may have its freshness extended or be
+            # shared; anything else is this process's partial view, and
+            # publishing it overwrites the real list in Redis.
+            #
+            # The timestamp is tested against 0.0 rather than left to the
+            # subtraction: 0.0 means "never filled", and reading it as a real
+            # instant only works while the epoch is further back than the TTL.
+            complete = (
+                self._collections is not None
+                and self._timestamp > 0.0
+                and time.time() - self._timestamp <= self.ttl_seconds
+            )
+
             if self._collections is None:
+                # Nothing was cached, so this process knows about exactly one
+                # collection and nothing about the other few hundred. The
+                # entry is still recorded, with its generation, so a refresh
+                # already in flight merges it instead of dropping it. The
+                # timestamp stays 0, so get() and exists() report "unknown"
+                # and the caller refreshes for real.
                 self._generation += 1
                 self._collections = [collection_info]
                 self._collection_generations = {collection_info.name: self._generation}
-                self._timestamp = time.time()
-                logger.info(f"Collection list cache initialized with '{collection_info.name}'")
+                self._timestamp = 0.0
+                logger.info(
+                    f"Collection list cache initialized with '{collection_info.name}' only; "
+                    "marked stale and not shared, the next read will refresh"
+                )
+            elif any(existing.name == collection_info.name for existing in self._collections):
+                # Concurrent create-if-not-exists path may fire this
+                # from multiple threads after the winner's 200; ignore
+                # without bumping the generation.
                 return
-            for existing in self._collections:
-                if existing.name == collection_info.name:
-                    # Concurrent create-if-not-exists path may fire this
-                    # from multiple threads after the winner's 200; ignore
-                    # without bumping the generation.
-                    return
-            self._generation += 1
-            self._collections.append(collection_info)
-            self._collection_generations[collection_info.name] = self._generation
-            self._timestamp = time.time()
-            logger.info(
-                f"Collection list cache updated: added '{collection_info.name}' ({len(self._collections)} total)"
-            )
+            else:
+                self._generation += 1
+                self._collections.append(collection_info)
+                self._collection_generations[collection_info.name] = self._generation
+                if complete:
+                    self._timestamp = time.time()
+                logger.info(
+                    f"Collection list cache updated: added '{collection_info.name}' ({len(self._collections)} total)"
+                )
+
+            if not complete:
+                # Back-to-back creates land here -- the second add appends to
+                # the one-entry list above. Freshening and publishing it would
+                # put that partial list in Redis looking current, which is the
+                # whole failure this guard exists to stop.
+                return
+
+        # Publishing is a Redis round trip; it happens with the lock released.
+        self._publish_shared_snapshot()
 
     def clear(self) -> None:
         """Clear the entire cache."""
@@ -169,6 +314,7 @@ class CollectionListCache:
             self._collection_generations.clear()
             self._timestamp = 0.0
             logger.info("Collection list cache cleared")
+        self._publish_shared_snapshot()
 
     def invalidate(self) -> None:
         """Invalidate cache (alias for clear)."""

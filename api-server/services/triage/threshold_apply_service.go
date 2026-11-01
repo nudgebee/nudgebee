@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"nudgebee/services/eventrule"
@@ -25,7 +26,7 @@ type ApplyThresholdRequest struct {
 	AlertRuleKey   string   `json:"alert_rule_key"`
 	CloudAccountID string   `json:"cloud_account_id"`
 	Method         string   `json:"method"`        // "direct" | "pr"
-	OverrideRisk   bool     `json:"override_risk"` // required to apply a "dangerous" suggestion
+	OverrideRisk   bool     `json:"override_risk"` // required unless the suggestion is safe with medium or high confidence
 	AcceptValue    *float64 `json:"accept_value"`  // optional user-edited threshold
 	AcceptDuration *int     `json:"accept_duration"`
 	// PR-path inputs (ignored for direct).
@@ -77,8 +78,8 @@ func ApplyThresholdSuggestion(ctx *security.RequestContext, req ApplyThresholdRe
 	}
 
 	// Risk gate — server-enforced, not just UI.
-	if sug.RiskLevel == "dangerous" && !req.OverrideRisk {
-		return ApplyThresholdResult{}, fmt.Errorf("blocked: this is a high-risk (dangerous) suggestion and requires explicit override")
+	if reason := applyBlockReason(sug, req.OverrideRisk); reason != "" {
+		return ApplyThresholdResult{}, errors.New(reason)
 	}
 
 	rule, err := LoadSourceRule(ctx.GetContext(), db, sc.GetTenantId(), req.CloudAccountID, sug.AlertName, sug.Source, req.AlertRuleKey)
@@ -273,16 +274,24 @@ func GetThresholdApplyOptions(ctx *security.RequestContext, alertRuleKey, cloudA
 
 	out := ApplyOptionsResult{
 		RiskLevel:        sug.RiskLevel,
-		RequiresOverride: sug.RiskLevel == "dangerous",
+		RequiresOverride: sug.RiskLevel == "dangerous" || applyNeedsOverride(sug),
 		CurrentThreshold: sug.CurrentThreshold,
 		NewThreshold:     sug.SuggestedThreshold,
 		Operator:         sug.Operator,
 	}
 
-	// quality_only rows have no numeric suggestion (metric not fetchable). A 'disable'
-	// verdict is threshold-free and can flow through the normal rewrite machinery; every
-	// other verdict has nothing mechanical to apply — mark both methods unavailable.
-	if sug.Status == "quality_only" && sug.RecommendationType != "disable" {
+	// A stored 'disable' is never applied from here (see applyBlockReason).
+	if sug.RecommendationType == "disable" {
+		out.Options = []ApplyOption{
+			{Method: "direct", Available: false, Reason: disableNotAppliedReason},
+			{Method: "pr", Available: false, Reason: disableNotAppliedReason},
+		}
+		return out, nil
+	}
+
+	// quality_only rows have no numeric suggestion (metric not fetchable), so there is nothing
+	// mechanical to apply — mark both methods unavailable.
+	if sug.Status == "quality_only" {
 		reason := "no numeric suggestion — verdict from firing history only; review the rule in the provider console"
 		out.Options = []ApplyOption{
 			{Method: "direct", Available: false, Reason: reason},

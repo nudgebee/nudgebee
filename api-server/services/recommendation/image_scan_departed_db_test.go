@@ -66,9 +66,11 @@ func TestArchiveDepartedImages_DB(t *testing.T) {
 		id text PRIMARY KEY, cloud_account_id text, tenant_id text, category text,
 		rule_name text, status text, account_object_id text, recommendation jsonb)`, recTable))
 	mustExec(fmt.Sprintf(`CREATE TABLE %s (
-		cloud_account_id text, tenant_id text, last_seen timestamptz, meta jsonb)`, podTable))
+		cloud_account_id text, tenant_id text, is_active boolean, last_seen timestamptz,
+		namespace text, workload_type text, workload_name text, meta jsonb)`, podTable))
 	mustExec(fmt.Sprintf(`CREATE TABLE %s (
-		cloud_account_id text, tenant_id text, is_active boolean, meta jsonb)`, wlTable))
+		cloud_account_id text, tenant_id text, is_active boolean, namespace text,
+		name text, kind text, meta jsonb)`, wlTable))
 
 	containers := func(images ...string) string {
 		out := `{"config":{"containers":[`
@@ -80,31 +82,48 @@ func TestArchiveDepartedImages_DB(t *testing.T) {
 		}
 		return out + `]}}`
 	}
+	pod := func(acct string, active bool, changedDaysAgo int, ownerKind, ownerName, meta string) {
+		mustExec(fmt.Sprintf(`INSERT INTO %s VALUES ($1,$2,$3,now() - make_interval(days => $4),'ns',$5,$6,$7::jsonb)`, podTable),
+			acct, tenant, active, changedDaysAgo, ownerKind, ownerName, meta)
+	}
+	workload := func(active bool, kind, name, meta string) {
+		mustExec(fmt.Sprintf(`INSERT INTO %s VALUES ($1,$2,$3,'ns',$4,$5,$6::jsonb)`, wlTable),
+			account, tenant, active, name, kind, meta)
+	}
 
 	// Inventory. The account is fresh; a pod reported minutes ago proves the
 	// agent is reporting, which is what makes any archiving eligible at all.
-	mustExec(fmt.Sprintf(`INSERT INTO %s VALUES ($1,$2,now(),$3::jsonb)`, podTable),
-		account, tenant, containers("live:1"))
-	// A pod row that outlived its pod still counts as a sighting, which is what
-	// keeps a CronJob between runs from being treated as gone.
-	mustExec(fmt.Sprintf(`INSERT INTO %s VALUES ($1,$2,now() - interval '3 days',$3::jsonb)`, podTable),
-		account, tenant, containers("cronjob:1"))
+	pod(account, true, 0, "Deployment", "web", containers("live:1"))
+	// The agent reports a pod only when it changes, so a pod running unchanged
+	// for weeks has an old last_seen and is still in the cluster.
+	pod(account, true, imageScanFreshDays+23, "Deployment", "api", containers("stable:1"))
+	// A pod that finished or restarted a few days ago is still a recent sighting.
+	pod(account, false, 3, "Deployment", "worker", containers("recent:1"))
+	// A CronJob that runs rarely: its last pod finished long ago and that run's
+	// Job has been pruned, but the CronJob still declares the image. Jobs and
+	// CronJobs carry their containers under job_data, not config.
+	pod(account, false, imageScanFreshDays+13, "Job", "report-123", containers("rare-cronjob:1"))
+	workload(true, "CronJob", "report", `{"job_data":{"containers":[{"image":"rare-cronjob:1"}]}}`)
+	// Once the CronJob itself is deleted its image is held by nothing current.
+	pod(account, false, imageScanFreshDays+13, "Job", "cleanup-100", containers("deleted-cronjob:1"))
+	workload(false, "CronJob", "cleanup", `{"job_data":{"containers":[{"image":"deleted-cronjob:1"}]}}`)
+	// A pod replaced by a rollout, unchanged since well before it left. Its
+	// Deployment still exists but now declares the new image, so the old one is
+	// held by nothing but the leftover row.
+	pod(account, false, imageScanFreshDays+1, "Deployment", "web", containers("replaced:1"))
+	workload(true, "Deployment", "web", containers("live:1"))
 	// A workload scaled to zero declares an image but has no pods.
-	mustExec(fmt.Sprintf(`INSERT INTO %s VALUES ($1,$2,true,$3::jsonb)`, wlTable),
-		account, tenant, containers("scaled-to-zero:1"))
+	workload(true, "Deployment", "idle", containers("scaled-to-zero:1"))
 	// An account whose agent stopped reporting must be skipped entirely.
-	mustExec(fmt.Sprintf(`INSERT INTO %s VALUES ($1,$2,now() - interval '30 days',$3::jsonb)`, podTable),
-		staleAcct, tenant, containers("whatever:1"))
+	pod(staleAcct, true, 30, "Deployment", "web", containers("whatever:1"))
 
 	// A JSON null container list is not a SQL NULL, so coalesce lets it through
 	// and expanding it aborts the statement. One such row anywhere would stop the
 	// sweep for every account, so it has to be skipped rather than expanded.
-	mustExec(fmt.Sprintf(`INSERT INTO %s VALUES ($1,$2,now(),'{"config":{"containers":null}}'::jsonb)`, podTable),
-		account, tenant)
-	mustExec(fmt.Sprintf(`INSERT INTO %s VALUES ($1,$2,now(),'{"config":{}}'::jsonb)`, podTable),
-		account, tenant)
-	mustExec(fmt.Sprintf(`INSERT INTO %s VALUES ($1,$2,true,'{"config":{"containers":{"image":"not-a-list"}}}'::jsonb)`, wlTable),
-		account, tenant)
+	pod(account, true, 0, "Deployment", "web", `{"config":{"containers":null}}`)
+	pod(account, true, 0, "Deployment", "web", `{"config":{}}`)
+	workload(true, "Deployment", "odd", `{"config":{"containers":{"image":"not-a-list"}}}`)
+	workload(true, "Job", "odd", `{"job_data":{"containers":null}}`)
 
 	// The scanner confirming an image recently counts as a sighting even when the
 	// inventory does not model it, such as an init-container-only image.
@@ -122,12 +141,16 @@ func TestArchiveDepartedImages_DB(t *testing.T) {
 			id, acct, tenant, status, image+"-CVE-1", fmt.Sprintf(`{"image_name":%q}`, image))
 	}
 	finding("keep-live", "live:1", "Open", account)
-	finding("keep-cronjob", "cronjob:1", "Open", account)
+	finding("keep-stable", "stable:1", "Open", account)
+	finding("keep-recent", "recent:1", "Open", account)
+	finding("keep-rare-cronjob", "rare-cronjob:1", "Open", account)
 	finding("keep-scaled", "scaled-to-zero:1", "Open", account)
 	finding("keep-init", "init-only:1", "Open", account)
 	finding("keep-stale-account", "gone:1", "Open", staleAcct)
 	finding("archive-gone", "gone:1", "Open", account)
 	finding("archive-long-ago", "long-ago:1", "Open", account)
+	finding("archive-replaced", "replaced:1", "Open", account)
+	finding("archive-deleted-cronjob", "deleted-cronjob:1", "Open", account)
 	// User-owned states are set by a person and must survive.
 	finding("keep-dismissed", "gone:1", "Dismissed", account)
 	finding("keep-inprogress", "gone:1", "InProgress", account)
@@ -139,16 +162,20 @@ func TestArchiveDepartedImages_DB(t *testing.T) {
 	require.NoError(t, err)
 
 	want := map[string]string{
-		"keep-live":          "Open",
-		"keep-cronjob":       "Open",
-		"keep-scaled":        "Open",
-		"keep-init":          "Open",
-		"keep-stale-account": "Open",
-		"archive-gone":       "Archive",
-		"archive-long-ago":   "Archive",
-		"keep-dismissed":     "Dismissed",
-		"keep-inprogress":    "InProgress",
-		"keep-closed":        "Closed",
+		"keep-live":               "Open",
+		"keep-stable":             "Open",
+		"keep-recent":             "Open",
+		"keep-rare-cronjob":       "Open",
+		"keep-scaled":             "Open",
+		"keep-init":               "Open",
+		"keep-stale-account":      "Open",
+		"archive-gone":            "Archive",
+		"archive-long-ago":        "Archive",
+		"archive-replaced":        "Archive",
+		"archive-deleted-cronjob": "Archive",
+		"keep-dismissed":          "Dismissed",
+		"keep-inprogress":         "InProgress",
+		"keep-closed":             "Closed",
 	}
 	for id, expected := range want {
 		var got string

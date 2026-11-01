@@ -30,6 +30,9 @@ type podNodeMetricsAction struct {
 	resourceType string // "memory" — kept extensible for future cpu/disk variants
 }
 
+// podNodeMetricsKeys are the utilisation keys the card asks for.
+var podNodeMetricsKeys = []string{"memory_usage", "memory_limit", "memory_request"}
+
 var podNodeMetricsAggKeys = map[string]bool{
 	"pod_oom_killer_enricher": true,
 	"report_crash_loop":       true,
@@ -83,7 +86,7 @@ func (a *podNodeMetricsAction) Execute(ctx playbooks.PlaybookActionContext, rawP
 			"workload_namespace": namespace,
 			"workload_name":      podName,
 			"kind":               "pod",
-			"metrics":            []string{"memory_usage", "memory_limit", "memory_request"},
+			"metrics":            podNodeMetricsKeys,
 		},
 	})
 	if err != nil {

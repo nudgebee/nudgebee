@@ -21,6 +21,7 @@ import (
 	"nudgebee/code-analysis-agent/internal/credentials"
 	"nudgebee/code-analysis-agent/internal/git"
 	"nudgebee/code-analysis-agent/internal/gitprovider"
+	"nudgebee/code-analysis-agent/internal/ownership"
 	"nudgebee/code-analysis-agent/internal/session"
 	"nudgebee/code-analysis-agent/llm"
 
@@ -78,34 +79,6 @@ func NewAgenticAnalyzeHandler(cfg *config.Config, gitClient *git.GitClient, cred
 	}, nil
 }
 
-// cleanupOrphanedAnalysisWorkspaces removes only the temporary directories
-// created by the remote-repository analysis path. Execution workspaces and
-// caller-provided local repositories are deliberately outside this sweep.
-// SweepOrphanedAnalysisWorkspaces removes abandoned remote-repository analysis
-// directories. maxAge==0 is used at process startup; a positive age allows a
-// live workspace pod to sweep old folders without touching an active run.
-func SweepOrphanedAnalysisWorkspaces(maxAge time.Duration) {
-	entries, err := os.ReadDir(os.TempDir())
-	if err != nil {
-		log.Printf("WARN: cannot scan temporary directory for orphaned analyses: %v", err)
-		return
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "code-analysis-") {
-			continue
-		}
-		if maxAge > 0 {
-			info, infoErr := entry.Info()
-			if infoErr != nil || time.Since(info.ModTime()) <= maxAge {
-				continue
-			}
-		}
-		if err := os.RemoveAll(filepath.Join(os.TempDir(), entry.Name())); err != nil {
-			log.Printf("WARN: failed to remove orphaned analysis workspace %s: %v", entry.Name(), err)
-		}
-	}
-}
-
 type GitRepository struct {
 	URL    string `json:"url" binding:"required_without=LocalPath"`
 	Branch string `json:"branch,omitempty"`
@@ -157,6 +130,10 @@ type AgenticAnalyzeRequest struct {
 	ConversationId string               `json:"conversation_id,omitempty"`
 	MessageId      string               `json:"message_id,omitempty"`
 	BuildConfig    *session.BuildConfig `json:"build_config,omitempty"`
+	// AgentRunID is the llm-server agent run this analysis was dispatched for.
+	// It is returned with every model call made through llm-server, which
+	// records that call's usage against the run's conversation.
+	AgentRunID string `json:"agent_run_id,omitempty"`
 	// AnalysisID is set internally by HandleAnalyze (the async entrypoint) to the
 	// progress-store key so the analysis can attach its tool tracker for live
 	// /status streaming. Not part of the wire contract — callers never send it.
@@ -166,11 +143,25 @@ type AgenticAnalyzeRequest struct {
 	// skills DB); injected verbatim into the internal agent prompts.
 	Skills         string                   `json:"skills,omitempty"`
 	KnowledgeFiles []KnowledgeFileReference `json:"knowledge_files,omitempty"`
+	OriginalQuery  string                   `json:"original_query,omitempty"`
 
 	// PR followup fields — used to address CI failures and review comments on existing PRs
 	Followup bool   `json:"followup,omitempty"`
 	PRURL    string `json:"pr_url,omitempty"`
 	PRBranch string `json:"pr_branch,omitempty"`
+	// AddressedComments is the set of comments a previous followup already
+	// answered, read from pr_followup.addressed_comments by api-server (#36865).
+	// Used as a FALLBACK skip source in the gatherers: GitHub's own
+	// resolved-thread and reply-marker state is consulted first and remains
+	// authoritative, so a human who un-resolves a thread still gets the comment
+	// re-raised. This covers what GitHub cannot answer — a PR whose markers have
+	// scrolled past the per_page=100 window, and a marker lookup that failed open.
+	AddressedComments []agents.AddressedComment `json:"addressed_comments,omitempty"`
+	// FollowupInstruction is a specific change the caller wants made on the PR
+	// branch (e.g. new rightsizing values after the recommendation moved). When
+	// set, the followup run makes that change and nothing else. Distinct from
+	// Prompt, which every followup carries as generic text.
+	FollowupInstruction string `json:"followup_instruction,omitempty"`
 
 	// LLMConfig, when present, carries the tenant-resolved LLM provider config
 	// forwarded by llm-server so this stateless service honors the tenant's own
@@ -227,18 +218,19 @@ func (o *LLMConfigOverride) toConfigOverride() config.LLMOverride {
 }
 
 type PRInfo struct {
-	Number      int    `json:"number,omitempty"`
-	IID         int    `json:"iid,omitempty"` // GitLab internal ID (merge request IID)
-	Title       string `json:"title,omitempty"`
-	Author      string `json:"author,omitempty"`
-	URL         string `json:"url,omitempty"`
-	WebURL      string `json:"web_url,omitempty"` // GitLab web URL format
-	State       string `json:"state,omitempty"`
-	Branch      string `json:"branch,omitempty"`
-	CreatedAt   string `json:"created_at,omitempty"`
-	MergedAt    string `json:"merged_at,omitempty"`
-	Description string `json:"description,omitempty"`
-	Provider    string `json:"provider,omitempty"` // "github" or "gitlab"
+	Ownership   *ownership.Result `json:"ownership,omitempty"`
+	Number      int               `json:"number,omitempty"`
+	IID         int               `json:"iid,omitempty"` // GitLab internal ID (merge request IID)
+	Title       string            `json:"title,omitempty"`
+	Author      string            `json:"author,omitempty"`
+	URL         string            `json:"url,omitempty"`
+	WebURL      string            `json:"web_url,omitempty"` // GitLab web URL format
+	State       string            `json:"state,omitempty"`
+	Branch      string            `json:"branch,omitempty"`
+	CreatedAt   string            `json:"created_at,omitempty"`
+	MergedAt    string            `json:"merged_at,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Provider    string            `json:"provider,omitempty"` // "github" or "gitlab"
 
 	// Duplicate detection fields
 	Status        string   `json:"status,omitempty"`         // e.g., "skipped_duplicate", "success"
@@ -328,15 +320,37 @@ type AnalysisResult struct {
 	// (non-convergence), vs a genuine "nothing to do". Additive & backward-compatible:
 	// the services-server cron reads it only for the outcome metric; an older cron
 	// ignores it. Only set on the PR-followup path.
-	FollowupUnresolved bool           `json:"followup_unresolved,omitempty"`
-	FilesModified      any            `json:"files_modified,omitempty"`      // List of files the fixer changed
-	VerificationPassed any            `json:"verification_passed,omitempty"` // Whether lint/build passed
-	PRCreationStatus   string         `json:"pr_creation_status,omitempty"`  // success, skipped, failed
-	PRCreationReason   string         `json:"pr_creation_reason,omitempty"`  // Why PR was skipped/failed
-	Review             map[string]any `json:"review,omitempty"`              // Review agent feedback, issues, syntax errors
-	BuildVerification  map[string]any `json:"build_verification,omitempty"`  // Lint/build command results
-	Verification       map[string]any `json:"verification,omitempty"`        // Harness-run tri-state verdict (verified|unverified|failed) with verbatim evidence
-	FailureSummary     string         `json:"failure_summary,omitempty"`     // Human-readable summary when pipeline fails
+	FollowupUnresolved bool `json:"followup_unresolved,omitempty"`
+	// FollowupBaseSynced reports that the run merged the PR's base branch into
+	// the PR branch and pushed it (#36864). Additive & backward-compatible in the
+	// same way as FollowupUnresolved: the services-server cron reads it only to
+	// tag the outcome metric, so base syncs are separable from real fixes; an
+	// older cron ignores it. Only set on the PR-followup path.
+	FollowupBaseSynced bool `json:"followup_base_synced,omitempty"`
+	// FollowupSuperseded signals that the agent proved the PR's bot changes are
+	// already in base. Closing remains the lifecycle service's responsibility.
+	FollowupSuperseded      bool   `json:"followup_superseded,omitempty"`
+	FollowupAssessedHeadSHA string `json:"followup_assessed_head_sha,omitempty"`
+	// FollowupInstructionHandled tells the caller this agent acted on
+	// followup_instruction. An older agent drops the field on the floor and
+	// reports its usual "nothing to do"; the flag lets api-server tell that
+	// apart from a run that tried the change and did not land it. Only set on
+	// the PR-followup path.
+	FollowupInstructionHandled bool `json:"followup_instruction_handled,omitempty"`
+	// AddressedComments is what this followup run actually answered on the PR,
+	// for api-server to merge into pr_followup.addressed_comments (#36865).
+	// Additive & backward-compatible in the same way as FollowupUnresolved: an
+	// older cron ignores it, and an older agent that never emits it makes the
+	// merge a no-op. Only set on the PR-followup path.
+	AddressedComments  []agents.AddressedComment `json:"addressed_comments,omitempty"`
+	FilesModified      any                       `json:"files_modified,omitempty"`      // List of files the fixer changed
+	VerificationPassed any                       `json:"verification_passed,omitempty"` // Whether lint/build passed
+	PRCreationStatus   string                    `json:"pr_creation_status,omitempty"`  // success, skipped, failed
+	PRCreationReason   string                    `json:"pr_creation_reason,omitempty"`  // Why PR was skipped/failed
+	Review             map[string]any            `json:"review,omitempty"`              // Review agent feedback, issues, syntax errors
+	BuildVerification  map[string]any            `json:"build_verification,omitempty"`  // Lint/build command results
+	Verification       map[string]any            `json:"verification,omitempty"`        // Harness-run tri-state verdict (verified|unverified|failed) with verbatim evidence
+	FailureSummary     string                    `json:"failure_summary,omitempty"`     // Human-readable summary when pipeline fails
 }
 
 type AgenticAnalyzeResponse struct {
@@ -726,6 +740,7 @@ func secureSessionWorkspace(path string) error {
 }
 
 func (ah *AgenticAnalyzeHandler) PerformAgenticAnalysis(ctx context.Context, req AgenticAnalyzeRequest) (*AgenticAnalyzeResponse, error) {
+	ctx = llm.WithAgentRunID(ctx, req.AgentRunID)
 	if len(req.KnowledgeFiles) > 0 {
 		req.Skills += NewFileHandler(ah.config).renderKnowledgeFiles(ctx, req.KnowledgeFiles)
 	}
@@ -851,9 +866,8 @@ func (ah *AgenticAnalyzeHandler) PerformAgenticAnalysis(ctx context.Context, req
 	// per-conversation workspace (see above), and deleting it at the end of
 	// every single request defeated that persistence, forcing every followup
 	// turn to re-clone and re-derive its fix from scratch. Reclaimed instead by
-	// the age-based SweepOrphanedAnalysisWorkspaces sweep (startup + periodic
-	// ticker in cmd/main.go), which already tolerates an actively-reused
-	// workspace via its ModTime-based maxAge check.
+	// the workspace cleanup (RegisterWorkspaceLeftovers), once nothing inside it
+	// has changed for longer than a run can last and the workspace is idle.
 	// Log analysis start
 	logger.AnalysisStart(req.GitRepository.URL, len(req.Logs))
 
@@ -906,6 +920,7 @@ func (ah *AgenticAnalyzeHandler) PerformAgenticAnalysis(ctx context.Context, req
 		EventId:               req.EventId,
 		RecommendationId:      req.RecommendationId,
 		Skills:                req.Skills,
+		OriginalQuery:         req.OriginalQuery,
 	}
 
 	// Determine which agent to use based on request content
@@ -1139,6 +1154,15 @@ func (ah *AgenticAnalyzeHandler) parseAgentResponse(responseStr string) (*Analys
 			URL:    prURL,
 			State:  "OPEN", // Default state for newly created PR
 			Branch: ah.getStringField(fixPRMap, "branch"),
+		}
+
+		if raw, ok := fixPRMap["ownership"]; ok {
+			if encoded, err := json.Marshal(raw); err == nil {
+				var owner ownership.Result
+				if json.Unmarshal(encoded, &owner) == nil {
+					fixPRInfo.Ownership = &owner
+				}
+			}
 		}
 
 		// Handle different PR statuses
@@ -2034,6 +2058,47 @@ type ToolTrackable interface {
 	EnableToolTracking(tracker *common.ToolInvocationTracker, logger *common.Logger)
 }
 
+// followupAnalysisResult converts a PR-followup agent result into the
+// response body. Split out of performFollowupAnalysis so the status and marker
+// mapping can be tested without running the agent.
+func followupAnalysisResult(req AgenticAnalyzeRequest, result *agents.PRFollowupResult) *AnalysisResult {
+	// Convert result to standard response format. ExecutionStatus drives the
+	// PR-lifecycle cron's accounting:
+	//   "success" — agent committed/replied; reset iteration count
+	//   "no_op"   — nothing actionable yet, or planner produced no change;
+	//               do NOT charge an iteration so future signals can still trigger
+	//   "failed"  — real failure; charge an iteration
+	agentResponse := &AnalysisResult{
+		Title:           fmt.Sprintf("PR Followup: %s", req.PRURL),
+		Description:     result.Summary,
+		ExecutionStatus: "success",
+	}
+	if !result.Success {
+		agentResponse.ExecutionStatus = "failed"
+	} else if result.NoOp {
+		agentResponse.ExecutionStatus = "no_op"
+		// Tag a no_op that was really a non-convergence (had actionable input but
+		// couldn't apply a change) so the cron's outcome metric can separate it
+		// from a genuine "nothing to do". Purely observability — still a no_op.
+		agentResponse.FollowupUnresolved = result.Unresolved
+	}
+	// Set independently of the status branches above: a base sync can be the
+	// run's only work (a "success" that never ran the planner) or can ride along
+	// with a normal comment/CI fix.
+	agentResponse.FollowupBaseSynced = result.BaseSynced
+	agentResponse.FollowupSuperseded = result.Superseded
+	agentResponse.FollowupAssessedHeadSHA = result.AssessedHeadSHA
+	agentResponse.FollowupInstructionHandled = strings.TrimSpace(req.FollowupInstruction) != ""
+	// Likewise independent: a run can answer comments and still finish as a
+	// no_op (every reply skipped as unverified), and that record is worth
+	// keeping either way.
+	agentResponse.AddressedComments = result.AddressedComments
+	if result.CommitHash != "" {
+		agentResponse.ExecutionSummary = fmt.Sprintf("Committed and pushed: %s", result.CommitHash)
+	}
+	return agentResponse
+}
+
 // performFollowupAnalysis handles PR followup mode — routes to PRFollowupAgent
 // to address CI failures and review comments on existing PRs/MRs.
 func (ah *AgenticAnalyzeHandler) performFollowupAnalysis(ctx context.Context, cfg *config.Config, client *llm.Client, tokensBefore *llm.TokenUsage, req AgenticAnalyzeRequest, logger *common.Logger, resolvedCreds *credentials.ResolvedCredentials) (*AgenticAnalyzeResponse, error) {
@@ -2142,11 +2207,13 @@ func (ah *AgenticAnalyzeHandler) performFollowupAnalysis(ctx context.Context, cf
 	followupAgent := agents.NewPRFollowupAgent(cfg, client, logger, workspaceDir, gitToken, provider)
 
 	followupReq := agents.PRFollowupRequest{
-		RepoURL:  req.GitRepository.URL,
-		Branch:   branch,
-		PRNumber: prNumber,
-		PRURL:    req.PRURL,
-		Provider: provider,
+		RepoURL:           req.GitRepository.URL,
+		Branch:            branch,
+		PRNumber:          prNumber,
+		PRURL:             req.PRURL,
+		Provider:          provider,
+		AddressedComments: req.AddressedComments,
+		Instruction:       req.FollowupInstruction,
 	}
 
 	result, err := followupAgent.Execute(ctx, followupReq)
@@ -2157,29 +2224,7 @@ func (ah *AgenticAnalyzeHandler) performFollowupAnalysis(ctx context.Context, cf
 
 	processingTime := time.Since(startTime).String()
 
-	// Convert result to standard response format. ExecutionStatus drives the
-	// PR-lifecycle cron's accounting:
-	//   "success" — agent committed/replied; reset iteration count
-	//   "no_op"   — nothing actionable yet, or planner produced no change;
-	//               do NOT charge an iteration so future signals can still trigger
-	//   "failed"  — real failure; charge an iteration
-	agentResponse := &AnalysisResult{
-		Title:           fmt.Sprintf("PR Followup: %s", req.PRURL),
-		Description:     result.Summary,
-		ExecutionStatus: "success",
-	}
-	if !result.Success {
-		agentResponse.ExecutionStatus = "failed"
-	} else if result.NoOp {
-		agentResponse.ExecutionStatus = "no_op"
-		// Tag a no_op that was really a non-convergence (had actionable input but
-		// couldn't apply a change) so the cron's outcome metric can separate it
-		// from a genuine "nothing to do". Purely observability — still a no_op.
-		agentResponse.FollowupUnresolved = result.Unresolved
-	}
-	if result.CommitHash != "" {
-		agentResponse.ExecutionSummary = fmt.Sprintf("Committed and pushed: %s", result.CommitHash)
-	}
+	agentResponse := followupAnalysisResult(req, result)
 
 	return &AgenticAnalyzeResponse{
 		Success:        result.Success,

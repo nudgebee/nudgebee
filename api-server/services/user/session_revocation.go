@@ -13,9 +13,10 @@ import (
 // expiry unless we record the revocation server-side. Two revocation shapes
 // share the namespace, keyed differently:
 //
-//   - per-jti key (`jti:<jti>`): revokes exactly one token. Written by
-//     /api/auth/revoke for Bearer callers that know the token they're
-//     killing. Value is unused ("1"); presence == revoked.
+//   - per-jti key (`jti:<jti>`): revokes exactly one token. No writer since
+//     the Bearer-logout route was removed; the read path stays because rows
+//     written before then are still honoured. Value is unused ("1");
+//     presence == revoked.
 //   - user-wide key (`user:<user_id>`): revokes every token whose iat is
 //     earlier than `revoked_at` for that user. Written by NextAuth's signOut
 //     event. Value is the revocation's unix-epoch timestamp so the read

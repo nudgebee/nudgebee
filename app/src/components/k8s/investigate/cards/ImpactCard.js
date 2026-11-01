@@ -12,6 +12,7 @@ const buildInsight = (data) => {
   }
   const name = (data.seed && data.seed.name) || 'this service';
   const core = (a.same_incident || []).length;
+  const sameNode = (a.same_node || []).length;
   const causes = ((a.cause && a.cause.config_changes) || []).length + ((a.cause && a.cause.upstream) || []).length;
   const affected = (a.impact || []).length;
   const noise = (a.chronic || []).length;
@@ -20,6 +21,9 @@ const buildInsight = (data) => {
   const out = [];
   if (core > 0) {
     out.push(`${core} more alert${core === 1 ? '' : 's'} on ${name} — same problem`);
+  }
+  if (sameNode > 0) {
+    out.push(`${sameNode} more alert${sameNode === 1 ? '' : 's'} from the same node running out of memory`);
   }
   if (causes > 0) {
     out.push(`${causes} possible cause${causes === 1 ? '' : 's'} just before it started`);

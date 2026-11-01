@@ -17,12 +17,6 @@ jest.mock('@api1/user', () => ({
   },
 }));
 
-const mockUseCurrencySymbol = jest.fn();
-jest.mock('@hooks/useCurrencySymbol', () => ({
-  __esModule: true,
-  default: (...args) => mockUseCurrencySymbol(...args),
-}));
-
 jest.mock('@utils/colors');
 
 jest.mock('src/utils/common', () => ({
@@ -203,7 +197,6 @@ const mockDistinctResponse = (types) => ({
 describe('ListingRecommendationResolution (integration)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockUseCurrencySymbol.mockReturnValue('$');
     apiRecommendations.getDistinctResolverTypes.mockImplementation((field) => {
       if (field === 'type') return Promise.resolve(mockDistinctResponse(['KubernetesRightsize', 'PvcResize']));
       return Promise.resolve(mockDistinctResponse(['AutoPilot', 'Manual']));
@@ -235,14 +228,6 @@ describe('ListingRecommendationResolution (integration)', () => {
     });
   });
 
-  it('does not fetch list until currencySymbol resolves', async () => {
-    mockUseCurrencySymbol.mockReturnValue(undefined);
-    render(<ListingRecommendationResolution accountId='acc-1' />);
-
-    await act(async () => {});
-    expect(apiRecommendations.getRecommendationResolution).not.toHaveBeenCalled();
-  });
-
   it('renders resolution rows with status labels', async () => {
     render(<ListingRecommendationResolution accountId='acc-1' />);
 
@@ -258,12 +243,12 @@ describe('ListingRecommendationResolution (integration)', () => {
     expect(screen.getAllByTestId('ext-link')[0]).toHaveAttribute('href', 'https://github.com/foo/bar/pull/1');
   });
 
-  it('renders Currency with currencySymbol prefix', async () => {
-    mockUseCurrencySymbol.mockReturnValue('€');
+  // Savings are USD from every producer, whatever the account bills in.
+  it('renders savings in $', async () => {
     render(<ListingRecommendationResolution accountId='acc-1' />);
 
     await waitFor(() => expect(screen.getAllByTestId('currency').length).toBeGreaterThan(0));
-    expect(screen.getAllByTestId('currency')[0].textContent).toMatch(/^€/);
+    expect(screen.getAllByTestId('currency')[0].textContent).toMatch(/^\$/);
   });
 
   it('populates status dropdown with In Progress option label', async () => {

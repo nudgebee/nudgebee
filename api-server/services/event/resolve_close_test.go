@@ -33,7 +33,7 @@ const (
 
 var (
 	findingLookupSQL  = regexp.QuoteMeta("SELECT id, subject_name, source FROM events WHERE tenant = $1 AND cloud_account_id = $2 AND finding_id = $3")
-	labelUpdateSQL    = regexp.QuoteMeta("UPDATE events SET updated_at = $1, labels = $3")
+	labelUpdateSQL    = regexp.QuoteMeta(repeatDeliveryUpdateSQL)
 	closeByIdSQL      = regexp.QuoteMeta(eventtypes.CloseEventByIdQuery)
 	closeByFingerprin = regexp.QuoteMeta(eventtypes.CloseEventsByFingerprintQuery)
 )

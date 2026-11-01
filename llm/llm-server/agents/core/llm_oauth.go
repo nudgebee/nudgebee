@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"nudgebee/llm/config"
+
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
 )
@@ -71,6 +73,21 @@ type llmAuthSettings struct {
 func resolveLLMAuthSettings(accountId string, res *LLMConfigResolution) llmAuthSettings {
 	out := llmAuthSettings{AuthType: llmAuthTypeAPIKey}
 
+	// ENV layer, below DB. Every credential key in llm_config.go already walks
+	// ENV then DB; these did not, so an env-configured deployment could not
+	// reach an OAuth provider or send a custom header at all. Values are
+	// overwritten by any DB value found below, preserving "DB always beats ENV".
+	if v := strings.TrimSpace(config.Config.LlmAuthType); v != "" {
+		out.AuthType = v
+	}
+	out.OAuth = llmOAuthConfig{
+		TokenURL:     strings.TrimSpace(config.Config.LlmOAuthTokenURL),
+		ClientID:     strings.TrimSpace(config.Config.LlmOAuthClientID),
+		ClientSecret: strings.TrimSpace(config.Config.LlmOAuthClientSecret),
+		Scope:        strings.TrimSpace(config.Config.LlmOAuthScope),
+	}
+	out.ExtraHeaders = parseExtraHeaders(config.Config.LlmExtraHeaders)
+
 	if res != nil && res.PinnedConfigSource != "" {
 		if res.PinnedAuthType != "" {
 			out.AuthType = res.PinnedAuthType
@@ -113,13 +130,24 @@ func resolveLLMAuthSettings(accountId string, res *LLMConfigResolution) llmAuthS
 	if v := read(llmAuthTypeKey); v != "" {
 		out.AuthType = v
 	}
-	out.OAuth = llmOAuthConfig{
-		TokenURL:     read(llmOAuthTokenURLKey),
-		ClientID:     read(llmOAuthClientIDKey),
-		ClientSecret: read(llmOAuthClientSecretKey),
-		Scope:        read(llmOAuthScopeKey),
+	// Per-field: a DB value wins, a blank one leaves the ENV value standing.
+	// Field-wise rather than whole-struct so an integration that sets only a
+	// client id does not blank an ENV-supplied token URL.
+	if v := read(llmOAuthTokenURLKey); v != "" {
+		out.OAuth.TokenURL = v
 	}
-	out.ExtraHeaders = parseExtraHeaders(read(llmExtraHeadersKey))
+	if v := read(llmOAuthClientIDKey); v != "" {
+		out.OAuth.ClientID = v
+	}
+	if v := read(llmOAuthClientSecretKey); v != "" {
+		out.OAuth.ClientSecret = v
+	}
+	if v := read(llmOAuthScopeKey); v != "" {
+		out.OAuth.Scope = v
+	}
+	if v := read(llmExtraHeadersKey); v != "" {
+		out.ExtraHeaders = parseExtraHeaders(v)
+	}
 	return out
 }
 

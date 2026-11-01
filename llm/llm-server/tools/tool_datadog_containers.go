@@ -35,6 +35,7 @@ func (t DatadogContainersExecuteTool) InputSchema() toolcore.ToolSchema {
 	return toolcore.ToolSchema{
 		Type: toolcore.ToolSchemaTypeObject,
 		Properties: map[string]toolcore.ToolSchemaProperty{
+			"instance": instanceProperty,
 			"query": {
 				Type:        toolcore.ToolSchemaTypeString,
 				Description: "The Datadog container query string.",

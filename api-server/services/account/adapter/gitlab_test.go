@@ -647,12 +647,8 @@ func TestGetResolutionStatusWithGitLabToken(t *testing.T) {
 	t.Logf("  Status: %s", response.Status)
 	t.Logf("  Message: %s", response.StatusMessage)
 
-	// The status should be one of the valid statuses (not "Failed" from bad credentials)
-	if response.Status == RecommendationResolutionStatusFailed {
-		// If failed, it should NOT be due to authentication issues
-		assert.NotContains(t, response.StatusMessage, "401",
-			"Should not fail with 401 when GitLab token is properly configured")
-		assert.NotContains(t, response.StatusMessage, "Unauthorized",
-			"Should not fail with Unauthorized when GitLab token is properly configured")
-	}
+	// A credential problem now reads as "could not check" (Unverified) rather
+	// than as a failed merge request, so assert on that directly.
+	assert.False(t, response.Unverified,
+		"GitLab should answer when the token is properly configured: %s", response.StatusMessage)
 }

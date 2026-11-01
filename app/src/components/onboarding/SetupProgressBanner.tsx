@@ -61,7 +61,7 @@ const readHiddenUntil = (tenantId: string | undefined): number => {
   }
 };
 
-const SetupProgressBanner = () => {
+const SetupProgressBannerContent = () => {
   const router = useRouter();
   const { data: session } = useSession();
   const tenantId = (session as { tenant?: { id?: string } } | null)?.tenant?.id;
@@ -181,6 +181,15 @@ const SetupProgressBanner = () => {
       />
     </Box>
   );
+};
+
+// `UI_ENABLE_SETUP_CENTER` off: never mount the content at all — not just
+// render nothing — because `useOnboardingReadiness()` fires its account,
+// capability, agent-health and knowledge-base lookups on mount, and every
+// `/home` load would pay for an answer nothing reads. See `SetupGateContext.tsx`.
+const SetupProgressBanner = () => {
+  const { setupCenterEnabled } = useSetupGate();
+  return setupCenterEnabled ? <SetupProgressBannerContent /> : null;
 };
 
 export default SetupProgressBanner;

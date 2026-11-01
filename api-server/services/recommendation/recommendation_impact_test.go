@@ -31,7 +31,7 @@ func TestAnnotateBreakdownWithImpactNoOp(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			bd := map[string]any{"base_score": 10}
-			annotateBreakdownWithImpact(tc.kg, "tenant", "acct", tc.namespace, tc.workload, tc.resourceID, "", ChangeClassReductive, bd, cache)
+			annotateBreakdownWithImpact(tc.kg, "tenant", "acct", tc.namespace, tc.workload, tc.resourceID, "", k8sVolumeRef{}, ChangeClassReductive, bd, cache)
 			if _, ok := bd["safety_band"]; ok {
 				t.Error("must not stamp safety_band on a no-op path")
 			}
@@ -64,7 +64,7 @@ func TestAnnotateBreakdownDerivesBandPerChangeClass(t *testing.T) {
 	}
 
 	additive := map[string]any{}
-	annotateBreakdownWithImpact(&core.Service{}, "tenant", "acct", "shop", "checkout", "", "", ChangeClassAdditive, additive, cache)
+	annotateBreakdownWithImpact(&core.Service{}, "tenant", "acct", "shop", "checkout", "", "", k8sVolumeRef{}, ChangeClassAdditive, additive, cache)
 	if additive["safety_band"] != string(SafetyBandReview) {
 		t.Errorf("additive band = %v, want review (prod dependents cap at review for additive changes)", additive["safety_band"])
 	}
@@ -73,13 +73,13 @@ func TestAnnotateBreakdownDerivesBandPerChangeClass(t *testing.T) {
 	}
 
 	destructive := map[string]any{}
-	annotateBreakdownWithImpact(&core.Service{}, "tenant", "acct", "shop", "checkout", "", "", ChangeClassDestructive, destructive, cache)
+	annotateBreakdownWithImpact(&core.Service{}, "tenant", "acct", "shop", "checkout", "", "", k8sVolumeRef{}, ChangeClassDestructive, destructive, cache)
 	if destructive["safety_band"] != string(SafetyBandRisky) {
 		t.Errorf("destructive band = %v, want risky", destructive["safety_band"])
 	}
 
 	unknown := map[string]any{}
-	annotateBreakdownWithImpact(&core.Service{}, "tenant", "acct", "shop", "checkout", "", "", ChangeClassUnknown, unknown, cache)
+	annotateBreakdownWithImpact(&core.Service{}, "tenant", "acct", "shop", "checkout", "", "", k8sVolumeRef{}, ChangeClassUnknown, unknown, cache)
 	if unknown["safety_band"] != string(SafetyBandRisky) {
 		t.Errorf("unknown-class band = %v, want risky (pre-change-aware policy)", unknown["safety_band"])
 	}
@@ -199,5 +199,61 @@ func TestCompactDependentsFormatsLastObserved(t *testing.T) {
 	}
 	if _, ok := buildImpactSummary(&core.ImpactSummary{CoverageConfidence: core.CoverageHigh}, "r")["computed_at"]; !ok {
 		t.Error("summary must carry its computed_at anchor")
+	}
+}
+
+// A volume rule resolves from its payload identity alone. It must never borrow
+// the workload lookup: a claim can share its (namespace, name) with a workload,
+// and grading the delete by that workload's callers would be another
+// resource's verdict.
+func TestAnnotateBreakdownVolumeRuleIdentity(t *testing.T) {
+	workloadImpact := &core.ImpactSummary{CoverageConfidence: core.CoverageHigh, DependentCount: 4}
+	cache := map[string]*core.ImpactSummary{"tenant|acct|k8s|signoz|data": workloadImpact}
+
+	bd := map[string]any{}
+	annotateBreakdownWithImpact(&core.Service{}, "tenant", "acct", "signoz", "data", "", "unused_pvc", k8sVolumeRef{}, ChangeClassDestructive, bd, cache)
+	if _, ok := bd["safety_band"]; ok {
+		t.Error("a volume rule with no volume identity must not be graded by the workload of the same name")
+	}
+	bd = map[string]any{}
+	annotateBreakdownWithImpact(&core.Service{}, "tenant", "acct", "", "", "", "pv_rightsize", k8sVolumeRef{ClaimName: "data"}, ChangeClassReductive, bd, cache)
+	if _, ok := bd["safety_band"]; ok {
+		t.Error("a claim with no namespace and no PV name is not an identity")
+	}
+	if len(cache) != 1 {
+		t.Errorf("unresolvable volume identities must not touch the cache, got %d entries", len(cache))
+	}
+}
+
+// A resolved volume grades like any other resource: a delete floors at risky
+// when something mounts the volume, and a resize is keyed apart from a delete
+// on the same volume because each seeds the traversal at a different node.
+func TestAnnotateBreakdownVolumeRuleGrades(t *testing.T) {
+	mounted := &core.ImpactSummary{CoverageConfidence: core.CoverageHigh, DependentCount: 1, EnvironmentResolved: true}
+	vol := k8sVolumeRef{PVName: "pvc-1234", ClaimNamespace: "signoz", ClaimName: "data"}
+	cache := map[string]*core.ImpactSummary{
+		"tenant|acct|k8s-volume|PersistentVolume|pvc-1234|signoz|data": mounted,
+	}
+
+	bd := map[string]any{}
+	annotateBreakdownWithImpact(&core.Service{}, "tenant", "acct", "signoz", "", "", "unused_pvc", vol, ChangeClassDestructive, bd, cache)
+	if bd["safety_band"] != string(SafetyBandRisky) {
+		t.Errorf("mounted volume delete band = %v, want risky", bd["safety_band"])
+	}
+	if bd["change_class"] != string(ChangeClassDestructive) {
+		t.Errorf("change_class = %v, want destructive", bd["change_class"])
+	}
+	if _, ok := bd["impact_summary"].(map[string]any); !ok {
+		t.Error("impact_summary not stamped")
+	}
+
+	cache["tenant|acct|k8s-volume|PersistentVolumeClaim|pvc-1234|signoz|data"] = mounted
+	bd = map[string]any{}
+	annotateBreakdownWithImpact(&core.Service{}, "tenant", "acct", "signoz", "", "", "pv_rightsize", vol, ChangeClassAdditive, bd, cache)
+	if bd["safety_band"] != string(SafetyBandReview) {
+		t.Errorf("volume grow band = %v, want review", bd["safety_band"])
+	}
+	if len(cache) != 2 {
+		t.Errorf("cache has %d entries, want 2 (claim-seeded and PV-seeded traversals kept apart)", len(cache))
 	}
 }

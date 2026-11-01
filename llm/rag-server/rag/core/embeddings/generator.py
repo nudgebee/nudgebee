@@ -4,7 +4,6 @@ import time
 from typing import Any, Dict, Optional, Callable, Tuple
 
 from rag.core.embeddings.providers import (
-    AzureAIEmbeddings,
     AzureOpenAIEmbeddings,
     BedrockEmbeddings,
     GoogleGenAIEmbeddings,
@@ -33,7 +32,7 @@ _instance_cache_lock = threading.Lock()
 
 def validate_embeddings_provider_keys(selected_provider: str, get_config_value) -> None:
     required_keys = {
-        "azure": ["embeddings_api_key", "embeddings_api_endpoint", "embeddings_api_version", "embeddings_model_id"],
+        "azure": ["embeddings_api_key", "embeddings_api_endpoint", "embeddings_model_id"],
         "huggingface": ["embeddings_api_key", "embeddings_api_endpoint", "embeddings_model_id"],
         "ollama": ["embeddings_model_id", "embeddings_api_endpoint"],
         "sagemaker": ["embeddings_api_endpoint", "embeddings_region"],
@@ -60,11 +59,13 @@ def build_embeddings_provider_map(
     get_config_value: Callable[[str, Optional[Any]], Any], bedrock_client_fn: Callable[[], Any]
 ) -> Tuple[Dict[str, Callable[[], Embeddings]], Callable[[], Embeddings]]:
     def azure() -> Embeddings:
-        return AzureAIEmbeddings(
-            endpoint=str(get_config_value("embeddings_api_endpoint", None)),
-            credential=str(get_config_value("embeddings_api_key", None)),
-            model_name=str(get_config_value("embeddings_model_id", None)),
-            api_version=str(get_config_value("embeddings_api_version", None)),
+        # embeddings_model_id is the Azure deployment name.
+        return AzureOpenAIEmbeddings(
+            model=str(get_config_value("embeddings_model_id", None)),
+            api_key=str(get_config_value("embeddings_api_key", None)),
+            api_version=str(get_config_value("embeddings_api_version", None) or ""),
+            azure_endpoint=str(get_config_value("embeddings_api_endpoint", None)),
+            api_style=str(get_config_value("embeddings_api_style", None) or "v1"),
         )
 
     def huggingface() -> Embeddings:
@@ -95,8 +96,9 @@ def build_embeddings_provider_map(
             return AzureOpenAIEmbeddings(
                 model=str(get_config_value("embeddings_model_id", None)),
                 api_key=api_key,
-                api_version=str(get_config_value("embeddings_api_version", None)),
+                api_version=str(get_config_value("embeddings_api_version", None) or ""),
                 azure_endpoint=str(get_config_value("embeddings_api_endpoint", None)),
+                api_style="classic",
             )
         return OpenAIEmbeddings(
             api_key=api_key,
@@ -204,14 +206,21 @@ def get_openai_llm(model_name: str, config: Optional[dict] = None) -> LLM:
 
 
 def get_azure_llm(model_name: str, config: Optional[dict] = None) -> LLM:
+    from rag.core.llm.azure import build_azure_openai_client, extra_headers_from_config, oauth_from_config
     from rag.core.llm.providers import AzureOpenAILLM
 
-    return AzureOpenAILLM(
-        model=model_name,
-        api_key=_get_str_config(config, "llm_provider_api_key"),
-        api_version=_get_str_config(config, "llm_provider_api_version"),
-        azure_endpoint=_get_str_config(config, "llm_provider_api_endpoint"),
+    def get(key: str) -> str:
+        return _get_str_config(config, key)
+
+    client = build_azure_openai_client(
+        endpoint=get("llm_provider_api_endpoint"),
+        api_style=get("llm_provider_api_style"),
+        api_version=get("llm_provider_api_version"),
+        api_key=get("llm_provider_api_key"),
+        oauth=oauth_from_config(get),
+        extra_headers=extra_headers_from_config(get("llm_extra_headers")),
     )
+    return AzureOpenAILLM(client=client, model=model_name)
 
 
 def get_anthropic_llm(model_name: str, config: Optional[dict] = None) -> LLM:
@@ -292,12 +301,9 @@ def get_custom_llm(model_name: str, config: Optional[dict] = None) -> LLM:
 def validate_llm_provider_keys(selected_provider: str, get_config_value: Callable) -> None:
     """Validate that required config keys are present for the selected LLM provider."""
     required_keys: Dict[str, list] = {
-        "azure": [
-            "llm_provider_api_key",
-            "llm_provider_api_endpoint",
-            "llm_provider_api_version",
-            "llm_model_name",
-        ],
+        # The key-or-Entra and classic api-version rules are checked when the
+        # client is built (rag.core.llm.azure).
+        "azure": ["llm_provider_api_endpoint", "llm_model_name"],
         "openai": ["llm_provider_api_key", "llm_model_name"],
         "googleai": ["llm_provider_api_key", "llm_model_name"],
         "vertexai": ["llm_provider_api_key", "llm_model_name"],

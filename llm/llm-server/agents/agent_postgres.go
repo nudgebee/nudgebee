@@ -15,10 +15,15 @@ func init() {
 	toolInput := "Provide a question in natural language to investigate, query, or troubleshoot PostgreSQL."
 	toolOutput := "Returns query results and summaries for PostgreSQL operations."
 
-	core.RegisterNBAgentFactoryAndTool(PostgresAgentName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAndTool(PostgresAgentName, func(accountId string) (core.NBAgent, error) {
 		return newPostgresAgent(accountId), nil
 	}, toolDescription, toolInput, toolOutput)
 }
+
+// AcceptsExecutionTarget: postgres_query_execute follows a handed target and
+// picks among the target account's own integrations (#39906), so the agent
+// can run for another account.
+func (l PostgresDebugAgent) AcceptsExecutionTarget() {}
 
 func newPostgresAgent(accountId string) PostgresDebugAgent {
 	return PostgresDebugAgent{

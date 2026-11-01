@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -111,6 +112,52 @@ func TestBuildKBSearchQueryCappedLength(t *testing.T) {
 	assert.LessOrEqual(t, len(got), kbPrestepMaxQueryLen)
 }
 
+func TestBuildKBSearchQueryKeepsHintsAfterLongBase(t *testing.T) {
+	// An event investigation prompt (and every delegated child, which inherits
+	// it as OriginalQuery) is far longer than the cap.
+	longPrompt := "Identify RootCause of the event with id 00000000-0000-0000-0000-000000000000\n\n## Event Details\n" + strings.Repeat("instructions ", 200)
+	got := buildKBSearchQuery(NBAgentRequest{
+		OriginalQuery: longPrompt,
+		Query:         "inspect the failed job log",
+		QueryConfig: toolcore.NBQueryConfig{
+			KnowledgeHints: []string{"CI failed: example-ci / Go Lint", "ci", "github_workflow_job", "github_ci_failure"},
+			Labels:         map[string]any{"alertname": "CIJobFailed"},
+		},
+	})
+	assert.LessOrEqual(t, len(got), kbPrestepMaxQueryLen)
+	assert.True(t, strings.HasPrefix(got, "Identify RootCause"), "the question still leads: %q", got)
+	for _, want := range []string{"CI failed: example-ci / Go Lint", "github_workflow_job", "github_ci_failure", "inspect the failed job log", "CIJobFailed"} {
+		assert.Contains(t, got, want)
+	}
+}
+
+func TestBuildKBSearchQueryLongHintsKeepMinimumBase(t *testing.T) {
+	got := buildKBSearchQuery(NBAgentRequest{
+		OriginalQuery: strings.Repeat("q", kbPrestepMaxQueryLen),
+		QueryConfig:   toolcore.NBQueryConfig{KnowledgeHints: []string{strings.Repeat("h", kbPrestepMaxQueryLen)}},
+	})
+	assert.LessOrEqual(t, len(got), kbPrestepMaxQueryLen)
+	assert.True(t, strings.HasPrefix(got, strings.Repeat("q", kbPrestepMinBaseLen)), "base keeps its minimum share")
+	assert.Contains(t, got, "h")
+}
+
+func TestBuildKBSearchQueryShortBaseLeavesRoomForHints(t *testing.T) {
+	got := buildKBSearchQuery(NBAgentRequest{
+		OriginalQuery: "why",
+		QueryConfig:   toolcore.NBQueryConfig{KnowledgeHints: []string{strings.Repeat("h", kbPrestepMaxQueryLen)}},
+	})
+	assert.Len(t, got, kbPrestepMaxQueryLen, "a short question only reserves what it uses")
+	assert.True(t, strings.HasPrefix(got, "why "))
+}
+
+func TestBuildKBSearchQueryShortQuestionUnchanged(t *testing.T) {
+	got := buildKBSearchQuery(NBAgentRequest{
+		OriginalQuery: "why did CI fail",
+		QueryConfig:   toolcore.NBQueryConfig{KnowledgeHints: []string{"ci", "github_ci_failure"}},
+	})
+	assert.Equal(t, "why did CI fail github_ci_failure", got, "hints already in the question are skipped")
+}
+
 func TestRetrieveKnowledgeDocsPartialTimeout(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -164,6 +211,31 @@ func TestRetrieveKnowledgeDocsPartialTimeout(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+func TestRetrieveKnowledgeDocsSearchesByEventKind(t *testing.T) {
+	previousAccount := queryAccountKnowledgeFn
+	t.Cleanup(func() { queryAccountKnowledgeFn = previousAccount })
+	var mu sync.Mutex
+	var queries []string
+	queryAccountKnowledgeFn = func(_ context.Context, _, _, q, _ string, _ int, _, _, _ string, _ bool) toolcore.RAGSearchResults {
+		mu.Lock()
+		queries = append(queries, q)
+		mu.Unlock()
+		return toolcore.RAGSearchResults{{Document: q}}
+	}
+
+	event := NBAgentRequest{QueryConfig: toolcore.NBQueryConfig{KnowledgeHints: []string{"ci", "github_workflow_job", "github_ci_failure"}}}
+	docs, traceIDs := retrieveKnowledgeDocs(context.Background(), event, "Identify RootCause of the event", nil)
+	assert.ElementsMatch(t, []string{"Identify RootCause of the event", "ci github_workflow_job github_ci_failure"}, queries)
+	require.Len(t, docs, 2)
+	assert.Equal(t, "ci github_workflow_job github_ci_failure", docs[0].Document, "event-kind results lead the question's")
+	assert.Len(t, traceIDs, 2)
+
+	queries = nil
+	docs, _ = retrieveKnowledgeDocs(context.Background(), NBAgentRequest{}, "why is checkout failing", nil)
+	assert.Equal(t, []string{"why is checkout failing"}, queries, "no event, no extra search")
+	assert.Len(t, docs, 1)
 }
 
 func TestRetrieveKnowledgeDocsExcludesDisabledMappedKB(t *testing.T) {
@@ -714,4 +786,33 @@ func TestRetrieveRelevantKBAppliesTheJudgeOnce(t *testing.T) {
 	assert.Empty(t, result.menu)
 	assert.Empty(t, result.content)
 	assert.Empty(t, result.references)
+}
+
+func TestRetrieveRelevantKBJudgesEventResultsAgainstEventKind(t *testing.T) {
+	previousAccountQuery, previousJudge, previousResolver := queryAccountKnowledgeFn, judgeKBResultsFn, resolveManualKnowledgeFn
+	t.Cleanup(func() {
+		queryAccountKnowledgeFn, judgeKBResultsFn, resolveManualKnowledgeFn = previousAccountQuery, previousJudge, previousResolver
+	})
+	queryAccountKnowledgeFn = func(_ context.Context, _, _, _, _ string, _ int, _, _, _ string, _ bool) toolcore.RAGSearchResults {
+		return toolcore.RAGSearchResults{{Document: "CI failure procedure", Metadata: map[string]any{"collection": "global_docs"}}}
+	}
+	resolveManualKnowledgeFn = func(_ *security.RequestContext, _ string, docs toolcore.RAGSearchResults) toolcore.RAGSearchResults {
+		return docs
+	}
+	var judgedQuery string
+	judgeKBResultsFn = func(_ *security.RequestContext, _, _, _, _, q string, docs toolcore.RAGSearchResults, _ ...string) toolcore.RAGSearchResults {
+		judgedQuery = q
+		return toolcore.RAGSearchResults{}
+	}
+
+	request := NBAgentRequest{
+		AccountId: "account-1", OriginalQuery: "Identify RootCause of the event with id 00000000-0000-0000-0000-000000000000",
+		QueryConfig: toolcore.NBQueryConfig{KnowledgeHints: []string{"ci", "github_workflow_job"}},
+	}
+	retrieveRelevantKB(security.NewRequestContextForSuperAdmin(), request, nil)
+	assert.True(t, strings.HasPrefix(judgedQuery, "ci github_workflow_job "), "judge sees the event kind: %q", judgedQuery)
+
+	request.QueryConfig.KnowledgeHints = nil
+	retrieveRelevantKB(security.NewRequestContextForSuperAdmin(), request, nil)
+	assert.Equal(t, request.OriginalQuery, judgedQuery, "ordinary questions are judged as before")
 }

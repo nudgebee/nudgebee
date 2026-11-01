@@ -62,6 +62,10 @@ const (
 	// above: those describe the machines, these describe what the workloads on them use.
 	seRolePodCPUUsage splunkUtilisationRole = "pod_cpu_usage"
 	seRolePodMemUsage splunkUtilisationRole = "pod_mem_usage"
+	// Per-CONTAINER usage, for the rightsizing keys. Pod-level families cannot stand in:
+	// a pod's total is not any one container's usage, and a recommendation is per container.
+	seRoleContainerCPUUsage      splunkUtilisationRole = "container_cpu_usage"
+	seRoleContainerMemWorkingSet splunkUtilisationRole = "container_mem_working_set"
 )
 
 // SplunkUtilisationCandidates is the match order per role, most specific first. Package
@@ -79,6 +83,10 @@ var SplunkUtilisationCandidates = map[splunkUtilisationRole][]string{
 	seRoleMemLimit:    {"k8s.container.memory_limit", "k8s.container.memory.limit"},
 	seRolePodCPUUsage: {"k8s.pod.cpu.usage", "k8s.pod.cpu.utilization", "container.cpu.usage", "k8s.container.cpu.usage"},
 	seRolePodMemUsage: {"k8s.pod.memory.usage", "k8s.pod.memory.working_set", "container.memory.usage", "k8s.container.memory.usage"},
+	// Working set, not usage, as the Prometheus key reads container_memory_working_set_bytes:
+	// usage includes reclaimable page cache and would size a memory request too high.
+	seRoleContainerCPUUsage:      {"container.cpu.usage", "k8s.container.cpu.usage"},
+	seRoleContainerMemWorkingSet: {"container.memory.working_set", "k8s.container.memory.working_set"},
 }
 
 // splunkUtilisationSpec says which family a utilisation key reads and how the spanned
@@ -87,33 +95,59 @@ var SplunkUtilisationCandidates = map[splunkUtilisationRole][]string{
 type splunkUtilisationSpec struct {
 	Role    splunkUtilisationRole
 	Reducer string
+	// PerPod keys return one series per namespace/pod/container instead of one summed
+	// series, and honour the request's Aggregate; see buildSplunkPerPodQuery.
+	PerPod bool
 }
 
 // splunkUtilisationKeys are the keys this provider serves. Anything else returns an
 // explicit unsupported error rather than falling through to the Prometheus builders --
 // those emit PromQL, which Splunk rejects at the validator with a message about
 // generating commands that says nothing about the real cause.
-var splunkUtilisationKeys = map[string]splunkUtilisationSpec{
-	"cpu_total":       {seRoleCPUCapacity, "latest"},
-	"cpu_real":        {seRoleCPUUsage, "avg"},
-	"p50_cpu":         {seRoleCPUUsage, "perc50"},
-	"p90_cpu":         {seRoleCPUUsage, "perc90"},
-	"max_usage_cpu":   {seRoleCPUUsage, "max"},
-	"cpu_usage_trend": {seRoleCPUUsage, ""},
-	"mem_total":       {seRoleMemCapacity, "latest"},
-	"mem_real":        {seRoleMemUsage, "latest"},
-	"p50_mem":         {seRoleMemUsage, "perc50"},
-	"p90_mem":         {seRoleMemUsage, "perc90"},
-	"max_usage_mem":   {seRoleMemUsage, "max"},
-	"mem_usage_trend": {seRoleMemUsage, ""},
-	"cpu_request":     {seRoleCPURequest, "latest"},
-	"cpu_limit":       {seRoleCPULimit, "latest"},
-	"memory_request":  {seRoleMemRequest, "latest"},
-	"memory_limit":    {seRoleMemLimit, "latest"},
+var splunkUtilisationKeys = map[UtilisationKey]splunkUtilisationSpec{
+	KeyCPUTotal:      {Role: seRoleCPUCapacity, Reducer: "latest"},
+	KeyCPUReal:       {Role: seRoleCPUUsage, Reducer: "avg"},
+	KeyP50CPU:        {Role: seRoleCPUUsage, Reducer: "perc50"},
+	KeyP90CPU:        {Role: seRoleCPUUsage, Reducer: "perc90"},
+	KeyMaxUsageCPU:   {Role: seRoleCPUUsage, Reducer: "max"},
+	KeyCPUUsageTrend: {Role: seRoleCPUUsage, Reducer: ""},
+	KeyMemTotal:      {Role: seRoleMemCapacity, Reducer: "latest"},
+	KeyMemReal:       {Role: seRoleMemUsage, Reducer: "latest"},
+	KeyP50Mem:        {Role: seRoleMemUsage, Reducer: "perc50"},
+	KeyP90Mem:        {Role: seRoleMemUsage, Reducer: "perc90"},
+	KeyMaxUsageMem:   {Role: seRoleMemUsage, Reducer: "max"},
+	KeyMemUsageTrend: {Role: seRoleMemUsage, Reducer: ""},
+	KeyCPURequest:    {Role: seRoleCPURequest, Reducer: "latest"},
+	KeyCPULimit:      {Role: seRoleCPULimit, Reducer: "latest"},
+	KeyMemoryRequest: {Role: seRoleMemRequest, Reducer: "latest"},
+	KeyMemoryLimit:   {Role: seRoleMemLimit, Reducer: "latest"},
 	// The Utilization page's usage lines. Gauges like the rest, so they follow the same
 	// instant-vs-range rule: one figure for an instant read, the series for a range.
-	"cpu_usage":    {seRolePodCPUUsage, "latest"},
-	"memory_usage": {seRolePodMemUsage, "latest"},
+	KeyCPUUsage:    {Role: seRolePodCPUUsage, Reducer: "latest"},
+	KeyMemoryUsage: {Role: seRolePodMemUsage, Reducer: "latest"},
+
+	// The per-container keys vertical rightsizing reads, in the Prometheus builder's
+	// shape: one series per (namespace, pod, container), labelled canonically, so usage
+	// joins against its spec on those three.
+	KeyContainerCPUUsageByPod:         {Role: seRoleContainerCPUUsage, PerPod: true},
+	KeyContainerMemoryWorkingSetByPod: {Role: seRoleContainerMemWorkingSet, PerPod: true},
+	KeyContainerCPURequestByPod:       {Role: seRoleCPURequest, PerPod: true},
+	KeyContainerCPULimitByPod:         {Role: seRoleCPULimit, PerPod: true},
+	KeyContainerMemoryRequestByPod:    {Role: seRoleMemRequest, PerPod: true},
+	KeyContainerMemoryLimitByPod:      {Role: seRoleMemLimit, PerPod: true},
+}
+
+// splunkUtilisationRefusals are keys deliberately not served, with the reason. Answering
+// them from the nearest family would be worse than no answer, because rightsizing would
+// act on it.
+var splunkUtilisationRefusals = map[UtilisationKey]string{
+	// The cgroup high-water mark. The OTel collector's kubeletstats receiver reports
+	// usage and working set, not a max; substituting working set would set a memory
+	// limit below the peak it has to cover. Rightsizing treats this key as optional.
+	KeyContainerMemoryMaxUsageByPod: "splunk enterprise: no Splunk OTel metric carries the container memory high-water mark",
+	// Needs the limit joined against a per-container OOMKilled terminated reason; the
+	// k8s_cluster receiver publishes restarts but not the reason.
+	KeyContainerOOMKilledLimitByPod: "splunk enterprise: no Splunk OTel metric carries a container's OOMKilled termination reason",
 }
 
 // splunkUtilisationSeriesColumn holds each series' per-bucket value before the series are
@@ -167,6 +201,54 @@ func buildSplunkUtilisationQuery(family, index string, stepSeconds int, reducer 
 		base, reducer, splunkEnterpriseValueColumn, splunkEnterpriseValueColumn), nil
 }
 
+// splunkPerPodDims identify one series of a per-container key. Namespace is included at
+// every scope: at node and cluster scope two namespaces can each run a `worker-0`.
+var splunkPerPodDims = []string{"k8s.namespace.name", "k8s.pod.name", "k8s.container.name"}
+
+// buildSplunkPerPodQuery renders a per-container key: one series per namespace, pod and
+// container at the caller's step, with the still-filling final bucket dropped.
+//
+// With an Aggregate each series collapses to one point over the window. The buckets are
+// already Step wide, so `count` of them is exactly the contract's definition of count
+// ("Step-wide intervals with data", metrics_aggregate_count.go) and needs no conversion,
+// and a percentile over them matches Prometheus's quantile_over_time((expr)[window:step]).
+// exactperc rather than perc: perc is an approximation, and the rightsizing floor and
+// percentiles are compared against thresholds.
+//
+// Without an Aggregate an instant read keeps the latest complete bucket per series, as
+// the gauge keys do; a range read returns the series.
+func buildSplunkPerPodQuery(family, index string, stepSeconds int, scope []LabelMatcher, agg ParsedAggregate, instant bool) (string, error) {
+	where := []string{fmt.Sprintf(`index="%s"`, index)}
+	for _, m := range scope {
+		matcher, err := buildSplunkMetricMatcher(m)
+		if err != nil {
+			return "", err
+		}
+		where = append(where, matcher)
+	}
+	dims := strings.Join(splunkPerPodDims, ", ")
+
+	q := fmt.Sprintf(`| mstats avg("%s") AS %s WHERE %s span=%ds BY %s`+
+		` | addinfo | where _time + %d <= info_max_time | fields _time %s %s`,
+		family, splunkEnterpriseValueColumn, strings.Join(where, " AND "), stepSeconds, dims,
+		stepSeconds, strings.Join(splunkPerPodDims, " "), splunkEnterpriseValueColumn)
+
+	var stage string
+	switch {
+	case agg.IsQuantile():
+		stage = "exactperc" + strconv.FormatFloat(agg.Quantile*100, 'f', -1, 64)
+	case agg.Name != "":
+		// avg, sum, max, min and count are all SPL stats functions of the same name.
+		stage = agg.Name
+	case instant:
+		stage = "latest"
+	default:
+		return q, nil
+	}
+	return fmt.Sprintf("%s | stats %s(%s) AS %s BY %s",
+		q, stage, splunkEnterpriseValueColumn, splunkEnterpriseValueColumn, dims), nil
+}
+
 // splunkUtilisationSeriesDims names the dimensions that identify one series of a family:
 // a node for node families, a pod for pod families, a container otherwise. Namespace is
 // included for pods because pod names are only unique within a namespace.
@@ -194,11 +276,29 @@ func splunkUtilisationSeriesDims(family string) []string {
 // A request with no namespace is cluster-wide and gets no matchers at all.
 func splunkUtilisationScope(meta RequestMetadata) []LabelMatcher {
 	var scope []LabelMatcher
+	// A node request carries no namespace; without this it was answered cluster-wide.
+	if meta.Kind == "node" {
+		if meta.NodeName == "" {
+			return nil
+		}
+		return []LabelMatcher{{Label: "k8s.node.name", Operator: "_eq", Value: meta.NodeName}}
+	}
 	if meta.Namespace == "" {
 		return nil
 	}
 	scope = append(scope, LabelMatcher{Label: "k8s.namespace.name", Operator: "_eq", Value: meta.Namespace})
-	if meta.Name != "" {
+	// An exact pod list (rightsizing supplies one) is scope in its own right and beats
+	// the prefix, which also matches a sibling workload ("services-server" matches
+	// "services-server-worker-…"). An empty list is a real answer: match nothing, on a
+	// name Kubernetes cannot produce (RFC 1123 forbids underscores), rather than falling
+	// back to the prefix and sizing this workload on its neighbours' pods.
+	if meta.PodNamesSupplied {
+		if len(meta.PodNames) == 0 {
+			scope = append(scope, LabelMatcher{Label: "k8s.pod.name", Operator: "_eq", Value: "__no_pods_resolved__"})
+		} else {
+			scope = append(scope, LabelMatcher{Label: "k8s.pod.name", Operator: "_in", Value: strings.Join(meta.PodNames, ",")})
+		}
+	} else if meta.Name != "" {
 		if meta.Kind == "pod" {
 			scope = append(scope, LabelMatcher{Label: "k8s.pod.name", Operator: "_eq", Value: meta.Name})
 		} else {
@@ -239,15 +339,19 @@ func fetchSplunkEnterpriseUtilisation(ctx *security.RequestContext, req GetUtili
 	results := make([]QueryResult, 0, len(meta.RequestedMetrics))
 
 	for _, key := range meta.RequestedMetrics {
-		spec, ok := splunkUtilisationKeys[key]
+		if reason, refused := splunkUtilisationRefusals[UtilisationKey(key)]; refused {
+			results = append(results, splunkUtilisationUnavailable(key, reason))
+			continue
+		}
+		spec, ok := splunkUtilisationKeys[UtilisationKey(key)]
 		if !ok {
-			results = append(results, splunkUtilisationError(key,
-				fmt.Sprintf("splunk enterprise: utilisation key %q is not supported for this provider", key)))
+			results = append(results, splunkUtilisationUnavailable(key,
+				fmt.Sprintf("splunk enterprise: utilisation key %q is not served by this provider", key)))
 			continue
 		}
 		family, found := resolved[spec.Role]
 		if !found {
-			results = append(results, splunkUtilisationError(key, fmt.Sprintf(
+			results = append(results, splunkUtilisationUnavailable(key, fmt.Sprintf(
 				"splunk enterprise: no metric in index %q carries %q (looked for: %s)",
 				index, key, strings.Join(SplunkUtilisationCandidates[spec.Role], ", "))))
 			continue
@@ -261,7 +365,13 @@ func fetchSplunkEnterpriseUtilisation(ctx *security.RequestContext, req GetUtili
 				fmt.Sprintf("splunk enterprise: invalid or unsafe metric name %q", family)))
 			continue
 		}
-		spl, buildErr := buildSplunkUtilisationQuery(family, index, step, splunkUtilisationReducer(spec, instant), scope)
+		var spl string
+		var buildErr error
+		if spec.PerPod {
+			spl, buildErr = buildSplunkPerPodQuery(family, index, step, scope, meta.Aggregate, instant)
+		} else {
+			spl, buildErr = buildSplunkUtilisationQuery(family, index, step, splunkUtilisationReducer(spec, meta.Aggregate, instant), scope)
+		}
 		if buildErr != nil {
 			results = append(results, splunkUtilisationError(key, buildErr.Error()))
 			continue
@@ -298,7 +408,20 @@ func fetchSplunkEnterpriseUtilisation(ctx *security.RequestContext, req GetUtili
 // The statistical reducers are left alone: avg, perc50, perc90 and max describe the whole
 // window by definition, so one number is the right answer whether or not the caller asked
 // for an instant.
-func splunkUtilisationReducer(spec splunkUtilisationSpec, instant bool) string {
+func splunkUtilisationReducer(spec splunkUtilisationSpec, agg ParsedAggregate, instant bool) string {
+	// count is the one aggregate the key cannot encode. Every other statistic this family
+	// serves has its own key -- p50_cpu, p90_cpu, max_usage_cpu, cpu_real -- so the spec's
+	// reducer IS the requested statistic and the caller's aggregate must not override it;
+	// answering p50_cpu with an average would return a mean under a name promising a
+	// median. There is no count_cpu key, so a count request has nowhere else to go.
+	//
+	// Without this the reducer was whatever the key hardcoded, and a count came back as the
+	// metric's own value: cpu_total answered count=12.0 -- the core count -- where the
+	// Prometheus control answered 15915. Anything sizing on count was wrong by three orders
+	// of magnitude, and doubling the step did not halve the answer (contract rule 4).
+	if agg.Name == "count" {
+		return "count"
+	}
 	if !instant && spec.Reducer == "latest" {
 		return ""
 	}
@@ -360,4 +483,19 @@ func splunkUtilisationStep(meta RequestMetadata, req GetUtilisationTrendRequest)
 
 func splunkUtilisationError(key, msg string) QueryResult {
 	return QueryResult{QueryKey: key, Error: &msg}
+}
+
+// splunkUtilisationUnavailable answers a key this provider cannot serve: empty payload, a
+// note saying why, and NO error.
+//
+// The distinction is the whole point. "This query failed" and "there is no such metric
+// here" are different answers, and only the first belongs on Error. Across api-server 91
+// call sites read Payload and only 62 read Error, so a capability gap reported as an error
+// is read by the majority as a workload that used nothing -- which once flagged a live
+// workload as abandoned. Elasticsearch already answers its absent HTTP keys this way.
+//
+// A genuine failure -- an unsafe metric name, a query that would not build -- keeps
+// splunkUtilisationError, because a caller must not read that as "no data".
+func splunkUtilisationUnavailable(key, note string) QueryResult {
+	return QueryResult{QueryKey: key, Note: note}
 }

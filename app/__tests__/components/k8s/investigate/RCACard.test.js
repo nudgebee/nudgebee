@@ -3,6 +3,7 @@ import dayjs from 'dayjs';
 import { fireEvent, render, screen } from '@testing-library/react';
 import apiKubernetes from '@api1/kubernetes';
 import RCACard, { RCAReport } from '@components/k8s/investigate/cards/RCACard';
+import { formatClockCompact } from '@shared/format/Datetime';
 
 jest.mock('@api1/kubernetes', () => ({
   __esModule: true,
@@ -74,7 +75,7 @@ describe('RCA version selection', () => {
     const regenerate = jest.fn();
     render(<RCAReport data={data} onRegenerate={regenerate} eventId='event' />);
     fireEvent.click(screen.getByLabelText('RCA version'));
-    fireEvent.click(screen.getByText(new Date(earlier).toLocaleString()));
+    fireEvent.click(screen.getByText(formatClockCompact(earlier)));
     expect(screen.getByTestId('markdown-data')).toHaveTextContent('old report');
     expect(screen.queryByTestId('rca-regenerate-btn')).not.toBeInTheDocument();
     expect(screen.queryByText(/Read only/)).not.toBeInTheDocument();
@@ -112,7 +113,7 @@ describe('RCA version selection', () => {
   it('allows selecting a single historical version when the latest report is separate', () => {
     render(<RCAReport data={{ ...data, rca_versions: [data.rca_versions[1]] }} />);
     fireEvent.click(screen.getByLabelText('RCA version'));
-    fireEvent.click(screen.getByText(new Date(earlier).toLocaleString()));
+    fireEvent.click(screen.getByText(formatClockCompact(earlier)));
     expect(screen.getByTestId('markdown-data')).toHaveTextContent('old report');
   });
   it.each(['IN_PROGRESS', 'FAILED'])('keeps report and generation date during %s', (status) => {

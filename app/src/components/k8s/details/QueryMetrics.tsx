@@ -90,6 +90,8 @@ interface QueryMetricsProps {
     startTime: number;
     endTime: number;
   };
+  /** Formats the numbers the charts print; the chart default (`toFixed(2)`) when omitted. */
+  formatValue?: (value: number) => string;
 }
 
 interface Header {
@@ -111,6 +113,7 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
     endTime: 0,
   },
   preparedEvidences = [],
+  formatValue,
 }) => {
   const router = useRouter();
   const k8sProm = 'k8sProm';
@@ -147,6 +150,14 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
   // Guards the async ES-index resolve below against a stale response landing after
   // the user has switched providers again.
   const selectedProviderRef = useRef('');
+  // Bumped on every provider switch and used as QueryModeSwitcher's key, so a switch
+  // remounts it. That component keeps the editor text, the builder blocks and the ES
+  // query language in its own state, which a reset here does not reach: without the
+  // remount the old query stays on screen while `query` is empty, and Submit sends
+  // nothing. The key is not metricsProvider because that also changes when the account
+  // default resolves on load; a remount then would clear a query that arrived in the
+  // link from `query` while the editor still showed it.
+  const [providerSwitchCount, setProviderSwitchCount] = useState(0);
   const [operatorDescriptors, setOperatorDescriptors] = useState<OperatorDescriptor[] | undefined>(undefined);
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [truncationWarnings, setTruncationWarnings] = useState<{
@@ -259,6 +270,7 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
     setOperatorDescriptors(descriptors);
     selectedProviderRef.current = newProvider;
     setMetricsProvider(newProvider);
+    setProviderSwitchCount((count) => count + 1);
 
     if (newProvider === defaultProvider) {
       // Switching back to the account default — its per-account/top-level index was
@@ -549,7 +561,13 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
             labels: decimatedLabels.map((e: number) => convertNumberToTimestamp(e)),
             data: fromMetric
               ? chartDataDataset
-              : [{ label: 'Value', data: decimateData(g.payload[0]?.values?.map((e: string) => parseFloat(e)) || [], MAX_CHART_DATA_POINTS) }],
+              : // A series with no labels of its own is named after the metric it charts.
+                [
+                  {
+                    label: g.query_key || 'Value',
+                    data: decimateData(g.payload[0]?.values?.map((e: string) => parseFloat(e)) || [], MAX_CHART_DATA_POINTS),
+                  },
+                ],
           },
         });
       } else if (evidenceData[g]) {
@@ -926,6 +944,7 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
                     metricsProvider === 'victoria-metrics' ||
                     metricsProvider === 'splunk_observability_platform' ||
                     metricsProvider === 'cubeapm' ||
+                    metricsProvider === 'signoz' ||
                     metricsProvider === 'openobserve' ||
                     metricsProvider === 'ES') && (
                     <>
@@ -1106,6 +1125,7 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
         <ListingLayout.Body sx={{ pb: 'var(--ds-space-4)' }}>
           {showQueryBox && (
             <QueryModeSwitcher
+              key={providerSwitchCount}
               accountId={accountId}
               params={{ ...selectedDateRange }}
               logProvider={metricsProvider}
@@ -1245,6 +1265,7 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
                         interactionOptions={{
                           enabled: false,
                         }}
+                        formatValue={formatValue}
                       />
                     </Box>
                   </Box>

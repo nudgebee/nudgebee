@@ -122,8 +122,14 @@ func getDatadogConfigSchema() core.ToolConfigSchema {
 }
 
 func (m DatadogLogExecuteTool) executeDatadogLogs(ctx core.NbToolContext, query string, configs map[string]any) (core.ObservabilityLogResponse, error) {
-	return executeFetchLogs(ctx, services_server.ObservabilityProvider{
+	// Datadog logs are read through the account the call is about; that
+	// account's Datadog integration answers (one per account).
+	return executeFetchLogs(ctx.ForTarget(), services_server.ObservabilityProvider{
 		IntegrationSource: "user",
 		Provider:          "datadog",
 	}, query, configs)
 }
+
+// queriesIntegrationByAccount: services-server answers from the account's
+// Datadog integration, so the call follows the account, not a connection.
+func (DatadogLogExecuteTool) queriesIntegrationByAccount() {}

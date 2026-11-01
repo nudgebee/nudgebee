@@ -44,3 +44,21 @@ func TestHasWorkloadValidationInput(t *testing.T) {
 	nilLabels := &EventIncomingWebhook{}
 	assert.False(t, hasWorkloadValidationInput(nilLabels))
 }
+
+func TestTrimPodTemplateHash(t *testing.T) {
+	cases := map[string]string{
+		"checkout-6f665f49dd":    "checkout",
+		"orders-api-7c75686877":  "orders-api",
+		"payments-f5678b6":       "payments-f5678b6", // 7 chars: below a real hash's length
+		"web-backend":            "web-backend",      // vowels never appear in the hash alphabet
+		"redis-master":           "redis-master",
+		"api-v2":                 "api-v2",
+		"worker-10000000":        "worker-10000000", // 0 and 1 are not in the alphabet
+		"checkout":               "checkout",
+		"":                       "",
+		"checkout-6f665f49dd-x7": "checkout-6f665f49dd-x7", // a pod name is not a ReplicaSet name
+	}
+	for in, want := range cases {
+		assert.Equal(t, want, TrimPodTemplateHash(in), in)
+	}
+}

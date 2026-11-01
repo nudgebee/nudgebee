@@ -96,10 +96,14 @@ func TestFetchSplunkEnterpriseUtilisationEndToEnd(t *testing.T) {
 	assert.Contains(t, served.Query, `k8s.pod.name="checkout-*"`)
 	assert.Contains(t, served.Query, "BY k8s.namespace.name, k8s.pod.name")
 
-	require.NotNil(t, byKey["cpu_total"].Error)
-	assert.Contains(t, *byKey["cpu_total"].Error, "no metric in index")
-	require.NotNil(t, byKey["no_such_key"].Error)
-	assert.Contains(t, *byKey["no_such_key"].Error, "not supported")
+	// "no metric here" and "this key is not served" are capability statements, so both come
+	// back empty WITH a note and no error. Only a query that actually failed sets Error.
+	assert.Nil(t, byKey["cpu_total"].Error)
+	assert.Contains(t, byKey["cpu_total"].Note, "no metric in index")
+	assert.Empty(t, byKey["cpu_total"].Payload)
+	assert.Nil(t, byKey["no_such_key"].Error)
+	assert.Contains(t, byKey["no_such_key"].Note, "not served by this provider")
+	assert.Empty(t, byKey["no_such_key"].Payload)
 
 	// One catalog read, one search for the one resolvable key -- unresolved keys must not
 	// cost a Splunk search.

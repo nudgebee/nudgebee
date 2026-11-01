@@ -7,6 +7,25 @@ import (
 	"strings"
 )
 
+// awsResourceMetaSource returns the meta.nb_source marker ("billing", "api", …)
+// for a cloud_resourses row, or "" when absent or unparseable. Mirrors
+// gcpResourceMetaSource; see shouldIncludeResource for why AWS gates on it.
+func awsResourceMetaSource(r *sources.CloudResourceRow) string {
+	if r == nil || len(r.Meta) == 0 {
+		return ""
+	}
+	// Decoded into a typed struct rather than map[string]interface{}: this runs
+	// once per inventory row, and one account's billing ingest can carry 500k+
+	// of them in a single build.
+	var m struct {
+		NbSource string `json:"nb_source"`
+	}
+	if err := json.Unmarshal(r.Meta, &m); err != nil {
+		return ""
+	}
+	return m.NbSource
+}
+
 // createNodeFromResource creates a knowledge graph node from a cloud resource.
 // Returns nil when the row should be suppressed (eg an IAM Role that's already
 // emitted as a typed ServiceIdentity); callers must skip nil returns.

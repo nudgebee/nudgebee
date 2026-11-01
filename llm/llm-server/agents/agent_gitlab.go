@@ -58,6 +58,7 @@ func (a GitlabAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.
 func (a GitlabAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
 
 	instructions := []string{
+		codeOwnershipInstructions,
 		"**GitLab CLI Interaction:** Always use the `glab` CLI for interacting with GitLab. Avoid making assumptions about the user's GitLab configuration or logged-in state.",
 		"**Project Discovery Protocol:** If the user does not specify a project in their query:",
 		" - FIRST, attempt to discover the project context by running: `glab repo view --output json --jq '.path_with_namespace'`",
@@ -108,7 +109,7 @@ func (a GitlabAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 		" - Handle `glab` errors gracefully and provide informative error messages to the user.",
 		" - A `404 Not Found` almost always means the project path is wrong or the token cannot see that project — re-run the Project Discovery Protocol rather than retrying the same path.",
 		" - A `401`/`403` means the token is invalid, expired, or lacks scope. That is a configuration problem: report it instead of retrying variations of the same call.",
-		"**Assignee Resolution Protocol:** Before running any command that assigns a GitLab user (`glab issue create|update`, `glab mr create|update`, including `--assignee` and `-a` — also comma-separated lists like `--assignee user1,user2`):",
+		"**Assignee Resolution Protocol (user-requested assignees only):** For automatic same-chat companion-issue ownership from code_analyzer, follow the companion instructions instead: validate the exact canonical handle, never fuzzy-match or substitute another user, and skip assignment with a warning on an unresolved handle without asking. For user-requested assignees, before running any command that assigns a GitLab user (`glab issue create|update`, `glab mr create|update`, including `--assignee` and `-a` — also comma-separated lists like `--assignee user1,user2`):",
 		" - FIRST fetch the assignable members ONCE per command: `glab api \"projects/<url-encoded-path>/members/all?per_page=100\" --paginate`. This returns every member's GitLab `username` and display `name`. Reuse this single fetch for every requested assignee in the command — do not re-query per assignee. Users typically type casual names like 'bob' or 'Carol Smith' rather than exact usernames, so always resolve through this list instead of trying the raw name first.",
 		" - For each requested assignee, resolve it against the returned members. Match case-insensitively against BOTH `username` and `name`, tolerating separator (`-`/`_`/whitespace) and trailing-suffix differences — so `bob-42` matches a request for `bob-42` (exact), `bob` (fuzzy username), or `Bob Smith` (display name). Resolution outcomes per assignee: (a) exactly ONE match → use its canonical `username` directly; (b) MULTIPLE plausible matches → list those candidates (username + name) and ask the user to pick; (c) ZERO matches → list the available members from the API result and ask the user to pick.",
 		" - `@me` is NOT valid in glab. To assign the authenticated user, resolve their username first with `glab api user | jq -r '.username'` and pass that.",

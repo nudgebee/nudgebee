@@ -23,21 +23,44 @@ jobs:
       matrix:
         go-version: ['1.26.x']
 
+    # Real broker for the TestBroker_* recovery tests in
+    # pkg/server/handlers/session_consumer_broker_test.go (queue deleted under a
+    # session, broker back without its queue). Same RabbitMQ version as the chart.
+    services:
+      rabbitmq:
+        image: ghcr.io/nudgebee/rabbitmq:3-management  # official image, RabbitMQ 3.13.7
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q check_port_connectivity"
+          --health-interval 5s
+          --health-timeout 10s
+          --health-retries 20
+
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
       - name: Setup Go ${{ matrix.go-version }}
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: ${{ matrix.go-version }}
           cache: true
           cache-dependency-path: collector-server/k8s-collector/relay-server/go.sum
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.11.3
           working-directory: ./collector-server/k8s-collector/relay-server
           args: --timeout 20m
+
+      - name: Run unit tests
+        working-directory: ./collector-server/k8s-collector/relay-server
+        # setup-go leaves CGO_ENABLED unset; -race requires cgo, so enable it.
+        # Broker tests skip locally without RabbitMQ; here a missing broker fails them.
+        env:
+          CGO_ENABLED: "1"
+          NB_REQUIRE_RABBITMQ: "1"
+        run: go test -race ./...

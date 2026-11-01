@@ -253,6 +253,15 @@ func TestComputeRedirectURL_Families(t *testing.T) {
 			title: "Save $48.00/month by rightsizing underutilized instances", cloudProvider: "azure",
 			want: "/cloud-account/details/acct-1?accountId=acct-1&ruleName=aws_ec2_underutilized,aws_ec2_idle_instance,aws_ec2_alternate_instances,aws_rds_alternate_instances,azure_vm_auto_shutdown_disabled&status=Open#optimize/right-sizing",
 		},
+		{
+			name: "self-hosted VM recommendation (uid 131, critical CVEs) routes to the Instances tab, not cloud-account details",
+			rule: InsightRule{
+				UniqueID: "131", Source: InsightSourceRecommendation, Type: InsightTypeAddition, InsightCategory: Security,
+				Filters: []InsightFilters{{Column: "rule_name", Value: "vm_package_vulnerability", Operator: "="}, {Column: "status", Value: []interface{}{"Open", "InProgress"}, Operator: "in"}, {Column: "severity", Value: "Critical", Operator: "="}},
+			},
+			title: "3 Critical severity CVEs open on your VM fleet", cloudProvider: "SelfHosted",
+			want: "/vm?accountId=acct-1#instances",
+		},
 	}
 
 	for _, tc := range cases {

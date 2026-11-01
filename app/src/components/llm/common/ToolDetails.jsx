@@ -26,6 +26,7 @@ import CodeBlock from '@ui/CodeBlock';
 import { Chip } from '@ui/Chip';
 import { convertToReadableFormat } from 'src/utils/common';
 import { executionBatchLabel, executionBatchTone, executionBatchTooltip, parseExecutionBatchMetadata } from './executionBatch';
+import ExecutedTargetChip, { targetKey } from './ExecutedTargetChip';
 
 const FRIENDLY_TOOL_NAMES = {
   react_critique: 'Critique Feedback',
@@ -1050,67 +1051,68 @@ SectionLabel.propTypes = {
  * string (per-tool-call task objects) or an already-parsed object so both the
  * grouped view and the single-call fallback can share it.
  */
-const ParametersBox = ({ parameters }) => {
+export const ParametersBox = ({ parameters }) => {
   const isEmpty =
     !parameters || parameters === '{}' || (typeof parameters === 'object' && !Array.isArray(parameters) && Object.keys(parameters).length === 0);
   if (isEmpty) {
     return null;
   }
+  const body = (() => {
+    try {
+      let parsed = null;
+      if (Array.isArray(parameters)) {
+        // An array param has no command/query shape; show it verbatim rather
+        // than spreading it into an object with numeric keys.
+        return <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{JSON.stringify(parameters, null, 2)}</pre>;
+      }
+      if (typeof parameters === 'object') {
+        parsed = { ...parameters };
+      } else if (typeof parameters === 'string' && parameters.trim().startsWith('{')) {
+        parsed = JSON.parse(parameters);
+      }
+      if (parsed && typeof parsed === 'object') {
+        // Planner working memory persisted by older backends — internal
+        // plumbing, never useful to show.
+        delete parsed._tool_outputs;
+        delete parsed.__intention;
+        // Executor-style tools (shell, kubectl, ...) put the executable in
+        // `command` and the actual command line in `args`. Showing only
+        // `command` ("shell") hides what actually ran, so prefer `args`.
+        let single = parsed.sql || parsed.query;
+        if (typeof single !== 'string' && typeof parsed.args === 'string' && parsed.args.trim()) {
+          const exe = typeof parsed.command === 'string' && parsed.command && parsed.command !== 'shell' ? parsed.command : '';
+          single = exe ? `${exe} ${parsed.args}` : parsed.args;
+        }
+        if (typeof single !== 'string') {
+          single = parsed.command;
+        }
+        if (typeof single === 'string') {
+          return <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{single}</pre>;
+        }
+        return <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{JSON.stringify(parsed, null, 2)}</pre>;
+      }
+    } catch (e) {
+      console.warn('ParametersBox: parameters JSON parse failed', e);
+    }
+    // Unparseable (e.g. truncated JSON from older rows): strip the
+    // working-memory blob and decode escapes so it reads as text.
+    const salvaged = salvageTruncatedParams(parameters);
+    if (salvaged === null || salvaged === undefined) {
+      return (
+        <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)', fontStyle: 'italic', fontFamily: ds.font.sans }}>
+          Internal working memory omitted (record truncated server-side).
+        </Typography>
+      );
+    }
+    return <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{salvaged}</pre>;
+  })();
+  // Copy exactly what the box shows (the command, or the formatted JSON); nothing
+  // to copy when the record was truncated server-side.
+  const copyText = body?.type === 'pre' ? body.props.children : undefined;
   return (
     <Box sx={{ mb: ds.space[2] }}>
-      <Typography sx={sectionLabelSx}>Query</Typography>
-      <Box sx={{ ...contentBoxSx, fontFamily: ds.font.mono, fontSize: 'var(--ds-text-small)' }}>
-        {(() => {
-          try {
-            let parsed = null;
-            if (Array.isArray(parameters)) {
-              // An array param has no command/query shape; show it verbatim rather
-              // than spreading it into an object with numeric keys.
-              return <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{JSON.stringify(parameters, null, 2)}</pre>;
-            }
-            if (typeof parameters === 'object') {
-              // Shallow-copy so stripping working-memory keys below doesn't mutate the prop.
-              parsed = { ...parameters };
-            } else if (typeof parameters === 'string' && parameters.trim().startsWith('{')) {
-              parsed = JSON.parse(parameters);
-            }
-            if (parsed && typeof parsed === 'object') {
-              // Planner working memory persisted by older backends — internal
-              // plumbing, never useful to show.
-              delete parsed._tool_outputs;
-              delete parsed.__intention;
-              // Executor-style tools (shell, kubectl, ...) put the executable in
-              // `command` and the actual command line in `args`. Showing only
-              // `command` ("shell") hides what actually ran, so prefer `args`.
-              let single = parsed.sql || parsed.query;
-              if (typeof single !== 'string' && typeof parsed.args === 'string' && parsed.args.trim()) {
-                const exe = typeof parsed.command === 'string' && parsed.command && parsed.command !== 'shell' ? parsed.command : '';
-                single = exe ? `${exe} ${parsed.args}` : parsed.args;
-              }
-              if (typeof single !== 'string') {
-                single = parsed.command;
-              }
-              if (typeof single === 'string') {
-                return <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{single}</pre>;
-              }
-              return <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{JSON.stringify(parsed, null, 2)}</pre>;
-            }
-          } catch (e) {
-            console.warn('ParametersBox: parameters JSON parse failed', e);
-          }
-          // Unparseable (e.g. truncated JSON from older rows): strip the
-          // working-memory blob and decode escapes so it reads as text.
-          const salvaged = salvageTruncatedParams(parameters);
-          if (salvaged === null || salvaged === undefined) {
-            return (
-              <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)', fontStyle: 'italic', fontFamily: ds.font.sans }}>
-                Internal working memory omitted (record truncated server-side).
-              </Typography>
-            );
-          }
-          return <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{salvaged}</pre>;
-        })()}
-      </Box>
+      <SectionLabel label='Query' copyText={copyText} toastMessage='Query copied to clipboard' />
+      <Box sx={{ ...contentBoxSx, fontFamily: ds.font.mono, fontSize: 'var(--ds-text-small)' }}>{body}</Box>
     </Box>
   );
 };
@@ -1152,6 +1154,7 @@ const ToolCallSection = ({ tc, index, accountId, reasoning, showExecutionBatch }
           {toolSourceSuffix(tc.metadata)}
         </Typography>
         <StatusBadge status={tcStatus} />
+        <ExecutedTargetChip metadata={tc.metadata} status={tcStatus} />
         {executionBatch && (
           <Tooltip title={executionBatchTooltip(executionBatch)} placement='top'>
             <Box component='span' sx={{ display: 'inline-flex' }}>
@@ -1168,7 +1171,7 @@ const ToolCallSection = ({ tc, index, accountId, reasoning, showExecutionBatch }
       {/* Thought */}
       {thought && (
         <Box sx={{ mb: ds.space[2] }}>
-          <Typography sx={sectionLabelSx}>Thought</Typography>
+          <SectionLabel label='Thought' copyText={prettyThought || thought} toastMessage='Thought copied to clipboard' />
           <Box sx={contentBoxSx}>
             {prettyThought ? (
               <pre style={{ ...preStyle, color: 'var(--ds-gray-700)' }}>{prettyThought}</pre>
@@ -1358,6 +1361,17 @@ const ToolDetails = ({ toolCall, accountId, conversationId, getReasoningForTool 
       : null;
   })();
 
+  // A grouped task names a target in its header only when every call in it ran
+  // on the same account with the same integration; otherwise each call's own
+  // section shows its target.
+  const headerTargetMetadata = (() => {
+    if (!hasMultipleToolCalls) {
+      return headerMetadata;
+    }
+    const keys = toolCalls.map((t) => targetKey(t.metadata));
+    return keys[0] && keys.every((key) => key === keys[0]) ? toolCalls[0].metadata : null;
+  })();
+
   // Per-tool reasoning lookup: match a tool-call-like object's candidate ids against the
   // time-split reasoning map so each tool shows the thinking that produced it.
   const reasoningFor = (obj) => {
@@ -1442,6 +1456,7 @@ const ToolDetails = ({ toolCall, accountId, conversationId, getReasoningForTool 
           </Box>
         )}
         <StatusBadge status={status} />
+        <ExecutedTargetChip metadata={headerTargetMetadata} status={status} />
         {headerBatch && (
           <Tooltip title={executionBatchTooltip(headerBatch)} placement='top'>
             <Box component='span' sx={{ display: 'inline-flex' }}>
@@ -1497,7 +1512,7 @@ const ToolDetails = ({ toolCall, accountId, conversationId, getReasoningForTool 
           {/* Single tool call fallback: agent-level thought + response */}
           {agentThought && (
             <Box sx={{ mb: ds.space[4] }}>
-              <Typography sx={sectionLabelSx}>Thought</Typography>
+              <SectionLabel label='Thought' copyText={prettyAgentThought || agentThought} toastMessage='Thought copied to clipboard' />
               <Box sx={contentBoxSx}>
                 {prettyAgentThought ? (
                   <pre style={{ ...preStyle, color: 'var(--ds-gray-700)' }}>{prettyAgentThought}</pre>

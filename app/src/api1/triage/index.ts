@@ -879,6 +879,12 @@ export const NB_STATUS_OPTIONS = [
 export const TRIAGE_SCORE_INFO =
   'Triage Score is a context-aware triage score/level, computed using multiple signals beyond raw thresholds such as service criticality, customer/user impact, recurrence frequency, dependency (upstream/downstream) blast radius, and the nature of the service/workload.';
 
+/** What "Source Severity" means, for the investigation panel, where it sits next to the
+ *  triage priority and the two can differ. The events tables carry the same sentence on their
+ *  column header. */
+export const SOURCE_SEVERITY_INFO =
+  "The original urgency level assigned by the source monitoring/alerting system, based on that tool's built-in rules or your configured thresholds";
+
 export const TRIAGE_STATUS_TOOLTIPS: Record<string, string> = {
   OPEN: 'No triage done yet. Awaiting review.',
   ACTION_REQUIRED: 'Triaged. Waiting on action from your team.',

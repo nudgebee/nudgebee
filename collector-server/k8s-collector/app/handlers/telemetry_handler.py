@@ -127,6 +127,36 @@ def _maybe_set_default_provider(
     )
 
 
+# Name of the integration_config_values row api-server writes when a user
+# disables an agent integration, and removes when they enable it again.
+USER_DISABLED_CONFIG_NAME = "user_disabled"
+
+
+def _unlink_integration(
+    tenant_id: str,
+    cloud_account_id: str,
+    provider: str,
+    provider_type: str,
+):
+    """Drop this account's own link to an agent integration it no longer has."""
+    database.run_query(
+        sql.SQL("""
+            DELETE FROM integrations_cloud_accounts ica
+            USING integrations i
+            WHERE ica.integration_id = i.id
+              AND i.tenant_id = %s
+              AND i.name = %s
+              AND i.source = 'agent'
+              AND i.type = %s
+              AND ica.cloud_account_id = %s
+              AND ica.tenant_id = %s
+              AND ica.link_role = 'own'
+            """),
+        [tenant_id, provider, provider, cloud_account_id, tenant_id],
+    )
+    logging.info(f"Removed integration mapping for {provider_type}={provider}")
+
+
 def _upsert_integration(
     tenant_id: str,
     cloud_account_id: str,
@@ -140,13 +170,29 @@ def _upsert_integration(
     if not provider or not tenant_id or not cloud_account_id:
         return
 
-    status_value = "enabled" if connection_enabled else "disabled"
+    # One integration row serves every cluster in the tenant, so nothing about
+    # a single cluster's health is written to it:
+    #   - the account's link says this cluster has the provider configured, and
+    #     is kept whether the signal is up or down;
+    #   - the row's status is the user's switch. It is disabled only while the
+    #     user-disabled marker exists, and this statement keeps it in step with
+    #     that marker (which also re-enables rows an older collector disabled
+    #     from a cluster's health). A Disable committed while this statement is
+    #     waiting on the row is not seen until the next heartbeat;
+    #   - whether the signal is up for this cluster stays in the agent's own
+    #     connection_status, which is what readers consult.
     upsert_integration = sql.SQL("""
         INSERT INTO integrations (id, tenant_id, type, source, name,
                                   status, created_at, updated_at, labels)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (tenant_id, name, source, type) DO UPDATE
-        SET status = EXCLUDED.status,
+        SET status = CASE
+                WHEN EXISTS (
+                    SELECT 1 FROM integration_config_values m
+                    WHERE m.integration_id = integrations.id AND m.name = %s
+                ) THEN 'disabled'
+                ELSE 'enabled'
+            END,
             updated_at = EXCLUDED.updated_at,
             labels = EXCLUDED.labels
         RETURNING id
@@ -161,10 +207,11 @@ def _upsert_integration(
             provider,
             "agent",
             provider,
-            status_value,
+            "enabled",
             now,
             now,
             json.dumps({}),
+            USER_DISABLED_CONFIG_NAME,
         ],
     )
 
@@ -236,6 +283,46 @@ def _notify_scanner_heartbeat(tenant_id: str, cloud_account_id: str) -> None:
     ).start()
 
 
+# Per signal: its provider type, the flag the agent sends to say the signal is
+# connected, and the account-link column that marks its default provider.
+_SIGNALS = (
+    ("logsConnectionProvider", "logsConnection", "default_log_provider"),
+    ("metricsConnectionProvider", "prometheusConnection", "default_metrics_provider"),
+    ("tracesConnectionProvider", "tracesEnabled", "default_traces_provider"),
+)
+
+
+def _signal_providers(stats: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    """The provider an agent names for each signal, keyed by the signal's provider type.
+
+    Anything but a non-empty string counts as not named.
+    """
+
+    def named(value: Any) -> Optional[str]:
+        return value if isinstance(value, str) and value else None
+
+    prometheus_url = named(stats.get("prometheusUrl"))
+    metrics_provider = None
+
+    if prometheus_url:
+        if "chronosphere" in prometheus_url.lower():
+            metrics_provider = "chronosphere"
+        else:
+            metrics_provider = "prometheus"
+
+    return {
+        "logsConnectionProvider": named(stats.get("logsConnectionProvider")),
+        "metricsConnectionProvider": metrics_provider,
+        "tracesConnectionProvider": named(stats.get("traceProvider")),
+    }
+
+
+def _stored_connection_status(agent_id: str) -> Dict[str, Any]:
+    rows = database.run_query(sql.SQL("SELECT connection_status FROM agent WHERE id = %s"), [agent_id])
+    status = rows[0][0] if rows else None
+    return status if isinstance(status, dict) else {}
+
+
 def handle_telemetry(tenant_id: str, cloud_account_id: str, agent_id: str, data: Dict[str, Any]):
     if "version" not in data:
         raise RuntimeError("invalid params, version is required")
@@ -305,6 +392,10 @@ def handle_telemetry(tenant_id: str, cloud_account_id: str, agent_id: str, data:
                k8s_provider = %s
            WHERE id = %s""").format(sql.Identifier("agent"))
 
+    # What the agent named for each signal on its previous post. Read before the
+    # merge below, which replaces a name the agent has changed.
+    previous_providers = _signal_providers(_stored_connection_status(agent_id))
+
     database.run_query(
         update_agent,
         [
@@ -334,38 +425,27 @@ def handle_telemetry(tenant_id: str, cloud_account_id: str, agent_id: str, data:
         },
     )
 
-    _upsert_integration(
-        tenant_id,
-        cloud_account_id,
-        activity_stats.get("logsConnectionProvider"),
-        activity_stats.get("logsConnection", False),
-        "logsConnectionProvider",
-        default_column="default_log_provider",
-    )
+    providers = _signal_providers(activity_stats)
 
-    prometheus_url = activity_stats.get("prometheusUrl")
-    metrics_provider = None
+    for provider_type, flag, default_column in _SIGNALS:
+        _upsert_integration(
+            tenant_id,
+            cloud_account_id,
+            providers[provider_type],
+            activity_stats.get(flag, False),
+            provider_type,
+            default_column=default_column,
+        )
 
-    if prometheus_url:
-        if "chronosphere" in prometheus_url.lower():
-            metrics_provider = "chronosphere"
-        else:
-            metrics_provider = "prometheus"
-
-    _upsert_integration(
-        tenant_id,
-        cloud_account_id,
-        metrics_provider,
-        activity_stats.get("prometheusConnection", False),
-        "metricsConnectionProvider",
-        default_column="default_metrics_provider",
-    )
-
-    _upsert_integration(
-        tenant_id,
-        cloud_account_id,
-        activity_stats.get("traceProvider"),
-        activity_stats.get("tracesEnabled", False),
-        "tracesConnectionProvider",
-        default_column="default_traces_provider",
-    )
+    # A cluster that stops naming a provider, or names a different one, no
+    # longer has the old one configured, so its link to it is dropped. The agent
+    # leaves a name out of the post when the signal is not configured, and the
+    # additive merge above then keeps the old name in connection_status, so this
+    # repeats on later posts; by then there is no link left and it changes nothing.
+    # A signal is only acted on when the post carries its flag, which the agent
+    # always sends: a post without it says nothing about that signal.
+    named = set(providers.values())
+    for provider_type, flag, _ in _SIGNALS:
+        previous = previous_providers[provider_type]
+        if previous and previous not in named and flag in activity_stats:
+            _unlink_integration(tenant_id, cloud_account_id, previous, provider_type)

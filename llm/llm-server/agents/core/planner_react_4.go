@@ -487,6 +487,7 @@ func (o *NBReActPlanner4) Plan(
 	messages := o.buildMessages(plannerInput, intermediateSteps)
 	messages = AppendImagesToLastHumanMessage(messages, o.request.Images)
 	clarificationContinuationRetried := false
+	textToolCallRetried := false
 
 	for {
 		// Only advertise tools when there is at least one: several providers
@@ -535,6 +536,23 @@ func (o *NBReActPlanner4) Plan(
 		if perr == nil && finish == nil && o.agentName() == "elastic_search_metrics" {
 			o.useFirstExplicitMetricsQuery(actions, intermediateSteps)
 		}
+		// A tool call written as text gets one corrective re-prompt here. The
+		// executor has no retry for ErrParseFailure — it stops the loop and
+		// summarizes — so without this the run ends with the work undone.
+		if errors.Is(perr, errReact4TextToolCall) {
+			// The rejected text is logged because it is persisted nowhere else:
+			// without it a false positive or a new leaked shape is invisible.
+			leaked := common.TruncateHead(result.Choices[0].Content, textToolCallLogBytes)
+			if !textToolCallRetried {
+				textToolCallRetried = true
+				messages = append(messages, textToolCallRetryMessages(result.Choices[0].Content)...)
+				o.ctx.GetLogger().Warn("react4: model wrote a tool call as text; re-prompting once",
+					"agent", o.agentName(), "text", leaked)
+				continue
+			}
+			o.ctx.GetLogger().Warn("react4: model wrote a tool call as text again after the re-prompt; giving up",
+				"agent", o.agentName(), "text", leaked)
+		}
 		// Tool calls to dispatch, or a hard parse error: hand straight back to
 		// the executor. Only a final answer (finish != nil) is critiqued.
 		if perr != nil || finish == nil {
@@ -571,7 +589,17 @@ func (o *NBReActPlanner4) Plan(
 			return nil, finish, nil
 		}
 
-		decision, feedback := o.runCritique(plannerInput, o.flattenTranscript(intermediateSteps), finish.Data, intermediateSteps)
+		// Continuing this exact request lets the critiques reuse its prompt
+		// cache and see earlier refinement rounds; nil keeps the standalone path.
+		var conv *critiqueConversation
+		if config.Config.CritiqueContinuationEnabled {
+			answer := result.Choices[0].Content
+			if strings.TrimSpace(answer) == "" {
+				answer = finish.Data
+			}
+			conv = newCritiqueConversation(agentCtx, o.request.AccountId, messages, answer, opts, intermediateSteps, o.compressionActive(intermediateSteps))
+		}
+		decision, feedback := o.runCritique(plannerInput, o.flattenTranscript(intermediateSteps), finish.Data, intermediateSteps, conv)
 		if !strings.EqualFold(decision, "refine") || strings.TrimSpace(feedback) == "" {
 			o.ctx.GetLogger().Info("react4: critique accepted answer",
 				"decision", decision, "attempts", len(o.refinementData), "agent", o.agentName())
@@ -701,14 +729,36 @@ func containsActionGrammar(text string) bool {
 	return false
 }
 
-// containsToolNameGrammar reports whether text wraps a call in one of the
-// agent's own registered tool names used as an ad-hoc XML tag (observed:
-// qwen emitting "<update_notebook>...</update_notebook>" instead of either a
-// native tool call or react_3's generic grammar). containsActionGrammar only
-// catches the fixed react_3 tag set, so this shape slipped past it straight
-// into the terminal-final-answer fallback, shipping the raw XML as the
-// answer and ending the run instead of retrying.
-func containsToolNameGrammar(text string, tools []toolcore.NBTool) bool {
+// geminiTextToolCallMarker is the prefix Gemini writes when it serializes a
+// function call into text instead of emitting a native call, e.g.
+// "call:default_api:qa_browser_click{element:link Troubleshoot,...}".
+const geminiTextToolCallMarker = "call:default_api:"
+
+// errReact4TextToolCall marks a turn whose text carries a tool call that was
+// never dispatched. Plan re-prompts once on it before surfacing the wrapped
+// ErrParseFailure to the executor.
+var errReact4TextToolCall = errors.New("tool call written as text instead of a native tool call")
+
+// textToolCallLogBytes caps how much of a rejected text tool call is logged:
+// enough to see its shape, not a whole answer.
+const textToolCallLogBytes = 300
+
+// containsTextToolCall reports whether text is an attempted tool call written
+// as prose instead of a native call. Used only when the turn produced NO native
+// tool call: nothing was dispatched, so treating the text as the final answer
+// ships a raw command to the user and ends the run with the work undone.
+//
+// Each model leaks its own shape — react_3's XML grammar, qwen's
+// "<update_notebook>...</update_notebook>", Gemini's
+// "call:default_api:<tool>{...}" — so instead of one matcher per shape this
+// treats any registered tool name used as a tag or followed directly by call
+// syntax ("name{", "name(") as a call. The Gemini marker matches on its own,
+// since the leaked name may not be a registered tool. A bare mention of a tool
+// name in prose ("I used update_notebook to...") is not a call.
+func containsTextToolCall(text string, tools []toolcore.NBTool) bool {
+	if containsActionGrammar(text) || strings.Contains(text, geminiTextToolCallMarker) {
+		return true
+	}
 	for _, tool := range tools {
 		if tool == nil {
 			continue
@@ -717,11 +767,52 @@ func containsToolNameGrammar(text string, tools []toolcore.NBTool) bool {
 		if name == "" {
 			continue
 		}
-		if strings.Contains(text, "<"+name+">") || strings.Contains(text, "</"+name+">") {
+		if strings.Contains(text, "<"+name+">") || strings.Contains(text, "</"+name+">") ||
+			containsCallSyntax(text, name) {
 			return true
 		}
 	}
 	return false
+}
+
+// containsCallSyntax reports whether name appears as a whole identifier
+// immediately followed by "{" or "(".
+func containsCallSyntax(text, name string) bool {
+	for offset := 0; ; {
+		i := strings.Index(text[offset:], name)
+		if i < 0 {
+			return false
+		}
+		start := offset + i
+		end := start + len(name)
+		if (start == 0 || !isIdentByte(text[start-1])) &&
+			end < len(text) && (text[end] == '{' || text[end] == '(') {
+			return true
+		}
+		offset = start + 1
+	}
+}
+
+func isIdentByte(c byte) bool {
+	return c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+}
+
+// textToolCallRetryMessages re-prompts a turn that wrote a tool call as text.
+// The leaked text is replayed as the assistant turn so the model sees exactly
+// what it did, followed by the correction.
+func textToolCallRetryMessages(leaked string) []llms.MessageContent {
+	return []llms.MessageContent{
+		{
+			Role:  llms.ChatMessageTypeAI,
+			Parts: []llms.ContentPart{llms.TextContent{Text: leaked}},
+		},
+		{
+			Role: llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextContent{Text: "Your previous reply wrote a tool call as text, so no tool ran. " +
+				"To use a tool, invoke it through native function calling — never write its name and arguments in your reply. " +
+				"If you already have enough evidence, reply with the final answer only."}},
+		},
+	}
 }
 
 // normalizeNativeToolThought keeps only user-displayable intent from the text
@@ -1055,8 +1146,8 @@ func (o *NBReActPlanner4) parseCompletion(choice *llms.ContentChoice) ([]NBAgent
 		// risk is real enough to guard: this model already emits react_3 XML
 		// unprompted, and FINAL ANSWER FORMAT now teaches it one XML block, which it
 		// may over-generalize to actions.
-		if containsActionGrammar(choice.Content) || containsToolNameGrammar(choice.Content, o.tools) {
-			return nil, nil, fmt.Errorf("react4: model emitted XML action grammar instead of a native tool call (no tool ran): %w", ErrParseFailure)
+		if containsTextToolCall(choice.Content, o.tools) {
+			return nil, nil, fmt.Errorf("react4: %w (no tool ran): %w", errReact4TextToolCall, ErrParseFailure)
 		}
 		// Check action grammar before unwrapping a final answer: a mixed response
 		// must not hide an attempted tool call that never executed.
@@ -1772,9 +1863,10 @@ func (o *NBReActPlanner4) flattenTranscript(steps []NBAgentPlannerToolActionStep
 // (saveCritique / saveCritiqueAsToolCall), which the seam map flagged as
 // optional (errors there are swallowed and never affect the decision). Wiring
 // analytics persistence for react_4 is a follow-up.
-func (o *NBReActPlanner4) runCritique(input, scratchpad, finalAnswer string, intermediateSteps []NBAgentPlannerToolActionStep) (resultDecision, resultFeedback string) {
+func (o *NBReActPlanner4) runCritique(input, scratchpad, finalAnswer string, intermediateSteps []NBAgentPlannerToolActionStep, conv *critiqueConversation) (resultDecision, resultFeedback string) {
 	defer func() {
-		resultDecision, resultFeedback = runClaimCritiqueShadow(o.ctx, o.request, "react4", o.nbAgent.GetName(), resultDecision, resultFeedback, input, finalAnswer, o.Notebook, intermediateSteps)
+		resultDecision, resultFeedback = runClaimCritiqueShadow(o.ctx, o.request, "react4", o.nbAgent.GetName(), resultDecision, resultFeedback, input, finalAnswer, o.Notebook, intermediateSteps,
+			len(o.refinementData)+1 >= o.maxRefinementAttempts, conv)
 	}()
 	logger := o.ctx.GetLogger()
 
@@ -1795,7 +1887,7 @@ func (o *NBReActPlanner4) runCritique(input, scratchpad, finalAnswer string, int
 		critiquerPrompt,
 		reactCritiquerInputVariables,
 	)
-	critiquePromptStr, promptErr := critiquePrompt.Format(map[string]any{
+	critiqueVars := map[string]any{
 		"input":                        input,
 		"scratchpad":                   scratchpad,
 		"final_answer":                 finalAnswer,
@@ -1808,7 +1900,13 @@ func (o *NBReActPlanner4) runCritique(input, scratchpad, finalAnswer string, int
 		"hypothesis_mode_enabled":      resolveHypothesisModeEnabled(o.request, o.nbAgent),
 		"sdg_grounding_enabled":        config.Config.LlmServerSDGGroundingContractEnabled && HasServiceDependencyGraphTool(o.tools),
 		"premise_verification_enabled": resolvePremiseVerificationEnabled(o.request, o.nbAgent),
-	})
+	}
+	if conv != nil {
+		if decision, feedback, ok := o.continuationCritique(conv, critiquePrompt, critiqueVars); ok {
+			return decision, feedback
+		}
+	}
+	critiquePromptStr, promptErr := critiquePrompt.Format(critiqueVars)
 	if promptErr != nil {
 		logger.Error("react4: failed to format critique prompt, accepting answer", "error", promptErr)
 		return "", ""
@@ -1859,4 +1957,42 @@ func (o *NBReActPlanner4) runCritique(input, scratchpad, finalAnswer string, int
 	}
 
 	return decision, common.XmlExtractTagContent(critiqueResult.Choices[0].Content, "feedback")
+}
+
+// critiqueScratchpadPointer replaces the inlined transcript in the critiquer
+// prompt: in a continuation the transcript is the conversation itself.
+const critiqueScratchpadPointer = "(The tool calls and their results are earlier in this conversation; cite them by the evidence index below. Do not call tools.)"
+
+// continuationCritique runs the answer critique as a continuation of the
+// planner's request, with the same rules as the standalone critiquer. ok=false
+// means the caller should run the standalone critique instead.
+func (o *NBReActPlanner4) continuationCritique(conv *critiqueConversation, tmpl prompts.PromptTemplate, vars map[string]any) (decision, feedback string, ok bool) {
+	logger := o.ctx.GetLogger()
+	cvars := make(map[string]any, len(vars))
+	for k, v := range vars {
+		cvars[k] = v
+	}
+	cvars["scratchpad"] = critiqueScratchpadPointer
+	cvars["tool_descriptions"] = "(declared in this conversation)"
+	rendered, err := tmpl.Format(cvars)
+	if err != nil {
+		logger.Warn("react4: continuation critique prompt failed to render, using standalone critique", "error", err)
+		return "", "", false
+	}
+	response, err := conv.generate(conv.ctx, o.request, llms.TextParts(llms.ChatMessageTypeHuman, conv.instruction(rendered)))
+	if err != nil {
+		logger.Warn("react4: continuation critique failed, using standalone critique", "error", err)
+		return "", "", false
+	}
+	if response == nil || len(response.Choices) == 0 || response.Choices[0] == nil {
+		logger.Warn("react4: continuation critique returned no choice, using standalone critique")
+		return "", "", false
+	}
+	content := response.Choices[0].Content
+	decision = common.XmlExtractTagContent(content, "decision")
+	if decision == "" {
+		logger.Warn("react4: continuation critique had no decision, using standalone critique")
+		return "", "", false
+	}
+	return decision, common.XmlExtractTagContent(content, "feedback"), true
 }

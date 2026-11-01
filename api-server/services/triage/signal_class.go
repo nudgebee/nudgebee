@@ -18,32 +18,89 @@ var ErrMintSuperseded = errors.New("signal-class mint superseded")
 
 // ClassKey derives the signal-class cache key for an event:
 //
-//	lower(aggregation_key) | finding_type | coalesce(subject_owner, subject_namespace)
+//	lower(aggregation_key) | finding_type | scope
+//
+// where scope is the subject's owner, or the subject itself when it is an ownerless Kubernetes
+// Service or workload, or else its namespace (see classSubject.identity).
 //
 // This collapses per-instance fingerprint fragmentation (e.g. 137 fingerprints of the same
 // DB-slow-query alert -> one class) while separating conflated generic buckets (e.g. a
 // "prod-alert" webhook carrying both RabbitMQ and slow-query alerts -> distinct scopes).
 // Empirically validated against live data before adoption.
 func ClassKey(event *models.Event) string {
-	get := func(p *string) string {
-		if p == nil {
-			return ""
-		}
-		return *p
-	}
-	return classKeyFromParts(get(event.AggregationKey), get(event.FindingType), get(event.SubjectOwner), get(event.SubjectNamespace))
+	return classKeyFromParts(deref(event.AggregationKey), deref(event.FindingType), classSubjectOf(event))
 }
 
 // classKeyFromParts builds the class key from raw string parts, so callers that only have a
 // partial event projection (e.g. eventBasicInfo) can derive the same key as ClassKey.
-func classKeyFromParts(aggregationKey, findingType, subjectOwner, subjectNamespace string) string {
+func classKeyFromParts(aggregationKey, findingType string, subject classSubject) string {
 	aggKey := strings.ToLower(strings.TrimSpace(aggregationKey))
 	finding := strings.ToLower(strings.TrimSpace(findingType))
-	scope := strings.TrimSpace(subjectOwner)
-	if scope == "" {
-		scope = strings.TrimSpace(subjectNamespace)
-	}
+	_, _, scope := subject.identity()
 	return aggKey + "|" + finding + "|" + scope
+}
+
+// classSubject is the part of an event that says what a signal class is about.
+type classSubject struct {
+	Source    string
+	Owner     string
+	OwnerKind string
+	Type      string
+	Name      string
+	Namespace string
+}
+
+func classSubjectOf(event *models.Event) classSubject {
+	return classSubject{
+		Source:    deref(event.Source),
+		Owner:     deref(event.SubjectOwner),
+		OwnerKind: deref(event.SubjectOwnerKind),
+		Type:      deref(event.SubjectType),
+		Name:      deref(event.SubjectName),
+		Namespace: deref(event.SubjectNamespace),
+	}
+}
+
+// selfScopedKinds are the Kubernetes kinds that are alerted on directly, with no owner above
+// them, and whose name is a stable identity. Pods, jobs and nodes are left out on purpose: their
+// names churn, and one verdict per alert kind is what they want.
+var selfScopedKinds = map[string]bool{"service": true, "deployment": true, "statefulset": true, "daemonset": true}
+
+// identity returns what the classifier is told the subject is (kind and name) and the scope
+// segment of the class key. Both come from this one function so the prompt can never describe a
+// different subject from the one the verdict is cached under.
+//
+// An ownerless Service or workload is scoped to itself. It used to fall back to the namespace,
+// which gave every Service in a namespace one shared verdict, minted from whichever fired first
+// and described to the classifier as the namespace. The namespace stays in the scope because the
+// same name in two namespaces is two different things.
+//
+// Cloud-provider alerts are excluded: an ECS or Cloud Run alert also calls its subject a
+// service, and its namespace field holds the provider's service name, not a namespace.
+func (s classSubject) identity() (kind, name, scope string) {
+	namespace := strings.TrimSpace(s.Namespace)
+	if owner := strings.TrimSpace(s.Owner); owner != "" {
+		return s.OwnerKind, owner, owner
+	}
+	subjectName := strings.TrimSpace(s.Name)
+	if subjectName != "" && selfScopedKinds[strings.ToLower(strings.TrimSpace(s.Type))] && !isCloudProviderSource(s.Source) {
+		return s.Type, subjectName, namespace + "/" + subjectName
+	}
+	return s.OwnerKind, namespace, namespace
+}
+
+// cloudProviderSourcePrefixes are how the cloud collector names its event sources:
+// <provider>_<feed>, e.g. AWS_EventBridge, GCP_PubSub, Azure_EventGrid. Matching the prefix
+// rather than a list of feeds keeps a feed added later on the cloud side of this line.
+var cloudProviderSourcePrefixes = []string{"AWS_", "GCP_", "Azure_"}
+
+func isCloudProviderSource(source string) bool {
+	for _, prefix := range cloudProviderSourcePrefixes {
+		if strings.HasPrefix(source, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // getSignalVerdict returns the cached, servable verdict for a (tenant, class). The second

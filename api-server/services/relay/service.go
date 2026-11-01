@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"math"
 	"net"
 	"net/http"
 	"nudgebee/services/common"
@@ -24,6 +25,30 @@ import (
 )
 
 const errMsgAgentNotConnected = "agent not connected"
+
+// ErrResponseTooLarge is returned when a relay response exceeds
+// config.RelayMaxResponseBytes. Callers get it instead of the data; it is not retried.
+var ErrResponseTooLarge = errors.New("relay: response too large")
+
+// readRelayBody reads a relay response body up to the configured cap. The body is
+// decoded into generic maps, which costs several times its size in memory: an
+// uncapped 147 MB metrics response OOM-killed the API pod, taking every user's
+// requests with it. One caller's oversized answer now fails on its own.
+func readRelayBody(body io.Reader) ([]byte, error) {
+	limit := config.Config.RelayMaxResponseBytes
+	// limit+1 below would overflow at the maximum and make the reader return nothing.
+	if limit <= 0 || limit == math.MaxInt64 {
+		return io.ReadAll(body)
+	}
+	data, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("%w: over the %d-byte limit", ErrResponseTooLarge, limit)
+	}
+	return data, nil
+}
 
 var relayHttpClient *http.Client
 
@@ -164,7 +189,11 @@ func ExecutePrometheusWithStep(accountId string, startTime time.Time, endTime ti
 	})
 
 	if err != nil {
-		slog.Error("relay: unable to process request", "error", err)
+		if err.Error() == errMsgAgentNotConnected {
+			slog.Warn("relay: agent not connected", "account_id", accountId, "error", err)
+		} else {
+			slog.Error("relay: unable to process request", "error", err)
+		}
 		return map[string]any{}, err
 	}
 
@@ -423,6 +452,9 @@ func Execute(relayRequest RelayExecuteRequest) (map[string]any, error) {
 	data := make(map[string]any)
 
 	maxRetries := 3
+	if relayRequest.MaxAttempts > 0 {
+		maxRetries = relayRequest.MaxAttempts
+	}
 	baseRetryInterval := 2 * time.Second
 
 	// Extract Account ID for better logging
@@ -491,12 +523,16 @@ func Execute(relayRequest RelayExecuteRequest) (map[string]any, error) {
 			return data, errors.New("relay: request timeout")
 		}
 
-		jsonBody, readErr := io.ReadAll(resp.Body)
+		jsonBody, readErr := readRelayBody(resp.Body)
 		if closeErr := resp.Body.Close(); closeErr != nil {
 			slog.Warn("relay: error closing response body", "error", closeErr)
 		}
 
 		if readErr != nil {
+			if errors.Is(readErr, ErrResponseTooLarge) {
+				slog.Error("relay: response rejected", "account_id", accountID, "action", relayRequest.Body.ActionName, "error", readErr)
+				return data, readErr
+			}
 			if isRetryableError(readErr) && attempt < maxRetries-1 {
 				slog.Warn("relay: Transient error reading response body, retrying..", "account_id", accountID, "attempt", attempt+1, "max_retries", maxRetries, "error", readErr)
 				time.Sleep(retryDelay)
@@ -607,12 +643,16 @@ func ExecuteRelayProxyApi(accountID string, params map[string]any, apiPath strin
 			return data, errors.New("relay: request timeout")
 		}
 
-		jsonBody, readErr := io.ReadAll(resp.Body)
+		jsonBody, readErr := readRelayBody(resp.Body)
 		if closeErr := resp.Body.Close(); closeErr != nil {
 			slog.Warn("relay: error closing response body", "error", closeErr)
 		}
 
 		if readErr != nil {
+			if errors.Is(readErr, ErrResponseTooLarge) {
+				slog.Error("relay: response rejected", "account_id", accountID, "api_path", apiPath, "error", readErr)
+				return data, readErr
+			}
 			if isRetryableError(readErr) && attempt < maxRetries-1 {
 				slog.Warn("relay: Transient error reading response body, retrying..", "account_id", accountID, "attempt", attempt+1, "max_retries", maxRetries, "error", readErr)
 				time.Sleep(retryDelay)

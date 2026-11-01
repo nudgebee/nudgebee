@@ -26,7 +26,7 @@ import {
 import apiUser from '@api1/user';
 import { Link } from '@ui/Link';
 import CodeMirrorDiffViewer from '@shared/viewers/DiffViewer';
-import { CategoryListing, EventListing } from './common';
+import { CategoryListing, EventListing, parseAuditLogParams } from './common';
 import { toast as snackbar } from '@ui/Toast';
 import { Card } from '@ui/Card';
 
@@ -124,24 +124,29 @@ const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={
 export const AuditsTable = () => {
   const auditsTableId = 'audits-table';
 
+  // Filters handed over by a deep link (see buildAuditLogUrl). Read once on mount to
+  // seed the filter bar, which stays editable; without params this is the default view.
+  const [linked] = useState(() => parseAuditLogParams(typeof window === 'undefined' ? '' : window.location.search));
+
   const [offset, setOffset] = useState(0);
   const [limit, setLimit] = useState(apiUser.getUserPreferencesTablePageSize());
   const [data, setData] = useState([]);
   const [totalRows, setTotalRows] = useState(0);
   const [selectedStatus, setSelectedStatus] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState(linked.category);
   const [selectedCategoryType, setSelectedCategoryType] = useState('');
   const [selectedAction, setSelectedAction] = useState('');
+  const [selectedTarget, setSelectedTarget] = useState(linked.target);
   const [userFilter, setUserFilter] = useState([]);
   const [usersLoaded, setUsersLoaded] = useState(false);
   const [usersMap, setUsersMap] = useState({});
   const [selectedUser, setSelectedUser] = useState('');
   const [accountFilter, setAccountFilter] = useState([]);
-  const [selectedAccount, setSelectedAccount] = useState('');
+  const [selectedAccount, setSelectedAccount] = useState(linked.accountId);
   const [loading, setLoading] = useState(false);
   const [dateRange, setDateRange] = useState({
-    startDate: getSpecificTime(1440),
-    endDate: new Date().getTime(),
+    startDate: linked.startDate ?? getSpecificTime(1440),
+    endDate: linked.endDate ?? new Date().getTime(),
   });
 
   useEffect(() => {
@@ -481,6 +486,7 @@ export const AuditsTable = () => {
         status: selectedStatus,
         category: selectedCategory,
         action: selectedAction,
+        target: selectedTarget,
         username: selectedUser,
         accountId: selectedAccount,
         eventStart: dateRange.startDate ? new Date(dateRange.startDate) : undefined,
@@ -594,6 +600,7 @@ export const AuditsTable = () => {
       selectedCategory,
       selectedCategoryType,
       selectedAction,
+      selectedTarget,
       selectedUser,
       selectedAccount,
       dateRange.startDate,
@@ -621,6 +628,8 @@ export const AuditsTable = () => {
     []
   );
   const actionOptions = useMemo(() => ['CREATE', 'UPDATE', 'DELETE', 'READ', 'EXECUTE'].map((v) => ({ value: v, label: capitalize(v) })), []);
+  // Target has no fixed option list, so its filter only exists when a deep link supplied one.
+  const targetOptions = useMemo(() => (linked.target ? [{ value: linked.target, label: linked.target }] : []), [linked.target]);
 
   const findOption = (options, value) => (value ? options.find((o) => o.value === value) ?? null : null);
 
@@ -700,6 +709,18 @@ export const AuditsTable = () => {
             setOffset(0);
           }}
         />
+        {targetOptions.length > 0 && (
+          <FilterDropdown
+            id='audit-filter-target'
+            label='Target'
+            options={targetOptions}
+            value={findOption(targetOptions, selectedTarget)}
+            onSelect={(_e, item) => {
+              setSelectedTarget(item?.value || '');
+              setOffset(0);
+            }}
+          />
+        )}
       </ListingLayout.Toolbar>
 
       <ListingLayout.Body>

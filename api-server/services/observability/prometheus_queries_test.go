@@ -61,22 +61,22 @@ func TestBuildPrometheusNodeQueries(t *testing.T) {
 		{
 			name:     "cpu_request scoped by node name",
 			metric:   "cpu_request",
-			expected: `sum(kube_pod_container_resource_requests{resource="cpu", node=~"node-1.*"})`,
+			expected: `sum(max by (namespace, pod, container) (kube_pod_container_resource_requests{resource="cpu", node=~"node-1.*"}))`,
 		},
 		{
 			name:     "memory_request scoped by node name",
 			metric:   "memory_request",
-			expected: `sum(kube_pod_container_resource_requests{resource="memory", node=~"node-1.*"})`,
+			expected: `sum(max by (namespace, pod, container) (kube_pod_container_resource_requests{resource="memory", node=~"node-1.*"}))`,
 		},
 		{
 			name:     "cpu_limit scoped by node name",
 			metric:   "cpu_limit",
-			expected: `sum(kube_pod_container_resource_limits{resource="cpu", node=~"node-1.*"})`,
+			expected: `sum(max by (namespace, pod, container) (kube_pod_container_resource_limits{resource="cpu", node=~"node-1.*"}))`,
 		},
 		{
 			name:     "memory_limit scoped by node name",
 			metric:   "memory_limit",
-			expected: `sum(kube_pod_container_resource_limits{resource="memory", node=~"node-1.*"})`,
+			expected: `sum(max by (namespace, pod, container) (kube_pod_container_resource_limits{resource="memory", node=~"node-1.*"}))`,
 		},
 		{
 			name:     "disk_total falls back across internal IP, node name and node IP",
@@ -216,17 +216,17 @@ func TestBuildPrometheusWorkloadQueries_DeploymentResourceMetrics(t *testing.T) 
 		{
 			name:     "cpu_request from kube-state-metrics requests",
 			metric:   "cpu_request",
-			expected: `sum(kube_pod_container_resource_requests{__CLUSTER__  namespace="shop", pod=~"web-.*", container!="",resource="cpu"})`,
+			expected: `sum(max by (namespace, pod, container) (kube_pod_container_resource_requests{__CLUSTER__  namespace="shop", pod=~"web-.*", container!="",resource="cpu"}))`,
 		},
 		{
 			name:     "cpu_limit from kube-state-metrics limits",
 			metric:   "cpu_limit",
-			expected: `sum(kube_pod_container_resource_limits{__CLUSTER__  namespace="shop", pod=~"web-.*", container!="",resource="cpu"})`,
+			expected: `sum(max by (namespace, pod, container) (kube_pod_container_resource_limits{__CLUSTER__  namespace="shop", pod=~"web-.*", container!="",resource="cpu"}))`,
 		},
 		{
 			name:     "memory_limit from kube-state-metrics limits",
 			metric:   "memory_limit",
-			expected: `sum(kube_pod_container_resource_limits{__CLUSTER__  namespace="shop", pod=~"web-.*", container!="",resource="memory"})`,
+			expected: `sum(max by (namespace, pod, container) (kube_pod_container_resource_limits{__CLUSTER__  namespace="shop", pod=~"web-.*", container!="",resource="memory"}))`,
 		},
 		{
 			name:     "pod_count counts the pods carrying the filtered containers",

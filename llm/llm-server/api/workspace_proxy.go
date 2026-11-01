@@ -468,6 +468,16 @@ func handleWorkspaceExecute(c *gin.Context, tracer trace.Tracer, meter metric.Me
 	}
 
 	toolCtx := core.NewNbToolContext(ctx, nbTool, req.AccountId, "system", "", "", "", req.Command, nil, "", queryConfig, "")
+	if allowed, bound := c.Get("workspace_allowed_target"); bound {
+		target, _ := allowed.(string)
+		retargeted, retargetErr := workspaceBoundIntegration(toolCtx, nbTool, relayJob, target, req.ConfigName)
+		if retargetErr != nil {
+			writeWorkspaceExecuteAudit(ctx, req, toolName, target, false)
+			c.JSON(http.StatusForbidden, gin.H{"error": retargetErr.Error()})
+			return
+		}
+		toolCtx = retargeted
+	}
 	if specialized {
 		plan, prepareErr := handler.Prepare(ctx, toolCtx, req)
 		if prepareErr != nil {
@@ -835,15 +845,58 @@ func trailingNewline(values []string) string {
 // A command that ran and exited non-zero therefore gets 200 with both fields:
 // the output still reaches the caller, and the workspace (and kubectl_execute's
 // status) sees a failure instead of a success.
+//
+// A request the cluster agent refused is answered the same way. As a 500 it
+// would reach the model inside the shim's "Server returned 500" wrapper, which
+// reads as an infrastructure fault; the agent's own reason (a read-only
+// allowlist, an unregistered action) is what it needs to see.
 func workspaceExecuteReply(result any, err error) (int, gin.H) {
 	var exitErr *tools.RelayCommandExitError
 	if errors.As(err, &exitErr) {
 		return http.StatusOK, gin.H{"result": result, "error": exitErr.Error()}
 	}
+	var refusedErr *tools.RelayCommandRefusedError
+	if errors.As(err, &refusedErr) {
+		return http.StatusOK, gin.H{"result": result, "error": refusedErr.Error()}
+	}
 	if err != nil {
 		return http.StatusInternalServerError, gin.H{"error": err.Error(), "result": result}
 	}
 	return http.StatusOK, gin.H{"result": result}
+}
+
+// workspaceIntegrationJobs run against an account's own integration and may
+// be bound to another account by a per-call target.
+var workspaceIntegrationJobs = map[tools.RelayJob]bool{
+	tools.RelayJobPostgres:   true,
+	tools.RelayJobRedis:      true,
+	tools.RelayJobRabbitmq:   true,
+	tools.RelayJobMysql:      true,
+	tools.RelayJobMssql:      true,
+	tools.RelayJobOracle:     true,
+	tools.RelayJobClickhouse: true,
+	tools.RelayJobArgoCD:     true,
+}
+
+// integrationConfigByName is replaced in tests, which have no integration store.
+var integrationConfigByName = tools.IntegrationConfigByName
+
+// workspaceBoundIntegration points an integration command whose token is bound
+// to another account (a per-call target) at that account's own integration,
+// so it is relayed there. The binding was read-checked when the token was
+// minted and again by authorizeWorkspaceRequest. Other commands are unchanged.
+func workspaceBoundIntegration(toolCtx core.NbToolContext, tool core.NBTool, job tools.RelayJob, target, configName string) (core.NbToolContext, error) {
+	if target == "" || target == toolCtx.AccountId || !workspaceIntegrationJobs[job] {
+		return toolCtx, nil
+	}
+	selected, err := integrationConfigByName(toolCtx.Ctx, target, tool, configName)
+	if err != nil {
+		return toolCtx, err
+	}
+	toolCtx.AccountId = target
+	toolCtx.TargetAccountId = target
+	toolCtx.ToolConfig = selected
+	return toolCtx, nil
 }
 
 func workspaceRelayTarget(ctx core.NbToolContext, job tools.RelayJob, requestedConfig string, command string) (string, error) {

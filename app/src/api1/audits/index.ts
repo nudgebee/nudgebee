@@ -56,6 +56,7 @@ const apiAudits = {
       eventType?: string;
       action?: string;
       status?: string;
+      target?: string;
       eventStart?: Date;
       eventEnd?: Date;
     } = {}
@@ -82,6 +83,9 @@ const apiAudits = {
       }
       if (query.status) {
         gqlQuery['event_status'] = { _eq: query.status };
+      }
+      if (query.target) {
+        gqlQuery['event_target'] = { _eq: query.target };
       }
       if (query.eventStart && query.eventEnd) {
         gqlQuery['event_time'] = { _between: { _gt: query.eventStart.toISOString(), _lt: query.eventEnd.toISOString() } };

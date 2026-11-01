@@ -48,6 +48,18 @@ type ListScanStatusesResponse struct {
 	Data []map[string]any `json:"data" mapstructure:"data"`
 }
 
+// ListScanDatasourcesRequest is the input for listing the discovery
+// datasources a single-VM scan (ScanRequest.DatasourceId) can run through
+// for an account.
+type ListScanDatasourcesRequest struct {
+	AccountId string `json:"account_id" mapstructure:"account_id" validate:"required"`
+}
+
+// ListScanDatasourcesResponse carries one row per pickable datasource.
+type ListScanDatasourcesResponse struct {
+	Data []map[string]any `json:"data" mapstructure:"data"`
+}
+
 // Package types accepted by vuln-matcher-server for this slice — apk and
 // Windows packages are out of scope until forager collects them.
 const (

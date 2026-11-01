@@ -50,6 +50,13 @@ func (t GcpCliTool) ConfirmationKey(toolInput string) string {
 	return targetConfirmationKey(t.Name(), RequestedCloudAccount(req.Arguments))
 }
 
+func (t GcpCliTool) PrepareDelegatedTargetInput(target *core.ExecutionTarget, input string) (string, error) {
+	if target == nil || target.Provider != "gcp" || RequestedCloudAccount(core.ParseNBToolCallRequestFromInput(input).Arguments) != "" {
+		return input, nil
+	}
+	return addDelegatedTargetArgument(input, "account", target.Name)
+}
+
 func (t GcpCliTool) RequestedTarget(toolInput string) (string, error) {
 	req := core.ParseNBToolCallRequestFromInput(toolInput)
 	return RequestedCloudAccount(req.Arguments), nil
@@ -141,6 +148,9 @@ func (t GcpCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 	}
 	target, err := ResolveRequestedTarget(nbRequestContext.Ctx, nbRequestContext.AccountId, t.Name(), nbRequestContext.ToolConfig, requested)
 	if err != nil {
+		return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
+	}
+	if err := VerifyDelegatedTargetIdentity(nbRequestContext, "gcp", target, requested); err != nil {
 		return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
 	}
 	provenance := cloudTargetProvenance(target)
@@ -654,6 +664,11 @@ func isReadOnlyBigQueryQuery(args []string) bool {
 // inferGcpVerbType classifies a GCP CLI command by its verb.
 // Returns empty string if the verb is not recognized (caller should fall back to LLM).
 func inferGcpVerbType(command string) core.ToolRequestType {
+	// The command runs through a shell, so one verb cannot speak for a chain,
+	// a substitution or a comment.
+	if hasUnquotedShellSyntax(command) {
+		return ""
+	}
 	parts := strings.Fields(strings.TrimSpace(command))
 
 	if result := isCloudCLIInfoFlag(parts); result != "" {
@@ -732,7 +747,11 @@ func inferGcpVerbType(command string) core.ToolRequestType {
 }
 
 func (t GcpCliTool) InferToolRequestType(ctx *security.RequestContext, toolName, input string) (core.ToolRequestType, error) {
-	requestType := inferGcpVerbType(extractCommandFromToolInput(input))
+	command := extractCommandFromToolInput(input)
+	requestType := inferGcpVerbType(command)
+	if requestType == "" {
+		requestType = classifyOwnCLIChain(ctx, command, inferGcpVerbType, "gcloud", "gsutil", "bq")
+	}
 	if requestType != "" {
 		return requestType, nil
 	}

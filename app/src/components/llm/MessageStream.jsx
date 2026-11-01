@@ -14,6 +14,8 @@ import api from '@api1/ask-nudgebee';
 import { useWatchFeatureEnabled } from '@hooks/useTenantBranding';
 import { TERMINAL_WATCH_STATUSES, WATCH_FOLLOWUP_BUDGET_MS, countAwaitingFollowups, reconcilePendingFollowups } from './utils/watchFollowup';
 import { actionableTasks } from './utils/taskClassification';
+import { isFollowupTask, summarizeFollowups } from './utils/followupRecord';
+import FollowupHistory from './common/FollowupHistory';
 
 const taskKey = (task) => task?.id ?? task?.tool_id ?? task?.originalIndex ?? null;
 
@@ -271,6 +273,11 @@ const MessageStream = ({ messages, isProcessing = false, isBusy, collapsedObj, s
     setSecondary({ open: false, task: null });
   }, []);
 
+  const openFollowupsDrawer = useCallback((followups) => {
+    setDrawer({ open: true, kind: 'followups', title: `Approvals & clarifications · ${followups.length}`, data: { followups } });
+    setSecondary({ open: false, task: null });
+  }, []);
+
   const openMemoriesDrawer = useCallback((memories) => {
     setDrawer({ open: true, kind: 'memories', title: `New Memories · ${memories.length}`, data: { memories } });
     setSecondary({ open: false, task: null });
@@ -404,6 +411,11 @@ const MessageStream = ({ messages, isProcessing = false, isBusy, collapsedObj, s
         const channelRefs = allReferences.filter((r) => r?.type === 'channel_context');
         const memories = extra?.memories || [];
 
+        // A finished turn hides its task cards, followups included; the pill keeps
+        // what the user was asked — and what they chose or approved — one click away.
+        const followups = response ? tasks.filter(isFollowupTask) : [];
+        const followupSummary = summarizeFollowups(followups);
+
         const responseTokenData = response ? itemProps.messageTokenData?.[response.id] || itemProps.messageTokenData?.[response.messageId] : null;
 
         const isLastGroup = groupIndex === groupedMessages.length - 1;
@@ -425,6 +437,8 @@ const MessageStream = ({ messages, isProcessing = false, isBusy, collapsedObj, s
               onOpenMemories: memories.length > 0 ? () => openMemoriesDrawer(memories) : undefined,
               onOpenChannels: channelRefs.length > 0 ? () => openChannelsDrawer(channelRefs) : undefined,
               onOpenWatches: watchesForThisGroup > 0 ? openWatchesDrawer : undefined,
+              followups: followupSummary,
+              onOpenFollowups: followups.length > 0 ? () => openFollowupsDrawer(followups) : undefined,
               messageTokenData: responseTokenData,
               onTokenUsageHover: itemProps.handleTokenUsageHover,
               isFetchingTokenData: itemProps.isFetchingTokenData,
@@ -580,6 +594,8 @@ const renderDrawerContent = ({ drawer, secondary, itemProps, onOpenToolDetails }
       return <ReferencesDrawerContent references={drawer.data.references} />;
     case 'channels':
       return <ChannelContextDrawerContent references={drawer.data.references} />;
+    case 'followups':
+      return <FollowupHistory followups={drawer.data.followups} />;
     case 'memories':
       return <MemoriesDrawerContent memories={drawer.data.memories} />;
     case 'tool-details':

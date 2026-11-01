@@ -131,9 +131,9 @@
 
   <!-- CLOSING COPY -->
   <p style="font-family:'DM Sans',Arial,sans-serif; font-size:15.5px; color:#3D3D3D; line-height:1.85; font-weight:300; margin:0 0 18px;">
-    And if anything comes up — a question, something not working, or just feedback — please do reply to this email or write to us at
+    And if anything comes up — a question, something not working, or just feedback — please do reply to this email{% if _support_email %} or write to us at
     <a href="mailto:{{ _support_email }}"
-      style="color:#F5A623; text-decoration:none; font-weight:500; border-bottom:1px solid rgba(245,166,35,0.4);">{{ _support_email }}</a>.
+      style="color:#F5A623; text-decoration:none; font-weight:500; border-bottom:1px solid rgba(245,166,35,0.4);">{{ _support_email }}</a>{% endif %}.
     We're a small team. No ticket system, no bot — just us, reading everything.
   </p>
 
@@ -175,8 +175,10 @@
     <p style="font-family:'DM Serif Display',Georgia,serif; font-size:18px; color:#0D1B2A; font-weight:400; letter-spacing:-0.2px; margin:0 0 4px;">
       — The {{ _brand_name }} Team
     </p>
+    {% if _branding_url or _support_email %}
     <p style="font-family:'DM Sans',Arial,sans-serif; font-size:13px; color:#999999; font-weight:300; margin:0; line-height:1.6;">
-      {{ _branding_url }} &nbsp;&middot;&nbsp; {{ _support_email }}
+      {% if _branding_url %}{{ _branding_url }}{% endif %}{% if _branding_url and _support_email %} &nbsp;&middot;&nbsp; {% endif %}{% if _support_email %}{{ _support_email }}{% endif %}
     </p>
+    {% endif %}
   </div>
 {% endblock %}

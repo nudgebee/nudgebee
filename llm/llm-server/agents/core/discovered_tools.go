@@ -4,6 +4,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	toolcore "nudgebee/llm/tools/core"
 )
 
 // discoveredToolsTTL bounds how long a search_tools discovery stays directly-callable.
@@ -105,4 +107,27 @@ func DiscoveredToolCanonicalName(conversationId, toolName string) (string, bool)
 func IsDiscoveredTool(conversationId, toolName string) bool {
 	_, ok := DiscoveredToolCanonicalName(conversationId, toolName)
 	return ok
+}
+
+// QueryConfigDiscoveredToolCanonicalName returns the canonical name if toolName
+// was preserved in queryConfig.DiscoveredTools or configured in queryConfig.ToolConfigs.
+// This ensures direct-call authorization survives multi-turn followups, turn restarts,
+// and multi-pod dispatch where the in-memory discoveredTools registry may not be present
+// on the active worker pod.
+func QueryConfigDiscoveredToolCanonicalName(qc toolcore.NBQueryConfig, toolName string) (string, bool) {
+	trimmed := strings.TrimSpace(toolName)
+	if trimmed == "" {
+		return "", false
+	}
+	for _, dt := range qc.DiscoveredTools {
+		if strings.EqualFold(strings.TrimSpace(dt), trimmed) {
+			return dt, true
+		}
+	}
+	for tc := range qc.ToolConfigs {
+		if strings.EqualFold(strings.TrimSpace(tc), trimmed) {
+			return tc, true
+		}
+	}
+	return "", false
 }

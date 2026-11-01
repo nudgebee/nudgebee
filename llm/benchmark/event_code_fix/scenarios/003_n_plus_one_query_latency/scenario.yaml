@@ -5,10 +5,10 @@ tags: [code_fix, latency, sql]
 alert:
   alertname: HighAPILatency
   labels:
-    deployment: orders-api
+    deployment: order-email-api
     namespace: benchmark-scenarios
     severity: warning
-  summary: "orders-api: high latency on /api/orders/by-email"
+  summary: "order-email-api: high latency on /api/orders/by-email"
   log_lines: |
     2026-09-18T11:00:00Z level=warn msg="slow query" duration_ms=1180 query="SELECT * FROM customers WHERE id = $1" endpoint="/api/orders/by-email"
     2026-09-18T11:00:00Z level=warn msg="slow query" duration_ms=1210 query="SELECT * FROM customers WHERE id = $1" endpoint="/api/orders/by-email"
@@ -20,7 +20,7 @@ alert:
 workload:
   manifests: manifests/all.yaml
   namespace: benchmark-scenarios
-  deployment: orders-api
+  deployment: order-email-api
 
 fixture_repo:
   url: https://github.com/nudgebee-org/nb-benchmark-fixtures

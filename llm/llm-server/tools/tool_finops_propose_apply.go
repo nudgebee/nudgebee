@@ -67,6 +67,7 @@ func (t ProposeRecommendationApplyTool) InferToolRequestType(_ *security.Request
 }
 
 func (t ProposeRecommendationApplyTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	ctx = ctx.ForTarget()
 	recID, _ := input.Arguments["recommendation_id"].(string)
 	recID = strings.TrimSpace(recID)
 	if recID == "" {

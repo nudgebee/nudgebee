@@ -82,6 +82,7 @@ func (c nbCustomContainerTool) GetExecutorType() ToolExecutorType {
 func (c nbCustomContainerTool) Call(nbRequestContext NbToolContext, input NBToolCallRequest) (NBToolResponse, error) {
 	log := nbRequestContext.Ctx.GetLogger().With("toolName", c.Name(), "toolId", c.tool.Id, "accountId", nbRequestContext.AccountId, "toolCallId", nbRequestContext.ToolCallId)
 	log.Info("customcontainer: executing custom container tool", "input", input)
+	input = normalizeContainerCallRequest(input)
 
 	// 1. Determine Image
 	containerImage, ok := c.tool.Config["image"].(string)
@@ -96,37 +97,7 @@ func (c nbCustomContainerTool) Call(nbRequestContext NbToolContext, input NBTool
 	}
 
 	// 2. Determine Command
-	var commandToRunParts []string
-	if input.Command != "" {
-		commandToRunParts = strings.Split(input.Command, " ")
-		log.Info("customcontainer: using 'command' from input arguments", "command", commandToRunParts)
-	} else if cmdOverridePayload, present := input.Arguments["command"]; present {
-		if cmdOverride, ok := cmdOverridePayload.([]any); ok {
-			for _, part := range cmdOverride {
-				if partStr, isStr := part.(string); isStr {
-					commandToRunParts = append(commandToRunParts, partStr)
-				} else {
-					log.Warn("customcontainer: invalid type in command array", "part", part)
-				}
-			}
-		} else if cmdOverride, ok := cmdOverridePayload.([]string); ok {
-			commandToRunParts = cmdOverride
-		} else {
-			log.Warn("customcontainer: command was present but not an array of strings", "value", cmdOverridePayload)
-		}
-		log.Info("customcontainer: using 'command' from input arguments", "command", commandToRunParts)
-	} else if defaultConfigCmdPayload, ok := c.tool.Config["command"].([]any); ok {
-		for _, part := range defaultConfigCmdPayload {
-			if partStr, isStr := part.(string); isStr {
-				commandToRunParts = append(commandToRunParts, partStr)
-			}
-		}
-		log.Info("customcontainer: using 'command' from tool.Config as default", "command", commandToRunParts)
-	} else if defaultConfigCmdPayload, ok := c.tool.Config["command"].([]string); ok {
-		commandToRunParts = defaultConfigCmdPayload
-		log.Info("customcontainer: using 'command' from tool.Config as default", "command", commandToRunParts)
-	}
-	commandString := strings.Join(commandToRunParts, " ")
+	commandString := resolveContainerCommand(log, input, c.tool.Config)
 
 	// 3. Determine Environment Variables
 	envVars := make(map[string]string)
@@ -188,6 +159,65 @@ func (c nbCustomContainerTool) Call(nbRequestContext NbToolContext, input NBTool
 	}
 
 	return NBToolResponse{Data: response, Type: NBToolResponseTypeText, Status: NBToolResponseStatusSuccess}, nil
+}
+
+// normalizeContainerCallRequest unpacks a Command that is itself the tool's
+// JSON input. The planner leaves the raw input in Command whenever it has no
+// string "command" key — `{}`, or `{"command":["df","-h"]}` — so running
+// Command as-is executed the literal "{}" instead of the configured command.
+func normalizeContainerCallRequest(input NBToolCallRequest) NBToolCallRequest {
+	normalized := ParseNBToolCallRequestFromInput(strings.TrimSpace(input.Command))
+	if normalized.Arguments == nil {
+		// Not a JSON object — a plain shell command.
+		return input
+	}
+	normalized.Context = input.Context
+	for k, v := range input.Arguments {
+		if _, ok := normalized.Arguments[k]; !ok {
+			normalized.Arguments[k] = v
+		}
+	}
+	return normalized
+}
+
+// resolveContainerCommand picks the command to run: the call's command
+// (string, or array in Arguments), else the tool's configured default.
+func resolveContainerCommand(log *slog.Logger, input NBToolCallRequest, config map[string]any) string {
+	if cmd := strings.TrimSpace(input.Command); cmd != "" {
+		log.Info("customcontainer: using 'command' from input arguments", "command", cmd)
+		return cmd
+	}
+	var commandToRunParts []string
+	if cmdOverridePayload, present := input.Arguments["command"]; present && cmdOverridePayload != nil {
+		if cmdOverride, ok := cmdOverridePayload.([]any); ok {
+			for _, part := range cmdOverride {
+				if partStr, isStr := part.(string); isStr {
+					commandToRunParts = append(commandToRunParts, partStr)
+				} else {
+					log.Warn("customcontainer: invalid type in command array", "part", part)
+				}
+			}
+		} else if cmdOverride, ok := cmdOverridePayload.([]string); ok {
+			commandToRunParts = cmdOverride
+		} else {
+			log.Warn("customcontainer: command was present but not an array of strings", "value", cmdOverridePayload)
+		}
+		log.Info("customcontainer: using 'command' from input arguments", "command", commandToRunParts)
+	}
+	if len(commandToRunParts) == 0 {
+		if defaultConfigCmdPayload, ok := config["command"].([]any); ok {
+			for _, part := range defaultConfigCmdPayload {
+				if partStr, isStr := part.(string); isStr {
+					commandToRunParts = append(commandToRunParts, partStr)
+				}
+			}
+			log.Info("customcontainer: using 'command' from tool.Config as default", "command", commandToRunParts)
+		} else if defaultConfigCmdPayload, ok := config["command"].([]string); ok {
+			commandToRunParts = defaultConfigCmdPayload
+			log.Info("customcontainer: using 'command' from tool.Config as default", "command", commandToRunParts)
+		}
+	}
+	return strings.Join(commandToRunParts, " ")
 }
 
 func (c nbCustomContainerTool) GetType() NBToolType {

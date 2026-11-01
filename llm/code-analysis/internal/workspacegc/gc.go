@@ -3,7 +3,8 @@
 // A workspace is shared by concurrent analyses. Cleanup therefore uses leases
 // rather than directory age: an active lease always wins over garbage
 // collection, including when the active run owns a worktree below a shared
-// repository mirror.
+// repository mirror. Age is used only for data no lease owns (see AddAgedRoot),
+// and only once the workspace has no active lease.
 package workspacegc
 
 import (
@@ -14,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -25,8 +27,19 @@ type Manager struct {
 	cancelCleanup     chan struct{}
 	workspaceRoot     string
 	cacheRoots        []string
+	agedRoots         []agedRoot
+	usageRoots        []string
 	storageLimitBytes int64
 	diskUsage         func(string) (float64, error)
+}
+
+// agedRoot is a directory whose children are collected by age rather than by
+// lease. A non-empty prefix limits collection to children whose name starts
+// with it. See AddAgedRoot and AddAgedChildren.
+type agedRoot struct {
+	path   string
+	prefix string
+	maxAge time.Duration
 }
 
 // sharedCacheDiskUsageThreshold is the fraction of the pod's ephemeral-storage
@@ -65,14 +78,63 @@ func NewWithDiskUsage(workspaceRoot string, cacheRoots []string, usage func(stri
 	return m
 }
 
-// measuredUsage reports the workspace tree's own footprint as a fraction of the
-// pod's ephemeral-storage budget. See sharedCacheDiskUsageThreshold for why the
-// footprint is measured directly rather than read from the filesystem.
+// measuredUsage reports the footprint of path, plus every directory registered
+// with SetUsageRoots, as a fraction of the pod's ephemeral-storage budget. See
+// sharedCacheDiskUsageThreshold for why the footprint is measured directly
+// rather than read from the filesystem.
+//
+// It counts what the kubelet counts when it enforces the budget: allocated
+// disk blocks, across every volume that shares the budget. Summing file sizes
+// under the workspace root alone read well below the real figure, so the
+// threshold was reached only after the pod was already close to eviction.
 func (m *Manager) measuredUsage(path string) (float64, error) {
 	if m.storageLimitBytes <= 0 {
 		return 0, nil
 	}
-	return float64(directorySize(path)) / float64(m.storageLimitBytes), nil
+	m.mu.Lock()
+	roots := outermost(append([]string{path}, m.usageRoots...))
+	m.mu.Unlock()
+	var used int64
+	for _, root := range roots {
+		used += allocatedSize(root)
+	}
+	return float64(used) / float64(m.storageLimitBytes), nil
+}
+
+// SetUsageRoots names further directories that count against the same storage
+// budget as the workspace root, such as the pod's temp and home volumes. They
+// are only measured, never cleaned.
+func (m *Manager) SetUsageRoots(paths []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.usageRoots = append([]string(nil), paths...)
+}
+
+// outermost returns the given directories as absolute paths with duplicates and
+// any directory nested inside another removed, so a walk of the result visits
+// each file once.
+func outermost(paths []string) []string {
+	cleaned := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if p != "" {
+			cleaned = append(cleaned, absClean(p))
+		}
+	}
+	sort.Strings(cleaned)
+	var result []string
+	for _, p := range cleaned {
+		nested := false
+		for _, kept := range result {
+			if p == kept || strings.HasPrefix(p, strings.TrimSuffix(kept, string(filepath.Separator))+string(filepath.Separator)) {
+				nested = true
+				break
+			}
+		}
+		if !nested {
+			result = append(result, p)
+		}
+	}
+	return result
 }
 
 // CachePaths returns the managed cache locations used by the workspace
@@ -89,6 +151,79 @@ func CachePaths(workspaceRoot string) []string {
 		filepath.Join(root, "maven"),
 		filepath.Join(root, "gradle"),
 	}
+}
+
+// AddAgedRoot registers a directory whose children are removed during an idle
+// collection once nothing beneath them has been modified for maxAge.
+//
+// It covers data that outlives any single lease and has no owner to release
+// it: a conversation's command folder is reused by later turns, and spilled
+// tool output is read back after the command that wrote it has returned. For
+// those, "untouched for long enough" is the only end-of-life signal there is.
+// The lease rule still wins — an aged root is only swept while the workspace
+// has no active lease at all.
+//
+// Unusable input is refused and reported by returning false: an empty path, a
+// non-positive maxAge, a filesystem root, or a path that is the workspace root
+// or one of its parents (its children would include the shared caches and
+// repository mirrors, which must never be collected by age). Registering a
+// path again replaces its maxAge.
+func (m *Manager) AddAgedRoot(path string, maxAge time.Duration) bool {
+	return m.addAged(path, "", maxAge)
+}
+
+// AddAgedChildren is AddAgedRoot limited to the children of path whose name
+// starts with namePrefix. It exists for directories the workspace shares with
+// other data, such as the temp directory that holds each run's checkout next
+// to unrelated files. Because only matching names are candidates, path may be
+// a parent of the workspace root, as long as the workspace root itself does
+// not sit under a name that matches. An empty namePrefix is refused.
+func (m *Manager) AddAgedChildren(path, namePrefix string, maxAge time.Duration) bool {
+	if namePrefix == "" {
+		return false
+	}
+	return m.addAged(path, namePrefix, maxAge)
+}
+
+func (m *Manager) addAged(path, prefix string, maxAge time.Duration) bool {
+	if path == "" || maxAge <= 0 {
+		return false
+	}
+	// Compare absolute paths: a relative path must not slip past the checks
+	// below just because the workspace root was given as an absolute one.
+	path = absClean(path)
+	root := absClean(m.workspaceRoot)
+	if filepath.Dir(path) == path || path == root {
+		return false
+	}
+	if below, ok := strings.CutPrefix(root, path+string(filepath.Separator)); ok {
+		// path is a parent of the workspace root. Without a prefix every child
+		// is a candidate, the workspace included. With one, refuse only if the
+		// child that leads to the workspace would itself match.
+		first, _, _ := strings.Cut(below, string(filepath.Separator))
+		if prefix == "" || strings.HasPrefix(first, prefix) {
+			return false
+		}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.agedRoots {
+		if m.agedRoots[i].path == path && m.agedRoots[i].prefix == prefix {
+			m.agedRoots[i].maxAge = maxAge
+			return true
+		}
+	}
+	m.agedRoots = append(m.agedRoots, agedRoot{path: path, prefix: prefix, maxAge: maxAge})
+	return true
+}
+
+// absClean returns path as a cleaned absolute path, or just cleaned when the
+// working directory cannot be determined.
+func absClean(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		return abs
+	}
+	return filepath.Clean(path)
 }
 
 // Acquire marks a run or command as active. If a collection pass is in
@@ -163,6 +298,7 @@ func (m *Manager) CollectIfIdle(ctx context.Context) (int64, error) {
 	m.cleanupDone = make(chan struct{})
 	m.cancelCleanup = make(chan struct{})
 	cancelCleanup := m.cancelCleanup
+	agedRoots := append([]agedRoot(nil), m.agedRoots...)
 	m.mu.Unlock()
 
 	defer func() {
@@ -190,7 +326,23 @@ func (m *Manager) CollectIfIdle(ctx context.Context) (int64, error) {
 		if isCancelled() {
 			return removed, nil
 		}
-		bytes, err := removeChildren(root, isCancelled)
+		bytes, err := removeChildren(root, isCancelled, nil)
+		removed += bytes
+		if err != nil {
+			errs = append(errs, err.Error())
+		}
+	}
+	for _, aged := range agedRoots {
+		if isCancelled() {
+			return removed, nil
+		}
+		cutoff := time.Now().Add(-aged.maxAge)
+		bytes, err := removeChildren(aged.path, isCancelled, func(path string) bool {
+			if aged.prefix != "" && !strings.HasPrefix(filepath.Base(path), aged.prefix) {
+				return false
+			}
+			return !modifiedSince(path, cutoff)
+		})
 		removed += bytes
 		if err != nil {
 			errs = append(errs, err.Error())
@@ -209,7 +361,7 @@ func (m *Manager) CollectIfIdle(ctx context.Context) (int64, error) {
 			if isCancelled() {
 				return removed, nil
 			}
-			bytes, err := removeChildren(root, isCancelled)
+			bytes, err := removeChildren(root, isCancelled, nil)
 			removed += bytes
 			if err != nil {
 				errs = append(errs, err.Error())
@@ -237,8 +389,9 @@ func (m *Manager) sharedRoots() []string {
 
 // removeChildren deletes each child of root to completion — never partway —
 // checking isCancelled only between children so a caller waiting on Acquire
-// never observes one of them half-removed.
-func removeChildren(root string, isCancelled func() bool) (int64, error) {
+// never observes one of them half-removed. A non-nil eligible limits deletion
+// to the children it accepts; nil removes every child.
+func removeChildren(root string, isCancelled func() bool, eligible func(path string) bool) (int64, error) {
 	entries, err := os.ReadDir(root)
 	if os.IsNotExist(err) {
 		return 0, nil
@@ -253,6 +406,9 @@ func removeChildren(root string, isCancelled func() bool) (int64, error) {
 			break
 		}
 		path := filepath.Join(root, entry.Name())
+		if eligible != nil && !eligible(path) {
+			continue
+		}
 		size := directorySize(path)
 		if err := os.RemoveAll(path); err != nil {
 			// Go marks module-cache directories (GOMODCACHE) read-only, so the
@@ -287,6 +443,52 @@ func makeWritable(root string) {
 		}
 		return nil
 	})
+}
+
+// modifiedSince reports whether path, or anything beneath it, was modified
+// after cutoff. A directory's own mtime only moves when an entry is added to or
+// removed from it directly, so the whole subtree is checked. Anything that
+// cannot be inspected counts as modified: keeping a stale folder for another
+// round is cheaper than deleting one that is still in use.
+func modifiedSince(path string, cutoff time.Time) bool {
+	modified := false
+	_ = filepath.WalkDir(path, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			modified = true
+			return filepath.SkipAll
+		}
+		info, err := d.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			modified = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return modified
+}
+
+// allocatedSize is the disk space path and everything beneath it occupies, in
+// bytes: allocated blocks rather than file lengths, directories included,
+// which is what `du` and the kubelet report. It falls back to the file length
+// where the platform does not expose block counts.
+func allocatedSize(path string) int64 {
+	var total int64
+	_ = filepath.WalkDir(path, func(_ string, d os.DirEntry, err error) error {
+		if err != nil || d == nil {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		if st, ok := info.Sys().(*syscall.Stat_t); ok {
+			total += int64(st.Blocks) * 512
+		} else if !d.IsDir() {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
 }
 
 func directorySize(path string) int64 {

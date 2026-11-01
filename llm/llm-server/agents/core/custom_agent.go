@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"log/slog"
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
@@ -262,6 +263,7 @@ func (a *nbCustomAgent) GetSystemPrompt(ctx *security.RequestContext, query NBAg
 	err := common.UnmarshalJson([]byte(promptText), &prompt)
 	if err != nil {
 		//custom parsing
+		prompt = NBAgentPrompt{}
 		promptMap := make(map[string]any)
 		err = common.UnmarshalJson([]byte(promptText), &promptMap)
 		if err != nil {
@@ -307,8 +309,18 @@ func (a *nbCustomAgent) GetSystemPrompt(ctx *security.RequestContext, query NBAg
 			if len(prompt.ToolUsage) == 0 {
 				prompt.ToolUsage = make(map[string][]string)
 				if toolUsage, ok := promptMap["tool_usage"]; ok {
-					if toolUsage, ok := toolUsage.(map[string]any); ok {
-						for key, value := range toolUsage {
+					if toolUsageStr, ok := toolUsage.(string); ok {
+						if strings.TrimSpace(toolUsageStr) != "" {
+							prompt.Instructions = append(prompt.Instructions, toolUsageStr)
+						}
+					} else if toolUsageMap, ok := toolUsage.(map[string]any); ok {
+						for key, value := range toolUsageMap {
+							if key == "toolUsage" {
+								if str, ok := value.(string); ok && strings.TrimSpace(str) != "" {
+									prompt.Instructions = append(prompt.Instructions, str)
+								}
+								continue
+							}
 							if valueStr, ok := value.(string); ok {
 								prompt.ToolUsage[key] = []string{valueStr}
 							} else if values, ok := value.([]any); ok {
@@ -366,13 +378,39 @@ func (a *nbCustomAgent) GetSystemPrompt(ctx *security.RequestContext, query NBAg
 								ex := NBAgentPromptExample{}
 								ex.Answer = schemaStr
 								prompt.Examples = append(prompt.Examples, ex)
+							} else if exMap, ok := example.(map[string]any); ok {
+								// Decode the whole object so answer_steps survive too.
+								var ex NBAgentPromptExample
+								if raw, err := json.Marshal(exMap); err == nil && json.Unmarshal(raw, &ex) == nil {
+									prompt.Examples = append(prompt.Examples, ex)
+								}
 							}
+						}
+					} else if exampleStr, ok := examplesAny.(string); ok {
+						if strings.TrimSpace(exampleStr) != "" {
+							prompt.Examples = append(prompt.Examples, NBAgentPromptExample{Answer: exampleStr})
 						}
 					}
 				}
 			}
 		}
 	}
+
+	// Clean up legacy phantom toolUsage key if present in prompt.ToolUsage
+	if tu, ok := prompt.ToolUsage["toolUsage"]; ok {
+		delete(prompt.ToolUsage, "toolUsage")
+		for _, u := range tu {
+			if strings.TrimSpace(u) != "" {
+				prompt.Instructions = append(prompt.Instructions, u)
+			}
+		}
+	}
+
+	// The prompt is later rendered as a Go template (GetPromptTemplate), and a
+	// render failure leaves the agent with an empty system prompt. Declared
+	// variables were already substituted above, so any "{{" left is literal
+	// user text — e.g. `${{ secrets.X }}` or a Helm value in an example.
+	escapeCustomPromptTemplateSyntax(&prompt)
 
 	// A stored orchestrating-agent prompt may contain legacy XML plan instructions
 	// that conflict with the current planner protocol. Append a corrective note so
@@ -427,4 +465,35 @@ func (a *nbCustomAgent) GetSystemPrompt(ctx *security.RequestContext, query NBAg
 	}
 
 	return prompt
+}
+
+// escapeCustomPromptTemplateSyntax makes every user-authored field of a custom
+// agent's prompt render verbatim through GetPromptTemplate. Only "{{" opens a
+// template action, so it is the only thing rewritten — to {{"{{"}}, which renders
+// back as exactly "{{". Text without "{{" (the common case) is left untouched.
+func escapeCustomPromptTemplateSyntax(p *NBAgentPrompt) {
+	escape := func(s string) string { return strings.ReplaceAll(s, "{{", `{{"{{"}}`) }
+	p.Role = escape(p.Role)
+	p.OutputFormat = escape(p.OutputFormat)
+	for _, list := range [][]string{p.Instructions, p.Constraints, p.Schema} {
+		for i := range list {
+			list[i] = escape(list[i])
+		}
+	}
+	for tool, usages := range p.ToolUsage {
+		for i := range usages {
+			usages[i] = escape(usages[i])
+		}
+		p.ToolUsage[tool] = usages
+	}
+	for i := range p.Examples {
+		ex := &p.Examples[i]
+		ex.Question = escape(ex.Question)
+		ex.Answer = escape(ex.Answer)
+		ex.Explanation = escape(ex.Explanation)
+		for j := range ex.AnswerSteps {
+			ex.AnswerSteps[j].Input = escape(ex.AnswerSteps[j].Input)
+			ex.AnswerSteps[j].Explanation = escape(ex.AnswerSteps[j].Explanation)
+		}
+	}
 }

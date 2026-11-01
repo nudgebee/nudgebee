@@ -144,6 +144,48 @@ func TestDetectValueDrift_AppliesPerDimensionThresholds(t *testing.T) {
 	assert.Equal(t, "cpu", drifts[0].Dimension)
 }
 
+// A move of exactly the threshold counts: the rule acts on "at least 10%". The
+// percentage for 320m → 288m computes as 9.99999999999999, which a bare
+// comparison reads as under 10.
+func TestDetectValueDrift_CountsAMoveOfExactlyTheThreshold(t *testing.T) {
+	open := values(map[string]any{"app": map[string]any{"cpu": map[string]any{"request": "320m"}}})
+	current := values(map[string]any{"app": map[string]any{"cpu": map[string]any{"request": "288m"}}})
+
+	drifts := detectValueDrift(open, current, ruleThresholds)
+	require.Len(t, drifts, 1)
+	assert.Contains(t, drifts[0].String(), "320m → 288m")
+
+	justUnder := values(map[string]any{"app": map[string]any{"cpu": map[string]any{"request": "289m"}}})
+	assert.Empty(t, detectValueDrift(open, justUnder, ruleThresholds), "9.7%% is still under the threshold")
+}
+
+// Only what the pull request records and the run did not produce is listed, and
+// only within the dimensions being compared.
+func TestFieldsRunLeftOut(t *testing.T) {
+	open := values(map[string]any{
+		"app": map[string]any{
+			"cpu":    map[string]any{"request": "320m"},
+			"memory": map[string]any{"request": "256Mi", "limit": "512Mi"},
+		},
+		"sidecar": map[string]any{"cpu": map[string]any{"request": "50m"}},
+	})
+	current := values(map[string]any{
+		"app": map[string]any{
+			"cpu":    map[string]any{},
+			"memory": map[string]any{"request": "260Mi"},
+		},
+	})
+
+	assert.Equal(t,
+		[]string{"app cpu request", "app memory limit", "sidecar cpu request"},
+		fieldsRunLeftOut(open, current, ruleThresholds))
+	assert.Equal(t,
+		[]string{"app memory limit"},
+		fieldsRunLeftOut(open, current, map[string]float64{"memory": 10}),
+		"a dimension the caller does not compare is not reported")
+	assert.Empty(t, fieldsRunLeftOut(open, open, ruleThresholds))
+}
+
 // No thresholds means the caller did not opt in — every non-auto-optimize caller.
 func TestDetectValueDrift_WithoutThresholdsNeverDrifts(t *testing.T) {
 	open := values(map[string]any{"app": map[string]any{"cpu": map[string]any{"request": "10m"}}})

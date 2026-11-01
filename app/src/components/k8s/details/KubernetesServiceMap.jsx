@@ -158,7 +158,16 @@ const getType = (node) => {
  * Transforms flat API data into Graph Nodes and Edges.
  * RESTORED: Now correctly builds the visual 'label' JSX for the nodes.
  */
-const useGraphTransformation = (serviceMapData, selectedNamespace, duration, showOnlyErrorEdges, selectedWorkloads, appName, selectedSourceType) => {
+const useGraphTransformation = (
+  serviceMapData,
+  selectedNamespace,
+  duration,
+  showOnlyErrorEdges,
+  selectedWorkloads,
+  appName,
+  selectedSourceType,
+  requestsPerSecond
+) => {
   return useMemo(() => {
     // 1. Filtering Logic (Same as before)
     let filteredData = serviceMapData;
@@ -222,6 +231,7 @@ const useGraphTransformation = (serviceMapData, selectedNamespace, duration, sho
             changeColor: isExternal,
             entireNodeInstance: nodeData,
             selectedNamespace: selectedNamespace,
+            requestsPerSecond,
             // Keep extra props if needed for other logic
             isExternal,
           },
@@ -259,7 +269,7 @@ const useGraphTransformation = (serviceMapData, selectedNamespace, duration, sho
             animated: true,
             markerEnd: { type: 'arrow', color: 'var(--ds-red-500)' },
             label: u.Protocol || '',
-            data: { ...u },
+            data: { ...u, requestsPerSecond },
           });
         }
       });
@@ -287,14 +297,14 @@ const useGraphTransformation = (serviceMapData, selectedNamespace, duration, sho
             type: 'custom-edge',
             animated: true,
             markerEnd: { type: 'arrow', color: 'var(--ds-red-500)' },
-            data: { ...d },
+            data: { ...d, requestsPerSecond },
           });
         }
       });
     });
 
     return { nodes: Array.from(nodeMap.values()), edges: links };
-  }, [serviceMapData, selectedNamespace, duration, showOnlyErrorEdges, selectedWorkloads, appName, selectedSourceType]);
+  }, [serviceMapData, selectedNamespace, duration, showOnlyErrorEdges, selectedWorkloads, appName, selectedSourceType, requestsPerSecond]);
 };
 
 const KubernetesServiceMap = ({ accountId, appName, namespaceName, dateRange, showSourceType = true, dataForServiceMap = [] }) => {
@@ -564,6 +574,9 @@ const KubernetesServiceMap = ({ accountId, appName, namespaceName, dateRange, sh
   }, [accountId, startDateInMilli, endDateInMilli, selectedSourceType, selectedWorkloads, selectedNamespace, dataForServiceMap.length]);
 
   // 3. Graph Calculation (Uses debounced slider value)
+  // eBPF links (fetched here or passed in from evidence, which always comes
+  // from the eBPF agent) carry requests per second; OTel links carry counts.
+  const requestsPerSecond = dataForServiceMap.length > 0 || selectedSourceType !== 'otel';
   const { nodes: rawNodes, edges: rawEdges } = useGraphTransformation(
     serviceMapData,
     selectedNamespace,
@@ -571,7 +584,8 @@ const KubernetesServiceMap = ({ accountId, appName, namespaceName, dateRange, sh
     showOnlyErrorEdges,
     selectedWorkloads,
     appName,
-    selectedSourceType
+    selectedSourceType,
+    requestsPerSecond
   );
 
   useEffect(() => {

@@ -1,0 +1,27 @@
+﻿2026-09-30T07:00:00.0000039Z Current runner version: '2.337.0'
+2026-09-30T07:00:00.0000040Z ##[group]Runner Image
+2026-09-30T07:00:00.0000041Z Image: ubuntu-24.04
+2026-09-30T07:00:00.0000042Z ##[endgroup]
+2026-09-30T07:00:00.0000043Z ##[group]Run actions/checkout@v4
+2026-09-30T07:00:00.0000044Z syncing repository: nudgebee/nudgebee
+2026-09-30T07:00:00.0000045Z ##[endgroup]
+2026-09-30T07:00:00.0000046Z ##[group]Run go test -race -p 4 ./...
+2026-09-30T07:00:00.0000047Z ##[endgroup]
+2026-09-30T07:00:00.0000048Z [job-a] === RUN   TestA0
+2026-09-30T07:00:00.0000049Z [job-b] === RUN   TestB0
+2026-09-30T07:00:00.0000050Z [job-a] === RUN   TestA1
+2026-09-30T07:00:00.0000051Z [job-b] === RUN   TestB1
+2026-09-30T07:00:00.0000052Z [job-a] === RUN   TestA2
+2026-09-30T07:00:00.0000053Z [job-b] === RUN   TestB2
+2026-09-30T07:00:00.0000054Z [job-a] === RUN   TestA3
+2026-09-30T07:00:00.0000055Z [job-b] === RUN   TestB3
+2026-09-30T07:00:00.0000056Z [job-a] === RUN   TestA4
+2026-09-30T07:00:00.0000057Z [job-b] === RUN   TestB4
+2026-09-30T07:00:00.0000058Z [job-a] === RUN   TestA5
+2026-09-30T07:00:00.0000059Z [job-b] === RUN   TestB5
+2026-09-30T07:00:00.0000060Z [job-b] --- FAIL: TestB3 (0.01s)
+2026-09-30T07:00:00.0000061Z [job-a] --- PASS: TestA3 (0.01s)
+2026-09-30T07:00:00.0000062Z [job-b]     b_test.go:88: expected 3, got 4
+2026-09-30T07:00:00.0000063Z [job-a] === RUN   TestA9
+2026-09-30T07:00:00.0000064Z FAIL
+2026-09-30T07:00:00.0000065Z ##[error]Process completed with exit code 1.

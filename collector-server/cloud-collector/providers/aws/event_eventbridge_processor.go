@@ -1133,6 +1133,7 @@ func (p *TemplatedEventBridgeProcessor) executeAction(
 		if err := mapToStruct(renderedParams, &params); err != nil {
 			return nil, fmt.Errorf("eventprocessor: parsing aws_get_metric params: %w", err)
 		}
+		params.Dimensions = dropEmptyDimensions(params.Dimensions)
 
 		// When dimensions or statistic are missing/default, auto-extract from the alarm's
 		// metric configuration. CloudWatch GetMetricData requires dimensions to scope the
@@ -1701,6 +1702,28 @@ func resolveResourceIdentity(
 		"AWS", accountNumber, region, serviceName, resourceType, canonicalId, "")
 }
 
+// findLookupMatch picks the item a ListResources lookup actually asked for. For
+// services without a targeted fetch, ListResources falls back to a region scan
+// filtered by strings.Contains(resource.Arn, key) (main.go), so a name key like
+// "web" also returns "web-2". Taking Items[0] blindly would stamp the event — a
+// Delete included — onto that other resource. Accept only an item whose Id or
+// Arn equals the key, or whose Arn the key qualifies (a Lambda
+// "<function-arn>:PROD" resolved by GetFunction to the base function).
+//
+// Name is deliberately not a match. Every rule keys on the stored Id or the Arn,
+// and a Name can belong to a different resource: an Application Load Balancer is
+// stored under its ARN, so one named "web" would otherwise be adopted — and
+// marked Deleted — when a Classic Load Balancer "web" is deleted.
+func findLookupMatch(items []providers.Resource, key string) (providers.Resource, bool) {
+	for _, item := range items {
+		if item.Id == key || item.Arn == key ||
+			(item.Arn != "" && strings.HasPrefix(key, item.Arn+":")) {
+			return item, true
+		}
+	}
+	return providers.Resource{}, false
+}
+
 // updateCloudResource updates a resource in the cloud_resourses table based on EventBridge event
 func (p *TemplatedEventBridgeProcessor) updateCloudResource(
 	pCtx providers.CloudProviderContext,
@@ -1716,6 +1739,18 @@ func (p *TemplatedEventBridgeProcessor) updateCloudResource(
 		"region", params.Region,
 		"newStatus", params.NewStatus,
 		"accountNumber", awsAccount.AccountNumber)
+
+	// A blank resource_id means the rule's template couldn't extract an identifier
+	// from this event (e.g. Classic ELB Create/DeleteLoadBalancer only carries
+	// loadBalancerName, no ARN). Without a real ID, the ListResources fallback
+	// filter below would match every resource in the region via
+	// strings.Contains(resource.Arn, ""), and Items[0] would silently update an
+	// unrelated resource. Skip instead of guessing.
+	if strings.TrimSpace(params.ResourceId) == "" {
+		logger.Warn("eventprocessor: skipping update_cloud_resource — empty resource_id",
+			"serviceName", params.ServiceName, "resourceType", params.ResourceType)
+		return nil, nil
+	}
 
 	// The account UUID is already on the resolved account; only its tenant needs
 	// looking up, keyed by that UUID so two tenants sharing one AWS account
@@ -1791,8 +1826,7 @@ func (p *TemplatedEventBridgeProcessor) updateCloudResource(
 			}
 			// Use resourceId as fallback external_resource_id
 			resourceArn = params.ResourceId
-		} else if len(resourceResp.Items) > 0 {
-			resource := resourceResp.Items[0]
+		} else if resource, found := findLookupMatch(resourceResp.Items, params.ResourceId); found {
 			logger.Info("eventprocessor: fetched resource details before upsert",
 				"resourceId", resource.Id,
 				"arn", resource.Arn,
@@ -2167,6 +2201,23 @@ func parseLogGroupForContainerFromTaskDefMeta(meta map[string]any, containerName
 	return ""
 }
 
+// dropEmptyDimensions removes {Name, Value} dimensions whose value rendered
+// empty, e.g. ServiceName for a task that belongs to no service. Left in,
+// getAwsCloudwatchMetrics reads the map as {dimName: value} pairs and queries
+// the made-up dimension Name=<dimName>, which matches nothing.
+func dropEmptyDimensions(dims []map[string]string) []map[string]string {
+	kept := make([]map[string]string, 0, len(dims))
+	for _, d := range dims {
+		_, hasName := d["Name"]
+		value, hasValue := d["Value"]
+		if hasName && hasValue && strings.TrimSpace(value) == "" {
+			continue
+		}
+		kept = append(kept, d)
+	}
+	return kept
+}
+
 // mapToStruct converts a map to a struct using JSON tags.
 func mapToStruct(m map[string]any, s any) error {
 	jsonBytes, err := common.MarshalJson(m)
@@ -2451,6 +2502,11 @@ func (p *TemplatedEventBridgeProcessor) Process(ctx providers.CloudProviderConte
 	var matchedRuleNames []string
 	var lastMatchedEvent providers.Event
 	var foundMatch bool
+	// The first emitting rule that matches wins; emitting rules that match
+	// after it are skipped before their actions run. aws_runbook.yaml is
+	// ordered specific-first, so the winner is the most specific rule.
+	// ActionsOnly rules take no part in this and always run.
+	var chosenRule string
 
 	for _, rule := range p.ruleSet.Rules {
 		if !p.matches(ebEvent, rule.Triggers, templateData) {
@@ -2462,6 +2518,17 @@ func (p *TemplatedEventBridgeProcessor) Process(ctx providers.CloudProviderConte
 		foundMatch = true
 
 		logger.Info("eventprocessor: event matches rule", "ruleName", rule.Name, "eventId", ebEvent.ID, "account_number", account.AccountNumber)
+
+		if !rule.ActionsOnly {
+			if chosenRule != "" {
+				logger.Info("eventprocessor: skipping rule, an earlier rule already matched",
+					"ruleName", rule.Name, "chosenRule", chosenRule, "eventId", ebEvent.ID)
+				continue
+			}
+			// Chosen before the dedup check: a winner suppressed by its own
+			// dedup emits nothing, instead of letting a catch-all below it emit.
+			chosenRule = rule.Name
+		}
 
 		// Render the rule's Fingerprint once: it's the dedup key AND the
 		// downstream eventId for emitting rules. Done before the ActionsOnly
@@ -2687,7 +2754,36 @@ func (p *TemplatedEventBridgeProcessor) Process(ctx providers.CloudProviderConte
 		// This overrides template-rendered resource identification and labels
 		// with authoritative values from cloudwatchNamespaceServiceMap.
 		if ebEvent.DetailType == "CloudWatch Alarm State Change" {
-			if alarmInfo, ok := extractCloudWatchAlarmInfoFromEB(ebEvent); ok {
+			// The per-firing id of an alarm is never the delivery's own id. The
+			// poll reports the same firing and knows nothing of deliveries, so a
+			// delivery id here would store the firing twice.
+			provEvent.FindingId = ""
+			alarmInfo, ok := extractCloudWatchAlarmInfoFromEB(ebEvent)
+			if !ok {
+				logger.Warn("eventprocessor: alarm identity falls back to the rule's fingerprint and the delivery time",
+					"ruleName", rule.Name, "reason", "detail unreadable or without an alarm name", "fingerprint", provEvent.EventId)
+			} else {
+				// Identity comes from the alarm's own facts in the event, the same
+				// two the poll reads: its ARN, not the rule's template of one, and
+				// the time it changed state, not the time the event was sent. The
+				// envelope time is the sending time rounded to the second, and for
+				// about one push in five that is the second after the state change,
+				// which gave the two paths different ids for one firing. Each
+				// fallback keeps the value this branch used before and says so,
+				// because a silent one stores the firing twice again.
+				alarmArn, stateChangedAt := alarmInfo.AlarmArn, alarmInfo.StateChangedAt
+				if _, _, isAlarmArn := AlarmIdentity(alarmArn); !isAlarmArn {
+					logger.Warn("eventprocessor: alarm identity falls back to the rule's fingerprint",
+						"ruleName", rule.Name, "reason", "no alarm ARN in the event", "alarmName", alarmInfo.AlarmName, "fingerprint", provEvent.EventId)
+					alarmArn = provEvent.EventId
+				}
+				if stateChangedAt.IsZero() {
+					logger.Warn("eventprocessor: alarm identity falls back to the delivery time",
+						"ruleName", rule.Name, "reason", "no readable state time in the event", "alarmArn", alarmArn)
+					stateChangedAt = provEvent.Date
+				}
+				setAlarmFiring(&provEvent, alarmArn, stateChangedAt)
+
 				var awsCfg *aws.Config
 				cfg, cfgErr := getAwsConfigFromAccount(ctx.GetContext(), account)
 				if cfgErr == nil {
@@ -2698,13 +2794,22 @@ func (p *TemplatedEventBridgeProcessor) Process(ctx providers.CloudProviderConte
 				provEvent.ResourceId = enrichment.ResourceId
 				provEvent.ResourceType = enrichment.ResourceType
 				provEvent.ResourceServiceName = enrichment.ResourceServiceName
+				provEvent.ResourceLookupIds = enrichment.ResourceLookupIds
 				for k, v := range enrichment.Labels {
 					provEvent.Labels[k] = v
+				}
+				// An alarm entering ALARM is a condition that lasts, not a moment.
+				// Whether it is stored open is decided where it is stored, by
+				// whether a poll can end it.
+				if alarmInfo.StateValue == string(AlarmStatusAlarm) && provEvent.EventStatus == providers.EventStatusFiring {
+					if scope, _, ok := AlarmIdentity(provEvent.EventId); ok {
+						provEvent.OngoingScope = scope
+					}
 				}
 			}
 		}
 
-		// Store this event as the last matched event
+		// Store the chosen rule's event
 		lastMatchedEvent = provEvent
 	}
 

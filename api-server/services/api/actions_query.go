@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"nudgebee/services/common"
@@ -16,6 +17,12 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
+
+// StatusClientClosedRequest is the non-standard 499 (nginx's "client closed
+// request") a table query answers with when its caller left before the answer was
+// ready. It keeps abandoned requests out of the 400 count and out of the Warn
+// access log, which cmd/main.go skips for this status.
+const StatusClientClosedRequest = 499
 
 func generateColumnFromAstField(f *ast.Field) query.QueryColumn {
 	expr := ""
@@ -232,12 +239,24 @@ func handleQueryAction(actionPayload *ActionRequest, c *gin.Context, tracer *tra
 	execTime := time.Since(tExec)
 	totalTime := time.Since(t0)
 
-	ctx.GetLogger().Info("query execution time",
+	cancelled := errors.Is(err, query.ErrQueryCancelled)
+	timing := []any{
 		"table", queryRequest.Table,
 		"parse_ms", parseTime.Milliseconds(),
 		"exec_ms", execTime.Milliseconds(),
 		"total_ms", totalTime.Milliseconds(),
-	)
+	}
+	if cancelled {
+		timing = append(timing, "cancelled", true)
+	}
+	ctx.GetLogger().Info("query execution time", timing...)
+
+	if cancelled {
+		// The caller is gone, so nobody reads this. The status is for our own
+		// logs and dashboards: an abandoned request must not count as a bad one.
+		c.JSON(StatusClientClosedRequest, common.ErrorActionBadRequest("client closed the request"))
+		return
+	}
 
 	if err != nil {
 		c.JSON(400, common.ErrorActionBadRequest(err.Error()))

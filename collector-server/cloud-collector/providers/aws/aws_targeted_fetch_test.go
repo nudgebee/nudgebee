@@ -36,18 +36,44 @@ func (c *targetedFetchTestCtx) GetSecurityContext() *security.SecurityContext { 
 // An empty id list is the cheap probe for "is the targeted path implemented" —
 // every implementation returns before touching AWS, and only the inherited
 // DefaultAwsServiceImpl reports ErrUnsupported.
+//
+// The service list is read from the embedded runbook rather than kept by hand:
+// the SQS, SNS and ELB sync rules were added without a targeted path because a
+// hand-kept list only covers the services someone remembered to add to it.
 func TestResourceSyncServicesImplementTargetedFetch(t *testing.T) {
 	ctx := &targetedFetchTestCtx{ctx: context.Background()}
 
-	services := map[string]awsService{
-		"lambda": &awsLambda{},
-		"ecs":    &amazonEcs{},
-		"ec2":    &amazonEc2{},
-	}
+	rules, err := GetEventRules("")
+	require.NoError(t, err, "load embedded aws_runbook.yaml")
 
-	for name, svc := range services {
+	services := map[string]bool{}
+	for _, rule := range rules.Rules {
+		for _, action := range rule.Actions {
+			if action.Type != "update_cloud_resource" {
+				continue
+			}
+			serviceName, _ := action.Params["service_name"].(string)
+			require.NotEmpty(t, serviceName, "rule %s: update_cloud_resource needs a literal service_name", rule.Name)
+			services[serviceName] = true
+		}
+	}
+	require.NotEmpty(t, services, "the runbook must have update_cloud_resource rules")
+
+	// Known gap, not an endorsement: RDS sync rules still scan the region per
+	// event. Remove the entry when RDS gets a targeted path; do not add to it.
+	withoutTargetedFetch := map[string]bool{ServiceNameRDS: true}
+
+	for name := range services {
 		t.Run(name, func(t *testing.T) {
+			svc, ok := GetAwsService(name)
+			require.True(t, ok, "runbook service_name %s is not a registered AWS service", name)
+
 			_, err := svc.GetResourcesByIds(ctx, providers.Account{}, "us-east-1", nil)
+			if withoutTargetedFetch[name] {
+				require.ErrorIs(t, err, errors.ErrUnsupported,
+					"%s now has a targeted path; remove it from withoutTargetedFetch", name)
+				return
+			}
 			require.False(t, errors.Is(err, errors.ErrUnsupported),
 				"%s must implement GetResourcesByIds; inheriting the default sends every "+
 					"per-resource event back to a full-region scan", name)
@@ -56,7 +82,7 @@ func TestResourceSyncServicesImplementTargetedFetch(t *testing.T) {
 
 	// Control: the inherited default still reports unsupported, so the assertion
 	// above is actually discriminating and not vacuously true.
-	_, err := (&DefaultAwsServiceImpl{}).GetResourcesByIds(ctx, providers.Account{}, "us-east-1", nil)
+	_, err = (&DefaultAwsServiceImpl{}).GetResourcesByIds(ctx, providers.Account{}, "us-east-1", nil)
 	require.ErrorIs(t, err, errors.ErrUnsupported)
 }
 

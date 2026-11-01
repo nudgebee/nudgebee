@@ -68,52 +68,52 @@ func buildNewRelicNodeQueries(meta RequestMetadata, metrics []string) map[string
 	nodeFilter := buildNRQLNodeNameFilter(meta.NodeName)
 
 	for _, metricKey := range metrics {
-		switch metricKey {
-		case "cpu_usage":
+		switch UtilisationKey(metricKey) {
+		case KeyCPUUsage:
 			queries[metricKey] = fmt.Sprintf(
 				"SELECT average(cpuUsedCores) FROM K8sNodeSample WHERE %s FACET nodeName",
 				nodeFilter)
-		case "memory_usage":
+		case KeyMemoryUsage:
 			queries[metricKey] = fmt.Sprintf(
 				"SELECT average(memoryUsedBytes) FROM K8sNodeSample WHERE %s FACET nodeName",
 				nodeFilter)
-		case "cpu_request":
+		case KeyCPURequest:
 			queries[metricKey] = fmt.Sprintf(
 				"SELECT sum(cpuRequestedCores) FROM K8sContainerSample WHERE %s FACET nodeName",
 				nodeFilter)
-		case "cpu_limit":
+		case KeyCPULimit:
 			queries[metricKey] = fmt.Sprintf(
 				"SELECT sum(cpuLimitCores) FROM K8sContainerSample WHERE %s FACET nodeName",
 				nodeFilter)
-		case "memory_request":
+		case KeyMemoryRequest:
 			queries[metricKey] = fmt.Sprintf(
 				"SELECT sum(memoryRequestedBytes) FROM K8sContainerSample WHERE %s FACET nodeName",
 				nodeFilter)
-		case "memory_limit":
+		case KeyMemoryLimit:
 			queries[metricKey] = fmt.Sprintf(
 				"SELECT sum(memoryLimitBytes) FROM K8sContainerSample WHERE %s FACET nodeName",
 				nodeFilter)
-		case "disk_total":
+		case KeyDiskTotal:
 			queries[metricKey] = fmt.Sprintf(
 				"SELECT latest(fsCapacityBytes) FROM K8sNodeSample WHERE %s FACET nodeName",
 				nodeFilter)
-		case "disk_used":
+		case KeyDiskUsed:
 			queries[metricKey] = fmt.Sprintf(
 				"SELECT latest(fsUsedBytes) FROM K8sNodeSample WHERE %s FACET nodeName",
 				nodeFilter)
-		case "cpu_allocatable":
+		case KeyCPUAllocatable:
 			queries[metricKey] = fmt.Sprintf(
 				"SELECT latest(allocatableCpuCores) FROM K8sNodeSample WHERE %s FACET nodeName",
 				nodeFilter)
-		case "memory_allocatable":
+		case KeyMemoryAllocatable:
 			queries[metricKey] = fmt.Sprintf(
 				"SELECT latest(allocatableMemoryBytes) FROM K8sNodeSample WHERE %s FACET nodeName",
 				nodeFilter)
-		case "cpu_usage_line":
+		case KeyCPUUsageLine:
 			queries[metricKey] = fmt.Sprintf(
 				"SELECT average(cpuUsedCores) FROM K8sNodeSample WHERE %s FACET nodeName",
 				nodeFilter)
-		case "memory_usage_line":
+		case KeyMemoryUsageLine:
 			queries[metricKey] = fmt.Sprintf(
 				"SELECT average(memoryUsedBytes) FROM K8sNodeSample WHERE %s FACET nodeName",
 				nodeFilter)
@@ -172,35 +172,35 @@ func buildNewRelicWorkloadQueries(meta RequestMetadata, metrics []string) map[st
 
 	// --- Pass 1: Cluster/Node Aggregation Metrics (no workload filter needed) ---
 	for _, metricKey := range metrics {
-		switch metricKey {
-		case "cpu_real":
+		switch UtilisationKey(metricKey) {
+		case KeyCPUReal:
 			queries[metricKey] = "SELECT sum(cpuUsedCores) FROM K8sNodeSample"
-		case "cpu_total":
+		case KeyCPUTotal:
 			queries[metricKey] = "SELECT sum(capacityCpuCores) FROM K8sNodeSample"
-		case "mem_real":
+		case KeyMemReal:
 			queries[metricKey] = "SELECT sum(memoryUsedBytes) FROM K8sNodeSample"
-		case "mem_total":
+		case KeyMemTotal:
 			queries[metricKey] = "SELECT sum(capacityMemoryBytes) FROM K8sNodeSample"
-		case "p90_cpu":
+		case KeyP90CPU:
 			queries[metricKey] = "SELECT percentile(cpuUsedCores, 90) FROM K8sNodeSample"
-		case "p50_cpu":
+		case KeyP50CPU:
 			queries[metricKey] = "SELECT percentile(cpuUsedCores, 50) FROM K8sNodeSample"
-		case "p90_mem":
+		case KeyP90Mem:
 			queries[metricKey] = "SELECT percentile(memoryUsedBytes, 90) FROM K8sNodeSample"
-		case "p50_mem":
+		case KeyP50Mem:
 			queries[metricKey] = "SELECT percentile(memoryUsedBytes, 50) FROM K8sNodeSample"
-		case "max_usage_cpu":
+		case KeyMaxUsageCPU:
 			queries[metricKey] = "SELECT max(cpuUsedCores) FROM K8sNodeSample"
-		case "max_usage_mem":
+		case KeyMaxUsageMem:
 			queries[metricKey] = "SELECT max(memoryUsedBytes) FROM K8sNodeSample"
 		// --- Cluster-wide Container Resource Aggregations (no workload filter) ---
-		case "cpu_request":
+		case KeyCPURequest:
 			queries[metricKey] = "SELECT sum(cpuRequestedCores) FROM K8sContainerSample"
-		case "cpu_limit":
+		case KeyCPULimit:
 			queries[metricKey] = "SELECT sum(cpuLimitCores) FROM K8sContainerSample"
-		case "memory_request":
+		case KeyMemoryRequest:
 			queries[metricKey] = "SELECT sum(memoryRequestedBytes) FROM K8sContainerSample"
-		case "memory_limit":
+		case KeyMemoryLimit:
 			queries[metricKey] = "SELECT sum(memoryLimitBytes) FROM K8sContainerSample"
 		}
 	}
@@ -239,71 +239,71 @@ func buildNewRelicWorkloadQueries(meta RequestMetadata, metrics []string) map[st
 
 	// --- Pass 2: Workload-specific Metrics (require whereClause) ---
 	for _, metricKey := range metrics {
-		switch metricKey {
+		switch UtilisationKey(metricKey) {
 		// --- Resource Metrics from K8sContainerSample ---
-		case "cpu_usage":
+		case KeyCPUUsage:
 			queries[metricKey] = fmt.Sprintf(
 				"SELECT sum(cpuUsedCores) FROM K8sContainerSample WHERE %s %s",
 				whereClause, facetClause)
-		case "cpu_request":
+		case KeyCPURequest:
 			queries[metricKey] = fmt.Sprintf(
 				"SELECT sum(cpuRequestedCores) FROM K8sContainerSample WHERE %s %s",
 				whereClause, facetClause)
-		case "cpu_limit":
+		case KeyCPULimit:
 			queries[metricKey] = fmt.Sprintf(
 				"SELECT sum(cpuLimitCores) FROM K8sContainerSample WHERE %s %s",
 				whereClause, facetClause)
-		case "memory_usage":
+		case KeyMemoryUsage:
 			queries[metricKey] = fmt.Sprintf(
 				"SELECT sum(memoryWorkingSetBytes) FROM K8sContainerSample WHERE %s %s",
 				whereClause, facetClause)
-		case "memory_request":
+		case KeyMemoryRequest:
 			queries[metricKey] = fmt.Sprintf(
 				"SELECT sum(memoryRequestedBytes) FROM K8sContainerSample WHERE %s %s",
 				whereClause, facetClause)
-		case "memory_limit":
+		case KeyMemoryLimit:
 			queries[metricKey] = fmt.Sprintf(
 				"SELECT sum(memoryLimitBytes) FROM K8sContainerSample WHERE %s %s",
 				whereClause, facetClause)
 
 		// --- HTTP/APM Metrics from Transaction events ---
-		case "http_status":
+		case KeyHTTPStatus:
 			queries[metricKey] = fmt.Sprintf(
 				"SELECT count(*) FROM Transaction WHERE %s FACET httpResponseCode",
 				whereClause)
-		case "http_throughput":
+		case KeyHTTPThroughput:
 			queries[metricKey] = fmt.Sprintf(
 				"SELECT rate(count(*), 1 minute) FROM Transaction WHERE %s %s",
 				whereClause, facetClause)
-		case "http_latency_p95":
+		case KeyHTTPLatencyP95:
 			queries[metricKey] = fmt.Sprintf(
 				"SELECT percentile(duration, 95) FROM Transaction WHERE %s %s",
 				whereClause, facetClause)
-		case "http_latency_p99", "workload_http_latency_p99":
+		case KeyHTTPLatencyP99, KeyWorkloadHTTPLatencyP99:
 			queries[metricKey] = fmt.Sprintf(
 				"SELECT percentile(duration, 99) FROM Transaction WHERE %s %s",
 				whereClause, facetClause)
-		case "http_latency_sum":
+		case KeyHTTPLatencySum:
 			queries[metricKey] = fmt.Sprintf(
 				"SELECT sum(duration) FROM Transaction WHERE %s %s",
 				whereClause, facetClause)
-		case "http_max_response_time":
+		case KeyHTTPMaxResponseTime:
 			queries[metricKey] = fmt.Sprintf(
 				"SELECT max(duration) FROM Transaction WHERE %s %s",
 				whereClause, facetClause)
-		case "http_error_rate":
+		case KeyHTTPErrorRate:
 			queries[metricKey] = fmt.Sprintf(
 				"SELECT percentage(count(*), WHERE error IS true) FROM Transaction WHERE %s %s",
 				whereClause, facetClause)
 
 		// --- PVC/Volume Metrics from K8sVolumeSample ---
-		case "pvc_usage":
+		case KeyPVCUsage:
 			if pvcWhereClause != "" {
 				queries[metricKey] = fmt.Sprintf(
 					"SELECT sum(fsUsedBytes) FROM K8sVolumeSample WHERE %s FACET pvcName",
 					pvcWhereClause)
 			}
-		case "pvc_requests":
+		case KeyPVCRequests:
 			if pvcWhereClause != "" {
 				queries[metricKey] = fmt.Sprintf(
 					"SELECT sum(fsCapacityBytes) FROM K8sVolumeSample WHERE %s FACET pvcName",

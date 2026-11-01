@@ -124,17 +124,21 @@ CheckLine.propTypes = { ok: PropTypes.bool, children: PropTypes.node };
 // user changes the buffer or types a value.
 export const MemoryHeadroomCheck = ({ usage, request, limit }) => {
   const values = usageInMb(usage);
-  if (values.length === 0) return null;
-  const peak = Math.max(...values);
-  const whose = usage.scope === 'pod' ? 'the pod' : 'it';
   // The event form takes plain MB numbers and refuses anything else on submit
   // (e.g. "1Gi"), so read the value the same way: not a number, no check.
   const limitMb = limit === '' || limit == null ? NaN : Number(limit);
   const requestMb = request === '' || request == null ? NaN : Number(request);
+  // Needs no usage to be true, so it is not gated on the usage series below.
+  const requestAboveLimit = Number.isFinite(requestMb) && Number.isFinite(limitMb) && requestMb > limitMb;
+  if (values.length === 0 && !requestAboveLimit) return null;
+  const peak = values.length > 0 ? Math.max(...values) : NaN;
+  const whose = usage?.scope === 'pod' ? 'the pod' : 'it';
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }} data-testid='memory-headroom-check'>
+      {requestAboveLimit && <CheckLine ok={false}>Request is above the limit ({formatMb(limitMb)}) — Kubernetes will refuse it.</CheckLine>}
       {Number.isFinite(limitMb) &&
+        Number.isFinite(peak) &&
         (limitMb >= peak ? (
           <CheckLine ok>
             Limit is {formatMb(limitMb - peak)} above the most {whose} has used ({formatMb(peak)}).
@@ -144,7 +148,7 @@ export const MemoryHeadroomCheck = ({ usage, request, limit }) => {
             Limit is below the most {whose} has used ({formatMb(peak)}) — it would run out of memory again.
           </CheckLine>
         ))}
-      {Number.isFinite(requestMb) && requestMb < peak && (
+      {Number.isFinite(requestMb) && Number.isFinite(peak) && requestMb < peak && (
         <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600] }}>
           Reserves {formatMb(requestMb)} while {whose} has used up to {formatMb(peak)}. Room on the node is not checked.
         </Typography>

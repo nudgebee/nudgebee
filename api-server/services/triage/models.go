@@ -638,9 +638,9 @@ type AlertQualityScore struct {
 	FiringFrequency float64 `json:"firing_frequency"`   // events per day
 	ResolutionRate  float64 `json:"resolution_rate"`    // % of events that resolve (excludes instant events)
 	EngagementRate  float64 `json:"engagement_rate"`    // % triaged by a human
-	TransientRate   float64 `json:"transient_rate"`     // events resolving < 10 min / total resolved
+	TransientRate   float64 `json:"transient_rate"`     // events resolving within 10 min / total resolved
 	DurationP90     float64 `json:"duration_p90"`       // 90th percentile of event duration in seconds
 	InstantRate     float64 `json:"instant_rate"`       // events where ends_at = starts_at / total
-	Classification  string  `json:"classification"`     // false_positive|noisy_but_real|broken|healthy
-	Recommendation  string  `json:"recommendation"`     // tune_threshold|increase_duration|disable_alert|investigate|no_action
+	Classification  string  `json:"classification"`     // false_positive|noisy_but_real|noisy_ignored|broken|healthy
+	Recommendation  string  `json:"recommendation"`     // tune_threshold|increase_duration|investigate|no_action
 }

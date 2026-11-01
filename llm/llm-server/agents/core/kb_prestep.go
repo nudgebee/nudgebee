@@ -35,6 +35,9 @@ const (
 	// kbPrestepMaxQueryLen caps the enriched search query so resource hints
 	// never dominate the user's actual question for semantic matching.
 	kbPrestepMaxQueryLen = 400
+	// kbPrestepMinBaseLen is the part of the cap the question keeps when it and
+	// its hints do not fit together.
+	kbPrestepMinBaseLen = 100
 )
 
 var resolveManualKnowledgeFn = toolcore.ResolveManualKnowledge
@@ -159,6 +162,9 @@ func buildKBSearchQuery(request NBAgentRequest) string {
 		hints = append(hints, v)
 	}
 
+	for _, v := range request.QueryConfig.KnowledgeHints {
+		addHint(v)
+	}
 	addHint(request.QueryConfig.Namespace)
 	addHint(request.QueryConfig.Workload)
 	// A delegated task often contains the provider/resource detail that the
@@ -180,11 +186,19 @@ func buildKBSearchQuery(request NBAgentRequest) string {
 		}
 	}
 
-	query := base
-	if len(hints) > 0 {
-		query = strings.TrimSpace(base + " " + strings.Join(hints, " "))
+	if len(hints) == 0 {
+		return TruncateHead(base, kbPrestepMaxQueryLen)
 	}
-	return TruncateHead(query, kbPrestepMaxQueryLen)
+	hintText := strings.Join(hints, " ")
+	if len(base)+1+len(hintText) <= kbPrestepMaxQueryLen {
+		return strings.TrimSpace(base + " " + hintText)
+	}
+	// A long base (an event investigation prompt, or a delegated child that
+	// inherits it) would otherwise push every hint past the cap. Keep a minimum
+	// of the base and give the rest to the hints.
+	hintText = TruncateHead(hintText, kbPrestepMaxQueryLen-min(len(base), kbPrestepMinBaseLen)-1)
+	base = TruncateHead(base, kbPrestepMaxQueryLen-len(hintText)-1)
+	return strings.TrimSpace(base + " " + hintText)
 }
 
 // retrieveRelevantKB is the KB pre-step. It runs before planning, does ONE
@@ -247,7 +261,13 @@ func retrieveRelevantKB(ctx *security.RequestContext, request NBAgentRequest, kb
 	// the goroutines would cost one LLM call per search and could keep one document
 	// from each — while the pre-step's job is to supply the one page that answers the
 	// question. Runs after dedup so duplicate copies of a page are not judged twice.
-	kept = judgeKBResultsFn(ctx, request.AccountId, request.UserId, request.ConversationId, request.MessageId, query, kept, traceIDs...)
+	// Judge event results against what the event is, not only against the
+	// prompt prefix that failed to retrieve them.
+	judgeQuery := query
+	if hints := strings.Join(request.QueryConfig.KnowledgeHints, " "); hints != "" {
+		judgeQuery = hints + " " + query
+	}
+	kept = judgeKBResultsFn(ctx, request.AccountId, request.UserId, request.ConversationId, request.MessageId, judgeQuery, kept, traceIDs...)
 	if len(kept) == 0 {
 		ctx.GetLogger().Info("kb_prestep: judge found nothing relevant, no knowledge in prompt")
 		return kbDiscoveryResult{}
@@ -337,18 +357,32 @@ func retrieveKnowledgeDocs(ctx context.Context, request NBAgentRequest, query st
 		docs    toolcore.RAGSearchResults
 		traceID string
 	}
+	// An event investigation also searches by what kind of event it is. Its
+	// question is a long templated prompt about one occurrence, which ranks
+	// procedures for that kind of event below the relevance threshold; the
+	// event's category and type fields alone retrieve them.
+	eventQuery := strings.TrimSpace(strings.Join(request.QueryConfig.KnowledgeHints, " "))
+	slots := len(selectedIDs) + 1
+	if eventQuery != "" {
+		slots++
+	}
 	// One slot per producer allows late completions to exit after timeout.
-	results := make(chan result, len(selectedIDs)+1)
+	results := make(chan result, slots)
 	accountQuery, collectionQuery := queryAccountKnowledgeFn, queryCollectionKnowledgeFn
-	go func() {
+	searchAccount := func(index int, q string) {
 		// One trace id per search, derived inside the goroutine: these run
 		// concurrently, and a shared id would collapse four rows into one.
 		searchCtx, traceID := toolcore.WithRetrievalTraceID(ctx)
-		docs := accountQuery(searchCtx, request.UserId, request.AccountId, query, "knowledge_base",
+		docs := accountQuery(searchCtx, request.UserId, request.AccountId, q, "knowledge_base",
 			kbPrestepTopK, request.ConversationId, request.MessageId, request.AgentId, true)
-		results <- result{index: len(selectedIDs), docs: docs, traceID: traceID}
-	}()
+		results <- result{index: index, docs: docs, traceID: traceID}
+	}
+	go searchAccount(slots-1, query)
 	launched := 1
+	if eventQuery != "" {
+		go searchAccount(len(selectedIDs), eventQuery)
+		launched++
+	}
 	for i, id := range selectedIDs {
 		kb, ok := byID[id]
 		if !ok {
@@ -363,7 +397,7 @@ func retrieveKnowledgeDocs(ctx context.Context, request NBAgentRequest, query st
 		}(i, toolcore.KnowledgebaseCollectionName(kb))
 	}
 
-	ordered := make([]toolcore.RAGSearchResults, len(selectedIDs)+1)
+	ordered := make([]toolcore.RAGSearchResults, slots)
 	var traceIDs []string
 collect:
 	for range launched {

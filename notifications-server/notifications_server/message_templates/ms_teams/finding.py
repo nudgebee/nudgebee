@@ -4,6 +4,7 @@ import logging
 import os
 from datetime import datetime
 
+from notifications_server.services.ms_teams import card_actions
 from notifications_server.utils.evidence import flatten_evidence_rows
 from notifications_server.utils.transformer import Transformer
 from notifications_server.configs.settings import DEFAULT_EVIDENCES, settings
@@ -47,7 +48,9 @@ def add_filtered_evidences_teams(evidence_list, data: dict):
             )
 
 
-def get_ms_teams_finding_message_template(finding):
+def get_ms_teams_finding_message_template(finding, tenant_id=None):
+    """The finding card. With a tenant, for the bot (not webhooks, which can't
+    receive clicks), it also carries the action buttons."""
     parameters = {"title": finding.get("title")}
     if finding.get("description"):
         parameters["description"] = finding.get("description")
@@ -69,7 +72,22 @@ def get_ms_teams_finding_message_template(finding):
     parameters["evidences"] = add_evidences(finding)
     parameters["viewUrl"] = f"{os.environ.get('BASE_URL')}/investigate?id={finding.get('id')}"
 
-    return get_adaptive_card_template(parameters)
+    card = get_adaptive_card_template(parameters)
+    if not tenant_id:
+        return card
+    ask = card_actions.ask_nubi_action(finding, tenant_id)
+    suppress = card_actions.suppress_action(finding, tenant_id)
+    # An alert must still be delivered when its evidence leaves no room for the
+    # buttons: Ask Nubi is dropped first, then the Suppress menu.
+    for added in ([ask, suppress], [suppress]):
+        added = [a for a in added if a]
+        if not added:
+            continue
+        with_buttons = {**card, "actions": [*(card.get("actions") or []), *added]}
+        if card_actions.fits(with_buttons):
+            return with_buttons
+    LOG.info("Teams card for finding %s is too large for its buttons", finding.get("id"))
+    return card
 
 
 def add_evidences(finding):

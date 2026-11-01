@@ -61,7 +61,13 @@ export class TriageInboxLocators extends TroubleshootEventsLocators {
     // label prefix inside the card, valid only while nothing is selected.
     this.eventTypeFilter = this.filterTrigger("filter-event-type", /^Event Type/);
     this.sourceFilter = this.filterTrigger("filter-source", /^Source/);
-    this.severityFilter = this.filterTrigger("filter-severity", /^Severity/);
+    // Transition tolerance (#39806): the filter label was renamed Severity → Source
+    // Severity, and the trigger id derives from the label. This suite also runs against
+    // dev before that deploys, so match either shape; tighten to the source-severity
+    // pair in the old-widget cleanup PR.
+    this.severityFilter = this.filterTrigger("filter-source-severity", /^Source Severity/)
+      .or(this.filterTrigger("filter-severity", /^Severity/))
+      .first();
     this.statusFilter = this.filterTrigger("filter-status", /^Status/);
     this.triagePriorityFilter = this.filterTrigger("filter-triage-priority", /^Triage Priority/);
     this.issueTypeFilter = this.filterTrigger("filter-issue-type", /^Issue Type/);

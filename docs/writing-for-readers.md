@@ -27,12 +27,21 @@ the editing to whoever opens the PR.
 Every PR body and issue has the same shape. Order is not negotiable; sections are.
 
 1. **Lead — 3 sentences, no jargon.** What changed, who it affects, why it mattered.
-2. **How to verify — reader-side steps.** What *someone else* does to confirm it works.
-3. **Risks — max 3 bullets.** Only things a reviewer should actively evaluate. Omit if none.
-4. **`<details>` fold — everything else.** No length limit. This is where the depth lives.
+2. **Decision — 1–2 lines, PRs only.** What you chose, what else was possible, why not that.
+3. **Look at — 1 line, PRs only.** Which part of the diff carries the risk, and which parts are
+   mechanical.
+4. **Chain — 1 line, multi-PR tickets only.** Where this PR sits in the sequence, what it replaces,
+   and the rule as it stands after it.
+5. **How to verify — reader-side steps.** What *someone else* does to confirm it works.
+6. **Risks — max 3 bullets.** Only things a reviewer should actively evaluate. Omit if none.
+7. **`<details>` fold — everything else.** No length limit. This is where the depth lives.
 
 **Budget: everything above the fold fits one screen — hard cap 200 words.** The fold is unlimited,
 so nothing is ever lost by respecting the cap; detail is *demoted*, not deleted.
+
+**Scale it to the diff.** 200 words is a ceiling, not a target. A 20-line fix gets a lead, a
+decision line and one verify line — a description longer than the diff it describes is a draft.
+Dependency bumps and other mechanical PRs get a lead and nothing else.
 
 ```markdown
 <details>
@@ -42,6 +51,45 @@ so nothing is ever lost by respecting the cap; detail is *demoted*, not deleted.
 
 </details>
 ```
+
+## The decision is what the reviewer approves
+
+A reviewer does not approve the problem — they approve your answer to it. A description that spends
+its words proving the problem exists, then presents the fix as the only possible one, leaves them
+nothing to review: they can trust you or redo your investigation.
+
+- **`Decision:`** names the choice a reasonable engineer could disagree with, the alternative you
+  did not take, and why. "Close the alert when every pod is ready again, on a single sample. Waiting
+  for two samples was the safer option; it delays every close by a collection interval." If the
+  choice costs something, say so in bold — a known trade stated up front is reviewable, one
+  discovered in production is an incident.
+- **`Look at:`** tells them where to spend their attention. "The risk is the one new query in the
+  grouping step. The other nine files are a renamed field and its tests." Without it, every line of
+  a 1,500-line diff gets the same skim.
+- **Proof that the problem exists goes in the fold**, together with the query or command that
+  produced each number. A number nobody else can reproduce is an assertion, not evidence.
+
+Omit `Decision` only when there was genuinely no alternative (a typo, a version bump). Omit
+`Look at` when the diff is one file or under ~50 lines. If you cannot name an alternative for a
+non-trivial change, you have not looked for one yet.
+
+**Ask before the code exists.** Once 1,500 lines are written nobody proposes a different design —
+they approve. For work that will take more than one PR, post the approach on the ticket (the
+decision, the alternative, the order of the PRs) and get it agreed first. Each PR then links to it
+instead of re-arguing it.
+
+## Several PRs for one ticket
+
+One logical change is one PR. When a ticket really does need several, the reviewer of PR 4 has not
+memorised PRs 1–3, so each one carries a `Chain:` line above the fold:
+
+> **Chain:** 3 of 4 for #1234. Replaces the delete-time close from #1201. After this PR an alert
+> closes when its resource is gone *or* all its pods are ready and have not restarted since.
+
+Three things, every time: where this PR sits, which earlier PR it replaces or adjusts, and the
+**whole rule as it stands after this PR** — not just the delta. A PR that fixes a problem an earlier
+PR in the chain introduced says so and links it. If you are about to open the third same-week fix to
+one mechanism, stop and write the structural one instead.
 
 ## Author-side evidence is not reader-side verification
 
@@ -66,7 +114,11 @@ Function, method, struct or column names · `file.go:513` · commit SHAs · migr
 versions · stack traces · SQL · per-file change tables · anything a non-engineer would have to
 look up.
 
-Naming a service (`llm-server`, `relay-server`) is fine. Naming a symbol inside it is not.
+Naming a service (`llm-server`, `relay-server`) is fine. Naming a symbol inside it is not. The one
+exception is the `Look at` line, which may name files — pointing at the diff is its job.
+
+Also never above the fold: results of lint and test runs, notes about failures that already exist
+on `main`, and the story of how you got there. The reviewer approves none of them.
 
 ## Delete on sight
 
@@ -82,9 +134,10 @@ Naming a service (`llm-server`, `relay-server`) is fine. Naming a symbol inside 
 
 "Significantly slower" is unreviewable. "30% of calls (17/57) hit the cap, costing ~20 min of a
 41-minute investigation" is a fact someone can argue with. Put **one** number in the lead; put the
-table in the fold.
+table in the fold, next to the query that produced it. Keep a number above the fold only if it bears
+on the decision — five figures that all say "the problem is real" are one figure.
 
-## Four tests before you post
+## Five tests before you post
 
 Re-read your own draft and answer these. Any failure is a rewrite, not a caveat.
 
@@ -94,6 +147,8 @@ Re-read your own draft and answer these. Any failure is a rewrite, not a caveat.
 3. **Reproduce test** — could QA follow "How to verify" without opening the codebase?
 4. **Slop test** — delete every sentence that restates the diff, hedges, or exists to look
    thorough. Did the meaning survive? Then it should have been deleted.
+5. **Decision test** — reading only what is above the fold, can a reviewer name one thing they
+   could disagree with, and where in the diff to look for it?
 
 ## Worked example
 
@@ -105,7 +160,7 @@ Re-read your own draft and answer these. Any failure is a rewrite, not a caveat.
 >
 > **How Has This Been Tested?** `go test ./agents/core/` — green. `golangci-lint run` — 0 issues.
 
-**After** — 110 words above the fold, same information, nothing lost:
+**After** — 170 words above the fold, same information, nothing lost:
 
 > Investigations on newer models (Claude 4.x/5, GPT-5, o-series) were being cut off at 3% of the
 > output length those models support, then silently stitched back together from up to 4 retries.
@@ -113,13 +168,17 @@ Re-read your own draft and answer these. Any failure is a rewrite, not a caveat.
 > minutes** on those retries. This raises the ceilings and logs a warning whenever a model still
 > falls back to the old default.
 >
+> **Decision:** ceilings are raised only for the model families we know; self-hosted models (Qwen,
+> llama, mistral) stay on the old default. Raising the default for every model was the alternative —
+> their real ceiling is deployment-specific, and guessing high turns a slow call into a failed one.
+>
+> **Look at:** the per-model ceilings in `llm-server` — the only behaviour change. The rest is the
+> warning log.
+>
 > **How to verify**
 > 1. Run any investigation on a Bedrock account (`us.anthropic.claude-sonnet-4-6`).
 > 2. Watch `llm-server` logs — `Attempting continuation` should be rare, not 35× per investigation.
 > 3. Responses should read as one answer, not restart mid-sentence.
->
-> **Risks** — self-hosted models (Qwen, llama, mistral) deliberately stay on the old default; their
-> real ceiling is deployment-specific and guessing high turns a slow call into a failed one.
 >
 > <details><summary>Engineering detail</summary> …the 5 tables, root cause, per-model ceilings,
 > what's not in this PR… </details>

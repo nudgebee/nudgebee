@@ -760,7 +760,7 @@ func dispatchPRFollowup(ctx *security.RequestContext, dbms *database.DatabaseMan
 
 	chatRequest := buildPRFollowupChatRequest(meta, gitToken,
 		fmt.Sprintf("Follow up on PR %s — address CI failures and review comments", meta.PRURL),
-		addressedComments)
+		"", addressedComments)
 
 	runPRFollowupAgent(ctx, tenantID, chatRequest,
 		followupRunSpec{dbms: dbms, followupID: followupID, reattachable: true, logKey: "pr_url", logID: prURL},
@@ -1226,15 +1226,18 @@ func markPRFollowupUnresolvableByURL(ctx *security.RequestContext, dbms *databas
 // because followup is set with a pr_url, works on that pull request's existing
 // branch rather than opening a new one.
 //
-// prompt is the only thing that varies between callers: the lifecycle cron asks
-// it to address CI failures and review comments, while a value refresh asks it to
-// apply changed rightsizing numbers (#34959). Keeping one builder means both get
-// the same branch fallback and credential handling.
+// prompt is the conversation text; instruction is a specific change the run must
+// make, and the only thing that makes it do something other than address CI
+// failures and review comments. The lifecycle cron sends no instruction; a value
+// refresh sends the changed rightsizing numbers as one (#34959). prompt cannot
+// carry that on its own: every followup sends one, so code-analysis cannot tell
+// an instruction from boilerplate. Keeping one builder means both callers get the
+// same branch fallback and credential handling.
 // addressedComments is the set a previous run already answered (#36865),
 // forwarded so code-analysis — which has no metastore access — can use it as a
 // fallback skip source alongside GitHub's own resolved-thread state. Omitted
 // from the payload when empty, so nothing changes for a PR with no history.
-func buildPRFollowupChatRequest(meta prMetadata, gitToken, prompt string, addressedComments json.RawMessage) llm.ConversationApiRequest {
+func buildPRFollowupChatRequest(meta prMetadata, gitToken, prompt, instruction string, addressedComments json.RawMessage) llm.ConversationApiRequest {
 	prBranch := meta.PRBranch
 	if prBranch == "" {
 		prBranch = meta.Branch
@@ -1247,6 +1250,9 @@ func buildPRFollowupChatRequest(meta prMetadata, gitToken, prompt string, addres
 		"git_repo":  meta.RepoURL,
 		"pr_branch": prBranch,
 		"git_token": gitToken,
+	}
+	if instruction != "" {
+		followupQuery["instruction"] = instruction
 	}
 	// json.RawMessage marshals through verbatim, so the array is embedded as an
 	// array rather than a quoted string. Guarded on a non-empty array so a fresh

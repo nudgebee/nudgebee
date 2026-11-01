@@ -7,7 +7,11 @@
 # clean. EE deploys still override PYTHON_BASE via --build-arg.
 ARG PYTHON_BASE=ghcr.io/nudgebee/nudgebee-python:3.12
 FROM ${PYTHON_BASE} AS python-base
-RUN apk update && \
+# Bumping OS_PKG_EPOCH changes this layer's cache key so the registry cache
+# can't serve a stale package layer (same convention as api-server/services).
+ARG OS_PKG_EPOCH=2026-W44
+RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" && \
+    apk update && \
     apk upgrade --no-cache && \
     apk add --no-cache graphviz && \
     rm -rf /var/cache/apk/*
@@ -21,6 +25,15 @@ COPY poetry.lock pyproject.toml ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=cache,target=/root/.cache/pip \
     uv pip install --system --requirements pyproject.toml
+
+# Drop pip from the runtime image. Dependencies are installed with uv and
+# nothing calls pip at runtime, but pip vendors its own msgpack, urllib3 and
+# setuptools copies that Trivy flags (still unpatched in pip 26.2.2).
+RUN if python -m pip --version >/dev/null 2>&1; then python -m pip uninstall -y pip; fi
+
+# Native wheels are built by now, so remove the compilers the base preinstalls.
+# They are unused at runtime, and binutils carries scanner findings.
+RUN apk del --no-cache build-base gcc libc-dev musl-dev
 
 # Copy application source code
 COPY notifications_server notifications_server

@@ -185,12 +185,16 @@ Configure the Slack App's redirect URL to `${BASE_URL}/api/integrations/slack/ca
 
 | Variable | Required for |
 |---|---|
-| `MS_TEAMS_CLIENT_ID` | OAuth + Graph API |
-| `MS_TEAMS_CLIENT_SECRET` | OAuth + Graph API |
+| `MS_TEAMS_CLIENT_ID` | The bot's Entra app id: Connect sign-in and the bot identity |
+| `MS_TEAMS_CLIENT_SECRET` | The bot's Entra app secret |
+| `MS_TEAMS_BOT_TENANT_ID` | Home tenant of a SingleTenant Azure Bot; the Bot Connector token is issued there. Leave empty for a MultiTenant bot |
+| `MS_TEAMS_ACTION_SIGNING_KEY` | Signs the data on Teams card buttons (Suppress, Ask Nubi, workflow approvals, answer feedback). Leave empty to send Teams cards without action buttons |
+| `MS_TEAMS_THINKING_STEPS_ENABLED` | `true`: a chat question gets a "Thinking…" message that shows Nubi's steps and becomes the answer. `false`: a plain "working on it" reply |
+| `MS_TEAMS_ANSWER_CARDS_ENABLED` | `true`: chat answers are cards, with tables and feedback buttons. `false`: plain text answers |
 | `MS_TEAMS_AUTHORITY` | `https://login.microsoftonline.com/common` |
 | `MS_TEAMS_BOT_ENDPOINT` | Bot Framework endpoint |
 
-Register the Azure AD app as a bot in Azure Bot Service, add it to your Teams app manifest, and point the Bot Service messaging endpoint at `${BASE_URL}/api/webhooks/msteams/events`.
+Teams goes through the bot only; no Microsoft Graph permission is used. Connect asks only for `User.Read`, to learn which Microsoft tenant is connecting. Use a multi-tenant Entra app registration with a SingleTenant Azure Bot, enable its Microsoft Teams channel (and accept the channel's terms), point the messaging endpoint at `${BASE_URL}/api/webhooks/msteams/events`, and add the NudgeBee Teams app to the teams that should get alerts. The bot posts to a team's standard channels only; private and shared channels aren't listed.
 
 ### Google Chat
 

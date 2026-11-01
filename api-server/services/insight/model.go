@@ -70,29 +70,35 @@ type InsightUIFilters struct {
 }
 
 type InsightRule struct {
-	UniqueID             string             `json:"unique_id"`
-	InsightFormat        string             `json:"insight_format"`
-	Type                 InsightType        `json:"type"`
-	Source               InsightSource      `json:"source"`
-	Range                int                `json:"range"`
-	RangeUnit            InsightRangeUnit   `json:"range_unit"`
-	Threshold            float64            `json:"threshold"`
-	GroupedBy            []string           `json:"grouped_by"`
-	Filters              []InsightFilters   `json:"filters"`
-	Distinct             string             `json:"distinct"`
-	ResourceIDColumnName string             `json:"resource_id_column_name"`
-	With                 string             `json:"with"`
-	ViewName             string             `json:"view_name"`
-	AggregateColumn      string             `json:"aggregate_column"`
-	AccountColumnName    string             `json:"account_column"`
-	Query                string             `json:"query"`
-	InsightCategory      InsightCategory    `json:"category"`
-	InsightSubCategory   string             `json:"subcategory"`
-	InsightUIFilters     []InsightUIFilters `json:"ui_filters"`
-	Severity             InsightSeverity    `json:"severity"`
-	Instant              bool               `json:"instant"`
-	CloudProviders       []string           `json:"cloud_providers"`
-	RedirectURL          string             `json:"redirect_url,omitempty"`
+	UniqueID             string           `json:"unique_id"`
+	InsightFormat        string           `json:"insight_format"`
+	Type                 InsightType      `json:"type"`
+	Source               InsightSource    `json:"source"`
+	Range                int              `json:"range"`
+	RangeUnit            InsightRangeUnit `json:"range_unit"`
+	Threshold            float64          `json:"threshold"`
+	GroupedBy            []string         `json:"grouped_by"`
+	Filters              []InsightFilters `json:"filters"`
+	Distinct             string           `json:"distinct"`
+	ResourceIDColumnName string           `json:"resource_id_column_name"`
+	With                 string           `json:"with"`
+	ViewName             string           `json:"view_name"`
+	// ApplicationsQuery is an opt-in, single-account SELECT (one placeholder,
+	// one "name" column) run after an Addition-type insight's aggregate value
+	// so the insight can carry per-item chips (e.g. one per CVE) without the
+	// generic aggregate query needing a JOIN. Rules that don't set it are
+	// completely unaffected — see (*ruleExecutor).fetchApplications.
+	ApplicationsQuery  string             `json:"applications_query"`
+	AggregateColumn    string             `json:"aggregate_column"`
+	AccountColumnName  string             `json:"account_column"`
+	Query              string             `json:"query"`
+	InsightCategory    InsightCategory    `json:"category"`
+	InsightSubCategory string             `json:"subcategory"`
+	InsightUIFilters   []InsightUIFilters `json:"ui_filters"`
+	Severity           InsightSeverity    `json:"severity"`
+	Instant            bool               `json:"instant"`
+	CloudProviders     []string           `json:"cloud_providers"`
+	RedirectURL        string             `json:"redirect_url,omitempty"`
 }
 
 type RelevantApplications struct {

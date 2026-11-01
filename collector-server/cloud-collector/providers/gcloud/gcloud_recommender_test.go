@@ -6,6 +6,7 @@ import (
 	"os"
 	"testing"
 
+	"nudgebee/collector/cloud/common"
 	"nudgebee/collector/cloud/providers"
 
 	recommender "cloud.google.com/go/recommender/apiv1"
@@ -15,6 +16,7 @@ import (
 	"google.golang.org/api/option"
 	"google.golang.org/genproto/googleapis/type/money"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 func TestSanitizeRecommenderID(t *testing.T) {
@@ -337,6 +339,165 @@ func TestMapGCPRecommendation(t *testing.T) {
 	})
 }
 
+func TestNormalizeGCPResourcePath(t *testing.T) {
+	tests := []struct {
+		name     string
+		ref      string
+		expected string
+	}{
+		{"https selfLink", "https://www.googleapis.com/compute/v1/projects/p/zones/us-central1-a/instances/Demo-VM", "projects/-/zones/us-central1-a/instances/demo-vm"},
+		{"operation resource", "//compute.googleapis.com/projects/p/zones/us-central1-a/instances/demo-vm", "projects/-/zones/us-central1-a/instances/demo-vm"},
+		{"bare path", "projects/p/zones/us-central1-a/disks/disk-1", "projects/-/zones/us-central1-a/disks/disk-1"},
+		// Same resource referenced by project number (Recommender) and project id
+		// (selfLink) must land on the same key.
+		{"project number", "//container.googleapis.com/projects/137143602736/locations/us-central1/clusters/dev", "projects/-/locations/us-central1/clusters/dev"},
+		{"path ends at project", "projects/p", "projects/p"},
+		{"no projects segment", "1020227973377891447", ""},
+		{"empty", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, normalizeGCPResourcePath(tt.ref))
+		})
+	}
+}
+
+// TestResolveRecommenderTarget proves resolution is resolve-first, not
+// first-operation: the idle-disk shape leads with a create-snapshot operation
+// whose snapshot is not a collected resource, and the disk in the second
+// operation must still win.
+func TestResolveRecommenderTarget(t *testing.T) {
+	disk := providers.Resource{
+		Id:          "https://www.googleapis.com/compute/v1/projects/p/zones/us-central1-a/disks/pvc-disk",
+		Name:        "pvc-disk",
+		Type:        "storage",
+		Arn:         "https://www.googleapis.com/compute/v1/projects/p/zones/us-central1-a/disks/pvc-disk",
+		ServiceName: ServiceNameDisk,
+		Region:      "us-central1",
+	}
+	index := buildRecommenderResourceIndex([]providers.Resource{disk})
+
+	rec := &recommenderpb.Recommendation{
+		Content: &recommenderpb.RecommendationContent{
+			OperationGroups: []*recommenderpb.OperationGroup{{
+				Operations: []*recommenderpb.Operation{
+					{
+						Action:       "add",
+						ResourceType: "compute.googleapis.com/Snapshot",
+						Resource:     "//compute.googleapis.com/projects/p/global/snapshots/snapshot-of-pvc-disk",
+					},
+					{
+						Action:       "remove",
+						ResourceType: "compute.googleapis.com/Disk",
+						Resource:     "//compute.googleapis.com/projects/p/zones/us-central1-a/disks/pvc-disk",
+					},
+				},
+			}},
+		},
+	}
+
+	target, ok := resolveRecommenderTarget(rec, index)
+	require.True(t, ok)
+	assert.Equal(t, "pvc-disk", target.Name)
+
+	t.Run("no operation resolves", func(t *testing.T) {
+		unresolved := &recommenderpb.Recommendation{
+			Content: &recommenderpb.RecommendationContent{
+				OperationGroups: []*recommenderpb.OperationGroup{{
+					Operations: []*recommenderpb.Operation{{
+						Resource: "//compute.googleapis.com/projects/p/zones/us-central1-a/instances/never-collected",
+					}},
+				}},
+			},
+		}
+		_, ok := resolveRecommenderTarget(unresolved, index)
+		assert.False(t, ok)
+	})
+
+	t.Run("no content", func(t *testing.T) {
+		_, ok := resolveRecommenderTarget(&recommenderpb.Recommendation{}, index)
+		assert.False(t, ok)
+	})
+
+	// GKE DiagnosisRecommender shape: no operation groups at all; the cluster is
+	// referenced via content.overview targetClusters, by project NUMBER while the
+	// collected cluster's selfLink carries the project ID.
+	t.Run("diagnosis overview target cluster", func(t *testing.T) {
+		// The selfLink carries the project ID, the overview's clusterUri the
+		// project NUMBER — the canonicalized project segment must bridge them.
+		cluster := providers.Resource{
+			Id:          "78f3eb8cafcf41c1",
+			Name:        "demo-cluster",
+			Type:        "container.googleapis.com/Cluster",
+			Arn:         "https://container.googleapis.com/v1/projects/my-project/locations/us-central1/clusters/demo-cluster",
+			ServiceName: "Kubernetes Engine",
+			Region:      "us-central1",
+		}
+		clusterIndex := buildRecommenderResourceIndex([]providers.Resource{cluster})
+
+		overview, err := structpb.NewStruct(map[string]interface{}{
+			"targetClusters": []interface{}{
+				map[string]interface{}{
+					"clusterId":  "78f3eb8cafcf41c1",
+					"clusterUri": "//container.googleapis.com/projects/123456789012/locations/us-central1/clusters/demo-cluster",
+				},
+			},
+		})
+		require.NoError(t, err)
+
+		rec := &recommenderpb.Recommendation{
+			Content: &recommenderpb.RecommendationContent{Overview: overview},
+		}
+
+		target, ok := resolveRecommenderTarget(rec, clusterIndex)
+		require.True(t, ok)
+		assert.Equal(t, "demo-cluster", target.Name)
+	})
+}
+
+// TestLinkRecommenderTarget proves the stamped ExternalResourceId is the
+// identical construction etl_resources uses when storing the resource — built
+// from the matched resource's own stored fields (numeric instance ID included,
+// which the recommendation payload never carries).
+func TestLinkRecommenderTarget(t *testing.T) {
+	account := providers.Account{CloudProvider: "gcp", AccountNumber: "my-project"}
+	instance := providers.Resource{
+		Id:          "1020227973377891447",
+		Name:        "demo-billing-vm",
+		Type:        "compute.googleapis.com/Instance",
+		Arn:         "https://www.googleapis.com/compute/v1/projects/my-project/zones/us-central1-a/instances/demo-billing-vm",
+		ServiceName: ServiceNameCompute,
+		Region:      "us-central1",
+	}
+	index := buildRecommenderResourceIndex([]providers.Resource{instance})
+
+	rec := &recommenderpb.Recommendation{
+		Content: &recommenderpb.RecommendationContent{
+			OperationGroups: []*recommenderpb.OperationGroup{{
+				Operations: []*recommenderpb.Operation{{
+					Action:       "replace",
+					ResourceType: "compute.googleapis.com/Instance",
+					Resource:     "//compute.googleapis.com/projects/my-project/zones/us-central1-a/instances/demo-billing-vm",
+				}},
+			}},
+		},
+	}
+
+	mapped := providers.Recommendation{Data: map[string]any{"source": "gcp"}}
+	linked := linkRecommenderTarget(mapped, rec, account, index)
+
+	expected := common.BuildExternalResourceId("gcp", "my-project", "us-central1", ServiceNameCompute, "compute.googleapis.com/Instance", "1020227973377891447", "")
+	assert.Equal(t, expected, linked.ExternalResourceId)
+	assert.Equal(t, "demo-billing-vm", linked.Data["target_resource_name"])
+
+	t.Run("unmatched leaves recommendation untouched", func(t *testing.T) {
+		unlinked := linkRecommenderTarget(providers.Recommendation{Data: map[string]any{}}, &recommenderpb.Recommendation{}, account, index)
+		assert.Empty(t, unlinked.ExternalResourceId)
+		assert.NotContains(t, unlinked.Data, "target_resource_name")
+	})
+}
+
 func TestIsGCPPermissionOrNotFoundError(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -438,7 +599,9 @@ func TestGCPRecommenderIntegration(t *testing.T) {
 		for _, location := range locationsForScope(rt.scope, regions, nil) {
 			parent := fmt.Sprintf("projects/%s/locations/%s/recommenders/%s", projectID, location, rt.id)
 
-			recs, fetchErr := fetchRecommendations(ctx, client, parent, rt.id, rt.category, location)
+			// Standalone test has no collected resources, so the target index is
+			// empty and every recommendation stays unlinked — same as a fresh account.
+			recs, fetchErr := fetchRecommendations(ctx, client, parent, rt.id, rt.category, location, providers.Account{CloudProvider: "gcp", AccountNumber: projectID}, nil)
 			if fetchErr != nil {
 				if isGCPPermissionOrNotFoundError(fetchErr) {
 					continue

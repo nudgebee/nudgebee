@@ -10,6 +10,7 @@ import (
 
 	"nudgebee/services/common"
 	"nudgebee/services/integrations/promclient"
+	"nudgebee/services/integrations/signozclient"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
 )
@@ -395,61 +396,76 @@ func getElasticsearchConfigs(sc *security.RequestContext, accountId string) (*el
 	return cfg, nil
 }
 
-// getSignozConfigs returns (signozUrl, jwtToken) for a SigNoz integration.
-func getSignozConfigs(sc *security.RequestContext, accountId string) (string, string, error) {
-	configs, err := listIntegrationConfigValues(sc, accountId, "signoz")
+// getSignozCredentials returns the credentials of the account's user-configured
+// SigNoz. Logging in, and which login API to use, is left to signozclient, the
+// same client the logs source uses; only the selected auth type's secret is
+// read, and stored secrets are decrypted.
+func getSignozCredentials(sc *security.RequestContext, accountId string) (signozclient.Credentials, error) {
+	configs, err := listIntegrationConfigValuesWithSource(sc, accountId, "signoz", "user")
 	if err != nil {
-		return "", "", fmt.Errorf("failed to get signoz integration: %w", err)
+		return signozclient.Credentials{}, fmt.Errorf("failed to get signoz integration: %w", err)
 	}
-
-	var signozUrl, signozUsername, signozPassword string
+	stored := map[string]integrationConfigValue{}
 	for _, c := range configs {
-		switch c.Name {
-		case "signoz_url":
-			signozUrl = c.Value
-		case "signoz_username":
-			signozUsername = c.Value
-		case "signoz_password":
-			signozPassword = c.Value
-		}
+		stored[c.Name] = c
+	}
+	// Alert rules are managed over SigNoz's API from this process; a SigNoz
+	// behind a forager is not reachable here, and the forager carries no rules API.
+	if stored["connection_mode"].Value == "vm_agent" {
+		return signozclient.Credentials{}, fmt.Errorf("signoz alert rules are not supported for a SigNoz reached through a forager")
 	}
 
-	if signozUrl == "" || signozUsername == "" || signozPassword == "" {
-		return "", "", fmt.Errorf("missing required signoz configuration values")
+	creds := signozclient.Credentials{
+		BaseURL:  strings.TrimRight(strings.TrimSpace(stored["signoz_url"].Value), "/"),
+		Mode:     stored["signoz_mode"].Value,
+		AuthType: stored["signoz_auth_type"].Value,
+		Email:    stored["signoz_username"].Value,
 	}
-
-	jwtToken, err := getSignozJwtToken(signozUrl, signozUsername, signozPassword)
+	if creds.AuthType == "" {
+		creds.AuthType = signozclient.AuthPassword
+	}
+	secretName := "signoz_password"
+	if creds.AuthType == signozclient.AuthAPIKey {
+		secretName = "signoz_api_key"
+	}
+	secret, err := decryptConfigValue(stored[secretName])
 	if err != nil {
-		return "", "", fmt.Errorf("failed to get signoz jwt token: %w", err)
+		return signozclient.Credentials{}, fmt.Errorf("failed to decrypt %s: %w", secretName, err)
+	}
+	if creds.AuthType == signozclient.AuthAPIKey {
+		creds.APIKey = secret
+	} else {
+		creds.Password = secret
 	}
 
-	return signozUrl, jwtToken, nil
+	if creds.BaseURL == "" || secret == "" || (creds.AuthType != signozclient.AuthAPIKey && creds.Email == "") {
+		return signozclient.Credentials{}, fmt.Errorf("missing required signoz configuration values")
+	}
+	return creds, nil
 }
 
-// getSignozJwtToken authenticates with SigNoz and returns a JWT token.
-func getSignozJwtToken(signozUrl, username, password string) (string, error) {
-	loginBody := map[string]string{
-		"email":    username,
-		"password": password,
-	}
-
-	res, err := common.HttpPost(fmt.Sprintf("%s/api/v1/login", signozUrl), common.HttpWithJsonBody(loginBody))
+// listSignozWebhookTokens returns the tokens of the account's enabled SigNoz
+// webhook integrations. A SigNoz notification channel belongs to this account
+// only when its URL carries one of them: the token, not the path, is what the
+// webhook receiver resolves the account from.
+func listSignozWebhookTokens(sc *security.RequestContext, accountId string) ([]string, error) {
+	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
-		return "", fmt.Errorf("failed to post login request: %w", err)
+		return nil, fmt.Errorf("failed to get database manager: %w", err)
 	}
-	defer func() { _ = res.Body.Close() }()
-
-	var obj struct {
-		AccessJwt string `json:"accessJwt"`
+	var tokens []string
+	err = dbms.Db.Select(&tokens, `
+		SELECT DISTINCT icv.value::text
+		FROM integrations i
+		JOIN integrations_cloud_accounts ica ON ica.integration_id = i.id
+		JOIN integration_config_values icv ON icv.integration_id = i.id AND icv.name = 'token'
+		WHERE i.type = 'signoz_webhook' AND i.status = 'enabled'
+		  AND i.tenant_id = $1 AND ica.cloud_account_id = $2 AND icv.value <> ''`,
+		sc.GetSecurityContext().GetTenantId(), accountId)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list signoz webhook integrations: %w", err)
 	}
-	if err := json.NewDecoder(res.Body).Decode(&obj); err != nil {
-		return "", fmt.Errorf("failed to decode SigNoz login response: %w", err)
-	}
-	if obj.AccessJwt != "" {
-		return obj.AccessJwt, nil
-	}
-
-	return "", fmt.Errorf("empty JWT token received from SigNoz")
+	return tokens, nil
 }
 
 // getGrafanaConfigs returns (grafanaUrl, apiToken) for a Grafana integration.
@@ -624,6 +640,15 @@ func cubeAPMAdminHeaders(token string) map[string]string {
 // eventrule), so the row is read here and handed to promclient, which holds the
 // one auth implementation the metric queries also use.
 func getPrometheusUserConfig(sc *security.RequestContext, accountId string) (promclient.PrometheusUserConfig, error) {
+	// Same hazard as getCubeAPMConfigs: the cloud_account_id filter is conditional
+	// and the query ends in LIMIT 1, so an empty accountId resolves to an arbitrary
+	// user Prometheus in the tenant and the rule lands in the wrong account's ruler.
+	// CreateEventRule reaches here with an empty account for super admins, whom
+	// HasAccountAccess lets through for any account id.
+	if accountId == "" {
+		return promclient.PrometheusUserConfig{}, fmt.Errorf("account_id is required to resolve a Prometheus integration")
+	}
+
 	configs, err := listIntegrationConfigValuesWithSource(sc, accountId, "prometheus", "user")
 	if err != nil {
 		return promclient.PrometheusUserConfig{}, fmt.Errorf("failed to get prometheus integration: %w", err)

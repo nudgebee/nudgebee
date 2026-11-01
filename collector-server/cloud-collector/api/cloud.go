@@ -1322,6 +1322,36 @@ func handleCloudProviderApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.
 		c.JSON(200, buildApiResponse(map[string]string{"channel_name": channelName}))
 	})
 
+	// GCP Monitoring webhook normalization — api-server sends each delivery here and gets
+	// back the event row polling would store for the same incident. Nothing is stored.
+	groupV2.POST("/normalize_gcp_monitoring_webhook", func(c *gin.Context) {
+		accountId := c.Query("account_id")
+		if accountId == "" {
+			c.JSON(400, buildApiResponse(nil, errors.New("missing account_id query parameter")))
+			return
+		}
+		body, err := io.ReadAll(c.Request.Body)
+		if err != nil {
+			c.JSON(400, buildApiResponse(nil, fmt.Errorf("failed to read request body: %w", err)))
+			return
+		}
+
+		ctx, cancel, err := buildContextFromGin(c, logger, tracer, meter, accountId)
+		if err != nil {
+			c.JSON(400, buildApiResponse(nil, err))
+			return
+		}
+		defer cancel()
+
+		event, err := account.NormalizeGCPMonitoringWebhook(ctx, accountId, body)
+		if err != nil {
+			ctx.GetLogger().Error("error normalizing GCP monitoring webhook", "error", err)
+			c.JSON(400, buildApiResponse(nil, err))
+			return
+		}
+		c.JSON(200, buildApiResponse(event))
+	})
+
 	// Azure Event Grid webhook relay endpoint — receives events forwarded by api-server
 	var (
 		eventGridProcessorOnce sync.Once

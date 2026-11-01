@@ -115,3 +115,35 @@ func TestBuildEventContextOmitsCluster(t *testing.T) {
 		t.Errorf("namespace (part of the class key) must remain in context:\n%s", out)
 	}
 }
+
+// The classifier must be told what the alert is actually about. An ownerless subject used to be
+// rendered as its namespace ("subject:  ingress-nginx in namespace ingress-nginx"), so the model
+// judged the namespace's name instead of the Service.
+func TestBuildEventContextNamesAnOwnerlessSubject(t *testing.T) {
+	s := func(v string) *string { return &v }
+	ev := &models.Event{
+		Title:            "Service ingress-nginx/admission has no endpoints",
+		AggregationKey:   s("service_no_endpoints"),
+		Source:           s("kubernetes_api_server"),
+		SubjectType:      s("service"),
+		SubjectName:      s("admission"),
+		SubjectNamespace: s("ingress-nginx"),
+	}
+	out := buildEventContext(ev, workloadFacts{})
+	if !strings.Contains(out, "- subject: service admission in namespace ingress-nginx\n") {
+		t.Errorf("an ownerless Service must be named as the subject:\n%s", out)
+	}
+
+	owned := &models.Event{
+		Title:            "Pod api-7d9f-x2k4 OOMKilled",
+		AggregationKey:   s("pod_oom_killer_enricher"),
+		SubjectType:      s("pod"),
+		SubjectName:      s("api-7d9f-x2k4"),
+		SubjectNamespace: s("shop"),
+		SubjectOwner:     s("api"),
+		SubjectOwnerKind: s("Deployment"),
+	}
+	if out := buildEventContext(owned, workloadFacts{}); !strings.Contains(out, "- subject: Deployment api in namespace shop\n") {
+		t.Errorf("an owned subject is still described by its owner:\n%s", out)
+	}
+}

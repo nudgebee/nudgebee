@@ -1,13 +1,140 @@
 package budget
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"strings"
+	"sync"
+	"time"
+
+	"golang.org/x/sync/singleflight"
 
 	"nudgebee/llm/common"
 )
+
+// enforcedUsageCacheNS holds the cost totals CheckBudgetLimits enforces against.
+// That check runs before every chat message and investigation, with a cost
+// query per enabled limit (0.1-0.5s warm, over 10s cold on dev), and it used to
+// block the chat accept on every cache miss. The budget status reads stay live.
+const enforcedUsageCacheNS = "llm_budget_enforced_usage"
+
+// Staleness policy for enforced totals (see docs/architecture-decisions.md):
+//   - under enforcedUsageTTL old: served as is;
+//   - under enforcedUsageMaxStale old: served immediately while one background
+//     refresh per key updates it, so enforcement can lag real spend by up to
+//     enforcedUsageMaxStale, and only right after a quiet period on that key;
+//   - older, or absent: queried synchronously.
+const (
+	enforcedUsageTTL      = 60 * time.Second
+	enforcedUsageMaxStale = 5 * time.Minute
+	// A hung query must not hold a key's refresh (and every check that joins it) forever.
+	// On timeout the check fails open, as it already does on any query error.
+	enforcedUsageQueryTimeout = 30 * time.Second
+)
+
+// usageNow is the clock for the staleness policy; tests replace it.
+var usageNow = time.Now
+
+// usageRefreshes collapses concurrent queries for the same key on this pod,
+// both synchronous misses and background refreshes.
+var usageRefreshes singleflight.Group
+
+// backgroundRefreshes marks keys with a background refresh in flight on this pod, so a
+// burst of stale reads starts one goroutine per key instead of one per request.
+var backgroundRefreshes sync.Map
+
+// cachedUsage stamps its own times: the default in_memory backend (bigcache)
+// ignores per-entry expiration, so the store's TTL alone can't be relied on.
+type cachedUsage struct {
+	Cost      float64   `json:"cost"`
+	ExpiresAt time.Time `json:"expires_at"`
+	FetchedAt time.Time `json:"fetched_at"`
+}
+
+func init() {
+	common.CacheCreateNamespace(enforcedUsageCacheNS, common.CacheNamespaceWithExpiration(enforcedUsageMaxStale))
+}
+
+// enforcedUsageKey includes the current UTC day or month, so a total cached
+// just before a period rolls over is not reused after it (DATE_TRUNC runs in
+// the database's UTC session timezone).
+func enforcedUsageKey(entityType, entityId, module, period string, now time.Time) string {
+	bucket := now.UTC().Format("2006-01")
+	if period == "day" {
+		bucket = now.UTC().Format("2006-01-02")
+	}
+	return entityType + ":" + entityId + ":" + module + ":" + period + ":" + bucket
+}
+
+// cachedEntityTokenUsage is getEntityTokenUsage behind the staleness policy above.
+// Only a successful result is cached, so a failed query is retried next time,
+// and a failed background refresh leaves the previous total in place.
+func cachedEntityTokenUsage(dbManager *common.DatabaseManager, entityType, entityId, module, period string) (float64, error) {
+	now := usageNow()
+	key := enforcedUsageKey(entityType, entityId, module, period, now)
+	if data, ok := common.CacheGet(enforcedUsageCacheNS, key); ok {
+		var cached cachedUsage
+		if err := common.UnmarshalJson(data, &cached); err == nil {
+			if now.Before(cached.ExpiresAt) {
+				return cached.Cost, nil
+			}
+			// Entries without FetchedAt predate this policy and are only served fresh.
+			if !cached.FetchedAt.IsZero() && now.Before(cached.FetchedAt.Add(enforcedUsageMaxStale)) {
+				refreshUsageInBackground(dbManager, key, entityType, entityId, module, period)
+				return cached.Cost, nil
+			}
+		}
+	}
+	return refreshUsage(dbManager, key, entityType, entityId, module, period)
+}
+
+// refreshUsage queries and caches one total, sharing an in-flight query for the same key.
+func refreshUsage(dbManager *common.DatabaseManager, key, entityType, entityId, module, period string) (float64, error) {
+	v, err, _ := usageRefreshes.Do(key, func() (any, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), enforcedUsageQueryTimeout)
+		defer cancel()
+		cost, err := getEntityTokenUsageContext(ctx, dbManager, entityType, entityId, module, period)
+		if err != nil {
+			return 0.0, err
+		}
+		fetchedAt := usageNow()
+		data, err := common.MarshalJson(cachedUsage{Cost: cost, ExpiresAt: fetchedAt.Add(enforcedUsageTTL), FetchedAt: fetchedAt})
+		if err != nil {
+			slog.Debug("budget: unable to serialize usage for cache", "error", err, "key", key)
+			return cost, nil
+		}
+		if err := common.CacheSet(enforcedUsageCacheNS, key, data, common.CacheSetWithExpiration(enforcedUsageMaxStale)); err != nil {
+			slog.Debug("budget: unable to cache usage", "error", err, "key", key)
+		}
+		return cost, nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return v.(float64), nil
+}
+
+// refreshUsageInBackground updates a stale total without making the caller wait.
+// singleflight keeps it to one query per key on this pod even under a burst.
+func refreshUsageInBackground(dbManager *common.DatabaseManager, key, entityType, entityId, module, period string) {
+	if _, running := backgroundRefreshes.LoadOrStore(key, struct{}{}); running {
+		return
+	}
+	go func() {
+		defer backgroundRefreshes.Delete(key)
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				slog.Error("budget: panic refreshing usage", "panic", recovered, "key", key, "stack", string(debug.Stack()))
+			}
+		}()
+		if _, err := refreshUsage(dbManager, key, entityType, entityId, module, period); err != nil {
+			slog.Warn("budget: background usage refresh failed; keeping the previous total", "error", err, "key", key)
+		}
+	}()
+}
 
 // --- Monthly usage (existing, refactored) ---
 
@@ -115,6 +242,10 @@ func getEntityConversationCount(dbManager *common.DatabaseManager, entityType, e
 // getEntityTokenUsage calculates token usage cost for an entity in the given period.
 // Optimization: Cost is calculated in a single SQL query using a JOIN with llm_model_pricing.
 func getEntityTokenUsage(dbManager *common.DatabaseManager, entityType string, entityId string, module string, period string) (float64, error) {
+	return getEntityTokenUsageContext(context.Background(), dbManager, entityType, entityId, module, period)
+}
+
+func getEntityTokenUsageContext(ctx context.Context, dbManager *common.DatabaseManager, entityType string, entityId string, module string, period string) (float64, error) {
 	if err := validatePeriod(period); err != nil {
 		return 0, err
 	}
@@ -190,7 +321,7 @@ func getEntityTokenUsage(dbManager *common.DatabaseManager, entityType string, e
 	)
 
 	var totalCost sql.NullFloat64
-	err := dbManager.Db.Get(&totalCost, query, entityId)
+	err := dbManager.Db.GetContext(ctx, &totalCost, query, entityId)
 	if err != nil {
 		slog.Error("getEntityTokenUsage: error executing unified cost query",
 			"error", err, "entity_type", entityType, "entity_id", entityId, "period", period)

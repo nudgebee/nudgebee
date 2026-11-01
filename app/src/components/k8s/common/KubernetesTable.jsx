@@ -50,6 +50,7 @@ import { FiArrowRight } from 'react-icons/fi';
 import NBStatusBadge from '@shared/widgets/NBStatusBadge';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import KubernetesPlusMinusLogsGradual from '@components/k8s/details/KubernetesPlusMinusLogsGradual';
+import { artifactsFromStoredProfile, looksLikeSvg, reportedLanguage } from '@components/k8s/details/podProfilerArtifacts';
 const CodeMirrorDiffViewer = dynamic(() => import('@shared/viewers/DiffViewer'), { ssr: false });
 const KubernetesLogstashDetails = dynamic(() => import('./KubernetesLogstashDetails'), { ssr: false });
 import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
@@ -2354,8 +2355,13 @@ export const KubernetesPodProfilerHistory = ({ accountId, query }) => {
             let fileObject = {};
             let analysisType = '';
             let showNubeIcon = false;
+            let detectedLang = '';
             try {
-              const dataObjects = JSON.parse(ap.profile);
+              // Older agents stored the file blocks themselves; newer ones the
+              // agent's response with the file block inside it.
+              const artifacts = artifactsFromStoredProfile(JSON.parse(ap.profile));
+              const dataObjects = artifacts.groups.flat();
+              detectedLang = reportedLanguage(artifacts.lang);
 
               // Process SVG data
               const svgItems = dataObjects.filter((item) => item.type === 'svg');
@@ -2374,7 +2380,8 @@ export const KubernetesPodProfilerHistory = ({ accountId, query }) => {
                 const gzData = base64Converter(svgGzItems[0].data);
                 const unzippedData = await unzipData(gzData);
                 fileObject = {
-                  fileName: `${ap.pod_name}.svg`,
+                  // Older profiler images name raw-text profiles *.svg.gz.
+                  fileName: looksLikeSvg(unzippedData) ? `${ap.pod_name}.svg` : `${ap.pod_name}.txt`,
                   downloadableData: unzippedData,
                 };
               }
@@ -2449,7 +2456,7 @@ export const KubernetesPodProfilerHistory = ({ accountId, query }) => {
                 text: ap.profile_type || ap.output_type || '-',
               },
               {
-                text: ap.profile_language,
+                text: ap.profile_language || detectedLang || '-',
               },
               {
                 component: showNubeIcon && (
@@ -2632,7 +2639,7 @@ const KubernetesTable = ({
           defaultQuery={query}
           enableFilters={false}
           tableColumns={[
-            { name: 'Severity', width: '10%' },
+            { name: 'Source Severity', width: '10%' },
             { name: 'Subject Name', width: '20%' },
             { name: 'Message', width: '40%' },
             { name: 'Alert Status', width: '4%' },
@@ -2647,7 +2654,7 @@ const KubernetesTable = ({
           defaultQuery={query}
           enableFilters={false}
           tableColumns={[
-            { name: 'Severity', width: '10%' },
+            { name: 'Source Severity', width: '10%' },
             { name: 'Message', width: '40%' },
             { name: 'Alert Status', width: '4%' },
             { name: 'Error Type', width: '20%' },

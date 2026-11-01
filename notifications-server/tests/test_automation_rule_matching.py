@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from notifications_server.configs.settings import settings
 from notifications_server.exceptions.notification_errors import InvalidRuleError
 from notifications_server.services.message import (
     AUTOMATION_SOURCE,
@@ -29,6 +30,7 @@ def _filters(type_, **kwargs):
 def _rule(**overrides):
     base = dict(
         id="rule-1",
+        name="rule-1",
         source=AUTOMATION_SOURCE,
         account_id=None,
         scope_mode="all",
@@ -185,6 +187,40 @@ def _effect(rows, source=None, event_type=None):
 def test_suppressed_rule_drops_task_update():
     result = _effect(_matched(), source=AUTOMATION_SOURCE, event_type="automation.task.completed")
     assert result and result[0]["status"] == "suppressed"
+
+
+def test_suppressed_reason_names_the_rule():
+    result = _effect(
+        _matched(name="Silence automation task updates"),
+        source=AUTOMATION_SOURCE,
+        event_type="automation.task.completed",
+    )
+    assert result[0]["reason"] == 'Suppressed by notification rule "Silence automation task updates"'
+
+
+def test_suppressed_reason_falls_back_without_a_rule_name():
+    result = _effect(_matched(), source=AUTOMATION_SOURCE, event_type="automation.task.completed")
+    assert result[0]["reason"] == "Notification suppressed by notification rule configuration"
+
+
+def test_suppressed_response_links_to_notification_rules(monkeypatch):
+    monkeypatch.setattr(settings, "base_url", "https://app.test")
+    result = _effect(
+        _matched(name="Silence automation task updates"),
+        source=AUTOMATION_SOURCE,
+        event_type="automation.task.completed",
+    )
+    assert result[0]["rule_management_url"] == "https://app.test/user-management#notification-rules"
+
+
+def test_suppressed_response_has_no_link_without_a_configured_base_url(monkeypatch):
+    monkeypatch.setattr(settings, "base_url", "")
+    result = _effect(
+        _matched(name="Silence automation task updates"),
+        source=AUTOMATION_SOURCE,
+        event_type="automation.task.completed",
+    )
+    assert "rule_management_url" not in result[0]
 
 
 def test_approval_request_is_never_suppressed_or_snoozed():

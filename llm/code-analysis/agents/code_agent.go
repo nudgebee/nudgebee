@@ -184,10 +184,7 @@ func (a *CodeAgent) Execute(ctx context.Context, sessionCtx *session.SessionCont
 
 func (a *CodeAgent) buildEnhancedQuery(ctx context.Context, sessionCtx *session.SessionContext) string {
 	var data strings.Builder
-	data.WriteString("=== USER QUERY ===\n")
-	data.WriteString(sessionCtx.OriginalQuery)
-	data.WriteString("\n\n")
-
+	data.WriteString(sessionCtx.FormatQuerySection())
 	data.WriteString(buildEvidenceBlock(ctx, a.llmClient, a.logger, "LOGS (if provided)", sessionCtx.InitialLogs))
 
 	return data.String()

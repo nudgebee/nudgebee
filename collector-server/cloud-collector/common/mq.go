@@ -26,7 +26,7 @@ import (
 var (
 	rbmqConnMux        sync.Mutex
 	rbmqConn           *rabbitmq.Conn
-	rbmqConsumers      = make(map[string]*rabbitmq.Consumer)
+	rbmqConsumers      = make(map[string]*managedConsumer)
 	rbmqConsumersMux   sync.Mutex
 	rbmqPublishers     = make(map[string]*rabbitmq.Publisher)
 	rbmqPublishersMux  sync.Mutex
@@ -55,6 +55,52 @@ const (
 // observe the same failure.
 var rbmqLastResetNanos atomic.Int64
 
+// Broker-restart recovery. go-rabbitmq restarts a consumer in
+// place after it reconnects, and when that restart fails it waits for a "next reconnect"
+// that never comes on a healthy connection: Run stays blocked and the queue is never
+// consumed again. So consumers are never trusted across a reconnect — pollConnection
+// closes every consumer built before the connection went down, which makes Run return and
+// the MqConsume loop rebuild it (re-declaring its exchange, queue and binding). The same
+// down->up transition re-declares the dead-letter queues.
+const (
+	rbmqDialTimeout          = 5 * time.Second
+	rbmqConnPollInterval     = time.Second
+	rbmqConnDownResetAfter   = 5 * time.Minute
+	rbmqConsumerCloseTimeout = 10 * time.Second
+)
+
+// Connection state maintained by pollConnection. MqHealthy reads only these atomics:
+// IsClosed() takes the library's connection lock, which it holds across a redial.
+var (
+	rbmqWatchOnce     sync.Once
+	rbmqConnUp        atomic.Bool
+	rbmqConnDownSince atomic.Int64 // unix nanos the connection was first seen down; 0 while up
+	// rbmqConnectedNanos is a clock that advances only while the connection is up. Liveness
+	// timeouts are measured on it, so time spent in an outage never counts toward them and
+	// a flapping connection cannot keep resetting them.
+	rbmqConnectedNanos atomic.Int64
+	rbmqLastPollNanos  atomic.Int64
+)
+
+func connectedClock() time.Duration { return time.Duration(rbmqConnectedNanos.Load()) }
+
+// managedConsumer makes closing a consumer idempotent and bounded: go-rabbitmq's Close
+// must be called only once and waits for in-flight handlers (cost reports run for up to
+// 30 minutes), while both the MqConsume loop and pollConnection close consumers.
+type managedConsumer struct {
+	*rabbitmq.Consumer
+	createdAt time.Time
+	once      sync.Once
+}
+
+func (c *managedConsumer) close() {
+	c.once.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), rbmqConsumerCloseTimeout)
+		defer cancel()
+		c.CloseWithContext(ctx)
+	})
+}
+
 // consumerHealth tracks whether a given MqConsume goroutine currently has a live,
 // running consumer. MqHealthy (and thus /livez) goes unhealthy when any consumer has
 // been failing to (re)establish for longer than rbmqConsumerWedgeTimeout — closing the
@@ -63,6 +109,7 @@ var rbmqLastResetNanos atomic.Int64
 type consumerHealth struct {
 	healthy      bool
 	failingSince time.Time
+	failingAt    time.Duration // connectedClock() when failingSince was stamped
 	lastError    string
 	// session identifies the current consumer run (its startedAt). markConsumerHealthy
 	// only takes effect for the active session, so a healthy-timer left over from an
@@ -88,10 +135,13 @@ const (
 	mqHeartbeatKey      = "heartbeat"
 )
 
-// mqLastHeartbeatNanos holds the unix-nano timestamp of the last heartbeat that
-// completed the publish -> broker -> consume round-trip. Zero means the heartbeat
-// has not been started yet (boot grace period).
-var mqLastHeartbeatNanos atomic.Int64
+// mqLastHeartbeatAt holds the connectedClock() reading of the last heartbeat that
+// completed the publish -> broker -> consume round-trip. Until mqHeartbeatStarted the
+// heartbeat is not judged (boot grace period).
+var (
+	mqLastHeartbeatAt  atomic.Int64
+	mqHeartbeatStarted atomic.Bool
+)
 
 // slogRbmqLogger adapts slog to the go-rabbitmq Logger interface so that
 // library-internal log lines are emitted as structured JSON instead of
@@ -173,6 +223,9 @@ func getConnection() *rabbitmq.Conn {
 		fmt.Sprintf("amqp://%s:%s@%s:%d", config.Config.RabbitMqUsername, config.Config.RabbitMqPassword, config.Config.RabbitMqHost, config.Config.RabbitMqPort),
 		rabbitmq.WithConnectionOptionsLogger(rbmqLogger),
 		rabbitmq.WithConnectionOptionsBaseReconnectInterval(reconnectTimeDelay),
+		// Bounded so an unreachable broker can't hold rbmqConnMux (or the library's own
+		// connection lock during a redial) for amqp's 30s default.
+		rabbitmq.WithConnectionOptionsConfig(rabbitmq.Config{Dial: amqp.DefaultDial(rbmqDialTimeout)}),
 	)
 	if err != nil {
 		slog.Default().Error("Error connecting to RabbitMQ", "error", err)
@@ -264,9 +317,9 @@ func migrateQueueDurabilityIfMismatch(queue string, err error) bool {
 func MqClose() {
 	rbmqConsumersMux.Lock()
 	for _, consumer := range rbmqConsumers {
-		consumer.Close()
+		consumer.close()
 	}
-	rbmqConsumers = make(map[string]*rabbitmq.Consumer)
+	rbmqConsumers = make(map[string]*managedConsumer)
 	rbmqConsumersMux.Unlock()
 
 	rbmqPublishersMux.Lock()
@@ -304,6 +357,8 @@ func resetSharedConnection(reason string) {
 		return
 	}
 	rbmqLastResetNanos.Store(time.Now().UnixNano())
+	// Consumers built from here on are on the new connection and must not be restarted.
+	cutoff := time.Now()
 	old := rbmqConn
 	rbmqConn = nil
 	rbmqConnMux.Unlock()
@@ -325,6 +380,91 @@ func resetSharedConnection(reason string) {
 	rbmqPublishersMux.Unlock()
 	for _, publisher := range oldPublishers {
 		publisher.Close()
+	}
+
+	// A consumer on the closed connection never recovers by itself (its channel closed
+	// gracefully, so go-rabbitmq does not reconnect it); close it so its loop rebuilds it
+	// on the new connection.
+	restartConsumersCreatedBefore(cutoff, reason)
+}
+
+// restartConsumersCreatedBefore closes every live consumer created before cutoff, so its
+// MqConsume loop rebuilds it. Closes run in the background: each waits up to
+// rbmqConsumerCloseTimeout for in-flight handlers.
+func restartConsumersCreatedBefore(cutoff time.Time, reason string) {
+	rbmqConsumersMux.Lock()
+	var stale []*managedConsumer
+	for _, c := range rbmqConsumers {
+		if c.createdAt.Before(cutoff) {
+			stale = append(stale, c)
+		}
+	}
+	rbmqConsumersMux.Unlock()
+	if len(stale) == 0 {
+		return
+	}
+	slog.Warn("rbmq: restarting consumers", "count", len(stale), "reason", reason)
+	for _, c := range stale {
+		go c.close()
+	}
+}
+
+// startConnectionWatcher starts the pollConnection loop once per process.
+func startConnectionWatcher() {
+	rbmqWatchOnce.Do(func() {
+		go func() {
+			t := time.NewTicker(rbmqConnPollInterval)
+			defer t.Stop()
+			for now := range t.C {
+				pollConnection(now)
+			}
+		}()
+	})
+}
+
+// pollConnection records connection up/down transitions. On down->up it restarts every
+// consumer built before the outage and re-declares the dead-letter queues. A connection
+// that stays closed for rbmqConnDownResetAfter is rebuilt: go-rabbitmq stops reconnecting
+// for good if the new connection closes before it re-arms its close listener.
+func pollConnection(now time.Time) {
+	rbmqConnMux.Lock()
+	conn := rbmqConn
+	rbmqConnMux.Unlock()
+
+	up := conn != nil && !conn.IsClosed()
+	tickConnectedClock(now, up)
+	if up {
+		if rbmqConnUp.Load() {
+			return
+		}
+		downSince := rbmqConnDownSince.Swap(0)
+		rbmqConnUp.Store(true)
+		if downSince != 0 {
+			slog.Info("rbmq: connection re-established", "down_for", now.Sub(time.Unix(0, downSince)).String())
+			restartConsumersCreatedBefore(time.Unix(0, downSince), "connection re-established")
+		}
+		go redeclareDLQs()
+		return
+	}
+
+	rbmqConnUp.Store(false)
+	downSince := rbmqConnDownSince.Load()
+	if downSince == 0 {
+		rbmqConnDownSince.Store(now.UnixNano())
+		return
+	}
+	if conn != nil && now.Sub(time.Unix(0, downSince)) >= rbmqConnDownResetAfter {
+		resetSharedConnection(fmt.Sprintf("connection closed for %s", now.Sub(time.Unix(0, downSince)).Round(time.Second)))
+		rbmqConnDownSince.Store(now.UnixNano())
+	}
+}
+
+// tickConnectedClock advances the connected clock by the time since the previous poll
+// when the connection was up at both polls.
+func tickConnectedClock(now time.Time, up bool) {
+	last := rbmqLastPollNanos.Swap(now.UnixNano())
+	if up && rbmqConnUp.Load() && last != 0 {
+		rbmqConnectedNanos.Add(now.UnixNano() - last)
 	}
 }
 
@@ -371,6 +511,7 @@ func markConsumerFailing(queue string, err error) {
 	}
 	if h.healthy || h.failingSince.IsZero() {
 		h.failingSince = time.Now()
+		h.failingAt = connectedClock()
 	}
 	h.healthy = false
 	h.session = time.Time{}
@@ -380,27 +521,27 @@ func markConsumerFailing(queue string, err error) {
 }
 
 // anyConsumerWedged reports the first consumer that has been failing to (re)establish
-// for longer than rbmqConsumerWedgeTimeout, if any.
+// for longer than rbmqConsumerWedgeTimeout of connected time, if any.
 func anyConsumerWedged() (string, bool) {
 	rbmqConsumerHealthMux.Lock()
 	defer rbmqConsumerHealthMux.Unlock()
 	for queue, h := range rbmqConsumerHealth {
-		if !h.healthy && !h.failingSince.IsZero() && time.Since(h.failingSince) >= rbmqConsumerWedgeTimeout {
+		if !h.healthy && !h.failingSince.IsZero() && connectedClock()-h.failingAt >= rbmqConsumerWedgeTimeout {
 			return queue, true
 		}
 	}
 	return "", false
 }
 
+// MqConsume starts a goroutine that keeps a consumer on queue running for the life of the
+// process. It does not require the broker to be reachable yet: a failed dial is retried
+// in-process like any other failure, so a pod that starts during a broker outage begins
+// consuming once the broker returns.
 func MqConsume(exchangeName string, routingKey string, queue string, concurrency int, processor func(ctx context.Context, data []byte) error) error {
-	conn := getConnection()
-	if conn == nil {
-		slog.Error("rbmq: initial connection to rabbitmq failed for consumer setup", "queue", queue, "exchange", exchangeName)
-		return ErrRbmqNoConn
-	}
+	startConnectionWatcher()
 
 	go func() {
-		var currentConsumer *rabbitmq.Consumer
+		var currentConsumer *managedConsumer
 		consumerKey := queue
 
 		// Ensure consumer is closed and removed from map when this goroutine exits
@@ -412,7 +553,7 @@ func MqConsume(exchangeName string, routingKey string, queue string, concurrency
 			}
 			rbmqConsumersMux.Unlock()
 			if currentConsumer != nil {
-				currentConsumer.Close()
+				currentConsumer.close()
 			}
 			slog.Info("rbmq: consumer goroutine shut down", "queue", queue, "exchange", exchangeName)
 		}()
@@ -430,11 +571,11 @@ func MqConsume(exchangeName string, routingKey string, queue string, concurrency
 			conn := getConnection()
 			if conn == nil {
 				slog.Error("rbmq: failed to get rabbitmq connection for consumer", "queue", queue, "attempt", attempt+1)
+				markConsumerFailing(queue, ErrRbmqNoConn)
 				continue
 			}
 
-			var err error
-			currentConsumer, err = rabbitmq.NewConsumer(
+			built, err := rabbitmq.NewConsumer(
 				conn,
 				queue,
 				rabbitmq.WithConsumerOptionsRoutingKey(routingKey),
@@ -466,6 +607,7 @@ func MqConsume(exchangeName string, routingKey string, queue string, concurrency
 				}
 				continue
 			}
+			currentConsumer = &managedConsumer{Consumer: built, createdAt: time.Now()}
 
 			rbmqConsumersMux.Lock()
 			rbmqConsumers[consumerKey] = currentConsumer
@@ -500,7 +642,8 @@ func MqConsume(exchangeName string, routingKey string, queue string, concurrency
 			if runErr != nil {
 				slog.Warn("rbmq: consumer.Run exited", "error", runErr, "queue", queue, "exchange", exchangeName, "attempt", attempt+1)
 			} else {
-				// consumer.Run exited cleanly, possibly due to connection closure not handled by library's auto-reconnect
+				// Run returns nil only after Close: restartConsumersCreatedBefore (a reconnect
+				// or connection rebuild) or MqClose.
 				slog.Info("rbmq: consumer.Run exited cleanly, will attempt to restart", "queue", queue, "exchange", exchangeName, "attempt", attempt+1)
 			}
 
@@ -534,7 +677,7 @@ func MqConsume(exchangeName string, routingKey string, queue string, concurrency
 				delete(rbmqConsumers, consumerKey)
 			}
 			rbmqConsumersMux.Unlock()
-			currentConsumer.Close()
+			currentConsumer.close()
 			// Ensure it's nil for the next iteration
 			currentConsumer = nil
 		}
@@ -909,12 +1052,40 @@ func publishToPoisonDLQ(exchangeName string, queueName string, body []byte, orig
 // RabbitMQ silently discards messages published to an exchange with no bound queue,
 // so without this declaration DLQ messages are lost. Call once at consumer startup.
 // The declaration is idempotent: re-declaring with the same parameters is a no-op.
+// The DLQ is also re-declared on every connection re-establishment (redeclareDLQs), so a
+// broker that was down at startup or came back without its data still gets it.
 func MqDeclareDLQ(exchangeName string, queueName string) error {
 	if exchangeName == "" || queueName == "" {
 		slog.Warn("rbmq: DLQ not configured, skipping DLQ declaration", "dlq_exchange", exchangeName, "dlq_queue", queueName)
 		return nil
 	}
+	rbmqDLQsMux.Lock()
+	rbmqDLQs[exchangeName] = queueName
+	rbmqDLQsMux.Unlock()
+	return declareDLQ(exchangeName, queueName)
+}
 
+var (
+	rbmqDLQsMux sync.Mutex
+	rbmqDLQs    = make(map[string]string) // DLQ exchange -> queue, from MqDeclareDLQ
+)
+
+// redeclareDLQs re-declares every DLQ registered through MqDeclareDLQ.
+func redeclareDLQs() {
+	rbmqDLQsMux.Lock()
+	dlqs := make(map[string]string, len(rbmqDLQs))
+	for exchange, queue := range rbmqDLQs {
+		dlqs[exchange] = queue
+	}
+	rbmqDLQsMux.Unlock()
+	for exchange, queue := range dlqs {
+		if err := declareDLQ(exchange, queue); err != nil {
+			slog.Error("rbmq: failed to re-declare DLQ", "dlq_exchange", exchange, "dlq_queue", queue, "error", err)
+		}
+	}
+}
+
+func declareDLQ(exchangeName string, queueName string) error {
 	url := fmt.Sprintf("amqp://%s:%s@%s:%d", config.Config.RabbitMqUsername, config.Config.RabbitMqPassword, config.Config.RabbitMqHost, config.Config.RabbitMqPort)
 	// Use a bounded dial timeout so a slow/unreachable broker can't hang consumer startup.
 	conn, err := amqp.DialConfig(url, amqp.Config{Dial: amqp.DefaultDial(10 * time.Second)})
@@ -1098,12 +1269,20 @@ func MqPublish(exchangeName string, routingKey string, message any, opts ...MqPu
 // consume round-trip recently. It returns true during the boot grace period
 // (before the first heartbeat) so a slow startup does not trip the liveness probe.
 // Once heartbeats have started, a stale heartbeat (older than mqHeartbeatTimeout)
-// means a consumer or the connection has wedged and the pod should be restarted.
+// while the broker connection is up means a consumer or the connection has wedged and
+// the pod should be restarted. It returns true while the connection is down.
 func MqHealthy() bool {
+	// A broker outage is not something a restart can fix: consumers reconnect in-process
+	// and pollConnection rebuilds a connection that stays closed. So nothing below is
+	// judged while the connection is down, and staleness is measured on connectedClock,
+	// which does not advance during an outage.
+	if !rbmqConnUp.Load() {
+		return true
+	}
+
 	// Connection-level check: the heartbeat round-trip must be recent once it has
-	// started. last == 0 is the boot grace period (heartbeat not started yet).
-	last := mqLastHeartbeatNanos.Load()
-	if last != 0 && time.Since(time.Unix(0, last)) >= mqHeartbeatTimeout {
+	// started (before that is the boot grace period).
+	if mqHeartbeatStarted.Load() && connectedClock()-time.Duration(mqLastHeartbeatAt.Load()) >= mqHeartbeatTimeout {
 		return false
 	}
 	// Consumer-level check: the heartbeat rides the shared connection's own long-lived
@@ -1123,11 +1302,12 @@ func MqHealthy() bool {
 // goes false and the Kubernetes liveness probe restarts the pod.
 func StartMqHeartbeat() {
 	// Seed with the current time so the boot grace period is exactly one timeout
-	// window, after which a missing round-trip is treated as unhealthy.
-	mqLastHeartbeatNanos.Store(time.Now().UnixNano())
+	// window (of connected time), after which a missing round-trip is treated as unhealthy.
+	mqLastHeartbeatAt.Store(int64(connectedClock()))
+	mqHeartbeatStarted.Store(true)
 
 	err := MqConsume(mqHeartbeatExchange, mqHeartbeatKey, mqHeartbeatQueue, 1, func(_ context.Context, _ []byte) error {
-		mqLastHeartbeatNanos.Store(time.Now().UnixNano())
+		mqLastHeartbeatAt.Store(int64(connectedClock()))
 		return nil
 	})
 	if err != nil {

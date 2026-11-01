@@ -96,6 +96,7 @@ const TRACE_INTEGRATIONS = new Set([
   'ES',
   'elasticsearch',
   'openobserve',
+  'grafana_tempo',
   'newrelic',
   'splunk_observability_platform',
   'solarwinds',
@@ -123,6 +124,21 @@ const CANONICAL_TRACE_FIELD_OPTIONS = ALL_TRACE_LABEL_FIELDS.map(({ field }) => 
 // drift.
 const TRACE_CONCEPT_LABELS = Object.fromEntries(ALL_TRACE_LABEL_FIELDS.map(({ field, label }) => [field, label]));
 const TRACE_CONCEPT_ORDER = ALL_TRACE_LABEL_FIELDS.map(({ field }) => field);
+
+// Example request body for the event webhook, shown in its setup modal.
+// Contract: api-server/services/integrations/event_webhook.go.
+const EVENT_WEBHOOK_EXAMPLE = `{
+  "id": "evt-4411",
+  "fingerprint": "site24x7:dc01.example.com:cpu",
+  "status": "firing",
+  "title": "CPU above 85% on dc01",
+  "rule_name": "cpu_high",
+  "severity": "high",
+  "starts_at": "2026-09-29T10:00:00Z",
+  "subject": { "name": "dc01.example.com", "type": "host" },
+  "source_tool": "Site24x7",
+  "labels": { "client": "example-school" }
+}`;
 
 // Alert Template body NudgeBee expects from OpenObserve. Every `{variable}` is
 // substituted by OpenObserve at delivery; the k8s_* keys resolve from the
@@ -2046,10 +2062,22 @@ const IntegrationDynamicFormModal = ({
       endpoint: 'workflow',
       message: 'Point your external system at the following URL to trigger the associated automation',
     },
+    event_webhook: {
+      endpoint: 'event',
+      message: 'POST alerts as JSON to the following URL from any tool that can send a webhook',
+      template: EVENT_WEBHOOK_EXAMPLE,
+      templateMessage:
+        'Send one alert, or {"events": [...]} with up to 100. Required: id (one occurrence), fingerprint (same on every occurrence), status (firing or resolved), title, rule_name. A resolve closes the alert with the same id and must carry the same labels. Optional: severity (critical, high, medium, low, info), description, starts_at / ends_at (RFC 3339), subject, source_tool, url, labels (string values only). An invalid request is rejected with the reason.',
+    },
     cubeapm_webhook: {
       endpoint: 'cubeapm',
       message:
         'Add the following URL as a Webhook notification channel in CubeAPM. Leave the payload template unset — CubeAPM’s default body is already Alertmanager-compatible, which is the expected format',
+    },
+    signoz_webhook: {
+      endpoint: 'signoz',
+      message:
+        'Add the following URL as a Webhook notification channel in SigNoz (Settings → Alert Channels → New Channel → Webhook). Alert rules Nudgebee creates in SigNoz notify the channels that use this URL',
     },
   };
 
@@ -2330,26 +2358,10 @@ const IntegrationDynamicFormModal = ({
           </Box>
         }
         subtitle={subtitle}
-        open={
-          showModal &&
-          [
-            'pagerduty_webhook',
-            'zenduty_webhook',
-            'prometheus_alertmanager_webhook',
-            'datadog_webhook',
-            'azure_monitor_webhook',
-            'gcp_monitoring_webhook',
-            'servicenow_webhook',
-            'newrelic_webhook',
-            'dynatrace_webhook',
-            'splunk_webhook',
-            'grafana_webhook',
-            'solarwinds_webhook',
-            'elasticsearch_webhook',
-            'openobserve_webhook',
-            'workflow_webhook',
-          ].includes(integrationName)
-        }
+        // Every webhook with a URL entry in webhookConfig shows its URL here. A separate
+        // allowlist drifted: CubeAPM and SigNoz were missing, so saving one closed the
+        // form and opened nothing, and the one-time URL was never shown.
+        open={showModal && Boolean(webhookConfig[integrationName])}
         width='md'
         isConfirmRequired={false}
       >

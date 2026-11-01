@@ -259,3 +259,12 @@ func TestGetAlertRuleSource_PrometheusUserOnly(t *testing.T) {
 	_, err = getAlertRuleSource("prometheus", "agent")
 	require.Error(t, err)
 }
+
+// An empty account id must fail before the lookup: the account filter is
+// conditional and the query ends in LIMIT 1, so it would otherwise resolve to
+// whichever user Prometheus comes first in the tenant and write rules there.
+func TestGetPrometheusUserConfigRequiresAccountID(t *testing.T) {
+	_, err := getPrometheusUserConfig(nil, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "account_id is required")
+}

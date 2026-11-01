@@ -77,6 +77,25 @@ query GetUserByProviderAndAccountId($username: String!, $provider: String!) {
   }
 }
 `;
+export const GET_USER_AUTH_BY_TOKEN_HASH = `
+query GetUserAuthByTokenHash($provider: String!, $hash: String!) {
+  users_get_auth_by_username(where: {provider: {_eq: $provider}, token_sha256: {_eq: $hash}}) {
+    rows {
+      auth_id
+      auth_tenant_id
+      auth_status
+      expires_at
+      kind
+      scopes
+      id
+      display_name
+      username
+      user_status
+      user_roles
+    }
+  }
+}
+`;
 const USER_UPDATE_ACCESSED_MUTATION = `mutation UserUpdateAccessed($object: user_update_accessed_input!) {
   userauths_update_accessed(object: $object) {
     updated
@@ -539,6 +558,56 @@ export async function updateUserAccountAccessed(authId: string, tenant: string, 
     object: { auth_id: authId, tenant_id: tenant, ...(tokenSha256 ? { token_sha256: tokenSha256 } : {}) },
   });
   return response.data;
+}
+
+/**
+ * Resolve a Nudgebee Personal Access Token to its user_auths row by
+ * sha256(token). bcrypt (the `credential` column) is salted and therefore not
+ * searchable by value, which is why `token_sha256` exists — see V780 and the
+ * identical lookup the AI Gateway runs in llm/gateway/auth/user_auths.go.
+ *
+ * Returns the same nested `{ user_auths: [{ user }] }` shape the username
+ * lookup returns, so both auth flows feed the session builder the same object.
+ */
+export async function getUserAuthByTokenSha256(tokenSha256: string) {
+  const response = await queryGraphQL(GET_USER_AUTH_BY_TOKEN_HASH, 'GetUserAuthByTokenHash', {
+    provider: 'token',
+    hash: tokenSha256,
+  });
+  // queryGraphQL's catch hands back `e.response || e.request` (HttpService.ts),
+  // so a transport failure resolves to undefined or to a bare request object.
+  // Without this guard the caller reads that as an empty row set — a metastore
+  // outage would be indistinguishable from an unknown token, and would deny
+  // every API call silently.
+  if (!response?.data) {
+    return { errors: [{ message: 'token lookup returned no response' }] };
+  }
+  if (response.data.errors) {
+    return response.data;
+  }
+  const rows = response.data.data?.users_get_auth_by_username?.rows || [];
+  return {
+    data: {
+      user_auths: rows.map((row: any) => ({
+        id: row.auth_id,
+        status: row.auth_status,
+        tenant_id: row.auth_tenant_id,
+        expires_at: row.expires_at,
+        kind: row.kind,
+        scopes: typeof row.scopes === 'string' ? JSON.parse(row.scopes) : row.scopes ?? null,
+        user: {
+          id: row.id,
+          display_name: row.display_name,
+          username: row.username,
+          status: row.user_status,
+          // Same defensive parse as the username lookup above: the gateway
+          // returns json columns as a string on some upstream builds and as a
+          // parsed array on others.
+          user_roles: typeof row.user_roles === 'string' ? JSON.parse(row.user_roles) : row.user_roles || [],
+        },
+      })),
+    },
+  };
 }
 
 export async function updateUserAccountAccessedByUsername(username: string, tenant: string) {

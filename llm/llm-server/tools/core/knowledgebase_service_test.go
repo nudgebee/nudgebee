@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -8,8 +9,24 @@ import (
 
 	"nudgebee/llm/common"
 
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// newMockDBManager wires a sqlmock-backed *common.DatabaseManager for tests
+// that call getKBCapabilitySummaries/attachCapabilitySummaries directly —
+// both take dbms as a parameter rather than reaching into the global
+// singleton, so no RegisterDatabaseManagerHook dance is needed here.
+func newMockDBManager(t *testing.T) (*common.DatabaseManager, sqlmock.Sqlmock) {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	return &common.DatabaseManager{Db: sqlx.NewDb(db, "postgresql")}, mock
+}
 
 // cdataExtract pulls every character that the standard CDATA parsing rules
 // would expose from a correctly framed payload. It walks the string, respects
@@ -291,4 +308,134 @@ func TestUsableForAgents(t *testing.T) {
 			assert.Equal(t, tc.want, kb.UsableForAgents())
 		})
 	}
+}
+
+const capabilitySummaryQuery = `SELECT e.collection_name, e.kinds`
+
+var capabilitySummaryColumns = []string{"collection_name", "kinds", "shapes", "capabilities", "capability_details"}
+
+func TestGetKBCapabilitySummaries_NoCollectionsSkipsQuery(t *testing.T) {
+	dbms, mock := newMockDBManager(t)
+
+	summaries, err := getKBCapabilitySummaries(t.Context(), dbms, nil)
+	require.NoError(t, err)
+	assert.Nil(t, summaries)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestGetKBCapabilitySummaries_KeysTheRollupByCollectionName(t *testing.T) {
+	dbms, mock := newMockDBManager(t)
+
+	details := `[{"name":"k8s.workload_restart","description":"Restarts a workload","surface":"agent_tool","scope":"narrow"}]`
+	mock.ExpectQuery(capabilitySummaryQuery).
+		WithArgs(pq.Array([]string{"kb_abc123"})).
+		WillReturnRows(sqlmock.NewRows(capabilitySummaryColumns).
+			AddRow("kb_abc123", "{sop}", "{deterministic_procedure}", "{k8s.workload_restart,scripting.run_script}", details))
+
+	summaries, err := getKBCapabilitySummaries(t.Context(), dbms, []string{"kb_abc123"})
+	require.NoError(t, err)
+	require.Contains(t, summaries, "kb_abc123")
+	summary := summaries["kb_abc123"]
+	assert.Equal(t, []string{"sop"}, summary.Kinds)
+	assert.Equal(t, []string{"deterministic_procedure"}, summary.Shapes)
+	assert.ElementsMatch(t, []string{"k8s.workload_restart", "scripting.run_script"}, summary.Capabilities)
+	require.Len(t, summary.CapabilityDetails, 1)
+	assert.Equal(t, CapabilityDetail{
+		Name: "k8s.workload_restart", Description: "Restarts a workload", Surface: "agent_tool", Scope: "narrow",
+	}, summary.CapabilityDetails[0])
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestAttachCapabilitySummaries_MergesOntoMatchingKBOnly(t *testing.T) {
+	dbms, mock := newMockDBManager(t)
+
+	kbs := []Knowledgebase{
+		{Id: "abc123", AccountId: "acc-1", KBType: KBTypeManual},
+		{Id: "unclassified", AccountId: "acc-1", KBType: KBTypeManual},
+	}
+
+	mock.ExpectQuery(capabilitySummaryQuery).
+		WithArgs(pq.Array([]string{"kb_abc123", "kb_unclassified"})).
+		WillReturnRows(sqlmock.NewRows(capabilitySummaryColumns).
+			AddRow("kb_abc123", "{knowledge}", "{narrative_reference}", "{}", "[]"))
+
+	attachCapabilitySummaries(t.Context(), dbms, kbs)
+
+	assert.Equal(t, []string{"knowledge"}, kbs[0].Kinds)
+	assert.Equal(t, []string{"narrative_reference"}, kbs[0].Shapes)
+	assert.Empty(t, kbs[0].Capabilities)
+
+	// Second KB has no rollup row — must stay untouched, not zeroed from some
+	// other row's data.
+	assert.Empty(t, kbs[1].Kinds)
+	assert.Empty(t, kbs[1].Shapes)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// An integration collection is shared by one KB row per account of its
+// tenant, and the classification belongs to the collection: every account's KB
+// row reads the one rollup, and the lookup names the collection once. Adding
+// an account to an integration therefore needs no classification of its own.
+func TestAttachCapabilitySummaries_AccountsSharingAnIntegrationCollectionReadTheSameRollup(t *testing.T) {
+	dbms, mock := newMockDBManager(t)
+	integrationID := "int-9"
+
+	kbs := []Knowledgebase{
+		{Id: "row-1", AccountId: "acc-1", KBType: KBTypeIntegration, IntegrationId: &integrationID},
+		{Id: "row-2", AccountId: "acc-2", KBType: KBTypeIntegration, IntegrationId: &integrationID},
+	}
+
+	mock.ExpectQuery(capabilitySummaryQuery).
+		WithArgs(pq.Array([]string{"int-9_knowledge_base"})).
+		WillReturnRows(sqlmock.NewRows(capabilitySummaryColumns).
+			AddRow("int-9_knowledge_base", "{sop,knowledge}", "{decision_tree,narrative_reference}", "{}", "[]"))
+
+	attachCapabilitySummaries(t.Context(), dbms, kbs)
+
+	for _, kb := range kbs {
+		assert.Equal(t, []string{"sop", "knowledge"}, kb.Kinds, "account %s", kb.AccountId)
+		assert.Equal(t, []string{"decision_tree", "narrative_reference"}, kb.Shapes, "account %s", kb.AccountId)
+	}
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// The same text in two KBs is two collections, each with its own rollup: one
+// KB's classification never shows on the other.
+func TestAttachCapabilitySummaries_TwoKBsOfOneAccountKeepTheirOwnRollup(t *testing.T) {
+	dbms, mock := newMockDBManager(t)
+
+	kbs := []Knowledgebase{
+		{Id: "kb-a", AccountId: "acc-1", KBType: KBTypeManual},
+		{Id: "kb-b", AccountId: "acc-1", KBType: KBTypeManual},
+	}
+
+	mock.ExpectQuery(capabilitySummaryQuery).
+		WithArgs(pq.Array([]string{"kb_kb-a", "kb_kb-b"})).
+		WillReturnRows(sqlmock.NewRows(capabilitySummaryColumns).
+			AddRow("kb_kb-a", "{sop}", "{decision_tree}", "{}", "[]").
+			AddRow("kb_kb-b", "{knowledge}", "{narrative_reference}", "{}", "[]"))
+
+	attachCapabilitySummaries(t.Context(), dbms, kbs)
+
+	assert.Equal(t, []string{"sop"}, kbs[0].Kinds)
+	assert.Equal(t, []string{"knowledge"}, kbs[1].Kinds)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestAttachCapabilitySummaries_QueryErrorLeavesKBsUnmodified guards the
+// best-effort contract: a capability-summary lookup failure must not break
+// the KB list itself, since it's an enrichment on top of llm_knowledgebases,
+// not a dependency of it.
+func TestAttachCapabilitySummaries_QueryErrorLeavesKBsUnmodified(t *testing.T) {
+	dbms, mock := newMockDBManager(t)
+
+	kbs := []Knowledgebase{{Id: "abc123", AccountId: "acc-1", KBType: KBTypeManual}}
+
+	mock.ExpectQuery(capabilitySummaryQuery).
+		WithArgs(pq.Array([]string{"kb_abc123"})).
+		WillReturnError(errors.New("boom"))
+
+	assert.NotPanics(t, func() { attachCapabilitySummaries(t.Context(), dbms, kbs) })
+	assert.Empty(t, kbs[0].Kinds)
+	assert.NoError(t, mock.ExpectationsWereMet())
 }

@@ -57,15 +57,7 @@ type FileContent struct {
 func (h *FileHandler) getWorkspaceDir(conversationID string) string {
 	// If conversation ID is provided, use execution workspace
 	if conversationID != "" {
-		baseDir := h.Config.Execution.WorkspaceDir
-		if baseDir == "" {
-			if h.Config.Analysis.WorkspaceDir != "" {
-				baseDir = filepath.Join(h.Config.Analysis.WorkspaceDir, "exec_workspaces")
-			} else {
-				baseDir = "/tmp/code-analysis/exec_workspaces"
-			}
-		}
-		return filepath.Join(baseDir, conversationID)
+		return filepath.Join(execWorkspaceBaseDir(h.Config), conversationID)
 	}
 
 	// Default to analysis workspace
@@ -316,6 +308,11 @@ func (h *FileHandler) HandleSaveFile(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
+	// A save is an active workspace user: hold a lease so the idle sweep cannot
+	// remove the conversation's folder between creating it and writing the file.
+	releaseWorkspace := workspaceGCFor(h.Config.Analysis.WorkspaceDir).Acquire("file:" + req.ConversationID)
+	defer func() { go releaseWorkspace() }()
 
 	// Ensure directory exists
 	dir := filepath.Dir(fullPath)

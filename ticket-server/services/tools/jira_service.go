@@ -427,6 +427,125 @@ func FetchFullIssueDetails(jiraClient *jira.Client, issueKey string) (*jira.Issu
 	return jiraIssue, nil
 }
 
+const (
+	// jiraSyncBatchSize bounds how many ticket keys go into one "key in (...)"
+	// JQL search, keeping each sync's search requests well under Jira's
+	// practical JQL/URL length limits.
+	jiraSyncBatchSize = 100
+	// jiraSyncMaxRetries bounds 429 (rate-limit) retries per batch.
+	jiraSyncMaxRetries = 3
+	// jiraSyncMaxRetryWait caps how long a Retry-After header is honored so a
+	// large value can't stall the sync job.
+	jiraSyncMaxRetryWait = 30 * time.Second
+)
+
+// FetchIssuesByKeys fetches many Jira issues via one or more "key in (...)"
+// JQL searches (jiraSyncBatchSize keys per search) instead of one GET per
+// key — the per-GET pattern is exactly what Jira Cloud rate-limits under
+// load. Used by the ticket-status sync job. A 429 is retried up to
+// jiraSyncMaxRetries times honoring Retry-After instead of being treated as
+// a generic fetch failure. A batch that still fails after retries does not
+// abort the rest: every batch is attempted, and the issues from the ones
+// that succeeded are returned alongside the joined errors from the ones that
+// didn't, so one bad batch (e.g. a malformed key tripping the JQL parser)
+// can't stop sync from reaching tickets in later, unrelated batches.
+func FetchIssuesByKeys(ctx context.Context, jiraClient *jira.Client, keys []string) ([]jira.Issue, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+
+	cloud, err := clients.IsJiraCloud(jiraClient)
+	if err != nil {
+		return nil, fmt.Errorf("failed to detect Jira deployment: %w", err)
+	}
+
+	var all []jira.Issue
+	var errs []error
+	for start := 0; start < len(keys); start += jiraSyncBatchSize {
+		batch := keys[start:min(start+jiraSyncBatchSize, len(keys))]
+		issues, err := fetchJiraIssueBatch(ctx, jiraClient, cloud, batch)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		all = append(all, issues...)
+	}
+	return all, errors.Join(errs...)
+}
+
+// fetchJiraIssueBatch runs a single "key in (...)" JQL search for batch,
+// retrying on 429 per the jiraSync* bounds above.
+func fetchJiraIssueBatch(ctx context.Context, jiraClient *jira.Client, cloud bool, batch []string) ([]jira.Issue, error) {
+	quoted := make([]string, len(batch))
+	for i, k := range batch {
+		quoted[i] = strconv.Quote(k)
+	}
+	jql := fmt.Sprintf("key in (%s)", strings.Join(quoted, ","))
+
+	for attempt := 0; ; attempt++ {
+		var issues []jira.Issue
+		var resp *jira.Response
+		var err error
+		if cloud {
+			issues, resp, err = searchJiraIssuesJQLCloud(ctx, jiraClient, jql, len(batch))
+		} else {
+			issues, resp, err = jiraClient.Issue.SearchWithContext(ctx, jql, &jira.SearchOptions{MaxResults: len(batch)})
+		}
+		if err == nil {
+			return issues, nil
+		}
+		if resp != nil && resp.StatusCode == http.StatusTooManyRequests && attempt < jiraSyncMaxRetries {
+			wait := jiraRetryWait(resp.Header.Get("Retry-After"), attempt)
+			timer := time.NewTimer(wait)
+			select {
+			case <-timer.C:
+				continue
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			}
+		}
+		return nil, fmt.Errorf("jira batch search failed: %w", err)
+	}
+}
+
+// searchJiraIssuesJQLCloud runs jql against Jira Cloud's rest/api/2/search/jql
+// via a POST body (unlike the SDK's SearchV2JQLWithContext, which puts jql in
+// the query string — a problem for a "key in (...)" list long enough to
+// approach URL length limits). Mirrors the request shape walkJiraCloud already
+// uses for paginated listing, without that function's cursor caching, which a
+// one-shot batch-by-keys fetch has no use for.
+func searchJiraIssuesJQLCloud(ctx context.Context, jiraClient *jira.Client, jql string, maxResults int) ([]jira.Issue, *jira.Response, error) {
+	body := map[string]interface{}{
+		"jql":        jql,
+		"fields":     []string{"summary", "status", "priority", "assignee"},
+		"maxResults": maxResults,
+	}
+	req, err := jiraClient.NewRequestWithContext(ctx, "POST", "rest/api/2/search/jql", body)
+	if err != nil {
+		return nil, nil, err
+	}
+	var result jiraSearchPage
+	resp, err := jiraClient.Do(req, &result)
+	return result.Issues, resp, err
+}
+
+// jiraRetryWait resolves the wait before a 429 retry: the Retry-After header
+// (seconds) when present and sane, otherwise exponential backoff (1s, 2s,
+// 4s…). Capped at jiraSyncMaxRetryWait.
+func jiraRetryWait(header string, attempt int) time.Duration {
+	wait := time.Duration(1<<attempt) * time.Second
+	if header != "" {
+		if secs, err := strconv.Atoi(strings.TrimSpace(header)); err == nil && secs > 0 {
+			wait = time.Duration(secs) * time.Second
+		}
+	}
+	if wait > jiraSyncMaxRetryWait {
+		wait = jiraSyncMaxRetryWait
+	}
+	return wait
+}
+
 func AddTicketComment(configuration models.TicketConfigurations, ticketId, title, description string) error {
 	jiraClient, err := clients.CreateJiraClient(configuration.AuthType, configuration.Username, configuration.Password, configuration.URL)
 	if err != nil {

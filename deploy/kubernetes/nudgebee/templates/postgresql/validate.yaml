@@ -1,0 +1,33 @@
+{{- /*
+PostgreSQL features the Bitnami subchart offered and this chart does not
+render. Fails with a message instead of dropping them silently. A default
+install sets none of them.
+*/ -}}
+{{- if .Values.postgresql.enabled }}
+  {{- $r := include "nudgebee.postgresql.values" . | fromYaml }}
+  {{- $u := list }}
+  {{- if eq (toString $r.architecture) "replication" }}{{- $u = append $u "postgresql.architecture=replication" }}{{- end }}
+  {{- if (($r.tls | default (dict)).enabled) }}{{- $u = append $u "postgresql.tls.enabled" }}{{- end }}
+  {{- if (($r.ldap | default (dict)).enabled) }}{{- $u = append $u "postgresql.ldap.enabled" }}{{- end }}
+  {{- if ((($r.backup | default (dict)).enabled)) }}{{- $u = append $u "postgresql.backup.enabled" }}{{- end }}
+  {{- if (($r.networkPolicy | default (dict)).enabled) }}{{- $u = append $u "postgresql.networkPolicy.enabled" }}{{- end }}
+  {{- if (($r.serviceBindings | default (dict)).enabled) }}{{- $u = append $u "postgresql.serviceBindings.enabled" }}{{- end }}
+  {{- if $r.rbac.create }}{{- $u = append $u "postgresql.rbac.create" }}{{- end }}
+  {{- if $r.psp.create }}{{- $u = append $u "postgresql.psp.create" }}{{- end }}
+  {{- if $r.primary.standby.enabled }}{{- $u = append $u "postgresql.primary.standby.enabled" }}{{- end }}
+  {{- if $r.primary.existingConfigmap }}{{- $u = append $u "postgresql.primary.existingConfigmap (use postgresql.primary.configuration / pgHbaConfiguration)" }}{{- end }}
+  {{- if $r.audit.pgAuditLog }}{{- $u = append $u "postgresql.audit.pgAuditLog (pgaudit is not in the official image)" }}{{- end }}
+  {{- if $r.auth.usePasswordFiles }}{{- $u = append $u "postgresql.auth.usePasswordFiles" }}{{- end }}
+  {{- if or $r.primary.initdb.user $r.primary.initdb.password }}{{- $u = append $u "postgresql.primary.initdb.user/password" }}{{- end }}
+  {{- if or $r.primary.command $r.primary.args }}{{- $u = append $u "postgresql.primary.command/args" }}{{- end }}
+  {{- if $r.extraDeploy }}{{- $u = append $u "postgresql.extraDeploy" }}{{- end }}
+  {{- /* A custom application user or no postgres password is only set up at
+         initdb; on an existing install the users already exist. */}}
+  {{- if .Release.IsInstall }}
+    {{- if and $r.auth.username (ne $r.auth.username "postgres") }}{{- $u = append $u "postgresql.auth.username on a fresh install" }}{{- end }}
+    {{- if not $r.auth.enablePostgresUser }}{{- $u = append $u "postgresql.auth.enablePostgresUser=false on a fresh install" }}{{- end }}
+  {{- end }}
+  {{- if $u }}
+    {{- fail (printf "\n\n[ERROR] Unsupported PostgreSQL settings: %s\n\nThis chart now deploys the official PostgreSQL image itself instead of the Bitnami postgresql subchart, and does not render these features.\n\nRemove these keys from your values, or set postgresql.enabled=false and point the database URLs at a PostgreSQL you run yourself.\n" (join ", " $u)) }}
+  {{- end }}
+{{- end }}

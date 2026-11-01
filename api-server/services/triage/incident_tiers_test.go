@@ -171,3 +171,63 @@ func TestCoFiring(t *testing.T) {
 		t.Errorf("CoFiring = %v, want %v (nearest first; far, chronic, derived, same-subject, tiered and post-root config changes excluded)", ids, want)
 	}
 }
+
+// A node that ran out of memory: the pods it killed and its own MemoryPressure are
+// related to each other by the evidence on each alert, with no topology edge and
+// across namespaces. Everything else on or near that node stays out.
+func TestAssembleTiersSameNode(t *testing.T) {
+	const oom = "pod_oom_killer_enricher"
+	seed := AlertIdentity{ID: "seed", SubjectNamespace: "agents", SubjectOwner: "log-agent", AggregationKey: oom, NodeMemory: "node-1"}
+	rates := map[string]Rate{
+		"cache|cache|" + oom: {Expected: 2, Observed: 2}, // chronic
+	}
+	cands := []AlertIdentity{
+		{ID: "sibling", SubjectNamespace: "monitoring", SubjectOwner: "metrics-db", AggregationKey: oom, NodeMemory: "node-1", TsOffsetS: -10},
+		{ID: "node", SubjectType: "node", SubjectName: "node-1", AggregationKey: "node_pressure", NodeMemory: "node-1", TsOffsetS: 40},
+		// Evidence that the node was out of memory outranks a firing rate.
+		{ID: "chronic-sibling", SubjectNamespace: "cache", SubjectOwner: "cache", AggregationKey: oom, NodeMemory: "node-1", TsOffsetS: 60},
+		{ID: "at-window-edge", SubjectNamespace: "queue", SubjectOwner: "queue", AggregationKey: oom, NodeMemory: "node-1", TsOffsetS: -NodeMemoryWindowSeconds},
+		// A pod at its own limit carries no node, wherever it ran.
+		{ID: "own-limit", SubjectNamespace: "billing", SubjectOwner: "billing-api", AggregationKey: oom, TsOffsetS: 20},
+		{ID: "other-node", SubjectNamespace: "search", SubjectOwner: "indexer", AggregationKey: oom, NodeMemory: "node-2", TsOffsetS: 30},
+		{ID: "too-late", SubjectNamespace: "jobs", SubjectOwner: "batch", AggregationKey: oom, NodeMemory: "node-1", TsOffsetS: NodeMemoryWindowSeconds + 1},
+		// Another pod of the seed's own workload is the seed's subject first.
+		{ID: "own-replica", SubjectNamespace: "agents", SubjectOwner: "log-agent", AggregationKey: "KubePodCrashLooping", NodeMemory: "node-1", TsOffsetS: 5},
+	}
+
+	got := AssembleTiers(seed, cands, nil, rates)
+
+	want := map[string]string{
+		"sibling":         TierSameNode,
+		"node":            TierSameNode,
+		"chronic-sibling": TierSameNode,
+		"at-window-edge":  TierSameNode,
+		"own-replica":     TierCore,
+	}
+	for id, tier := range want {
+		if got[id] != tier {
+			t.Errorf("%s: got %q, want %q", id, got[id], tier)
+		}
+	}
+	for _, id := range []string{"own-limit", "other-node", "too-late"} {
+		if tier, ok := got[id]; ok {
+			t.Errorf("%s: got %q, want it left out", id, tier)
+		}
+	}
+
+	// A seed that is not itself a node memory failure relates to none of them.
+	plain := seed
+	plain.NodeMemory = ""
+	for id, tier := range AssembleTiers(plain, cands, nil, rates) {
+		if tier == TierSameNode {
+			t.Errorf("seed without a node: %s placed in %q", id, tier)
+		}
+	}
+
+	// Once placed, a peer is not also offered as a weak co-firing candidate.
+	for _, c := range CoFiring(seed, cands, got, rates) {
+		if got[c.ID] == TierSameNode {
+			t.Errorf("%s is in same_node and co_firing", c.ID)
+		}
+	}
+}

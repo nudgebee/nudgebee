@@ -349,7 +349,7 @@ func getSystemToolDto(context *security.RequestContext, accountId string, toolNa
 		Description:  nbTool.Description(),
 		ExecutorType: ToolExecutorTypeSystem,
 		Config:       map[string]any{},
-		InputSchema:  nbTool.InputSchema(),
+		InputSchema:  ModelInputSchema(nbTool),
 		NBToolType:   nbTool.GetType(),
 	}
 
@@ -1128,7 +1128,7 @@ func ListToolsForTenant(context *security.RequestContext) []ToolDto {
 			Description:  nbTool.Description(),
 			ExecutorType: ToolExecutorTypeSystem,
 			Config:       map[string]any{},
-			InputSchema:  nbTool.InputSchema(),
+			InputSchema:  ModelInputSchema(nbTool),
 			NBToolType:   nbTool.GetType(),
 			// NeedsConfig / IsConfigured / ConfigSchema deliberately left
 			// at zero values — per-account config doesn't apply in the

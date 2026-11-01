@@ -286,6 +286,17 @@ cache assembly per event with staleness-on-new-candidates — not preemptively.
 > `event_duplicates` lifetime chain — more relevant to "this incident" and needs no
 > extra query.
 
+> **Added (2026-10): `assembly.same_node`.** A fifth lane, for a seed that is itself a
+> memory failure of a Kubernetes node: the other pods that node killed and the node's
+> own MemoryPressure alert, within 15 minutes of the root either side. Membership is
+> by evidence on each alert (`triage.NodeMemoryNode` — the same rule incident grouping
+> links on), not by topology, so it crosses namespaces and needs no service-map edge.
+> It is its own lane rather than part of `same_incident` because that lane means "the
+> subject you opened". Items carry `relation: "same_node"` and are never folded as
+> chronic. The peers are fetched with their own narrow query, so the 1000-row window
+> LIMIT cannot cut them. Another pod of the seed's own workload stays where it was:
+> same subject, counted as a repeat firing.
+
 ## 11. Slices & exit criteria
 
 **A — story:** §5 identity promotion, §4 steps 1–6, additive API fields, corpus growth.

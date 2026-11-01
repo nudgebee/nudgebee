@@ -94,9 +94,13 @@ func BackfillMessagingIntegrations(logger *slog.Logger, tracer *trace.Tracer, me
 			continue
 		}
 
+		name := r.teamId
+		if r.platform == "ms_teams" {
+			name = MsTeamsAadTenantId(name)
+		}
 		ctx := security.NewRequestContextForTenantAdmin(r.tenantId, logger, tracer, meter)
 		_, createErr := CreateIntegrationConfig(
-			ctx, "", r.platform, r.teamId, buildMessagingConfigValues(r.platform, r),
+			ctx, "", r.platform, name, buildMessagingConfigValues(r.platform, r),
 			nil, []string{}, true, "user")
 		if createErr != nil {
 			result.Failed++

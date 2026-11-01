@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/exec"
@@ -43,21 +45,40 @@ type PRFollowupAgent struct {
 	toolTracker  *common.ToolInvocationTracker
 	gitToken     string
 	provider     gitprovider.GitProvider
+	// newPlanner replaces the ReAct planner. Nil outside tests; it is what lets
+	// a test run Execute end to end without a model.
+	newPlanner func() followupPlanner
 }
 
-// AddressedComment is one PR comment a followup run has already answered
-// (#36865). It travels both ways: in on the request as the durable record of
-// what earlier runs did, and out on the result as what this run just did.
+// followupPlanner is the part of the ReAct planner that Execute drives.
+type followupPlanner interface {
+	Plan(ctx context.Context, query string, systemPrompt string) (*planners.PlannerResult, error)
+	GetSubmitAnalysisData() any
+}
+
+// AddressedComment is one piece of PR feedback a followup run has already
+// handled (#36865): a comment, or a failing CI run (#39995). It travels both
+// ways: in on the request as the durable record of what earlier runs did, and
+// out on the result as what this run just did.
 //
-// Source is part of the identity alongside CommentID because issue comments and
-// review submissions are separate GitHub id spaces and can collide — the same
-// reason answeredCommentKey already keys on both.
+// Source is part of the identity alongside CommentID because issue comments,
+// review submissions and check runs are separate id spaces and can collide —
+// the same reason answeredCommentKey already keys on both.
 type AddressedComment struct {
-	Source      string    `json:"source"`     // "inline" | "issue_comment" | "review_body"
-	CommentID   int64     `json:"comment_id"` // GitHub's numeric comment id
+	Source      string    `json:"source"`     // "inline" | "issue_comment" | "review_body" | addressedSourceCheckRun
+	CommentID   int64     `json:"comment_id"` // the provider's numeric id for the comment or CI run
 	Action      string    `json:"action"`     // "fixed" | "acknowledged" | "wont_fix"
 	AddressedAt time.Time `json:"addressed_at"`
 }
+
+// addressedSourceCheckRun is the AddressedComment source for a failing CI run
+// the planner was shown. CommentID is then the GitHub check-run id, or on
+// GitLab the pipeline id. On GitHub a re-run or a new commit produces a new id,
+// so a failure is skipped only for as long as it is the same failure. A GitLab
+// pipeline keeps its id when its failed jobs are retried; a retry that fails
+// again is skipped too, which loses nothing — all the planner is ever shown
+// for a GitLab pipeline is that it failed.
+const addressedSourceCheckRun = "check_run"
 
 // PRFollowupRequest contains all info needed for a followup.
 type PRFollowupRequest struct {
@@ -72,6 +93,11 @@ type PRFollowupRequest struct {
 	// stays authoritative. Empty for a PR with no followup history, or when an
 	// older api-server does not send it.
 	AddressedComments []AddressedComment
+	// Instruction, when set, is one specific change the caller wants made on the
+	// branch (e.g. rightsizing values that moved after the PR was raised). The
+	// run then makes that change and nothing else: review comments and CI
+	// failures are left to the regular followup.
+	Instruction string
 }
 
 // PRFollowupResult is the structured output from a followup execution.
@@ -85,8 +111,9 @@ type PRFollowupResult struct {
 	ReviewsAddressed []string `json:"reviews_addressed"`
 	// AddressedComments is the structured counterpart of ReviewsAddressed
 	// (which is display text), recorded so api-server can persist it on
-	// pr_followup (#36865). Appended only after a reply actually landed on
-	// GitHub, so it records what happened rather than what the agent claimed.
+	// pr_followup (#36865). A comment is appended once its reply has landed, or
+	// once the run settled it without one (see settledWithoutReply), so it
+	// records what happened rather than what the agent claimed.
 	AddressedComments []AddressedComment `json:"addressed_comments,omitempty"`
 	Error             string             `json:"error,omitempty"`
 	// NoOp signals that the run found nothing actionable (no unaddressed
@@ -108,6 +135,11 @@ type PRFollowupResult struct {
 	// execution_status like any other, this only tags the outcome metric so
 	// base syncs are separable from real fixes.
 	BaseSynced bool `json:"base_synced,omitempty"`
+	// Superseded reports that the PR head's bot-authored changes are already
+	// contained in the freshly fetched base branch. The lifecycle service owns
+	// any provider-side close; this agent only leaves the marker comment.
+	Superseded      bool   `json:"superseded,omitempty"`
+	AssessedHeadSHA string `json:"assessed_head_sha,omitempty"`
 }
 
 // reviewComment represents a single review comment that needs to be addressed.
@@ -182,12 +214,15 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 	if baseBranch != "" {
 		a.ensureBaseRefFetched(baseBranch)
 	}
+	// Pin CI inspection to the provider's current PR/MR head before a base
+	// merge changes the workspace HEAD. Never substitute a branch name here.
+	ciHead := a.resolveCIHead(repoInfo, prNumber)
 
-	// --- Step 0: Bring the branch up to date with base ---
-	// Runs before the gatherers so a clean merge can short-circuit the whole
-	// run below without paying for a planner pass, and so a conflicted merge is
-	// already staged as work by the time the "is anything actionable?" check
-	// happens. See syncWithBase for why this is a merge and not a rebase.
+	// --- Step 0: Merge base into the workspace ---
+	// Runs before the gatherers so a conflicted merge is already staged as work
+	// by the time the "is anything actionable?" check happens, and so the
+	// superseded check below sees the branch on top of the current base. A clean
+	// merge is dropped again before any work — see syncWithBase.
 	sync := a.syncWithBase(baseBranch, req.Branch)
 
 	// --- Step 1: Gather PR/MR context ---
@@ -206,16 +241,40 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 		})
 	}
 
+	instruction := strings.TrimSpace(req.Instruction)
+
 	prDetails := a.gatherPRDetails(ctx, repoInfo, prNumber)
-	inlineComments, inlineText := a.gatherInlineComments(ctx, repoInfo, prNumber, dbAddressed)
-	issueComments, issueText, answeredComments := a.gatherIssueComments(ctx, repoInfo, prNumber, dbAddressed)
-	reviewBodyComments, reviewBodyText := a.gatherReviewBodyComments(ctx, repoInfo, prNumber, answeredComments)
 	prDiff := a.gatherDiff(ctx, repoInfo, prNumber)
-	ciFailureLogs := a.gatherCIFailureLogs(ctx, repoInfo, prNumber, req.Branch)
+
+	// An instruction run makes the one change it was asked for and nothing else.
+	// Review comments and CI failures stay with the regular followup: mixed in,
+	// a run that only answered an old comment reads as having carried out the
+	// instruction, and the caller would record a change the branch never got.
+	var (
+		inlineComments, issueComments, reviewBodyComments    []reviewComment
+		inlineText, issueText, reviewBodyText, ciFailureLogs string
+		failingChecks                                        []int64
+	)
+	activity := &prActivity{}
+	if instruction == "" {
+		var answeredComments map[string]bool
+		inlineComments, inlineText = a.gatherInlineComments(ctx, repoInfo, prNumber, dbAddressed, activity)
+		issueComments, issueText, answeredComments = a.gatherIssueComments(ctx, repoInfo, prNumber, dbAddressed, activity)
+		reviewBodyComments, reviewBodyText = a.gatherReviewBodyComments(ctx, repoInfo, prNumber, answeredComments, activity)
+		ciFailureLogs, failingChecks = a.gatherCIFailureLogs(ctx, repoInfo, prNumber, ciHead, dbAddressed)
+	}
 
 	// Merge all pending comments into one slice
 	pendingComments := append(inlineComments, issueComments...)
 	pendingComments = append(pendingComments, reviewBodyComments...)
+	if shouldAssessSuperseded(instruction, len(pendingComments), sync) {
+		if result := a.retireIfSuperseded(ctx, repoInfo, prNumber, baseBranch); result != nil {
+			return result, nil
+		}
+	}
+	if !a.undoLocalBaseMerge(sync) {
+		return a.failResult("failed to undo the local base merge"), nil
+	}
 
 	// Build combined comments text for the prompt
 	commentsText := ""
@@ -233,27 +292,8 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 		commentsText = combined.String()
 	}
 
-	// Nothing for the planner to do. A conflicted base merge is the exception:
-	// it is actionable work even with no comments and no CI failures, and it is
-	// already open in the workspace, so it must fall through to the planner
-	// rather than short-circuit (which would strand a half-merged tree).
-	if len(pendingComments) == 0 && ciFailureLogs == "" && !sync.conflicted {
-		if sync.merged {
-			// The branch was behind and the merge landed cleanly. That is a real
-			// change to the PR, so this is a success rather than a no_op — but it
-			// needed no reasoning, so the planner never runs and the whole run
-			// costs zero LLM tokens. The push re-triggers CI; if CI then fails,
-			// the existing check_run webhook dispatches a fresh followup for it.
-			a.logger.Log(common.EventStepComplete, "Base sync was the only work — skipping the planner", map[string]any{
-				"behind_by": sync.behindBy, "commit": sync.commitHash,
-			})
-			return &PRFollowupResult{
-				Success:    true,
-				BaseSynced: true,
-				CommitHash: sync.commitHash,
-				Summary:    fmt.Sprintf("Merged origin/%s into the PR branch (was %d commits behind)", baseBranch, sync.behindBy),
-			}, nil
-		}
+	// Nothing for the planner to do — see nothingForPlanner.
+	if nothingForPlanner(instruction, len(pendingComments), ciFailureLogs, sync) {
 		a.logger.Log(common.EventStepComplete, "No unaddressed comments or CI failures — nothing to do", nil)
 		return &PRFollowupResult{
 			Success: true,
@@ -262,15 +302,26 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 		}, nil
 	}
 
+	// There is work, but this agent has already pushed followupPushBudget commits
+	// with nobody acting on the PR in between. An instruction is an explicit
+	// request, not a reaction to the PR, so it is never held back.
+	if instruction == "" {
+		a.noteHumanCommits(activity, baseBranch)
+		if pushes := activity.pushesSinceHuman(); pushes >= followupPushBudget {
+			return a.pauseForPushBudget(repoInfo, prNumber, mrTerm, pushes, activity, sync), nil
+		}
+	}
+
 	a.logger.Log(common.EventStepComplete, "Gathered PR context", map[string]any{
 		"inline_comments":      len(inlineComments),
 		"issue_comments":       len(issueComments),
 		"review_body_comments": len(reviewBodyComments),
 		"has_ci_failures":      ciFailureLogs != "",
+		"has_instruction":      instruction != "",
 	})
 
 	// --- Step 2: Build system prompt ---
-	systemPrompt := a.buildSystemPrompt(repoInfo.FullPath, prNumber, prDetails, prDiff, commentsText, ciFailureLogs, pendingComments, baseBranch, sync)
+	systemPrompt := a.buildSystemPrompt(repoInfo.FullPath, prNumber, prDetails, prDiff, commentsText, ciFailureLogs, pendingComments, baseBranch, sync, instruction)
 
 	// --- Step 3: Create tools and ReAct planner ---
 	replaceTool := tools.NewReplaceToolWithWorkspace(a.workspaceDir)
@@ -304,14 +355,20 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 		trackedTools[i] = tools.NewTrackedToolWrapper(tool, a.toolTracker, a.logger)
 	}
 
-	planner := planners.NewReActPlanner(a.llmClient, trackedTools, a.config.Agent.ReActMaxIterations)
-	planner.SetLogger(a.logger)
-	planner.SetRepositoryContext(&planners.RepositoryContext{
-		URL:        req.RepoURL,
-		Branch:     req.Branch,
-		LocalPath:  a.workspaceDir,
-		GitHubRepo: repoInfo.FullPath,
-	})
+	var planner followupPlanner
+	if a.newPlanner != nil {
+		planner = a.newPlanner()
+	} else {
+		react := planners.NewReActPlanner(a.llmClient, trackedTools, a.config.Agent.ReActMaxIterations)
+		react.SetLogger(a.logger)
+		react.SetRepositoryContext(&planners.RepositoryContext{
+			URL:        req.RepoURL,
+			Branch:     req.Branch,
+			LocalPath:  a.workspaceDir,
+			GitHubRepo: repoInfo.FullPath,
+		})
+		planner = react
+	}
 
 	// --- Step 4: Execute the planner ---
 	userPrompt := fmt.Sprintf(
@@ -319,6 +376,13 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 			"After making changes, use submit_analysis to report what you fixed.",
 		mrTerm, prNumber, repoInfo.FullPath,
 	)
+	if instruction != "" {
+		userPrompt = fmt.Sprintf(
+			"Make the requested change on %s #%s in %s, then commit and push it. "+
+				"After making the change, use submit_analysis to report what you changed.",
+			mrTerm, prNumber, repoInfo.FullPath,
+		)
+	}
 
 	// Snapshot state before the planner runs so we can detect whether the
 	// agent actually changed anything. The agent owns its own git/metadata
@@ -386,6 +450,13 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 	postHead, _ := a.runCommandInDir("git", "rev-parse", "HEAD")
 	postHead = strings.TrimSpace(postHead)
 	committed := preHead != "" && postHead != "" && postHead != preHead && a.headPushedToRemote(postHead, req.Branch)
+
+	// Did the planner leave the workspace different from how it found it — a
+	// moved HEAD, uncommitted edits, or an open merge? Read now, before the
+	// commit enforcement below commits or discards them: a run that touched the
+	// tree and then landed nothing has settled nothing (see Step 6.1).
+	dirtyAfterPlan, _ := a.runCommandInDir("git", "status", "--porcelain")
+	treeTouched := postHead != preHead || strings.TrimSpace(dirtyAfterPlan) != ""
 
 	// Commit-enforcement: if the agent left real edits uncommitted, commit and
 	// push them deterministically instead of re-prompting the LLM to run git
@@ -574,6 +645,27 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 		result.CommentPosted = repliedCount > 0
 	}
 
+	// --- Step 6.1: Record what this run settled without a reply ---
+	// Step 6 records a comment only when a reply lands. That leaves out
+	// everything the run dealt with silently — a tool's top-level comment (never
+	// replied to, by design), a comment the agent chose not to answer, a failing
+	// check — and each of those came back as fresh work on every later run, so
+	// one PR was re-examined for days over input that had not changed (#39995).
+	//
+	// Recorded only when the planner submitted a result it did not itself call
+	// a failure, and that result is what the PR now shows: either a commit
+	// landed, or the planner left the tree alone. A run that ended without a
+	// submitted result, reported failure, or edited files that never reached the
+	// PR has settled nothing, and the next run must see the same input again.
+	// (A planner that uses up its steps is asked to submit what it has; if it
+	// does, that counts as a result.)
+	settled := planResult.Status == "completed" && parsedSubmit != nil && parsedSubmit.ExecutionStatus != "failed" &&
+		(result.CommitHash != "" || !treeTouched)
+	if settled {
+		result.AddressedComments = append(result.AddressedComments,
+			a.settledWithoutReply(pendingComments, responses, result.AddressedComments, failingChecks, agentChangedSomething)...)
+	}
+
 	// --- Step 6.5: Don't leave a human reviewer in silence ---
 	// If there were open comments but the agent produced NO structured
 	// comment_responses at all (the force-submit / ran-out-of-steps path — it
@@ -598,6 +690,12 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 	// --- Step 7: Post summary comment (only when code was changed) ---
 	if result.CommitHash != "" {
 		summaryBody := a.buildSummaryComment(result, responses)
+		// The marker is what the push budget counts. An instruction's push is one
+		// the caller asked for, not this agent reacting to the PR, so it carries
+		// none and is not counted.
+		if instruction == "" {
+			summaryBody = followupPushMarker + "\n" + summaryBody
+		}
 		if err := a.postIssueComment(repoInfo, prNumber, summaryBody); err != nil {
 			a.logger.Error(common.EventStepFailure, "Failed to post summary comment", err, nil)
 		}
@@ -617,10 +715,211 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 		// really a non-convergence. Observability-only — the cron still treats
 		// it as a counter-neutral no_op, so the PR stays eligible for a retry
 		// once the conflict is easier or a human resolves it.
-		result.Unresolved = len(pendingComments) > 0 || ciFailureLogs != "" || mergeAbandoned
+		result.Unresolved = len(pendingComments) > 0 || ciFailureLogs != "" || mergeAbandoned || instruction != ""
 	}
 
 	return result, nil
+}
+
+// nothingForPlanner reports whether a followup run has no work for the planner,
+// so Execute can finish without an LLM call. A conflicted base merge is the
+// exception: it is actionable work even with no comments and no CI failures,
+// and it is already open in the workspace, so it must fall through to the
+// planner rather than short-circuit (which would strand a half-merged tree). So
+// is an instruction — it is the work itself, and a clean base sync does not
+// carry it out.
+func nothingForPlanner(instruction string, pendingComments int, ciFailureLogs string, sync baseSyncResult) bool {
+	return instruction == "" && pendingComments == 0 && ciFailureLogs == "" && !sync.conflicted
+}
+
+// followupPushBudget is how many commits the followup may push to one PR with
+// nobody acting on it in between. Every push re-runs CI and any reviewer bot,
+// and their output is new input for the next run, so a fix that does not
+// converge keeps pushing: one PR took 19 runs in 18 hours, each on top of the
+// last, with nobody looking. Remembering what was already handled cannot stop
+// that — every round's input is new. A person commenting, reviewing or pushing
+// starts the count again.
+const followupPushBudget = 5
+
+// followupPushMarker tags the summary comment posted for each commit a regular
+// run pushes, and followupPausedMarker the notice posted when the budget runs
+// out. Both are read back by prActivity; the PR's own comment history is the
+// only record.
+const (
+	followupPushMarker   = "<!-- nb-followup-push -->"
+	followupPausedMarker = "<!-- nb-followup-paused -->"
+)
+
+// prActivity is what the PR's comments and commits say about who acted last:
+// when a person last did, and what this agent has posted. The comment gatherers
+// fill it in from the listings they already fetch.
+type prActivity struct {
+	lastHuman time.Time
+	pushes    []time.Time
+	paused    []time.Time
+}
+
+// note files one comment from any of the PR's comment listings. automation is
+// isAutomationComment's verdict on it.
+func (p *prActivity) note(body, createdAt string, automation bool) {
+	at, err := time.Parse(time.RFC3339, createdAt)
+	if err != nil {
+		return
+	}
+	switch {
+	case strings.Contains(body, followupPushMarker):
+		p.pushes = append(p.pushes, at)
+	case strings.Contains(body, followupPausedMarker):
+		p.paused = append(p.paused, at)
+	case automation || strings.Contains(body, "Automated Followup"):
+		// A tool's comment, or one of our own replies and notices: not a person.
+	default:
+		p.noteHuman(at)
+	}
+}
+
+func (p *prActivity) noteHuman(at time.Time) {
+	if at.After(p.lastHuman) {
+		p.lastHuman = at
+	}
+}
+
+// pushesSinceHuman counts this agent's pushes since a person last acted.
+func (p *prActivity) pushesSinceHuman() int {
+	n := 0
+	for _, at := range p.pushes {
+		if at.After(p.lastHuman) {
+			n++
+		}
+	}
+	return n
+}
+
+// pausedSinceHuman reports whether the pause notice is already on the PR for
+// the current run of pushes.
+func (p *prActivity) pausedSinceHuman() bool {
+	for _, at := range p.paused {
+		if at.After(p.lastHuman) {
+			return true
+		}
+	}
+	return false
+}
+
+// noteHumanCommits counts a commit put on the PR branch by anyone but this agent
+// as a person acting on the PR. Best-effort: with no readable base ref the
+// commits are simply not counted, and a comment still resets the budget.
+//
+// It reads the committer, not the author. When this agent amends or squashes a
+// commit someone else authored, the author stays theirs but the commit is this
+// agent's push — counting it as a person would reset the budget on every push.
+func (a *PRFollowupAgent) noteHumanCommits(p *prActivity, base string) {
+	if base == "" || !isPlainBranchName(base) {
+		return
+	}
+	out, err := a.runCommandInDir("git", "log", "--format=%ce %cI", "origin/"+base+"..HEAD")
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		email, when, ok := strings.Cut(line, " ")
+		// bot@nudgebee.com is the identity buildCLIEnv commits under.
+		if !ok || email == "bot@nudgebee.com" {
+			continue
+		}
+		if at, err := time.Parse(time.RFC3339, when); err == nil {
+			p.noteHuman(at)
+		}
+	}
+}
+
+// pauseForPushBudget ends a run that has work but no push budget left. It tells
+// the PR once, and leaves the workspace without an open merge.
+func (a *PRFollowupAgent) pauseForPushBudget(repoInfo *gitprovider.RepoInfo, prNumber, mrTerm string, pushes int, activity *prActivity, sync baseSyncResult) *PRFollowupResult {
+	a.logger.Log(common.EventStepComplete, "Push budget spent — skipping the planner", map[string]any{
+		"pushes_since_human": pushes, "budget": followupPushBudget,
+	})
+	if sync.conflicted {
+		if _, err := a.runCommandInDir("git", "merge", "--abort"); err != nil {
+			a.logger.Error(common.EventStepFailure, "Failed to abort the base merge", err, nil)
+		}
+	}
+	if !activity.pausedSinceHuman() {
+		body := fmt.Sprintf("%s\n### Nudgebee Automated Followup\n\nI have pushed %d commits to this %s since anyone last commented, reviewed or pushed, and there is still open feedback or a failing check. I am stopping here rather than pushing again.\n\nComment on this %s and I will pick it up again.\n",
+			followupPausedMarker, pushes, mrTerm, mrTerm)
+		if err := a.postIssueComment(repoInfo, prNumber, body); err != nil {
+			a.logger.Error(common.EventStepFailure, "Failed to post the push-budget notice", err, nil)
+		}
+	}
+	return &PRFollowupResult{
+		Success:    true,
+		NoOp:       true,
+		Unresolved: true,
+		Summary:    fmt.Sprintf("Paused: %d commits pushed with no one acting on the %s in between", pushes, mrTerm),
+	}
+}
+
+// settledWithoutReply lists what a run dealt with that no posted reply records,
+// so the next run does not take it for fresh work. recorded is what Step 6
+// already recorded for a landed reply; changed says whether this run changed
+// the PR at all. Three kinds:
+//
+//   - a top-level comment from a tool. Its reply is suppressed by design (see
+//     isAutomationComment), so nothing else would ever mark it done;
+//   - a comment the agent answered with should_reply=false;
+//   - a failing check the planner was shown.
+//
+// Deliberately absent: a comment from a person that the agent gave no answer
+// for, a "fixed" claim Step 6 withheld because nothing changed, and a reply
+// that failed to post. Those stay open on the provider, so they must stay
+// pending here — the record may only ever agree with what a reviewer can see.
+func (a *PRFollowupAgent) settledWithoutReply(pending []reviewComment, responses []commentResponse, recorded []AddressedComment, failingChecks []int64, changed bool) []AddressedComment {
+	now := time.Now().UTC()
+	done := addressedCommentKeys(recorded)
+	answers := make(map[int64]commentResponse, len(responses))
+	for _, r := range responses {
+		answers[r.CommentID] = r
+	}
+	// An answer names a comment by id alone, and ids from different sources can
+	// collide. An answer that could belong to two pending comments settles
+	// neither.
+	sameID := make(map[int64]int, len(pending))
+	for _, c := range pending {
+		sameID[c.ID]++
+	}
+	// "fixed" is only ever recorded for a run that changed the PR; the record
+	// says what happened, not what the agent claimed.
+	settledAction := func(claimed string) string {
+		if claimed == "" || (claimed == "fixed" && !changed) {
+			return "acknowledged"
+		}
+		return claimed
+	}
+
+	var out []AddressedComment
+	for _, c := range pending {
+		if done[answeredCommentKey(c.Source, c.ID)] {
+			continue
+		}
+		answer, answered := answers[c.ID]
+		if sameID[c.ID] > 1 {
+			answer, answered = commentResponse{}, false
+		}
+		toolComment := c.Source != "inline" && a.isAutomationComment(c.AuthorType, c.Body)
+		if !toolComment && (!answered || answer.ShouldReply) {
+			continue
+		}
+		out = append(out, AddressedComment{Source: c.Source, CommentID: c.ID, Action: settledAction(answer.Action), AddressedAt: now})
+	}
+
+	checkAction := "acknowledged"
+	if changed {
+		checkAction = "fixed"
+	}
+	for _, id := range failingChecks {
+		out = append(out, AddressedComment{Source: addressedSourceCheckRun, CommentID: id, Action: checkAction, AddressedAt: now})
+	}
+	return out
 }
 
 func (a *PRFollowupAgent) failResult(msg string) *PRFollowupResult {
@@ -920,17 +1219,22 @@ func isPlainBranchName(name string) bool {
 
 // baseSyncResult reports what syncWithBase did to the PR branch.
 //
-// Exactly one of merged / conflicted / skipReason is meaningful on any given
-// run; behindBy is set whenever the count was readable, including when the
-// answer was zero.
+// Exactly one of preMergeHead / conflicted / skipReason is meaningful when
+// syncWithBase returns; behindBy is set whenever the count was readable,
+// including when the answer was zero.
 type baseSyncResult struct {
 	behindBy int
-	// merged means the base merged cleanly AND the merge commit reached the
-	// remote. A local-only merge is never reported as merged — the workspace is
-	// ephemeral, so an unpushed commit is indistinguishable from no commit
-	// (the #36634 lesson that headPushedToRemote exists for).
-	merged     bool
-	commitHash string
+	// merged means a base merge commit reached the remote. syncWithBase never
+	// sets it: only a conflicted merge the agent resolved is pushed, by
+	// finalizeMerge. A local-only merge is never reported as merged — the
+	// workspace is ephemeral, so an unpushed commit is indistinguishable from no
+	// commit (the #36634 lesson that headPushedToRemote exists for).
+	merged bool
+	// preMergeHead is set when the base merged cleanly. The merge commit exists
+	// only in the workspace, where the superseded check needs it, and is never
+	// pushed (#39995): the caller must call undoLocalBaseMerge before doing any
+	// work on the branch.
+	preMergeHead string
 	// conflicted means the merge is still IN PROGRESS in the workspace, with
 	// unmerged paths for the agent to resolve. The caller must reach
 	// finalizeMerge before returning, or the run leaves a half-merged tree.
@@ -998,16 +1302,23 @@ func (a *PRFollowupAgent) ensureMergeBase(base, branch string) bool {
 	return false
 }
 
-// syncWithBase brings the PR branch up to date with its base branch when it has
-// fallen behind, and reports what happened.
+// syncWithBase merges the base branch into the PR branch in the workspace when
+// the branch has fallen behind, and reports what happened.
 //
 // Why this exists: being out-of-date was not an actionable signal anywhere in
 // the followup subsystem (#36864). extractGithubPRSignal ignores `push`, so a
-// base branch moving forward fires no webhook; and while the hourly cron does
-// still dispatch a followup for the PR, Execute short-circuited to a no_op
-// whenever there were no open comments and no CI failures. An auto-PR with
-// clean CI therefore drifted behind base until it conflicted, and nothing
-// touched it until the 3-day stale retirement.
+// base branch moving forward fires no webhook; and while the cron does still
+// dispatch a followup for the PR, Execute short-circuited to a no_op whenever
+// there were no open comments and no CI failures. An auto-PR with clean CI
+// therefore drifted behind base until it conflicted, and nothing touched it
+// until the 3-day stale retirement.
+//
+// Only a conflict is work. A clean merge stays in the workspace and is never
+// pushed (#39995): pushing it on every run re-triggered CI and every
+// push-driven automation on the PR, and on a repository that allows a single
+// commit per PR it broke that rule — which the next run then repaired by
+// squashing and force-pushing, on every cron tick, for as long as the PR stayed
+// open. A branch that is merely behind still merges; it needs nothing from us.
 //
 // Merge, never rebase. A rebase would need --force-with-lease on every sync,
 // which this agent's own non-negotiable safety rule already forbids whenever a
@@ -1048,6 +1359,14 @@ func (a *PRFollowupAgent) syncWithBase(base, branch string) baseSyncResult {
 		return baseSyncResult{}
 	}
 
+	preMergeHead, headErr := a.runCommandInDir("git", "rev-parse", "HEAD")
+	preMergeHead = strings.TrimSpace(preMergeHead)
+	if headErr != nil || preMergeHead == "" {
+		// Without the pre-merge head a clean merge could not be undone, and a
+		// merge commit left in the workspace would ride out on the agent's push.
+		return baseSyncResult{behindBy: behind, skipReason: "head_unreadable"}
+	}
+
 	a.logger.Log(common.EventStepStart, "PR branch is behind its base — merging base in", map[string]any{
 		"base": base, "behind_by": behind,
 	})
@@ -1070,14 +1389,25 @@ func (a *PRFollowupAgent) syncWithBase(base, branch string) baseSyncResult {
 		return baseSyncResult{behindBy: behind, conflicted: true, conflictFiles: conflicts}
 	}
 
-	head, pushed := a.pushCurrentHead(branch)
-	if !pushed {
-		return baseSyncResult{behindBy: behind, skipReason: "push_failed"}
-	}
-	a.logger.Log(common.EventStepComplete, "Merged base into the PR branch", map[string]any{
-		"base": base, "behind_by": behind, "commit": head,
+	a.logger.Log(common.EventStepComplete, "Base merges cleanly — nothing to push", map[string]any{
+		"base": base, "behind_by": behind,
 	})
-	return baseSyncResult{behindBy: behind, merged: true, commitHash: head}
+	return baseSyncResult{behindBy: behind, preMergeHead: preMergeHead}
+}
+
+// undoLocalBaseMerge drops the clean merge commit syncWithBase left in the
+// workspace, so the agent works on — and can only ever push — the PR's own
+// head. A no-op when there is no such merge. Returns false when the reset
+// failed; the caller must then not let the planner run on the merged tree.
+func (a *PRFollowupAgent) undoLocalBaseMerge(sync baseSyncResult) bool {
+	if sync.preMergeHead == "" {
+		return true
+	}
+	if _, err := a.runCommandInDir("git", "reset", "--hard", sync.preMergeHead); err != nil {
+		a.logger.Error(common.EventStepFailure, "Failed to undo the local base merge", err, map[string]any{"head": sync.preMergeHead})
+		return false
+	}
+	return true
 }
 
 // unmergedPaths lists the files git left with conflict markers.
@@ -1251,19 +1581,39 @@ func (a *PRFollowupAgent) gatherPRDetails(_ context.Context, repoInfo *gitprovid
 	return out
 }
 
+// decodeJSONPages decodes the output of a paginated list call into rows. A
+// provider returns a list 30 (GitHub) or 20 (GitLab) rows at a time unless
+// asked for every page, and `--paginate` prints the pages one after another:
+// as a single array, or as one array per page back to back. Both decode here.
+// Reading only the first page hid every later comment — on one PR, a human
+// review at position 34 of 92 was never seen (#39995).
+func decodeJSONPages[T any](out string, rows *[]T) error {
+	dec := json.NewDecoder(strings.NewReader(out))
+	for {
+		var page []T
+		if err := dec.Decode(&page); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+		*rows = append(*rows, page...)
+	}
+}
+
 // gatherInlineComments fetches review comments and returns unaddressed ones.
 // Returns structured comments for reply tracking and formatted text for the LLM prompt.
 // dbAddressed is the fallback skip set from pr_followup.addressed_comments
 // (#36865), applied alongside — never instead of — the reply-marker and
 // resolved-thread checks below, both of which stay authoritative.
-func (a *PRFollowupAgent) gatherInlineComments(_ context.Context, repoInfo *gitprovider.RepoInfo, prNumber string, dbAddressed map[string]bool) ([]reviewComment, string) {
+func (a *PRFollowupAgent) gatherInlineComments(_ context.Context, repoInfo *gitprovider.RepoInfo, prNumber string, dbAddressed map[string]bool, activity *prActivity) ([]reviewComment, string) {
 	var out string
 	var err error
 	if a.provider == gitprovider.GitProviderGitLab {
 		encodedPath := url.PathEscape(repoInfo.FullPath)
-		out, err = a.runCommandInDir("glab", "api", fmt.Sprintf("projects/%s/merge_requests/%s/notes", encodedPath, prNumber))
+		out, err = a.runCommandInDir("glab", "api", "--paginate", fmt.Sprintf("projects/%s/merge_requests/%s/notes?per_page=100", encodedPath, prNumber))
 	} else {
-		out, err = a.runCommandInDir("gh", "api", fmt.Sprintf("repos/%s/pulls/%s/comments", repoInfo.FullPath, prNumber))
+		out, err = a.runCommandInDir("gh", "api", "--paginate", fmt.Sprintf("repos/%s/pulls/%s/comments?per_page=100", repoInfo.FullPath, prNumber))
 	}
 
 	if err != nil {
@@ -1280,13 +1630,23 @@ func (a *PRFollowupAgent) gatherInlineComments(_ context.Context, repoInfo *gitp
 		OriginalLine int    `json:"original_line"`
 		User         struct {
 			Login string `json:"login"`
+			Type  string `json:"type"`
 		} `json:"user"`
 		CreatedAt   string `json:"created_at"`
 		InReplyToID *int64 `json:"in_reply_to_id"`
+		// GitLab only: a note the platform wrote itself ("added 1 commit").
+		System bool `json:"system"`
 	}
-	if err := json.Unmarshal([]byte(out), &rawComments); err != nil {
+	if err := decodeJSONPages(out, &rawComments); err != nil {
 		a.logger.Log(common.EventStepFailure, "Failed to parse inline comments", map[string]any{"error": err.Error()})
 		return nil, out // Return raw text as fallback
+	}
+	for _, c := range rawComments {
+		// GitLab attributes a system note to whoever caused it, so this agent's
+		// own push would otherwise read as a person acting on the MR.
+		if !c.System {
+			activity.note(c.Body, c.CreatedAt, a.isAutomationComment(c.User.Type, c.Body))
+		}
 	}
 
 	// Collect top-level review comments that haven't been replied to by our bot
@@ -1333,13 +1693,14 @@ func (a *PRFollowupAgent) gatherInlineComments(_ context.Context, repoInfo *gitp
 		}
 
 		unaddressed = append(unaddressed, reviewComment{
-			ID:        c.ID,
-			Body:      c.Body,
-			Path:      c.Path,
-			Line:      line,
-			User:      c.User.Login,
-			CreatedAt: c.CreatedAt,
-			Source:    "inline",
+			ID:         c.ID,
+			Body:       c.Body,
+			Path:       c.Path,
+			Line:       line,
+			User:       c.User.Login,
+			AuthorType: c.User.Type,
+			CreatedAt:  c.CreatedAt,
+			Source:     "inline",
 		})
 	}
 
@@ -1539,9 +1900,12 @@ func followupReplyMarker(source string, commentID int64) string {
 // The ORDER of sources is not the point — any one of them is sufficient — but
 // their RELATIONSHIP is: replied and resolved come from GitHub and are
 // authoritative, while dbAddressed is our own record and is purely additive.
-// It can only cause more skipping, never less, so a comment GitHub reports as
-// open and unanswered still comes back as pending. That is what stops a human
-// un-resolving a thread from being met with permanent silence (#36625).
+// It can only cause more skipping, never less. A comment GitHub reports as open
+// and unanswered still comes back as pending unless the record says a run
+// settled it — and the record holds an unanswered comment in one case only: the
+// agent looked at it and chose not to reply (see settledWithoutReply). A
+// comment the agent never got to, or failed to act on, is never in the record,
+// which is what stops a human being met with permanent silence (#36625).
 //
 // Split out from gatherInlineComments so this invariant is testable without
 // shelling out to gh.
@@ -1648,7 +2012,7 @@ func (a *PRFollowupAgent) automationCommentMarkers() []string {
 // lookup failed. It is a pure addition: GitHub-derived markers are still read
 // and still win where they exist, and the returned map (which
 // gatherReviewBodyComments consumes) carries both sources.
-func (a *PRFollowupAgent) gatherIssueComments(_ context.Context, repoInfo *gitprovider.RepoInfo, prNumber string, dbAddressed map[string]bool) ([]reviewComment, string, map[string]bool) {
+func (a *PRFollowupAgent) gatherIssueComments(_ context.Context, repoInfo *gitprovider.RepoInfo, prNumber string, dbAddressed map[string]bool, activity *prActivity) ([]reviewComment, string, map[string]bool) {
 	answered := make(map[string]bool, len(dbAddressed))
 	for k := range dbAddressed {
 		answered[k] = true
@@ -1659,7 +2023,7 @@ func (a *PRFollowupAgent) gatherIssueComments(_ context.Context, repoInfo *gitpr
 		return nil, "", answered
 	}
 
-	out, err := a.runCommandInDir("gh", "api", fmt.Sprintf("repos/%s/issues/%s/comments", repoInfo.FullPath, prNumber))
+	out, err := a.runCommandInDir("gh", "api", "--paginate", fmt.Sprintf("repos/%s/issues/%s/comments?per_page=100", repoInfo.FullPath, prNumber))
 	if err != nil {
 		a.logger.Log(common.EventStepFailure, "Failed to gather issue comments", map[string]any{"error": err.Error()})
 		return nil, "", answered
@@ -1675,9 +2039,12 @@ func (a *PRFollowupAgent) gatherIssueComments(_ context.Context, repoInfo *gitpr
 		} `json:"user"`
 		CreatedAt string `json:"created_at"`
 	}
-	if err := json.Unmarshal([]byte(out), &rawComments); err != nil {
+	if err := decodeJSONPages(out, &rawComments); err != nil {
 		a.logger.Log(common.EventStepFailure, "Failed to parse issue comments", map[string]any{"error": err.Error()})
 		return nil, "", answered
+	}
+	for _, c := range rawComments {
+		activity.note(c.Body, c.CreatedAt, a.isAutomationComment(c.User.Type, c.Body))
 	}
 
 	// First pass: recover what we already answered, from our own comments.
@@ -1740,12 +2107,12 @@ func (a *PRFollowupAgent) gatherIssueComments(_ context.Context, repoInfo *gitpr
 // gatherReviewBodyComments fetches review submission body text (the top-level text of a review, not inline comments).
 // answered comes from gatherIssueComments: our replies to a review body are posted
 // as top-level issue comments, so that is where the reply markers live.
-func (a *PRFollowupAgent) gatherReviewBodyComments(_ context.Context, repoInfo *gitprovider.RepoInfo, prNumber string, answered map[string]bool) ([]reviewComment, string) {
+func (a *PRFollowupAgent) gatherReviewBodyComments(_ context.Context, repoInfo *gitprovider.RepoInfo, prNumber string, answered map[string]bool, activity *prActivity) ([]reviewComment, string) {
 	if a.provider == gitprovider.GitProviderGitLab {
 		return nil, ""
 	}
 
-	out, err := a.runCommandInDir("gh", "api", fmt.Sprintf("repos/%s/pulls/%s/reviews", repoInfo.FullPath, prNumber))
+	out, err := a.runCommandInDir("gh", "api", "--paginate", fmt.Sprintf("repos/%s/pulls/%s/reviews?per_page=100", repoInfo.FullPath, prNumber))
 	if err != nil {
 		a.logger.Log(common.EventStepFailure, "Failed to gather reviews", map[string]any{"error": err.Error()})
 		return nil, ""
@@ -1761,9 +2128,16 @@ func (a *PRFollowupAgent) gatherReviewBodyComments(_ context.Context, repoInfo *
 		State     string `json:"state"`
 		CreatedAt string `json:"submitted_at"`
 	}
-	if err := json.Unmarshal([]byte(out), &rawReviews); err != nil {
+	if err := decodeJSONPages(out, &rawReviews); err != nil {
 		a.logger.Log(common.EventStepFailure, "Failed to parse reviews", map[string]any{"error": err.Error()})
 		return nil, ""
+	}
+	for _, r := range rawReviews {
+		// A review with no text is an approval or a wrapper for inline comments,
+		// which the inline listing already reports.
+		if strings.TrimSpace(r.Body) != "" {
+			activity.note(r.Body, r.CreatedAt, a.isAutomationComment(r.User.Type, r.Body))
+		}
 	}
 
 	var unaddressed []reviewComment
@@ -1828,94 +2202,41 @@ func (a *PRFollowupAgent) gatherDiff(_ context.Context, repoInfo *gitprovider.Re
 	return out
 }
 
-// gatherCIFailureLogs fetches CI/CD failure logs with actual error output.
-func (a *PRFollowupAgent) gatherCIFailureLogs(_ context.Context, repoInfo *gitprovider.RepoInfo, prNumber string, branch string) string {
-	if a.provider == gitprovider.GitProviderGitLab {
-		encodedPath := url.PathEscape(repoInfo.FullPath)
-		out, err := a.runCommandInDir("glab", "api", fmt.Sprintf("projects/%s/merge_requests/%s/pipelines", encodedPath, prNumber))
-		if err != nil {
-			a.logger.Log(common.EventStepFailure, "Failed to gather GitLab CI logs", map[string]any{"error": err.Error()})
-			return ""
-		}
-		return out
-	}
-
-	ref := branch
-	if ref == "" {
-		ref = "HEAD"
-	}
-
-	var sb strings.Builder
-
-	// Reject branch names that could lead to gh CLI argument injection
-	// (`gh run list --branch` and similar take `--` to terminate flags only at the binary level,
-	// but a leading `-` would still be interpreted as a flag by some subcommands).
-	if branch != "" && (strings.Contains(branch, "..") || strings.HasPrefix(branch, "-")) {
-		a.logger.Log(common.EventStepFailure, "Invalid branch name format", map[string]any{"branch": branch})
-		return ""
-	}
-
-	// URL-path-escape ref to prevent special characters (spaces, slashes, encoded sequences)
-	// from breaking the gh-api path or being interpreted as additional path segments.
-	escapedRef := url.PathEscape(ref)
-	checkNames, err := a.runCommandInDir("gh", "api", fmt.Sprintf("repos/%s/commits/%s/check-runs", repoInfo.FullPath, escapedRef), "--jq", `.check_runs[] | select(.conclusion=="failure") | .name`)
-	if err != nil {
-		a.logger.Log(common.EventStepFailure, "Failed to list failed checks", map[string]any{"error": err.Error()})
-		return ""
-	}
-
-	failedChecks := strings.TrimSpace(checkNames)
-	if failedChecks == "" {
-		return ""
-	}
-
-	fmt.Fprintf(&sb, "### Failed Checks\n%s\n\n", failedChecks)
-
-	runListOut, err := a.runCommandInDir("gh", "run", "list", "--branch", branch, "--status", "failure", "--limit", "5", "--json", "databaseId,name,conclusion", "--repo", repoInfo.FullPath)
-	if err != nil {
-		a.logger.Log(common.EventStepFailure, "Failed to list failed runs", map[string]any{"error": err.Error()})
-		return sb.String()
-	}
-
-	var runs []struct {
-		DatabaseID int64  `json:"databaseId"`
-		Name       string `json:"name"`
-	}
-	if err := json.Unmarshal([]byte(runListOut), &runs); err != nil || len(runs) == 0 {
-		return sb.String()
-	}
-
-	maxRuns := 3
-	if len(runs) < maxRuns {
-		maxRuns = len(runs)
-	}
-	for i := 0; i < maxRuns; i++ {
-		run := runs[i]
-		fmt.Fprintf(&sb, "### Workflow: %s (Run #%d)\n", run.Name, run.DatabaseID)
-
-		logOut, err := a.runCommandInDir("gh", "run", "view", strconv.FormatInt(run.DatabaseID, 10), "--log-failed", "--repo", repoInfo.FullPath)
-		if err != nil {
-			fmt.Fprintf(&sb, "(Failed to fetch logs: %s)\n\n", err.Error())
-			continue
-		}
-		logOut = strings.TrimSpace(logOut)
-		if logOut == "" {
-			fmt.Fprintf(&sb, "(No log output available)\n\n")
-		} else {
-			fmt.Fprintf(&sb, "```\n%s\n```\n\n", truncateIfNeeded(logOut, 3000))
-		}
-	}
-
-	return sb.String()
+// gatherCIFailureLogs fetches deterministic, commit-pinned CI summaries, and the
+// ids of the failing runs they cover. handled is the addressed set: a failing
+// run already recorded there is left out.
+func (a *PRFollowupAgent) gatherCIFailureLogs(_ context.Context, repoInfo *gitprovider.RepoInfo, prNumber string, head ciHead, handled map[string]bool) (string, []int64) {
+	return collectCIFailures(commandRunner{a}, a.provider, repoInfo.FullPath, prNumber, head, handled)
 }
 
-func (a *PRFollowupAgent) buildSystemPrompt(repo, prNumber, prDetails, diff, comments, ciLogs string, pendingComments []reviewComment, baseBranch string, sync baseSyncResult) string {
+func (a *PRFollowupAgent) resolveCIHead(repoInfo *gitprovider.RepoInfo, prNumber string) ciHead {
+	head, err := resolveCIHead(commandRunner{a}, a.provider, repoInfo.FullPath, prNumber)
+	if err != nil {
+		a.logger.Log(common.EventStepFailure, "Failed to resolve CI head", map[string]any{"error": err.Error()})
+	}
+	return head
+}
+
+func (a *PRFollowupAgent) buildSystemPrompt(repo, prNumber, prDetails, diff, comments, ciLogs string, pendingComments []reviewComment, baseBranch string, sync baseSyncResult, instruction string) string {
 	mrTerm := gitprovider.GetMergeRequestTerminology(a.provider)
 	mrFullTerm := gitprovider.GetMergeRequestFullTerminology(a.provider)
 	cliTool := gitprovider.GetCLIToolName(a.provider)
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, `You are an expert software engineer tasked with addressing issues on %s #%s in repository %s.
+	if instruction != "" {
+		fmt.Fprintf(&sb, `You are an expert software engineer tasked with making one requested change on %s #%s in repository %s.
+
+You have access to the repository workspace and can read, modify, and create files.
+
+## %s Details
+%s
+
+## Requested change
+%s
+
+`, mrFullTerm, prNumber, repo, strings.ToUpper(mrTerm), prDetails, instruction)
+	} else {
+		fmt.Fprintf(&sb, `You are an expert software engineer tasked with addressing issues on %s #%s in repository %s.
 
 Your goal is to:
 1. Fix any CI/CD failures
@@ -1928,6 +2249,7 @@ You have access to the repository workspace and can read, modify, and create fil
 %s
 
 `, mrFullTerm, prNumber, repo, strings.ToUpper(mrTerm), prDetails)
+	}
 
 	if diff != "" {
 		fmt.Fprintf(&sb, "## Current %s Diff\n%s\n\n", mrTerm, truncateIfNeeded(diff, 10000))
@@ -1938,7 +2260,7 @@ You have access to the repository workspace and can read, modify, and create fil
 	}
 
 	if ciLogs != "" {
-		fmt.Fprintf(&sb, "## CI/CD Failure Logs\n%s\n\n", truncateIfNeeded(ciLogs, 10000))
+		fmt.Fprintf(&sb, "## CI/CD Failure Logs\n%s\n\n", ciLogs)
 	}
 
 	if sync.conflicted {
@@ -1958,10 +2280,21 @@ If you cannot resolve a file honestly, leave it conflicted and say so in submit_
 `, baseBranch, sync.behindBy, formatConflictFileList(sync.conflictFiles))
 	}
 
-	fmt.Fprintf(&sb, `## Your job
+	if instruction != "" {
+		fmt.Fprintf(&sb, `## Your job
 
-Drive %[2]s #%[3]s in `+"`%[4]s`"+` to a mergeable state. The CI failures and review comments above are everything you need to address. The repo workspace is the cwd of every tool call.
+Make the requested change above on %[1]s #%[2]s in `+"`%[3]s`"+`. It is the whole task for this run: change only what it asks for, and leave review comments and CI failures alone — a separate followup handles those. The repo workspace is the cwd of every tool call.
 
+Do not post comments on the %[1]s yourself. Your submit_analysis summary is posted on the %[1]s for you, so make it say what changed and why.
+`, mrTerm, prNumber, repo)
+	} else {
+		fmt.Fprintf(&sb, `## Your job
+
+Drive %[1]s #%[2]s in `+"`%[3]s`"+` to a mergeable state. The CI failures and review comments above are everything you need to address. The repo workspace is the cwd of every tool call.
+`, mrTerm, prNumber, repo)
+	}
+
+	fmt.Fprintf(&sb, `
 You own the full flow: code edits, PR metadata, git history, commit, push. The framework only posts comment replies (after you call submit_analysis). It will not commit or push for you.
 
 ## Triaging CI failures

@@ -33,37 +33,37 @@ func buildDatadogNodeQueries(meta RequestMetadata, metrics []string) map[string]
 	windowSeconds := int64(datadogRollupSeconds(meta.RangeWindow))
 
 	for _, metricKey := range metrics {
-		if metric, perPod := datadogPerPodKeys[metricKey]; perPod {
+		if metric, perPod := datadogPerPodKeys[UtilisationKey(metricKey)]; perPod {
 			queries[metricKey] = buildDatadogPerPodQuery(metric, meta, filterStr, windowSeconds)
 			continue
 		}
 
-		switch metricKey {
-		case "cpu_total":
+		switch UtilisationKey(metricKey) {
+		case KeyCPUTotal:
 			queries[metricKey] = fmt.Sprintf("avg:kubernetes_state.node.cpu_allocatable{%s}%s", filterStr, groupBy)
-		case "mem_total":
+		case KeyMemTotal:
 			queries[metricKey] = fmt.Sprintf("avg:kubernetes_state.node.memory_allocatable{%s}%s", filterStr, groupBy)
-		case "cpu_usage":
+		case KeyCPUUsage:
 			queries[metricKey] = fmt.Sprintf("avg:kubernetes.cpu.usage.total{%s}%s", filterStr, groupBy)
-		case "memory_usage":
+		case KeyMemoryUsage:
 			queries[metricKey] = fmt.Sprintf("avg:system.mem.used{%s}%s", filterStr, groupBy)
-		case "cpu_request":
+		case KeyCPURequest:
 			queries[metricKey] = fmt.Sprintf("avg:kubernetes.cpu.requests{%s}%s", filterStr, groupBy)
-		case "cpu_limit":
+		case KeyCPULimit:
 			queries[metricKey] = fmt.Sprintf("avg:kubernetes.cpu.limits{%s}%s", filterStr, groupBy)
-		case "memory_request":
+		case KeyMemoryRequest:
 			queries[metricKey] = fmt.Sprintf("avg:kubernetes.memory.requests{%s}%s", filterStr, groupBy)
-		case "memory_limit":
+		case KeyMemoryLimit:
 			queries[metricKey] = fmt.Sprintf("avg:kubernetes.memory.limits{%s}%s", filterStr, groupBy)
-		case "disk_total":
+		case KeyDiskTotal:
 			queries[metricKey] = fmt.Sprintf("avg:system.disk.total{%s}%s", filterStr, groupBy)
-		case "disk_used":
+		case KeyDiskUsed:
 			queries[metricKey] = fmt.Sprintf("avg:system.disk.used{%s}%s", filterStr, groupBy)
-		case "cpu_usage_line":
+		case KeyCPUUsageLine:
 			queries[metricKey] = fmt.Sprintf("avg:kubernetes.cpu.usage.total{%s}%s", filterStr, groupBy)
-		case "memory_usage_line":
+		case KeyMemoryUsageLine:
 			queries[metricKey] = fmt.Sprintf("avg:system.mem.used{%s}%s", filterStr, groupBy)
-		case "pvc_usage":
+		case KeyPVCUsage:
 			queries[metricKey] = fmt.Sprintf("(avg:system.disk.used{%s}%s / avg:system.disk.total{%s}%s) * 100", filterStr, groupBy, filterStr, groupBy)
 		}
 	}
@@ -88,10 +88,10 @@ func buildDatadogPVCPerClaimQueries(queries map[string]string, meta RequestMetad
 
 	for _, metricKey := range metrics {
 		var metric string
-		switch metricKey {
-		case "pvc_used_by_claim":
+		switch UtilisationKey(metricKey) {
+		case KeyPVCUsedByClaim:
 			metric = "used_bytes"
-		case "pvc_capacity_by_claim":
+		case KeyPVCCapacityByClaim:
 			metric = "capacity_bytes"
 		default:
 			continue
@@ -109,18 +109,18 @@ func buildDatadogPVCPerClaimQueries(queries map[string]string, meta RequestMetad
 // namespace and no workload — returned before reaching them. Measured live against a
 // Datadog account: every cluster tile came back empty, and empty with NO note, which
 // reads as "this cluster used nothing" rather than "nobody built a query".
-var datadogClusterWideKeys = map[string]string{
-	"cpu_real":        "sum:kubernetes.cpu.usage.total{*}",
-	"cpu_total":       "sum:kubernetes_state.node.cpu_capacity{*}",
-	"cpu_usage_trend": "sum:kubernetes.cpu.usage.total{*}",
-	"mem_real":        "sum:kubernetes.memory.usage{*}",
-	"mem_total":       "sum:kubernetes_state.node.memory_capacity{*}",
-	"mem_usage_trend": "sum:kubernetes.memory.usage{*}",
+var datadogClusterWideKeys = map[UtilisationKey]string{
+	KeyCPUReal:       "sum:kubernetes.cpu.usage.total{*}",
+	KeyCPUTotal:      "sum:kubernetes_state.node.cpu_capacity{*}",
+	KeyCPUUsageTrend: "sum:kubernetes.cpu.usage.total{*}",
+	KeyMemReal:       "sum:kubernetes.memory.usage{*}",
+	KeyMemTotal:      "sum:kubernetes_state.node.memory_capacity{*}",
+	KeyMemUsageTrend: "sum:kubernetes.memory.usage{*}",
 }
 
 func buildDatadogClusterWideQueries(queries map[string]string, metrics []string) {
 	for _, metricKey := range metrics {
-		if query, ok := datadogClusterWideKeys[metricKey]; ok {
+		if query, ok := datadogClusterWideKeys[UtilisationKey(metricKey)]; ok {
 			queries[metricKey] = query
 		}
 	}
@@ -190,37 +190,37 @@ func buildDatadogWorkloadQueries(meta RequestMetadata, metrics []string) map[str
 		// carry their own rollup. One Datadog has no metric for builds no query;
 		// datadogNoteUnanswerableKeys puts it back in the response with the
 		// reason, so it is not mistaken for a workload that used nothing.
-		if metric, perPod := datadogPerPodKeys[metricKey]; perPod {
+		if metric, perPod := datadogPerPodKeys[UtilisationKey(metricKey)]; perPod {
 			queries[metricKey] = buildDatadogPerPodQuery(metric, meta, filterStr, windowSeconds)
 			continue
 		}
 
-		switch metricKey {
+		switch UtilisationKey(metricKey) {
 		// (Cases remain identical, they just use the updated filterStr)
-		case "network_receive_packet":
+		case KeyNetworkReceivePacket:
 			queries[metricKey] = fmt.Sprintf("avg:kubernetes.network.rx_bytes{%s}%s", filterStr, groupBy)
-		case "network_transmit_packets":
+		case KeyNetworkTransmitPackets:
 			queries[metricKey] = fmt.Sprintf("avg:kubernetes.network.tx_bytes{%s}%s * -1", filterStr, groupBy)
 		// HTTP metrics come from APM trace metrics, not the kube_* series above — see
 		// datadog_http_queries.go for why they need their own filter and operation name.
-		case "http_throughput", "http_latency_p95", "http_latency_p99", "http_latency_sum",
-			"http_error_rate", "http_status", "http_max_response_time":
+		case KeyHTTPThroughput, KeyHTTPLatencyP95, KeyHTTPLatencyP99, KeyHTTPLatencySum,
+			KeyHTTPErrorRate, KeyHTTPStatus, KeyHTTPMaxResponseTime:
 			if q := buildDatadogHTTPQuery(metricKey, meta); q != "" {
 				queries[metricKey] = q
 			}
-		case "network_usage":
+		case KeyNetworkUsage:
 			queries[metricKey] = fmt.Sprintf("default(avg:container.net.tcp.connection.time.seconds.total{%s}%s, avg:kubernetes.network.rx_bytes{%s}%s)", filterStr, groupBy, filterStr, groupBy)
-		case "cpu_usage":
+		case KeyCPUUsage:
 			queries[metricKey] = fmt.Sprintf("avg:kubernetes.cpu.usage.total{%s}%s", filterStr, groupBy)
 		// Seconds per second the workload's containers spent throttled, from the
 		// Datadog agent's kubelet check. It carries the same kube_* tags as usage, so
 		// filterStr scopes it to the workload exactly.
-		case "cpu_throttling":
+		case KeyCPUThrottling:
 			queries[metricKey] = fmt.Sprintf("sum:kubernetes.cpu.cfs.throttled.seconds{%s}%s", filterStr, groupBy)
 		// APM latency. Trace metrics carry no kube_* tags, only service/env/resource,
 		// so this matches on the APM service being named after the workload. Where it
 		// is not, the query matches nothing and the card is empty.
-		case "workload_http_latency_p99":
+		case KeyWorkloadHTTPLatencyP99:
 			if meta.Name != "" {
 				queries[metricKey] = fmt.Sprintf("p99:trace.http.server.request{service:%s}", meta.Name)
 			}
@@ -229,11 +229,11 @@ func buildDatadogWorkloadQueries(meta RequestMetadata, metrics []string) map[str
 		// kubelet probes and /metrics scrapes are not traced, because nothing
 		// instruments them. So the definition holds without a path filter, which is
 		// the point of naming the metric rather than the query.
-		case "workload_http_request_rate":
+		case KeyWorkloadHTTPRequestRate:
 			if meta.Name != "" {
 				queries[metricKey] = fmt.Sprintf("sum:trace.http.server.request.hits{service:%s}.as_rate()", meta.Name)
 			}
-		case "workload_http_latency_mean":
+		case KeyWorkloadHTTPLatencyMean:
 			if meta.Name != "" {
 				queries[metricKey] = fmt.Sprintf("avg:trace.http.server.request{service:%s}", meta.Name)
 			}
@@ -244,52 +244,52 @@ func buildDatadogWorkloadQueries(meta RequestMetadata, metrics []string) map[str
 		// Datadog counts a span as an error when the tracer marks it failed -- in
 		// practice 5xx -- so the numerator reads lower than the Prometheus one, which
 		// counts 4xx too. Same caveat the http_error_rate key already carries.
-		case "workload_http_request_count":
+		case KeyWorkloadHTTPRequestCount:
 			if meta.Name != "" {
 				queries[metricKey] = fmt.Sprintf("sum:trace.http.server.request.hits{service:%s}.as_count().rollup(sum, %d)",
 					meta.Name, datadogRollupSeconds(meta.Step))
 			}
-		case "workload_http_error_count":
+		case KeyWorkloadHTTPErrorCount:
 			if meta.Name != "" {
 				queries[metricKey] = fmt.Sprintf("sum:trace.http.server.request.errors{service:%s}.as_count().rollup(sum, %d)",
 					meta.Name, datadogRollupSeconds(meta.Step))
 			}
-		case "cpu_request":
+		case KeyCPURequest:
 			queries[metricKey] = fmt.Sprintf("avg:kubernetes.cpu.requests{%s}%s", filterStr, groupBy)
-		case "cpu_limit":
+		case KeyCPULimit:
 			queries[metricKey] = fmt.Sprintf("avg:kubernetes.cpu.limits{%s}%s", filterStr, groupBy)
-		case "memory_usage":
+		case KeyMemoryUsage:
 			queries[metricKey] = fmt.Sprintf("avg:kubernetes.memory.working_set{%s}%s", filterStr, groupBy)
-		case "memory_request":
+		case KeyMemoryRequest:
 			queries[metricKey] = fmt.Sprintf("avg:kubernetes.memory.requests{%s}%s", filterStr, groupBy)
-		case "memory_limit":
+		case KeyMemoryLimit:
 			queries[metricKey] = fmt.Sprintf("avg:kubernetes.memory.limits{%s}%s", filterStr, groupBy)
 
 		// --- PVC Metrics ---
-		case "pvc_usage":
+		case KeyPVCUsage:
 			if pvcFilterStr != "" {
 				queries[metricKey] = fmt.Sprintf("sum:kubernetes.kubelet.volume.stats.used_bytes{%s}", pvcFilterStr)
 			}
-		case "pvc_requests":
+		case KeyPVCRequests:
 			if pvcFilterStr != "" {
 				queries[metricKey] = fmt.Sprintf("sum:kubernetes_state.persistentvolumeclaim.request_storage{%s}", pvcFilterStr)
 			}
 
-		case "p90_mem":
+		case KeyP90Mem:
 			queries[metricKey] = "avg:system.mem.used{*} by {host}"
-		case "p90_cpu":
+		case KeyP90CPU:
 			queries[metricKey] = "avg:kubernetes.cpu.usage.total{*} by {host}"
-		case "p50_mem":
+		case KeyP50Mem:
 			queries[metricKey] = "avg:system.mem.used{*} by {host}"
-		case "p50_cpu":
+		case KeyP50CPU:
 			queries[metricKey] = "avg:kubernetes.cpu.usage.total{*} by {host}"
-		case "max_usage_mem":
+		case KeyMaxUsageMem:
 			queries[metricKey] = "max:system.mem.used{*}"
-		case "max_usage_cpu":
+		case KeyMaxUsageCPU:
 			queries[metricKey] = "max:kubernetes.cpu.usage.total{*}"
-		case "replica_defined":
+		case KeyReplicaDefined:
 			queries[metricKey] = datadogWorkloadReplicaQuery(meta, false)
-		case "replica_ready":
+		case KeyReplicaReady:
 			queries[metricKey] = datadogWorkloadReplicaQuery(meta, true)
 		}
 	}

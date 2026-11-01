@@ -41,6 +41,29 @@ func TestBuildResumeAgentRequestRestoresClientToolRuntimeFields(t *testing.T) {
 	assert.Equal(t, queryConfig, got.QueryConfig)
 }
 
+func TestDelegatedTargetPersistsOnAgentNotMessage(t *testing.T) {
+	config := toolcore.NBQueryConfig{
+		ToolConfigs:     map[string]string{"aws_execute": "origin"},
+		DelegatedTarget: &toolcore.ExecutionTarget{Provider: "aws", Name: "prod"},
+	}
+	messageConfig := messageQueryConfig(config)
+	require.Nil(t, messageConfig.DelegatedTarget)
+	require.Equal(t, "origin", messageConfig.ToolConfigs["aws_execute"])
+	require.Equal(t, "prod", config.DelegatedTarget.Name)
+
+	encoded := `{"delegated_target":{"provider":"aws","name":"prod"}}`
+	resumed, err := withResumedAgentTarget(messageConfig, ConversationAgent{QueryConfig: &encoded})
+	require.NoError(t, err)
+	require.Equal(t, config.DelegatedTarget, resumed.DelegatedTarget)
+	resumed, err = withResumedAgentTarget(resumed, ConversationAgent{})
+	require.NoError(t, err)
+	require.Nil(t, resumed.DelegatedTarget, "another agent must not inherit the child's target")
+	empty := ""
+	resumed, err = withResumedAgentTarget(config, ConversationAgent{QueryConfig: &empty})
+	require.NoError(t, err)
+	require.Nil(t, resumed.DelegatedTarget, "an empty saved config must not inherit the previous target")
+}
+
 // TestIsResumableAgentStatus locks in the contract for which agent statuses
 // V2's idempotency guard treats as eligible for resume vs already-progressed.
 //
@@ -271,7 +294,7 @@ func (f *bubbleFakeDao) GetConversationMessage(id, accountId, conversationId str
 }
 
 // originalQueryFakeDao is a minimal IConversationDao stubbing only
-// GetConversationMessage, so originalQuestionForScoring can be tested without
+// GetConversationMessage, so loadOriginalQuestion can be tested without
 // pulling in the rest of bubbleFakeDao's completion-flow stubs.
 type originalQueryFakeDao struct {
 	IConversationDao
@@ -289,7 +312,7 @@ func (f *originalQueryFakeDao) GetConversationMessage(id, accountId, conversatio
 // TestOriginalQuestionForScoring is the regression test for #37534: a turn
 // that completes via a followup resume must be graded on the user's ORIGINAL
 // question, not the followup answer text (e.g. "yes") that req.Query carries
-// at that point. originalQuestionForScoring is what finalizeCompletedConversation
+// at that point. loadOriginalQuestion is what withOriginalQuestion
 // uses to recover it — from the generation message row, which a followup
 // exchange never overwrites.
 func TestOriginalQuestionForScoring(t *testing.T) {
@@ -311,7 +334,7 @@ func TestOriginalQuestionForScoring(t *testing.T) {
 		fake := &originalQueryFakeDao{message: ConversationMessage{Message: originalQuestion}}
 		SetConversationDao(fake)
 
-		got, err := originalQuestionForScoring(req)
+		got, err := loadOriginalQuestion(req)
 
 		require.NoError(t, err)
 		assert.Equal(t, originalQuestion, got)
@@ -336,7 +359,7 @@ func TestOriginalQuestionForScoring(t *testing.T) {
 		fake := &originalQueryFakeDao{err: errors.New("boom")}
 		SetConversationDao(fake)
 
-		got, err := originalQuestionForScoring(req)
+		got, err := loadOriginalQuestion(req)
 		require.Error(t, err)
 		assert.ErrorContains(t, err, "boom", "the underlying cause must survive wrapping")
 		assert.Empty(t, got)
@@ -351,7 +374,7 @@ func TestOriginalQuestionForScoring(t *testing.T) {
 			fake := &originalQueryFakeDao{message: ConversationMessage{Message: blank}}
 			SetConversationDao(fake)
 
-			got, err := originalQuestionForScoring(req)
+			got, err := loadOriginalQuestion(req)
 			require.NoError(t, err, "a blank message is not a failure, just nothing to grade")
 			assert.Empty(t, strings.TrimSpace(got), "blank message %q must not count as a recovered question", blank)
 		}
@@ -387,7 +410,7 @@ func TestOriginalQuestionForScoring(t *testing.T) {
 			func() NBAgentRequest { c := req; c.MessageId = ""; return c }(),
 			func() NBAgentRequest { c := req; c.ConversationId = ""; return c }(),
 		} {
-			got, err := originalQuestionForScoring(r)
+			got, err := loadOriginalQuestion(r)
 			require.NoError(t, err, "a missing identifier is nothing to look up, not a failure")
 			assert.Empty(t, got)
 		}
@@ -722,11 +745,12 @@ func TestFinalizeCompletedConversation_ScoresResumedTurn(t *testing.T) {
 // conversation path, and rebuilding it field by field is what silently dropped
 // account context, memory, KB content and skills from every resumed turn.
 var resumeOverriddenFields = map[string]bool{
-	"ParentAgentId": true,
-	"PreviousState": true,
-	"QueryConfig":   true,
-	"ClientTools":   true,
-	"Capabilities":  true,
+	"ParentAgentId":  true,
+	"TopLevelResume": true,
+	"PreviousState":  true,
+	"QueryConfig":    true,
+	"ClientTools":    true,
+	"Capabilities":   true,
 }
 
 func TestBuildResumeAgentRequestCarriesEveryFieldForward(t *testing.T) {
@@ -787,4 +811,82 @@ func TestBuildResumeAgentRequestKeepsAccountContextFromDB(t *testing.T) {
 	assert.Equal(t, firstTurn, resumed.AccountContext)
 	assert.Equal(t, renderAccountContextBlock(firstTurn), renderAccountContextBlock(resumed.AccountContext),
 		"rendered account context differs across resume — the two prefixes would evict each other")
+}
+
+// TestWithOriginalQuestion_ResumedInvestigationKeepsItsShape is the regression
+// test for #40085: after an approval, the resumed request carries the answer
+// ("yes") as Query and no OriginalQuery, so isTopLevelPlainRetrievalTurn read
+// "yes" and the rest of the investigation ran on the lean prompt (and a new
+// prompt cache). withOriginalQuestion restores the question from the
+// generation message row.
+func TestWithOriginalQuestion_ResumedInvestigationKeepsItsShape(t *testing.T) {
+	original := GetConversationDao()
+	defer SetConversationDao(original)
+	ctx := security.NewRequestContextForSuperAdmin()
+
+	const question = "why is vmsingle restarting? fix it"
+	require.True(t, IsInvestigationRequestTask(question), "fixture must be an investigation question")
+	req := NBAgentRequest{
+		AgentId:            "orch-1",
+		MessageId:          uuid.New().String(),
+		AccountId:          uuid.New().String(),
+		ConversationId:     uuid.New().String(),
+		Query:              "yes",
+		ConversationSource: ConversationSourceUserInvestigation,
+	}
+	require.True(t, isTopLevelPlainRetrievalTurn(req), `without the fix "yes" classifies as a plain query`)
+
+	fake := &originalQueryFakeDao{message: ConversationMessage{Message: "  " + question + "\n"}}
+	SetConversationDao(fake)
+
+	got := withOriginalQuestion(ctx, req)
+	assert.Equal(t, question, got.OriginalQuery)
+	assert.True(t, got.OriginalQueryFromUser)
+	assert.Equal(t, "yes", got.Query, "Query stays the answer; refine needs it")
+	assert.False(t, isTopLevelPlainRetrievalTurn(got), "the resumed turn must stay an investigation")
+	assert.Empty(t, promptVariantForRequest(got), "full prompt, not lean")
+
+	t.Run("routed agent mention is stripped like the first run", func(t *testing.T) {
+		SetConversationDao(&originalQueryFakeDao{message: ConversationMessage{Message: "@k8s_orchestrator " + question}})
+		assert.Equal(t, question, withOriginalQuestion(ctx, req).OriginalQuery)
+	})
+
+	t.Run("already set is left alone without a lookup", func(t *testing.T) {
+		fake := &originalQueryFakeDao{err: errors.New("must not be called")}
+		SetConversationDao(fake)
+		set := req
+		set.OriginalQuery = "list pods"
+		assert.Equal(t, set, withOriginalQuestion(ctx, set))
+		assert.Empty(t, fake.calledWithID)
+	})
+
+	t.Run("lookup failure leaves the request unchanged", func(t *testing.T) {
+		SetConversationDao(&originalQueryFakeDao{err: errors.New("db down")})
+		assert.Equal(t, req, withOriginalQuestion(ctx, req))
+	})
+}
+
+// A resumed top-level agent arrives with OriginalQuery already restored, so
+// seedOriginalQuery reports "not top level"; executeAgent must still compose
+// memory and discover knowledge for it, on the question rather than the
+// answer (#40085).
+func TestIsResumedTopLevelInvocation(t *testing.T) {
+	for name, tc := range map[string]struct {
+		req  NBAgentRequest
+		want bool
+	}{
+		"resumed top level":                 {NBAgentRequest{AgentId: "a", ParentAgentId: "a", TopLevelResume: true, PreviousState: "s", OriginalQuery: "q", Query: "yes"}, true},
+		"resumed top level, no saved state": {NBAgentRequest{AgentId: "a", ParentAgentId: "a", TopLevelResume: true, OriginalQuery: "q", Query: "yes"}, true},
+		"resumed sub-agent":                 {NBAgentRequest{AgentId: "c", ParentAgentId: "a", PreviousState: "s", OriginalQuery: "q", Query: "yes"}, false},
+		"tool request with self parent":     {NBAgentRequest{AgentId: "a", ParentAgentId: "a", OriginalQuery: "q", Query: "logs"}, false},
+		"question not recovered":            {NBAgentRequest{AgentId: "a", ParentAgentId: "a", TopLevelResume: true, Query: "yes"}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isResumedTopLevelInvocation(tc.req))
+		})
+	}
+
+	// The resume marks only the agent that is its own parent.
+	assert.True(t, buildResumeAgentRequest(NBAgentRequest{AgentId: "a"}, "a", "", toolcore.NBQueryConfig{}).TopLevelResume)
+	assert.False(t, buildResumeAgentRequest(NBAgentRequest{AgentId: "c"}, "a", "s", toolcore.NBQueryConfig{}).TopLevelResume)
 }

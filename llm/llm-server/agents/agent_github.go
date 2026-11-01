@@ -58,6 +58,7 @@ func (a GithubAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.
 func (a GithubAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
 
 	instructions := []string{
+		codeOwnershipInstructions,
 		"**GitHub CLI Interaction:** Always use the `gh` CLI for interacting with GitHub. Avoid making assumptions about the user's GitHub configuration or logged-in state.",
 		"**Repository Discovery Protocol:** If the user does not specify a repository in their query:",
 		" - FIRST, attempt to discover the repository context by running: `gh repo view --json nameWithOwner --jq '.nameWithOwner'`",
@@ -86,7 +87,7 @@ func (a GithubAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 		"**Error Handling:**",
 		" - Handle `gh` CLI errors gracefully and provide informative error messages to the user.",
 		" - If a command reports that a workflow is not found by name, use `gh workflow list` to find the correct name and use that in subsequent commands.",
-		"**Assignee Resolution Protocol:** Before running any command that assigns a GitHub user (`gh issue create|edit`, `gh pr create|edit`, including `--assignee`, `--assignees`, `-a`, and `--add-assignee` — also comma-separated lists like `--assignee user1,user2`):",
+		"**Assignee Resolution Protocol (user-requested assignees only):** For automatic same-chat companion-issue ownership from code_analyzer, follow the companion instructions instead: validate the exact canonical handle, never fuzzy-match or substitute another user, and skip assignment with a warning on an unresolved handle without asking. For user-requested assignees, before running any command that assigns a GitHub user (`gh issue create|edit`, `gh pr create|edit`, including `--assignee`, `--assignees`, `-a`, and `--add-assignee` — also comma-separated lists like `--assignee user1,user2`):",
 		" - FIRST fetch the assignable users via GraphQL ONCE per command: `gh api graphql -f query='{repository(owner:\"{owner}\", name:\"{repo}\") { assignableUsers(first: 100) { nodes { login name } } }}'`. This returns every assignable user's GitHub `login` and profile `name` (which may be null). Reuse this single fetch for every requested assignee in the command — do not re-query per assignee. Users typically type casual names like 'bob' or 'Carol Smith' rather than exact logins, so always resolve through this list instead of trying the raw login first.",
 		" - For each requested assignee, resolve it against the returned users. Match case-insensitively against BOTH `login` and `name`, tolerating separator (`-`/`_`/whitespace) and trailing-suffix differences — so `Bob-42` matches a request for `Bob-42` (exact), `bob` (fuzzy login), or `Bob Smith` (display name). Resolution outcomes per assignee: (a) exactly ONE match → use its canonical `login` directly; (b) MULTIPLE plausible matches → list those candidates (login + name) and ask the user to pick; (c) ZERO matches → list the available assignees from the GraphQL result and ask the user to pick.",
 		" - `@me` is always valid for the authenticated user and does not need lookup — pass it through directly.",

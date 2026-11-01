@@ -117,16 +117,20 @@ func TestConfirmationApprovedForAction(t *testing.T) {
 
 	// Approval recorded under the per-action key is found; an approval under a
 	// different action's key is not.
-	assert.True(t, confirmationApprovedForAction(map[string]string{"scoped_tool:a": "yes"}, nameToTool, action))
-	assert.False(t, confirmationApprovedForAction(map[string]string{"scoped_tool:b": "yes"}, nameToTool, action))
+	e := &plannerExecutor{agentRequest: NBAgentRequest{AccountId: "account"}}
+	approved := func(confirmations map[string]string, action NBAgentPlannerToolAction) bool {
+		return isToolConfirmationApproved(confirmations, e.confirmationKeyOf(nameToTool, action))
+	}
+	assert.True(t, approved(map[string]string{"scoped_tool:a": "yes"}, action))
+	assert.False(t, approved(map[string]string{"scoped_tool:b": "yes"}, action))
 	// A bare per-tool approval no longer unlocks a scoped tool's other actions.
-	assert.False(t, confirmationApprovedForAction(map[string]string{"scoped_tool": "yes"}, nameToTool, action))
+	assert.False(t, approved(map[string]string{"scoped_tool": "yes"}, action))
 	// Rejection under the right key stays a rejection.
-	assert.False(t, confirmationApprovedForAction(map[string]string{"scoped_tool:a": "no"}, nameToTool, action))
+	assert.False(t, approved(map[string]string{"scoped_tool:a": "no"}, action))
 
 	// Tools absent from the map fall back to the per-tool key.
 	unknown := NBAgentPlannerToolAction{Tool: "other_tool", ToolInput: "x"}
-	assert.True(t, confirmationApprovedForAction(map[string]string{"other_tool": "yes"}, nameToTool, unknown))
+	assert.True(t, approved(map[string]string{"other_tool": "yes"}, unknown))
 }
 
 func TestConfirmationRejectedForAction(t *testing.T) {
@@ -134,11 +138,15 @@ func TestConfirmationRejectedForAction(t *testing.T) {
 	nameToTool := map[string]toolcore.NBTool{"SCOPED_TOOL": scoped}
 	action := NBAgentPlannerToolAction{Tool: "scoped_tool", ToolInput: "a"}
 
-	assert.True(t, confirmationRejectedForAction(map[string]string{"scoped_tool:a": "no"}, nameToTool, action, "account"))
-	assert.True(t, confirmationRejectedForAction(map[string]string{"scoped_tool:a": ""}, nameToTool, action, "account"))
-	assert.False(t, confirmationRejectedForAction(map[string]string{"scoped_tool:a": "yes"}, nameToTool, action, "account"))
-	assert.False(t, confirmationRejectedForAction(map[string]string{"scoped_tool:b": "no"}, nameToTool, action, "account"))
-	assert.False(t, confirmationRejectedForAction(nil, nameToTool, action, "account"))
+	e := &plannerExecutor{agentRequest: NBAgentRequest{AccountId: "account"}}
+	rejected := func(confirmations map[string]string) bool {
+		return confirmationRejected(confirmations, e.confirmationKeyOf(nameToTool, action))
+	}
+	assert.True(t, rejected(map[string]string{"scoped_tool:a": "no"}))
+	assert.True(t, rejected(map[string]string{"scoped_tool:a": ""}))
+	assert.False(t, rejected(map[string]string{"scoped_tool:a": "yes"}))
+	assert.False(t, rejected(map[string]string{"scoped_tool:b": "no"}))
+	assert.False(t, rejected(nil))
 }
 
 type rejectionContinuationPlanner struct {

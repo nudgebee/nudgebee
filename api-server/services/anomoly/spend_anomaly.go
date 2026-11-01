@@ -597,8 +597,17 @@ func resolveAnomalyEvent(dbms *database.DatabaseManager, oa OpenSpendAnomaly, ac
 		},
 	}, accountName, cloudProvider, accountId, cfg)
 
+	// starts_at is the day the anomaly began, so the event carries the interval the
+	// anomaly covered. The evaluation time is later than endDate, and InsertEvent
+	// reads ends_at <= starts_at as a point-in-time event: it would store this
+	// resolve CLOSED and re-run event-trigger workflows instead of publishing the
+	// resolved notification.
 	endsAt := endDate
-	evalTime := time.Now().UTC()
+	startsAt, err := time.Parse("2006-01-02", oa.StartDate)
+	if err != nil {
+		slog.Warn("spend-anomaly: unreadable start_date on resolve, using evaluation time", "error", err, "id", oa.ID, "start_date", oa.StartDate)
+		startsAt = time.Now().UTC()
+	}
 	eventObj := event.Event{
 		AccountId:        oa.AccountID,
 		Tenant:           oa.Tenant,
@@ -616,7 +625,7 @@ func resolveAnomalyEvent(dbms *database.DatabaseManager, oa OpenSpendAnomaly, ac
 		Description:      description,
 		SubjectType:      "cloud_account",
 		Status:           "RESOLVED",
-		StartsAt:         &evalTime,
+		StartsAt:         &startsAt,
 		EndsAt:           &endsAt,
 		Fingerprint:      fmt.Sprintf("spend-anomaly-%s-%s-%s", oa.AccountID, oa.AnomalyType, oa.Name),
 		Cluster:          accountName,

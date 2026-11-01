@@ -332,9 +332,13 @@ class ClusterRightSizingRecommendation:
             account_id=self.account_id, namespace_name="", deployment_name="", tenant_id=self.tenant_id
         )
         start_time = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)
+        # One series per container and per pod before the join and the sum: OpenCost
+        # re-exports kube_pod_container_resource_requests next to kube-state-metrics, and
+        # a bare sum counts every request once per exporter.
         cpu_requests: list[list[float]] = prometheus.query_metrics(
-            query='sum(kube_pod_container_resource_requests{  __CLUSTER__  resource="cpu"} * on (pod, namespace)'
-            ' group_left kube_pod_owner{  __CLUSTER__  owner_kind!="DaemonSet"})',
+            query="sum(max by (namespace, pod, container) (kube_pod_container_resource_requests{  __CLUSTER__  "
+            'resource="cpu"}) * on (pod, namespace) group_left max by (namespace, pod) '
+            '(kube_pod_owner{  __CLUSTER__  owner_kind!="DaemonSet"}))',
             start_time=start_time,
             end_time=datetime.datetime.now(datetime.timezone.utc),
         )
@@ -344,8 +348,9 @@ class ClusterRightSizingRecommendation:
                 max_cpu_requests = float(request[1])
 
         memory_requests = prometheus.query_metrics(
-            query='sum(kube_pod_container_resource_requests{  __CLUSTER__  resource="memory"} * on (pod, namespace)'
-            'group_left kube_pod_owner{  __CLUSTER__  owner_kind!="DaemonSet"})',
+            query="sum(max by (namespace, pod, container) (kube_pod_container_resource_requests{  __CLUSTER__  "
+            'resource="memory"}) * on (pod, namespace) group_left max by (namespace, pod) '
+            '(kube_pod_owner{  __CLUSTER__  owner_kind!="DaemonSet"}))',
             start_time=start_time,
             end_time=datetime.datetime.now(datetime.timezone.utc),
         )

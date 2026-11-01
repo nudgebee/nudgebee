@@ -90,6 +90,14 @@ const knownValue = (v) => {
 // Beyond this many containers the segmented control wraps badly; use a dropdown.
 const MAX_CONTAINER_BUTTONS = 4;
 
+// CPU may be a bare-cores number ("0.5") or a millicores string ("500m"); parse
+// both to cores (500m must read as 0.5, not 500).
+const parseCpuCores = (val) => {
+  const s = String(val ?? '').trim();
+  if (!s) return NaN;
+  return s.endsWith('m') ? parseFloat(s.slice(0, -1)) / 1000 : parseFloat(s);
+};
+
 const KubernetesRightSizingPopupForm = ({
   open,
   title = 'Update Resource Limits',
@@ -171,16 +179,25 @@ const KubernetesRightSizingPopupForm = ({
   // resource-pressure event (OOM, memory reaching limit, CPU throttling), so the
   // current allocation is a floor. Usage alone still drives the math when the
   // current allocation is unknown — the case nbalgoBase was added for.
-  const higherOf = (a, b) => {
-    const values = [a, b].map((v) => (typeof v === 'string' ? parseFloat(v) : v)).filter((v) => Number.isFinite(v));
+  const higherOf = (...candidates) => {
+    const values = candidates.map((v) => (typeof v === 'string' ? parseFloat(v) : v)).filter((v) => Number.isFinite(v));
     return values.length ? Math.max(...values) : null;
   };
   // What the container actually used — only the event path carries it.
   const memoryUsage = recommendationSource === 'event' ? data?.memory?.usage : undefined;
-  const memNbalgoBase = higherOf(data?.memory?.nbalgoBase, currentMemRequest);
+  // Kubernetes admits no request above its limit, so a current request above the
+  // current limit is a miscount in the evidence (a second exporter publishing the
+  // same series doubled it). The limit is then the request's real floor.
+  const memRequestFloor =
+    Number.isFinite(parseFloat(currentMemRequest)) && Number.isFinite(parseFloat(currentMemLimit))
+      ? Math.min(parseFloat(currentMemRequest), parseFloat(currentMemLimit))
+      : currentMemRequest;
+  const memNbalgoBase = higherOf(data?.memory?.nbalgoBase, memRequestFloor);
   // The limit's base is the current LIMIT, not the request — sharing one base
-  // collapses a 192Mi limit onto the request's value.
-  const memNbalgoLimit = higherOf(data?.memory?.nbalgoBase, currentMemLimit);
+  // collapses a 192Mi limit onto the request's value. Never below the request's
+  // base, though: with no limit set, the usage peak can sit under a generous
+  // request, and both are multiplied by the same buffer.
+  const memNbalgoLimit = higherOf(data?.memory?.nbalgoBase, currentMemLimit, memNbalgoBase);
   const cpuNbalgoBase = higherOf(data?.cpu?.nbalgoBase, currentCpuRequest);
 
   // `|| undefined` (not `|| ''`) so `'' * bufferMultiplier === 0` can't sneak a
@@ -318,16 +335,9 @@ const KubernetesRightSizingPopupForm = ({
   const computeDriftRows = () => {
     const memUnit = recommendationSource === 'event' ? 'Mi' : 'GB';
     const rows = [];
-    // CPU may be a bare-cores number ("0.5") or a millicores string ("500m"); parse
-    // both to cores so the ratio isn't skewed (500m must read as 0.5, not 500).
-    const parseCpu = (val) => {
-      const s = String(val ?? '').trim();
-      if (!s) return NaN;
-      return s.endsWith('m') ? parseFloat(s.slice(0, -1)) / 1000 : parseFloat(s);
-    };
     const add = (label, oldRaw, newRaw, unit, isCpu = false) => {
-      const from = isCpu ? parseCpu(oldRaw) : parseFloat(oldRaw);
-      const to = isCpu ? parseCpu(newRaw) : parseFloat(newRaw);
+      const from = isCpu ? parseCpuCores(oldRaw) : parseFloat(oldRaw);
+      const to = isCpu ? parseCpuCores(newRaw) : parseFloat(newRaw);
       if (!Number.isFinite(from) || from <= 0 || !Number.isFinite(to) || to <= 0) return;
       const ratio = to / from;
       if (ratio >= 0.25 && ratio <= 4) return;
@@ -341,6 +351,21 @@ const KubernetesRightSizingPopupForm = ({
   };
 
   const submitRecommendation = (skipConfirm = false) => {
+    // Kubernetes refuses a request above its limit. Say so here, before the apply
+    // marks the recommendation in progress and hands the agent a patch that fails.
+    // Request and limit share a unit within each section, so they compare as-is.
+    const memRequest = parseFloat(updatedData?.memory?.request);
+    const memLimit = parseFloat(updatedData?.memory?.limit);
+    if (Number.isFinite(memRequest) && Number.isFinite(memLimit) && memRequest > memLimit) {
+      showError('Memory request is above the memory limit, which Kubernetes refuses. Lower the request or raise the limit.');
+      return;
+    }
+    const cpuRequest = parseCpuCores(updatedData?.cpu?.request);
+    const cpuLimit = parseCpuCores(updatedData?.cpu?.limit);
+    if (Number.isFinite(cpuRequest) && Number.isFinite(cpuLimit) && cpuRequest > cpuLimit) {
+      showError('CPU request is above the CPU limit, which Kubernetes refuses. Lower the request or raise the limit.');
+      return;
+    }
     // Warn before a large deviation from the current allocation (a likely mistake
     // or a fat-fingered value) — the user confirms once, then we proceed.
     if (!skipConfirm) {

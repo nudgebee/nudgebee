@@ -237,6 +237,17 @@ const podCloudResourceSQL = `
 	LIMIT 1
 `
 
+// nodeCloudResourceSQL resolves a node-subject event to the node's own
+// cloud_resource_id. Nodes are cluster-scoped, so the match is by name within
+// the account. k8s_nodes has no last_seen; updated_at stands in for it.
+const nodeCloudResourceSQL = `
+	SELECT cloud_resource_id
+	FROM k8s_nodes
+	WHERE tenant_id = $1 AND cloud_account_id = $2 AND name = $3
+	ORDER BY is_active DESC, updated_at DESC NULLS LAST
+	LIMIT 1
+`
+
 // sqlLikeEscaper escapes SQL LIKE wildcards in a subject name before it is used
 // as a prefix pattern ($4 of podOwnerLookupSQL). Package-level: lookupPodOwner
 // runs on the per-event hot path, so the replacer must not be rebuilt per call.
@@ -1303,21 +1314,13 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 		recommendationStatus = models.RecommendationStatusClosed
 	case adapter.RecommendationResolutionStatusFailed:
 		// Not Dismissed: that is the user's decision not to act, and reporting it
-		// for a failure the platform hit says the opposite of what happened. The
-		// event stays unresolved either way — only Closed marks it RESOLVED below.
+		// for a failure the platform hit says the opposite of what happened.
 		recommendationStatus = models.RecommendationStatusOpen
 	case adapter.RecommendationResolutionStatusInProgress:
 		recommendationStatus = models.RecommendationStatusInProgress
 	}
 
-	if recommendationStatus == models.RecommendationStatusClosed {
-		_, err = dbms.Db.Exec("UPDATE events SET status = $3, updated_at = $2 WHERE id = $1", r.Id, time.Now().UTC().Format(time.RFC3339), "RESOLVED")
-		if err != nil {
-			ctx.GetLogger().Error("error closing recommendation", "error", err, "event_id", r.Id, "status", recommendationStatus)
-			return EventRecommendationApplyResponse{}, common.ErrorInternal(fmt.Sprintf("error closing recommendation: %s", err.Error()))
-		}
-	}
-
+	// The event's status is left alone: see recordResolutionStatus.
 	_, err = dbms.Db.Exec("UPDATE event_resolution SET type_reference_id = $2, updated_at = $3 WHERE id = $1", resolution.Id, resp.ResolutionTypeRefrenceId, time.Now().UTC().Format(time.RFC3339))
 	if err != nil {
 		ctx.GetLogger().Error("error updating type reference event resolution", "error", err)
@@ -2239,51 +2242,96 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 			}
 			continue
 		}
-		adptr := adapter.GetAdapterFromResolutionProvider(resolution.Type)
-		if adptr == nil {
-			ctx.GetLogger().Error("error getting adapter", "error", fmt.Errorf("adapter not found - %s", resolution.Type))
-			continue
-		}
-
-		adapterContext := security.NewRequestContext(ctx.GetContext(), security.NewSecurityContextForTenantAdmin(*event.Tenant), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
-		resp, err := adptr.GetRecommendationResolutionStatus(adapterContext, models.Recommendation{
-			Category:       "RightSizing",
-			RuleName:       "pod_right_sizing",
-			Id:             event.Id,
-			CloudAccountId: *event.CloudAccountId,
-			TenantId:       *event.Tenant,
-			Recommendation: models.NewJsonObject(map[string]any{}),
-		}, resolution.TypeReferenceId, resolution.Data, *resolution.StatusMessage)
-		var status models.RecommendationResolutionStatus
-		var statusMsg string
-		if err != nil {
-			ctx.GetLogger().Error("error getting event resolution status", "error", err)
-			statusMsg = fmt.Sprintf("error getting event resolution status - %s", err.Error())
-			status = models.RecommendationResolutionStatusFailed
-		} else {
-			status = models.RecommendationResolutionStatus(string(resp.Status))
-			statusMsg = resp.StatusMessage
-		}
-
-		_, err = dbms.Db.Exec("UPDATE event_resolution SET status = $2, updated_at = $3, status_message = $4 WHERE id = $1", resolution.Id, status, time.Now().UTC().Format(time.RFC3339), statusMsg)
-		if err != nil {
-			ctx.GetLogger().Error("error updating event resolution", "error", err)
+		if err := settleResolution(ctx, dbms, resolution, event); err != nil {
 			return err
-		}
-
-		if status == models.RecommendationResolutionStatusSuccess {
-			// The agent reports what it replaced; without capturing it here the applied value is
-			// recorded and the value it replaced is lost, so the action cannot be undone.
-			storeUndoStateFromTask(ctx, dbms, resolution)
-
-			_, err = dbms.Db.Exec("UPDATE events SET status = $3, updated_at = $2 WHERE id = $1", event.Id, time.Now().UTC().Format(time.RFC3339), "RESOLVED")
-			if err != nil {
-				ctx.GetLogger().Error("error closing recommendation", "error", err, "event_id", event.Id, "status", status)
-				return common.ErrorInternal(fmt.Sprintf("error closing recommendation: %s", err.Error()))
-			}
 		}
 	}
 
+	return nil
+}
+
+// settleResolution asks the resolution's adapter how the attempt went and records the answer.
+func settleResolution(ctx *security.RequestContext, dbms *database.DatabaseManager, resolution models.EventResolution, event models.Event) error {
+	adptr := adapter.GetAdapterFromResolutionProvider(resolution.Type)
+	if adptr == nil {
+		ctx.GetLogger().Error("error getting adapter", "error", fmt.Errorf("adapter not found - %s", resolution.Type))
+		return nil
+	}
+
+	if event.Tenant == nil || event.CloudAccountId == nil {
+		ctx.GetLogger().Error("resolution's event has no tenant or account", "event_id", event.Id, "resolution_id", resolution.Id)
+		return nil
+	}
+	statusMessage := ""
+	if resolution.StatusMessage != nil {
+		statusMessage = *resolution.StatusMessage
+	}
+	adapterContext := security.NewRequestContext(ctx.GetContext(), security.NewSecurityContextForTenantAdmin(*event.Tenant), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
+	resp, err := adptr.GetRecommendationResolutionStatus(adapterContext, models.Recommendation{
+		Category:       "RightSizing",
+		RuleName:       "pod_right_sizing",
+		Id:             event.Id,
+		CloudAccountId: *event.CloudAccountId,
+		TenantId:       *event.Tenant,
+		Recommendation: models.NewJsonObject(map[string]any{}),
+	}, resolution.TypeReferenceId, resolution.Data, statusMessage)
+	var status models.RecommendationResolutionStatus
+	var statusMsg string
+	if err != nil {
+		ctx.GetLogger().Error("error getting event resolution status", "error", err)
+		statusMsg = fmt.Sprintf("error getting event resolution status - %s", err.Error())
+		status = models.RecommendationResolutionStatusFailed
+	} else {
+		status = models.RecommendationResolutionStatus(string(resp.Status))
+		statusMsg = resp.StatusMessage
+	}
+	// A check that could not reach the provider keeps the pull request in
+	// progress and leaves last_pr_check_at alone, up to the limit — see
+	// adapter.PRStatusUnverifiedLimit.
+	lastCheck := lastCheckKeep // an adapter error is not a sighting either
+	if err == nil && !resp.Unverified {
+		lastCheck = lastCheckNow
+	}
+	if err == nil && resp.Unverified {
+		if adapter.PRStatusCheckExpired(resolution.LastPRCheckAt, time.Now().UTC()) {
+			status = models.RecommendationResolutionStatusFailed
+			statusMsg = adapter.PRStatusGaveUpMessage(resp.StatusMessage)
+		} else {
+			lastCheck = lastCheckCoalesce
+		}
+	}
+	return recordResolutionStatus(ctx, dbms, resolution, status, statusMsg, lastCheck)
+}
+
+// How settleResolution moves last_pr_check_at: keep it, stamp now, or stamp now only if unset.
+const (
+	lastCheckKeep     = "keep"
+	lastCheckNow      = "now"
+	lastCheckCoalesce = "coalesce"
+)
+
+// recordResolutionStatus records a remediation attempt's outcome, and only that: applied != incident
+// ended, so events.status stays with the alert's source. Guarded on InProgress so a webhook that settled the row first wins.
+func recordResolutionStatus(ctx *security.RequestContext, dbms *database.DatabaseManager, resolution models.EventResolution, status models.RecommendationResolutionStatus, statusMsg, lastCheck string) error {
+	switch lastCheck {
+	case lastCheckKeep, lastCheckNow, lastCheckCoalesce:
+	default:
+		return fmt.Errorf("resolution: unexpected last_pr_check_at mode %q", lastCheck)
+	}
+	_, err := dbms.Db.Exec(`UPDATE event_resolution SET status = $2, updated_at = $3, status_message = $4,
+		last_pr_check_at = CASE $6 WHEN 'now' THEN (now() AT TIME ZONE 'UTC')
+		                           WHEN 'coalesce' THEN COALESCE(last_pr_check_at, (now() AT TIME ZONE 'UTC'))
+		                           ELSE last_pr_check_at END
+		WHERE id = $1 AND status = $5`, resolution.Id, status, time.Now().UTC().Format(time.RFC3339), statusMsg, models.RecommendationResolutionStatusInProgress, lastCheck)
+	if err != nil {
+		ctx.GetLogger().Error("error updating event resolution", "error", err)
+		return err
+	}
+	if status == models.RecommendationResolutionStatusSuccess {
+		// The agent reports what it replaced; without capturing it here the applied value is
+		// recorded and the value it replaced is lost, so the action cannot be undone.
+		storeUndoStateFromTask(ctx, dbms, resolution)
+	}
 	return nil
 }
 
@@ -2637,14 +2685,7 @@ func InsertEvent(event Event, id string, opts ...InsertOption) (string, error) {
 		// resolved notification only (notify_resolved); the upsert can't see the
 		// prior status, so repeated resolve webhooks re-publish and
 		// notifications-server dedupes per delivered thread.
-		_ = common.MqPublish(
-			config.Config.RabbitMqEventPostProcessExchange,
-			config.Config.RabbitMqEventPostProcessQueue,
-			map[string]any{"event_id": id, "notify_resolved": true},
-			common.MqPublishWithExpiration(1*time.Hour),
-			common.MqPublishWithBackgroundRetry(),
-			common.MqPublishWithContext(cfg.publishCtx),
-		)
+		publishResolved(cfg.publishCtx, []string{id})
 	}
 
 	return id, nil
@@ -2705,6 +2746,43 @@ func getPlaybookStartEndTime(e Event) (start, end, detected time.Time) {
 
 // playbookLeadIn is how far before the alert the playbook window starts.
 const playbookLeadIn = 10 * time.Minute
+
+// repeatDeliveryUpdateSQL applies a repeat delivery of an alert that is already
+// stored (an Alertmanager repeat, a Datadog re-notification) to its event.
+//
+// A repeat is the source's payload again. It carries nothing of what enrichment
+// has added to the event since the first delivery, so it must not erase that:
+//   - Labels are merged, and the delivery's value wins for a label both carry.
+//     A label the playbook added survives. So does a label the source has since
+//     stopped sending: nothing records which labels came from the source, and a
+//     stale one that lasts until the event closes costs less than losing the
+//     playbook's.
+//   - An empty subject field or resource link leaves the stored one alone.
+//   - Unless the delivery names a different subject. The stored namespace, type,
+//     owner and resource then describe the old subject, so all of them are
+//     replaced as sent, empty or not. An event stored without a subject name has
+//     no old subject: "<>" against its empty name is NULL, not true, so naming it
+//     fills the name in and keeps the rest.
+//
+// Priority is always the delivery's: an escalation arrives as a repeat.
+//
+// A single statement for the reason enrichmentMergeSQL is one: enrichment writes
+// these columns while repeats arrive, and the comparison with the stored subject
+// has to be made against the row version the update locks.
+const repeatDeliveryUpdateSQL = `UPDATE events
+		    SET updated_at = $1,
+		        labels = CASE
+		                WHEN jsonb_typeof(labels) = 'object' THEN labels
+		                ELSE '{}'::jsonb
+		            END || $3::jsonb,
+		        priority           = $4,
+		        subject_name       = COALESCE(NULLIF($5, ''), subject_name),
+		        subject_namespace  = CASE WHEN NULLIF($5, '') <> NULLIF(subject_name, '') THEN $6 ELSE COALESCE(NULLIF($6, ''), subject_namespace) END,
+		        subject_type       = CASE WHEN NULLIF($5, '') <> NULLIF(subject_name, '') THEN $7 ELSE COALESCE(NULLIF($7, ''), subject_type) END,
+		        cloud_resource_id  = CASE WHEN NULLIF($5, '') <> NULLIF(subject_name, '') THEN $8 ELSE COALESCE($8, cloud_resource_id) END,
+		        subject_owner      = CASE WHEN NULLIF($5, '') <> NULLIF(subject_name, '') THEN $9 ELSE COALESCE(NULLIF($9, ''), subject_owner) END,
+		        subject_owner_kind = CASE WHEN NULLIF($5, '') <> NULLIF(subject_name, '') THEN $10 ELSE COALESCE(NULLIF($10, ''), subject_owner_kind) END
+		  WHERE id = $2`
 
 func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string) (string, error) {
 	start := time.Now().UTC()
@@ -2892,6 +2970,21 @@ func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string
 	switch err {
 	case nil: // event exists
 		sc.GetLogger().Info("event: already processed, updating event details", "event_id", existingEventId, "finding_id", webhookEvent.FindingId)
+		// Resolve the subject exactly as the insert below does, so the repeat names
+		// the subject the event was stored with rather than the raw one it arrived
+		// with. applySubjectFallbacks also leaves Labels non-nil, which the label
+		// merge in repeatDeliveryUpdateSQL needs: a nil map marshals to null.
+		applySubjectFallbacks(&webhookEvent)
+		applyNodeSubjectCorrection(sc, dbms, tenantId, &webhookEvent)
+		// The correction can miss on a repeat where the first delivery resolved it
+		// (the exporter pod was rescheduled and its row is gone). The delivery then
+		// still names the exporter pod, and writing that would move a corrected
+		// event back onto it. Send no subject instead, so the stored one stands.
+		if existingSubjectName.String != "" && !integrationcore.IsExporterWorkloadName(existingSubjectName.String) &&
+			webhookEvent.SubjectType != "node" && integrationcore.IsExporterWorkloadName(webhookEvent.SubjectName) {
+			webhookEvent.SubjectName, webhookEvent.SubjectNamespace, webhookEvent.SubjectType = "", "", ""
+			webhookEvent.SubjectOwner, webhookEvent.SubjectOwnerKind, webhookEvent.CloudResourceId = "", "", ""
+		}
 		labels, err1 := common.MarshalJson(webhookEvent.Labels)
 		if err1 != nil {
 			slog.Error("event: failed to marshal labels", "error", err1)
@@ -2903,7 +2996,7 @@ func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string
 		}
 		// Do NOT overwrite evidences — playbook-collected evidences would be lost.
 		// Duplicate webhooks carry the same inline evidences, so nothing new to store.
-		_, err := dbms.Db.Exec("UPDATE events SET updated_at = $1, labels = $3, priority=$4, subject_name=$5, subject_namespace=$6, subject_type=$7, cloud_resource_id=$8, subject_owner=$9, subject_owner_kind=$10 WHERE id = $2", time.Now().UTC(), existingEventId, labels, webhookEvent.Priority, webhookEvent.SubjectName, webhookEvent.SubjectNamespace, webhookEvent.SubjectType, nullableCloudResourceId, webhookEvent.SubjectOwner, webhookEvent.SubjectOwnerKind)
+		_, err := dbms.Db.Exec(repeatDeliveryUpdateSQL, time.Now().UTC(), existingEventId, labels, webhookEvent.Priority, webhookEvent.SubjectName, webhookEvent.SubjectNamespace, webhookEvent.SubjectType, nullableCloudResourceId, webhookEvent.SubjectOwner, webhookEvent.SubjectOwnerKind)
 		if err != nil {
 			sc.GetLogger().Error("event: failed to update existing event", "error", err)
 			return "", err
@@ -2952,7 +3045,7 @@ func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string
 		// the label it resolves from is both present in the payload and later
 		// rewritten by an enricher.
 		applySubjectFallbacks(&webhookEvent)
-		applyNodeSubjectCorrection(sc, &webhookEvent)
+		applyNodeSubjectCorrection(sc, dbms, tenantId, &webhookEvent)
 
 		if webhookEvent.CreatedAt == nil {
 			webhookEvent.CreatedAt = &start
@@ -3086,9 +3179,13 @@ func applySubjectFallbacks(webhookEvent *Event) {
 // be resolved, in which case the event is left exactly as it arrived rather than
 // half-rewritten.
 //
-// Runs on the new-event path only. Occurrences that attach to an existing chain
-// keep the subject the chain was opened with.
-func applyNodeSubjectCorrection(sc *security.RequestContext, webhookEvent *Event) {
+// Runs for a repeat delivery as well as a new event. The repeat names the
+// exporter pod again, and would otherwise point the stored event back at it.
+//
+// The resource link is part of the identity being replaced: by the time this
+// runs, linkK8sCloudResourceId has linked the exporter pod, so the link is
+// resolved again for the node.
+func applyNodeSubjectCorrection(sc *security.RequestContext, dbms *database.DatabaseManager, tenantId string, webhookEvent *Event) {
 	alertName := webhookEvent.AggregationKey
 	if v := webhookEvent.Labels["nb_alert_name"]; v != "" {
 		alertName = v
@@ -3122,6 +3219,7 @@ func applyNodeSubjectCorrection(sc *security.RequestContext, webhookEvent *Event
 	webhookEvent.SubjectOwnerKind = ""
 	webhookEvent.ServiceKey = ""
 	webhookEvent.CloudResourceId = ""
+	linkK8sCloudResourceId(sc, dbms, tenantId, webhookEvent)
 }
 
 // runPlaybookEnrichment executes the event's playbook and applies every
@@ -3751,12 +3849,33 @@ func isNonWorkloadDatastoreSubject(subjectType string) bool {
 //     match the workload by (tenant, account, namespace, subject_name).
 //   - pod-subject events: prefer the owning workload (SubjectOwner, enriched
 //     upstream in InvestigateEvent); fall back to the pod's own resource.
+//   - node-subject events: match the node by (tenant, account, subject_name).
 //
 // Best-effort: a miss leaves cloud_resource_id NULL and never blocks ingestion.
-// k8s_workloads.cloud_resource_id and k8s_pods.cloud_resource_id are valid
-// cloud_resourses.id values, so the events FK is satisfied.
+// k8s_workloads.cloud_resource_id, k8s_pods.cloud_resource_id and
+// k8s_nodes.cloud_resource_id are valid cloud_resourses.id values, so the
+// events FK is satisfied.
 func linkK8sCloudResourceId(sc *security.RequestContext, dbms *database.DatabaseManager, tenantId string, webhookEvent *Event) {
 	if webhookEvent.CloudResourceId != "" || webhookEvent.AccountId == "" || tenantId == "" {
+		return
+	}
+	// Nodes are cluster-scoped, so this runs before the namespace gate below. A
+	// node event has no namespace of its own: an automation leaves it empty and
+	// a prometheus alert carries the namespace of the exporter that reported
+	// it, which would send the node's name to the k8s_workloads match. A node
+	// is not a workload, so a miss stays unlinked rather than falling through.
+	if strings.EqualFold(webhookEvent.SubjectType, "node") {
+		if webhookEvent.SubjectName == "" {
+			return
+		}
+		var crid string
+		err := dbms.Db.QueryRowxContext(sc.GetContext(), nodeCloudResourceSQL, tenantId, webhookEvent.AccountId, webhookEvent.SubjectName).Scan(&crid)
+		switch {
+		case err == nil && crid != "":
+			webhookEvent.CloudResourceId = crid
+		case err != nil && err != sql.ErrNoRows:
+			sc.GetLogger().Warn("link_k8s_cloud_resource: node lookup failed", "error", err, "node", webhookEvent.SubjectName)
+		}
 		return
 	}
 	// SubjectNamespace / SubjectName are empty on the struct for some emitters
@@ -4274,6 +4393,44 @@ func pagerdutyCommentIfNotInvestigated(ctx *security.RequestContext, newEvent ma
 	return processPagerDutyComment(ctx, newEvent)
 }
 
+// recordOnlyLabel marks an event the producer wants stored and counted but not
+// acted on. The cloud collector sets it (providers/aws RecordOnlyLabel).
+const recordOnlyLabel = "nb_record_only"
+
+// recordOnlySources are the sources whose labels are written by our own cloud
+// collector. Other sources carry labels the customer's tooling sets (a
+// Prometheus rule, a webhook payload), and for them the label must not work as
+// a way to stop notifications.
+var recordOnlySources = map[string]bool{
+	"AWS_CloudWatch_Alarm": true,
+	"AWS_EventBridge":      true,
+	"Azure_Monitor_Alert":  true,
+	"GCP_Metric_Alert":     true,
+}
+
+// isRecordOnly reads recordOnlyLabel from the event's labels, in any of the
+// shapes the post-process map carries them in, for an event from one of
+// recordOnlySources.
+func isRecordOnly(event map[string]any) bool {
+	if source, _ := event["source"].(string); !recordOnlySources[source] {
+		return false
+	}
+	switch labels := event["labels"].(type) {
+	case map[string]any:
+		v, _ := labels[recordOnlyLabel].(string)
+		return v == "true"
+	case map[string]string:
+		return labels[recordOnlyLabel] == "true"
+	case string:
+		var m map[string]any
+		if json.Unmarshal([]byte(labels), &m) == nil {
+			v, _ := m[recordOnlyLabel].(string)
+			return v == "true"
+		}
+	}
+	return false
+}
+
 // Pipeline-step / emit seams. PostProcessEvent calls these indirectly so the
 // orchestration (triage → llm → event.created) is unit-testable without a live
 // DB / MQ. Overridden in tests.
@@ -4304,6 +4461,17 @@ func PostProcessEvent(ctx *security.RequestContext, newEvent map[string]any) {
 	// notification's priority/suppressed check and llm's suppressed-skip depend
 	// on it. triage produces the classification carried by event.created.
 	runStep(ctx, "triage", triageStep, newEvent)
+
+	// A record-only event is history, not an alert: the cloud collector sends an
+	// alarm firing that started and cleared between two of its polls this way.
+	// Triage above has counted it (repeats, grouping, alert tuning); nothing
+	// after this point acts on it — no investigation, no notification, no
+	// workflow — since event.created below is the one place those fan out from.
+	if isRecordOnly(newEvent) {
+		ctx.GetLogger().Info("event: record-only, not investigated or notified",
+			"event_id", newEvent["id"], "source", newEvent["source"], recordOnlyLabel, "true")
+		return
+	}
 
 	// llm runs next: it decides eligibility and, when it enqueues an
 	// investigation, sets llm.EventInvestigationEnqueuedKey. event.created

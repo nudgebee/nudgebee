@@ -2,6 +2,8 @@
 matched on its own, and every channel gets one message holding only the
 accounts its rules allow, with those accounts' numbers."""
 
+from datetime import datetime, timezone
+
 # Optimize digests whose producer sends `accounts`: {account_id: {account_name,
 # recommendations, totals}} next to the tenant-wide fields older pods read.
 ROLLUP_TYPES = ("recommendation_nudge_digest", "recommendation_proactive_nudge", "security_posture_alert")
@@ -59,3 +61,38 @@ def merged_parameters(parameters, account_ids):
             totals[key] = _add(totals.get(key), value)
     merged.update(totals)
     return merged
+
+
+def _stamp(value):
+    """A producer timestamp as a tz-aware datetime, or None if absent/unreadable."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def latest_per_key(items, key="finding_id", stamp="updated_at"):
+    """One item per `key` value — its latest state — for a channel's batch of
+    grouped alerts, so a firing and its resolve in the same window show once.
+    `items` are newest first, as the grouped list is read. The item's own
+    `stamp` decides which is latest when both carry a readable one (queue order
+    is not state order: a resolve can overtake its firing); otherwise the newer
+    list entry stands. Items without the key are all kept."""
+    kept = []
+    position = {}
+    for item in items:
+        value = item.get(key)
+        if not value:
+            kept.append(item)
+            continue
+        if value not in position:
+            position[value] = len(kept)
+            kept.append(item)
+            continue
+        kept_at, item_at = _stamp(kept[position[value]].get(stamp)), _stamp(item.get(stamp))
+        if kept_at and item_at and item_at > kept_at:
+            kept[position[value]] = item
+    return kept

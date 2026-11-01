@@ -1,6 +1,9 @@
 package core
 
 import (
+	"encoding/json"
+	"strings"
+
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -15,5 +18,17 @@ var renderExecutionTargetsBlock = func(ctx *security.RequestContext, request NBA
 	for _, t := range agentTools {
 		names = append(names, t.Name())
 	}
-	return tools.RenderExecutionTargets(ctx, request.AccountId, request.QueryConfig.ToolConfigs, names)
+	block := tools.RenderExecutionTargets(ctx, request.AccountId, request.QueryConfig.ToolConfigs, names)
+	return strings.TrimSpace(block + "\n" + renderDelegatedTargetBlock(request.QueryConfig.DelegatedTarget))
+}
+
+func renderDelegatedTargetBlock(target *toolcore.ExecutionTarget) string {
+	if target == nil {
+		return ""
+	}
+	encoded, _ := json.Marshal(struct {
+		Provider string `json:"provider"`
+		Name     string `json:"name"`
+	}{Provider: target.Provider, Name: target.Name})
+	return "<delegated_target>\n" + string(encoded) + "\n" + target.ScopeNote() + " Matching remote tools apply it by default; an explicit per-call target takes precedence. It does not grant access; tools validate the selected account before use. Tools that cannot take this target are refused; if one was needed, say what was not checked on it.\n</delegated_target>"
 }

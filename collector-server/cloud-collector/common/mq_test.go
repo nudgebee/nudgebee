@@ -10,14 +10,27 @@ import (
 	"github.com/wagslane/go-rabbitmq"
 )
 
-// resetConsumerHealthState clears the package-level consumer-health registry so each
-// test starts from a clean slate.
+// resetConsumerHealthState clears the package-level consumer-health registry and the
+// connection state so each test starts from a clean slate.
 func resetConsumerHealthState(t *testing.T) {
 	t.Helper()
 	rbmqConsumerHealthMux.Lock()
 	rbmqConsumerHealth = make(map[string]*consumerHealth)
 	rbmqConsumerHealthMux.Unlock()
+	resetConnState := func() {
+		rbmqConnUp.Store(false)
+		rbmqConnectedNanos.Store(0)
+		rbmqLastPollNanos.Store(0)
+		mqLastHeartbeatAt.Store(0)
+		mqHeartbeatStarted.Store(false)
+	}
+	resetConnState()
+	t.Cleanup(resetConnState)
 }
+
+// advanceConnected moves the connected clock forward, as pollConnection does while the
+// connection is up.
+func advanceConnected(d time.Duration) { rbmqConnectedNanos.Add(int64(d)) }
 
 func TestIsRabbitMQConnectionError_ChannelExhausted(t *testing.T) {
 	cases := []struct {
@@ -50,10 +63,8 @@ func TestConsumerHealth_WedgeDetection(t *testing.T) {
 		t.Fatal("a just-now failure should not be reported as wedged")
 	}
 
-	// Backdate failingSince past the wedge timeout: now it should be wedged.
-	rbmqConsumerHealthMux.Lock()
-	rbmqConsumerHealth[q].failingSince = time.Now().Add(-rbmqConsumerWedgeTimeout - time.Minute)
-	rbmqConsumerHealthMux.Unlock()
+	// Still failing after the wedge timeout of connected time: now it should be wedged.
+	advanceConnected(rbmqConsumerWedgeTimeout + time.Minute)
 	if queue, wedged := anyConsumerWedged(); !wedged || queue != q {
 		t.Fatalf("expected %q wedged, got queue=%q wedged=%v", q, queue, wedged)
 	}
@@ -114,22 +125,43 @@ func TestConsumerHealth_FailingSinceStable(t *testing.T) {
 	}
 }
 
+// A connection that drops more often than the wedge timeout must not hide a consumer
+// that never recovers: connected time accumulates across the flaps.
+func TestConsumerHealth_FlappingConnectionDoesNotHideAWedge(t *testing.T) {
+	resetConsumerHealthState(t)
+	now := time.Now()
+	poll := func(up bool) {
+		now = now.Add(10 * time.Second)
+		tickConnectedClock(now, up)
+		rbmqConnUp.Store(up)
+	}
+	poll(true)
+	markConsumerFailing("cloud_account_events", errors.New("declare queue failed: ACCESS_REFUSED"))
+
+	// Up for three minutes, down for twenty seconds, three times over.
+	for cycle := 0; cycle < 3; cycle++ {
+		for i := 0; i < 18; i++ {
+			poll(true)
+		}
+		poll(false)
+		poll(false)
+	}
+	if _, wedged := anyConsumerWedged(); !wedged {
+		t.Fatalf("a consumer failing through %s of connected time must be wedged", connectedClock())
+	}
+}
+
 func TestMqHealthy_ConsumerWedgeTripsLiveness(t *testing.T) {
 	resetConsumerHealthState(t)
-	// Make the heartbeat look fresh so only the consumer-level check is exercised.
-	mqLastHeartbeatNanos.Store(time.Now().UnixNano())
-	t.Cleanup(func() { mqLastHeartbeatNanos.Store(0) })
-
+	rbmqConnUp.Store(true)
+	// The heartbeat is not started, so only the consumer-level check is exercised.
 	if !MqHealthy() {
-		t.Fatal("expected healthy with fresh heartbeat and no consumers registered")
+		t.Fatal("expected healthy with no consumers registered")
 	}
 
 	const q = "cloud_account_post_report"
 	markConsumerFailing(q, errors.New("channel id space exhausted"))
-	rbmqConsumerHealthMux.Lock()
-	rbmqConsumerHealth[q].failingSince = time.Now().Add(-rbmqConsumerWedgeTimeout - time.Minute)
-	rbmqConsumerHealthMux.Unlock()
-
+	advanceConnected(rbmqConsumerWedgeTimeout + time.Minute)
 	if MqHealthy() {
 		t.Fatal("expected unhealthy when a consumer is wedged past the timeout")
 	}
@@ -144,11 +176,54 @@ func TestMqHealthy_ConsumerWedgeTripsLiveness(t *testing.T) {
 
 func TestMqHealthy_StaleHeartbeatUnhealthy(t *testing.T) {
 	resetConsumerHealthState(t)
-	mqLastHeartbeatNanos.Store(time.Now().Add(-mqHeartbeatTimeout - time.Second).UnixNano())
-	t.Cleanup(func() { mqLastHeartbeatNanos.Store(0) })
+	rbmqConnUp.Store(true)
+	mqHeartbeatStarted.Store(true)
+	advanceConnected(mqHeartbeatTimeout + time.Second)
 
 	if MqHealthy() {
 		t.Fatal("expected unhealthy with a stale heartbeat")
+	}
+}
+
+// A broker outage must not fail liveness: a restarted pod finds the broker just as
+// unreachable, so every probe during the outage restarts it again. Consumers reconnect in-process.
+func TestMqHealthy_BrokerDownIsNotALivenessFailure(t *testing.T) {
+	resetConsumerHealthState(t)
+	mqHeartbeatStarted.Store(true)
+	markConsumerFailing("cloud_account_events", ErrRbmqNoConn)
+	advanceConnected(time.Hour)
+	rbmqConnUp.Store(false)
+
+	if !MqHealthy() {
+		t.Fatal("expected healthy while the broker connection is down")
+	}
+}
+
+// Time spent in an outage does not count toward the heartbeat or wedge timeouts, so
+// consumers get their full timeouts once the broker is back.
+func TestMqHealthy_OutageTimeDoesNotCount(t *testing.T) {
+	resetConsumerHealthState(t)
+	start := time.Now()
+	poll := func(at time.Time, up bool) {
+		tickConnectedClock(at, up)
+		rbmqConnUp.Store(up)
+	}
+	poll(start, true)
+	mqHeartbeatStarted.Store(true)
+	markConsumerFailing("cloud_account_events", ErrRbmqNoConn)
+
+	// An hour-long outage, then the broker is back.
+	poll(start.Add(time.Second), false)
+	poll(start.Add(time.Hour), false)
+	poll(start.Add(time.Hour+time.Second), true)
+	if !MqHealthy() {
+		t.Fatal("expected healthy right after the outage: it must not count toward the timeouts")
+	}
+
+	// Still no heartbeat a full timeout of connected time later: now it is a wedge.
+	poll(start.Add(time.Hour+time.Second+mqHeartbeatTimeout+time.Second), true)
+	if MqHealthy() {
+		t.Fatal("expected unhealthy once the heartbeat stays stale for its timeout after the outage")
 	}
 }
 

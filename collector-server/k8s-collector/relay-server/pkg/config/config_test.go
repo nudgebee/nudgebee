@@ -74,3 +74,25 @@ func TestLoadLLMCacheInvalidationExchange(t *testing.T) {
 		t.Fatalf("env override = %q, want custom_exchange", got)
 	}
 }
+
+// Relay pods share MCP sessions through Redis unless an install explicitly
+// opts out (docs/mcp-sessions.md).
+func TestLoadMCPSessionStoreDefaultsToRedis(t *testing.T) {
+	t.Setenv("MCP_SESSION_STORE", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	if cfg.MCP.SessionStore != "redis" {
+		t.Errorf("MCP.SessionStore = %q, want default %q", cfg.MCP.SessionStore, "redis")
+	}
+
+	t.Setenv("MCP_SESSION_STORE", "memory")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	if cfg.MCP.SessionStore != "memory" {
+		t.Errorf("MCP.SessionStore = %q, want override %q", cfg.MCP.SessionStore, "memory")
+	}
+}

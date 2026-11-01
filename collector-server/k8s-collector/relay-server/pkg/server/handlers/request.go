@@ -196,13 +196,13 @@ func NewRequestHandler(
 		resp, err := rpcClient.Call(ctx, cfg.RabbitMQ.ExchangeName, rk, payload, requestID)
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || ctx.Err() != nil {
-				logger.Error("RPC timeout", "corr", requestID, "action_name", actionName, "action_params", actionParams.String(), "err", err)
+				logger.Error("RPC timeout", "corr", requestID, "action_name", actionName, "action_params", loggableActionParams(actionName, actionParams), "err", err)
 				if metrics.AsyncMetricsInstance != nil {
 					metrics.AsyncMetricsInstance.IncWSRequestTimeouts(metrics.AttrAccount(accountID))
 				}
 				c.JSON(504, utils.BuildError(504, "timeout waiting for agent"))
 			} else {
-				logger.Error("RPC error", "corr", requestID, "action_name", actionName, "action_params", actionParams.String(), "err", err)
+				logger.Error("RPC error", "corr", requestID, "action_name", actionName, "action_params", loggableActionParams(actionName, actionParams), "err", err)
 				if metrics.AsyncMetricsInstance != nil {
 					metrics.AsyncMetricsInstance.IncWSRequestErrors(metrics.AttrAccount(accountID))
 				}
@@ -212,7 +212,7 @@ func NewRequestHandler(
 		}
 
 		if _, err := c.Writer.Write(resp); err != nil {
-			logger.Error("error writing response", "corr", requestID, "action_name", actionName, "action_params", actionParams.String(), "err", err)
+			logger.Error("error writing response", "corr", requestID, "action_name", actionName, "action_params", loggableActionParams(actionName, actionParams), "err", err)
 			c.JSON(500, utils.BuildError(500, "error writing response"))
 			if metrics.AsyncMetricsInstance != nil {
 				metrics.AsyncMetricsInstance.IncWSRequestErrors(metrics.AttrAccount(accountID))

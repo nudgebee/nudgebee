@@ -13,6 +13,8 @@ import CustomTable from '@shared/tables/CustomTable';
 import Datetime from '@shared/format/Datetime';
 import Text from '@shared/format/Text';
 import { Label } from '@ui/Label';
+import Tooltip from '@ui/Tooltip';
+import { eventBridgeStatus, newestTimestamp } from '@lib/eventBridgeStatus';
 import { hasWriteAccess, canManage } from '@lib/auth';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
@@ -28,6 +30,13 @@ import apiUser from '@api1/user';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import CfUpdateModal from './CfUpdateModal';
 import EnableGcpWebhookModal from './EnableGcpWebhookModal';
+import EventAnalysisSettingsFields from '@components/accounts/EventAnalysisSettingsFields';
+import {
+  DEFAULT_EVENT_ANALYSIS_FORM,
+  buildEventAnalysisValue,
+  getEventAnalysisForm,
+  saveEventAnalysisValue,
+} from '@api1/account/eventAnalysisSettings';
 import AccountEnvToggle, { DEFAULT_ACCOUNT_ENV } from '@shared/forms/AccountEnvToggle';
 import AccountEnvText from '@shared/format/AccountEnvText';
 import { getIntegrationDescription } from '@lib/integrationDescriptions';
@@ -123,6 +132,10 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
   const [cfUpdateAccountId, setCfUpdateAccountId] = useState(null);
   const [webhookModalOpen, setWebhookModalOpen] = useState(false);
   const [webhookModalAccount, setWebhookModalAccount] = useState(null);
+  // AI event analysis settings modal: the account it's open for, or null.
+  const [eventAnalysisAccount, setEventAnalysisAccount] = useState(null);
+  const [eventAnalysisForm, setEventAnalysisForm] = useState(DEFAULT_EVENT_ANALYSIS_FORM);
+  const [eventAnalysisLoading, setEventAnalysisLoading] = useState(false);
   const [webhookAccountIds, setWebhookAccountIds] = useState(new Set());
   const [existedIntegrations, setExistedIntegrations] = useState({});
   const [enabledWebhookIntegrations, setEnabledWebhookIntegrations] = useState([]);
@@ -269,9 +282,10 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
           for (const agent of agents) {
             const cs = typeof agent.connection_status === 'string' ? safeJSONParse(agent.connection_status) : agent.connection_status;
             // connected_at is stamped when the user clicks "Connect EventBridge";
-            // last_event_at is stamped on every received event. Either one
-            // means the integration is in place — without connected_at the
-            // indicator stays inactive for hours until the first event arrives.
+            // last_event_at is stamped on every received event. Either one makes
+            // the menu offer "Manage EventBridge". What the Real-Time Events
+            // column says is decided by eventBridgeStatus, which treats only a
+            // received event as proof the feed works.
             if (cs?.eventbridge?.last_event_at || cs?.eventbridge?.connected_at) {
               ids.add(account.id);
             }
@@ -281,6 +295,51 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
     }
     return ids;
   }, [allWebhookAccountIds, rawAccounts, cloudProvider]);
+
+  const eventBridgeStatusByAccount = useMemo(() => {
+    const byAccount = new Map();
+    if (cloudProvider !== 'AWS') {
+      return byAccount;
+    }
+    const now = Date.now();
+    for (const account of rawAccounts) {
+      const agents = typeof account.agents === 'string' ? safeJSONParse(account.agents) : account.agents;
+      if (!Array.isArray(agents)) continue;
+      // An account can have more than one agent row; the feed is as alive as
+      // its most recent event on any of them.
+      const merged = {};
+      for (const agent of agents) {
+        const cs = typeof agent.connection_status === 'string' ? safeJSONParse(agent.connection_status) : agent.connection_status;
+        merged.last_event_at = newestTimestamp(merged.last_event_at, cs?.eventbridge?.last_event_at);
+        merged.connected_at = newestTimestamp(merged.connected_at, cs?.eventbridge?.connected_at);
+      }
+      const status = eventBridgeStatus(merged, now);
+      if (status) {
+        byAccount.set(account.id, status);
+      }
+    }
+    return byAccount;
+  }, [rawAccounts, cloudProvider]);
+
+  const renderRealtimeEvents = useCallback(
+    (item) => {
+      if (cloudProvider === 'AWS') {
+        const status = eventBridgeStatusByAccount.get(item.id);
+        if (!status) {
+          return <Text value='-' />;
+        }
+        return (
+          <Tooltip title={status.tooltip}>
+            <span>
+              <Label text={status.text} tone={status.tone} />
+            </span>
+          </Tooltip>
+        );
+      }
+      return realtimeEventAccountIds.has(item.id) ? <Label text='active' /> : <Text value='-' />;
+    },
+    [cloudProvider, eventBridgeStatusByAccount, realtimeEventAccountIds]
+  );
 
   const getMenuItems = (item) => {
     if (!hasWriteAccess()) {
@@ -298,6 +357,10 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
       {
         label: 'Change Environment',
         id: 7,
+      },
+      {
+        label: 'AI Event Analysis Settings',
+        id: 'event-analysis-settings',
       },
     ];
     if (cloudProvider === 'Azure') {
@@ -382,6 +445,8 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
     } else if (menuItem.id === 'real-time-alerts') {
       setWebhookModalAccount(data);
       setWebhookModalOpen(true);
+    } else if (menuItem.id === 'event-analysis-settings') {
+      openEventAnalysisModal(data);
     } else if (menuItem.id === 'update-permissions') {
       handleUpdatePermissions(data);
     } else if (menuItem.id === 7) {
@@ -400,15 +465,49 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
         { component: <Text value={item.account_number || '-'} /> },
         { component: <Label text={item.status || '-'} /> },
         { component: <AccountEnvText accountName={item.account_name} accountEnv={item.account_env} /> },
-        { component: realtimeEventAccountIds.has(item.id) ? <Label text='active' /> : <Text value='-' /> },
+        { component: renderRealtimeEvents(item) },
         { component: <ThreeDotsMenu sx={{ ...action.primary }} menuItems={getMenuItems(item)} data={item} onMenuClick={onMenuClick} /> },
       ]),
-    [rawAccounts, realtimeEventAccountIds, getMenuItems, onMenuClick]
+    [rawAccounts, renderRealtimeEvents, getMenuItems, onMenuClick]
   );
 
   const handleUpdatePermissions = (account) => {
     setCfUpdateAccountId(account.id);
     setCfUpdateModalOpen(true);
+  };
+
+  const openEventAnalysisModal = async (account) => {
+    setEventAnalysisAccount(account);
+    setEventAnalysisForm(DEFAULT_EVENT_ANALYSIS_FORM);
+    setEventAnalysisLoading(true);
+    try {
+      setEventAnalysisForm(await getEventAnalysisForm(account.id));
+    } catch (error) {
+      snackbar.error(error.message);
+      setEventAnalysisAccount(null);
+    } finally {
+      setEventAnalysisLoading(false);
+    }
+  };
+
+  const closeEventAnalysisModal = () => setEventAnalysisAccount(null);
+
+  const handleEventAnalysisSave = async () => {
+    const built = buildEventAnalysisValue(eventAnalysisForm);
+    if (built.error) {
+      snackbar.error(built.error);
+      return;
+    }
+    setEventAnalysisLoading(true);
+    try {
+      await saveEventAnalysisValue(eventAnalysisAccount.id, built.value);
+      snackbar.success('AI event analysis settings saved');
+      closeEventAnalysisModal();
+    } catch (error) {
+      snackbar.error(error.message);
+    } finally {
+      setEventAnalysisLoading(false);
+    }
   };
 
   const handleOpenEventGridModal = (account) => {
@@ -862,6 +961,35 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
   return (
     <>
       <AddAccountModalComponent open={openAddModal} onClose={handleCloseAddModal} />
+      <Modal
+        width='sm'
+        open={!!eventAnalysisAccount}
+        handleClose={eventAnalysisLoading ? () => {} : closeEventAnalysisModal}
+        title={`AI Event Analysis Settings (${eventAnalysisAccount?.account_name || ''})`}
+        loader={eventAnalysisLoading}
+      >
+        <Box p={ds.space[4]}>
+          <EventAnalysisSettingsFields form={eventAnalysisForm} onChange={setEventAnalysisForm} disabled={eventAnalysisLoading} />
+        </Box>
+        <Box
+          sx={{
+            display: 'flex',
+            justifyContent: 'flex-end',
+            gap: ds.space[4],
+            mt: ds.space[2],
+            mb: ds.space[4],
+            pr: ds.space[4],
+            '& button': { minWidth: ds.space.mul(1, 35) },
+          }}
+        >
+          <DsButton tone='secondary' size='md' onClick={closeEventAnalysisModal} disabled={eventAnalysisLoading}>
+            Cancel
+          </DsButton>
+          <DsButton tone='primary' size='md' onClick={handleEventAnalysisSave} disabled={eventAnalysisLoading} data-testid='event-analysis-save'>
+            Save
+          </DsButton>
+        </Box>
+      </Modal>
       {AddOrgModalComponent && <AddOrgModalComponent open={openOrgModal} onClose={handleCloseOrgModal} />}
       <Modal
         width='sm'

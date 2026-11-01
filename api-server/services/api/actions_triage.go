@@ -134,6 +134,32 @@ func handleTriageAction(h *ActionRequest, c *gin.Context, tracer *trace.Tracer, 
 	}
 }
 
+// requireTriageAccountAccess reports whether the caller may act on accountID,
+// answering 403 when it may not. The triage package trusts the account it is
+// handed, so a handler must call this before acting on one: with the
+// cloud_account_id input for account-keyed actions, or with the account of the
+// event it loaded for event-keyed ones. Both checks are tenant-aware, so an
+// account or event from another tenant is refused for everyone but a super admin.
+//
+// Access comes from a built-in account role or a custom-role grant on module
+// (the one the gateway admitted the action under — app/src/lib/permissionCatalog.ts),
+// the same pairing validateRelayAccountAccess uses.
+func requireTriageAccountAccess(c *gin.Context, ctx *security.RequestContext, accountID, module string, access security.SecurityAccessType) bool {
+	sc := ctx.GetSecurityContext()
+	allowed := false
+	if sc != nil {
+		if access == security.SecurityAccessTypeRead {
+			allowed = sc.CanReadAccountData(accountID, module)
+		} else {
+			allowed = sc.HasAccountAccess(accountID, access) || sc.HasScopedPermission(accountID, module, "Write")
+		}
+	}
+	if !allowed {
+		c.JSON(http.StatusForbidden, common.ErrorActionForbidden("access denied for account"))
+	}
+	return allowed
+}
+
 // handleEventGetDuplicates returns the duplicate chain for an event
 // handleEventGetTriage returns the triage picture for an event: its duplicate
 // chain, historical firing stats and hourly trend. The llm-server
@@ -483,6 +509,9 @@ func handleEventClassifyPreview(h *ActionRequest, c *gin.Context, ctx *security.
 		c.JSON(http.StatusBadRequest, gin.H{"error": "event has no account ID"})
 		return
 	}
+	if !requireTriageAccountAccess(c, ctx, *ev.CloudAccountId, "events", security.SecurityAccessTypeRead) {
+		return
+	}
 
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -582,6 +611,9 @@ func handleEventClassify(h *ActionRequest, c *gin.Context, ctx *security.Request
 		c.JSON(http.StatusBadRequest, gin.H{"error": "event has no account ID"})
 		return
 	}
+	if !requireTriageAccountAccess(c, ctx, *ev.CloudAccountId, "events", security.SecurityAccessTypeUpdate) {
+		return
+	}
 
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -672,6 +704,9 @@ func handleEventGetDuplicateSuggestions(h *ActionRequest, c *gin.Context, ctx *s
 
 	if ev.CloudAccountId == nil || *ev.CloudAccountId == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "event has no account ID"})
+		return
+	}
+	if !requireTriageAccountAccess(c, ctx, *ev.CloudAccountId, "events", security.SecurityAccessTypeRead) {
 		return
 	}
 
@@ -783,6 +818,10 @@ func handleEventCreateTriageRule(h *ActionRequest, c *gin.Context, ctx *security
 	action, ok := h.Input["action"].(string)
 	if !ok || action == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "action is required"})
+		return
+	}
+
+	if !requireTriageAccountAccess(c, ctx, cloudAccountID, "events", security.SecurityAccessTypeUpdate) {
 		return
 	}
 
@@ -1030,6 +1069,10 @@ func handleEventDeleteTriageRule(h *ActionRequest, c *gin.Context, ctx *security
 		return
 	}
 
+	if !requireTriageAccountAccess(c, ctx, cloudAccountID, "events", security.SecurityAccessTypeUpdate) {
+		return
+	}
+
 	hardDelete := false
 	if v, ok := h.Input["hard_delete"].(bool); ok {
 		hardDelete = v
@@ -1102,6 +1145,10 @@ func handleEventUpdateTriageRule(h *ActionRequest, c *gin.Context, ctx *security
 	action, ok := h.Input["action"].(string)
 	if !ok || action == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "action is required"})
+		return
+	}
+
+	if !requireTriageAccountAccess(c, ctx, cloudAccountID, "events", security.SecurityAccessTypeUpdate) {
 		return
 	}
 
@@ -1260,6 +1307,9 @@ func handleEventUpdateNBStatus(h *ActionRequest, c *gin.Context, ctx *security.R
 		c.JSON(http.StatusBadRequest, gin.H{"error": "event has no account ID"})
 		return
 	}
+	if !requireTriageAccountAccess(c, ctx, *ev.CloudAccountId, "events", security.SecurityAccessTypeUpdate) {
+		return
+	}
 
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -1316,6 +1366,10 @@ func handleEventToggleSystemRuleOverride(h *ActionRequest, c *gin.Context, ctx *
 	disabled, ok := h.Input["disabled"].(bool)
 	if !ok {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "disabled is required"})
+		return
+	}
+
+	if !requireTriageAccountAccess(c, ctx, cloudAccountID, "events", security.SecurityAccessTypeUpdate) {
 		return
 	}
 

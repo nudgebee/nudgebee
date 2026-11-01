@@ -35,6 +35,7 @@ export class LoginPage {
   readonly switchTenantSubmitButton: Locator;
   readonly homeButton: Locator;
   readonly clusterInput: Locator;
+  readonly accessBanner: Locator;
 
   constructor(page: Page) {
     this.page = page;
@@ -42,11 +43,13 @@ export class LoginPage {
     this.passwordInput = page.getByRole("textbox", { name: "LDAP Password" });
     this.submitButton = page.getByRole("button", { name: /^sign in$/i }).or(page.getByRole("button", { name: /^submit$/i })).first();
     this.accountSettingsButton = page.locator("#account-setting");
-    this.switchTenantMenu = page.getByText("Switch Tenant");
+    // Scoped to the account menu: the "This account isn't in your tenant" banner carries its own Switch Tenant button.
+    this.switchTenantMenu = page.locator('[role="menuitem"]').filter({ hasText: "Switch Tenant" });
     this.tenantInput = page.locator("#auto-complete-tenant");
     this.switchTenantSubmitButton = page.getByRole("button", { name: "Switch Tenant" });
     this.homeButton = page.getByText("Home", { exact: true }).first();
     this.clusterInput = page.locator("#auto-complete-global-cluster");
+    this.accessBanner = page.locator("#account-access-banner");
   }
 
   async navigate() {
@@ -394,6 +397,7 @@ export class LoginPage {
 
   // Returns the cluster it settled on, so the caller can verify that exact name later.
   async selectHighestIterationCluster(): Promise<string> {
+    await this.waitForClusterOptions();
     await this.clearAndTypeCluster("iteration");
     await this.page.locator("[role='option']").first().waitFor({ state: "visible", timeout: 10000 });
 
@@ -415,26 +419,62 @@ export class LoginPage {
     await this.clusterInput.pressSequentially(clusterName, { delay: 50 });
   }
 
-  async selectCluster(clusterName: string) {
-    await this.clearAndTypeCluster(clusterName);
-    await this.page.waitForTimeout(500);
+  // ClusterDropDown renders no options until getCloudAccounts lands, so typing before that filters an empty list.
+  private async waitForClusterOptions(timeout = 30000) {
+    await this.clusterInput.waitFor({ state: "visible", timeout: 10000 });
+    await this.clusterInput.click();
+    const loaded = await this.page
+      .locator("[role='option']")
+      .first()
+      .waitFor({ state: "visible", timeout })
+      .then(() => true)
+      .catch(() => false);
+    await this.page.keyboard.press("Escape");
+    if (!loaded) {
+      throw new Error(`Cluster dropdown listed no options within ${timeout}ms — the accounts list (getCloudAccounts) did not load`);
+    }
+  }
 
+  async selectCluster(clusterName: string) {
     const option = this.page
       .locator("[role='option']")
       .filter({ hasText: clusterName })
       .first();
 
-    const isVisible = await option.isVisible().catch(() => false);
-    if (!isVisible) {
-      console.log(`No option found for '${clusterName}', retrying...`);
-      await this.clearAndTypeCluster(clusterName);
-      await this.page.waitForTimeout(500);
+    // A failed GetCloudAccounts leaves only the mock Demo account and is never refetched on that page, so reload for a fresh fetch.
+    const pageLoads = 2;
+    const attempts = 2;
+    for (let load = 1; load <= pageLoads; load++) {
+      if (load > 1) {
+        console.log(`'${clusterName}' missing from the loaded cluster list — reloading to refetch the accounts`);
+        await this.page.reload();
+        await this.waitForLoaderToDisappear();
+      }
+      await this.waitForClusterOptions();
+
+      for (let attempt = 1; attempt <= attempts; attempt++) {
+        await this.clearAndTypeCluster(clusterName);
+        const found = await option
+          .waitFor({ state: "visible", timeout: 10000 })
+          .then(() => true)
+          .catch(() => false);
+        if (found) {
+          await option.click();
+          await this.page.mouse.move(0, 0);
+          console.log(`Selected cluster: ${clusterName}`);
+          return;
+        }
+        // The list is loaded by now, so a miss is dropped keystrokes or a stale popup — close it and retype.
+        console.log(`No option found for '${clusterName}' (load ${load}/${pageLoads}, attempt ${attempt}/${attempts}), reopening the dropdown...`);
+        await this.page.keyboard.press("Escape");
+      }
     }
 
-    await option.waitFor({ state: "visible", timeout: 10000 });
-    await option.click();
-    await this.page.mouse.move(0, 0);
-    console.log(`Selected cluster: ${clusterName}`);
+    await this.clearAndTypeCluster("").catch(() => {});
+    const available = await this.page.locator("[role='option']").allTextContents().catch(() => [] as string[]);
+    throw new Error(
+      `Cluster "${clusterName}" is not in the loaded cluster dropdown (first options: ${available.slice(0, 15).join(", ") || "none"})`
+    );
   }
 
   // Returns what this login settled on, so global-setup can verify it before caching.
@@ -547,10 +587,15 @@ export class LoginPage {
       return resolved;
     }
 
-    if ((await readGlobalClusterValue(this.page, 10000, explicitCluster)) === explicitCluster) {
+    let current = await this.readClusterOrAccessBanner(explicitCluster);
+    if (current === null) {
+      current = await this.recoverFromAccessBanner(explicitCluster);
+    }
+    if (current === explicitCluster) {
       console.log(`Cluster check: already on "${explicitCluster}" — skipping cluster selection`);
       return explicitCluster;
     }
+    console.log(`Cluster check: dropdown shows "${current || "nothing"}" — selecting "${explicitCluster}"`);
 
     await this.selectCluster(explicitCluster);
     await this.waitForLoaderToDisappear();
@@ -563,6 +608,39 @@ export class LoginPage {
       throw new Error(`Cluster selection did not commit: expected "${explicitCluster}", dropdown shows "${committed}"`);
     }
     return explicitCluster;
+  }
+
+  // Resolved dropdown cluster (empty input = still loading), or null when the "isn't in your tenant" banner shows instead.
+  private async readClusterOrAccessBanner(expected: string, loadTimeout = 30000, settleMs = 3000): Promise<string | null> {
+    const deadline = Date.now() + loadTimeout;
+    while (Date.now() < deadline) {
+      if (await this.accessBanner.isVisible().catch(() => false)) return null;
+      const value = (await this.clusterInput.inputValue().catch(() => "")).trim();
+      if (value) return value === expected ? value : readGlobalClusterValue(this.page, settleMs, expected);
+      await this.page.waitForTimeout(250);
+    }
+    return "";
+  }
+
+  // Usually a failed GetCloudAccounts (demo-only list) that a reload refetches; if the banner survives, run the tenant check.
+  private async recoverFromAccessBanner(expected: string): Promise<string> {
+    console.log(`"This account isn't in your tenant" banner shown — reloading to refetch the accounts list`);
+    await this.page.reload();
+    await this.waitForLoaderToDisappear();
+    const afterReload = await this.readClusterOrAccessBanner(expected);
+    if (afterReload !== null) return afterReload;
+
+    console.log(`Banner persists after reload (session tenant: "${await this.activeTenant()}") — running the tenant check`);
+    await this.switchTenantWithRetry();
+    await this.page.goto(process.env.BASE_URL || "");
+    await this.waitForLoaderToDisappear();
+    const afterSwitch = await this.readClusterOrAccessBanner(expected);
+    if (afterSwitch === null) {
+      throw new Error(
+        `"${expected}" is not in tenant "${await this.activeTenant()}" and no tenant switch fixed it — check SWITCH_TENANT and CLUSTER for this environment`
+      );
+    }
+    return afterSwitch;
   }
 
   /**

@@ -281,37 +281,8 @@ query k8s_resource_groupings($limit:Int,$offset:Int){
   async getFilteredResourceCounts(accountId: string) {
     if (accountId === 'demo') return { data: [] };
     try {
-      // Billing line item types to exclude (not actual resources)
-      const excludedTypes = [
-        // AWS billing line items
-        'data-transfer',
-        'api-request',
-        'usage',
-        'cpu-credits',
-        'data-payload',
-        'storage-snapshot',
-        'request',
-        'requests',
-        'data',
-        'bandwidth',
-        'tax',
-        // GCP billing aggregates (actual resources have googleapis.com in type)
-        'compute-engine',
-        'cloud-sql',
-        'kubernetes-engine',
-        'networking',
-        'bigquery',
-        'vertex-ai',
-        'vertex-ai-model',
-        'subnet',
-      ];
-
       // Build filter params safely using gqlStringify
-      const filterParams = {
-        account_id: { _eq: accountId },
-        resource_status: { _eq: 'Active' },
-        resource_type: { _not_in: excludedTypes },
-      };
+      const filterParams = buildFilteredResourceCountsWhere(accountId);
 
       // Use resource_groupings_v2 with _not_in filter to properly aggregate resource counts
       const FILTERED_RESOURCES_QUERY = `
@@ -349,5 +320,67 @@ query FilteredResourceCounts {
     }
   },
 };
+
+// Billing line item types to exclude (not actual resources)
+const EXCLUDED_RESOURCE_TYPES = [
+  // AWS billing line items
+  'data-transfer',
+  'api-request',
+  'usage',
+  'cpu-credits',
+  'data-payload',
+  'storage-snapshot',
+  // ARN-derived snapshot rows (EBS/RDS snapshots), and the EBS/RDS IOPS and
+  // throughput charges: one account had 546k `snapshot` rows under AmazonEC2.
+  'snapshot',
+  'provisioned-throughput',
+  'system-operation',
+  'request',
+  'requests',
+  'data',
+  'bandwidth',
+  'tax',
+  // GCP billing aggregates (actual resources have googleapis.com in type)
+  'compute-engine',
+  'cloud-sql',
+  'kubernetes-engine',
+  'networking',
+  'bigquery',
+  'vertex-ai',
+  'vertex-ai-model',
+  'subnet',
+];
+
+// Services whose Resource Summary tile names one resource kind ("EC2 Instances",
+// "S3 Buckets"): count only that kind's types, the same ones the service's
+// drill-down tab lists (ec2/Instances.tsx ec2TypeMap, s3/Instances.tsx s3TypeMap).
+// A service_name spans many types (AmazonEC2 = instances, volumes, snapshots,
+// billing line items), so a deny-list alone lets every new type inflate the tile.
+export const SERVICE_PRIMARY_RESOURCE_TYPES: Record<string, string[]> = {
+  AmazonEC2: ['compute-instance'],
+  'Compute Engine': ['compute.googleapis.com/Instance'],
+  'microsoft.compute/virtualmachines': ['virtualmachines'],
+  AmazonS3: ['storage'],
+  'Cloud Storage': ['storage.googleapis.com/Bucket'],
+  'microsoft.storage/storageaccounts': ['storageaccounts'],
+};
+
+export function buildFilteredResourceCountsWhere(accountId: string) {
+  const mappedServices = Object.keys(SERVICE_PRIMARY_RESOURCE_TYPES);
+  return {
+    account_id: { _eq: accountId },
+    resource_status: { _eq: 'Active' },
+    _or: [
+      ...mappedServices.map((service) => ({
+        resource_service_name: { _eq: service },
+        resource_type: { _in: SERVICE_PRIMARY_RESOURCE_TYPES[service] },
+      })),
+      {
+        resource_service_name: { _not_in: mappedServices },
+        resource_type: { _not_in: EXCLUDED_RESOURCE_TYPES },
+      },
+    ],
+  };
+}
 
 export default apiResources;

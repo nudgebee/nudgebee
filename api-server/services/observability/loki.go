@@ -3,6 +3,7 @@ package observability
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/url"
 
 	"github.com/nudgebee/logparser"
@@ -76,11 +77,23 @@ func validateUserRegex(pattern string) error {
 	return nil
 }
 
+// LogsFilterMap is the canonical → Loki field mapping. "log" is not a Loki stream
+// label; buildWhere/buildLabelSelector special-case it into a line filter (`|=` / `|~`).
+//
+// `_body` is llm-server's canonical log-text token: QueryLabels (llm/llm-server/tools/
+// tool_logs.go) appends it to EVERY provider's advertised field list, so the canonical
+// query generator emits it even on backends that never reported such a field — measured
+// on dev Loki over the 7 days to 2026-09-29, `_body` outnumbered `content` 48 to 9.
+// Without this entry it survives convertWhereClauseWithMApping unmapped and
+// BuildLokiQuery renders it as a STREAM LABEL matcher (`{_body=~"..."}`), which matches
+// no stream and returns zero rows with HTTP 200 — the same silent-empty failure the
+// Elasticsearch source fixed via esCanonicalBodyField.
 var LogsFilterMap = map[string]string{
 	"content": "log",
+	"_body":   "log",
 	// The canonical spelling every producer is moving to (#39573). `log` is not a
 	// Loki stream label — buildWhere/buildLabelSelector special-case it into a line
-	// filter — so every spelling converges on the same `|=` / `|~` clause.
+	// filter — so all three spellings converge on the same `|=` / `|~` clause.
 	"message": "log",
 }
 
@@ -876,11 +889,16 @@ func (s *LokiSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest Fet
 		NoSinks: true,
 	}
 
-	resp, err := relay.Execute(relay.RelayExecuteRequest{
+	relayRequest := relay.RelayExecuteRequest{
 		NoSinks: true,
 		Cache:   false,
 		Body:    lokiRequest,
-	})
+	}
+	if fetchLogRequest.Timeout > 0 {
+		relayRequest.TimeoutSeconds = int(math.Ceil(fetchLogRequest.Timeout.Seconds()))
+		relayRequest.MaxAttempts = 1
+	}
+	resp, err := relay.Execute(relayRequest)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute loki query: %w", err)
 	}
@@ -1086,6 +1104,21 @@ func (s *LokiSource) GenerateQuery(ctx playbooks.PlaybookActionContext) (string,
 
 	logql := fmt.Sprintf(`{%s, namespace="%s"}`, podMatcher, namespace)
 	return logql, map[string]any{}, nil
+}
+
+// withLineFilter narrows a LogQL query to the lines matching pattern (RE2). Only a log
+// query — a stream selector and its pipeline — can take a line filter; a metric query,
+// or a query already encoded as API parameters, cannot, and is reported as such.
+//
+// The level a line comes back with is logparser.GuessLevel's reading of the line itself
+// (extractSeverity), never a default, which is what lineFilterSource requires.
+func (s *LokiSource) withLineFilter(query, pattern string) (string, bool) {
+	query = strings.TrimSpace(query)
+	if !strings.HasPrefix(query, "{") || strings.Contains(pattern, "`") {
+		return "", false
+	}
+	// A raw string, so the pattern needs no escaping.
+	return query + " |~ `" + pattern + "`", true
 }
 
 // escapeLokiLabelValue escapes special characters in LogQL label values.

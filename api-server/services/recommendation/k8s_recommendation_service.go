@@ -876,13 +876,18 @@ const imageScanDepartedBatchLimit = 20000
 // build tag leaves its vulnerabilities behind, and they are shown to users
 // alongside the ones that still apply.
 //
-// An image counts as present if any pod row still carries it, if any workload
-// declares it, or if the scanner itself confirmed it within the re-scan window.
-// Pod rows outlive the pod, so a CronJob between runs and a briefly restarting
-// workload both stay covered; the workload side covers a Deployment scaled to
-// zero, which declares an image but has no pods; the scanner side covers an
-// image the inventory does not model, such as one that only ever runs as an init
-// container.
+// An image counts as present if a pod carrying it is still in the cluster, if
+// any workload declares it, or if the scanner itself confirmed it within the
+// re-scan window. Pod rows outlive the pod by weeks, until retention deletes
+// them, so a row alone is not a sighting. A pod counts while it is active, or
+// if its row changed within the re-scan window, which covers a pod that just
+// finished or restarted. last_seen is when the agent last reported a change,
+// not when it last saw the pod, so it cannot stand in for is_active on a
+// long-running pod. The workload side covers a Deployment scaled to zero, which
+// declares an image but has no pods, and a CronJob between runs for as long as
+// its row is active: Jobs and CronJobs carry their containers under job_data
+// rather than config. The scanner side covers an image the inventory does not
+// model, such as one that only ever runs as an init container.
 //
 // Only Open rows are touched, and only into Archive. Dismissed, InProgress and
 // Closed are set by people and must survive, and Closed in particular means a
@@ -919,6 +924,7 @@ func departedImageArchiveQuery(recommendationTable, podTable, workloadTable stri
 				CASE WHEN jsonb_typeof(p.meta->'config'->'containers') = 'array'
 					THEN p.meta->'config'->'containers' ELSE '[]'::jsonb END) c
 			WHERE c->>'image' IS NOT NULL
+			  AND (p.is_active OR p.last_seen > now() - make_interval(days => $2))
 		UNION
 			SELECT w.cloud_account_id, w.tenant_id, c->>'image'
 			FROM %[3]s w
@@ -926,7 +932,9 @@ func departedImageArchiveQuery(recommendationTable, podTable, workloadTable stri
 			  ON f.cloud_account_id = w.cloud_account_id AND f.tenant_id = w.tenant_id
 			CROSS JOIN LATERAL jsonb_array_elements(
 				CASE WHEN jsonb_typeof(w.meta->'config'->'containers') = 'array'
-					THEN w.meta->'config'->'containers' ELSE '[]'::jsonb END) c
+					THEN w.meta->'config'->'containers' ELSE '[]'::jsonb END
+				|| CASE WHEN jsonb_typeof(w.meta->'job_data'->'containers') = 'array'
+					THEN w.meta->'job_data'->'containers' ELSE '[]'::jsonb END) c
 			WHERE w.is_active IS NOT FALSE AND c->>'image' IS NOT NULL
 		UNION
 			SELECT s.cloud_account_id, s.tenant_id, s.account_object_id

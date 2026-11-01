@@ -4,6 +4,10 @@ import (
 	"errors"
 	"testing"
 
+	"nudgebee/collector/cloud/providers"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -77,4 +81,70 @@ func TestIdleElasticIPPricingFiltersMatchTheRealProduct(t *testing.T) {
 func TestGetUsageTypeRejectsUnknownRegion(t *testing.T) {
 	_, err := getUsageType("mars-north-1")
 	assert.Error(t, err)
+}
+
+// The $295-on-$25 bug (#38367): the idle-EIP recommendation was emitted once
+// per existing VPC resource, so one idle address became 82 findings. The
+// recommendation must target the address's own elastic-ip resource instead.
+func TestIdleElasticIPRecommendationTargetsTheAddressItself(t *testing.T) {
+	rec, ok := idleElasticIPRecommendation(ec2types.Address{
+		AllocationId: aws.String("eipalloc-123"),
+		PublicIp:     aws.String("52.200.219.207"),
+	}, "us-east-1", 3.6, eipPricingSourceAPI)
+	assert.True(t, ok)
+	assert.Equal(t, "eipalloc-123", rec.ResourceId)
+	assert.Equal(t, getAwsServiceResourceType(ServiceNameVPC, "elastic-ip"), rec.ResourceType)
+	assert.Equal(t, ServiceNameVPC, rec.ResourceServiceName)
+	assert.Equal(t, "us-east-1", rec.ResourceRegion)
+	assert.Equal(t, "52.200.219.207", rec.Data["elastic_ip"])
+	assert.InDelta(t, 3.6, rec.Savings, 1e-9)
+}
+
+func TestIdleElasticIPRecommendationSkipsAssociatedAddresses(t *testing.T) {
+	_, ok := idleElasticIPRecommendation(ec2types.Address{
+		AllocationId:  aws.String("eipalloc-123"),
+		AssociationId: aws.String("eipassoc-456"),
+		PublicIp:      aws.String("52.200.219.207"),
+	}, "us-east-1", 3.6, eipPricingSourceAPI)
+	assert.False(t, ok)
+}
+
+// EC2-Classic addresses have no AllocationId; GetResources stores them under
+// their public IP, and the recommendation must use the same identity to link.
+func TestIdleElasticIPRecommendationFallsBackToPublicIpForClassic(t *testing.T) {
+	rec, ok := idleElasticIPRecommendation(ec2types.Address{
+		PublicIp: aws.String("52.200.219.207"),
+	}, "us-east-1", 3.6, eipPricingSourceFlatRate)
+	assert.True(t, ok)
+	assert.Equal(t, "52.200.219.207", rec.ResourceId)
+}
+
+func TestIdleElasticIPRecommendationSkipsAddressesWithNoIdentity(t *testing.T) {
+	_, ok := idleElasticIPRecommendation(ec2types.Address{}, "us-east-1", 3.6, eipPricingSourceFlatRate)
+	assert.False(t, ok)
+}
+
+// Lockstep with GetResources, which skips an address with no PublicIp: without a
+// stored elastic-ip row, a recommendation keyed on AllocationId alone would be
+// orphaned (no resource to link to), so the helper must skip it too.
+func TestIdleElasticIPRecommendationSkipsAddressesWithNoPublicIp(t *testing.T) {
+	_, ok := idleElasticIPRecommendation(ec2types.Address{
+		AllocationId: aws.String("eipalloc-123"),
+	}, "us-east-1", 3.6, eipPricingSourceFlatRate)
+	assert.False(t, ok)
+}
+
+func TestEipScanRegionsDeduplicatesAndSeedsTheDefaultRegion(t *testing.T) {
+	regions := eipScanRegions("us-east-1", []providers.Resource{
+		{Region: "eu-west-1"},
+		{Region: "eu-west-1"},
+		{Region: "us-east-1"},
+		{Region: ""},
+		{Region: "ap-south-1"},
+	})
+	assert.Equal(t, []string{"ap-south-1", "eu-west-1", "us-east-1"}, regions)
+}
+
+func TestEipScanRegionsWithNoResourcesStillCoversTheDefaultRegion(t *testing.T) {
+	assert.Equal(t, []string{"us-east-1"}, eipScanRegions("us-east-1", nil))
 }

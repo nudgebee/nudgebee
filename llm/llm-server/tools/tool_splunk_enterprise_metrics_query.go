@@ -143,6 +143,7 @@ func firstWord(s string) string {
 }
 
 func (m SplunkMetricsQueryTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	nbRequestContext = nbRequestContext.ForTarget()
 	logger := nbRequestContext.Ctx.GetLogger()
 
 	// A nested {"command": ..., "range": ...} carries its time window inside the

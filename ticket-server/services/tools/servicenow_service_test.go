@@ -2,12 +2,14 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"nudgebee/tickets-server/models"
+	"nudgebee/tickets-server/services/ticket"
 
 	"github.com/gin-gonic/gin"
 )
@@ -238,6 +240,9 @@ func TestServiceNowService_Get_NotFound(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "incident not found") {
 		t.Errorf("expected 'incident not found' error, got %v", err)
 	}
+	if !errors.Is(err, ticket.ErrNotFound) {
+		t.Errorf("err = %v, want it to wrap ticket.ErrNotFound (so sync can skip it without counting toward its failure-abort guard)", err)
+	}
 }
 
 // Verifies refOrString prefers display_value for reference-shape fields
@@ -445,6 +450,21 @@ func TestGetNudgebeeSeverity(t *testing.T) {
 		if got := getNudgebeeSeverity(in); got != want {
 			t.Errorf("getNudgebeeSeverity(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// Get/List read an existing incident's priority, so a blank reading (field
+// absent, or hidden by the service account's ACL) must surface as "unknown"
+// (""), not getNudgebeeSeverity's own caller-omitted-value default of "Low" —
+// otherwise the ticket-status sync job (which treats any non-blank Severity
+// as authoritative) would silently downgrade a correctly stored severity to
+// "Low" every time ServiceNow's priority field can't be read.
+func TestSeverityFromExistingRecord_BlankPriorityIsUnknownNotLow(t *testing.T) {
+	if got := severityFromExistingRecord(""); got != "" {
+		t.Errorf("severityFromExistingRecord(\"\") = %q, want \"\" (unknown)", got)
+	}
+	if got := severityFromExistingRecord("3"); got != "Medium" {
+		t.Errorf("severityFromExistingRecord(\"3\") = %q, want Medium", got)
 	}
 }
 

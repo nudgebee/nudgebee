@@ -639,7 +639,7 @@ func (s *ChronosphereTraceSource) convertNanoToTimeString(nanoTimestamp string) 
 	}
 
 	// Convert nanoseconds to time.Time, then to RFC3339 string
-	return time.Unix(0, nanoTime).Format(time.RFC3339)
+	return time.Unix(0, nanoTime).UTC().Format(time.RFC3339)
 }
 
 func (s *ChronosphereTraceSource) calculateDurationAsFloat(startTime, endTime string) float64 {

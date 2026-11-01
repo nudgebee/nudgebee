@@ -1,10 +1,20 @@
 package ticket
 
 import (
+	"errors"
 	"nudgebee/tickets-server/models"
 
 	"github.com/gin-gonic/gin"
 )
+
+// ErrNotFound signals that a ticket no longer exists on the source platform
+// (deleted, or never valid there) — a permanent, ticket-specific condition.
+// Get implementations wrap their platform-specific not-found signal with
+// this (fmt.Errorf("...: %w", ErrNotFound)) so callers like the ticket-status
+// sync job can tell it apart from a transient/connectivity failure: it's
+// safe to skip forever, and must never count toward a consecutive-failure
+// abort guard meant for errors where retrying might help.
+var ErrNotFound = errors.New("ticket not found upstream")
 
 // TicketManager defines base operations for all ticketing tools (Jira, GitHub, ServiceNow, PagerDuty, ZenDuty).
 // This interface provides a common contract for ticket/issue management operations.

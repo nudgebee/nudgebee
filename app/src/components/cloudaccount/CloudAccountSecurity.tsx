@@ -150,6 +150,7 @@ const CloudAccountSecurity = (props: { accountId: string | undefined; serviceNam
                 <DsDropdownMenu
                   align='end'
                   size='sm'
+                  disablePortal={false}
                   items={MENU_ITEMS}
                   trigger={<DsButton tone='ghost' size='xs' composition='icon-only' aria-label='More actions' icon={<MoreVertIcon />} />}
                 />

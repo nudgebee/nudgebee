@@ -12,9 +12,9 @@ import (
 	"nudgebee/llm/config"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
+	"nudgebee/llm/security/egressfilter"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
-	"reflect"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -23,6 +23,7 @@ import (
 	"unicode"
 
 	"github.com/google/uuid"
+	"github.com/samber/lo"
 	"github.com/tmc/langchaingo/agents"
 	"github.com/tmc/langchaingo/callbacks"
 	"github.com/tmc/langchaingo/chains"
@@ -158,18 +159,34 @@ func checkMessageTerminationStatus(messageId, accountId, conversationId string) 
 // terminated, using the project's cache abstraction to debounce database
 // lookups.
 func CheckMessageTerminationStatus(messageId, accountId, conversationId string) (bool, error) {
+	if messageId == "" {
+		return false, nil
+	}
 	// Try to get from cache first
 	if val, ok := common.CacheGet(MessageTerminationCacheNamespace, messageId); ok {
 		return string(val) == "true", nil
 	}
 
+	dao := GetConversationDao()
+	if dao == nil {
+		return false, nil
+	}
+
 	// Fetch from database on cache miss
-	message, err := GetConversationDao().GetConversationMessage(messageId, accountId, conversationId)
+	status := ConversationStatus("")
+	message, err := dao.GetConversationMessage(messageId, accountId, conversationId)
+	if errors.Is(err, sql.ErrNoRows) {
+		// The metrics/traces sub-agents run under a delegated target's
+		// account, not the message's; the conversation still identifies it.
+		status, err = dao.GetConversationMessageStatus(messageId, conversationId)
+	} else if err == nil {
+		status = message.Status
+	}
 	if err != nil {
 		return false, err
 	}
 
-	isTerminated := message.Status == ConversationStatusTerminated
+	isTerminated := status == ConversationStatusTerminated
 
 	// Cache the result.
 	// If terminated, we can cache it for longer as it's a final state.
@@ -240,9 +257,20 @@ func normalizeToolInputForTool(tool toolcore.NBTool, input string) string {
 
 	args := map[string]any{}
 
+	// Only scalar properties can be written as plain text. An object property
+	// such as "target" must not capture a PromQL label or SQL column that
+	// happens to share its name ('up{target="x"}', 'WHERE target=1').
+	textProperty := func(name string) bool {
+		prop, exists := schema.Properties[name]
+		return exists && prop.Type != toolcore.ToolSchemaTypeObject
+	}
+
 	// Try XML tags: <id>value</id><limit>1</limit>
 	if strings.Contains(input, "<") && strings.Contains(input, ">") {
 		for propName := range schema.Properties {
+			if !textProperty(propName) {
+				continue
+			}
 			if val := common.XmlExtractTagContent(input, propName); val != "" {
 				args[propName] = val
 			}
@@ -258,7 +286,7 @@ func normalizeToolInputForTool(tool toolcore.NBTool, input string) string {
 				if eqIdx := strings.Index(part, "="); eqIdx > 0 {
 					key := strings.TrimSpace(part[:eqIdx])
 					val := strings.TrimSpace(part[eqIdx+1:])
-					if _, exists := schema.Properties[key]; exists && val != "" {
+					if textProperty(key) && val != "" {
 						args[key] = val
 					}
 				}
@@ -366,6 +394,12 @@ func newPlannerExecutor(ctx *security.RequestContext, agentPlanner NBAgentPlanne
 		request.QueryConfig.OriginalUserQuery = request.Query
 	}
 
+	// Seed the in-memory discovered tools registry from QueryConfig so discoveries
+	// survive multi-turn followups and multi-pod dispatch.
+	if request.ConversationId != "" && len(request.QueryConfig.DiscoveredTools) > 0 {
+		RecordDiscoveredTools(request.ConversationId, request.QueryConfig.DiscoveredTools)
+	}
+
 	return &plannerExecutor{
 		ctx:                 ctx,
 		agentPlanner:        agentPlanner,
@@ -410,6 +444,10 @@ type plannerExecutor struct {
 	summaryToolName     string
 	semaphore           chan struct{}
 	toolCallCache       turnToolCallCache // Normalized cache for tool results, persists across plan regeneration within a turn
+	// pausedOn holds, per paused tool call, the followup it paused on. Unmarshal
+	// fills it before dropping the WAITING steps, so the resume pass can tell an
+	// approval from a question, and this agent's question from a sub-agent's.
+	pausedOn map[string]FollowupRequest
 	// configMu guards agentRequest.QueryConfig's ToolConfigs and ToolConfigMetadata
 	// maps. doIterationParallel runs several actions against this one executor, and
 	// every one of them resolves its tool's config through the same maps.
@@ -677,7 +715,7 @@ func buildToolCallSummary(steps []NBAgentPlannerToolActionStep) (string, bool) {
 // when asked to summarize — observed live: benchmark run dd7bc6b21b45's
 // 108_logs_nearby_lines rerun returned raw "<update_notebook>...
 // </update_notebook>" markup (headers, tables, [NEXT] action items) as the
-// user-facing answer verbatim. Unlike parseCompletion's containsToolNameGrammar
+// user-facing answer verbatim. Unlike parseCompletion's containsTextToolCall
 // check (which treats this shape as a retryable parse failure mid-loop),
 // summarizeConversation is already the last-resort fallback — there is no
 // further retry to fall back to — so the correct recovery here is to unwrap
@@ -1035,6 +1073,16 @@ func (e *plannerExecutor) doIteration(
 			if _, configurable := tool.(toolcore.NBToolConfig); !configurable {
 				continue
 			}
+			// A call on another account that names no integration may ask the
+			// user to pick one of the target's (followupForTargetIntegration).
+			if tools.IsTargetedIntegrationTool(e.ctx, tool) && tools.CallHasTarget(action.ToolInput, e.agentRequest.QueryConfig.DelegatedTarget, e.agentRequest.AccountId) {
+				if tools.RequestedInstance(toolcore.NBToolCallRequest{Command: action.ToolInput}) == "" {
+					needsSequential = true
+					sequentialFallbackReason = "unresolved_target_integration"
+					break
+				}
+				continue
+			}
 			if e.agentRequest.QueryConfig.ToolConfigs != nil && e.agentRequest.QueryConfig.ToolConfigs[tool.Name()] != "" {
 				continue
 			}
@@ -1120,7 +1168,7 @@ func (e *plannerExecutor) doIterationSequential(
 	}
 	successContext := successContextBuilder.String()
 
-	for _, action := range actions {
+	for idx, action := range actions {
 		// Gather all available steps for condition evaluation
 		allAvailableStepsForCondition := append([]NBAgentPlannerToolActionStep{}, previousIterationSteps...)
 		allAvailableStepsForCondition = append(allAvailableStepsForCondition, newStepsThisIteration...)
@@ -1214,7 +1262,11 @@ func (e *plannerExecutor) doIterationSequential(
 		stepResponse, finishAct, errAct := e.doAction(nameToTool, action, queryContext)
 		if finishAct != nil {
 			if finishAct.Status == ConversationStatusWaiting || finishAct.Status == ConversationStatusWaitingForClientTool {
-				e.currentAction = actions
+				// Resume re-runs currentAction, so keep only this action and the
+				// ones after it. Earlier ones already ran and are in steps;
+				// replaying one would repeat its tool_use id in the next prompt
+				// (Anthropic rejects that) and duplicate its result.
+				e.currentAction = actions[idx:]
 			}
 			if errAct == nil && stepResponse.Action.ToolID != "" {
 				newStepsThisIteration = append(newStepsThisIteration, stepResponse)
@@ -1996,6 +2048,34 @@ func confirmationKeyForAction(tool toolcore.NBTool, action NBAgentPlannerToolAct
 	return action.Tool
 }
 
+func prepareDelegatedActionInput(tool toolcore.NBTool, target *toolcore.ExecutionTarget, originAccountID string, action NBAgentPlannerToolAction) (NBAgentPlannerToolAction, error) {
+	if target == nil {
+		return action, nil
+	}
+	if _, isClientTool := tool.(*toolcore.ClientToolWrapper); isClientTool {
+		return action, nil // runs on the user's side, not against an account
+	}
+	if !toolcore.SupportsDelegatedTarget(tool) {
+		// A target-blind tool would answer from the conversation's own account
+		// while the child reports it as the target's. Refuse unless the tool
+		// reads no account data or the target is the conversation's account.
+		if target.AccountID != originAccountID && !toolcore.IsTargetNeutral(tool.Name()) {
+			return action, fmt.Errorf("%s cannot run against the %s %q: it only reads this conversation's own account, so its result would not describe %q. Use a tool that accepts the target, or state that this was not checked on %q", tool.Name(), target.Kind(), target.Name, target.Name, target.Name)
+		}
+		return action, nil
+	}
+	preparer, ok := tool.(toolcore.DelegatedTargetInputPreparer)
+	if !ok {
+		return action, nil // applies the target from the call context
+	}
+	input, err := preparer.PrepareDelegatedTargetInput(target, action.ToolInput)
+	if err != nil {
+		return action, err
+	}
+	action.ToolInput = input
+	return action, nil
+}
+
 // lookupToolForPlanner resolves a tool from the static nameToTool map, falling back
 // to dynamic tool lookup via toolcore.GetNBTool (handling aliases like "shell").
 func lookupToolForPlanner(nameToTool map[string]toolcore.NBTool, accountId, toolName string) (toolcore.NBTool, bool) {
@@ -2025,30 +2105,10 @@ func confirmationQuestionForAction(tool toolcore.NBTool, action NBAgentPlannerTo
 	return strings.TrimSpace(prompter.ConfirmationQuestion(input))
 }
 
-// confirmationApprovedForAction mirrors isToolConfirmationApproved but resolves
-// the per-action confirmation key when the tool is available, so resume paths
-// agree with the doAction gate about which entry an approval lives under.
-func confirmationApprovedForAction(confirmations map[string]string, nameToTool map[string]toolcore.NBTool, action NBAgentPlannerToolAction, accountId ...string) bool {
-	return isToolConfirmationApproved(confirmations, resumeConfirmationKey(nameToTool, action, accountId...))
-}
-
-func confirmationRejectedForAction(confirmations map[string]string, nameToTool map[string]toolcore.NBTool, action NBAgentPlannerToolAction, accountId string) bool {
-	key := resumeConfirmationKey(nameToTool, action, accountId)
+// confirmationRejected reports a recorded "no" (or any non-approval) under key.
+func confirmationRejected(confirmations map[string]string, key string) bool {
 	_, found := confirmations[key]
 	return found && !isToolConfirmationApproved(confirmations, key)
-}
-
-// resumeConfirmationKey is the key a resume looks an approval up under: the
-// per-action key when the tool scopes its confirmations, else the tool name.
-func resumeConfirmationKey(nameToTool map[string]toolcore.NBTool, action NBAgentPlannerToolAction, accountId ...string) string {
-	var accId string
-	if len(accountId) > 0 {
-		accId = accountId[0]
-	}
-	if tool, ok := lookupToolForPlanner(nameToTool, accId, action.Tool); ok && tool != nil {
-		return confirmationKeyForAction(tool, action)
-	}
-	return action.Tool
 }
 
 // writeConfirmationRequired reports whether a write (create/update/delete) tool needs user confirmation.
@@ -2076,19 +2136,6 @@ func writeConfirmationRequired(tool toolcore.NBTool, requestType *toolcore.ToolR
 	}
 }
 
-// withExecutedToolTarget records the configured target a tool call actually ran
-// against. Empty for tools that need no configuration.
-func withExecutedToolTarget(additionalDetails map[string]any, configName string) map[string]any {
-	if configName == "" {
-		return additionalDetails
-	}
-	if additionalDetails == nil {
-		additionalDetails = map[string]any{}
-	}
-	additionalDetails[toolcore.MetadataResolvedTarget] = configName
-	return additionalDetails
-}
-
 // unresolvedTargetMessage explains why a configured tool could not run. "None
 // configured" and "several configured, none is the subject" lead somewhere
 // different: the second should send the agent to reach the system where it
@@ -2109,6 +2156,18 @@ func unresolvedTargetMessage(ctx *security.RequestContext, tool toolcore.NBTool,
 	}
 	return fmt.Sprintf("%s: none of the configured targets for %s (%s) is %s — name one explicitly, or reach it where it runs",
 		toolcore.ErrNoMatchingConfig, tool.Name(), strings.Join(names, ", "), subject)
+}
+
+// missingToolConfig reports a configurable tool call with nothing to run
+// against: no conversation default and no target named in the call. A call
+// that names its own target resolves and access-checks it in Call; the
+// pre-resolve step validated it with the same actionRequestedTarget and
+// recorded no default, so a later call naming none does not inherit it.
+func missingToolConfig(tool toolcore.NBTool, input string, config toolcore.ToolConfig) bool {
+	if requested, _ := actionRequestedTarget(tool, NBAgentPlannerToolAction{Tool: tool.Name(), ToolInput: input}); requested != "" {
+		return false
+	}
+	return config.Name == ""
 }
 
 // subjectOfRequest is the resource the question is about, as the event pipeline
@@ -2147,6 +2206,11 @@ func ensureToolConfigs(m map[string]string) map[string]string {
 func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action NBAgentPlannerToolAction, queryContext string) (NBAgentPlannerToolActionStep, *NBAgentPlannerFinishAction, error) {
 	// Normalize tool name: trim whitespace that XML parsing may leave
 	action.Tool = strings.TrimSpace(action.Tool)
+	// [[Time:…]] macros are what the shared time-handling rule tells every model
+	// to write. react_3 expanded them in its own planner; react_4 handed them to
+	// tools verbatim (events_execute then failed on a literal "[[Time:-24h]]").
+	// Expanding here covers every planner and keeps cache keys date-resolved.
+	action.ToolInput = common.SubstituteDateMacros(action.ToolInput)
 
 	// --- Guard: Reject tool names that are clearly invalid (LLM hallucination of "..." from truncated context)
 	if isInvalidToolName(action.Tool) {
@@ -2337,9 +2401,23 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		}, nil, nil
 	}
 
+	var targetErr error
+	action, targetErr = prepareDelegatedActionInput(tool, e.agentRequest.QueryConfig.DelegatedTarget, e.agentRequest.AccountId, action)
+	if targetErr != nil {
+		return NBAgentPlannerToolActionStep{
+			Action:      action,
+			Observation: targetErr.Error(),
+			Status:      ToolStatusFailure,
+		}, nil, nil
+	}
 	// validate user access
 	implType := toolcore.ImplTypeFor(tool)
-	finish2, requestType, err2 := IsAgentToolAuthorizedToProcessRequest(e.ctx, e.agent, e.agentRequest, action)
+	// Where a write lands decides the account it must be allowed on, its
+	// approval key and its card. Resolved for a write only, and again at the
+	// approval gate: a config picked in between can change it.
+	finish2, requestType, err2 := authorizeToolRequest(e.ctx, e.agent, e.agentRequest, action, func() []string {
+		return writeAccountOf(e.agentRequest.AccountId, e.writeTargetOf(tool, action), config.Config.LlmServerTargetWriteAccess)
+	})
 	if err2 != nil {
 		// Metrics: record fail
 		common.MetricsToolOperationsTotal(implType, toolName, "fail", accountID)
@@ -2351,6 +2429,13 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		common.MetricsToolOperationsTotal(implType, toolName, "success", accountID)
 		common.MetricsToolLatencySeconds(implType, toolName, accountID, time.Since(start).Seconds())
 		return NBAgentPlannerToolActionStep{}, finish2, nil
+	}
+	if e.agentRequest.QueryConfig.DelegatedTarget != nil && requestType != nil && *requestType != toolcore.ToolRequestTypeRead {
+		if validator, ok := tool.(toolcore.WriteTargetInputValidator); ok {
+			if err := validator.ValidateWriteTargetInput(action.ToolInput); err != nil {
+				return NBAgentPlannerToolActionStep{Action: action, Observation: err.Error(), Status: ToolStatusFailure}, nil, nil
+			}
+		}
 	}
 
 	toolResolveDur := time.Since(start)
@@ -2374,6 +2459,9 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 			}
 			if requestType != nil && *requestType != toolcore.ToolRequestTypeRead {
 				selected, resolveErr := e.shellWriteTarget(owner, action)
+				if errors.Is(resolveErr, tools.ErrAmbiguousShellTarget) {
+					return NBAgentPlannerToolActionStep{Action: action, Observation: resolveErr.Error(), Status: ToolStatusFailure}, nil, nil
+				}
 				if resolveErr != nil {
 					return NBAgentPlannerToolActionStep{}, nil, resolveErr
 				}
@@ -2399,14 +2487,56 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		}
 	}
 
+	// Likewise an integration tool's write on another account (same classifier
+	// and approval as on the conversation's own) needs write access there.
+	if tools.IsTargetedIntegrationTool(e.ctx, tool) && (requestType == nil || *requestType != toolcore.ToolRequestTypeRead) {
+		callCtx := toolcore.NbToolContext{Ctx: e.ctx, AccountId: e.agentRequest.AccountId, QueryConfig: e.agentRequest.QueryConfig}
+		_, account, targetErr := tools.ResolveObservabilityTarget(callCtx, toolcore.NBToolCallRequest{Command: action.ToolInput})
+		if targetErr != nil {
+			return NBAgentPlannerToolActionStep{}, nil, targetErr
+		}
+		if account != "" && account != e.agentRequest.AccountId && !e.ctx.GetSecurityContext().HasAccountAccess(account, security.SecurityAccessTypeCreate) {
+			return NBAgentPlannerToolActionStep{}, nil, fmt.Errorf("%s: write access to the target account is required", tool.Name())
+		}
+	}
+
+	// Which integration runs the call is settled before a write's approval, so
+	// the approval card names it ("on k8s-prod · prod") and the user is not
+	// asked for the integration after already approving.
+	// Resolving a config on behalf of a tool that is not being called cannot work:
+	// the follow-up builder matches on action.Tool, so no question can be produced.
+	if toolResolvesOwnConfig(tool) {
+		e.ctx.GetLogger().Debug("plannerexecutor: running config checks", "actionTool", action.Tool, "configTool", tool.Name())
+		followupSteps, followupFinish, err := e.followupForMultipleToolConfigs(tool, action)
+		if err != nil {
+			e.ctx.GetLogger().Info("plannerexecutor: error in generating followup for multiple tool configs", "tool", tool.Name(), "error", err)
+			return NBAgentPlannerToolActionStep{}, &NBAgentPlannerFinishAction{
+				Data:   "Error in handling request: " + err.Error(),
+				Status: ConversationStatusFailed,
+			}, nil
+		}
+		if followupFinish != nil {
+			e.ctx.GetLogger().Info("plannerexecutor: generated followup for multiple tool configs", "tool", tool.Name(), "followup", slog.AnyValue(followupFinish))
+			var fupStep NBAgentPlannerToolActionStep
+			if len(followupSteps) > 0 {
+				fupStep = followupSteps[0]
+			}
+			return fupStep, followupFinish, nil
+		}
+	}
+
 	// confirmation if tehre is write operation
 	if tool.GetType() == toolcore.NBToolTypeTool {
 		if writeConfirmationRequired(tool, requestType, action) {
-			confirmationKey := confirmationKeyForAction(tool, action)
+			// A write on another account is approved for that account; every
+			// write's card says where it lands.
+			target := e.writeTargetOf(tool, action)
+			confirmationKey := e.approvalKey(tool, action, target)
 			// Operator-readable card text, when the tool can provide it — the
 			// default rendering shows the raw tool input, which for id-driven
 			// tools describes nothing the approver can judge.
-			confirmationQuestion := confirmationQuestionForAction(tool, action)
+			destination := e.destinationOf(tool, action, target)
+			confirmationQuestion := confirmationQuestionWithTarget(confirmationQuestionForAction(tool, action), action, *requestType, destination)
 			isFollowupFound := false
 			if e.agentRequest.QueryConfig.ToolConfirmations != nil {
 				if previousData, exists := e.agentRequest.QueryConfig.ToolConfirmations[confirmationKey]; exists {
@@ -2424,7 +2554,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 
 			if !isFollowupFound {
 				e.ctx.GetLogger().Info("plannerexecutor: generating followup for confirmation", logRequestType, requestType, "request", action.ToolInput, "tool", action.Tool)
-				followupSteps, followupFinish, err := e.followupForToolOperationConfirmation(action, *requestType, confirmationKey, confirmationQuestion)
+				followupSteps, followupFinish, err := e.followupForToolOperationConfirmation(action, *requestType, confirmationKey, confirmationQuestion, destination.followupTarget(), target != nil)
 				if err != nil {
 					e.ctx.GetLogger().Info("plannerexecutor: error in generating followup for confirmation", logRequestType, requestType, "request", action.ToolInput, "tool", action.Tool, "error", err)
 					return NBAgentPlannerToolActionStep{}, nil, err
@@ -2438,47 +2568,6 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 					return fupStep, followupFinish, nil
 				}
 			}
-		}
-	}
-
-	// [Changed for TicketV2] Previously, config checks only ran when the current tool itself
-	// implemented NBToolConfig. TicketV2 agent's first tool call is often ask_clarification
-	// (non-configurable), but we still need to prompt for integration/project selection before
-	// the actual ticket tool runs. This fallback finds the agent's configurable tool so config
-	// checks fire proactively regardless of which tool is called first.
-	// Backward-compatible: for agents without configurable tools, configCheckTool == tool (no-op).
-	configCheckTool := tool
-	if tool.GetType() == toolcore.NBToolTypeTool {
-		if _, hasConfig := tool.(toolcore.NBToolConfig); !hasConfig && tool.Name() != toolcore.ToolExecuteShellCommand {
-			for _, t := range e.agent.GetSupportedTools(e.ctx) {
-				if _, ok := t.(toolcore.NBToolConfig); ok {
-					configCheckTool = t
-					break
-				}
-			}
-		}
-	}
-
-	if configCheckTool.GetType() == toolcore.NBToolTypeTool {
-		if _, hasConfig := configCheckTool.(toolcore.NBToolConfig); hasConfig {
-			e.ctx.GetLogger().Debug("plannerexecutor: running config checks", "actionTool", action.Tool, "configTool", configCheckTool.Name())
-			followupSteps, followupFinish, err := e.followupForMultipleToolConfigs(configCheckTool, action)
-			if err != nil {
-				e.ctx.GetLogger().Info("plannerexecutor: error in generating followup for multiple tool configs", "tool", configCheckTool.Name(), "error", err)
-				return NBAgentPlannerToolActionStep{}, &NBAgentPlannerFinishAction{
-					Data:   "Error in handling request: " + err.Error(),
-					Status: ConversationStatusFailed,
-				}, nil
-			}
-			if followupFinish != nil {
-				e.ctx.GetLogger().Info("plannerexecutor: generated followup for multiple tool configs", "tool", configCheckTool.Name(), "followup", slog.AnyValue(followupFinish))
-				var fupStep NBAgentPlannerToolActionStep
-				if len(followupSteps) > 0 {
-					fupStep = followupSteps[0]
-				}
-				return fupStep, followupFinish, nil
-			}
-
 		}
 	}
 
@@ -2591,7 +2680,23 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 			err = summaryErr
 		}
 	} else {
-		observation, err = callNbTool(actionCtx, e.agentRequest, e.agent.GetName(), tool, action.ToolInput, nil, queryContext, action.ToolID)
+		observation, err = callNbTool(actionCtx, e.agentRequest, e.agent.GetName(), tool, action.ToolInput, nil, queryContext, action.ToolID, action.FollowupAnswer)
+	}
+	var dt []string
+	if val, ok := observation.AdditionalDetails["discovered_tools"]; ok && val != nil {
+		switch v := val.(type) {
+		case []string:
+			dt = v
+		case []any:
+			for _, item := range v {
+				if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+					dt = append(dt, strings.TrimSpace(s))
+				}
+			}
+		}
+	}
+	if len(dt) > 0 {
+		e.agentRequest.QueryConfig.DiscoveredTools = lo.Uniq(append(e.agentRequest.QueryConfig.DiscoveredTools, dt...))
 	}
 
 	toolExecDur := time.Since(toolExecStart)
@@ -2876,12 +2981,13 @@ func (e *plannerExecutor) matchesAnyPriorSameToolObservation(action NBAgentPlann
 // shouldn't fire).
 const noProgressLoopThreshold = 3
 
-func (e *plannerExecutor) followupForToolOperationConfirmation(action NBAgentPlannerToolAction, toolRequestType toolcore.ToolRequestType, confirmationKey string, questionOverride string) ([]NBAgentPlannerToolActionStep, *NBAgentPlannerFinishAction, error) {
+func (e *plannerExecutor) followupForToolOperationConfirmation(action NBAgentPlannerToolAction, toolRequestType toolcore.ToolRequestType, confirmationKey string, questionOverride string, target *FollowupTarget, crossAccount bool) ([]NBAgentPlannerToolActionStep, *NBAgentPlannerFinishAction, error) {
 	followupRequest, err := FollowupRequestForToolOperationConfirmation(e.ctx, e.agentRequest, e.agent, action, toolRequestType, confirmationKey, questionOverride)
 	if err != nil {
 		e.ctx.GetLogger().Error(logErrUnableToGenerateFup, "error", err)
 		return nil, nil, err
 	}
+	followupRequest.Target, followupRequest.CrossAccount = target, crossAccount && target != nil
 	followupId, err := GenerateFollowup(e.ctx, e.agentRequest, followupRequest)
 	if err != nil {
 		e.ctx.GetLogger().Error(logErrUnableToGenerateFup, "error", err)
@@ -3079,6 +3185,11 @@ func (e *plannerExecutor) selectConfigUsingLLM(userQuery string, configs []toolc
 func actionRequestedTarget(tool toolcore.NBTool, action NBAgentPlannerToolAction) (string, error) {
 	if strings.EqualFold(action.Tool, toolcore.ToolExecuteShellCommand) {
 		_, requested, err := tools.RequestedShellTargetFromInput(action.ToolInput)
+		if errors.Is(err, tools.ErrAmbiguousShellTarget) {
+			// For choosing a connection an ambiguous script names none; writes
+			// are refused later by shellWriteTarget, reads run per invocation.
+			return "", nil
+		}
 		return requested, err
 	}
 	if tool == nil {
@@ -3112,6 +3223,66 @@ func (e *plannerExecutor) followupForMultipleToolConfigs(tool toolcore.NBTool, a
 	if tool == nil {
 		return nil, nil, fmt.Errorf("tool is nil")
 	}
+	// A delegated child with a concrete per-call target does not need the
+	// conversation's config chooser. Resolve the same effective input used at
+	// dispatch, including an inherited default, before considering followups.
+	if e.agentRequest.QueryConfig.DelegatedTarget != nil {
+		inputTool := tool
+		if strings.EqualFold(action.Tool, toolcore.ToolExecuteShellCommand) {
+			inputTool = tools.ShellTool{}
+		}
+		prepared, err := prepareDelegatedActionInput(inputTool, e.agentRequest.QueryConfig.DelegatedTarget, e.agentRequest.AccountId, action)
+		if err != nil {
+			return []NBAgentPlannerToolActionStep{
+				{
+					Action:      action,
+					Observation: err.Error(),
+					Status:      ToolStatusFailure,
+				},
+			}, nil, nil
+		}
+		if strings.EqualFold(action.Tool, toolcore.ToolExecuteShellCommand) {
+			owner, requested, err := tools.RequestedShellTargetFromInput(prepared.ToolInput)
+			if errors.Is(err, tools.ErrAmbiguousShellTarget) {
+				err = nil // same as actionRequestedTarget: not a reason to fail a read
+			}
+			if err != nil {
+				return []NBAgentPlannerToolActionStep{
+					{
+						Action:      action,
+						Observation: err.Error(),
+						Status:      ToolStatusFailure,
+					},
+				}, nil, nil
+			}
+			if owner == tool.Name() && requested != "" {
+				return nil, nil, nil
+			}
+		} else if scoped, ok := tool.(toolcore.PerCallTargetTool); ok {
+			requested, err := scoped.RequestedTarget(prepared.ToolInput)
+			if err != nil {
+				return []NBAgentPlannerToolActionStep{
+					{
+						Action:      action,
+						Observation: err.Error(),
+						Status:      ToolStatusFailure,
+					},
+				}, nil, nil
+			}
+			if requested != "" {
+				return nil, nil, nil
+			}
+		}
+		action = prepared
+	}
+
+	// An integration tool's call about another account runs against one of
+	// the target's integrations, picked by ResolveToolCallTarget; the
+	// conversation's own integrations are not a choice for it.
+	if tools.IsTargetedIntegrationTool(e.ctx, tool) && tools.CallHasTarget(action.ToolInput, e.agentRequest.QueryConfig.DelegatedTarget, e.agentRequest.AccountId) {
+		return e.followupForTargetIntegration(tool, action)
+	}
+
 	// If the action explicitly named a target, resolve it with the tenant list
 	// filtered by read access. An explicit target must never fall back to an account picker.
 	if requested, reqErr := actionRequestedTarget(tool, action); reqErr != nil {
@@ -3134,7 +3305,6 @@ func (e *plannerExecutor) followupForMultipleToolConfigs(tool toolcore.NBTool, a
 		}
 		return nil, nil, nil
 	}
-
 	// Get available configs for the tool
 	configs, err := toolcore.ListToolConfigs(e.ctx, e.agentRequest.AccountId, tool)
 	shellTarget := strings.EqualFold(action.Tool, toolcore.ToolExecuteShellCommand)
@@ -3283,8 +3453,15 @@ func (e *plannerExecutor) followupForMultipleToolConfigs(tool toolcore.NBTool, a
 			queryConfig.ToolConfigMetadata = md
 		}
 
+		// Without a conversation store (no database) there is nothing to save
+		// to, and a nil store in this goroutine would crash the process.
+		dao := GetConversationDao()
+		if dao == nil {
+			slog.Warn("plannerexecutor: no conversation store; resolved config not persisted", "message_id", messageId)
+			return
+		}
 		go func() {
-			if err := GetConversationDao().UpdateConversationMessageConfig(messageId, queryConfig); err != nil {
+			if err := dao.UpdateConversationMessageConfig(messageId, queryConfig); err != nil {
 				slog.Warn("plannerexecutor: failed to persist resolved config", "error", err, "message_id", messageId)
 			}
 		}()
@@ -3315,6 +3492,21 @@ func (e *plannerExecutor) followupForMultipleToolConfigs(tool toolcore.NBTool, a
 				persistResolvedConfigAsync()
 				return nil, nil, nil
 			}
+		}
+	}
+
+	// Strategy 3.4: an integration tool's call names its connection with
+	// `instance`. Exact names only, so it is as safe unattended as a pick.
+	if tools.IsTargetedIntegrationTool(e.ctx, tool) {
+		if named, ok := tools.IntegrationNamedIn(configs, toolcore.ParseNBToolCallRequestFromInput(action.ToolInput)); ok {
+			if e.agentRequest.QueryConfig.ToolConfigs == nil {
+				e.agentRequest.QueryConfig.ToolConfigs = make(map[string]string)
+			}
+			e.agentRequest.QueryConfig.ToolConfigs[tool.Name()] = named.Name
+			recordConfigSelectionStrategy(&e.agentRequest.QueryConfig, tool.Name(), "explicit_instance")
+			e.ctx.GetLogger().Info("plannerexecutor: resolved tool config via the call's instance", "tool", tool.Name(), "config", named.Name)
+			persistResolvedConfigAsync()
+			return nil, nil, nil
 		}
 	}
 
@@ -3487,6 +3679,60 @@ func (e *plannerExecutor) followupForMultipleToolConfigs(tool toolcore.NBTool, a
 		return steps, finish, nil
 	}
 	return nil, nil, nil
+}
+
+// followupForTargetIntegration asks the user to pick among another account's
+// integrations when a call about that account names none and it has several:
+// the same question the conversation's own account gets, for the target's
+// integrations. One, none, a named one or an earlier pick is left to
+// ResolveToolCallTarget, which also refuses a name shared by two.
+func (e *plannerExecutor) followupForTargetIntegration(tool toolcore.NBTool, action NBAgentPlannerToolAction) ([]NBAgentPlannerToolActionStep, *NBAgentPlannerFinishAction, error) {
+	request := toolcore.NBToolCallRequest{Command: action.ToolInput}
+	if tools.RequestedInstance(request) != "" {
+		return nil, nil, nil
+	}
+	callCtx := toolcore.NbToolContext{Ctx: e.ctx, AccountId: e.agentRequest.AccountId, QueryConfig: e.agentRequest.QueryConfig}
+	target, account, err := tools.ResolveObservabilityTarget(callCtx, request)
+	if err != nil || target == nil || account == "" || account == e.agentRequest.AccountId {
+		return nil, nil, nil // refused or not another account: the resolver says why
+	}
+	key := tools.TargetIntegrationChoiceKey(tool.Name(), account)
+	if e.resolvedToolConfig(key) != "" {
+		return nil, nil, nil
+	}
+	configs, err := toolcore.ListToolConfigs(e.ctx, account, tool)
+	if err != nil {
+		return nil, nil, nil
+	}
+	names := tools.UniqueConfigNames(configs)
+	if len(names) < 2 {
+		return nil, nil, nil
+	}
+	followupRequest := FollowupRequest{
+		Question:        fmt.Sprintf("%s %s has several integrations for %s. Which one should be used?", target.Kind(), target.Name, tool.Name()),
+		FollowupType:    FollowupTypeToolConfig,
+		FollowupOptions: names,
+		AgentName:       e.agent.GetName(),
+		AgentId:         uuid.MustParse(e.agentRequest.AgentId),
+		ToolName:        key,
+		ToolId:          action.ToolID,
+	}
+	followupId, err := GenerateFollowup(e.ctx, e.agentRequest, followupRequest)
+	if err != nil {
+		e.ctx.GetLogger().Error(logErrUnableToGenerateFup, "error", err)
+		return nil, nil, err
+	}
+	return []NBAgentPlannerToolActionStep{{
+			Action:      action,
+			Observation: followupRequest.Question,
+			Status:      ToolStatusWaiting,
+			Followup:    &followupRequest,
+		}}, &NBAgentPlannerFinishAction{
+			Data:              followupRequest.Question,
+			Status:            ConversationStatusWaiting,
+			Followup:          followupRequest,
+			AdditionalDetails: map[string]any{"followupId": followupId},
+		}, nil
 }
 
 // isToolConfigResolved checks whether any tool config or project selection was just
@@ -3986,6 +4232,12 @@ func (e *plannerExecutor) Unmarshal(previousState []byte) error {
 		for _, s := range e.steps {
 			if s.Status == ToolStatusWaiting || s.Status == ToolStatusWaitingForClient {
 				droppedWaitingIDs[s.Action.ToolID] = struct{}{}
+				if s.Followup != nil {
+					if e.pausedOn == nil {
+						e.pausedOn = map[string]FollowupRequest{}
+					}
+					e.pausedOn[s.Action.ToolID] = *s.Followup
+				}
 				continue
 			}
 			filteredSteps = append(filteredSteps, s)
@@ -4168,7 +4420,7 @@ func delegationSkillScope(parentInherited []string, parentAgentName string) []st
 	return scope
 }
 
-func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentRequest, parentAgentName string, tool toolcore.NBTool, input string, previousHistory []llms.MessageContent, queryContext string, toolId string) (resp toolcore.NBToolResponse, err error) {
+func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentRequest, parentAgentName string, tool toolcore.NBTool, input string, previousHistory []llms.MessageContent, queryContext string, toolId string, followupAnswer string) (resp toolcore.NBToolResponse, err error) {
 	// Recover from panics and convert to proper error responses
 	defer func() {
 		if r := recover(); r != nil {
@@ -4215,6 +4467,8 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 	// back to routine defaults (small tail, no error filter), missing rare-error
 	// clusters in long streams.
 	toolContext.OriginalQuery = agentRequest.OriginalQuery
+	toolContext.OriginalQueryFromUser = agentRequest.OriginalQueryFromUser
+	toolContext.FollowupAnswer = followupAnswer
 
 	// Every delegated agent performs its own account-wide search using the original
 	// question plus its delegated task. Agent mappings therefore do not need to be
@@ -4227,8 +4481,10 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 	// Check if this tool requires configuration
 	if _, ok := tool.(toolcore.NBToolConfig); ok {
 		// Check if we have a valid tool config
-		config := toolContext.ToolConfig
-		if !reflect.ValueOf(config).IsValid() || config.Name == "" {
+		// An integration tool's call about another account picks the target's
+		// integration in ResolveToolCallTarget, below.
+		targeted := tools.IsTargetedIntegrationTool(nbRequestContext, tool) && tools.CallHasTarget(input, agentRequest.QueryConfig.DelegatedTarget, agentRequest.AccountId)
+		if !targeted && missingToolConfig(tool, input, toolContext.ToolConfig) {
 			// "None configured" and "several configured, none is the subject"
 			// are different answers and lead somewhere different: the second
 			// should send the agent to reach the system where it runs. Ask the
@@ -4306,6 +4562,11 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 		return *resp, nil
 	}
 
+	toolContext, targetErr := tools.ResolveToolCallTarget(toolContext, tool, request)
+	if targetErr != nil {
+		return toolcore.NBToolResponse{Status: toolcore.NBToolResponseStatusError, Data: targetErr.Error()}, nil
+	}
+
 	// Circuit-breaker pre-check. A tool opts in by implementing
 	// CircuitBreakerKeyer; tools that don't implement it never touch the
 	// breaker. When the circuit is open we short-circuit before the
@@ -4334,7 +4595,11 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 	// request's ToolConfigs map is resolved per agent and a parent orchestrator's
 	// copy can be stale, so reading it there misses exactly the calls most at
 	// risk — the ones resolved inside the tool rather than by the planner.
-	data.AdditionalDetails = withExecutedToolTarget(data.AdditionalDetails, toolContext.ToolConfig.Name)
+	data = tools.StampExecutedTarget(data, err, tool, toolContext, input)
+	// Secrets in tool output (a pod's environment, a log line with a
+	// connection string) must not reach the model, the stored conversation or
+	// later commands built from them. Governed by the egress filter settings.
+	data.Data = egressfilter.RedactToolOutput(nbRequestContext, parentAgentName, tool.Name(), data.Data)
 	latency := time.Since(t0).Seconds()
 	nbRequestContext.GetLogger().Info("tool execution time", "tool", tool.Name(), "time", latency, "input", input)
 	// Record tool latency metric
@@ -4355,10 +4620,12 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 		}
 	}
 	if err != nil {
-		nbRequestContext.GetLogger().Error("tool execution error", "error", err, "tool", tool.Name())
+		// Redacted before logging too: the model can read this service's logs.
+		errText := egressfilter.RedactToolOutput(nbRequestContext, parentAgentName, tool.Name(), err.Error())
+		nbRequestContext.GetLogger().Error("tool execution error", "error", errText, "tool", tool.Name())
 		responseData := data.Data
 		if responseData == "" {
-			responseData = err.Error()
+			responseData = errText
 		}
 		if data.AdditionalDetails == nil {
 			data.AdditionalDetails = map[string]any{}
@@ -4443,13 +4710,22 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 		if len(executor.currentAction) > 0 {
 			// Resolved once for the whole resume pass: the confirmation checks below
 			// must look under the same per-action key doAction recorded under, which
-			// requires the tool instance (confirmationApprovedForAction).
+			// requires the tool instance (confirmationKeyOf).
 			resumeNameToTool := getNameToTool(nbAgentPlanner.GetTools())
 			// read all current actions as steps
-			for _, action := range executor.currentAction {
-				// A rejection is a tool observation, not an unresolved configuration
-				// or a reason to end the entire planner turn.
-				if confirmationRejectedForAction(request.QueryConfig.ToolConfirmations, resumeNameToTool, action, executor.agentRequest.AccountId) {
+			for i, action := range executor.currentAction {
+				if tool, ok := lookupToolForPlanner(resumeNameToTool, executor.agentRequest.AccountId, action.Tool); ok {
+					prepared, prepErr := prepareDelegatedActionInput(tool, executor.agentRequest.QueryConfig.DelegatedTarget, executor.agentRequest.AccountId, action)
+					if prepErr != nil {
+						executor.steps = append(executor.steps, NBAgentPlannerToolActionStep{Action: action, Observation: prepErr.Error(), Status: ToolStatusFailure})
+						executor.stepKeys[action.ToolID] = true
+						continue
+					}
+					action = prepared
+					executor.currentAction[i] = prepared
+				}
+				// Check approval against the prepared, target-bound action.
+				if confirmationRejected(request.QueryConfig.ToolConfirmations, executor.confirmationKeyOf(resumeNameToTool, action)) {
 					ctx.GetLogger().Info("plannerexecutor: user rejected tool confirmation", "tool", action.Tool, "toolId", action.ToolID)
 					executor.steps = append(executor.steps, NBAgentPlannerToolActionStep{
 						Action:      action,
@@ -4471,7 +4747,7 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 					executor.steps = append(executor.steps, step)
 					executor.stepKeys[action.ToolID] = true
 					ctx.GetLogger().Info("plannerexecutor: recovered terminal client tool result from DB", "toolId", toolId, "status", status)
-				} else if errors.Is(err, sql.ErrNoRows) && !isToolConfigResolved(executor.agentRequest.QueryConfig.ToolConfigs, action.Tool) && !confirmationApprovedForAction(executor.agentRequest.QueryConfig.ToolConfirmations, resumeNameToTool, action, executor.agentRequest.AccountId) {
+				} else if errors.Is(err, sql.ErrNoRows) && !isToolConfigResolved(executor.agentRequest.QueryConfig.ToolConfigs, action.Tool) && !isToolConfirmationApproved(executor.agentRequest.QueryConfig.ToolConfirmations, executor.confirmationKeyOf(resumeNameToTool, action)) {
 					// No row found in DB for this tool AND neither a config nor a write-confirmation
 					// was resolved. This means the tool was waiting for a config selection that never
 					// arrived. A confirmation-gated tool whose confirmation was just approved is NOT
@@ -4485,7 +4761,7 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 					// message above sends triage down the wrong path.
 					ctx.GetLogger().Error("plannerexecutor: no tool record found in DB and config not resolved, failing fast to avoid running with wrong credentials",
 						"tool", action.Tool, "toolId", toolId, "error", err,
-						"expectedConfirmationKey", resumeConfirmationKey(resumeNameToTool, action, executor.agentRequest.AccountId),
+						"expectedConfirmationKey", executor.confirmationKeyOf(resumeNameToTool, action),
 						"presentConfirmationKeys", slices.Sorted(maps.Keys(executor.agentRequest.QueryConfig.ToolConfirmations)))
 					step := NBAgentPlannerToolActionStep{
 						Action:      action,
@@ -4531,7 +4807,7 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 					}
 					ctx.GetLogger().Info("plannerexecutor: using completed child agent response for WAITING parent tool_call",
 						"toolId", toolId, "tool", action.Tool, "childStatus", childOut.status)
-				} else if request.Query != "" && (strings.EqualFold(string(status), string(toolcore.NBToolResponseStatusWaiting)) || (errors.Is(err, sql.ErrNoRows) && (isToolConfigResolved(executor.agentRequest.QueryConfig.ToolConfigs, action.Tool) || confirmationApprovedForAction(executor.agentRequest.QueryConfig.ToolConfirmations, resumeNameToTool, action, executor.agentRequest.AccountId)))) {
+				} else if request.Query != "" && (strings.EqualFold(string(status), string(toolcore.NBToolResponseStatusWaiting)) || (errors.Is(err, sql.ErrNoRows) && (isToolConfigResolved(executor.agentRequest.QueryConfig.ToolConfigs, action.Tool) || isToolConfirmationApproved(executor.agentRequest.QueryConfig.ToolConfirmations, executor.confirmationKeyOf(resumeNameToTool, action))))) {
 					// [Changed for TicketV2] Tool is still waiting — execute it IMMEDIATELY so the planner starts with the result.
 					// Previously, the user's response always replaced tool input. But for tool_config followups
 					// (e.g., user selecting a Jira integration), the user's response is the config choice, not
@@ -4547,11 +4823,30 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 					// we ensure doAction runs again with the newly resolved config — triggering the next
 					// config step (e.g., project selection after integration selection).
 					isConfigResolved := isToolConfigResolved(request.QueryConfig.ToolConfigs, action.Tool)
-					isConfirmationApproved := confirmationApprovedForAction(executor.agentRequest.QueryConfig.ToolConfirmations, resumeNameToTool, action, executor.agentRequest.AccountId)
+					isConfirmationApproved := isToolConfirmationApproved(executor.agentRequest.QueryConfig.ToolConfirmations, executor.confirmationKeyOf(resumeNameToTool, action))
+					// When the pause came from a sub-agent (delegate_agent, an agent
+					// tool), the user's reply is not this tool's input: an approval is
+					// recorded under the sub-agent's own tool key, so the check above
+					// misses it, and a question's answer belongs to the sub-agent.
+					// Replacing the input there broke tools whose input is a JSON
+					// envelope. Only this case changes; every other resume is as before,
+					// including one where this agent's own id cannot be read.
+					pausedOn, paused := executor.pausedOn[toolId]
+					ownAgentId, ownIdErr := uuid.Parse(executor.agentRequest.AgentId)
+					pausedOnSubAgent := paused && ownIdErr == nil && pausedOn.AgentId != uuid.Nil && pausedOn.AgentId != ownAgentId
 					if isConfigResolved || isConfirmationApproved {
 						// The user's answer was a config/confirmation choice, not the tool input — keep the original command.
 						ctx.GetLogger().Info("plannerexecutor: resuming tool after config/confirmation, keeping original input",
 							"tool", action.Tool, "toolId", toolId, "isConfigResolved", isConfigResolved, "isConfirmationApproved", isConfirmationApproved, "dbLookupFailed", err != nil)
+					} else if pausedOnSubAgent && (pausedOn.FollowupType == FollowupTypeToolConfirmation || pausedOn.FollowupType == FollowupTypeToolConfig) {
+						// The sub-agent finds the decision in the confirmations and
+						// configs propagated to it; the tool re-runs with its own input.
+						ctx.GetLogger().Info("plannerexecutor: resuming tool after its sub-agent's approval or config choice, keeping original input",
+							"tool", action.Tool, "toolId", toolId, "followupType", pausedOn.FollowupType, "subAgentId", pausedOn.AgentId.String())
+					} else if pausedOnSubAgent {
+						ctx.GetLogger().Info("plannerexecutor: resuming tool with the answer to its sub-agent's question",
+							"tool", action.Tool, "toolId", toolId, "subAgentId", pausedOn.AgentId.String())
+						action.FollowupAnswer = request.Query
 					} else {
 						ctx.GetLogger().Info("plannerexecutor: immediately resuming waiting tool",
 							"tool", action.Tool, "toolId", toolId, "newInput", request.Query)
@@ -4594,6 +4889,11 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 								State:       string(currentState),
 							}, nil
 						}
+					} else {
+						// As in the main loop: the planner sees the failure instead of
+						// re-planning as if the resumed call never happened.
+						executor.steps = append(executor.steps, executor.recordFailedActionStep(action, "action execution failed", errAct))
+						executor.stepKeys[action.ToolID] = true
 					}
 				}
 			}
@@ -5148,6 +5448,16 @@ func (e *plannerExecutor) perCallWriteTarget(tool toolcore.NBTool, scoped toolco
 	saved, _ := toolcore.GetToolConfigByName(e.ctx, e.agentRequest.AccountId, tool, e.resolvedToolConfig(tool.Name()))
 	selected, err := tools.ResolveRequestedTarget(e.ctx, e.agentRequest.AccountId, tool.Name(), saved, requested)
 	return selected, err == nil, err
+}
+
+// toolResolvesOwnConfig reports whether this tool declares configurable integrations
+// of its own. Deliberately takes no agent: only the called tool's declaration counts.
+func toolResolvesOwnConfig(tool toolcore.NBTool) bool {
+	if tool == nil || tool.GetType() != toolcore.NBToolTypeTool {
+		return false
+	}
+	_, hasConfig := tool.(toolcore.NBToolConfig)
+	return hasConfig
 }
 
 func configOwnerForAction(tool toolcore.NBTool, accountID, input string) toolcore.NBTool {

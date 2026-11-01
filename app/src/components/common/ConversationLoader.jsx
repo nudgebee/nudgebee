@@ -116,7 +116,9 @@ function classifyQuery(query) {
 
 const getRandomDelay = () => Math.floor(Math.random() * (10000 - 4000 + 1)) + 4000;
 
-const ConversationLoader = ({ query, startedAt = null }) => {
+// `label` replaces the rotating phrases with a fixed line, for a caller that knows what is
+// actually happening (which step of a run is in progress).
+const ConversationLoader = ({ query, startedAt = null, label = '' }) => {
   const [currentWordIndex, setCurrentWordIndex] = useState(0);
   const [dotCount, setDotCount] = useState(1);
   const [elapsedSec, setElapsedSec] = useState(0);
@@ -270,7 +272,7 @@ const ConversationLoader = ({ query, startedAt = null }) => {
             },
           }}
         >
-          {shuffledWords[currentWordIndex]}
+          {label || shuffledWords[currentWordIndex]}
         </Box>
         <Box
           component='span'

@@ -87,6 +87,8 @@ export interface EgressFilterConfig {
   // tri-state overrides for mode / NER. Note: env_pii_enabled was removed
   // 2026-07-30 — PII is now a per-tenant opt-in (no platform enable/disable
   // flag); the master toggles the whole subsystem.
+  /** Absent on older servers: NER capability is unknown. */
+  pii_ner_supported?: boolean;
   env_pii_ner_enabled: boolean;
   env_pii_default_mode: PIIMode;
 }

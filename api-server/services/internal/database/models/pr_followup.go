@@ -5,17 +5,20 @@ import (
 	"time"
 )
 
-// AddressedComment is one PR comment the followup agent has already handled,
-// recorded so the answer survives independently of GitHub (#36865). It is a
-// durable record and a FALLBACK skip source — GitHub's own resolved-thread
-// state stays authoritative, so a human who un-resolves a thread still gets
-// the comment re-raised.
+// AddressedComment is one piece of PR feedback the followup agent has already
+// handled — a comment (#36865) or a failing CI run (#39995) — recorded so the
+// answer survives independently of GitHub. It is a durable record and a
+// FALLBACK skip source — GitHub's own resolved-thread state stays
+// authoritative, so a human who un-resolves a thread still gets the comment
+// re-raised.
 //
-// Source is part of the identity alongside CommentID because issue comments
-// and review submissions are separate GitHub id spaces and can collide.
+// Source is part of the identity alongside CommentID because issue comments,
+// review submissions and CI runs are separate id spaces and can collide. This
+// service stores and returns the entries as-is; only the agent gives a source
+// its meaning.
 type AddressedComment struct {
-	Source      string    `json:"source"`     // "inline" | "issue_comment" | "review_body"
-	CommentID   int64     `json:"comment_id"` // GitHub's numeric comment id
+	Source      string    `json:"source"`     // "inline" | "issue_comment" | "review_body" | "check_run"
+	CommentID   int64     `json:"comment_id"` // the provider's numeric id for the comment or CI run
 	Action      string    `json:"action"`     // "fixed" | "acknowledged" | "wont_fix"
 	AddressedAt time.Time `json:"addressed_at"`
 }

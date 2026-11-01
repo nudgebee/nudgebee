@@ -16,7 +16,8 @@ from notifications_server.repositories.oauth_repository import (
     find_installation_by_tenant_and_platform,
     update_state_tenant,
 )
-from notifications_server.services.ms_teams.ms_teams import MsTeamsService
+from notifications_server.services.messaging_installations import ms_teams_aad_tenant_owner
+from notifications_server.services.ms_teams.ms_teams import MsTeamsService, aad_tenant_id_of
 from notifications_server.services.discord.discord import DiscordService
 from notifications_server.clients.discord_client import DiscordClient
 from pydantic import BaseModel
@@ -24,6 +25,7 @@ from pydantic import BaseModel
 OAUTH_NOT_FOUND = "OAuth flow not configured"
 
 INSTALLATION_ALREADY_EXISTS = "Installation already exists for tenant"
+MS_TEAMS_TENANT_ALREADY_LINKED = "This Microsoft tenant is already connected to another workspace"
 
 LOG = logging.getLogger(__name__)
 
@@ -61,6 +63,14 @@ async def ms_teams_oauth_redirect(request: Request, data: Dict[Any, Any]):
         code, scopes=settings.ms_teams.scopes, redirect_uri=settings.ms_teams_redirect_uri
     )
     account = teams_app.get_accounts()[0]
+    aad_tenant_id = aad_tenant_id_of(token_result, account)
+    with Session(sync_engine) as session:
+        owner = ms_teams_aad_tenant_owner(session, aad_tenant_id)
+    if owner and owner != str(tenant_id):
+        LOG.warning(
+            f"MS Teams tenant {aad_tenant_id} is already linked to another tenant; refusing install for {tenant_id}"
+        )
+        raise HTTPException(status_code=400, detail=MS_TEAMS_TENANT_ALREADY_LINKED)
     service = MsTeamsService(sync_engine)
     service.save_teams_installation(teams_app.client_id, tenant_id, token_result, account, user_email)
     success_html = render_success_page("MS-Teams", settings.base_url)

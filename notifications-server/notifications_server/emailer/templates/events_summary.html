@@ -171,7 +171,7 @@
               &nbsp;
               <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?accountId={{ account.id }}&amp;eventAggregationKey={{ agg_key|replace(' ', '') }}&amp;eventSubjectName={{ row.subject_name|urlencode }}&amp;utm=email#events/all-events"
                 target="_blank" rel="noopener noreferrer"
-                style="display:inline-block; background-color:#DBEAFE; color:#3B82F6; text-decoration:none; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:500;">
+                style="display:inline-block; background-color:{{ _primary_tint }}; color:{{ _primary_color }}; text-decoration:none; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:500;">
                 Investigate &rarr;
               </a>
               <br />
@@ -184,7 +184,7 @@
             <p style="margin:4px 0 12px;">
               <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?accountId={{ account.id }}&amp;eventAggregationKey={{ agg_key|replace(' ', '') }}&amp;utm=email#events/all-events"
                 target="_blank" rel="noopener noreferrer"
-                style="font-family:'DM Sans',Arial,sans-serif; font-size:13px; color:#3B82F6; text-decoration:none;">
+                style="font-family:'DM Sans',Arial,sans-serif; font-size:13px; color:{{ _primary_color }}; text-decoration:none;">
                 show all &rarr;
               </a>
             </p>
@@ -227,7 +227,7 @@
           <p style="margin:8px 0 0;">
             <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?accountId={{ account.id }}&amp;utm=email#events/all-events"
               target="_blank" rel="noopener noreferrer"
-              style="font-family:'DM Sans',Arial,sans-serif; font-size:13px; color:#3B82F6; text-decoration:none;">
+              style="font-family:'DM Sans',Arial,sans-serif; font-size:13px; color:{{ _primary_color }}; text-decoration:none;">
               show all &rarr;
             </a>
           </p>
@@ -253,7 +253,7 @@
       Set up auto-remediation for recurring events. I can restart pods automatically when crash loops are detected.
     </p>
     <a href="{{ base_url }}/auto-pilot?utm=email"
-      style="font-family:'DM Sans',Arial,sans-serif; font-size:13px; font-weight:500; color:#3B82F6; text-decoration:none;">
+      style="font-family:'DM Sans',Arial,sans-serif; font-size:13px; font-weight:500; color:{{ _primary_color }}; text-decoration:none;">
       Set up &rarr;
     </a>
   </div>

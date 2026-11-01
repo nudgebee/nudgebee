@@ -152,3 +152,122 @@ func TestProcessEventResolved_DroppedEventIsNotNotified(t *testing.T) {
 		t.Errorf("Expectations were not met: %v", err)
 	}
 }
+
+// capturePublished records the messages bound for notifications-server instead
+// of sending them, so a test can read one without a broker.
+func capturePublished(t *testing.T) *[]map[string]any {
+	t.Helper()
+	var sent []map[string]any
+	orig := publishNotification
+	publishNotification = func(_ *security.RequestContext, message map[string]any) error {
+		sent = append(sent, message)
+		return nil
+	}
+	t.Cleanup(func() { publishNotification = orig })
+	return &sent
+}
+
+// A finding that had cleared and fired again is published as finding_returned,
+// carrying the event row the same way a resolve does. ProcessEventResolved runs
+// through the same code and must keep its own type.
+func TestProcessEventReturnedAndResolved_PublishTheirOwnType(t *testing.T) {
+	for _, tc := range []struct {
+		wantType string
+		process  func(*security.RequestContext, map[string]any) error
+	}{
+		{wantType: "finding_returned", process: ProcessEventReturned},
+		{wantType: "finding_resolved", process: ProcessEventResolved},
+	} {
+		t.Run(tc.wantType, func(t *testing.T) {
+			mock := mockMetastore(t)
+			sent := capturePublished(t)
+
+			logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+			ctx := security.NewRequestContext(context.TODO(), &security.SecurityContext{}, logger, nil, nil)
+
+			mock.ExpectQuery(`SELECT nb_status FROM events WHERE id = \$1`).
+				WithArgs("event-1").
+				WillReturnRows(sqlmock.NewRows([]string{"nb_status"}).AddRow("OPEN"))
+
+			finding := map[string]any{
+				"id":       "event-1",
+				"priority": "HIGH",
+				"source":   "anomaly",
+				"status":   "FIRING",
+				"tenant":   "tenant-1",
+			}
+			assert.NoError(t, tc.process(ctx, finding))
+
+			assert.Equal(t, []map[string]any{{
+				"kind":       "notification",
+				"type":       tc.wantType,
+				"source":     "anomaly",
+				"tenant_id":  "tenant-1",
+				"parameters": map[string]any{"finding": finding},
+			}}, *sent)
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("Expectations were not met: %v", err)
+			}
+		})
+	}
+}
+
+// A finding triage suppressed or dropped stays silent when it returns, the same
+// as when it resolves.
+func TestProcessEventReturned_SilencedFindingIsNotNotified(t *testing.T) {
+	for _, nbStatus := range []string{"SUPPRESSED", "DROPPED"} {
+		t.Run(nbStatus, func(t *testing.T) {
+			mock := mockMetastore(t)
+			sent := capturePublished(t)
+
+			logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+			ctx := security.NewRequestContext(context.TODO(), &security.SecurityContext{}, logger, nil, nil)
+
+			mock.ExpectQuery(`SELECT nb_status FROM events WHERE id = \$1`).
+				WithArgs("event-1").
+				WillReturnRows(sqlmock.NewRows([]string{"nb_status"}).AddRow(nbStatus))
+
+			err := ProcessEventReturned(ctx, map[string]any{
+				"id":       "event-1",
+				"priority": "HIGH",
+				"source":   "anomaly",
+				"status":   "FIRING",
+				"tenant":   "tenant-1",
+			})
+			assert.NoError(t, err)
+
+			assert.Empty(t, *sent)
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("Expectations were not met: %v", err)
+			}
+		})
+	}
+}
+
+// The message is consumed after the upsert. An anomaly that cleared again in
+// between is no longer firing, so nothing is announced and nothing is read.
+func TestProcessEventReturned_EventThatClearedAgainIsNotNotified(t *testing.T) {
+	for _, status := range []string{"RESOLVED", "CLOSED", ""} {
+		t.Run("status "+status, func(t *testing.T) {
+			mock := mockMetastore(t)
+			sent := capturePublished(t)
+
+			logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+			ctx := security.NewRequestContext(context.TODO(), &security.SecurityContext{}, logger, nil, nil)
+
+			err := ProcessEventReturned(ctx, map[string]any{
+				"id":       "event-1",
+				"priority": "HIGH",
+				"source":   "anomaly",
+				"status":   status,
+				"tenant":   "tenant-1",
+			})
+			assert.NoError(t, err)
+
+			assert.Empty(t, *sent)
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("Expectations were not met: %v", err)
+			}
+		})
+	}
+}

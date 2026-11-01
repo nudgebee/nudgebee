@@ -140,7 +140,7 @@ const CloudProviderIcon = ({ cloud_provider, width, height, sx = {} }) => {
     Icon = LoggleIcon;
   } else if (cloud_provider.toUpperCase() === 'LOKI') {
     Icon = LokiIcon;
-  } else if (cloud_provider.toUpperCase() === 'SIGNOZ') {
+  } else if (cloud_provider.toUpperCase() === 'SIGNOZ' || cloud_provider.toUpperCase() === 'SIGNOZ_WEBHOOK') {
     Icon = SignozIcon;
   } else if (cloud_provider.toUpperCase() === 'OBSERVE') {
     Icon = ObserveIcon;
@@ -158,7 +158,7 @@ const CloudProviderIcon = ({ cloud_provider, width, height, sx = {} }) => {
     Icon = OpentelemetryIcon;
   } else if (cloud_provider.toUpperCase() === 'AZURE_MONITOR_WEBHOOK') {
     Icon = AzureMonitorWebhookIcon;
-  } else if (cloud_provider.toUpperCase() === 'WORKFLOW_WEBHOOK') {
+  } else if (cloud_provider.toUpperCase() === 'WORKFLOW_WEBHOOK' || cloud_provider.toUpperCase() === 'EVENT_WEBHOOK') {
     Icon = WorkflowWebhookIcon;
   } else if (cloud_provider.toUpperCase() === 'SSH') {
     Icon = TerminalIcon;
@@ -184,7 +184,7 @@ const CloudProviderIcon = ({ cloud_provider, width, height, sx = {} }) => {
     Icon = BitBucketIcon;
   } else if (cloud_provider.toUpperCase() === 'GITLAB') {
     Icon = GitLabIcon;
-  } else if (cloud_provider.toUpperCase() === 'GRAFANA-TEMPO') {
+  } else if (cloud_provider.toUpperCase() === 'GRAFANA_TEMPO') {
     Icon = GrafanaTempoIcon;
   } else if (cloud_provider.toUpperCase() === 'ES' || cloud_provider.toUpperCase() === 'ELASTICSEARCH_WEBHOOK') {
     Icon = ElasticSearchIcon;

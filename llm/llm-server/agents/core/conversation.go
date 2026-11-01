@@ -55,6 +55,38 @@ func SetQueuedMessageDispatcher(d QueuedMessageDispatcherFunc) {
 	queuedMessageDispatcher = d
 }
 
+// QueueAcceptsStatus reports whether a new message on a conversation in this
+// status waits in the queue instead of starting a turn. WAITING counts: a turn
+// resumed from a followup answer runs with the conversation still WAITING
+// (resume_v2 keeps it so unanswered sibling followups stay visible), and a new
+// turn is refused while a followup is pending, so the message must queue.
+func QueueAcceptsStatus(status ConversationStatus) bool {
+	switch status {
+	case ConversationStatusInProgress, ConversationStatusWaiting, ConversationStatusWaitingForClientTool:
+		return true
+	}
+	return false
+}
+
+// dispatchNextQueuedMessage starts the oldest queued message once the turn has
+// ended. The claim is a no-op unless the conversation is COMPLETED or FAILED and
+// no message is still running or waiting.
+func dispatchNextQueuedMessage(ctx *security.RequestContext, agent NBAgent, conversation Conversation) {
+	if queuedMessageDispatcher == nil {
+		return
+	}
+	conversationId := conversation.ID.String()
+	claimCtx, cancelClaim := context.WithTimeout(context.WithoutCancel(ctx.GetContext()), 10*time.Second)
+	nextMsg, claimErr := GetConversationDao().ClaimNextQueuedMessage(claimCtx, conversationId)
+	cancelClaim()
+	if claimErr == nil && nextMsg != nil {
+		ctx.GetLogger().Info("conversation: auto-dispatching next queued message", "conversation_id", conversationId, "message_id", nextMsg.ID.String())
+		queuedMessageDispatcher(ctx, agent, conversation, *nextMsg)
+	} else if claimErr != nil {
+		ctx.GetLogger().Warn("conversation: error checking for queued messages", "error", claimErr, "conversation_id", conversationId)
+	}
+}
+
 func init() {
 	conversationAsyncTaskWorkerPool = common.NewWorkerPool("conversation_async_tasks", config.Config.ConversationTaskWorkerCount, 100)
 }
@@ -1732,13 +1764,8 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 			ScoreAnswerConfidenceAsync(ctx, request, agentResponseContent)
 		}
 
-		if status == ConversationStatusCompleted && queuedMessageDispatcher != nil {
-			if nextMsg, claimErr := GetConversationDao().ClaimNextQueuedMessage(ctx.GetContext(), request.ConversationId); claimErr == nil && nextMsg != nil {
-				ctx.GetLogger().Info("conversation: auto-dispatching next queued message", "conversation_id", request.ConversationId, "message_id", nextMsg.ID.String())
-				queuedMessageDispatcher(ctx, agent, conversation, *nextMsg)
-			} else if claimErr != nil {
-				ctx.GetLogger().Warn("conversation: error checking for queued messages", "error", claimErr, "conversation_id", request.ConversationId)
-			}
+		if status == ConversationStatusCompleted || status == ConversationStatusFailed {
+			dispatchNextQueuedMessage(ctx, agent, conversation)
 		}
 	} else {
 		ctx.GetLogger().Info("conversation: skipping save-back", "reason", skipReason, "message_id", request.MessageId)

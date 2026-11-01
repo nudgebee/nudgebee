@@ -130,14 +130,20 @@ const overcommitLookbackMinutes = 10
 //
 // Split out from Execute so the per-resource scoping is testable without a
 // metrics provider — see TestOvercommitQueriesScopedToResource.
+//
+// Every series is collapsed to one per node or per container before it is added up
+// or counted: other exporters (OpenCost) publish the same series, and a bare sum or
+// count reports each node and request once per exporter.
 func (a *overcommitAction) queries() map[string]string {
+	node := fmt.Sprintf(`max by (node) (kube_node_status_allocatable{resource=%q})`, a.resource)
+	container := fmt.Sprintf(`%s (kube_pod_container_resource_requests{resource=%q})`, promSpecPerContainer, a.resource)
 	return map[string]string{
-		"allocatable":   fmt.Sprintf(`sum(kube_node_status_allocatable{resource=%q})`, a.resource),
-		"requests":      fmt.Sprintf(`sum(kube_pod_container_resource_requests{resource=%q})`, a.resource),
-		"by_namespace":  fmt.Sprintf(`sum by (namespace) (kube_pod_container_resource_requests{resource=%q})`, a.resource),
-		"node_count":    fmt.Sprintf(`count(kube_node_status_allocatable{resource=%q})`, a.resource),
-		"largest_node":  fmt.Sprintf(`max(kube_node_status_allocatable{resource=%q})`, a.resource),
-		"requests_pods": fmt.Sprintf(`count(kube_pod_container_resource_requests{resource=%q})`, a.resource),
+		"allocatable":   fmt.Sprintf(`sum(%s)`, node),
+		"requests":      fmt.Sprintf(`sum(%s)`, container),
+		"by_namespace":  fmt.Sprintf(`sum by (namespace) (%s)`, container),
+		"node_count":    fmt.Sprintf(`count(%s)`, node),
+		"largest_node":  fmt.Sprintf(`max(%s)`, node),
+		"requests_pods": fmt.Sprintf(`count(%s)`, container),
 	}
 }
 

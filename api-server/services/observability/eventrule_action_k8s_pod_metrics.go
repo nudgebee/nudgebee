@@ -496,14 +496,14 @@ func (a *podMetricAction) fetchContainerMetrics(ctx playbooks.PlaybookActionCont
 					"pod", params.PodName, "namespace", params.Namespace, "error", *result.Error)
 				continue
 			}
-			switch result.QueryKey {
-			case usageKey:
+			switch UtilisationKey(result.QueryKey) {
+			case UtilisationKey(usageKey):
 				entries = append(entries, podUsageEntries(result, container, params)...)
-			case "cpu_request", "memory_request":
+			case KeyCPURequest, KeyMemoryRequest:
 				if !aggregated {
 					recordSpecValue(requestsMap, container, result)
 				}
-			case "cpu_limit", "memory_limit":
+			case KeyCPULimit, KeyMemoryLimit:
 				if !aggregated {
 					recordSpecValue(limitsMap, container, result)
 				}

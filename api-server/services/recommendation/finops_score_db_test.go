@@ -168,6 +168,17 @@ func TestRecomputeFinOpsScores_DB(t *testing.T) {
 	require.Equal(t, 1, stats.scanned, "a row with a resource never leaves the walk")
 	require.Zero(t, stats.updated)
 
+	// A k8s volume row has no resource_id; its identity is the PV object in its
+	// payload, and like a row with a resource it is revisited on every pass.
+	mustExec(`INSERT INTO recommendation (tenant_id, cloud_account_id, category, rule_name, severity,
+	            estimated_savings, created_at, resource_id, recommendation)
+	          VALUES ('t1', 'a1', 'RightSizing', 'unused_pvc', 'High', 5, now() - interval '90 days', NULL,
+	                  '{"kind":"PersistentVolume","metadata":{"name":"pvc-1234"},"spec":{"claimRef":{"namespace":"shop","name":"data"}}}')`)
+	require.Equal(t, 1, run().updated)
+	stats = run()
+	require.Equal(t, 2, stats.scanned, "a volume row never leaves the walk")
+	require.Zero(t, stats.updated)
+
 	// Rows outside the requested window are out of scope for the hourly pass.
 	stats, err = recomputeFinOpsScoresWith(ctx, dbms, 24*time.Hour)
 	require.NoError(t, err)

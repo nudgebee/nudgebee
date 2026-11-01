@@ -17,8 +17,9 @@ func handleHeathCheckApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.Met
 	})
 
 	// /livez is the liveness probe — it goes unhealthy when the MQ heartbeat stops
-	// round-tripping (a wedged consumer), so Kubernetes restarts the pod and rebuilds
-	// every consumer/publisher.
+	// round-tripping while the broker connection is up (a wedged consumer), so Kubernetes
+	// restarts the pod and rebuilds every consumer/publisher. A broker outage does not
+	// fail it: a restart cannot fix that, and consumers reconnect in-process.
 	r.GET("/livez", func(c *gin.Context) {
 		if common.MqHealthy() {
 			c.JSON(200, gin.H{"status": "ok"})

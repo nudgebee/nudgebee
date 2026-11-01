@@ -47,8 +47,6 @@ x-app-common: &app-common
   TICKET_SERVER_URL: http://ticket-server:8000
   NOTIFICATION_SERVICE_URL: http://notifications-server:8080
   ML_SERVICE_URL: http://ml-k8s-server:9999
-  # Postgres over the compose network uses no TLS
-  NUDGEBEE_DB_SSL_ENABLED: 'false'
 
 # Full Postgres DSN for the compose Postgres. Each service reads it under a
 # DIFFERENT variable name (see per-service env blocks).
@@ -121,7 +119,7 @@ services:
       - redis_data:/data
 
   qdrant:
-    image: ghcr.io/nudgebee/qdrant:v1.19.0
+    image: ghcr.io/nudgebee/qdrant:v1.19.2-nb1
     networks: [nudgebee]
     restart: unless-stopped
     ports:
@@ -279,6 +277,7 @@ services:
     ports:
       - "8004:8080"
     environment:
+      # Redis settings for the shared MCP session store (MCP_SESSION_STORE defaults to redis).
       <<: *app-common
       COLLECTOR_DB_URL: *db-url
       RELAY_HTTP_PORT: '8080'

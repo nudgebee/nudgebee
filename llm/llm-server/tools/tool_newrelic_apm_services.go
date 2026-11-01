@@ -30,6 +30,7 @@ func (t NewRelicAPMServicesTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
 		Properties: map[string]core.ToolSchemaProperty{
+			"instance": instanceProperty,
 			"command": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Search query for APM services (e.g., 'name:api-server', 'tags.environment:production')",

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -99,6 +100,13 @@ func genericWebhookHandler(webhookName string, tracer *trace.Tracer, meter *metr
 		sc := security.NewRequestContext(c.Request.Context(), security.NewSecurityContextForSuperAdmin(), logger, tracer, meter)
 
 		webhookRowID, err := core.ValidateAndStoreWebhook(sc, requestUrl, headers, payload)
+		var payloadErr *core.WebhookValidationError
+		if errors.As(err, &payloadErr) {
+			common.MetricsApiRequestsFailedTotal(c.Request.Context(), metricName, "invalid_payload")
+			logger.Info("integration: webhook payload rejected", "webhook", webhookName, "error", err)
+			c.JSON(400, gin.H{"message": "invalid payload", "errors": payloadErr.Items})
+			return
+		}
 		if err != nil {
 			common.MetricsApiRequestsFailedTotal(c.Request.Context(), metricName, "validate_webhook_failed")
 			logger.Warn("integration: webhook validation failed",
@@ -525,7 +533,9 @@ func handlePublicWebhooksApis(r *gin.Engine, tracer *trace.Tracer, meter *metric
 	webhookGroup.POST("/elasticsearch", genericWebhookHandler("elasticsearch_webhook", tracer, meter, logger))
 	webhookGroup.POST("/openobserve", genericWebhookHandler("openobserve_webhook", tracer, meter, logger))
 	webhookGroup.POST("/cubeapm", genericWebhookHandler("cubeapm_webhook", tracer, meter, logger))
+	webhookGroup.POST("/signoz", genericWebhookHandler("signoz_webhook", tracer, meter, logger))
 	webhookGroup.POST("/workflow", genericWebhookHandler("workflow_webhook", tracer, meter, logger))
+	webhookGroup.POST("/event", genericWebhookHandler("event_webhook", tracer, meter, logger))
 
 	// Azure Event Grid webhook — custom handler for validation handshake + relay to cloud-collector
 	webhookGroup.POST("/azure-eventgrid", azureEventGridWebhookHandler(tracer, meter, logger))

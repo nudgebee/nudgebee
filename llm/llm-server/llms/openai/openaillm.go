@@ -294,6 +294,7 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 		StreamingFunc:          opts.StreamingFunc,
 		StreamingReasoningFunc: opts.StreamingReasoningFunc,
 		Temperature:            opts.Temperature,
+		TopP:                   opts.TopP,
 		N:                      opts.N,
 		FrequencyPenalty:       opts.FrequencyPenalty,
 		PresencePenalty:        opts.PresencePenalty,

@@ -280,6 +280,17 @@ func markAlertOrigin(labels map[string]string, generatorURL string) {
 // own label map that becomes the event payload — so subject resolution does not
 // name-match the database onto a workload. The map is the caller's, and this is
 // deliberate: the opt-out must travel with the event.
+// otelControllerLabels maps OTel k8s resource attributes onto the workload kinds
+// extractPromSubject reports, in the same precedence as the Prometheus names.
+var otelControllerLabels = []struct{ key, kind string }{
+	{"k8s.deployment.name", "deployment"},
+	{"k8s.statefulset.name", "statefulset"},
+	{"k8s.daemonset.name", "daemonset"},
+	{"k8s.replicaset.name", "replicaset"},
+	{"k8s.cronjob.name", "cronjob"},
+	{"k8s.job.name", "job"},
+}
+
 func extractPromSubject(labels map[string]string) (kind, name string) {
 	for _, k := range []string{"deployment", "statefulset", "daemonset", "replicaset", "cronjob", "kube_job"} {
 		if v := labels[k]; v != "" {
@@ -288,6 +299,14 @@ func extractPromSubject(labels map[string]string) (kind, name string) {
 				kind = "job"
 			}
 			return kind, v
+		}
+	}
+	// OTel-native alerts (SigNoz, any rule over k8s-infra / kubeletstats metrics)
+	// keep the resource attributes' dotted names as labels. Checked after the
+	// Prometheus names so a rule carrying both keeps today's answer.
+	for _, rk := range otelControllerLabels {
+		if v := labels[rk.key]; v != "" {
+			return rk.kind, v
 		}
 	}
 	for _, k := range []string{"destination_workload_name", "workload", "source_workload_name"} {
@@ -330,7 +349,13 @@ func extractPromSubject(labels map[string]string) (kind, name string) {
 	if v := labels["service"]; v != "" {
 		return "service", v
 	}
+	if v := labels["service.name"]; v != "" {
+		return "service", v
+	}
 	if v := labels["pod"]; v != "" {
+		return "pod", v
+	}
+	if v := labels["k8s.pod.name"]; v != "" {
 		return "pod", v
 	}
 	// PostgreSQL exporter alerts (PostgreSQLCacheHitRatio, …) key on `datname` — the
@@ -411,7 +436,7 @@ func dbHostOnly(v string) string {
 // falling through service-mesh telemetry conventions when the canonical
 // `namespace` label is absent.
 func extractPromNamespace(labels map[string]string) string {
-	for _, k := range []string{"namespace", "destination_workload_namespace", "workload_namespace", "source_workload_namespace", "kubernetes_namespace"} {
+	for _, k := range []string{"namespace", "destination_workload_namespace", "workload_namespace", "source_workload_namespace", "kubernetes_namespace", "k8s.namespace.name"} {
 		if v := labels[k]; v != "" {
 			return v
 		}

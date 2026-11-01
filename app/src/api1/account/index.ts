@@ -257,6 +257,7 @@ mutation AzureBulkOnboard($object: AzureBulkOnboardInput!) {
       account_id
       status
       error
+      warning
     }
     parent_id
   }
@@ -494,9 +495,11 @@ const apiAccount = {
         'oracle',
         'splunk_observability_platform',
         'splunk_enterprise',
+        'grafana_tempo',
         'splunk_webhook',
         'cubeapm',
         'cubeapm_webhook',
+        'signoz_webhook',
         'dynatrace',
         'dynatrace_webhook',
         'gcp_monitoring_webhook',
@@ -506,6 +509,7 @@ const apiAccount = {
         'openobserve',
         'openobserve_webhook',
         'workflow_webhook',
+        'event_webhook',
         'google_chat_space',
         'slack',
         'ms_teams',
@@ -823,6 +827,11 @@ const apiAccount = {
       const response = await queryGraphQL(AZURE_LIST_SUBSCRIPTIONS, 'AzureListSubscriptions', {
         object: { tenant_id: tenantId, client_id: clientId, client_secret: clientSecret },
       });
+      // The gateway answers most backend failures with HTTP 200 and an errors
+      // array; surface it instead of reporting "no subscriptions".
+      if (response?.data?.errors?.length) {
+        throw new Error(response.data.errors[0]?.message || 'Failed to list Azure subscriptions');
+      }
       return response?.data?.data?.azure_list_subscriptions?.subscriptions || [];
     } catch (err) {
       console.error('listAzureSubscriptions error:', err);

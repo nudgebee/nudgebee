@@ -27,11 +27,6 @@ jest.mock('@hooks/usePagination', () => ({
   }),
 }));
 
-const mockUseCurrencySymbol = jest.fn();
-jest.mock('@hooks/useCurrencySymbol', () => ({
-  useCurrencySymbol: (...args: any[]) => mockUseCurrencySymbol(...args),
-}));
-
 jest.mock('@ui/Toast', () => ({
   __esModule: true,
   toast: { success: jest.fn(), error: jest.fn() },
@@ -257,7 +252,6 @@ describe('ServiceRecommendations (integration)', () => {
     jest.clearAllMocks();
     nextPageVal = 0;
     pageSizeVal = 10;
-    mockUseCurrencySymbol.mockReturnValue('$');
     apiRecommendations.getK8sRecommendation.mockResolvedValue(mockResponse());
     apiRecommendations.getRecommendationDetails.mockImplementation((category: string, rule: string) =>
       rule === 'oversized_instance' ? { title: 'Oversized Instance' } : null
@@ -316,13 +310,13 @@ describe('ServiceRecommendations (integration)', () => {
     expect(screen.getByText('Svc: rds')).toBeInTheDocument();
   });
 
-  it('renders Currency with hook prefix and /yr suffix', async () => {
-    mockUseCurrencySymbol.mockReturnValue('€');
+  // Savings are USD from every producer, whatever the account bills in.
+  it('renders savings in $ with /yr suffix', async () => {
     render(<ServiceRecommendations accountId='acc-1' serviceName='ec2' provider='AWS' />);
 
     await waitFor(() => expect(screen.getAllByTestId('currency').length).toBeGreaterThan(0));
     const cur = screen.getAllByTestId('currency')[0].textContent;
-    expect(cur).toMatch(/^€/);
+    expect(cur).toMatch(/^\$/);
     expect(cur).toMatch(/\/yr$/);
   });
 
@@ -427,11 +421,5 @@ describe('ServiceRecommendations (integration)', () => {
 
     await waitFor(() => expect(screen.getByTestId('total')).toHaveTextContent('0'));
     expect(screen.queryByTestId('row-0')).not.toBeInTheDocument();
-  });
-
-  it('passes accountId through to useCurrencySymbol hook', async () => {
-    render(<ServiceRecommendations accountId='acc-42' serviceName='ec2' provider='AWS' />);
-    expect(mockUseCurrencySymbol).toHaveBeenCalledWith('acc-42');
-    await waitFor(() => expect(apiRecommendations.getK8sRecommendation).toHaveBeenCalled());
   });
 });

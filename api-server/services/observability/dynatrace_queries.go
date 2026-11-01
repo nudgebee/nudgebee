@@ -306,7 +306,7 @@ func dqlKSMAllNodesTimeseries(metricID, resource string) string {
 
 // dqlKSMClusterTotal builds a DQL timeseries for a cluster-wide total of a KSM resource metric.
 // No by: clause — sums across all dimensions to produce a single aggregate time series.
-// Used for cpu_total (allocatable), cpu_request, cpu_limit, mem_total, mem_request, mem_limit.
+// Used for cpu_total (allocatable), cpu_request, cpu_limit, mem_total, memory_request, memory_limit.
 func dqlKSMClusterTotal(metricID, resource string) string {
 	return fmt.Sprintf(
 		tsSumFmt+"filter: {resource == \"%s\"} | fields val = arrayLast(val), timeframe",
@@ -407,22 +407,22 @@ func buildDynatraceNodeQueries(meta RequestMetadata, metrics []string) map[strin
 	node := meta.NodeName
 
 	for _, metricKey := range metrics {
-		switch metricKey {
-		case "cpu_usage", "cpu_usage_line":
+		switch UtilisationKey(metricKey) {
+		case KeyCPUUsage, KeyCPUUsageLine:
 			queries[metricKey] = dqlCAdvisorNodeCPU(node)
-		case "memory_usage", "memory_usage_line":
+		case KeyMemoryUsage, KeyMemoryUsageLine:
 			queries[metricKey] = dqlCAdvisorNodeMemory(node)
-		case "cpu_allocatable":
+		case KeyCPUAllocatable:
 			queries[metricKey] = dqlKSMNodeTimeseries(ksmNodeAllocatable, "cpu", node)
-		case "memory_allocatable":
+		case KeyMemoryAllocatable:
 			queries[metricKey] = dqlKSMNodeTimeseries(ksmNodeAllocatable, "memory", node)
-		case "cpu_request":
+		case KeyCPURequest:
 			queries[metricKey] = dqlKSMNodeSum(ksmPodRequests, "cpu", node)
-		case "cpu_limit":
+		case KeyCPULimit:
 			queries[metricKey] = dqlKSMNodeSum(ksmPodLimits, "cpu", node)
-		case "memory_request":
+		case KeyMemoryRequest:
 			queries[metricKey] = dqlKSMNodeSum(ksmPodRequests, "memory", node)
-		case "memory_limit":
+		case KeyMemoryLimit:
 			queries[metricKey] = dqlKSMNodeSum(ksmPodLimits, "memory", node)
 		}
 	}
@@ -440,30 +440,30 @@ func buildDynatraceNodeQueries(meta RequestMetadata, metrics []string) map[strin
 //     so memory percentiles use allocatable capacity rather than actual consumption.
 //   - cpu_real / mem_real: total actual usage across all pods (cAdvisor sum_irate / working_set).
 //   - cpu_total / mem_total: total allocatable capacity across all nodes (KSM, single series).
-//   - cpu_request / cpu_limit / mem_request / mem_limit: cluster-wide totals (KSM, single series).
+//   - cpu_request / cpu_limit / memory_request / memory_limit: cluster-wide totals (KSM, single series).
 func buildDynatraceClusterQueries(metrics []string) map[string]string {
 	queries := make(map[string]string)
 	for _, metricKey := range metrics {
-		switch metricKey {
-		case "p90_cpu", "p50_cpu", "max_usage_cpu":
+		switch UtilisationKey(metricKey) {
+		case KeyP90CPU, KeyP50CPU, KeyMaxUsageCPU:
 			queries[metricKey] = dqlCAdvisorAllNodesCPU()
-		case "p90_mem", "p50_mem", "max_usage_mem":
+		case KeyP90Mem, KeyP50Mem, KeyMaxUsageMem:
 			queries[metricKey] = dqlKSMAllNodesTimeseries(ksmNodeAllocatable, "memory")
-		case "cpu_real":
+		case KeyCPUReal:
 			queries[metricKey] = dqlCAdvisorClusterCPU()
-		case "mem_real":
+		case KeyMemReal:
 			queries[metricKey] = dqlCAdvisorClusterMem()
-		case "cpu_total":
+		case KeyCPUTotal:
 			queries[metricKey] = dqlKSMClusterTotal(ksmNodeAllocatable, "cpu")
-		case "mem_total":
+		case KeyMemTotal:
 			queries[metricKey] = dqlKSMClusterTotal(ksmNodeAllocatable, "memory")
-		case "cpu_request":
+		case KeyCPURequest:
 			queries[metricKey] = dqlKSMClusterTotal(ksmPodRequests, "cpu")
-		case "cpu_limit":
+		case KeyCPULimit:
 			queries[metricKey] = dqlKSMClusterTotal(ksmPodLimits, "cpu")
-		case "mem_request", "memory_request":
+		case KeyMemoryRequest:
 			queries[metricKey] = dqlKSMClusterTotal(ksmPodRequests, "memory")
-		case "mem_limit", "memory_limit":
+		case KeyMemoryLimit:
 			queries[metricKey] = dqlKSMClusterTotal(ksmPodLimits, "memory")
 		}
 	}
@@ -485,45 +485,45 @@ func buildDynatraceWorkloadQueries(meta RequestMetadata, metrics []string) map[s
 	ns, name := meta.Namespace, meta.Name
 
 	for _, metricKey := range metrics {
-		switch metricKey {
-		case "p90_cpu", "p50_cpu", "max_usage_cpu":
+		switch UtilisationKey(metricKey) {
+		case KeyP90CPU, KeyP50CPU, KeyMaxUsageCPU:
 			queries[metricKey] = dqlCAdvisorAllNodesCPU()
-		case "p90_mem", "p50_mem", "max_usage_mem":
+		case KeyP90Mem, KeyP50Mem, KeyMaxUsageMem:
 			queries[metricKey] = dqlKSMAllNodesTimeseries(ksmNodeAllocatable, "memory")
-		case "http_throughput":
+		case KeyHTTPThroughput:
 			if ns != "" && name != "" {
 				queries[metricKey] = dqlHTTPThroughput(ns, name)
 			}
-		case "http_error_rate":
+		case KeyHTTPErrorRate:
 			if ns != "" && name != "" {
 				queries[metricKey] = dqlHTTPErrorRate(ns, name)
 			}
-		case "http_latency_p95":
+		case KeyHTTPLatencyP95:
 			if ns != "" && name != "" {
 				queries[metricKey] = dqlHTTPLatencyPercentile(ns, name, 95)
 			}
-		case "http_latency_p99", "workload_http_latency_p99":
+		case KeyHTTPLatencyP99, KeyWorkloadHTTPLatencyP99:
 			if ns != "" && name != "" {
 				queries[metricKey] = dqlHTTPLatencyPercentile(ns, name, 99)
 			}
-		case "http_status":
+		case KeyHTTPStatus:
 			if ns != "" && name != "" {
 				queries[metricKey] = dqlHTTPStatus(ns, name)
 			}
-		case "http_max_response_time":
+		case KeyHTTPMaxResponseTime:
 			if ns != "" && name != "" {
 				queries[metricKey] = dqlHTTPMaxResponseTime(ns, name)
 			}
-		case "http_latency_sum":
+		case KeyHTTPLatencySum:
 			if ns != "" && name != "" {
 				queries[metricKey] = dqlHTTPLatencySum(ns, name)
 			}
-		case "network_receive_packet":
+		case KeyNetworkReceivePacket:
 			if ns != "" && name != "" {
 				pf := buildDynatraceWorkloadPodFilter(name, meta.Kind)
 				queries[metricKey] = dqlNetworkReceive(ns, pf)
 			}
-		case "network_transmit_packets":
+		case KeyNetworkTransmitPackets:
 			if ns != "" && name != "" {
 				pf := buildDynatraceWorkloadPodFilter(name, meta.Kind)
 				queries[metricKey] = dqlNetworkTransmit(ns, pf)
@@ -545,18 +545,18 @@ func buildDynatraceWorkloadQueries(meta RequestMetadata, metrics []string) map[s
 // addDynatracePodQuery populates a single pod-scoped DQL query into the queries map.
 // containerName is optional; when non-empty it narrows the filter to a single container.
 func addDynatracePodQuery(queries map[string]string, metricKey, ns, name, containerName string) {
-	switch metricKey {
-	case "cpu_usage":
+	switch UtilisationKey(metricKey) {
+	case KeyCPUUsage:
 		queries[metricKey] = dqlCAdvisorPodCPU(ns, name)
-	case "memory_usage":
+	case KeyMemoryUsage:
 		queries[metricKey] = dqlCAdvisorPodMemory(ns, name, containerName)
-	case "cpu_request":
+	case KeyCPURequest:
 		queries[metricKey] = dqlKSMPodTimeseries(ksmPodRequests, "cpu", ns, name, containerName)
-	case "cpu_limit":
+	case KeyCPULimit:
 		queries[metricKey] = dqlKSMPodTimeseries(ksmPodLimits, "cpu", ns, name, containerName)
-	case "memory_request":
+	case KeyMemoryRequest:
 		queries[metricKey] = dqlKSMPodTimeseries(ksmPodRequests, "memory", ns, name, containerName)
-	case "memory_limit":
+	case KeyMemoryLimit:
 		queries[metricKey] = dqlKSMPodTimeseries(ksmPodLimits, "memory", ns, name, containerName)
 	}
 }
@@ -575,18 +575,18 @@ func buildDynatraceWorkloadPodFilter(name, kind string) string {
 // addDynatraceWorkloadQuery populates resource/network DQL queries for non-pod workload kinds.
 // Uses startsWith(pod, "name-") to match all pods owned by the workload.
 func addDynatraceWorkloadQuery(queries map[string]string, metricKey, ns, name string) {
-	switch metricKey {
-	case "cpu_usage":
+	switch UtilisationKey(metricKey) {
+	case KeyCPUUsage:
 		queries[metricKey] = dqlCAdvisorWorkloadCPU(ns, name)
-	case "memory_usage":
+	case KeyMemoryUsage:
 		queries[metricKey] = dqlCAdvisorWorkloadMemory(ns, name)
-	case "cpu_request":
+	case KeyCPURequest:
 		queries[metricKey] = dqlKSMWorkloadTimeseries(ksmPodRequests, "cpu", ns, name)
-	case "cpu_limit":
+	case KeyCPULimit:
 		queries[metricKey] = dqlKSMWorkloadTimeseries(ksmPodLimits, "cpu", ns, name)
-	case "memory_request":
+	case KeyMemoryRequest:
 		queries[metricKey] = dqlKSMWorkloadTimeseries(ksmPodRequests, "memory", ns, name)
-	case "memory_limit":
+	case KeyMemoryLimit:
 		queries[metricKey] = dqlKSMWorkloadTimeseries(ksmPodLimits, "memory", ns, name)
 	}
 }

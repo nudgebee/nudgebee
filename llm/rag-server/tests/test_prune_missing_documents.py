@@ -1,7 +1,8 @@
 """Pins sync pruning of stale points, including legacy integer point ids.
 
 Runs handle_updated_documents against an in-memory Qdrant so a delete request
-with a malformed id fails the same way it does against the real server.
+with a malformed id fails the same way it does against the real server. The
+rollup refresh a prune triggers is covered in test_kb_collection_summary.py.
 """
 
 import hashlib
@@ -25,6 +26,10 @@ def qdrant(monkeypatch):
     client = QdrantClient(":memory:")
     client.create_collection(COLLECTION, vectors_config=VectorParams(size=2, distance=Distance.COSINE))
     monkeypatch.setattr(processing, "get_qdrant_client", lambda: client)
+    # A prune corrects the collection's classification rollup when it has one; keep that off a real database.
+    client.refresh_calls = []
+    monkeypatch.setattr("rag.core.utils.db_query.has_kb_collection_summary", lambda collection_name: True)
+    monkeypatch.setattr(processing, "refresh_kb_collection_summary", lambda name: client.refresh_calls.append(name))
     return client
 
 
@@ -50,6 +55,8 @@ def test_prune_deletes_stale_integer_and_uuid_points_and_keeps_current(qdrant):
     assert processing.handle_updated_documents(COLLECTION, [current]) is True
 
     assert _ids(qdrant) == {str(uuid.UUID(current))}
+    # The rollup is recomputed once, from what is left, after every stale point is gone.
+    assert qdrant.refresh_calls == [COLLECTION]
 
 
 def test_prune_is_a_no_op_when_nothing_is_stale(qdrant):
@@ -58,3 +65,4 @@ def test_prune_is_a_no_op_when_nothing_is_stale(qdrant):
 
     assert processing.handle_updated_documents(COLLECTION, [current]) is False
     assert _ids(qdrant) == {str(uuid.UUID(current))}
+    assert qdrant.refresh_calls == []  # nothing pruned, nothing to correct

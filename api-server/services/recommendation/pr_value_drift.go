@@ -23,6 +23,11 @@ import (
 // drifted — the shape changed, not just the number.
 var driftFields = []string{"request", "limit"}
 
+// thresholdSlack absorbs float rounding in the percentage. 320m → 288m is a move
+// of exactly 10%, but computes as 9.99999999999999 and would miss a threshold of
+// 10; "at least 10%" has to include it.
+const thresholdSlack = 1e-9
+
 // valueDrift is one dimension that moved far enough to matter.
 type valueDrift struct {
 	Container string
@@ -121,7 +126,7 @@ func detectValueDrift(oldValues, newValues map[string]any, thresholds map[string
 					continue
 				}
 
-				if abs(changePct) >= thresholds[dimension] {
+				if abs(changePct) >= thresholds[dimension]-thresholdSlack {
 					drifts = append(drifts, valueDrift{
 						Container: container, Dimension: dimension, Field: field,
 						Old: oldRaw, New: newRaw, ChangePct: changePct,
@@ -132,6 +137,49 @@ func detectValueDrift(oldValues, newValues map[string]any, thresholds map[string
 	}
 
 	return drifts
+}
+
+// fieldsRunLeftOut names what the open pull request sets that newValues carries no
+// value for ("app cpu request"), within the dimensions being compared.
+// detectValueDrift skips exactly these, so its verdict does not cover them.
+func fieldsRunLeftOut(oldValues, newValues map[string]any, thresholds map[string]float64) []string {
+	var leftOut []string
+
+	containers := make([]string, 0, len(oldValues))
+	for container := range oldValues {
+		containers = append(containers, container)
+	}
+	sort.Strings(containers)
+
+	dimensions := make([]string, 0, len(thresholds))
+	for dimension := range thresholds {
+		dimensions = append(dimensions, dimension)
+	}
+	sort.Strings(dimensions)
+
+	for _, container := range containers {
+		oldDims, ok := oldValues[container].(map[string]any)
+		if !ok {
+			continue
+		}
+		newDims, _ := newValues[container].(map[string]any)
+
+		for _, dimension := range dimensions {
+			oldFields, _ := oldDims[dimension].(map[string]any)
+			newFields, _ := newDims[dimension].(map[string]any)
+
+			for _, field := range driftFields {
+				if _, _, recorded := quantityOf(oldFields, field); !recorded {
+					continue
+				}
+				if _, _, produced := quantityOf(newFields, field); produced {
+					continue
+				}
+				leftOut = append(leftOut, fmt.Sprintf("%s %s %s", container, dimension, field))
+			}
+		}
+	}
+	return leftOut
 }
 
 // quantityOf parses one field out of a dimension payload, returning the numeric

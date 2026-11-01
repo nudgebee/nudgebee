@@ -395,7 +395,10 @@ func stampMetricProvider(ctx *security.RequestContext, req *eventrule.EventConfi
 			"account_id", req.AccountID, "error", err)
 		return
 	}
-	if provider == "prometheus" && source == "user" {
+	// A user-configured Prometheus or SigNoz evaluates the rule itself; anything
+	// else keeps the agent's PrometheusRule path. SigNoz resolves here only when it
+	// is the account's marked metrics default.
+	if (provider == "prometheus" || provider == "signoz") && source == "user" {
 		req.MetricProvider = provider
 		req.MetricProviderSource = source
 	}

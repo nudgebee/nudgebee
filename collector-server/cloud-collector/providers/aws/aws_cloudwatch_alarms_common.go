@@ -252,6 +252,12 @@ var cloudwatchNamespaceServiceMap = map[string]CloudwatchNamespace{
 		ServiceName:           ServiceNameEFS,
 		ResourceType:          "file-system",
 	},
+	"AWS/FSx": {
+		Name:                  "AWS/FSx",
+		ResourceDimensionName: "FileSystemId",
+		ServiceName:           ServiceNameFSx,
+		ResourceType:          "file-system",
+	},
 	"AWS/ES": {
 		Name:                  "AWS/ES",
 		ResourceDimensionName: "DomainName",
@@ -322,6 +328,10 @@ type AlarmsFilter struct {
 	ServiceName string      `json:"service_name" validate:"required"`
 	Status      AlarmStatus `json:"status"`
 	Region      string      `json:"region"`
+	// HistorySince, when set on an ALARM listing, also reads the alarm history
+	// from then on and adds the firings that started and cleared in between
+	// (see listClearedAlarmFirings).
+	HistorySince time.Time `json:"-"`
 }
 
 // fetchAlarmsByResource fetches all CloudWatch alarms for a region once and returns
@@ -356,12 +366,50 @@ func getAwsCloudwatchAlarms(ctx providers.CloudProviderContext, account provider
 		region = filter.Region
 	}
 	cfg.Region = region
-	svc := cloudwatch.NewFromConfig(cfg)
+	client := cloudwatch.NewFromConfig(cfg)
+	listedAt := time.Now()
+	resp, err := listCloudwatchAlarmEvents(ctx, client, &cfg, account, filter, region)
+	if err != nil || filter.Status != AlarmStatusAlarm || filter.HistorySince.IsZero() {
+		return resp, err
+	}
+	// The listing shows what is in ALARM now; the history adds what was in ALARM
+	// only between two polls. A failed history read costs only those firings.
+	listed := make(map[string]bool, len(resp.Items))
+	for _, e := range resp.Items {
+		listed[e.FiringFindingID()] = true
+	}
+	cleared, histErr := listClearedAlarmFirings(ctx, client, &cfg, account, region, filter.HistorySince, listedAt, listed)
+	if histErr != nil {
+		ctx.GetLogger().Warn("failed to read cloudwatch alarm history; firings that cleared between polls are not stored this time",
+			"error", histErr, "region", region, "accountNumber", account.AccountNumber)
+		return resp, nil
+	}
+	resp.Items = append(resp.Items, cleared...)
+	return resp, nil
+}
+
+// listCloudwatchAlarmEvents pages through one region's alarms and builds an
+// event for each single-metric alarm. Split from getAwsCloudwatchAlarms so the
+// listing can be driven by a fake client; cfg is nil there, which only turns
+// off the metric-filter lookup.
+func listCloudwatchAlarmEvents(ctx providers.CloudProviderContext, svc cloudwatch.DescribeAlarmsAPIClient, cfg *aws.Config, account providers.Account, filter AlarmsFilter, region string) (providers.ListEventResponse, error) {
 	events := []providers.Event{}
-	paginator := cloudwatch.NewDescribeAlarmsPaginator(svc, &cloudwatch.DescribeAlarmsInput{
+	input := &cloudwatch.DescribeAlarmsInput{
 		StateValue: types.StateValue(filter.Status),
 		MaxRecords: aws.Int32(100),
-	})
+	}
+	// A listing of what is in ALARM is also what ends stored firings (see
+	// providers.OngoingSnapshot), so it has to see every alarm a firing can be
+	// stored for: composite alarms reach us by push even though no event is
+	// built for them below. Left at the default, the API returns metric alarms
+	// only and those firings would look cleared.
+	var firing map[string]time.Time
+	scope := alarmScope(region, account.AccountNumber)
+	if filter.Status == AlarmStatusAlarm {
+		input.AlarmTypes = []types.AlarmType{types.AlarmTypeMetricAlarm, types.AlarmTypeCompositeAlarm}
+		firing = map[string]time.Time{}
+	}
+	paginator := cloudwatch.NewDescribeAlarmsPaginator(svc, input)
 
 	// Cache metric filter resolutions to avoid redundant DescribeMetricFilters calls
 	mfCache := MetricFilterCache{}
@@ -369,6 +417,11 @@ func getAwsCloudwatchAlarms(ctx providers.CloudProviderContext, account provider
 	for paginator.HasMorePages() {
 		alarms, err := paginator.NextPage(ctx.GetContext())
 		if err != nil {
+			// A region the caller should skip (unreachable, disabled, throttled, …)
+			// is returned unlogged: the caller logs it once at the right level.
+			if classifyRegionSkip(err) != regionSkipNone {
+				return providers.ListEventResponse{}, err
+			}
 			// Downgrade permission errors to WARN — these are customer IAM misconfigs,
 			// not collector bugs. The audit middleware already records them.
 			if _, errCode, errMsg, isPermErr := IsAWSPermissionError(err); isPermErr {
@@ -384,93 +437,118 @@ func getAwsCloudwatchAlarms(ctx providers.CloudProviderContext, account provider
 			return providers.ListEventResponse{}, err
 		}
 
+		if firing != nil {
+			for _, alarm := range alarms.CompositeAlarms {
+				recordAlarmFiring(firing, alarm.AlarmArn, alarm.StateTransitionedTimestamp)
+			}
+		}
+
 		for _, alarm := range alarms.MetricAlarms {
-			alarmName := aws.ToString(alarm.AlarmName)
-			if alarm.Namespace == nil {
-				ctx.GetLogger().Debug("alarm namespace is nil", "alarmName", alarmName)
-				continue
+			if firing != nil {
+				recordAlarmFiring(firing, alarm.AlarmArn, alarm.StateTransitionedTimestamp)
 			}
-
-			threshold := "0"
-			if alarm.Threshold != nil {
-				threshold = fmt.Sprintf("%f", *alarm.Threshold)
-			}
-
-			// Convert SDK dimensions to the shared AlarmDimension type
-			dims := make([]AlarmDimension, 0, len(alarm.Dimensions))
-			for _, d := range alarm.Dimensions {
-				dims = append(dims, AlarmDimension{
-					Name:  aws.ToString(d.Name),
-					Value: aws.ToString(d.Value),
-				})
-			}
-
-			// Use the shared enrichment function for namespace mapping,
-			// dimension matching, label building, and metric filter resolution.
-			enrichment := EnrichCloudWatchAlarm(ctx.GetContext(), CloudWatchAlarmInfo{
-				AlarmName:       alarmName,
-				MetricName:      aws.ToString(alarm.MetricName),
-				MetricNamespace: aws.ToString(alarm.Namespace),
-				Statistic:       string(alarm.Statistic),
-				Threshold:       threshold,
-				Region:          region,
-				AccountNumber:   account.AccountNumber,
-				AlarmArn:        aws.ToString(alarm.AlarmArn),
-				StateValue:      string(alarm.StateValue),
-				Dimensions:      dims,
-			}, true, &cfg, mfCache)
-
-			stateReason := aws.ToString(alarm.StateReason)
-			alarmArn := aws.ToString(alarm.AlarmArn)
-
-			// Handle StateTransitionedTimestamp safely.
-			//
-			// FindingId is deliberately left unset so the per-firing identity comes
-			// from providers.Event.FiringFindingID() — the same key the EventBridge
-			// path produces. A CloudWatch state change reaches us twice, by push and
-			// by this poller, and both already key on the alarm ARN plus the
-			// transition timestamp; this path used to print that pair as
-			// "<arn>/<RFC3339>" while the shared key prints "<arn>-<unix>", so the
-			// unique index on (tenant, cloud_account_id, finding_id) could not match
-			// them. Every alarm was stored twice and every firing advanced its dedup
-			// chain by two.
-			//
-			// Nothing is lost by dropping the bespoke format: eventDate *is* the
-			// transition timestamp, so the shared key is equally deterministic. When
-			// the timestamp is absent it falls back to now() and the finding id
-			// stops being stable across polls — pre-existing, and unchanged here.
-			var eventDate time.Time
+			event := metricAlarmEvent(ctx, alarm, cfg, account, region, mfCache)
+			// The firing's identity is the alarm's ARN and the time it changed
+			// state, set through setAlarmFiring so that it is the same one the push
+			// path and the history path set for the same state change. When the
+			// timestamp is absent it falls back to now() and the finding id stops
+			// being stable across polls — pre-existing, and unchanged here. Such an
+			// alarm is not marked ongoing: every poll would open a new row for it.
+			eventDate := time.Now()
 			if alarm.StateTransitionedTimestamp != nil {
 				eventDate = *alarm.StateTransitionedTimestamp
-			} else {
-				eventDate = time.Now()
+				if firing != nil {
+					event.OngoingScope = scope
+				}
 			}
-			// Use alarmArn as stable fingerprint (without timestamp).
-			// Per-firing uniqueness is handled by FindingId or fallback in etl_events.go.
-			eventId := alarmArn
-
-			events = append(events, providers.Event{
-				Title:               fmt.Sprintf("%s::%s::%s", enrichment.ResourceServiceName, enrichment.ResourceId, stateReason),
-				EventName:           alarmName,
-				Description:         stateReason,
-				Date:                eventDate,
-				EventSource:         "AWS_CloudWatch_Alarm",
-				EventId:             eventId,
-				EventStatus:         providers.EventStatusFiring,
-				EventSeverity:       providers.EventSeverityHigh,
-				ResourceType:        enrichment.ResourceType,
-				ResourceId:          enrichment.ResourceId,
-				ResourceRegion:      region,
-				ResourceServiceName: enrichment.ResourceServiceName,
-				Raw:                 buildAlarmRawMap(alarm),
-				Labels:              enrichment.Labels,
-			})
+			setAlarmFiring(&event, aws.ToString(alarm.AlarmArn), eventDate)
+			events = append(events, event)
 		}
 	}
 
-	return providers.ListEventResponse{
-		Items: events,
-	}, nil
+	resp := providers.ListEventResponse{Items: events}
+	if firing != nil {
+		// Reached only when every page was read, so the scope is listed completely.
+		resp.Ongoing = &providers.OngoingSnapshot{Scopes: []string{scope}, Since: firing}
+	}
+	return resp, nil
+}
+
+// metricAlarmEvent builds the event for one metric alarm in its current state,
+// without the firing's identity: callers set that with setAlarmFiring for the
+// state change they are reporting.
+func metricAlarmEvent(ctx providers.CloudProviderContext, alarm types.MetricAlarm, cfg *aws.Config, account providers.Account, region string, mfCache MetricFilterCache) providers.Event {
+	alarmName := aws.ToString(alarm.AlarmName)
+
+	threshold := "0"
+	if alarm.Threshold != nil {
+		threshold = fmt.Sprintf("%f", *alarm.Threshold)
+	} else if alarm.ThresholdMetricId != nil {
+		// Compared against a band, not a number: there is no threshold to show.
+		threshold = ""
+	}
+
+	metricName, metricNamespace, statistic, dims := alarmMetric(alarm)
+
+	// Use the shared enrichment function for namespace mapping,
+	// dimension matching, label building, and metric filter resolution.
+	enrichment := EnrichCloudWatchAlarm(ctx.GetContext(), CloudWatchAlarmInfo{
+		AlarmName:       alarmName,
+		MetricName:      metricName,
+		MetricNamespace: metricNamespace,
+		Statistic:       statistic,
+		Threshold:       threshold,
+		Region:          region,
+		AccountNumber:   account.AccountNumber,
+		AlarmArn:        aws.ToString(alarm.AlarmArn),
+		StateValue:      string(alarm.StateValue),
+		Dimensions:      dims,
+	}, cfg != nil, cfg, mfCache)
+
+	stateReason := aws.ToString(alarm.StateReason)
+	return providers.Event{
+		Title:               fmt.Sprintf("%s::%s::%s", enrichment.ResourceServiceName, enrichment.ResourceId, stateReason),
+		EventName:           alarmName,
+		Description:         stateReason,
+		EventSource:         "AWS_CloudWatch_Alarm",
+		EventStatus:         providers.EventStatusFiring,
+		EventSeverity:       providers.EventSeverityHigh,
+		ResourceType:        enrichment.ResourceType,
+		ResourceId:          enrichment.ResourceId,
+		ResourceRegion:      region,
+		ResourceServiceName: enrichment.ResourceServiceName,
+		ResourceLookupIds:   enrichment.ResourceLookupIds,
+		Raw:                 buildAlarmRawMap(alarm),
+		Labels:              enrichment.Labels,
+	}
+}
+
+// alarmMetric returns the metric an alarm is about. A single-metric alarm names
+// it directly. An alarm on a metric-math expression or an anomaly band has no
+// metric of its own, only the list its expression is built from; it is taken to
+// be about the first metric in that list, which is the rule the push path
+// applies to the same alarm (extractCloudWatchAlarmInfoFromEB), so that both
+// file the alarm under the same resource. With no metric at all the result is
+// empty and the alarm is filed under its own name.
+func alarmMetric(alarm types.MetricAlarm) (name, namespace, statistic string, dims []AlarmDimension) {
+	toDims := func(in []types.Dimension) []AlarmDimension {
+		out := make([]AlarmDimension, 0, len(in))
+		for _, d := range in {
+			out = append(out, AlarmDimension{Name: aws.ToString(d.Name), Value: aws.ToString(d.Value)})
+		}
+		return out
+	}
+	if alarm.Namespace != nil {
+		return aws.ToString(alarm.MetricName), aws.ToString(alarm.Namespace), string(alarm.Statistic), toDims(alarm.Dimensions)
+	}
+	for _, query := range alarm.Metrics {
+		if query.MetricStat == nil || query.MetricStat.Metric == nil {
+			continue
+		}
+		metric := query.MetricStat.Metric
+		return aws.ToString(metric.MetricName), aws.ToString(metric.Namespace), aws.ToString(query.MetricStat.Stat), toDims(metric.Dimensions)
+	}
+	return "", "", "", []AlarmDimension{}
 }
 
 // buildAlarmRawMap extracts only the operationally relevant fields from a CloudWatch
@@ -555,6 +633,9 @@ type CloudWatchAlarmInfo struct {
 	AccountNumber   string
 	AlarmArn        string
 	StateValue      string
+	// StateChangedAt is when the alarm entered StateValue, read from a pushed
+	// event. Zero when the event carries no readable time.
+	StateChangedAt time.Time
 	// Dimensions as Name/Value pairs (works for both polling and EventBridge).
 	Dimensions []AlarmDimension
 }
@@ -572,6 +653,9 @@ type CloudWatchAlarmEnrichment struct {
 	ResourceType        string
 	ResourceServiceName string
 	InstanceType        string // The dimension name used for ResourceId
+	// ResourceLookupIds are the ids the inventory stores for this resource when
+	// they differ from ResourceId (see providers.Event.ResourceLookupIds).
+	ResourceLookupIds []string
 
 	// Labels to set on the event
 	Labels map[string]string
@@ -627,6 +711,16 @@ func EnrichCloudWatchAlarm(ctx context.Context, info CloudWatchAlarmInfo, resolv
 	// 2. Smart dimension matching: use the namespace's expected dimension
 	instance, instanceType := resolveResourceFromDimensions(info.Dimensions, namespace, info.AlarmName)
 
+	var lookupIds []string
+
+	// A load balancer's metric dimension is "app/<name>/<id>" (or net/, gwy/);
+	// the inventory stores the load balancer under its ARN.
+	if namespace.ServiceName == ServiceNameELB {
+		if arn := loadBalancerArnFromDimension(instance, info.AlarmArn, info.Region, info.AccountNumber); arn != "" {
+			lookupIds = append(lookupIds, arn)
+		}
+	}
+
 	// ECS special case: compose multi-part resource ID from cluster/task/container dimensions
 	if namespace.ServiceName == ServiceNameECS {
 		var cluster, task, container, service string
@@ -649,6 +743,11 @@ func EnrichCloudWatchAlarm(ctx context.Context, info CloudWatchAlarmInfo, resolv
 			} else if service != "" {
 				instance = fmt.Sprintf("%s/%s", cluster, service)
 				instanceType = "ServiceName"
+				// The alarm is about the service, not its cluster. The inventory
+				// stores the service under its bare name, typed "service"; typed
+				// "cluster", a cluster named like the service would be chosen.
+				namespace.ResourceType = "service"
+				lookupIds = append(lookupIds, service)
 			}
 			// else: just use the cluster name (already set by resolveResourceFromDimensions)
 		}
@@ -675,6 +774,7 @@ func EnrichCloudWatchAlarm(ctx context.Context, info CloudWatchAlarmInfo, resolv
 	result.ResourceType = namespace.ResourceType
 	result.ResourceServiceName = namespace.ServiceName
 	result.InstanceType = instanceType
+	result.ResourceLookupIds = lookupIds
 
 	// 3. Set standard labels
 	result.Labels["aws_event_arn"] = info.AlarmArn
@@ -1079,6 +1179,8 @@ func extractCloudWatchAlarmInfoFromEB(ebEvent EventBridgeEvent) (CloudWatchAlarm
 
 	stateMap, _ := detail["state"].(map[string]any)
 	stateValue, _ := stateMap["value"].(string)
+	stateTimestamp, _ := stateMap["timestamp"].(string)
+	stateChangedAt, _ := parseAlarmStateTime(stateTimestamp)
 
 	var metricName, metricNamespace, statistic, threshold string
 	var dims []AlarmDimension
@@ -1125,6 +1227,7 @@ func extractCloudWatchAlarmInfoFromEB(ebEvent EventBridgeEvent) (CloudWatchAlarm
 		AccountNumber:   ebEvent.Account,
 		AlarmArn:        alarmArn,
 		StateValue:      stateValue,
+		StateChangedAt:  stateChangedAt,
 		Dimensions:      dims,
 	}, true
 }
@@ -1153,4 +1256,23 @@ func describeMetricFilter(ctx context.Context, cfg aws.Config, metricName, metri
 		LogGroupName:  aws.ToString(output.MetricFilters[0].LogGroupName),
 		FilterPattern: aws.ToString(output.MetricFilters[0].FilterPattern),
 	}, nil
+}
+
+// loadBalancerArnFromDimension turns a load balancer metric dimension
+// ("app/<name>/<id>", "net/...", "gwy/...") into the load balancer's ARN, which
+// is the id the inventory stores it under. The partition is taken from the
+// alarm's own ARN so that aws-cn and aws-us-gov accounts get theirs. Classic
+// load balancers are named without a prefix and get no ARN here.
+func loadBalancerArnFromDimension(dimension, alarmArn, region, account string) string {
+	if region == "" || account == "" {
+		return ""
+	}
+	if !strings.HasPrefix(dimension, "app/") && !strings.HasPrefix(dimension, "net/") && !strings.HasPrefix(dimension, "gwy/") {
+		return ""
+	}
+	partition := "aws"
+	if parts := strings.SplitN(alarmArn, ":", 3); len(parts) == 3 && parts[0] == "arn" && parts[1] != "" {
+		partition = parts[1]
+	}
+	return fmt.Sprintf("arn:%s:elasticloadbalancing:%s:%s:loadbalancer/%s", partition, region, account, dimension)
 }

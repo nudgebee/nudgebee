@@ -41,7 +41,8 @@ spec:
     - host: {{ .host | quote }}
       http:
         paths:
-          {{- range .paths }}
+          {{- $defaultPaths := list (dict "path" "/register" "pathType" "Prefix") (dict "path" "/status" "pathType" "Prefix") }}
+          {{- range (.paths | default $defaultPaths) }}
           - path: {{ .path }}
             {{- if and .pathType (semverCompare ">=1.18-0" $.Capabilities.KubeVersion.GitVersion) }}
             pathType: {{ .pathType }}

@@ -45,6 +45,18 @@ func TestTicketWriteTasks_DryRunSkipsSideEffects(t *testing.T) {
 			expected: map[string]any{"ticket_id": "PROJ-1", "status": "dry_run"},
 		},
 		{
+			// No universal field set — proves the validation checks additionalFields too.
+			name: "update with only a platform-specific field",
+			task: &TicketsUpdateTask{},
+			params: map[string]any{
+				"integration_id":   integrationID,
+				"ticket_id":        "INC1",
+				"resolution_code":  "Solved (Permanently)",
+				"resolution_notes": "root caused",
+			},
+			expected: map[string]any{"ticket_id": "INC1", "status": "dry_run"},
+		},
+		{
 			name: "assign",
 			task: &TicketsAssignTask{},
 			params: map[string]any{

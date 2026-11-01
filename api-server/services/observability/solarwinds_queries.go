@@ -17,16 +17,16 @@ func buildSolarWindsNodeQueries(nodeName string, metrics []string) map[string]st
 		return queries
 	}
 	for _, k := range metrics {
-		switch k {
-		case "cpu_usage", "cpu_usage_line":
+		switch UtilisationKey(k) {
+		case KeyCPUUsage, KeyCPUUsageLine:
 			queries[k] = "k8s.node.cpu.usage.seconds.rate"
-		case "memory_usage", "memory_usage_line":
+		case KeyMemoryUsage, KeyMemoryUsageLine:
 			queries[k] = "k8s.node.memory.working_set"
-		case "cpu_allocatable":
+		case KeyCPUAllocatable:
 			queries[k] = "k8s.node.cpu.allocatable"
-		case "memory_allocatable":
+		case KeyMemoryAllocatable:
 			queries[k] = "k8s.node.memory.allocatable"
-		case "disk_used":
+		case KeyDiskUsed:
 			queries[k] = "k8s.node.fs.usage"
 			// cpu_request, memory_request, cpu_limit, memory_limit:
 			//   No per-node pod-request rollup metric exists in SWO — skip.
@@ -50,23 +50,23 @@ func buildSolarWindsWorkloadQueries(meta RequestMetadata, metrics []string) map[
 		return queries
 	}
 	for _, k := range metrics {
-		switch k {
+		switch UtilisationKey(k) {
 		// Pod-level OTel metrics are used for all workload kinds (deployment, statefulset, pod).
 		// When filtered by k8s.deployment.name / k8s.statefulset.name and grouped by that key,
 		// SWO aggregates across all pods belonging to the workload.
-		case "cpu_usage", "cpu_usage_line":
+		case KeyCPUUsage, KeyCPUUsageLine:
 			queries[k] = "k8s.pod.cpu.usage.seconds.rate"
-		case "memory_usage", "memory_usage_line":
+		case KeyMemoryUsage, KeyMemoryUsageLine:
 			queries[k] = "k8s.pod.memory.working_set"
 		// Spec (request/limit) metrics use the container-level OTel variants which are generated
 		// by Kubernetes State Metrics and do carry deployment hierarchy attributes in SWO.
-		case "cpu_request":
+		case KeyCPURequest:
 			queries[k] = "k8s.container.spec.cpu.requests"
-		case "memory_request":
+		case KeyMemoryRequest:
 			queries[k] = "k8s.container.spec.memory.requests"
-		case "cpu_limit":
+		case KeyCPULimit:
 			queries[k] = "k8s.container.spec.cpu.limit"
-		case "memory_limit":
+		case KeyMemoryLimit:
 			queries[k] = "k8s.container.spec.memory.limit"
 		}
 	}
@@ -83,10 +83,10 @@ func buildSolarWindsWorkloadQueries(meta RequestMetadata, metrics []string) map[
 func buildSolarWindsClusterPercentileQueries(metrics []string) map[string]string {
 	queries := make(map[string]string)
 	for _, k := range metrics {
-		switch k {
-		case "p90_cpu", "p50_cpu", "max_usage_cpu", "cpu_usage_line":
+		switch UtilisationKey(k) {
+		case KeyP90CPU, KeyP50CPU, KeyMaxUsageCPU, KeyCPUUsageLine:
 			queries[k] = "k8s.node.cpu.usage.seconds.rate"
-		case "p90_mem", "p50_mem", "max_usage_mem", "memory_usage_line":
+		case KeyP90Mem, KeyP50Mem, KeyMaxUsageMem, KeyMemoryUsageLine:
 			queries[k] = "k8s.node.memory.working_set"
 		}
 	}
@@ -98,10 +98,10 @@ func buildSolarWindsClusterPercentileQueries(metrics []string) map[string]string
 func buildSolarWindsClusterAggregateQueries(metrics []string) map[string]string {
 	queries := make(map[string]string)
 	for _, k := range metrics {
-		switch k {
-		case "cpu_request":
+		switch UtilisationKey(k) {
+		case KeyCPURequest:
 			queries[k] = "k8s.cluster.spec.cpu.requests"
-		case "memory_request":
+		case KeyMemoryRequest:
 			queries[k] = "k8s.cluster.spec.memory.requests"
 		}
 	}
@@ -118,17 +118,17 @@ func buildSolarWindsClusterAggregateQueries(metrics []string) map[string]string 
 func buildSolarWindsClusterSumQueries(metrics []string) map[string]string {
 	queries := make(map[string]string)
 	for _, k := range metrics {
-		switch k {
-		case "cpu_real":
+		switch UtilisationKey(k) {
+		case KeyCPUReal:
 			// Actual CPU usage summed across all cluster nodes.
 			queries[k] = "k8s.node.cpu.usage.seconds.rate"
-		case "mem_real":
+		case KeyMemReal:
 			// Actual memory working-set summed across all cluster nodes.
 			queries[k] = "k8s.node.memory.working_set"
-		case "cpu_total":
+		case KeyCPUTotal:
 			// Allocatable CPU summed across all cluster nodes.
 			queries[k] = "k8s.node.cpu.allocatable"
-		case "mem_total":
+		case KeyMemTotal:
 			// Allocatable memory summed across all cluster nodes.
 			queries[k] = "k8s.node.memory.allocatable"
 		}
@@ -306,12 +306,12 @@ func fetchSolarWindsClusterUtilisation(
 				if len(qr.Payload) == 0 {
 					continue
 				}
-				switch qr.QueryKey {
-				case "p90_cpu", "p90_mem":
+				switch UtilisationKey(qr.QueryKey) {
+				case KeyP90CPU, KeyP90Mem:
 					pctOut.Results[i].Payload = []Result{computePercentileFromSeries(qr.Payload, 0.90)}
-				case "p50_cpu", "p50_mem":
+				case KeyP50CPU, KeyP50Mem:
 					pctOut.Results[i].Payload = []Result{computePercentileFromSeries(qr.Payload, 0.50)}
-				case "max_usage_cpu", "max_usage_mem":
+				case KeyMaxUsageCPU, KeyMaxUsageMem:
 					pctOut.Results[i].Payload = []Result{computePercentileFromSeries(qr.Payload, 1.0)}
 				}
 			}

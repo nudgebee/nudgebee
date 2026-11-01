@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -28,7 +29,7 @@ var (
 	metricsSourceProviders = []string{
 		"datadog", "prometheus", "chronosphere", "aws_cloudwatch",
 		"azure_app_insights", "newrelic", "splunk_observability_platform", "ES",
-		"cubeapm", "splunk_enterprise", "dynatrace", "solarwinds",
+		"cubeapm", "splunk_enterprise", "dynatrace", "solarwinds", "signoz",
 	}
 )
 
@@ -53,12 +54,15 @@ func TestUserHistoryModulesCoverAllProviders(t *testing.T) {
 // The Go allowlist mirrors the SQL one; drift between them reintroduces exactly
 // the silent-rejection failure the mirror exists to prevent.
 func TestUserHistoryModulesMatchMigration(t *testing.T) {
+	// Every allowlist change re-creates module_check in a new *_query_history_modules
+	// migration; the newest one (filenames start with a timestamp) is the one in force.
 	matches, err := filepath.Glob(filepath.Join(
-		"..", "..", "migrations", "migrations", "app", "*_add_forward_port_query_history_modules.up.sql"))
+		"..", "..", "migrations", "migrations", "app", "*_query_history_modules.up.sql"))
 	require.NoError(t, err)
-	require.Len(t, matches, 1, "expected exactly one user_history module_check migration")
+	require.NotEmpty(t, matches, "expected a user_history module_check migration")
+	sort.Strings(matches)
 
-	body, err := os.ReadFile(matches[0])
+	body, err := os.ReadFile(matches[len(matches)-1])
 	require.NoError(t, err)
 
 	// Only the ADD CONSTRAINT statement, so the comment block above it (which

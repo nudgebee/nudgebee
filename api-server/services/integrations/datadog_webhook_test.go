@@ -2,16 +2,20 @@ package integrations
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"nudgebee/services/event"
 	"nudgebee/services/integrations/core"
+	"nudgebee/services/internal/database"
 	"nudgebee/services/internal/testenv"
 	"nudgebee/services/security"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const datadogPayload = `{"time":"2025-06-27T06:51:30.582796049Z","level":"INFO","msg":"datadog webhook","url":"/api/webhooks/datadog","headers":{"Accept":"*/*","Accept-Encoding":"gzip, deflate","Authorization":"Bearer MySuperSecretToken","Content-Length":"4147","Content-Type":"application/json; charset=utf-8","Traceparent":"00-000000000000000046abb28660870352-0e5fc54254ac193c-00","User-Agent":"python-requests/2.32.3","X-Datadog-Parent-Id":"1035763327997581628","X-Datadog-Trace-Id":"5092360093887300434","X-Forwarded-For":"192.168.1.6","X-Forwarded-Host":"app.nudgebee.com","X-Forwarded-Port":"443","X-Forwarded-Proto":"https","X-Forwarded-Scheme":"https","X-Real-Ip":"192.168.1.6","X-Request-Id":"b9b204f5d0c45b06b6910eb2f64f1bcf","X-Scheme":"https"},"payload":"{\n    \"id\": \"8166212983446713351\",\n    \"last_updated\": \"1751007029000\",\n    \"event_type\": \"query_alert_monitor\",\n    \"title\": \"[P1] [Triggered] CPU usage is high for host k3s-example-node-pool-a6e3h\",\n    \"date\": \"1751007029000\",\n    \"org\": {\n        \"id\": \"1300568798\",\n        \"name\": \"Nudgebee\"\n    },\n    \"body\": \"%%%\\n## \\ud83d\\udea8 What\\u2019s happening\\n\\nHigh CPU usage detected on host k3s-example-node-pool-a6e3h.\\n\\nThis means the host is spending most of its time actively processing, with very little idle CPU capacity available. It typically signals that the system is under heavy load \\u2014 either from intense workloads, misbehaving processes, or increased traffic.\\n\\n---\\n\\n## \\ud83d\\udcc8 Impact\\n\\nIf CPU usage remains high over time, it can lead to:\\n\\n- Sluggish application and system performance\\n- Delayed or stalled background jobs\\n- Timeouts, degraded services, or crashes due to resource exhaustion\\n\\nThis may affect critical applications running on this host and lead to broader service degradation if not addressed promptly.\\n\\n---\\n\\n## Runbook\\n\\n### Initial Troubleshooting Steps\\n\\n1. **Identify the affected host** from the alert.\\n2. Open [**Infrastructure > Host Details**](https://app.datadoghq.com/infrastructure?tags=host%3Ak3s-example-node-pool-a6e3h) in Datadog.\\n3. In the **Metrics** tab, examine:\\n   - ` + "`" + `system.cpu.user` + "`" + `, ` + "`" + `system.cpu.system` + "`" + `, ` + "`" + `system.cpu.idle` + "`" + `\\n   - ` + "`" + `process.cpu.total_pct` + "`" + `, ` + "`" + `process.*` + "`" + ` metrics\\n4. Use [**Live Processes**](https://app.datadoghq.com/process?query=host%3Ak3s-example-node-pool-a6e3h) to view real-time CPU usage.\\n5. SSH into the host (if needed) and run:\\n   ` + "```" + `bash\\n   top -o %CPU\\n   \\n### Cause and Resolution\\n\\nCause | Resolution\\n------|------\\nRunaway processes | **Restart or stop** high-CPU processes if they\\u2019re stuck or misbehaving.\\n------|------\\nTraffic/load spike | Scale out or up the infrastructure\\n------|------\\nCode/deployment issue | Roll back recent changes or investigate further.\\n------|------\\nContainer/JVM misconfiguration | Tune resource limits and runtime settings\\n        \\n###  Related links\\n\\n* [Host Map](https://app.datadoghq.com/infrastructure/map)\\n* [Live Processes](https://app.datadoghq.com/process?query=host%3Ak3s-example-node-pool-a6e3h)\\n* [System Dashboards](https://app.datadoghq.com/dashboard/lists)\\n* [Monitor Documentation](https://docs.datadoghq.com/monitors/)\\n\\n### Who should be notified?\\n\\nAssign the appropriate notification handle for this alert (e.g., ` + "`" + `@slack-infra` + "`" + `, ` + "`" + `@pagerduty-core-systems` + "`" + `):  \\n` + "`" + `@your-team-handle` + "`" + `\\n\\n[![Metric Graph](https://p.us5.datadoghq.com/snapshot/view/dd-snapshots-us5-prod/org_1300568798/2025-06-27/c7f8fa5bc8e2b9def52d388a326d3e84717271ca.png)](https://us5.datadoghq.com/monitors/8248529?group=host%3Ak3s-example-node-pool-a6e3h&from_ts=1751006129000&to_ts=1751007329000&event_id=8166212983446713351&link_source=monitor_notif)\\n\\n` + "`" + `avg(last_15m):100 - avg:system.cpu.idle{*} by {host} > 90` + "`" + `\\n\\nThe monitor was last triggered at Fri Jun 27 2025 06:50:29 UTC.\\n\\n- - -\\n\\n[[Monitor Status](https://us5.datadoghq.com/monitors/8248529?group=host%3Ak3s-example-node-pool-a6e3h&from_ts=1751006129000&to_ts=1751007329000&event_id=8166212983446713351&link_source=monitor_notif)] \\u00b7 [[Edit Monitor](https://us5.datadoghq.com/monitors/8248529/edit?link_source=monitor_notif)] \\u00b7 [[View k3s-example-node-pool-a6e3h](https://us5.datadoghq.com/infrastructure?filter=k3s-example-node-pool-a6e3h&link_source=monitor_notif)] \\u00b7 [[Show Processes](https://us5.datadoghq.com/process?from_ts=1751006129000&to_ts=1751007149000&live=false&showSummaryGraphs=true&sort=cpu%2CASC&query=host%3Ak3s-example-node-pool-a6e3h&link_source=monitor_notif)] \\u00b7 [[Related Logs](https://us5.datadoghq.com/logs?query=host%3A%22k3s-example-node-pool-a6e3h%22&from_ts=1751006129000&to_ts=1751007029000&live=false&link_source=monitor_notif)]\\n%%%\"\n}"}`
@@ -662,4 +666,205 @@ func TestDatadogRuleID(t *testing.T) {
 			assert.Equal(t, tc.wantFallback, fallback)
 		})
 	}
+}
+
+// noMetastore makes every metastore lookup fail at once, so the parser's
+// enrichment lookups (Datadog API keys, workloads, nodes) miss the way they do
+// for an account with no Datadog API integration, without dialling a database.
+func noMetastore(t *testing.T) {
+	t.Helper()
+	prev, had := database.GetDatabaseManagerIfInitialized(database.Metastore)
+	database.RegisterDatabaseManagerHook(database.Metastore, func() (*database.DatabaseManager, error) {
+		return nil, errors.New("no metastore in this test")
+	})
+	t.Cleanup(func() {
+		if had {
+			database.RegisterDatabaseManagerHook(database.Metastore, func() (*database.DatabaseManager, error) { return prev, nil })
+			return
+		}
+		database.RegisterDatabaseManagerHook(database.Metastore, nil)
+	})
+}
+
+// parseDatadogDelivery runs one webhook delivery through the real parser.
+func parseDatadogDelivery(t *testing.T, payload string) core.EventIncomingWebhook {
+	t.Helper()
+	events, err := DatadogWebhook{}.ProcessEventWebook(testTenantRequestContext(), nil, "7a1d0c3e-0000-4000-8000-0000000000a1", payload)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	return events[0]
+}
+
+// Datadog stamps $LAST_UPDATED with the notification's own time, so on a firing
+// delivery it equals $DATE (every captured fixture here has them equal). Passed on
+// as ends_at, that is a zero-length interval, and InsertEvent's point-in-time rule
+// (#38289) stores the alert CLOSED / RESOLVED on arrival: it never shows as open,
+// and the later [Recovered] has nothing left to close. Only a recovery ends the
+// alert, as in the Elasticsearch webhook.
+func TestDatadogWebhook_FiringDeliveryHasNoEndTime(t *testing.T) {
+	noMetastore(t)
+	for _, tc := range []struct{ name, payload string }{
+		{"captured [Triggered] host monitor", datadogPayload},
+		{"captured [Triggered] error-tracking monitor", datadogPayload2},
+		{"[Triggered] query alert", datadogQueryAlertPayload},
+		{"[Triggered] synthetics", datadogSyntheticsPayload},
+		{"[Re-Triggered] synthetics", datadogReTriggeredPayload},
+		{"[Warn] query alert", datadogWarnPayload},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := parseDatadogDelivery(t, tc.payload)
+			require.Equal(t, string(event.EventStatusFiring), e.EventStatus)
+			assert.True(t, e.EventEndsAt.IsZero(),
+				"a firing delivery must carry no end time, got ends_at %s == starts_at %s", e.EventEndsAt.UTC(), e.EventCreatedAt.UTC())
+		})
+	}
+}
+
+// A "notification" delivery is a one-shot Datadog event, not a monitor alert: no
+// Recovered ever follows it, so it keeps its point-in-time end (ends_at ==
+// starts_at) and is stored closed on arrival instead of staying open for good.
+func TestDatadogWebhook_OneShotNotificationKeepsItsEndTime(t *testing.T) {
+	noMetastore(t)
+	payload := strings.Replace(datadogPayload, `\"event_type\": \"query_alert_monitor\"`, `\"event_type\": \"notification\"`, 1)
+	require.NotEqual(t, datadogPayload, payload, "fixture must contain the event_type being replaced")
+	e := parseDatadogDelivery(t, payload)
+	require.False(t, e.EventEndsAt.IsZero(), "a one-shot notification must keep its end time")
+	assert.Equal(t, e.EventCreatedAt, e.EventEndsAt)
+}
+
+func TestDatadogWebhook_RecoveryCarriesItsEndTime(t *testing.T) {
+	noMetastore(t)
+	e := parseDatadogDelivery(t, datadogResolvedPayload)
+	require.Equal(t, string(event.EventStatusResolved), e.EventStatus)
+	assert.Equal(t, time.UnixMilli(1751174655000), e.EventEndsAt, "the recovery's last_updated is when the alert ended")
+}
+
+// datadogPayload2 and datadogResolvedPayload are captured deliveries of one
+// multi-alert monitor (8249055, grouped by issue.id) for two different issues.
+// Their template has no $AGGREG_KEY, so both used to get the fingerprint
+// "8249055-", and the [Recovered] of one issue closed the open event of every
+// other issue of the monitor. The group in the monitor link tells them apart.
+func TestDatadogWebhook_GroupsOfOneMonitorHaveTheirOwnFingerprint(t *testing.T) {
+	noMetastore(t)
+	firing := parseDatadogDelivery(t, datadogPayload2)
+	recovered := parseDatadogDelivery(t, datadogResolvedPayload)
+
+	assert.Equal(t, "8249055-issue.id:2df20914-58c8-11f0-b092-da7ad0900000", firing.Investigation.Fingerprint)
+	assert.Equal(t, "8249055-issue.id:655bd304-5322-11f0-80d4-da7ad0900000", recovered.Investigation.Fingerprint)
+	assert.NotEqual(t, firing.Investigation.Fingerprint, recovered.Investigation.Fingerprint,
+		"a recovery of one issue must not resolve another issue's event")
+
+	// Events opened before this change were stored under the shared key; the
+	// resolve path closes those under it too.
+	assert.Equal(t, "8249055-", recovered.LegacyFingerprint)
+}
+
+// Every delivery for one group must land on one fingerprint, or its recovery
+// misses the firing it ends.
+func TestDatadogWebhook_OneGroupKeepsOneFingerprintAcrossTransitions(t *testing.T) {
+	noMetastore(t)
+	triggered := parseDatadogDelivery(t, datadogPayload)
+	reTriggered := parseDatadogDelivery(t, strings.NewReplacer(
+		`[Triggered]`, `[Re-Triggered]`, `8166212983446713351`, `8166212983446799999`).Replace(datadogPayload))
+	recovered := parseDatadogDelivery(t, strings.NewReplacer(
+		`[Triggered]`, `[Recovered]`, `8166212983446713351`, `8166212983446700000`).Replace(datadogPayload))
+
+	require.Equal(t, string(event.EventStatusResolved), recovered.EventStatus)
+	assert.Equal(t, "8248529-host:k3s-example-node-pool-a6e3h", triggered.Investigation.Fingerprint)
+	assert.Equal(t, triggered.Investigation.Fingerprint, reTriggered.Investigation.Fingerprint)
+	assert.Equal(t, triggered.Investigation.Fingerprint, recovered.Investigation.Fingerprint)
+}
+
+// The documented template sends $AGGREG_KEY, which Datadog already keys per
+// monitor group (live check: distinct aggregation keys == distinct groups for every
+// monitor, one key per group across all its transitions). Those fingerprints are
+// left exactly as they were, so events already open under them still resolve.
+func TestDatadogWebhook_AggregationKeyFingerprintUnchanged(t *testing.T) {
+	noMetastore(t)
+	e := parseDatadogDelivery(t, datadogQueryAlertPayload)
+	assert.Equal(t, "266154777-3f63d7b1a675db4d4f79cb6efcbb8afc", e.Investigation.Fingerprint)
+	assert.Empty(t, e.LegacyFingerprint)
+
+	e = parseDatadogDelivery(t, datadogSyntheticsPayload)
+	assert.Equal(t, "166187407-73e071f5c67d33400f240ec415c2d48e", e.Investigation.Fingerprint)
+	assert.Empty(t, e.LegacyFingerprint)
+}
+
+// A delivery whose body carries no group link falls back to $ALERT_SCOPE, read in
+// the same canonical form as the link's group so either source names the group
+// the same way.
+const datadogScopeOnlyPayload = `{
+	"id": "8834669752322638245",
+	"last_updated": "1790850157000",
+	"event_type": "query_alert_monitor",
+	"title": "[Triggered on {kube_cluster_name:shop-prod,pod_name:nightly-report-29847482-ml9tk}] [Kubernetes] Monitor Kubernetes Pods Restarting",
+	"date": "1790850157000",
+	"org": { "id": "9999999", "name": "xyz-org" },
+	"body": "%%%\nPod nightly-report-29847482-ml9tk restarted multiple times in the last five minutes.\n\n[[Edit Monitor](https://app.datadoghq.com/monitors/16207777/edit?link_source=monitor_notif)]\n%%%",
+	"alert": { "alert_id": "16207777", "alert_metric": "kubernetes.containers.restarts", "alert_query": "", "alert_status": "", "alert_scope": "pod_name:nightly-report-29847482-ml9tk, kube_cluster_name:shop-prod", "alert_transition": "Triggered", "alert_type": "error", "alert_metric_namespace": "kubernetes" },
+	"incident": { "incident_public_id": "null", "incident_severity": "null", "incident_status": "null", "incident_url": "null", "incident_uuid": "null", "incident_title": "", "incident_message": "", "incident_integrations": null, "incident_fields": null },
+	"event": { "aggreg_key": "", "event_id": "ID", "event_url": "https://app.datadoghq.com/event/event?id=8834669752322638245" }
+}`
+
+func TestDatadogWebhook_AlertScopeIdentifiesTheGroupWithoutALink(t *testing.T) {
+	noMetastore(t)
+	e := parseDatadogDelivery(t, datadogScopeOnlyPayload)
+	assert.Equal(t, "16207777-kube_cluster_name:shop-prod,pod_name:nightly-report-29847482-ml9tk", e.Investigation.Fingerprint)
+	assert.Equal(t, "16207777-", e.LegacyFingerprint)
+}
+
+// A simple (ungrouped) monitor has one identity, which "<monitorID>-" already
+// is; it keeps that fingerprint and needs no legacy key.
+func TestDatadogWebhook_SimpleMonitorKeepsMonitorFingerprint(t *testing.T) {
+	noMetastore(t)
+	payload := strings.NewReplacer(`"aggreg_key": "abc123def456"`, `"aggreg_key": ""`).Replace(datadogWarnPayload)
+	e := parseDatadogDelivery(t, payload)
+	assert.Equal(t, "266155000-", e.Investigation.Fingerprint)
+	assert.Empty(t, e.LegacyFingerprint)
+}
+
+// $ID is new on every notification, re-notifications of a still-firing group
+// included. A monitor delivery therefore carries a FiringKey, which makes the
+// framework store it on its group's open event, if there is one, instead of
+// opening another (core.firingFindingIDFor).
+func TestDatadogWebhook_MonitorDeliveryCarriesAFiringKey(t *testing.T) {
+	noMetastore(t)
+	for _, tc := range []struct{ name, payload string }{
+		{"captured [Triggered] host monitor", datadogPayload},
+		{"captured [Triggered] error-tracking monitor", datadogPayload2},
+		{"[Triggered] with $AGGREG_KEY", datadogQueryAlertPayload},
+		{"[Re-Triggered] synthetics", datadogReTriggeredPayload},
+		{"[Warn] query alert", datadogWarnPayload},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := parseDatadogDelivery(t, tc.payload)
+			require.NotEmpty(t, e.FiringKey)
+			assert.Equal(t, core.FiringKeyFromStart(e.Investigation.Fingerprint, e.EventCreatedAt), e.FiringKey)
+		})
+	}
+}
+
+// A one-shot "notification" delivery is stored closed on arrival and never
+// re-notified, so it keeps its own $ID and does not look for an open event.
+// A multi-alert monitor (its title names a group) whose delivery carries no
+// $AGGREG_KEY, no group in its monitor link and no alert_scope falls back to the
+// monitor-wide fingerprint shared by every group. Folding re-notifications into the
+// open event there would swallow every other group's alert into the first one, so
+// such a delivery keeps one event per notification (no FiringKey).
+func TestDatadogWebhook_UnidentifiedGroupGetsNoFiringKey(t *testing.T) {
+	noMetastore(t)
+	payload := strings.ReplaceAll(datadogPayload2, "?group=", "?grp=")
+	require.NotEqual(t, datadogPayload2, payload, "fixture must carry a monitor link group to remove")
+	e := parseDatadogDelivery(t, payload)
+	require.Equal(t, "8249055-", e.Investigation.Fingerprint, "no group is derivable, so the fingerprint is monitor-wide")
+	assert.Empty(t, e.FiringKey, "re-notifications must not fold different groups into one event")
+}
+
+func TestDatadogWebhook_OneShotNotificationHasNoFiringKey(t *testing.T) {
+	noMetastore(t)
+	payload := strings.Replace(datadogPayload, `\"event_type\": \"query_alert_monitor\"`, `\"event_type\": \"notification\"`, 1)
+	require.NotEqual(t, datadogPayload, payload, "fixture must contain the event_type being replaced")
+	e := parseDatadogDelivery(t, payload)
+	assert.Empty(t, e.FiringKey)
+	assert.Equal(t, "8166212983446713351", e.EventId)
 }

@@ -135,6 +135,88 @@ func TestLLMValidateConfig(t *testing.T) {
 			wantSubstrs: []string{"llm_provider_api_endpoint is required"},
 		},
 		{
+			name: "azure v1 needs no api version",
+			cfg: map[string]string{
+				"llm_provider":              "azure",
+				"llm_model_name":            "gpt-5-mini",
+				"llm_provider_api_key":      "k",
+				"llm_provider_api_endpoint": "https://x.openai.azure.com",
+			},
+			wantErr: false,
+		},
+		{
+			name: "azure classic requires api version",
+			cfg: map[string]string{
+				"llm_provider":              "azure",
+				"llm_model_name":            "gpt-5-mini",
+				"llm_provider_api_key":      "k",
+				"llm_provider_api_endpoint": "https://x.openai.azure.com",
+				"llm_provider_api_style":    "classic",
+			},
+			wantErr:     true,
+			wantSubstrs: []string{"llm_provider_api_version is required when llm_provider_api_style is classic"},
+		},
+		{
+			name: "azure invalid api style",
+			cfg: map[string]string{
+				"llm_provider":              "azure",
+				"llm_model_name":            "gpt-5-mini",
+				"llm_provider_api_key":      "k",
+				"llm_provider_api_endpoint": "https://x.openai.azure.com",
+				"llm_provider_api_style":    "v2",
+			},
+			wantErr:     true,
+			wantSubstrs: []string{`llm_provider_api_style "v2" is invalid`},
+		},
+		{
+			name: "azure tier, agent and fallback classic need their own api version",
+			cfg: map[string]string{
+				"llm_provider":                       "azure",
+				"llm_model_name":                     "gpt-5-mini",
+				"llm_provider_api_key":               "k",
+				"llm_provider_api_endpoint":          "https://x.openai.azure.com",
+				"llm_tier_api_style_reasoning":       "classic",
+				"llm_provider_api_style_aws_debug":   "classic",
+				"llm_provider_api_version_aws_debug": "2024-10-21",
+				"llm_fallback_provider":              "azure",
+				"llm_fallback_model":                 "gpt-4o",
+				"llm_fallback_api_key":               "k",
+				"llm_fallback_api_endpoint":          "https://x.openai.azure.com",
+				"llm_fallback_api_style":             "classic",
+			},
+			wantErr: true,
+			wantSubstrs: []string{
+				"llm_tier_api_version_reasoning is required when llm_tier_api_style_reasoning is classic",
+				"llm_fallback_api_version is required when llm_fallback_api_style is classic",
+			},
+		},
+		{
+			name: "a stale classic style on a slot that moved off azure is ignored",
+			cfg: map[string]string{
+				"llm_provider":                 "azure",
+				"llm_model_name":               "gpt-5-mini",
+				"llm_provider_api_key":         "k",
+				"llm_provider_api_endpoint":    "https://x.openai.azure.com",
+				"llm_tier_provider_reasoning":  "openai",
+				"llm_tier_model_reasoning":     "gpt-5",
+				"llm_tier_api_style_reasoning": "classic",
+			},
+			wantErr: false,
+		},
+		{
+			name: "azure entra needs no api key",
+			cfg: map[string]string{
+				"llm_provider":              "azure",
+				"llm_model_name":            "gpt-5-mini",
+				"llm_provider_api_endpoint": "https://x.openai.azure.com",
+				"llm_auth_type":             "oauth_client_credentials",
+				"llm_oauth_token_url":       "https://login.microsoftonline.com/t/oauth2/v2.0/token",
+				"llm_oauth_client_id":       "c",
+				"llm_oauth_client_secret":   "s",
+			},
+			wantErr: false,
+		},
+		{
 			name: "sagemaker missing region",
 			cfg: map[string]string{
 				"llm_provider":              "sagemaker",
@@ -253,6 +335,11 @@ func TestLLMRequiredFieldsMatchSchema(t *testing.T) {
 		for fieldName, prop := range schema.Properties {
 			cond, ok := prop.RequiredWhen["llm_provider"]
 			if !ok {
+				continue
+			}
+			// Style-conditional fields (azure classic api-version) are
+			// validated separately in ValidateConfig.
+			if _, styled := prop.RequiredWhen["llm_provider_api_style"]; styled {
 				continue
 			}
 			for _, p := range asStringSlice(cond) {

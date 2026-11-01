@@ -406,3 +406,41 @@ describe('ResponseMetaRail duration tooltip', () => {
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
   });
 });
+
+describe('ResponseMetaRail approvals/clarifications pills', () => {
+  const none = { count: 0, needsAttention: false };
+
+  it('shows one pill per kind, each opening the drawer', async () => {
+    const user = userEvent.setup();
+    const onOpen = jest.fn();
+    render(
+      <ResponseMetaRail
+        followups={{ approvals: { count: 2, needsAttention: false }, clarifications: { count: 1, needsAttention: false } }}
+        onOpenFollowups={onOpen}
+      />
+    );
+    const approvals = screen.getByLabelText('2 approvals, open details');
+    const clarifications = screen.getByLabelText('1 clarification, open details');
+    expect(approvals).toHaveAttribute('data-tone', 'neutral');
+    expect(clarifications).toHaveAttribute('data-tone', 'neutral');
+    await user.click(approvals);
+    await user.click(clarifications);
+    expect(onOpen).toHaveBeenCalledTimes(2);
+  });
+
+  it('turns only the kind where something did not go ahead amber', () => {
+    render(
+      <ResponseMetaRail
+        followups={{ approvals: { count: 1, needsAttention: true }, clarifications: { count: 1, needsAttention: false } }}
+        onOpenFollowups={() => {}}
+      />
+    );
+    expect(screen.getByLabelText('1 approval, open details')).toHaveAttribute('data-tone', 'warning');
+    expect(screen.getByLabelText('1 clarification, open details')).toHaveAttribute('data-tone', 'neutral');
+  });
+
+  it('renders no pill when nothing was asked', () => {
+    render(<ResponseMetaRail followups={{ approvals: none, clarifications: none }} onOpenFollowups={() => {}} createdAt='2026-01-01T00:00:00Z' />);
+    expect(screen.queryByLabelText(/approval|clarification/)).not.toBeInTheDocument();
+  });
+});

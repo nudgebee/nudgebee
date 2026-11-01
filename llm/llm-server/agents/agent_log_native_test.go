@@ -14,12 +14,14 @@ import (
 
 func TestBuildFetchLogsDirectRequest_PropagatesKnowledgeForLeafPlanning(t *testing.T) {
 	ctx := toolcore.NbToolContext{
-		AccountId:        "account",
-		OriginalQuery:    "show payment errors",
-		KBPrestepContent: `<knowledge id="payments-runbook">{namespace="payments", app="payment-service"} |= "error"</knowledge>`,
+		AccountId:             "account",
+		OriginalQuery:         "show payment errors",
+		OriginalQueryFromUser: true,
+		KBPrestepContent:      `<knowledge id="payments-runbook">{namespace="payments", app="payment-service"} |= "error"</knowledge>`,
 	}
 	request := buildFetchLogsDirectRequest(ctx, toolcore.NBToolCallRequest{Command: "show payment errors"})
 	require.Equal(t, ctx.KBPrestepContent, request.KBPrestepContent)
+	require.True(t, request.OriginalQueryFromUser, "whether the original request is the user's own travels with it")
 
 	forwarded := buildFetchLogsDirectRequest(toolcore.NbToolContext{}, toolcore.NBToolCallRequest{
 		Command:   "show payment errors",
@@ -39,8 +41,9 @@ func TestDecodeLogQueryPlan_AcceptsMarkdownFences(t *testing.T) {
 func TestValidateLogQueryPlan(t *testing.T) {
 	provider := services_server.ObservabilityProvider{Provider: "loki"}
 	request := core.NBAgentRequest{
-		Query:         "show checkout errors last 30m limit 100",
-		OriginalQuery: "show checkout errors last 30m limit 100",
+		Query:                 "show checkout errors last 30m limit 100",
+		OriginalQuery:         "show checkout errors last 30m limit 100",
+		OriginalQueryFromUser: true,
 	}
 
 	t.Run("valid native defaults execution envelope", func(t *testing.T) {
@@ -55,8 +58,9 @@ func TestValidateLogQueryPlan(t *testing.T) {
 
 	t.Run("original explicit constraints override a rewritten command", func(t *testing.T) {
 		plan, err := validateLogQueryPlan(core.NBAgentRequest{
-			Query:         "show checkout errors last 2h limit 500",
-			OriginalQuery: "show checkout errors last 30m limit 100",
+			Query:                 "show checkout errors last 2h limit 500",
+			OriginalQuery:         "show checkout errors last 30m limit 100",
+			OriginalQueryFromUser: true,
 		}, provider, logQueryPlan{
 			QueryType: "native",
 			Native: nativeLogQueryPlan{
@@ -71,9 +75,10 @@ func TestValidateLogQueryPlan(t *testing.T) {
 
 	t.Run("unanchored relative window discards a stale planner end", func(t *testing.T) {
 		plan, err := validateLogQueryPlan(core.NBAgentRequest{
-			Query:            "show checkout errors last 30m",
-			OriginalQuery:    "show checkout errors last 30m",
-			KBPrestepContent: "An old incident ended at 2026-09-20T10:00:00Z",
+			Query:                 "show checkout errors last 30m",
+			OriginalQuery:         "show checkout errors last 30m",
+			OriginalQueryFromUser: true,
+			KBPrestepContent:      "An old incident ended at 2026-09-20T10:00:00Z",
 		}, provider, logQueryPlan{
 			QueryType: "native",
 			Native: nativeLogQueryPlan{
@@ -87,8 +92,9 @@ func TestValidateLogQueryPlan(t *testing.T) {
 
 	t.Run("explicit historical end is retained", func(t *testing.T) {
 		plan, err := validateLogQueryPlan(core.NBAgentRequest{
-			Query:         "show checkout errors last 30m ending at 2026-09-20T10:00:00Z",
-			OriginalQuery: "show checkout errors last 30m ending at 2026-09-20T10:00:00Z",
+			Query:                 "show checkout errors last 30m ending at 2026-09-20T10:00:00Z",
+			OriginalQuery:         "show checkout errors last 30m ending at 2026-09-20T10:00:00Z",
+			OriginalQueryFromUser: true,
 		}, provider, logQueryPlan{
 			QueryType: "native",
 			Native: nativeLogQueryPlan{
@@ -99,14 +105,32 @@ func TestValidateLogQueryPlan(t *testing.T) {
 		assert.Equal(t, "2026-09-20T10:00:00Z", plan.Native.EndTime)
 	})
 
-	t.Run("parent paraphrase cannot add a historical end", func(t *testing.T) {
+	t.Run("a historical end the fetch command states is kept", func(t *testing.T) {
 		plan, err := validateLogQueryPlan(core.NBAgentRequest{
-			Query:         "show checkout errors last 30m ending at 2026-09-20T10:00:00Z",
-			OriginalQuery: "show checkout errors last 30m",
+			Query:                 "show checkout errors last 30m ending at 2026-09-20T10:00:00Z",
+			OriginalQuery:         "show checkout errors last 30m",
+			OriginalQueryFromUser: true,
 		}, provider, logQueryPlan{
 			QueryType: "native",
 			Native: nativeLogQueryPlan{
 				Query: `{app="checkout"} |= "error"`, EndTime: "2026-09-20T10:00:00Z",
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "2026-09-20T09:30:00Z", plan.Native.StartTime)
+		assert.Equal(t, "2026-09-20T10:00:00Z", plan.Native.EndTime)
+		assert.Empty(t, plan.Native.TimeRange)
+	})
+
+	t.Run("a historical end only the plan came up with is dropped", func(t *testing.T) {
+		plan, err := validateLogQueryPlan(core.NBAgentRequest{
+			Query:                 "show checkout errors",
+			OriginalQuery:         "show checkout errors last 30m",
+			OriginalQueryFromUser: true,
+		}, provider, logQueryPlan{
+			QueryType: "native",
+			Native: nativeLogQueryPlan{
+				Query: `{app="checkout"} |= "error"`, TimeRange: "30m", EndTime: "2026-09-20T10:00:00Z",
 			},
 		})
 		require.NoError(t, err)
@@ -116,8 +140,9 @@ func TestValidateLogQueryPlan(t *testing.T) {
 
 	t.Run("command constraints fill gaps in original query", func(t *testing.T) {
 		plan, err := validateLogQueryPlan(core.NBAgentRequest{
-			Query:         "run the query last 15m limit 25",
-			OriginalQuery: "show checkout errors",
+			Query:                 "run the query last 15m limit 25",
+			OriginalQuery:         "show checkout errors",
+			OriginalQueryFromUser: true,
 		}, provider, logQueryPlan{
 			QueryType: "native",
 			Native:    nativeLogQueryPlan{Query: `{app="checkout"} |= "error"`},

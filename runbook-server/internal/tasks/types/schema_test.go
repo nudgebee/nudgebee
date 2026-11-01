@@ -46,6 +46,43 @@ func TestSchemaValidation(t *testing.T) {
 		assert.Contains(t, err.Error(), "missing required parameter: 'name'")
 	})
 
+	t.Run("should fill missing required nested parameter from its default", func(t *testing.T) {
+		nestedSchema := &Schema{
+			Properties: map[string]Property{
+				"event": {
+					Type:     PropertyTypeObject,
+					Required: true,
+					Schema: &Schema{Properties: map[string]Property{
+						"title":    {Type: PropertyTypeString, Required: true},
+						"priority": {Type: PropertyTypeString, Required: true, Default: "INFO"},
+					}},
+				},
+			},
+		}
+		event := map[string]any{"title": "disk full", "priority": ""}
+		err := nestedSchema.Validate(map[string]any{"event": event})
+		assert.NoError(t, err)
+		assert.Equal(t, "INFO", event["priority"])
+
+		err = nestedSchema.Validate(map[string]any{"event": map[string]any{"priority": "HIGH"}})
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "event.missing required parameter: 'title'")
+	})
+
+	t.Run("should apply RequiredWhen against a filled default regardless of map order", func(t *testing.T) {
+		depSchema := &Schema{
+			Properties: map[string]Property{
+				"type": {Type: PropertyTypeString, Required: true, Default: "webhook"},
+				"url":  {Type: PropertyTypeString, RequiredWhen: &RequiredWhen{Field: "type", Value: []string{"webhook"}}},
+			},
+		}
+		for i := 0; i < 50; i++ {
+			err := depSchema.Validate(map[string]any{})
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "missing required parameter: 'url'")
+		}
+	})
+
 	t.Run("should fail if parameter has incorrect type", func(t *testing.T) {
 		params := map[string]any{
 			"name":  123, // Should be string

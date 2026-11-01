@@ -10,6 +10,8 @@ import { ds } from '@utils/colors';
 import Tabs, { formatTabCount } from './Tabs';
 import Tooltip from '@ui/Tooltip';
 import Link from 'next/link';
+import ErrorBoundary from '@shared/ErrorBoundary';
+import PendingAgentInstallBanner, { useClaimPendingAgentInstallBanner } from '@components/integrations/PendingAgentInstallBanner';
 
 const AnchorComponent = ({
   p = `${ds.space.mul(0, 3)} ${ds.space[6]} 0 ${ds.space[6]}`,
@@ -348,6 +350,9 @@ const AnchorComponent = ({
 
   const contentTopMargin = hideParentTabs ? ds.space[4] : ds.space.mul(0, 32);
 
+  // Render the layout's pending-agent reminder below this tab strip, not above it.
+  useClaimPendingAgentInstallBanner();
+
   return (
     <>
       {!hideParentTabs && (
@@ -656,76 +661,82 @@ const AnchorComponent = ({
         </Box>
       )}
 
-      {filterOptions?.[activeDropdownTab]?.options?.length > 0 ? (
-        <Box mt={contentTopMargin} position={'relative'} mb={ds.space[2]}>
-          <Box
-            sx={{
-              display: 'flex',
-              backgroundColor: 'var(--ds-background-100)',
-              p: 'var(--ds-space-2) var(--ds-space-5) 0 var(--ds-space-5)',
-              boxShadow: `0 1px ${ds.space[0]} ${ds.gray.alpha[100]}`,
-              alignItems: 'center',
-              border: '1px solid var(--ds-gray-200)',
-              borderRadius: 'var(--ds-radius-md)',
-              gap: 'var(--ds-space-2)',
-            }}
-          >
-            {filterOptions[activeDropdownTab]?.options.map((opt, _idx) => (
-              <React.Fragment key={opt.id}>
-                {_idx > 0 && <Box sx={{ height: ds.space[4], width: '1px', backgroundColor: 'var(--ds-gray-200)' }} />}
-                <Button
-                  onClick={() => handleClickScroll(opt.id)}
-                  sx={{
-                    textTransform: 'unset',
-                    fontSize: 'var(--ds-text-body)',
-                    fontWeight: 'var(--ds-font-weight-regular)',
-                    color: 'var(--ds-gray-700)',
-                    px: 'var(--ds-space-3)',
-                    py: 'var(--ds-space-2)',
-                    mb: 'var(--ds-space-2)',
-                    minHeight: 0,
-                    minWidth: 0,
-                    borderRadius: 'var(--ds-radius-sm)',
-                    transition: 'color 120ms ease, background-color 120ms ease',
-                    '&:hover': {
+      {/* flow-root keeps the banner's own top margin from collapsing into this one. */}
+      <Box mt={contentTopMargin} sx={{ display: 'flow-root' }}>
+        <ErrorBoundary resetKey={router.asPath}>
+          <PendingAgentInstallBanner />
+        </ErrorBoundary>
+        {filterOptions?.[activeDropdownTab]?.options?.length > 0 ? (
+          <Box position={'relative'} mb={ds.space[2]}>
+            <Box
+              sx={{
+                display: 'flex',
+                backgroundColor: 'var(--ds-background-100)',
+                p: 'var(--ds-space-2) var(--ds-space-5) 0 var(--ds-space-5)',
+                boxShadow: `0 1px ${ds.space[0]} ${ds.gray.alpha[100]}`,
+                alignItems: 'center',
+                border: '1px solid var(--ds-gray-200)',
+                borderRadius: 'var(--ds-radius-md)',
+                gap: 'var(--ds-space-2)',
+              }}
+            >
+              {filterOptions[activeDropdownTab]?.options.map((opt, _idx) => (
+                <React.Fragment key={opt.id}>
+                  {_idx > 0 && <Box sx={{ height: ds.space[4], width: '1px', backgroundColor: 'var(--ds-gray-200)' }} />}
+                  <Button
+                    onClick={() => handleClickScroll(opt.id)}
+                    sx={{
+                      textTransform: 'unset',
+                      fontSize: 'var(--ds-text-body)',
+                      fontWeight: 'var(--ds-font-weight-regular)',
                       color: 'var(--ds-gray-700)',
-                      backgroundColor: 'var(--ds-brand-100)',
-                    },
-                  }}
-                >
-                  {opt.name}
-                </Button>
-              </React.Fragment>
-            ))}
+                      px: 'var(--ds-space-3)',
+                      py: 'var(--ds-space-2)',
+                      mb: 'var(--ds-space-2)',
+                      minHeight: 0,
+                      minWidth: 0,
+                      borderRadius: 'var(--ds-radius-sm)',
+                      transition: 'color 120ms ease, background-color 120ms ease',
+                      '&:hover': {
+                        color: 'var(--ds-gray-700)',
+                        backgroundColor: 'var(--ds-brand-100)',
+                      },
+                    }}
+                  >
+                    {opt.name}
+                  </Button>
+                </React.Fragment>
+              ))}
+            </Box>
           </Box>
-        </Box>
-      ) : filterOptions[activeDropdownTab]?.tabOptions?.length > 0 ? (
-        <Box mt={contentTopMargin} position={'relative'} mb={ds.space[4]}>
-          <Tabs
-            options={{
-              ...filterOptions[activeDropdownTab],
-              tabOptions: showGroupedTabs
-                ? filterOptions[activeDropdownTab]?.tabOptions?.slice(range[0], range[1])
-                : filterOptions[activeDropdownTab]?.tabOptions?.map((opt) => ({
-                    ...opt,
-                    showBottomMargin: true,
-                  })),
-            }}
-            value={activeDropdownSubtab}
-            smallSize={true}
-            onChange={(v) => {
-              setActiveDropdownSubtab(v);
-            }}
-            showBorderBottom={showBorderBottom}
-            showCustomRounded={showCustomRounded}
-            p={tabPadding}
-            showGroupedTabs={showGroupedTabs}
-            tooltip={tooltip}
-          />
-        </Box>
-      ) : (
-        <Box mt={contentTopMargin} mb={ds.space[2]} position={'relative'} />
-      )}
+        ) : filterOptions[activeDropdownTab]?.tabOptions?.length > 0 ? (
+          <Box position={'relative'} mb={ds.space[4]}>
+            <Tabs
+              options={{
+                ...filterOptions[activeDropdownTab],
+                tabOptions: showGroupedTabs
+                  ? filterOptions[activeDropdownTab]?.tabOptions?.slice(range[0], range[1])
+                  : filterOptions[activeDropdownTab]?.tabOptions?.map((opt) => ({
+                      ...opt,
+                      showBottomMargin: true,
+                    })),
+              }}
+              value={activeDropdownSubtab}
+              smallSize={true}
+              onChange={(v) => {
+                setActiveDropdownSubtab(v);
+              }}
+              showBorderBottom={showBorderBottom}
+              showCustomRounded={showCustomRounded}
+              p={tabPadding}
+              showGroupedTabs={showGroupedTabs}
+              tooltip={tooltip}
+            />
+          </Box>
+        ) : (
+          <Box mb={ds.space[2]} position={'relative'} />
+        )}
+      </Box>
     </>
   );
 };

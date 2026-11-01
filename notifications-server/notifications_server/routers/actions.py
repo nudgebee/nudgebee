@@ -113,11 +113,15 @@ async def handle_ms_teams_events(request: Request, background_tasks: BackgroundT
         LOG.warning(f"Teams event did not contain valid JSON. {e}")
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    service = MsTeamsEventsService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app)
-
-    async def execute_and_close():
+    # The Teams handlers make blocking calls (database, Bot Connector, member
+    # lookups), so they run off the main event loop, as Google Chat's do below: a
+    # sync BackgroundTask runs in the threadpool, the service and its thread-local
+    # DB session are built in that thread, and asyncio.run drives the handlers in
+    # a loop confined to it.
+    def execute_and_close():
+        service = MsTeamsEventsService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app)
         try:
-            await service.execute_event(payload)
+            asyncio.run(service.execute_event(payload))
         finally:
             service.close()
 

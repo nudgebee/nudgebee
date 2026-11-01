@@ -1,6 +1,7 @@
 package reports
 
 import (
+	"nudgebee/services/account"
 	"nudgebee/services/config"
 
 	"github.com/jmoiron/sqlx"
@@ -9,11 +10,25 @@ import (
 // securityPostureAccountLimit caps one account's list, as the tenant list is capped.
 const securityPostureAccountLimit = 20
 
-func securityPostureRecMap(rec digestRecommendation) map[string]any {
-	// No per-finding deep link exists on the security surface; link to
-	// the account's security tab.
-	ctaURL := config.Config.BaseUrl + "/kubernetes/details/" + rec.CloudAccountID +
-		"?accountId=" + rec.CloudAccountID + "&utm=security-alert#security/image-scan"
+// securityFindingURL is the one place that maps a security finding's account
+// to a real destination. Only kubernetes accounts have a per-account security
+// page; vm and cloud accounts have no such page, so they land on the
+// cross-account /optimise Security tab's matching sub-tab instead (unscoped —
+// there's no accountId param for it to read).
+func securityFindingURL(accountID, accountType string) string {
+	base := config.Config.BaseUrl
+	switch accountType {
+	case account.AccountTypeVM:
+		return base + "/optimise?utm=security-alert#security/vm-vulnerabilities"
+	case "cloud":
+		return base + "/optimise?utm=security-alert#security/cloud-posture"
+	default: // "kubernetes" or unset
+		return base + "/kubernetes/details/" + accountID +
+			"?accountId=" + accountID + "&utm=security-alert#security/image-scan"
+	}
+}
+
+func securityPostureRecMap(rec digestRecommendation, accountType string) map[string]any {
 	return map[string]any{
 		"id":                rec.ID,
 		"rule_name":         rec.RuleName,
@@ -23,7 +38,7 @@ func securityPostureRecMap(rec digestRecommendation) map[string]any {
 		"estimated_savings": rec.EstimatedSavings,
 		"severity":          rec.Severity,
 		"category":          rec.Category,
-		"cta_url":           ctaURL,
+		"cta_url":           securityFindingURL(rec.CloudAccountID, accountType),
 	}
 }
 
@@ -120,6 +135,7 @@ func buildSecurityPostureAccountSections(
 	recs []digestRecommendation,
 	counts map[string]securityPostureCounts,
 	names map[string]string,
+	types map[string]string,
 ) map[string]any {
 	byAccount := map[string][]digestRecommendation{}
 	for _, rec := range recs {
@@ -134,7 +150,7 @@ func buildSecurityPostureAccountSections(
 	for accountID, accountRecs := range byAccount {
 		recMaps := make([]map[string]any, 0, len(accountRecs))
 		for _, rec := range accountRecs {
-			recMaps = append(recMaps, securityPostureRecMap(rec))
+			recMaps = append(recMaps, securityPostureRecMap(rec, types[accountID]))
 		}
 		c := counts[accountID]
 		sections[accountID] = map[string]any{

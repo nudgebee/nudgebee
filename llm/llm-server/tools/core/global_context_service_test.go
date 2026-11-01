@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 
 	"github.com/stretchr/testify/assert"
@@ -92,4 +93,88 @@ func TestInvalidateActiveGCCache_RemovesEntry(t *testing.T) {
 
 	_, ok := gcActiveCache.Load(gcCacheKey(testTenantID, accountID))
 	assert.False(t, ok, "cache entry must be removed after invalidation")
+}
+
+func TestHandleCrossReplicaGCInvalidation_RemovesEntry(t *testing.T) {
+	const accountID = "acct-replica-invalidate"
+	cacheKey := gcCacheKey(testTenantID, accountID)
+	gcActiveCache.Store(cacheKey, gcCacheEntry{
+		data:      "to be cleared by peer replica broadcast",
+		expiresAt: time.Now().Add(time.Hour),
+	})
+
+	handleCrossReplicaGCInvalidation("peer-replica|" + cacheKey)
+
+	_, ok := gcActiveCache.Load(cacheKey)
+	assert.False(t, ok, "cache entry must be removed when peer replica invalidation message arrives")
+}
+
+func TestHandleCrossReplicaGCInvalidation_LegacyPayloadRemovesEntry(t *testing.T) {
+	const accountID = "acct-legacy-invalidate"
+	cacheKey := gcCacheKey(testTenantID, accountID)
+	gcActiveCache.Store(cacheKey, gcCacheEntry{
+		data:      "to be cleared by legacy broadcast without sender prefix",
+		expiresAt: time.Now().Add(time.Hour),
+	})
+
+	handleCrossReplicaGCInvalidation(cacheKey)
+
+	_, ok := gcActiveCache.Load(cacheKey)
+	assert.False(t, ok, "cache entry must be removed when legacy non-prefixed invalidation arrives")
+}
+
+func TestHandleCrossReplicaGCInvalidation_IgnoresSelfInvalidation(t *testing.T) {
+	const accountID = "acct-self-keep"
+	cacheKey := gcCacheKey(testTenantID, accountID)
+	gcActiveCache.Store(cacheKey, gcCacheEntry{
+		data:      "must stay intact despite self-broadcast",
+		expiresAt: time.Now().Add(time.Hour),
+	})
+	t.Cleanup(func() { InvalidateActiveGCCache(testTenantID, accountID) })
+
+	// Set ServerName and send self-invalidation
+	oldServerName := config.Config.ServerName
+	config.Config.ServerName = "this-pod-123"
+	defer func() { config.Config.ServerName = oldServerName }()
+
+	handleCrossReplicaGCInvalidation("this-pod-123|" + cacheKey)
+
+	v, ok := gcActiveCache.Load(cacheKey)
+	assert.True(t, ok, "cache entry must not be deleted on self-invalidation broadcast")
+	assert.Equal(t, "must stay intact despite self-broadcast", v.(gcCacheEntry).data)
+}
+
+func TestHandleCrossReplicaGCInvalidation_IgnoresEmptyKey(t *testing.T) {
+	const accountID = "acct-replica-keep"
+	cacheKey := gcCacheKey(testTenantID, accountID)
+	gcActiveCache.Store(cacheKey, gcCacheEntry{
+		data:      "must stay intact",
+		expiresAt: time.Now().Add(time.Hour),
+	})
+	t.Cleanup(func() { InvalidateActiveGCCache(testTenantID, accountID) })
+
+	handleCrossReplicaGCInvalidation("")
+	handleCrossReplicaGCInvalidation("peer-replica|")
+
+	v, ok := gcActiveCache.Load(cacheKey)
+	assert.True(t, ok, "cache entry must not be deleted on empty broadcast key")
+	assert.Equal(t, "must stay intact", v.(gcCacheEntry).data)
+}
+
+func TestInvalidateActiveGCCache_GuardsEmptyParams(t *testing.T) {
+	const accountID = "acct-valid"
+	cacheKey := gcCacheKey(testTenantID, accountID)
+	gcActiveCache.Store(cacheKey, gcCacheEntry{
+		data:      "valid entry",
+		expiresAt: time.Now().Add(time.Hour),
+	})
+	t.Cleanup(func() { InvalidateActiveGCCache(testTenantID, accountID) })
+
+	InvalidateActiveGCCache("", accountID)
+	InvalidateActiveGCCache(testTenantID, "")
+	InvalidateActiveGCCache("", "")
+
+	v, ok := gcActiveCache.Load(cacheKey)
+	assert.True(t, ok, "empty params must be guarded and not delete valid entries")
+	assert.Equal(t, "valid entry", v.(gcCacheEntry).data)
 }

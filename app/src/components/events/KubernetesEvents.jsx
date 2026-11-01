@@ -22,8 +22,7 @@ import TicketLink from '@shared/links/TicketLink';
 import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import AlertStatusBadge from '@shared/widgets/AlertStatusBadge';
 import { toast as snackbar } from '@ui/Toast';
-import ScoreDisplay from '@shared/widgets/ScoreDisplay';
-import PriorityPinControl from '@shared/widgets/PriorityPinControl';
+import TriageScore from '@shared/widgets/TriageScore';
 import Chip from '@ui/Chip';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 
@@ -100,12 +99,23 @@ const TREND_SERIES_COLORS = ['#2f7af0', '#f5b400', '#e5484d', '#16a34a', '#9333e
 
 const DEFAULT_TABLE_COLUMNS = [
   {
-    name: 'Severity',
+    name: 'Triage Score',
+    width: '10%',
+    // The stacked cell's widest line — chip + label + chevron + the Score line's info
+    // icon — needs ~120px. Without a floor the resize hook happily allots it 10% (~74px)
+    // and the trigger wraps mid-label.
+    minWidth: 120,
+    align: 'left',
+    defaultVisible: true,
+    info: TRIAGE_SCORE_INFO,
+  },
+  {
+    name: 'Source Severity',
     width: '8%',
     align: 'center',
     defaultVisible: true,
     mandatory: true,
-    info: "Severity is the original urgency level assigned by the source monitoring/alerting system, based on that tool's built-in rules or your configured thresholds",
+    info: "The original urgency level assigned by the source monitoring/alerting system, based on that tool's built-in rules or your configured thresholds",
     infoPlacement: 'top-start',
   },
   {
@@ -132,17 +142,6 @@ const DEFAULT_TABLE_COLUMNS = [
     info: 'The alert message as received from the source system.',
   },
   { name: 'Event Type', width: '11%', align: 'left', defaultVisible: false },
-  {
-    name: 'Triage Score',
-    width: '10%',
-    // The cell packs a score, a bar, an info icon and the priority-pin control — ~173px
-    // of content. Without a floor the resize hook happily allots it 10% (~74px) and the
-    // whole group spills over the columns on both sides.
-    minWidth: 175,
-    align: 'left',
-    defaultVisible: true,
-    info: TRIAGE_SCORE_INFO,
-  },
   {
     name: 'Alert Status',
     width: '11%',
@@ -459,10 +458,17 @@ const KubernetesEventsTable = ({
   const troubleshootColumns = useMemo(
     () => [
       {
-        name: 'Severity',
+        name: 'Triage Score',
+        width: '10%',
+        minWidth: 120,
+        align: 'left',
+        info: TRIAGE_SCORE_INFO,
+      },
+      {
+        name: 'Source Severity',
         width: '9%',
         align: 'center',
-        info: "Severity is the original urgency level assigned by the source monitoring/alerting system, based on that tool's built-in rules or your configured thresholds",
+        info: "The original urgency level assigned by the source monitoring/alerting system, based on that tool's built-in rules or your configured thresholds",
         infoPlacement: 'top-start',
       },
       {
@@ -478,13 +484,6 @@ const KubernetesEventsTable = ({
         align: 'left',
         truncate: 'clamp-2',
         info: 'The alert message as received from the source system.',
-      },
-      {
-        name: 'Triage Score',
-        width: '10%',
-        minWidth: 175,
-        align: 'left',
-        info: TRIAGE_SCORE_INFO,
       },
       {
         name: 'Alert Status',
@@ -1274,7 +1273,23 @@ const KubernetesEventsTable = ({
       return events?.map((item) => {
         const row = [];
 
-        if (headersSet.has('Severity')) {
+        if (headersSet.has('Triage Score')) {
+          row.push({
+            component: (
+              <TriageScore
+                score={item.computed_score}
+                priority={item.computed_priority}
+                scoreFactors={item.score_factors}
+                confidence={item.score_confidence}
+                eventId={item.id}
+                accountId={item.account_id}
+                canWrite={hasWriteAccess(item.account_id)}
+                onChanged={(newPriority, newScore, newFactors) => handlePriorityChange(item.id, newPriority, newScore, newFactors)}
+              />
+            ),
+          });
+        }
+        if (headersSet.has('Source Severity')) {
           row.push({
             component: (
               <Box
@@ -1404,29 +1419,6 @@ const KubernetesEventsTable = ({
           row.push({
             component: <Text showAutoEllipsis value={titleCaseForAggregationKey(item.aggregation_key)} />,
             data: item.aggregation_key,
-          });
-        }
-        if (headersSet.has('Triage Score')) {
-          row.push({
-            component: (
-              <Box sx={{ justifySelf: 'center', display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
-                <ScoreDisplay
-                  score={item.computed_score}
-                  priority={item.computed_priority}
-                  scoreFactors={item.score_factors}
-                  confidence={item.score_confidence}
-                />
-                <PriorityPinControl
-                  eventId={item.id}
-                  accountId={item.account_id}
-                  currentPriority={item.computed_priority}
-                  currentScore={item.computed_score}
-                  currentScoreFactors={item.score_factors}
-                  canWrite={hasWriteAccess(item.account_id)}
-                  onChanged={(newPriority, newScore, newFactors) => handlePriorityChange(item.id, newPriority, newScore, newFactors)}
-                />
-              </Box>
-            ),
           });
         }
         if (headersSet.has('Alert Status')) {
@@ -2078,7 +2070,7 @@ const KubernetesEventsTable = ({
               {!disabledFilters.includes('priority') && (
                 <FilterDropdown
                   id='filter-priority'
-                  label='Severity'
+                  label='Source Severity'
                   options={priorityFilter}
                   value={selectedPriority}
                   onSelect={onPriorityFilterChange}
@@ -2168,7 +2160,7 @@ const KubernetesEventsTable = ({
             loading={loading}
             rounded={ds.radius.md}
             pageNumber={currentPage + 1}
-            tableHeadingCenter={['Severity', 'NB Priority', 'Triage Score', 'Alert Status', 'Triage Status', 'Action']}
+            tableHeadingCenter={['Source Severity', 'NB Priority', 'Triage Score', 'Alert Status', 'Triage Status', 'Action']}
             stickyColumnIndex={stickyColumnIndex}
             resizableColumns
           />

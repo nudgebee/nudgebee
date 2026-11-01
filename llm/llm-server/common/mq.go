@@ -7,6 +7,9 @@ package common
 //  3. A publish error replaces only that publisher; it never closes or waits on consumers.
 //  4. Only MqClose stops a supervisor (cancel -> close, bounded ~2×mqShutdownTimeout); any other stop -> re-arm.
 //  5. ≤1 live library consumer per supervisor; the old one is closed before the next is built.
+//  6. After a broker reconnect every consumer built before the outage is closed and rebuilt by its
+//     supervisor: go-rabbitmq restarts it in place, and if that fails Run never returns.
+//     A connection that stays closed for mqConnResetAfter is closed and re-dialed.
 //
 // Delivery (unchanged): success -> Ack, error -> NackRequeue (unbounded, no DLQ). Queues are non-durable &
 // messages transient -> lost on broker restart; channel loss before ack -> redelivery -> possible duplicates.
@@ -85,6 +88,9 @@ var (
 	mqRearmMaxDelay    = time.Minute
 	mqRearmResetAfter  = time.Minute
 	mqShutdownTimeout  = 10 * time.Second
+	// go-rabbitmq stops redialing for good if a new connection closes before it re-arms its
+	// close listener, so a connection closed this long is dropped and re-dialed.
+	mqConnResetAfter = 5 * time.Minute
 
 	mqDial = func(url string) (*rabbitmq.Conn, error) {
 		return rabbitmq.NewConn(url,
@@ -110,6 +116,7 @@ var (
 	ErrRbmqNoConn                  = fmt.Errorf("rbmq: unable to connect to rabbitmq")
 	ErrMqConsumerAlreadyRegistered = errors.New("rbmq: consumer already registered for queue")
 	errMqConsumerStoppedUnexpected = errors.New("rbmq: consumer stopped without shutdown")
+	errMqConsumerRestarted         = errors.New("rbmq: consumer restarted after the broker connection came back")
 )
 
 // getConnection returns the shared conn, or nil without waiting if none is available: a dial is
@@ -169,7 +176,7 @@ func connect(waitForDial bool) *rabbitmq.Conn {
 	rbmqConn = conn
 	rbmqConnDownAt = time.Time{}
 	rbmqConnMu.Unlock()
-	go watchConn(conn, gen, mqConnIsClosed, mqConnPollInterval)
+	go watchConn(conn, gen, mqConnIsClosed, mqConnPollInterval, mqConnResetAfter)
 	slog.Default().Info("rbmq: connected to rabbitmq",
 		"host", config.Config.RabbitMqHost, "port", config.Config.RabbitMqPort)
 	return conn
@@ -177,11 +184,15 @@ func connect(waitForDial bool) *rabbitmq.Conn {
 
 // watchConn records when the shared conn goes down & clears it on recovery, until MqClose
 // replaces the generation. isClosed/interval are captured so it never reads globals late.
-func watchConn(conn *rabbitmq.Conn, gen uint64, isClosed func(*rabbitmq.Conn) bool, interval time.Duration) {
+// On recovery it restarts every consumer built before the outage (invariant 6); a conn closed
+// for resetAfter is dropped, so supervisors dial a new one.
+func watchConn(conn *rabbitmq.Conn, gen uint64, isClosed func(*rabbitmq.Conn) bool, interval, resetAfter time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for range t.C {
 		closed := isClosed(conn) // may block while the library redials (≤ mqDialTimeout)
+		var recoveredFrom time.Time
+		reset := false
 		rbmqConnMu.Lock()
 		if gen != rbmqConnGen {
 			rbmqConnMu.Unlock()
@@ -189,11 +200,43 @@ func watchConn(conn *rabbitmq.Conn, gen uint64, isClosed func(*rabbitmq.Conn) bo
 		}
 		switch {
 		case !closed:
+			recoveredFrom = rbmqConnDownAt
 			rbmqConnDownAt = time.Time{}
 		case rbmqConnDownAt.IsZero():
 			rbmqConnDownAt = time.Now()
+		case time.Since(rbmqConnDownAt) >= resetAfter:
+			slog.Warn("rbmq: connection closed too long; dropping it and re-dialing", "down_for", time.Since(rbmqConnDownAt).Round(time.Second).String())
+			rbmqConn = nil
+			rbmqConnGen++ // stops this watcher
+			rbmqConnDownAt = time.Time{}
+			reset = true
 		}
 		rbmqConnMu.Unlock()
+
+		switch {
+		case !recoveredFrom.IsZero():
+			slog.Info("rbmq: connection re-established; restarting consumers", "down_for", time.Since(recoveredFrom).Round(time.Second).String())
+			restartConsumersBuiltBefore(recoveredFrom)
+		case reset:
+			closeConn := mqCloseConn
+			go func() { _ = closeConn(conn) }() // stops the old conn's own redial loop
+			restartConsumersBuiltBefore(time.Now())
+			return
+		}
+	}
+}
+
+// restartConsumersBuiltBefore closes every running consumer built before cutoff; its
+// supervisor then rebuilds it, re-declaring its queue and bindings.
+func restartConsumersBuiltBefore(cutoff time.Time) {
+	rbmqMux.Lock()
+	supervisors := make([]*mqConsumerSupervisor, 0, len(rbmqSupervisors))
+	for _, s := range rbmqSupervisors {
+		supervisors = append(supervisors, s)
+	}
+	rbmqMux.Unlock()
+	for _, s := range supervisors {
+		go s.restartIfBuiltBefore(cutoff)
 	}
 }
 
@@ -401,6 +444,7 @@ type mqConsumerSupervisor struct {
 	restarts  int
 	nextID    uint64
 	inFlight  map[uint64]time.Time
+	restarted bool // current was closed by restartIfBuiltBefore
 }
 
 func (s *mqConsumerSupervisor) run() {
@@ -427,7 +471,11 @@ func (s *mqConsumerSupervisor) run() {
 		s.restarts++
 		s.mu.Unlock()
 		delay := mqRearmDelay(failures, s.timing.rearmBase, s.timing.rearmMax)
-		slog.Error("rbmq: consumer not running; retrying", "queue", s.queue, "error", err, "retry_in", delay)
+		if errors.Is(err, errMqConsumerRestarted) {
+			slog.Info("rbmq: rebuilding consumer", "queue", s.queue, "reason", err, "retry_in", delay)
+		} else {
+			slog.Error("rbmq: consumer not running; retrying", "queue", s.queue, "error", err, "retry_in", delay)
+		}
 		select {
 		case <-s.ctx.Done():
 			return
@@ -474,6 +522,8 @@ func (s *mqConsumerSupervisor) runOnce() error {
 
 	s.mu.Lock()
 	s.current = nil
+	restarted := s.restarted
+	s.restarted = false
 	s.mu.Unlock()
 	if s.ctx.Err() != nil {
 		return s.ctx.Err()
@@ -481,14 +531,36 @@ func (s *mqConsumerSupervisor) runOnce() error {
 
 	if runErr != nil {
 		runErr = fmt.Errorf("rbmq: consumer run: %w", runErr)
-	} else {
-		// Run returns nil only after Close, and only MqClose may close.
+	}
+	switch {
+	case restarted && runErr != nil:
+		runErr = fmt.Errorf("%w: %w", errMqConsumerRestarted, runErr)
+	case restarted:
+		runErr = errMqConsumerRestarted
+	case runErr == nil:
+		// Run returns nil only after Close, and only MqClose and restartIfBuiltBefore close.
 		runErr = errMqConsumerStoppedUnexpected
 	}
 	if time.Since(started) >= s.timing.resetAfter {
 		return fmt.Errorf("%w: %w", errMqConsumerRanLongEnough, runErr)
 	}
 	return runErr
+}
+
+// restartIfBuiltBefore closes the running consumer if it was built before cutoff, so run()
+// rebuilds it (invariant 6). It waits for a handler no longer than timing.closeTimeout.
+func (s *mqConsumerSupervisor) restartIfBuiltBefore(cutoff time.Time) {
+	s.mu.Lock()
+	current := s.current
+	if current == nil || s.state != MqConsumerRunning || !s.since.Before(cutoff) {
+		s.mu.Unlock()
+		return
+	}
+	s.restarted = true
+	s.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), s.timing.closeTimeout)
+	defer cancel()
+	current.CloseWithContext(ctx)
 }
 
 // closeCurrent closes the running consumer, if any, waiting for its handler

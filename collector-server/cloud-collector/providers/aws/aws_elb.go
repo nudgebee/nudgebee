@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"nudgebee/collector/cloud/providers"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,8 +16,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	elb "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing"
+	elbtypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing/types"
 	elbv2 "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
 	elbv2types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"github.com/samber/lo"
 )
 
 // elbPriceFilters builds the pricing-API filter set for a classic load balancer
@@ -124,7 +127,7 @@ func (a *awsElb) GetResources(ctx providers.CloudProviderContext, account provid
 	paginator := elb.NewDescribeLoadBalancersPaginator(svc, &elb.DescribeLoadBalancersInput{})
 
 	for paginator.HasMorePages() {
-		loadBalancersOutput, err := paginator.NextPage(context.TODO())
+		loadBalancersOutput, err := paginator.NextPage(ctx.GetContext())
 		if err != nil {
 			ctx.GetLogger().Error("failed to fetch elb resources", "error", err, "accountNumber", account.AccountNumber, "region", regionName)
 			return resources, err // Return partial or fail completely
@@ -139,70 +142,7 @@ func (a *awsElb) GetResources(ctx providers.CloudProviderContext, account provid
 				ctx.GetLogger().Warn("Skipping ELB due to missing LoadBalancerName", "loadBalancer", loadBalancer, "region", regionName)
 				continue
 			}
-			// Log if CreatedTime is nil but proceed, CreatedAt will be zero time.
-			if loadBalancer.CreatedTime == nil {
-				ctx.GetLogger().Warn("CreatedTime is nil for ELB", "loadBalancerName", *loadBalancer.LoadBalancerName, "region", regionName)
-			}
-
-			tags := make(map[string][]string)
-			tagsOutput, err := svc.DescribeTags(context.TODO(), &elb.DescribeTagsInput{
-				LoadBalancerNames: []string{*loadBalancer.LoadBalancerName}, // LoadBalancerName checked not nil
-			})
-			if err != nil {
-				ctx.GetLogger().Warn("failed to fetch tags for elb", "error", err, "lbName", *loadBalancer.LoadBalancerName, "region", regionName)
-			} else {
-				if len(tagsOutput.TagDescriptions) > 0 { // Check if TagDescriptions slice is nil
-					for _, tagDesc := range tagsOutput.TagDescriptions {
-						// Ensure LoadBalancerName in tagDesc matches the current loadBalancer before processing tags
-						if tagDesc.LoadBalancerName != nil && loadBalancer.LoadBalancerName != nil && *tagDesc.LoadBalancerName == *loadBalancer.LoadBalancerName {
-							if len(tagDesc.Tags) > 0 { // Check if Tags slice in tagDesc is nil
-								for _, tag := range tagDesc.Tags {
-									if tag.Key != nil && tag.Value != nil { // Check individual tag and its fields
-										tags[*tag.Key] = append(tags[*tag.Key], *tag.Value)
-									}
-								}
-							} else {
-								ctx.GetLogger().Info("tagDesc.Tags is nil for ELB", "loadBalancerName", *loadBalancer.LoadBalancerName, "tagDescLbName", *tagDesc.LoadBalancerName, "region", regionName)
-							}
-							break // Found tags for the current load balancer
-						}
-					}
-				} else {
-					ctx.GetLogger().Info("tagsOutput.TagDescriptions is nil for ELB", "loadBalancerName", *loadBalancer.LoadBalancerName, "region", regionName)
-				}
-			}
-
-			attributesOutput, err := svc.DescribeLoadBalancerAttributes(context.TODO(), &elb.DescribeLoadBalancerAttributesInput{
-				LoadBalancerName: loadBalancer.LoadBalancerName, // LoadBalancerName checked not nil
-			})
-			if err != nil {
-				ctx.GetLogger().Warn("failed to fetch attributes for elb", "error", err, "lbName", *loadBalancer.LoadBalancerName, "region", regionName)
-			}
-
-			meta := structToMap(loadBalancer) // loadBalancer checked not nil
-			if attributesOutput != nil && attributesOutput.LoadBalancerAttributes != nil {
-				meta["Attributes"] = structToMap(attributesOutput.LoadBalancerAttributes)
-			}
-
-			createdAt := time.Time{} // Default zero time
-			if loadBalancer.CreatedTime != nil {
-				createdAt = *loadBalancer.CreatedTime
-			}
-
-			arn := fmt.Sprintf("arn:aws:elasticloadbalancing:%s:%s:loadbalancer/%s", regionName, account.AccountNumber, *loadBalancer.LoadBalancerName)
-			resource := providers.Resource{
-				Id:          *loadBalancer.LoadBalancerName, // LoadBalancerName checked not nil
-				Arn:         arn,
-				ServiceName: ServiceNameELB,
-				Name:        *loadBalancer.LoadBalancerName,
-				Status:      providers.ResourceStatusActive,
-				Region:      regionName,
-				Tags:        tags,
-				Meta:        meta,
-				CreatedAt:   createdAt,
-				Type:        getAwsServiceResourceType(ServiceNameELB, "loadbalancer"),
-			}
-			resources = append(resources, resource)
+			resources = append(resources, buildClassicElbResource(ctx, svc, loadBalancer, account, regionName))
 		}
 	}
 
@@ -211,144 +151,369 @@ func (a *awsElb) GetResources(ctx providers.CloudProviderContext, account provid
 	paginatorV2 := elbv2.NewDescribeLoadBalancersPaginator(elbv2Svc, &elbv2.DescribeLoadBalancersInput{})
 
 	for paginatorV2.HasMorePages() {
-		loadBalancersOutputV2, err := paginatorV2.NextPage(context.TODO())
+		loadBalancersOutputV2, err := paginatorV2.NextPage(ctx.GetContext())
 		if err != nil {
 			ctx.GetLogger().Error("failed to fetch elbv2 resources", "error", err, "accountNumber", account.AccountNumber, "region", regionName)
 			return resources, err
 		}
 
-		if len(loadBalancersOutputV2.LoadBalancers) > 0 {
-			var lbArns []string
-			for _, lb := range loadBalancersOutputV2.LoadBalancers {
-				if lb.LoadBalancerArn != nil {
-					lbArns = append(lbArns, *lb.LoadBalancerArn)
-				}
-			}
+		resources = append(resources, buildElbV2Resources(ctx, elbv2Svc, loadBalancersOutputV2.LoadBalancers, regionName)...)
+	}
 
-			tagsMap := make(map[string]map[string][]string)
-			if len(lbArns) > 0 {
-				// DescribeTags can handle a maximum of 20 ARNs at a time.
-				const chunkSize = 20
-				for i := 0; i < len(lbArns); i += chunkSize {
-					end := i + chunkSize
-					if end > len(lbArns) {
-						end = len(lbArns)
-					}
-					chunk := lbArns[i:end]
+	return resources, nil
+}
 
-					tagsOutput, err := elbv2Svc.DescribeTags(context.TODO(), &elbv2.DescribeTagsInput{
-						ResourceArns: chunk,
-					})
-					if err != nil {
-						ctx.GetLogger().Warn("failed to fetch tags for elbv2 chunk", "error", err, "region", regionName)
-						continue
-					}
+// buildClassicElbResource enriches one Classic Load Balancer into a
+// providers.Resource. Shared by GetResources and GetResourcesByIds so the
+// full-scan and targeted paths produce identical rows. The caller has checked
+// LoadBalancerName is not nil.
+func buildClassicElbResource(
+	ctx providers.CloudProviderContext,
+	svc *elb.Client,
+	loadBalancer elbtypes.LoadBalancerDescription,
+	account providers.Account,
+	regionName string,
+) providers.Resource {
+	// Log if CreatedTime is nil but proceed, CreatedAt will be zero time.
+	if loadBalancer.CreatedTime == nil {
+		ctx.GetLogger().Warn("CreatedTime is nil for ELB", "loadBalancerName", *loadBalancer.LoadBalancerName, "region", regionName)
+	}
 
-					for _, tagDesc := range tagsOutput.TagDescriptions {
-						if tagDesc.ResourceArn != nil {
-							tags := make(map[string][]string)
-							for _, tag := range tagDesc.Tags {
-								if tag.Key != nil && tag.Value != nil {
-									tags[*tag.Key] = append(tags[*tag.Key], *tag.Value)
-								}
-							}
-							tagsMap[*tagDesc.ResourceArn] = tags
-						}
-					}
-				}
-			}
-
-			for _, loadBalancer := range loadBalancersOutputV2.LoadBalancers {
-				if loadBalancer.LoadBalancerArn == nil || loadBalancer.LoadBalancerName == nil {
-					ctx.GetLogger().Warn("Skipping elbv2 due to missing information", "loadBalancer", loadBalancer, "region", regionName)
-					continue
-				}
-
-				attributesOutput, err := elbv2Svc.DescribeLoadBalancerAttributes(context.TODO(), &elbv2.DescribeLoadBalancerAttributesInput{
-					LoadBalancerArn: loadBalancer.LoadBalancerArn,
-				})
-				if err != nil {
-					ctx.GetLogger().Warn("failed to fetch attributes for elbv2", "error", err, "lbArn", *loadBalancer.LoadBalancerArn, "region", regionName)
-				}
-
-				// Fetch target groups for this load balancer
-				targetGroupsOutput, err := elbv2Svc.DescribeTargetGroups(context.TODO(), &elbv2.DescribeTargetGroupsInput{
-					LoadBalancerArn: loadBalancer.LoadBalancerArn,
-				})
-				if err != nil {
-					ctx.GetLogger().Warn("failed to fetch target groups for elbv2", "error", err, "lbArn", *loadBalancer.LoadBalancerArn, "region", regionName)
-				}
-
-				meta := structToMap(loadBalancer)
-				if attributesOutput != nil && len(attributesOutput.Attributes) > 0 {
-					attrs := make(map[string]string)
-					for _, attr := range attributesOutput.Attributes {
-						if attr.Key != nil && attr.Value != nil {
-							attrs[*attr.Key] = *attr.Value
-						}
-					}
-					meta["Attributes"] = attrs
-				}
-
-				// Store target group details with health information
-				if targetGroupsOutput != nil && len(targetGroupsOutput.TargetGroups) > 0 {
-					targetGroupList := []map[string]any{}
-					for _, tg := range targetGroupsOutput.TargetGroups {
-						tgMap := structToMap(tg)
-
-						// Fetch target health for this target group
-						if tg.TargetGroupArn != nil {
-							targetHealthOutput, healthErr := elbv2Svc.DescribeTargetHealth(context.TODO(), &elbv2.DescribeTargetHealthInput{
-								TargetGroupArn: tg.TargetGroupArn,
-							})
-							if healthErr != nil {
-								ctx.GetLogger().Warn("failed to fetch target health", "error", healthErr, "targetGroupArn", *tg.TargetGroupArn, "region", regionName)
-							} else if targetHealthOutput != nil && len(targetHealthOutput.TargetHealthDescriptions) > 0 {
-								healthList := []map[string]any{}
-								for _, health := range targetHealthOutput.TargetHealthDescriptions {
-									healthList = append(healthList, structToMap(health))
-								}
-								tgMap["TargetHealthDescriptions"] = healthList
+	tags := make(map[string][]string)
+	tagsOutput, err := svc.DescribeTags(ctx.GetContext(), &elb.DescribeTagsInput{
+		LoadBalancerNames: []string{*loadBalancer.LoadBalancerName}, // LoadBalancerName checked not nil
+	})
+	if err != nil {
+		ctx.GetLogger().Warn("failed to fetch tags for elb", "error", err, "lbName", *loadBalancer.LoadBalancerName, "region", regionName)
+	} else {
+		if len(tagsOutput.TagDescriptions) > 0 { // Check if TagDescriptions slice is nil
+			for _, tagDesc := range tagsOutput.TagDescriptions {
+				// Ensure LoadBalancerName in tagDesc matches the current loadBalancer before processing tags
+				if tagDesc.LoadBalancerName != nil && loadBalancer.LoadBalancerName != nil && *tagDesc.LoadBalancerName == *loadBalancer.LoadBalancerName {
+					if len(tagDesc.Tags) > 0 { // Check if Tags slice in tagDesc is nil
+						for _, tag := range tagDesc.Tags {
+							if tag.Key != nil && tag.Value != nil { // Check individual tag and its fields
+								tags[*tag.Key] = append(tags[*tag.Key], *tag.Value)
 							}
 						}
-
-						targetGroupList = append(targetGroupList, tgMap)
+					} else {
+						ctx.GetLogger().Info("tagDesc.Tags is nil for ELB", "loadBalancerName", *loadBalancer.LoadBalancerName, "tagDescLbName", *tagDesc.LoadBalancerName, "region", regionName)
 					}
-					meta["TargetGroups"] = targetGroupList
-				} else {
-					meta["TargetGroups"] = []any{}
+					break // Found tags for the current load balancer
 				}
+			}
+		} else {
+			ctx.GetLogger().Info("tagsOutput.TagDescriptions is nil for ELB", "loadBalancerName", *loadBalancer.LoadBalancerName, "region", regionName)
+		}
+	}
 
-				createdAt := time.Time{}
-				if loadBalancer.CreatedTime != nil {
-					createdAt = *loadBalancer.CreatedTime
-				}
+	attributesOutput, err := svc.DescribeLoadBalancerAttributes(ctx.GetContext(), &elb.DescribeLoadBalancerAttributesInput{
+		LoadBalancerName: loadBalancer.LoadBalancerName, // LoadBalancerName checked not nil
+	})
+	if err != nil {
+		ctx.GetLogger().Warn("failed to fetch attributes for elb", "error", err, "lbName", *loadBalancer.LoadBalancerName, "region", regionName)
+	}
 
-				var lbType elbv2types.LoadBalancerTypeEnum
-				if loadBalancer.Type != "" {
-					lbType = loadBalancer.Type
-				} else {
-					lbType = "unknown"
-				}
+	meta := structToMap(loadBalancer) // loadBalancer checked not nil
+	if attributesOutput != nil && attributesOutput.LoadBalancerAttributes != nil {
+		meta["Attributes"] = structToMap(attributesOutput.LoadBalancerAttributes)
+	}
 
-				resource := providers.Resource{
-					Id:          *loadBalancer.LoadBalancerArn,
-					Arn:         *loadBalancer.LoadBalancerArn,
-					ServiceName: ServiceNameELB,
-					Name:        *loadBalancer.LoadBalancerName,
-					Status:      providers.ResourceStatusActive,
-					Region:      regionName,
-					Tags:        tagsMap[*loadBalancer.LoadBalancerArn],
-					Meta:        meta,
-					CreatedAt:   createdAt,
-					Type:        getAwsServiceResourceType(ServiceNameELB, string(lbType)+"_loadbalancer"),
+	createdAt := time.Time{} // Default zero time
+	if loadBalancer.CreatedTime != nil {
+		createdAt = *loadBalancer.CreatedTime
+	}
+
+	arn := fmt.Sprintf("arn:aws:elasticloadbalancing:%s:%s:loadbalancer/%s", regionName, account.AccountNumber, *loadBalancer.LoadBalancerName)
+	return providers.Resource{
+		Id:          *loadBalancer.LoadBalancerName, // LoadBalancerName checked not nil
+		Arn:         arn,
+		ServiceName: ServiceNameELB,
+		Name:        *loadBalancer.LoadBalancerName,
+		Status:      providers.ResourceStatusActive,
+		Region:      regionName,
+		Tags:        tags,
+		Meta:        meta,
+		CreatedAt:   createdAt,
+		Type:        getAwsServiceResourceType(ServiceNameELB, "loadbalancer"),
+	}
+}
+
+// buildElbV2Resources enriches Application/Network/Gateway Load Balancers into
+// providers.Resources. Shared by GetResources and GetResourcesByIds so the
+// full-scan and targeted paths produce identical rows.
+func buildElbV2Resources(
+	ctx providers.CloudProviderContext,
+	elbv2Svc *elbv2.Client,
+	loadBalancers []elbv2types.LoadBalancer,
+	regionName string,
+) []providers.Resource {
+	resources := []providers.Resource{}
+	if len(loadBalancers) == 0 {
+		return resources
+	}
+
+	var lbArns []string
+	for _, lb := range loadBalancers {
+		if lb.LoadBalancerArn != nil {
+			lbArns = append(lbArns, *lb.LoadBalancerArn)
+		}
+	}
+
+	tagsMap := make(map[string]map[string][]string)
+	if len(lbArns) > 0 {
+		// DescribeTags can handle a maximum of 20 ARNs at a time.
+		const chunkSize = 20
+		for i := 0; i < len(lbArns); i += chunkSize {
+			end := i + chunkSize
+			if end > len(lbArns) {
+				end = len(lbArns)
+			}
+			chunk := lbArns[i:end]
+
+			tagsOutput, err := elbv2Svc.DescribeTags(ctx.GetContext(), &elbv2.DescribeTagsInput{
+				ResourceArns: chunk,
+			})
+			if err != nil {
+				ctx.GetLogger().Warn("failed to fetch tags for elbv2 chunk", "error", err, "region", regionName)
+				continue
+			}
+
+			for _, tagDesc := range tagsOutput.TagDescriptions {
+				if tagDesc.ResourceArn != nil {
+					tags := make(map[string][]string)
+					for _, tag := range tagDesc.Tags {
+						if tag.Key != nil && tag.Value != nil {
+							tags[*tag.Key] = append(tags[*tag.Key], *tag.Value)
+						}
+					}
+					tagsMap[*tagDesc.ResourceArn] = tags
 				}
-				resources = append(resources, resource)
 			}
 		}
 	}
 
-	return resources, nil
+	for _, loadBalancer := range loadBalancers {
+		if loadBalancer.LoadBalancerArn == nil || loadBalancer.LoadBalancerName == nil {
+			ctx.GetLogger().Warn("Skipping elbv2 due to missing information", "loadBalancer", loadBalancer, "region", regionName)
+			continue
+		}
+
+		attributesOutput, err := elbv2Svc.DescribeLoadBalancerAttributes(ctx.GetContext(), &elbv2.DescribeLoadBalancerAttributesInput{
+			LoadBalancerArn: loadBalancer.LoadBalancerArn,
+		})
+		if err != nil {
+			ctx.GetLogger().Warn("failed to fetch attributes for elbv2", "error", err, "lbArn", *loadBalancer.LoadBalancerArn, "region", regionName)
+		}
+
+		// Fetch target groups for this load balancer
+		targetGroupsOutput, err := elbv2Svc.DescribeTargetGroups(ctx.GetContext(), &elbv2.DescribeTargetGroupsInput{
+			LoadBalancerArn: loadBalancer.LoadBalancerArn,
+		})
+		if err != nil {
+			ctx.GetLogger().Warn("failed to fetch target groups for elbv2", "error", err, "lbArn", *loadBalancer.LoadBalancerArn, "region", regionName)
+		}
+
+		meta := structToMap(loadBalancer)
+		if attributesOutput != nil && len(attributesOutput.Attributes) > 0 {
+			attrs := make(map[string]string)
+			for _, attr := range attributesOutput.Attributes {
+				if attr.Key != nil && attr.Value != nil {
+					attrs[*attr.Key] = *attr.Value
+				}
+			}
+			meta["Attributes"] = attrs
+		}
+
+		// Store target group details with health information
+		if targetGroupsOutput != nil && len(targetGroupsOutput.TargetGroups) > 0 {
+			targetGroupList := []map[string]any{}
+			for _, tg := range targetGroupsOutput.TargetGroups {
+				tgMap := structToMap(tg)
+
+				// Fetch target health for this target group
+				if tg.TargetGroupArn != nil {
+					targetHealthOutput, healthErr := elbv2Svc.DescribeTargetHealth(ctx.GetContext(), &elbv2.DescribeTargetHealthInput{
+						TargetGroupArn: tg.TargetGroupArn,
+					})
+					if healthErr != nil {
+						ctx.GetLogger().Warn("failed to fetch target health", "error", healthErr, "targetGroupArn", *tg.TargetGroupArn, "region", regionName)
+					} else if targetHealthOutput != nil && len(targetHealthOutput.TargetHealthDescriptions) > 0 {
+						healthList := []map[string]any{}
+						for _, health := range targetHealthOutput.TargetHealthDescriptions {
+							healthList = append(healthList, structToMap(health))
+						}
+						tgMap["TargetHealthDescriptions"] = healthList
+					}
+				}
+
+				targetGroupList = append(targetGroupList, tgMap)
+			}
+			meta["TargetGroups"] = targetGroupList
+		} else {
+			meta["TargetGroups"] = []any{}
+		}
+
+		createdAt := time.Time{}
+		if loadBalancer.CreatedTime != nil {
+			createdAt = *loadBalancer.CreatedTime
+		}
+
+		var lbType elbv2types.LoadBalancerTypeEnum
+		if loadBalancer.Type != "" {
+			lbType = loadBalancer.Type
+		} else {
+			lbType = "unknown"
+		}
+
+		resource := providers.Resource{
+			Id:          *loadBalancer.LoadBalancerArn,
+			Arn:         *loadBalancer.LoadBalancerArn,
+			ServiceName: ServiceNameELB,
+			Name:        *loadBalancer.LoadBalancerName,
+			Status:      providers.ResourceStatusActive,
+			Region:      regionName,
+			Tags:        tagsMap[*loadBalancer.LoadBalancerArn],
+			Meta:        meta,
+			CreatedAt:   createdAt,
+			Type:        getAwsServiceResourceType(ServiceNameELB, string(lbType)+"_loadbalancer"),
+		}
+		resources = append(resources, resource)
+	}
+	return resources
+}
+
+// elbNamePattern is the load-balancer name alphabet shared by Classic and
+// Application/Network/Gateway Load Balancers.
+var elbNamePattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,32}$`)
+
+// elbLookupTargets is what a set of ListResources lookup keys asks AWS for.
+type elbLookupTargets struct {
+	classicNames []string // Classic Load Balancers, by name
+	v2Names      []string // Application/Network/Gateway Load Balancers, by name
+	v2Arns       []string // Application/Network/Gateway Load Balancers, by ARN
+}
+
+// elbLookupTargetsForKeys resolves ListResources lookup keys to the load
+// balancers to fetch in region. A key is a load balancer ARN or a bare name. A
+// bare name is the stored Id of a Classic Load Balancer and the Name of an
+// Application/Network/Gateway one — the region scan's filter matches both, so
+// both are looked up. An ARN for another region has nothing to fetch here. Any
+// other shape (a CloudWatch "app/<name>/<id>" dimension, a target group or
+// listener ARN) reports ErrUnsupported, which sends ListResources back to the
+// region scan and its own filter, exactly as before this service had a targeted
+// fetch.
+func elbLookupTargetsForKeys(keys []string, region string) (elbLookupTargets, error) {
+	targets := elbLookupTargets{}
+	for _, key := range keys {
+		if !strings.HasPrefix(key, "arn:") {
+			if !elbNamePattern.MatchString(key) {
+				return elbLookupTargets{}, errors.ErrUnsupported
+			}
+			targets.classicNames = append(targets.classicNames, key)
+			targets.v2Names = append(targets.v2Names, key)
+			continue
+		}
+		parts := strings.SplitN(key, ":", 6)
+		if len(parts) != 6 || parts[2] != "elasticloadbalancing" {
+			return elbLookupTargets{}, errors.ErrUnsupported
+		}
+		// "loadbalancer/<name>" is Classic (the ARN aws_elb.go builds for it);
+		// "loadbalancer/<app|net|gwy>/<name>/<id>" is the newer kind.
+		segments := strings.Split(parts[5], "/")
+		if segments[0] != "loadbalancer" || (len(segments) != 2 && len(segments) != 4) {
+			return elbLookupTargets{}, errors.ErrUnsupported
+		}
+		if parts[3] != region {
+			continue
+		}
+		if len(segments) == 2 {
+			targets.classicNames = append(targets.classicNames, segments[1])
+		} else {
+			targets.v2Arns = append(targets.v2Arns, key)
+		}
+	}
+	return targets, nil
+}
+
+// GetResourcesByIds fetches specific load balancers by ARN or name without
+// describing every load balancer in the region.
+//
+// Without this, ListResources falls back to describing every Classic and
+// Application/Network/Gateway Load Balancer in the region, plus tag, attribute,
+// target-group and target-health calls for each. On the EventBridge path that is
+// one whole-region inventory scan per delivered CreateLoadBalancer/
+// DeleteLoadBalancer event — see the Lambda implementation for what that did to
+// the consumer during a bulk delete.
+//
+// A load balancer deleted before this lookup is the normal case on
+// DeleteLoadBalancer and is genuinely gone: it is skipped. Any other failure is
+// returned so ListResources falls back to the full scan — callers read an empty,
+// no-error result as "gone", and a denied or throttled call must not look like
+// that.
+func (a *awsElb) GetResourcesByIds(ctx providers.CloudProviderContext, account providers.Account, region string, resourceIds []string) ([]providers.Resource, error) {
+	resourceIds = lo.Uniq(resourceIds)
+	if len(resourceIds) == 0 {
+		// Nothing to look up. Deliberately not ErrUnsupported: that word means
+		// "this service has no targeted fetch" and sends ListResources back to a
+		// full region scan.
+		return []providers.Resource{}, nil
+	}
+	targets, err := elbLookupTargetsForKeys(resourceIds, region)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg, err := getAwsConfigFromAccount(ctx.GetContext(), account)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Region = region
+	svc := elb.NewFromConfig(cfg)
+	elbv2Svc := elbv2.NewFromConfig(cfg)
+
+	resources := []providers.Resource{}
+	for _, name := range targets.classicNames {
+		output, err := svc.DescribeLoadBalancers(ctx.GetContext(), &elb.DescribeLoadBalancersInput{LoadBalancerNames: []string{name}})
+		if err != nil {
+			var notFound *elbtypes.AccessPointNotFoundException
+			if errors.As(err, &notFound) {
+				ctx.GetLogger().Info("GetResourcesByIds: classic load balancer not found, skipping", "loadBalancerName", name, "accountNumber", account.AccountNumber, "region", region)
+				continue
+			}
+			ctx.GetLogger().Error("GetResourcesByIds: failed to get classic load balancer, falling back to full scan", "error", err, "loadBalancerName", name, "accountNumber", account.AccountNumber, "region", region)
+			return nil, fmt.Errorf("failed to get classic load balancer %s: %w", name, err)
+		}
+		for _, loadBalancer := range output.LoadBalancerDescriptions {
+			if loadBalancer.LoadBalancerName == nil {
+				continue
+			}
+			resources = append(resources, buildClassicElbResource(ctx, svc, loadBalancer, account, region))
+		}
+	}
+
+	v2Inputs := make([]*elbv2.DescribeLoadBalancersInput, 0, len(targets.v2Names)+len(targets.v2Arns))
+	for _, name := range targets.v2Names {
+		v2Inputs = append(v2Inputs, &elbv2.DescribeLoadBalancersInput{Names: []string{name}})
+	}
+	for _, arn := range targets.v2Arns {
+		v2Inputs = append(v2Inputs, &elbv2.DescribeLoadBalancersInput{LoadBalancerArns: []string{arn}})
+	}
+	// One load balancer per call: a single missing one fails the whole request.
+	for _, input := range v2Inputs {
+		output, err := elbv2Svc.DescribeLoadBalancers(ctx.GetContext(), input)
+		if err != nil {
+			var notFound *elbv2types.LoadBalancerNotFoundException
+			if errors.As(err, &notFound) {
+				ctx.GetLogger().Info("GetResourcesByIds: load balancer not found, skipping", "names", input.Names, "arns", input.LoadBalancerArns, "accountNumber", account.AccountNumber, "region", region)
+				continue
+			}
+			ctx.GetLogger().Error("GetResourcesByIds: failed to get load balancer, falling back to full scan", "error", err, "names", input.Names, "arns", input.LoadBalancerArns, "accountNumber", account.AccountNumber, "region", region)
+			return nil, fmt.Errorf("failed to get load balancer: %w", err)
+		}
+		resources = append(resources, buildElbV2Resources(ctx, elbv2Svc, output.LoadBalancers, region)...)
+	}
+	return lo.UniqBy(resources, func(r providers.Resource) string { return r.Arn }), nil
 }
 
 func (a *awsElb) GetRecommendations(ctx providers.CloudProviderContext, account providers.Account, filter providers.ListRecommendationsRequest, existingResources []providers.Resource) ([]providers.Recommendation, error) {

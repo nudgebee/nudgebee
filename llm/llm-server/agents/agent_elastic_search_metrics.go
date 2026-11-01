@@ -23,10 +23,14 @@ func init() {
 	toolInput := "Provide a question in natural language to retrieve, analyze, or summarize metrics from Elasticsearch."
 	toolOutput := "Returns metric data and summaries derived from Elasticsearch aggregation responses."
 
-	core.RegisterNBAgentFactoryAndToolAndPrioritizeAgentResponseForTool(ElasticSearchMetricsAgentName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAndTool(ElasticSearchMetricsAgentName, func(accountId string) (core.NBAgent, error) {
 		return ElasticSearchMetricsAgent{accountId: accountId}, nil
 	}, toolDescription, toolInput, toolOutput)
 }
+
+// AcceptsExecutionTarget: its tools follow a handed target and re-resolve the
+// metrics provider and index for it, so the agent can run for another account.
+func (a ElasticSearchMetricsAgent) AcceptsExecutionTarget() {}
 
 type ElasticSearchMetricsAgent struct {
 	accountId string
@@ -368,16 +372,17 @@ func detectMetricSchemas(indexCfg utils.ESIndexConfig, probeFields esFieldProbe)
 }
 
 func (e ElasticSearchMetricsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
+	accountID := promptAccountID(query, e.accountId)
 	var indexCfg utils.ESIndexConfig
 	if ctx != nil {
-		if provider, err := services_server.GetObservabilityProvider(*ctx, e.accountId, "metrics", ""); err == nil && provider.DefaultIndex != "" {
+		if provider, err := services_server.GetObservabilityProvider(*ctx, accountID, "metrics", ""); err == nil && provider.DefaultIndex != "" {
 			indexCfg.DefaultIndex = provider.DefaultIndex
 		}
 	}
 	if indexCfg.DefaultIndex == "" || indexCfg.DefaultIndex == "*" {
-		indexCfg = utils.GetESAccountIndexConfig(e.accountId, "metrics")
+		indexCfg = utils.GetESAccountIndexConfig(accountID, "metrics")
 	}
-	schemas, availableIndices, timestampField, targets := detectMetricSchemas(indexCfg, newESFieldProbe(ctx, e.accountId))
+	schemas, availableIndices, timestampField, targets := detectMetricSchemas(indexCfg, newESFieldProbe(ctx, accountID))
 	return e.buildSystemPrompt(schemas, availableIndices, timestampField, targets)
 }
 

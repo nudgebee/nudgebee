@@ -1440,7 +1440,7 @@ func (j *JaegerTraceSource) jaegerSpanToOTEL(span map[string]any, processes map[
 	startTime := getInt64Field(span, "startTime", 0) // microseconds
 	duration := getInt64Field(span, "duration", 0)   // microseconds
 	durationNs := duration * 1000                    // convert to nanoseconds
-	timestamp := time.UnixMicro(startTime).Format(time.RFC3339Nano)
+	timestamp := time.UnixMicro(startTime).UTC().Format(time.RFC3339Nano)
 
 	workloadNamespace := j.extractFirstNonEmpty(spanTags,
 		"Namespace",

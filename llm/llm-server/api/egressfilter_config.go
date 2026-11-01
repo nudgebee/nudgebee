@@ -182,6 +182,7 @@ func egressConfigResponse(cfg *egressfilter.TenantConfig, mode egressfilter.Mode
 		"secrets_enabled":      config.Config.LlmServerEgressFilterSecretsEnabled,
 		"env_default_mode":     string(egressfilter.ParseMode(config.Config.LlmServerEgressFilterSecretsMode)),
 		"env_pii_ner_enabled":  config.Config.LlmServerEgressFilterPIINerEnabled,
+		"pii_ner_supported":    config.EffectivePIIBackend() == "http",
 		"env_pii_default_mode": envPIIMode(),
 	}
 }

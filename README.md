@@ -1,25 +1,50 @@
 # Nudgebee
 
-Open-source SRE copilot — observability, FinOps, runbook automation, and incident response across Kubernetes and AWS / Azure / GCP.
+The open-source agentic ops platform for cloud, SRE, DevOps, support and FinOps teams: self-hosted, on your own models.
 
 [![License: BSL 1.1](https://img.shields.io/badge/License-BSL_1.1-blue.svg)](./LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://go.dev/dl/)
 [![Node](https://img.shields.io/badge/Node-25+-339933?logo=node.js&logoColor=white)](https://nodejs.org/en/download)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
 [![Discord](https://img.shields.io/discord/1514262994152980622?logo=discord&logoColor=white&label=Discord&color=5865F2)](https://discord.gg/C5d27ceTEv)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/nudgebee/nudgebee/badge)](https://securityscorecards.dev/viewer/?uri=github.com/nudgebee/nudgebee)
 
 ## What is Nudgebee?
 
-Nudgebee is an open-source SRE copilot that watches your Kubernetes clusters and AWS / Azure / GCP accounts, turns raw signals into ranked findings, and walks operators through investigation and remediation. It bundles:
+Nudgebee puts AI agents to work on your team's repeatable ops work, across incidents, cost, Kubernetes, cloud and databases, with guardrails that make them safe to run in production.
 
-- **Observability ingestion** — Kubernetes events, metrics, traces, plus cloud-provider scans across AWS, Azure, and GCP.
-- **FinOps & cost optimization** — surfaces unused / underutilized resources (idle workloads, oversized pods, stale snapshots, dangling volumes) and right-sizing recommendations across cloud and Kubernetes.
-- **LLM-powered triage** — agentic planners that reproduce, root-cause, and propose fixes for incidents.
-- **ChatOps** — Slack / Teams chatbot for SRE workflows: query state, run runbooks, ack alerts, and drive investigations from the channel where on-call already lives.
-- **Runbook automation** — codifies recurring fixes as reusable runbooks and triggers them from chat, alert, or schedule.
-- **Ticketing + notifications** — bidirectional sync with Jira, ServiceNow, PagerDuty, Zenduty; alert delivery to Slack, Teams, email.
+- **Investigate incidents** — Nubi, the AI assistant, triages alerts and works to an evidence-backed root cause from logs, metrics, traces, recent changes and the live cluster.
+- **Cut waste** — finds unused and oversized resources across cloud and Kubernetes and recommends right-sizing.
+- **Run Kubernetes and cloud ops** — a Kubernetes agent with kubectl, Helm and Argo CD tools, plus AWS, Azure and GCP agents.
+- **Diagnose databases** — agents for Postgres, MySQL, SQL Server, Oracle and ClickHouse, plus a Redis tool.
+- **Automate runbooks** — turns recurring fixes into durable runbooks on Temporal, triggered by alert, schedule or chat, with approval gates.
+- **Work where your team works** — Slack, Teams and Google Chat, plus bidirectional ticketing with Jira, ServiceNow, PagerDuty and Zenduty.
+
+### Built to run in production
+
+- **Approvals** — remediations and runbook steps can require human approval before they run.
+- **Audit log** — configuration changes, manual runs and approvals are recorded.
+- **Self-hosted, no usage telemetry** — runs in your cluster or VPC, with the LLM provider you choose.
 
 > _Dashboard screenshot — to be added. Track [discussion thread](https://github.com/nudgebee/nudgebee/discussions) or contribute via a PR._
+
+## Related repositories
+
+This repo is the platform. Agents, docs, tooling and content live in their own repos:
+
+| Repo                                                                                                                                   | Purpose                                                                                         |
+| -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| [nudgebee-docs](https://github.com/nudgebee/nudgebee-docs)                                                                             | Public documentation, published at [docs.nudgebee.com](https://docs.nudgebee.com)               |
+| [nbctl](https://github.com/nudgebee/nbctl)                                                                                             | Command-line interface; also runs as an MCP server                                              |
+| [k8s-agent](https://github.com/nudgebee/k8s-agent)                                                                                     | In-cluster Kubernetes agent: state, events, metrics, logs and traces                            |
+| [node-agent](https://github.com/nudgebee/node-agent)                                                                                   | Per-node eBPF agent for container and host metrics, logs and L7 traffic                         |
+| [kubewatch](https://github.com/nudgebee/kubewatch)                                                                                     | Kubernetes resource watcher with workload sync                                                  |
+| [application-profiler](https://github.com/nudgebee/application-profiler)                                                               | On-demand profiling (flamegraphs, heap/thread dumps, pprof) without restarting pods             |
+| [forager](https://github.com/nudgebee/forager)                                                                                         | Lightweight agent that relays data from databases, HTTP APIs and MCP servers                    |
+| [automation-templates](https://github.com/nudgebee/automation-templates)                                                               | System runbook templates synced into the runbook server                                         |
+| [nudgebee-playbooks](https://github.com/nudgebee/nudgebee-playbooks)                                                                   | Workflow definitions for cross-platform service restart and diagnosis                           |
+| [nudgebee-scenario-lab](https://github.com/nudgebee/nudgebee-scenario-lab)                                                             | Disposable AWS lab that injects real incidents for Nudgebee to detect and explain               |
+| [kubepug](https://github.com/nudgebee/kubepug), [nova](https://github.com/nudgebee/nova), [popeye](https://github.com/nudgebee/popeye) | Nudgebee forks of Kubernetes checkers: deprecated APIs, outdated Helm charts, cluster sanitizer |
 
 ## Quick Start (Local Development)
 
@@ -27,7 +52,7 @@ This is the fastest way to run Nudgebee from source. **Infra in containers, back
 
 ### Prerequisites
 
-- [Docker](https://www.docker.com/products/docker-desktop/) (with `docker compose`) **or** [Podman Desktop](https://podman-desktop.io/) (with `podman-compose`)
+- [Docker](https://www.docker.com/products/docker-desktop/) with Docker Compose v2.24+ (the compose file uses optional `env_file` entries), or [Podman Desktop](https://podman-desktop.io/) with a `podman-compose` release that supports `env_file.required`
 - [Go 1.26+](https://go.dev/dl/)
 - [Node 25+ and npm](https://nodejs.org/en/download)
 
@@ -138,7 +163,7 @@ non-local deployment, generate fresh values and review the notes below.
 | `APP_DATABASE_URL`                                     | services-server             | —                         | Compose default: `postgres://postgres:postgrespassword@localhost:5432/nudgebee?sslmode=disable`. Use `localhost` from the host, `postgres` hostname from inside the compose network.                                  |
 | `NUDGEBEE_ENCRYPTION_KEY`                              | services-server **and** app | `openssl rand -hex 32`    | Encrypts integration credentials and other sensitive columns. **Must match between services-server and app.** Rotating it makes previously-encrypted rows unreadable — there is no automatic re-encryption migration. |
 | `ACTION_API_SERVER_TOKEN`                              | services-server **and** app | `openssl rand -hex 32`    | **Optional.** Shared secret for internal app↔services-server action calls. Defaults to empty on both sides, which disables the check (fine for local dev). If you set it, the value must match in both files.         |
-| `NEXTAUTH_SECRET`                                      | app                         | `openssl rand -base64 32` | Signs both NextAuth session cookies and the inner HS256 session JWT (used by nbctl / Bearer-flow callers). Rotating it logs everyone out and invalidates outstanding bearer tokens.                                   |
+| `NEXTAUTH_SECRET`                                      | app                         | `openssl rand -base64 32` | Signs both NextAuth session cookies and the inner HS256 session JWT the gateway mints for API-token callers and forwards upstream. Rotating it logs everyone out.                                   |
 | `NEXTAUTH_DUMMY_CREDS_ENABLED` / `_PASSWORD`           | app                         | —                         | Enables the any-email/password provider. Use for local development only; turn it off in any deployment exposed beyond your laptop.                                                                                    |
 | `RABBIT_MQ_USERNAME` / `_PASSWORD` / `_HOST` / `_PORT` | services-server             | —                         | Compose defaults: `guest` / `guest` / `localhost` / `5672`.                                                                                                                                                           |
 
@@ -275,7 +300,7 @@ The repo ships a `docker-compose.yaml` that wires every service against the publ
 | `postgres`    | postgres:16                  | Primary RDBMS. App schema applied by golang-migrate on deploy.                                                                       |
 | `rabbitmq`    | rabbitmq:3-management        | Message bus. UI at `:15672`.                                                                                                         |
 | `redis`       | redis:7-alpine               | Cache.                                                                                                                               |
-| `qdrant`      | qdrant/qdrant:v1.19.0        | Vector store for RAG / LLM.                                                                                                          |
+| `qdrant`      | qdrant/qdrant:v1.19.2        | Vector store for RAG / LLM.                                                                                                          |
 | `temporal`    | temporalio/auto-setup:1.29.1 | Workflow engine. Backed by `postgres` (creates `temporal` + `temporal_visibility` DBs on first boot). Required by `workflow-server`. |
 | `temporal-ui` | temporalio/ui:2.44.0         | Optional Temporal Web UI at `:8233`.                                                                                                 |
 
@@ -450,6 +475,7 @@ Nudgebee ships with **no telemetry or product analytics**. No data leaves your c
 - **Chat / questions / contributor coordination** — [Discord](https://discord.gg/C5d27ceTEv)
 - **Bugs and feature requests** — [GitHub Issues](https://github.com/nudgebee/nudgebee/issues)
 - **Security reports** — [SECURITY.md](./SECURITY.md)
+- **Commercial license, support or the full platform** — [Nudgebee Enterprise](https://www.nudgebee.com/pricing?utm_source=github&utm_medium=readme&utm_campaign=oss). Please don't open issues for Enterprise features here.
 
 ## License
 

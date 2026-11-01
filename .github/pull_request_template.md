@@ -1,7 +1,15 @@
 # Description
 
-Please include a summary of the changes and the related issue. Please also include relevant motivation and context. List
-any dependencies that are required for this change.
+<!-- Everything above the <details> block: 200 words at most, less for a small diff.
+     Full rules and a worked example: docs/writing-for-readers.md -->
+
+<!-- Lead: 3 sentences, no symbol names. What a user saw, what it does now, one number. -->
+
+**Decision:** <!-- What you chose, what else was possible, why not that. Delete only if there was no alternative. -->
+
+**Look at:** <!-- The file or area that carries the risk; say what is mechanical. Delete for a one-file or under-50-line diff. -->
+
+**Chain:** <!-- Only when the ticket has several PRs: "2 of 4 for #N. Replaces #A. After this PR the rule is …". Otherwise delete. -->
 
 Fixes # (issue)
 
@@ -22,8 +30,21 @@ Please delete options that are not relevant.
 
 # How Has This Been Tested?
 
-Please describe the tests that you ran to verify your changes. Provide instructions so we can reproduce. Please also
-list any relevant details for your test configuration
+<!-- Steps someone else follows to confirm it works: where to click, what they should see, what they
+     saw before. Commands you ran (lint, tests) go in the fold below. If there is nothing to observe,
+     say so in one line. -->
 
-- [ ] Test A
-- [ ] Test B
+1.
+2.
+
+# Risks
+
+<!-- At most 3 bullets a reviewer should weigh. Delete this heading if there are none. -->
+
+<details>
+<summary>Engineering detail</summary>
+
+<!-- No length limit: root cause, the query behind each number above, test and lint output,
+     measurements, what is not in this PR. -->
+
+</details>

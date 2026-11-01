@@ -16,6 +16,7 @@ import (
 	"nudgebee/llm/events"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
+	"nudgebee/llm/security/egressfilter"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -577,18 +578,58 @@ func isLiveFailure(repo *events.EventAnalysisRepository, analysis *events.EventA
 		!repo.IsAnalysisStale(analysis.UpdatedAt)
 }
 
+// shouldForceFreshAnalysis reports whether this request must run as a
+// regenerate — what the UI's "Refresh investigation" button sends — so the
+// event gets its own live run instead of a related event's analysis. That
+// applies when the account turned off reuse_related, or the event is in one of
+// its always_fresh_namespaces, and the event has never been analysed. Only the
+// first request forces: once the claim binds the event to its own run, later
+// requests (UI polling, MQ re-fires) reuse it. Lookup errors fall back to
+// normal reuse rather than failing the request.
+func shouldForceFreshAnalysis(ctx *security.RequestContext, repo *events.EventAnalysisRepository, eventId, accountId string) bool {
+	settings := repo.Settings()
+	if settings.ReusesRelated() && len(settings.AlwaysFreshNamespaces) == 0 {
+		return false
+	}
+	if settings.ReusesRelated() {
+		namespace, err := repo.GetEventNamespace(ctx, eventId, accountId)
+		if err != nil || !settings.IsAlwaysFresh(namespace) {
+			return false
+		}
+	}
+	analysed, err := repo.HasAnalysisMapping(ctx, eventId)
+	if err != nil || analysed {
+		return false
+	}
+	ctx.GetLogger().Info("analyzer: forcing fresh analysis per account settings", "event_id", eventId, "account_id", accountId)
+	return true
+}
+
+// bindStagesToEvent gives each non-log stage of a forced-fresh event its own
+// in-progress row and mapping. Without them, a stage the run never reached
+// (e.g. it failed after the log stage) has no mapping, and a later non-forced
+// request would read the related event's completed result for it through
+// GetEventAnalysis's fingerprint fallback. Errors are logged, not returned: the
+// run itself is already claimed and proceeds either way.
+func bindStagesToEvent(ctx *security.RequestContext, repo *events.EventAnalysisRepository, eventId, fingerprint, accountId, aggKey string) {
+	for _, aType := range []events.EventAnalysisType{events.AnalysisTypeSummary, events.AnalysisTypeInvestigation, events.AnalysisTypeDetailedResponse} {
+		if err := repo.UpsertEventAnalysisInProgress(ctx, eventId, fingerprint, accountId, aggKey, aType); err != nil {
+			ctx.GetLogger().Warn("analyzer: failed to bind stage to forced-fresh event", "error", err, "event_id", eventId, "analysis_type", aType)
+		}
+	}
+}
+
 func executeEventInvestigation(ctx *security.RequestContext, request EventAnalysisRequest, c *gin.Context) {
 	dbManager, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
 		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
-	eventAnalysisRepo := events.NewEventAnalysisRepository(dbManager)
-
 	if request.UserId == "" || request.AccountId == "" || request.EventId == "" {
 		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "userId, accountId and eventId are required"}}))
 		return
 	}
+	eventAnalysisRepo := events.NewEventAnalysisRepositoryForAccount(ctx, dbManager, request.AccountId)
 
 	ctx.GetLogger().Info("analyzer: fetching event info from database", "event_id", request.EventId)
 	eventInfo, err := eventAnalysisRepo.GetEventInfo(ctx, request.EventId, request.AccountId)
@@ -604,6 +645,11 @@ func executeEventInvestigation(ctx *security.RequestContext, request EventAnalys
 	if eventInfo.Fingerprint == "" {
 		ctx.GetLogger().Warn("analyzer: event fingerprint is empty, using event_id as fingerprint", "event_id", request.EventId)
 		eventInfo.Fingerprint = request.EventId
+	}
+
+	forcedFresh := !request.Regenerate && shouldForceFreshAnalysis(ctx, eventAnalysisRepo, request.EventId, request.AccountId)
+	if forcedFresh {
+		request.Regenerate = true
 	}
 
 	analysisTypes := []events.EventAnalysisType{events.AnalysisTypeSummary, events.AnalysisTypeInvestigation, events.AnalysisTypeLog, events.AnalysisTypeDetailedResponse}
@@ -746,9 +792,11 @@ func executeEventInvestigation(ctx *security.RequestContext, request EventAnalys
 		finalResponse.GeneratedAt = &generatedAt
 	}
 
-	// One post-loop check on the newest stage (not per-stage in the loop) so it
-	// stays identical to the events-list "View Analysis" test in
-	// services/query is_investigated: completion_ts >= event.created_at - window.
+	// One post-loop check on the newest stage (not per-stage in the loop),
+	// mirroring the events-list "View Analysis" test in services/query
+	// is_investigated: completion_ts >= event.created_at - window. That test
+	// hardcodes 24h, so the two diverge for an account with its own
+	// reuse_window_hours (event_analysis setting) or a non-default global window.
 	if allCompleted && eventAnalysisRepo.IsAnalysisStaleForEvent(latestAnalysisAt, eventInfo.CreatedAt) {
 		allCompleted = false
 	}
@@ -840,7 +888,11 @@ func executeEventInvestigation(ctx *security.RequestContext, request EventAnalys
 			}
 			continue
 		}
-		if logCompleted {
+		// A forced-fresh event still marks every stage, even when the related
+		// event's log is complete: that gives each stage its own mapping row, so a
+		// retry after a partial failure can't fall back to the related event's
+		// results. The MQ path does the same through bindStagesToEvent.
+		if logCompleted && !forcedFresh {
 			continue
 		}
 		if err := eventAnalysisRepo.UpsertEventAnalysisInProgress(ctx, request.EventId, eventInfo.Fingerprint, request.AccountId, eventInfo.AggregationKey, aType); err != nil {
@@ -887,7 +939,7 @@ func executeEventInvestigation(ctx *security.RequestContext, request EventAnalys
 }
 
 func getOrCreateEventAnalysisStatus(ctx *security.RequestContext, request EventAnalysisRequest, dbManager *common.DatabaseManager, createAnalysis bool) (EventAnalysisResponse, error) {
-	eventAnalysisRepo := events.NewEventAnalysisRepository(dbManager)
+	eventAnalysisRepo := events.NewEventAnalysisRepositoryForAccount(ctx, dbManager, request.AccountId)
 	if request.EventId == "" || request.AccountId == "" {
 		ctx.GetLogger().Warn("analyzer: event_id/account_id is required", "event_id", request.EventId, "account_id", request.AccountId)
 		return EventAnalysisResponse{}, common.Error{
@@ -1127,7 +1179,7 @@ func getConfirmedTerminalAnalysis(ctx *security.RequestContext, request EventAna
 	if request.EventId == "" || request.AccountId == "" || dbManager == nil {
 		return EventAnalysisResponse{}, false
 	}
-	repo := events.NewEventAnalysisRepository(dbManager)
+	repo := events.NewEventAnalysisRepositoryForAccount(ctx, dbManager, request.AccountId)
 	eventInfo, err := repo.GetEventInfo(ctx, request.EventId, request.AccountId)
 	if err != nil {
 		return EventAnalysisResponse{}, false
@@ -1375,7 +1427,7 @@ func analyzeEventRCAUsingAgentsAndUpdateDb(ctx *security.RequestContext, request
 		ctx.GetLogger().Error("unable to get db manager for rca analysis", "error", dbErr, "event_id", request.EventId)
 		return EventAnalysisResponse{}, dbErr
 	}
-	eventAnalysisRepo := events.NewEventAnalysisRepository(dbManager)
+	eventAnalysisRepo := events.NewEventAnalysisRepositoryForAccount(ctx, dbManager, request.AccountId)
 	defer func() {
 		if request.AttemptID != "" && resultErr != nil {
 			if err := eventAnalysisRepo.UpdateRCAAttemptStatus(ctx, request.AttemptID, request.EventId, request.AccountId, string(events.AnalysisStatusFailed), "RCA could not complete. Please retry."); err != nil {
@@ -1662,6 +1714,7 @@ const maxErrorLogLinesBytes = 4096
 // Reserve space for observations even when enrichment produces verbose insights.
 const maxEvidenceInsightBytes = 2000
 const maxEvidencePatternBytes = 1500
+const maxLogCoverageNoteBytes = 400
 const maxInlineRawLogBytes = 1000
 
 // maxLogPatternCount bounds how many enricher log-pattern templates are
@@ -1713,12 +1766,29 @@ func buildInvestigationEvidenceContext(ev events.InvestigateData) string {
 		b.WriteString("\n")
 	}
 
+	// 1b. Error-log-spike alerts: which log patterns rose against normal.
+	if breakdown := renderLogPatternBreakdown(ev); breakdown != "" {
+		b.WriteString("### Error Patterns Against Normal\n")
+		b.WriteString(breakdown)
+		b.WriteString("\n")
+	}
+
 	// 2. Metric values: one line per series with its span, first/min/max/last.
 	// Insight messages name the metric fetch but carry none of its numbers.
 	if digest := renderMetricDigest(ev); digest != "" {
 		b.WriteString("### Metric Values\n")
 		b.WriteString(digest)
 		b.WriteString("\n")
+	}
+
+	// What the collected logs below cover. A log card holds a fixed number of
+	// lines, so on a busy workload it is the newest part of the window; the
+	// sections below must not read as the whole of it.
+	hasLogEvidence := ev.LogSummary != nil || len(ev.ErrorLogData) > 0 || strings.TrimSpace(ev.LogData) != ""
+	if note := strings.TrimSpace(ev.LogCoverageNote); note != "" && hasLogEvidence {
+		b.WriteString("### Log Coverage\n")
+		b.WriteString(core.TruncateHead(note, maxLogCoverageNoteBytes))
+		b.WriteString("\n\n")
 	}
 
 	// 3. The log enricher's pattern digest: top templates with counts plus
@@ -1733,8 +1803,12 @@ func buildInvestigationEvidenceContext(ev events.InvestigateData) string {
 	// tool). Middle-truncated so the start and end of the window both survive.
 	if len(ev.ErrorLogData) > 0 {
 		if errText := strings.TrimSpace(strings.Join(ev.ErrorLogData, "\n")); errText != "" {
+			// The sections above have their own budgets; when they are all
+			// full, what is left decides this one, so the block's final cap
+			// never cuts the last errors off the end.
+			errBudget := min(maxErrorLogLinesBytes, maxInvestigationEvidenceBytes-b.Len()-128)
 			b.WriteString("### Error Log Lines\n```\n")
-			b.WriteString(core.TruncateMiddle(errText, maxErrorLogLinesBytes/2, maxErrorLogLinesBytes/2))
+			b.WriteString(core.TruncateMiddle(errText, errBudget/2, errBudget/2))
 			b.WriteString("\n```\n\n")
 		}
 	}
@@ -1793,7 +1867,11 @@ func saveEvidenceLogsToWorkspace(ctx *security.RequestContext, accountId, sessio
 	if hasWindow {
 		windowNote = fmt.Sprintf(" for the incident window (%s → %s)", window.startString(), window.endString())
 	}
-	return fmt.Sprintf("## Stored Log Evidence\nThe full logs already collected%s are saved in your workspace at `%s` (one log line per row). Grep this file first (e.g. `grep -iE \"error|timeout|fail\" %s | head -40`) before fetching live logs — logs fetched live at analysis time include activity from after the incident window.", windowNote, filename, filename)
+	note := fmt.Sprintf("## Stored Log Evidence\nThe full logs already collected%s are saved in your workspace at `%s` (one log line per row). Grep this file first (e.g. `grep -iE \"error|timeout|fail\" %s | head -40`) before fetching live logs — logs fetched live at analysis time include activity from after the incident window.", windowNote, filename, filename)
+	if coverage := strings.TrimSpace(event.Evidences.LogCoverageNote); coverage != "" {
+		note += " What this file covers: " + core.TruncateHead(coverage, maxLogCoverageNoteBytes)
+	}
+	return note
 }
 
 // structuredEvidenceForWorkspace returns the event's structured evidence (metric
@@ -1989,7 +2067,7 @@ func collectEvidenceInsights(ev events.InvestigateData) []string {
 	for _, d := range []events.InvestigateDataInsight{
 		ev.PodData, ev.NodeData, ev.Deployment, ev.AlertLabels, ev.JobInformation,
 		ev.JobEvents, ev.JobPodEvents, ev.RelatedEvents, ev.ContainerMetrics,
-		ev.Traces, ev.AlertData, ev.ServiceMap,
+		ev.Traces, ev.AlertData, ev.ServiceMap, ev.LogPatternBreakdown,
 	} {
 		add(d.Insight)
 	}
@@ -2167,6 +2245,19 @@ func buildCodeCapabilityBlock(caps *services_server.EventCodeCapabilities, names
 	b.WriteString("target_value: <for a deployment change only: the exact value, e.g. 512Mi>\n")
 	b.WriteString("</change_plan>\n")
 	return b.String()
+}
+
+// eventKnowledgeHints names the kind of event for knowledge discovery. The
+// title is left out: it describes one occurrence, and the investigation
+// prompt already starts with it.
+func eventKnowledgeHints(event events.Event) []string {
+	var hints []string
+	for _, v := range []string{event.Category, event.FindingType, event.AggregationKey} {
+		if v = strings.TrimSpace(v); v != "" {
+			hints = append(hints, v)
+		}
+	}
+	return hints
 }
 
 // capNamespace / capWorkload are the event's resolved workload
@@ -2448,7 +2539,7 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 		ctx.GetLogger().Error("unable to get db", "error", err)
 		return EventAnalysisResponse{}, err
 	}
-	eventAnalysisRepo := events.NewEventAnalysisRepository(dbManager)
+	eventAnalysisRepo := events.NewEventAnalysisRepositoryForAccount(ctx, dbManager, request.AccountId)
 
 	// Gate before getEventData (which `select *`s the event, materialising its
 	// potentially multi-MB evidences column) and before any agent runs. For
@@ -2781,7 +2872,7 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 				"has_deployment_values", codeCapabilities != nil && codeCapabilities.Deployment != nil,
 				"prompt_offers_code_analyzer", strings.Contains(eventAnalsysisPrompt, "`code_analyzer` is available"),
 				"prompt_bytes", len(eventAnalsysisPrompt))
-			rootcauseAnalysis, err := core.HandleConversationSessionRequest(ctx, rootcauseAgent, request.UserId, request.AccountId, parentConversationId, eventAnalsysisPrompt, core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{Labels: parsedLabels, EventId: request.EventId, Namespace: workloadNamespace, Workload: workloadName}), core.ConversationSessionRequestWitAdditionalSystemPrompt(accountPrompt), core.ConversationSessionRequestWithEnableCritique(true), core.ConversationSessionRequestWithoutConversationHistory())
+			rootcauseAnalysis, err := core.HandleConversationSessionRequest(ctx, rootcauseAgent, request.UserId, request.AccountId, parentConversationId, eventAnalsysisPrompt, core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{Labels: parsedLabels, EventId: request.EventId, KnowledgeHints: eventKnowledgeHints(eventData), Namespace: workloadNamespace, Workload: workloadName}), core.ConversationSessionRequestWitAdditionalSystemPrompt(accountPrompt), core.ConversationSessionRequestWithEnableCritique(true), core.ConversationSessionRequestWithoutConversationHistory())
 
 			if err != nil {
 				if errors.Is(err, core.ErrConversationInProgress) {
@@ -3242,6 +3333,25 @@ func validateCodeChangePlan(plan *codeChangePlan) string {
 	return ""
 }
 
+// defaultCodeFixMaxEvidenceAgeDays is how old an event may be before a change
+// plan built on its stored evidence is declined (#39104). Log retention is not
+// known to this service, so the cutoff is configurable per deployment via
+// EVENT_CODE_FIX_MAX_EVIDENCE_AGE_DAYS; 0 or a negative value disables it.
+const defaultCodeFixMaxEvidenceAgeDays = 7
+
+// staleEvidenceReason declines a change plan when the event fired longer ago
+// than maxAge. A re-analysis of such an event works from evidence collected
+// back then (event eab45d8f: mislabelled "error" lines from months earlier led
+// to a fix for a warning the alert never counted) and the live logs for the
+// incident window are usually gone, so nothing can correct it. Returns "" when
+// the evidence is fresh enough, the cutoff is disabled, or the start is unknown.
+func staleEvidenceReason(startsAt *time.Time, now time.Time, maxAge time.Duration) string {
+	if maxAge <= 0 || startsAt == nil || now.Sub(*startsAt) <= maxAge {
+		return ""
+	}
+	return fmt.Sprintf("skipped - event fired %d days ago; its stored evidence is too old to base a code change on", int(now.Sub(*startsAt).Hours()/24))
+}
+
 // stripChangePlanBlock removes the <change_plan> block (and trailing blank
 // space) from investigation text before it is stored in the investigation row,
 // fed to synthesis, or shown in the UI. No-op when the block is absent.
@@ -3652,6 +3762,10 @@ func runCodeFixStage(ctx *security.RequestContext, request EventAnalysisRequest,
 		"auto_raise_pr_enabled", raisePR)
 
 	if reason := validateCodeChangePlan(plan); reason != "" {
+		return skipCodeFix(reason)
+	}
+	if reason := staleEvidenceReason(eventData.StartsAt, time.Now(), time.Duration(config.Config.GetInt("event_code_fix_max_evidence_age_days", defaultCodeFixMaxEvidenceAgeDays))*24*time.Hour); reason != "" {
+		ctx.GetLogger().Info("analyzer: declining change plan built on stale evidence", "event_id", request.EventId, "reason", reason)
 		return skipCodeFix(reason)
 	}
 	if !isGitIntegrationConfigured(request.AccountId) {
@@ -4128,7 +4242,9 @@ func getEventData(ctx *security.RequestContext, request EventAnalysisRequest) (e
 		return events.Event{}, err
 	}
 	var event []events.Event
-	err = common.UnmarshalJson([]byte(data.Data), &event)
+	// Event evidence carries collected logs; secrets in them must not reach
+	// the analysis prompts.
+	err = common.UnmarshalJson([]byte(egressfilter.RedactToolOutput(ctx, "", eventTool.Name(), data.Data)), &event)
 	if err != nil {
 		return events.Event{}, err
 	}

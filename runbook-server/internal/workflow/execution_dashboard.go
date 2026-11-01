@@ -313,8 +313,7 @@ func (s *Service) seekPageBoundary(
 		return resp.GetCount(), nil
 	}
 
-	// Open runs have no close time, so no CloseTime predicate can see them —
-	// yet they sort ahead of every closed row. Their count is the constant
+	// Open runs sort ahead of every closed row, so their count is the constant
 	// offset between "rows before T" and "closed rows before T".
 	openRows, err := count(query + " AND ExecutionStatus='Running'")
 	if err != nil {
@@ -325,8 +324,13 @@ func (s *Service) seekPageBoundary(
 		return time.Time{}, 0, err
 	}
 
+	// The closed count has to rule open runs out by status. Whether a CloseTime
+	// predicate matches a run that has not closed depends on the Temporal
+	// server: up to 1.31 it compares such a run as closing in the far future,
+	// so `CloseTime > T` alone counts every open run a second time and the page
+	// starts that many rows early; from 1.32 it matches none of them.
 	rankBefore := func(boundary time.Time) (int64, error) {
-		closedAhead, countErr := count(query + fmt.Sprintf(" AND CloseTime > '%s'", boundary.UTC().Format(time.RFC3339Nano)))
+		closedAhead, countErr := count(query + fmt.Sprintf(" AND CloseTime > '%s' AND ExecutionStatus!='Running'", boundary.UTC().Format(time.RFC3339Nano)))
 		if countErr != nil {
 			return 0, countErr
 		}

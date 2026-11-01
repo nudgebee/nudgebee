@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/prometheus/prometheus/promql/parser"
 	"github.com/tmc/langchaingo/llms"
 )
@@ -270,6 +271,9 @@ func extractPromQLFromCommand(command string, arguments map[string]any) (string,
 }
 
 func (m PrometheusExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	// A targeted child's call reads the target's account throughout (views,
+	// provider, routing), exactly as inside the metrics/traces sub-agents.
+	nbRequestContext = nbRequestContext.ForTarget()
 	nbRequestContext.Ctx.GetLogger().Info("prometheus: executing queryPrometheus tool call", "query", input.Command)
 
 	// Guard: LLM may wrap PromQL inside a JSON object (double-serialization).
@@ -312,10 +316,15 @@ func (m PrometheusExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 			}, nil
 		}
 
-		apiDataAny, err := m.executePromQl(nbRequestContext, q, nbRequestContext.AccountId, map[string]any{
+		queryAccountId := nbRequestContext.AccountId
+		if target := nbRequestContext.QueryConfig.DelegatedTarget; target != nil && target.AccountID != "" {
+			queryAccountId = target.AccountID
+		}
+		apiDataAny, err := m.executePromQl(nbRequestContext, q, queryAccountId, map[string]any{
 			"end_time":   endTime.UTC().Format("2006-01-02T15:04:05Z07:00"),
 			"start_time": startTime.UTC().Format("2006-01-02T15:04:05Z07:00"),
 		})
+
 		if err != nil {
 			nbRequestContext.Ctx.GetLogger().Error("unable to execute tool query", "error", err.Error())
 			return core.NBToolResponse{
@@ -743,6 +752,14 @@ func esDiscoveryProvenance(fromDocuments, fromMapping int) string {
 }
 
 func (m MetricsListTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	originAccountID := nbRequestContext.AccountId
+	nbRequestContext = nbRequestContext.ForTarget()
+	if nbRequestContext.AccountId != originAccountID {
+		// The provider was resolved for the conversation's account when the
+		// tool was built; the target may use a different metrics backend.
+		m.Provider = MetricsDiscoveryProvider(nbRequestContext.AccountId)
+		m.DefaultIndex = "" // resolved for the target below
+	}
 	nbRequestContext.Ctx.GetLogger().Info("metrics: executing metrics.metrics tool call", "query", input.Command)
 	query := strings.ReplaceAll(input.Command, "\\", "")
 	query = strings.ReplaceAll(query, "`", "")
@@ -932,6 +949,44 @@ func (m MetricsListTool) Call(nbRequestContext core.NbToolContext, input core.NB
 	return result, nil
 }
 
+// prometheusMetricFilterAgent names the metric-filter LLM call in token usage,
+// which otherwise records it with an empty agent name.
+const prometheusMetricFilterAgent = "prometheus_metric_filter"
+
+// conversationMessageExists reports whether the conversation and message rows
+// exist; a var so tests can stub it.
+var conversationMessageExists = func(conversationId, messageId string) (bool, error) {
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return false, fmt.Errorf("conversationMessageExists: %w", err)
+	}
+	var exists bool
+	err = dbms.Db.Get(&exists, `SELECT EXISTS (SELECT 1 FROM llm_conversation_messages WHERE id = $1 AND conversation_id = $2)`, messageId, conversationId)
+	if err != nil {
+		return false, fmt.Errorf("conversationMessageExists: %w", err)
+	}
+	return exists, nil
+}
+
+// metricFilterUsageIDs returns the conversation and message to bill the
+// metric-filter call to, or empty ids when they are not real rows. Token usage
+// references both by foreign key, and some tool contexts carry synthetic ids
+// (a watch source uses its watch id for both, see watch/source.go); billing to
+// those would fail the insert and lose the usage row it records today.
+func metricFilterUsageIDs(conversationId, messageId string) (string, string) {
+	if _, err := uuid.Parse(conversationId); err != nil {
+		return "", ""
+	}
+	if _, err := uuid.Parse(messageId); err != nil {
+		return "", ""
+	}
+	exists, err := conversationMessageExists(conversationId, messageId)
+	if err != nil || !exists {
+		return "", ""
+	}
+	return conversationId, messageId
+}
+
 // filterMetricsWithLLM uses LLM to intelligently filter metrics based on user's question
 func filterMetricsWithLLM(nbRequestContext core.NbToolContext, userQuery string, allMetrics []core.ObservabilityMetricsSeries) ([]core.ObservabilityMetricsSeries, error) {
 	if len(allMetrics) == 0 {
@@ -959,13 +1014,18 @@ func filterMetricsWithLLM(nbRequestContext core.NbToolContext, userQuery string,
 		return nil, errors.New("llm client not initialized")
 	}
 
+	conversationId, messageId := metricFilterUsageIDs(nbRequestContext.ConversationId, nbRequestContext.MessageId)
 	response, err := llmClient.GenerateContent(
-		nbRequestContext.Ctx,
+		// The conversation id below only bills the call; a one-shot filter
+		// prompt must not create a conversation cache entry.
+		core.WithPromptCachingDisabled(nbRequestContext.Ctx),
 		nbRequestContext.UserId,
 		nbRequestContext.AccountId,
-		"",    // conversationId
-		"",    // messageId
-		"",    // agentId
+		// Attribute the call to the conversation that ran the tool so it
+		// counts against that conversation's budget.
+		conversationId,
+		messageId,
+		prometheusMetricFilterAgent,
 		false, // trackContent
 		[]llms.MessageContent{
 			llms.TextParts(llms.ChatMessageTypeHuman, prompt),
@@ -1181,6 +1241,14 @@ func (m ListMetricsLabelsTool) InputSchema() core.ToolSchema {
 }
 
 func (m ListMetricsLabelsTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	originAccountID := nbRequestContext.AccountId
+	nbRequestContext = nbRequestContext.ForTarget()
+	if nbRequestContext.AccountId != originAccountID {
+		// The provider was resolved for the conversation's account when the
+		// tool was built; the target may use a different metrics backend.
+		m.Provider = MetricsDiscoveryProvider(nbRequestContext.AccountId)
+		m.DefaultIndex = "" // resolved for the target below
+	}
 	nbRequestContext.Ctx.GetLogger().Info("metrics: executing metrics.label tool call", "query", input.Command)
 	query := strings.ReplaceAll(input.Command, "\\", "")
 	query = strings.ReplaceAll(query, "`", "")
@@ -1369,6 +1437,14 @@ func filterAndCapLabelValues(raw []core.ObservabilityMetricsLabelValue, filter s
 }
 
 func (m ListMetricsLabelValuesTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	originAccountID := nbRequestContext.AccountId
+	nbRequestContext = nbRequestContext.ForTarget()
+	if nbRequestContext.AccountId != originAccountID {
+		// The provider was resolved for the conversation's account when the
+		// tool was built; the target may use a different metrics backend.
+		m.Provider = MetricsDiscoveryProvider(nbRequestContext.AccountId)
+		m.DefaultIndex = "" // resolved for the target below
+	}
 	label := strings.TrimSpace(argString(input, "label"))
 	if label == "" {
 		// Some planners pass a single required arg in the bare command instead.
@@ -1538,6 +1614,7 @@ func (s SearchMetricsTool) InputSchema() core.ToolSchema {
 }
 
 func (s SearchMetricsTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	nbRequestContext = nbRequestContext.ForTarget()
 	nbRequestContext.Ctx.GetLogger().Info("search_metrics: executing semantic metric search", "query", input.Command)
 	query := strings.TrimSpace(input.Command)
 	query = strings.ReplaceAll(query, "\\", "")

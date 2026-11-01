@@ -56,7 +56,12 @@ const escapeHtml = (str) => {
  * chartLabel?: string | any[], dataset?: any[], id?: string, chartTitle?: string, loading?: boolean,
  * minHeight?: number, legendOptions?: object, interactionOptions?: object, scaleOptions?: object,
  * onDataPointClick?: (e: any) => void, onAskNubi?: (e: any) => void, useFixedHeight?: boolean,
- * fixedHeight?: number, dynamicHeight?: boolean, integerYlabel?: boolean, timeAxis?: boolean, }} props
+ * fixedHeight?: number, dynamicHeight?: boolean, integerYlabel?: boolean, timeAxis?: boolean,
+ * formatValue?: (value: number) => string }} props
+ *
+ * `formatValue` (opt-in) formats every number the chart prints — y-axis ticks,
+ * tooltip values and Max/Min/P99/Avg — in place of the default `toFixed(2)`.
+ * Give it when the caller knows the unit, so the unit appears with the number.
  */
 const Charts = ({
   data = [],
@@ -83,6 +88,7 @@ const Charts = ({
   integerYlabel = false,
   fixedWidth = undefined,
   timeAxis = true,
+  formatValue = undefined,
 }) => {
   const uniqueId = id || uuidv4();
   const legendContainerId = `legend-container-${uniqueId}`;
@@ -311,7 +317,7 @@ const Charts = ({
    * names, one detail strip for the numbers.
    */
   const domLegendPlugin = (containerId) => {
-    const legend = chipsLegendPlugin(containerId, { unit: legendOptions?.unit });
+    const legend = chipsLegendPlugin(containerId, { unit: legendOptions?.unit, format: formatValue });
     return {
       ...legend,
       afterUpdate(chart, args, options) {
@@ -431,7 +437,8 @@ const Charts = ({
   };
 
   function safeFormat(value) {
-    return Number.isFinite(value) ? value.toFixed(2) : '-';
+    if (!Number.isFinite(value)) return '-';
+    return formatValue ? formatValue(value) : value.toFixed(2);
   }
 
   const externalTooltipHandler = (context) => {
@@ -487,9 +494,10 @@ const Charts = ({
           // Extract unit from label (e.g., "Memory (MB)" -> "MB")
           // Limit capture group length to prevent ReDoS
           const unitMatch = datasetLabel.match(/\(([^)]{1,50})\)/);
-          const unit = unitMatch ? ` ${unitMatch[1]}` : '';
+          // A caller-supplied formatter already carries the unit.
+          const unit = unitMatch && !formatValue ? ` ${unitMatch[1]}` : '';
 
-          const value = typeof rawValue === 'number' ? rawValue.toFixed(2) + unit : rawValue;
+          const value = typeof rawValue === 'number' ? (formatValue ? formatValue(rawValue) : rawValue.toFixed(2) + unit) : rawValue;
           const color = dataPoint.dataset.backgroundColor || dataPoint.dataset.borderColor || ds.gray[300];
 
           const metrics = chartDataMetrices[datasetLabel] || {};
@@ -672,6 +680,15 @@ const Charts = ({
 
   if (scaleOptions && Object.keys(scaleOptions).length > 0) {
     localOptions.scales = scaleOptions;
+  }
+
+  if (formatValue) {
+    // A copy, so a caller's scaleOptions object is never written to.
+    const y = localOptions.scales?.y || {};
+    localOptions.scales = {
+      ...localOptions.scales,
+      y: { ...y, ticks: { ...(y.ticks || {}), callback: (value) => formatValue(Number(value)) } },
+    };
   }
 
   // Show all series values at the hovered x-position for multiple lines
@@ -918,6 +935,7 @@ Charts.propTypes = {
   integerYlabel: PropTypes.bool,
   fixedWidth: PropTypes.number,
   timeAxis: PropTypes.bool,
+  formatValue: PropTypes.func,
 };
 
 export default withErrorBoundary(Charts);

@@ -52,6 +52,9 @@ func handleWorkloadListCriticality(h *ActionRequest, c *gin.Context, ctx *securi
 		c.JSON(http.StatusBadRequest, gin.H{"error": "cloud_account_id is required"})
 		return
 	}
+	if !requireTriageAccountAccess(c, ctx, account, "workload", security.SecurityAccessTypeRead) {
+		return
+	}
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		ctx.GetLogger().Error("criticality list: db manager", "error", err)
@@ -84,6 +87,9 @@ func handleWorkloadUpsertCriticality(h *ActionRequest, c *gin.Context, ctx *secu
 		c.JSON(http.StatusBadRequest, gin.H{"error": "cloud_account_id, cloud_resource_id and criticality are required"})
 		return
 	}
+	if !requireTriageAccountAccess(c, ctx, account, "workload", security.SecurityAccessTypeUpdate) {
+		return
+	}
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		ctx.GetLogger().Error("criticality upsert: db manager", "error", err)
@@ -106,6 +112,9 @@ func handleWorkloadDeleteCriticality(h *ActionRequest, c *gin.Context, ctx *secu
 	crid := inputString(h.Input, "cloud_resource_id")
 	if account == "" || crid == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "cloud_account_id and cloud_resource_id are required"})
+		return
+	}
+	if !requireTriageAccountAccess(c, ctx, account, "workload", security.SecurityAccessTypeUpdate) {
 		return
 	}
 	dbms, err := database.GetDatabaseManager(database.Metastore)

@@ -17,7 +17,14 @@ on:
 
 permissions:
   contents: read
-  packages: write
+
+# One edge run at a time. Every run writes the shared `:edge-<arch>` and
+# `:edge` tags, so two runs interleaving (merges landing seconds apart) could
+# leave `:edge` pointing at the older commit. Queued, not cancelled, so every
+# merged commit still gets its `:edge-<date>-<sha7>` snapshot.
+concurrency:
+  group: edge
+  cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
@@ -44,6 +51,9 @@ jobs:
 
   build-images:
     needs: prepare
+    permissions:
+      contents: read
+      packages: write
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
@@ -111,18 +121,18 @@ jobs:
           sudo systemctl start docker
           df -h / /mnt
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push ${{ matrix.image }} (${{ matrix.arch }}) — edge
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: ${{ matrix.context }}
           push: true
@@ -157,6 +167,9 @@ jobs:
 
   merge-manifests:
     needs: [prepare, build-images]
+    permissions:
+      contents: read
+      packages: write
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -185,9 +198,9 @@ jobs:
       SHA_SHORT: ${{ needs.prepare.outputs.sha_short }}
       BUILD_DATE: ${{ needs.prepare.outputs.build_date }}
     steps:
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -202,11 +215,12 @@ jobs:
           # immutable :edge-<date>-<sha7> snapshot tag. The snapshot lets
           # callers pin a specific main commit; the date prefix is for
           # human-scannability so you can tell when a snapshot was published
-          # without an extra GitHub lookup. Sources also include the per-arch
-          # snapshot tags so the snapshot manifest is self-contained.
+          # without an extra GitHub lookup. Sources are this commit's own
+          # per-arch snapshot tags, never the rolling `:edge-<arch>`: another
+          # run can overwrite those between our build and this merge.
           SOURCES=()
           for arch in ${{ matrix.archs }}; do
-            SOURCES+=("${REPO}:edge-${arch}")
+            SOURCES+=("${REPO}:edge-${BUILD_DATE}-${SHA_SHORT}-${arch}")
           done
 
           echo "Merging into ${REPO}:edge and ${REPO}:edge-${BUILD_DATE}-${SHA_SHORT} from: ${SOURCES[*]}"

@@ -1,0 +1,6 @@
+﻿2026-09-30T07:00:00.0000066Z ##[group]Run make lint
+2026-09-30T07:00:00.0000067Z [36;1mmake lint[0m
+2026-09-30T07:00:00.0000068Z ##[endgroup]
+2026-09-30T07:00:00.0000069Z [1;31mError:[0m [33mcannot find module[0m
+2026-09-30T07:00:00.0000070Z [31mFAIL[0m lint_check
+2026-09-30T07:00:00.0000071Z ##[error]Process completed with exit code 2.

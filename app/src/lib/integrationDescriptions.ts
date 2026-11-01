@@ -66,7 +66,9 @@ export const INTEGRATION_DESCRIPTIONS: Record<string, string> = {
   CUBEAPM_WEBHOOK: 'Receive CubeAPM alerts as events through an inbound webhook.',
   ELASTICSEARCH_WEBHOOK: 'Receive Elasticsearch Watcher alerts as events through a webhook.',
   OPENOBSERVE_WEBHOOK: 'Receive OpenObserve alerts as events through an inbound webhook.',
-  WORKFLOW_WEBHOOK: 'Receive alerts from any tool as events through a generic inbound webhook.',
+  SIGNOZ_WEBHOOK: 'Receive SigNoz alerts as events through a webhook notification channel.',
+  WORKFLOW_WEBHOOK: 'Trigger an automation from any tool through an inbound webhook.',
+  EVENT_WEBHOOK: 'Send alerts from any tool that can post JSON, in a documented format, straight into Nudgebee.',
 
   // ── Databases, queues, caches ───────────────────────────────────
   POSTGRES: 'Run diagnostic SQL against a PostgreSQL database during investigations.',
@@ -104,7 +106,7 @@ export const INTEGRATION_DESCRIPTIONS: Record<string, string> = {
   JAEGER: 'Query Jaeger for distributed traces during investigations.',
   PINOT: 'Query an Apache Pinot table as a log source.',
   HIVE: 'Query an Apache Hive table as a log source.',
-  'GRAFANA-TEMPO': 'Query Grafana Tempo for distributed traces.',
+  GRAFANA_TEMPO: 'Query Grafana Tempo for distributed traces.',
 
   // ── LLM ─────────────────────────────────────────────────────────
   LLM: 'Choose the LLM provider and models used for AI analysis.',

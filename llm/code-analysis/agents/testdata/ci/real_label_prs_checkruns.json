@@ -1,0 +1,213 @@
+{
+ "total_count": 13,
+ "check_runs": [
+  {
+   "id": 109779247422,
+   "name": "label-prs",
+   "status": "completed",
+   "conclusion": "success",
+   "details_url": "https://github.com/nudgebee/nudgebee/actions/runs/1/job/109779247422",
+   "started_at": "2026-09-30T07:08:14Z",
+   "completed_at": "2026-09-30T07:08:19Z",
+   "app": {
+    "id": 15368,
+    "slug": "github-actions"
+   },
+   "check_suite": {
+    "id": 99340898277
+   }
+  },
+  {
+   "id": 109779176538,
+   "name": "label-prs",
+   "status": "completed",
+   "conclusion": "success",
+   "details_url": "https://github.com/nudgebee/nudgebee/actions/runs/2/job/109779176538",
+   "started_at": "2026-09-30T07:08:00Z",
+   "completed_at": "2026-09-30T07:08:07Z",
+   "app": {
+    "id": 15368,
+    "slug": "github-actions"
+   },
+   "check_suite": {
+    "id": 99340837198
+   }
+  },
+  {
+   "id": 109778715279,
+   "name": "label-prs",
+   "status": "completed",
+   "conclusion": "failure",
+   "details_url": "https://github.com/nudgebee/nudgebee/actions/runs/3/job/109778715279",
+   "started_at": "2026-09-30T07:06:24Z",
+   "completed_at": "2026-09-30T07:06:30Z",
+   "app": {
+    "id": 15368,
+    "slug": "github-actions"
+   },
+   "check_suite": {
+    "id": 99340413722
+   }
+  },
+  {
+   "id": 109777874401,
+   "name": "lint",
+   "status": "completed",
+   "conclusion": "success",
+   "details_url": "https://github.com/nudgebee/nudgebee/actions/runs/4/job/109777874401",
+   "started_at": "2026-09-30T07:03:44Z",
+   "completed_at": "2026-09-30T07:09:37Z",
+   "app": {
+    "id": 15368,
+    "slug": "github-actions"
+   },
+   "check_suite": {
+    "id": 99339653201
+   }
+  },
+  {
+   "id": 109777873683,
+   "name": "Go Lint",
+   "status": "completed",
+   "conclusion": "success",
+   "details_url": "https://github.com/nudgebee/nudgebee/actions/runs/5/job/109777873683",
+   "started_at": "2026-09-30T07:03:37Z",
+   "completed_at": "2026-09-30T07:12:36Z",
+   "app": {
+    "id": 15368,
+    "slug": "github-actions"
+   },
+   "check_suite": {
+    "id": 99339653328
+   }
+  },
+  {
+   "id": 109777873668,
+   "name": "oss-boundary",
+   "status": "completed",
+   "conclusion": "success",
+   "details_url": "https://github.com/nudgebee/nudgebee/actions/runs/6/job/109777873668",
+   "started_at": "2026-09-30T07:03:39Z",
+   "completed_at": "2026-09-30T07:03:54Z",
+   "app": {
+    "id": 15368,
+    "slug": "github-actions"
+   },
+   "check_suite": {
+    "id": 99339653174
+   }
+  },
+  {
+   "id": 109777873587,
+   "name": "Reject CONCURRENTLY in migrations",
+   "status": "completed",
+   "conclusion": "success",
+   "details_url": "https://github.com/nudgebee/nudgebee/actions/runs/7/job/109777873587",
+   "started_at": "2026-09-30T07:03:40Z",
+   "completed_at": "2026-09-30T07:03:51Z",
+   "app": {
+    "id": 15368,
+    "slug": "github-actions"
+   },
+   "check_suite": {
+    "id": 99339653346
+   }
+  },
+  {
+   "id": 109777873489,
+   "name": "gitleaks (internal-leaks)",
+   "status": "completed",
+   "conclusion": "success",
+   "details_url": "https://github.com/nudgebee/nudgebee/actions/runs/8/job/109777873489",
+   "started_at": "2026-09-30T07:03:37Z",
+   "completed_at": "2026-09-30T07:04:12Z",
+   "app": {
+    "id": 15368,
+    "slug": "github-actions"
+   },
+   "check_suite": {
+    "id": 99339653425
+   }
+  },
+  {
+   "id": 109777873481,
+   "name": "oss-snapshot",
+   "status": "completed",
+   "conclusion": "success",
+   "details_url": "https://github.com/nudgebee/nudgebee/actions/runs/9/job/109777873481",
+   "started_at": "2026-09-30T07:03:38Z",
+   "completed_at": "2026-09-30T07:06:34Z",
+   "app": {
+    "id": 15368,
+    "slug": "github-actions"
+   },
+   "check_suite": {
+    "id": 99339653174
+   }
+  },
+  {
+   "id": 109777873421,
+   "name": "PR lifecycle sweeps (real Postgres)",
+   "status": "completed",
+   "conclusion": "success",
+   "details_url": "https://github.com/nudgebee/nudgebee/actions/runs/10/job/109777873421",
+   "started_at": "2026-09-30T07:03:37Z",
+   "completed_at": "2026-09-30T07:05:50Z",
+   "app": {
+    "id": 15368,
+    "slug": "github-actions"
+   },
+   "check_suite": {
+    "id": 99339653328
+   }
+  },
+  {
+   "id": 109777873334,
+   "name": "gitleaks (secrets)",
+   "status": "completed",
+   "conclusion": "success",
+   "details_url": "https://github.com/nudgebee/nudgebee/actions/runs/11/job/109777873334",
+   "started_at": "2026-09-30T07:03:37Z",
+   "completed_at": "2026-09-30T07:04:12Z",
+   "app": {
+    "id": 15368,
+    "slug": "github-actions"
+   },
+   "check_suite": {
+    "id": 99339653425
+   }
+  },
+  {
+   "id": 109777873015,
+   "name": "validate",
+   "status": "completed",
+   "conclusion": "success",
+   "details_url": "https://github.com/nudgebee/nudgebee/actions/runs/12/job/109777873015",
+   "started_at": "2026-09-30T07:03:44Z",
+   "completed_at": "2026-09-30T07:06:13Z",
+   "app": {
+    "id": 15368,
+    "slug": "github-actions"
+   },
+   "check_suite": {
+    "id": 99339653239
+   }
+  },
+  {
+   "id": 109777872286,
+   "name": "label-prs",
+   "status": "completed",
+   "conclusion": "failure",
+   "details_url": "https://github.com/nudgebee/nudgebee/actions/runs/13/job/109777872286",
+   "started_at": "2026-09-30T07:03:28Z",
+   "completed_at": "2026-09-30T07:03:34Z",
+   "app": {
+    "id": 15368,
+    "slug": "github-actions"
+   },
+   "check_suite": {
+    "id": 99339652986
+   }
+  }
+ ]
+}

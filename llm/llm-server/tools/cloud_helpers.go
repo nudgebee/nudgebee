@@ -125,13 +125,14 @@ func extractCommandFromToolInput(input string) string {
 	return input
 }
 
-// isCloudCLIInfoFlag checks if the command parts contain flags that only
-// display help, usage, or version information (always read-only operations).
+// isCloudCLIInfoFlag reports a command that only displays help or version
+// information. See isHelpRequest for why a help flag elsewhere does not count.
 func isCloudCLIInfoFlag(parts []string) core.ToolRequestType {
-	for _, p := range parts {
-		if p == "--help" || p == "-h" || p == "--version" {
-			return core.ToolRequestTypeRead
-		}
+	if len(parts) > 0 && !strings.HasPrefix(parts[0], "-") {
+		parts = parts[1:] // the executable
+	}
+	if isHelpRequest(parts) {
+		return core.ToolRequestTypeRead
 	}
 	return ""
 }

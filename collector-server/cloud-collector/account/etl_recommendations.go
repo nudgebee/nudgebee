@@ -61,8 +61,8 @@ func StoreRecommendationsAll(ctx *security.RequestContext, accountId string) (St
 		ctx.GetLogger().Info("stored native recommendations", "service", svc, "count", d.Count, "time", time.Since(t0).String())
 	}
 
-	// Final reconciliation: archive any Open rec whose target resource is no
-	// longer Active. The per-service archive in StoreRecommendations only runs
+	// Final reconciliation: archive any Open rec whose target resource is
+	// deleted. The per-service archive in StoreRecommendations only runs
 	// when getRecommendationsInternal succeeds, so a transient provider error
 	// (or a service whose live resources are all deleted) leaves orphans behind.
 	if swept, sweepErr := sweepOrphanedRecommendations(ctx, accountId); sweepErr != nil {
@@ -81,10 +81,15 @@ func StoreRecommendationsAll(ctx *security.RequestContext, accountId string) (St
 }
 
 // sweepOrphanedRecommendations archives Open recommendations whose target
-// cloud_resourses row is no longer Active for the given account. Uses
-// NOT EXISTS so it catches both soft-deleted rows (status != 'active') and
-// hard-deleted rows (no cloud_resourses row at all). Recommendations with
-// NULL resource_id (account-level / native) are left alone.
+// cloud_resourses row is gone for the given account. Uses NOT EXISTS so it
+// catches both soft-deleted rows (status = 'deleted') and hard-deleted rows
+// (no cloud_resourses row at all). Inactive is NOT orphaned: an unattached
+// disk or stopped VM is a present resource, and idle-resource recommendations
+// deliberately link to exactly those rows — an active-only predicate here
+// would archive them at the end of every sync and flap them Open/Archive
+// (the same non-deleted predicate the recommender's match set uses in
+// getRecommendationsInternal). Recommendations with NULL resource_id
+// (account-level / native) are left alone.
 func sweepOrphanedRecommendations(ctx *security.RequestContext, accountId string) (int64, error) {
 	dbms, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
@@ -100,7 +105,7 @@ func sweepOrphanedRecommendations(ctx *security.RequestContext, accountId string
 			       select 1 from cloud_resourses
 			        where id = recommendation.resource_id
 			          and account = $1
-			          and lower(status) = 'active'
+			          and lower(status) != 'deleted'
 			   )`
 	r, err := dbms.Exec(query, accountId)
 	if err != nil {
@@ -337,22 +342,29 @@ func getRecommendationsInternal(ctx *security.RequestContext, accountId string, 
 		ctx.GetLogger().Error("unable to get dbms", "error", err)
 		return providers.ListRecommendationsResponse{}, providers.Account{}, err
 	}
-	query := `select created_at, resourse_id, name, type, status, region, arn, tags::text, meta::text, service_name
+	query := `select resourse_created_on, created_at, resourse_id, name, type, status, region, arn, tags::text, meta::text, service_name
 	from cloud_resourses
-	where account = $1 and lower(status) = 'active'`
+	where account = $1`
 	args := []interface{}{accountId}
 	// The GCP "Recommender" pseudo-service owns no cloud_resourses rows of its
 	// own — it needs the account's full resource set to derive which
 	// regions/zones to query (see resolveRecommenderLocations in
-	// providers/gcloud). Gate this on the GCP provider: the account-level
-	// StoreRecommendationsAll runs the "recommender" native-service sync for
-	// every provider, and dropping the filter for AWS/Azure would hand their
-	// dispatchers the full active fleet — Azure's ListRecommendations would then
-	// fall through to re-crawl every registered service. Every other case keeps
-	// the service_name filter, preserving the pre-change behavior exactly.
+	// providers/gcloud) and to resolve each recommendation's target resource
+	// (buildRecommenderResourceIndex). Gate this on the GCP provider: the
+	// account-level StoreRecommendationsAll runs the "recommender"
+	// native-service sync for every provider, and dropping the filter for
+	// AWS/Azure would hand their dispatchers the full active fleet — Azure's
+	// ListRecommendations would then fall through to re-crawl every registered
+	// service. Every other case keeps the service_name and active-status
+	// filters, preserving the pre-change behavior exactly.
 	if !strings.EqualFold(filter.ServiceName, "recommender") || !strings.EqualFold(provider, "gcp") {
-		query += ` and lower(service_name) = $2`
+		query += ` and lower(status) = 'active' and lower(service_name) = $2`
 		args = append(args, strings.ToLower(filter.ServiceName))
+	} else {
+		// Idle-resource recommendations point at exactly the rows the
+		// active-only filter drops — an unattached disk or stopped VM is
+		// stored Inactive — so the recommender keeps every non-deleted row.
+		query += ` and lower(status) != 'deleted'`
 	}
 	rows, err := databaseManager.Query(query, args...)
 	if err != nil {
@@ -367,10 +379,10 @@ func getRecommendationsInternal(ctx *security.RequestContext, accountId string, 
 
 	existingResources := []providers.Resource{}
 	for rows.Next() {
-		var createdAt *time.Time
+		var cloudCreatedOn, firstStored *time.Time
 		var resourseId, name, resourceType, status, region, arn, tagsStr, serviceName, metaStr *string
 
-		err := rows.Scan(&createdAt, &resourseId, &name, &resourceType, &status, &region, &arn, &tagsStr, &metaStr, &serviceName)
+		err := rows.Scan(&cloudCreatedOn, &firstStored, &resourseId, &name, &resourceType, &status, &region, &arn, &tagsStr, &metaStr, &serviceName)
 		if err != nil {
 			ctx.GetLogger().Error("unable to scan resources", "error", err)
 			return providers.ListRecommendationsResponse{}, providers.Account{}, err
@@ -391,6 +403,7 @@ func getRecommendationsInternal(ctx *security.RequestContext, accountId string, 
 			}
 		}
 
+		createdAt := resourceCreatedAt(cloudCreatedOn, firstStored)
 		if resourseId == nil || name == nil || resourceType == nil || serviceName == nil || status == nil || createdAt == nil {
 			ctx.GetLogger().Warn("skipping resource with missing required fields",
 				"accountId", accountId,
@@ -422,6 +435,22 @@ func getRecommendationsInternal(ctx *security.RequestContext, accountId string, 
 	recommendations, err := cloudProvider.ListRecommendations(ctx, account, filter, existingResources)
 	return recommendations, account, err
 
+}
+
+// resourceCreatedAt is the time rules measure a resource's age from: when it
+// was created in the cloud. created_at only records when this row was first
+// stored, so on an account connected last week every resource would read as a
+// week old. Collectors that cannot read a creation time store the zero time,
+// and those fall back to the first-stored time rather than reading as ancient.
+// A row with no usable time at all returns nil, so the caller skips it like
+// any other row missing a required field instead of dating it to year one.
+func resourceCreatedAt(cloudCreatedOn, firstStored *time.Time) *time.Time {
+	for _, t := range []*time.Time{cloudCreatedOn, firstStored} {
+		if t != nil && t.Year() > 1970 {
+			return t
+		}
+	}
+	return nil
 }
 
 func derefString(s *string) string {

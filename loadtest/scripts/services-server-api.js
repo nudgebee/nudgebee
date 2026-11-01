@@ -3,7 +3,7 @@
 // picked by weight. The default mix is read-only; add recorded payloads for more coverage.
 import http from 'k6/http';
 import { check } from 'k6';
-import { env, baseUrl, scenarios, thresholds, weightedPicker } from './lib.js';
+import { env, baseUrl, scenarios, thresholds, thinkTime, weightedPicker } from './lib.js';
 
 const actions = JSON.parse(open('./services-server-actions.json'));
 const pick = weightedPicker(actions);
@@ -34,4 +34,5 @@ export function run() {
     'status 200': (r) => r.status === 200,
     'no errors in body': (r) => r.status !== 200 || !(r.json('errors') || []).length,
   });
+  thinkTime();
 }

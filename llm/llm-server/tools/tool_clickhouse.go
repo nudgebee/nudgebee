@@ -151,9 +151,7 @@ func (m ClickhouseExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 	command := fmt.Sprintf("clickhouse-client%s --query %s --format CSVWithNames --send_logs_level=none --progress=0",
 		dbFlag, sshShellQuote(q))
 
-	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, map[string]string{
-		workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
-	})
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, IntegrationWorkspaceEnv(nbRequestContext, nil))
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("clickhouse: unable to execute shell script", "error", err.Error(), "command", query)
 		if response == "" {
@@ -276,4 +274,15 @@ func (m ClickhouseExecuteTool) ConfigSchema(ctx *security.RequestContext) core.T
 			},
 		},
 	}
+}
+
+// InferToolRequestType classifies the query with the static SQL rules; ""
+// leaves an unclear query to InferToolRequestTypePrompt.
+func (m ClickhouseExecuteTool) InferToolRequestType(_ *security.RequestContext, _, input string) (core.ToolRequestType, error) {
+	return inferSQLRequestType(input), nil
+}
+
+// InferToolRequestTypePrompt classifies queries the static SQL rules cannot.
+func (m ClickhouseExecuteTool) InferToolRequestTypePrompt(_ *security.RequestContext, _, _ string) (string, error) {
+	return sqlRequestTypePrompt("ClickHouse"), nil
 }

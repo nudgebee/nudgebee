@@ -225,11 +225,22 @@ def query_collection(collection_name: str, query: str, limit=10) -> List[str] | 
         raise
 
 
+def _forget_classification(collection_name: str) -> None:
+    """Drop the classification rollup of a collection that was just deleted, so a
+    collection recreated under the same name (an integration KB's is stable) does
+    not show the labels of the one it replaced."""
+    from rag.core.utils.db_query import delete_kb_capabilities
+
+    delete_kb_capabilities(collection_name)
+
+
 def delete_collection(collection_name: str):
     logger.info(f"Deleting collection {collection_name}")
+    gone = False
     try:
         client = get_qdrant_client()
         client.delete_collection(collection_name)
+        gone = True
         logger.info(f"Deleted collection {collection_name}")
 
         # Invalidate cache after deletion
@@ -239,9 +250,15 @@ def delete_collection(collection_name: str):
         get_collection_list_cache().invalidate()
         get_metadata_cache().invalidate()
     except ValueError:
+        gone = True
         logger.warning(f"Failed to delete collection {collection_name}, as it does not exist.")
     except Exception as e:
         logger.error(f"Failed to delete collection {collection_name}: {e}")
+
+    if gone:
+        # A manual KB delete, an integration KB delete and the delete-then-recreate an
+        # edit performs all pass through here (the two bulk deletes below do the same).
+        _forget_classification(collection_name)
 
 
 def delete_module_collections(module_name: str):
@@ -253,6 +270,7 @@ def delete_module_collections(module_name: str):
             if collection.metadata:
                 if "module" in collection.metadata and module_name == collection.metadata["module"]:
                     client.delete_collection(collection.name)
+                    _forget_classification(collection.name)
                     logger.info(f"Deleted collection name: {collection.name}")
         logger.info(f"Deleted all collections with module name: {module_name}")
 
@@ -276,6 +294,7 @@ def delete_all_collections():
         for collection in collections:
             logger.info(f"Deleting collection name: {collection.name}")
             client.delete_collection(collection.name)
+            _forget_classification(collection.name)
 
         # Invalidate cache after deletion
         from rag.core.cache import get_collection_list_cache

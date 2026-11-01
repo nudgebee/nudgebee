@@ -81,7 +81,7 @@ autoscaling:
 # so this is best-effort.
 initCheckEnabled: false
 initImages:
-  postgres: 'ghcr.io/nudgebee/postgres:16.10-alpine'
+  postgres: 'ghcr.io/nudgebee/postgres:16.15-alpine-nb1'
   redis: 'ghcr.io/nudgebee/redis:7-alpine'
 
 nodeSelector: {}

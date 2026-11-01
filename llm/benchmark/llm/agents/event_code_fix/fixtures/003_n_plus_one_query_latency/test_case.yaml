@@ -1,4 +1,4 @@
-user_prompt: 'orders-api: high latency on /api/orders/by-email'
+user_prompt: 'order-email-api: high latency on /api/orders/by-email'
 expected_output:
 - The response must identify the repeated 'SELECT * FROM customers WHERE id = $1' slow-query log lines
   on /api/orders/by-email as an N+1 query pattern (one customer lookup per order) rather than a single

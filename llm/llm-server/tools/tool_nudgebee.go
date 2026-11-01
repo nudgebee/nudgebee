@@ -120,7 +120,9 @@ func (NudgebeeAgentHealthGetTool) InputSchema() core.ToolSchema {
 func (t NudgebeeAgentHealthGetTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
 	accountID := nudgebeeStringArg(input, "account_id")
 	if accountID == "" {
-		accountID = strings.TrimSpace(nbCtx.AccountId)
+		// "The current account" is a handed target's account when there is one.
+		dataCtx := nbCtx.ForTarget()
+		accountID = strings.TrimSpace(dataCtx.AccountId)
 	}
 	if accountID == "" {
 		return triageErrorResponse(errors.New("nudgebee_agent_health_get requires an account id")), nil

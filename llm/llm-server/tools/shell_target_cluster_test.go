@@ -65,6 +65,14 @@ func TestRequestedHelmCluster(t *testing.T) {
 	}
 }
 
+func TestShellHelmTargetDetection(t *testing.T) {
+	require.Empty(t, ShellConfigToolName("helm list --kube-context k8s-dev"))
+	owner, target, err := RequestedShellTargetFromInput(`{"command":"helm list --kube-context k8s-dev"}`)
+	require.NoError(t, err)
+	require.Equal(t, ToolExecuteHelmCommand, owner)
+	require.Equal(t, "k8s-dev", target)
+}
+
 func TestStripKubectlContextFlag(t *testing.T) {
 	require.Equal(t, "kubectl get pods -A | grep api", StripKubectlContextFlag("kubectl --context k8s-dev get pods -A | grep api"))
 	require.Equal(t, "kubectl get pods -A", StripKubectlContextFlag("kubectl get pods --context=k8s-dev -A"))

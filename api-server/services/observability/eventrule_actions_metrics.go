@@ -86,7 +86,26 @@ func (a *prometheusAction) AutoExecute(ctx playbooks.PlaybookActionContext) (pla
 	ctx.GetLogger().Info("prometheus auto action: executing with query from event_rules",
 		"alert", ctx.GetEvent().Name, "query", expr)
 
-	return a.Execute(ctx, params)
+	resp, err := a.Execute(ctx, params)
+	if err != nil {
+		return resp, err
+	}
+	if promResp, ok := resp.(playbooks.PrometheusActionResponse); ok {
+		if seriesList, ok := promResp.Data["series_list_result"].([]any); ok {
+			marked := markAlertingSeries(seriesList, common.SeriesMatchLabels(ctx.GetEvent().Labels))
+			promResp.Data["series_list_result"] = marked
+			// Readers show only the marked series when there is one; without a mark
+			// they show every object, so say when that happened.
+			if len(marked) > 1 {
+				first, _ := marked[0].(map[string]any)
+				if alerting, _ := first["alerting"].(bool); !alerting {
+					ctx.GetLogger().Info("prometheus auto action: could not tell the alert's series from the rule's other objects",
+						"alert", ctx.GetEvent().Name, "series", len(marked))
+				}
+			}
+		}
+	}
+	return resp, nil
 }
 
 // getValidPrometheusExpressionFromEventRules retrieves and validates a Prometheus expression from event_rules table.

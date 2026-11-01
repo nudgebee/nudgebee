@@ -369,13 +369,21 @@ test.describe("Nubi Egress Filter Tab", () => {
       // is exposed as a real button rather than a styled div.
       await expect(locators.settingsPaper.getByRole("button", { name: "EMAIL", exact: true })).toBeVisible({ timeout: 15000 });
 
-      // Read from data-tone, not aria-pressed: the tab passes aria-pressed but
-      // ds/Chip drops it for a chip given neither `pressed` nor `selected`
-      // (Chip.tsx:677,838), so tone is the only state the component renders.
+      // PR checks run against deployed dev, which may still use the legacy
+      // status chip. Require pressed state on the new action variant; keep
+      // the selection/dirty-state checks below mandatory for both versions.
+      const variant = await emailChip.getAttribute("data-variant");
+      expect(["status", "action"]).toContain(variant);
       const toneBefore = await emailChip.getAttribute("data-tone");
       expect(toneBefore === "neutral" || toneBefore === "warning").toBe(true);
 
+      if (variant === "action") {
+        await expect(emailChip).toHaveAttribute("aria-pressed", String(toneBefore === "warning"));
+      }
       await emailChip.click();
+      if (variant === "action") {
+        await expect(emailChip).toHaveAttribute("aria-pressed", String(toneBefore !== "warning"));
+      }
       await expect(emailChip).toHaveAttribute("data-tone", toneBefore === "warning" ? "neutral" : "warning", { timeout: 15000 });
 
       await expect(locators.saveChangesBtn).toBeEnabled();

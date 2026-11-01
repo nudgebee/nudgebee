@@ -3,9 +3,9 @@ global:
     registry: 'ghcr.io/nudgebee'
   imagePullSecrets: []
   initImages:
-    # -nb2 rebuilds gosu on Go 1.26.5 (clears 1C/14H Go-stdlib CVEs); fully clean.
-    postgres: 'ghcr.io/nudgebee/postgres:16.10-alpine-nb2'
-    curl: 'ghcr.io/nudgebee/curl:8.10.1'
+    # -nb1 rebuilds gosu on a patched Go (clears 1C/14H Go-stdlib CVEs); fully clean.
+    postgres: 'ghcr.io/nudgebee/postgres:16.15-alpine-nb1'
+    curl: 'ghcr.io/nudgebee/curl:8.23.0'
   # `helm test` connection pods only (each service chart's
   # templates/tests/test-connection.yaml). A full ref, like initImages above,
   # rather than a repository composed onto global.image.registry: this is a
@@ -26,7 +26,7 @@ global:
   # this empty and set each component individually:
   #   nudgebee-qdrant-server.persistence.storageClass
   #   postgresql.primary.persistence.storageClass
-  #   redis.master.persistence.storageClass / redis.replica.persistence.storageClass
+  #   redis.master.persistence.storageClass
   #   rabbitmq.persistence.storageClass
   #
   # Changing this after install does not move existing PVCs — a bound PVC's
@@ -110,8 +110,8 @@ postgresql:
   auth:
     existingSecret: 'postgresql'
     database: 'postgres'
-  # Bitnami postgresql chart 13.2.25 defaults primary.persistence.size to 8Gi
-  # (see charts/postgresql-13.2.25.tgz values.yaml). 8Gi fills quickly under
+  # Bitnami postgresql chart 13.2.25 defaulted primary.persistence.size to 8Gi
+  # (kept as the default in templates/postgresql/_postgresql.tpl). 8Gi fills quickly under
   # real workloads; bump the default PVC request to 50Gi. Note: resizing an
   # already-bound PVC requires the underlying StorageClass to allow expansion.
   primary:
@@ -143,15 +143,20 @@ postgresql:
       requests:
         cpu: 250m
         memory: 1.5Gi
-  # Pin to the GHCR mirror of bitnami/postgresql:16.1.0-debian-11-r16.
-  # Same tag the bitnami chart 13.2.25 already defaults to, but the original
-  # docker.io/bitnami/postgresql path was deprecated in Bitnami's mid-2025
-  # sunset (images moved to docker.io/bitnamilegacy/*). Without this override
-  # the chart's default image-pull 404s.
+  # Rendered by this chart (templates/postgresql/), not the Bitnami postgresql
+  # subchart it replaced: same StatefulSet, PVC, PGDATA, Secrets and Services,
+  # so `helm upgrade` moves 16.1 -> 16.15 (a minor upgrade) on the same data,
+  # and `helm rollback` works too. Bitnami 13.2.25's defaults for every key not
+  # set here live in templates/postgresql/_postgresql.tpl.
+  # See docs/security/postgresql-official-image-spec.md.
   image:
     registry: 'ghcr.io/nudgebee'
-    repository: postgresql
-    tag: '16.1.0-debian-11-r16-nb1'
+    # Patched mirror of the official postgres:16.15-trixie image
+    # (nudgebee-mirrors/postgres-trixie). Debian, not Alpine: existing
+    # databases sort text with glibc's en_US.UTF-8 collation, which musl
+    # does not implement, so Alpine would silently mis-order text indexes.
+    repository: postgres
+    tag: '16.15-trixie-nb1'
   metrics:
     enabled: true
     # postgres-exporter sidecar: measured 16Mi. Bounded so a scrape storm cannot
@@ -173,7 +178,7 @@ postgresql:
     image:
       registry: 'ghcr.io/nudgebee'
       repository: postgres-exporter
-      tag: 'v0.20.1-nb1'
+      tag: 'v0.20.1-nb2'
     # ServiceMonitor and PrometheusRule are Prometheus Operator CRDs
     # (monitoring.coreos.com/v1). A cluster without the operator installed has
     # no such kinds, and the install fails with `no matches for kind
@@ -287,34 +292,37 @@ clickhouse:
 redis:
   enabled: true
   fullnameOverride: redis
-  # Pin to the GHCR mirror — bitnami chart 17.11.8 defaults at
-  # docker.io/bitnami/redis are dead since Bitnami's mid-2025 sunset
-  # (moved to docker.io/bitnamilegacy/*).
+  # Rendered by this chart (templates/redis/), not the Bitnami redis subchart it
+  # replaced. Object names, labels and the PVC template match what Bitnami 17.11.8
+  # created, so upgrading an existing install only rolls the pod onto this image
+  # and keeps the same PVC and data. See docs/security/redis-official-image-spec.md.
   image:
     registry: 'ghcr.io/nudgebee'
+    # Mirror of the official redis:7.2.17-alpine image
+    # (nudgebee-mirrors/clone-third-party.sh); 0 Critical/High in Grype.
     repository: redis
-    # -nb2 rebuilds the bitnami wait-for-port startup helper on Go 1.26.5,
-    # clearing 2 CRITICAL + 19 HIGH + 43 MEDIUM Go-stdlib CVEs a debian apt
-    # upgrade can't touch. Residual is the debian-11 NOFIX OS floor only.
-    tag: 7.0.12-debian-11-r0-nb2
+    tag: 7.2.17-alpine
+    digest: ''
+    pullPolicy: IfNotPresent
+    pullSecrets: []
   auth:
+    enabled: true
     password: 'password'
     existingSecret: 'redis'
     existingSecretPasswordKey: 'redis-password'
+  # Same behaviour as the Bitnami chart shipped: AOF on, RDB snapshots off.
+  commonConfiguration: |-
+    appendonly yes
+    save ""
   # Used for locks and caches, not as a data store: measured 7-21Mi across every
   # deployment. Shipped with no requests or limits, which made it BestEffort and
   # therefore an eviction candidate — and losing the lock store wedges the
   # schedulers that depend on it. See docs/sizing-and-tiers.md.
-  replica:
-    replicaCount: 0
-    resources:
-      limits:
-        cpu: 200m
-        memory: 250Mi
-      requests:
-        cpu: 25m
-        memory: 50Mi
   master:
+    disableCommands:
+      - FLUSHDB
+      - FLUSHALL
+    configuration: ''
     resources:
       limits:
         cpu: 200m
@@ -322,6 +330,32 @@ redis:
       requests:
         cpu: 25m
         memory: 50Mi
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    topologySpreadConstraints: []
+    priorityClassName: ''
+    podLabels: {}
+    podAnnotations: {}
+    terminationGracePeriodSeconds: 30
+    # Rendered into the StatefulSet's volumeClaimTemplates, which Kubernetes never
+    # lets change: an existing install must keep the values it was installed with.
+    persistence:
+      enabled: true
+      path: /data
+      subPath: ''
+      # Ignored when global.storageClass is set (it wins).
+      storageClass: ''
+      accessModes:
+        - ReadWriteOnce
+      size: 8Gi
+      labels: {}
+      annotations: {}
+      selector: {}
+      dataSource: {}
+      existingClaim: ''
+      medium: ''
+      sizeLimit: ''
 rabbitmq:
   enabled: true
   fullnameOverride: rabbitmq
@@ -335,10 +369,19 @@ rabbitmq:
     requests:
       cpu: 50m
       memory: 250Mi
+  # Rendered by this chart (templates/rabbitmq/), not the Bitnami rabbitmq
+  # subchart it replaced: same StatefulSet, Services, Secrets, PVC, node name
+  # and data path, so `helm upgrade` rolls the broker onto this image and keeps
+  # every queue and message. Bitnami 12.6.1's defaults for every key not set
+  # here live in templates/rabbitmq/_rabbitmq.tpl. RabbitMQ 3.13 -> 4.2 is a
+  # one-way upgrade: 3.13 cannot boot on the data afterwards.
+  # See docs/security/rabbitmq-official-image-spec.md.
   image:
     registry: 'ghcr.io/nudgebee'
+    # Mirror of the official rabbitmq:4.2.9-management-alpine image
+    # (nudgebee-mirrors/clone-third-party.sh); 0 Critical/High in Grype.
     repository: rabbitmq
-    tag: 3.13.7-debian-12-r5-nb1
+    tag: 4.2.9-management-alpine
   extraConfiguration: |-
     consumer_timeout = 3600000
   # Ready = the AMQP listener accepts connections (the check the RabbitMQ
@@ -521,10 +564,10 @@ services-server:
   # Carries ADMIN_EMAIL and the bundled agent's credential when either is in use.
   extraEnvFromSecret: 'nudgebee-bootstrap'
   env:
-    NOVA_IMAGE: 'ghcr.io/nudgebee/nova:2026-05-22T07-15-34_decaacbbf56e1789c3299a89f790b8e824ab741c'
-    TRIVY_IMAGE: 'ghcr.io/nudgebee/trivy:0.58.0'
-    POPEYE_IMAGE: 'ghcr.io/nudgebee/popeye:v0.11.1-nudgebee.1'
-    KUBE_BENCH_IMAGE: 'ghcr.io/nudgebee/kube-bench:v0.10.4'
+    NOVA_IMAGE: 'ghcr.io/nudgebee/nova:2026-11-01T06-52-28_672e9c0c399afd5b92709ce34a52434e6f05d603'
+    TRIVY_IMAGE: 'ghcr.io/nudgebee/trivy:0.76.1-nb2'
+    POPEYE_IMAGE: 'ghcr.io/nudgebee/popeye:v0.11.1-nudgebee.2'
+    KUBE_BENCH_IMAGE: 'ghcr.io/nudgebee/kube-bench:v0.16.0-nb2'
 k8s-collector:
   fullnameOverride: k8s-collector
 relay-server:
@@ -586,10 +629,10 @@ nudgebee-qdrant-server:
   enabled: true
   fullnameOverride: nudgebee-qdrant-server
   image:
-    # ghcr clone of docker.io/qdrant/qdrant — avoids Docker Hub rate limits.
-    # Copied via deploy/kubernetes/nudgebee-mirrors/clone-third-party.sh (crane).
+    # Patched ghcr mirror of docker.io/qdrant/qdrant, built by
+    # deploy/kubernetes/nudgebee-mirrors/qdrant. Also avoids Docker Hub rate limits.
     repository: ghcr.io/nudgebee/qdrant
-    tag: 'v1.19.0'
+    tag: 'v1.19.2-nb1'
 temporal:
   enabled: true
   fullnameOverride: temporal
@@ -615,7 +658,7 @@ temporal:
   admintools:
     image:
       repository: ghcr.io/nudgebee/temporal-admin-tools
-      tag: '1.31.2'
+      tag: '1.31.4-nb1'
     # Disabled: the admintools Deployment is only a standing shell with the
     # temporal/tctl CLI for operators to exec into — no nudgebee component uses
     # it (workflow-server talks to temporal-frontend:7233 via SDK). Schema
@@ -627,7 +670,7 @@ temporal:
   shims:
     # Disabled: the chart's dockerize / temporal-elasticsearch-tool shims exist
     # only for Temporal 1.29 images ("Set to false if using Temporal 1.30 or
-    # higher" per the subchart values); we run 1.31.2, and with elasticsearch
+    # higher" per the subchart values); we run 1.31.4, and with elasticsearch
     # disabled nothing mounts them. Keeping them enabled also breaks upgrades
     # from chart 1.3.0: with schema.useHelmHooks=true the shims ConfigMap was
     # created as a pre-install/pre-upgrade hook (hooks carry no Helm ownership
@@ -656,7 +699,7 @@ temporal:
   server:
     image:
       repository: ghcr.io/nudgebee/temporal-server
-      tag: '1.31.2'
+      tag: '1.31.4-nb1'
     enabled: true
     replicaCount: 1
     # Small-tier resources. Upstream ships no resources for any temporal role, so

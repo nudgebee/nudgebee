@@ -22,9 +22,26 @@ import (
 //     BigQuery error) is a fault worth retrying and worth a DLQ entry, and must
 //     NOT be wrapped in this sentinel.
 //
+// Access to cost data that the account's credential was never granted, or that
+// the billing setup blocks, is also a steady state and may be wrapped here — as
+// long as the credential itself still works. AWS wraps a denied CUR read; Azure
+// wraps a cost query refused while the subscription stays readable (no cost
+// role, Enterprise Agreement "view charges" off, unsupported offer type).
+//
 // Compare with errors.ErrUnsupported, which means the provider has no billing
 // concept at all. Both are benign for the queue; this one is fixable by the user.
 var ErrCostNotConfigured = errors.New("cost reporting is not configured for this account")
+
+// ErrCostFetchFailedCredentialOK reports a spend fetch that failed — throttled,
+// an upstream fault, or a reason the provider did not recognise — while the
+// account's credential still works: either the provider checked, or the failure
+// itself came after authentication succeeded (a throttled or failed request).
+//
+// It is NOT benign for the queue: the job still fails and is dead-lettered, and
+// "Sync now" still reports the error. It only stops the failure from marking
+// the whole account disconnected, since resources, events and recommendations
+// keep syncing with the same credential.
+var ErrCostFetchFailedCredentialOK = errors.New("cost data could not be fetched this run")
 
 type CloudProviderContext interface {
 	GetContext() context.Context
@@ -373,6 +390,23 @@ type Event struct {
 	Raw                 map[string]any    `json:"raw_event"`
 	AdditionalContext   []EventEvidence   `json:"evidences,omitempty"`
 	Labels              map[string]string `json:"labels,omitempty"`
+	// OngoingScope is set when the event is a condition that stays on until its
+	// source says it ended (an alarm in ALARM), to the scope a poll lists it
+	// under. Such an event is stored open only when a poll has listed that scope,
+	// because the poll is what ends it when no resolve arrives (see
+	// OngoingSnapshot). Left empty, as it is for every notification, the event is
+	// stored as a moment that has already passed.
+	OngoingScope string `json:"ongoing_scope,omitempty"`
+	// ResourceLookupIds are other ids the inventory stores for this same
+	// resource, where its id differs from the one the event names it by: an
+	// alarm names a load balancer by its metric dimension (app/name/id) while the
+	// inventory stores its ARN. Used only to find the resource's row; it is not
+	// a general alias list, and it is never stored on the event.
+	ResourceLookupIds []string `json:"resource_lookup_ids,omitempty"`
+	// EndsAt is set for a condition that had already ended when it was read
+	// (an alarm that entered and left ALARM between two polls); it is stored with
+	// that end time.
+	EndsAt *time.Time `json:"ends_at,omitempty"`
 }
 
 // FiringFindingID is the per-firing identity of an event: what makes two
@@ -419,6 +453,35 @@ type ListRecommendationsResponse struct {
 type ListEventResponse struct {
 	Items   []Event        `json:"items"`
 	Summary []EventSummary `json:"summaries"`
+	// Ongoing is nil when the poll listed no conditions that are still on.
+	Ongoing *OngoingSnapshot `json:"-"`
+}
+
+// OngoingSnapshot is what one poll saw of the conditions that are on right now.
+// The store ends the stored firings that are no longer on from it: a poll-only
+// account has no other way to learn that an alarm cleared, and where a resolve
+// is pushed it can be lost.
+//
+// It speaks only for the scopes it lists. A scope the poll could not list
+// completely is left out, and a firing in a scope that is not listed is never
+// ended: not listed means unknown.
+type OngoingSnapshot struct {
+	// Sources are the event sources whose stored firings the snapshot covers.
+	Sources []string
+	// FingerprintLike is a SQL LIKE pattern for the fingerprints Identify accepts,
+	// so the store reads back only firings the snapshot can speak for.
+	FingerprintLike string
+	// ListedAt is taken before the listing starts. A firing that began after it
+	// can be missing from the listing without having ended.
+	ListedAt time.Time
+	// Scopes are the scopes listed completely.
+	Scopes []string
+	// Since maps each condition that is on to when its current firing began. A
+	// zero time means it is on but the source did not say since when.
+	Since map[string]time.Time
+	// Identify maps a stored fingerprint to its scope and its key in Since. ok is
+	// false for a fingerprint the snapshot cannot place.
+	Identify func(fingerprint string) (scope, key string, ok bool)
 }
 
 type ListEventRules struct {

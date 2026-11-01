@@ -6,6 +6,7 @@ import (
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/query"
 	"strconv"
+	"time"
 )
 
 type SortField struct {
@@ -44,6 +45,11 @@ type FetchLogRequest struct {
 	// a key in Request — that map is provider-parameter space that LLM tools
 	// populate freely, which would make this flag agent-settable.
 	RecordHistory bool `json:"record_history"`
+	// Timeout, when set, bounds the provider call and turns off its retries: the caller
+	// has a budget and would rather have no answer than a late one. Set in-process only
+	// (never from a request body), by the log card's narrowed queries, and honoured by
+	// the sources that serve them (lineFilterSource); others ignore it.
+	Timeout time.Duration `json:"-"`
 }
 
 type OutputLog struct {

@@ -109,7 +109,9 @@ const VmPackages = ({ accountId, cloudResourceId, embedded = false, vmNames = NO
   }, [fetchPackages]);
 
   const onSearchEnter = () => {
-    setAppliedSearch(searchInput);
+    // Pasted text often carries a stray space, which the substring match would
+    // otherwise treat as part of the name and find nothing.
+    setAppliedSearch(searchInput.trim());
     setPage(0);
   };
 
@@ -143,6 +145,11 @@ const VmPackages = ({ accountId, cloudResourceId, embedded = false, vmNames = NO
     [rows, embedded, vmNames]
   );
 
+  // Empty means "never scanned" only when nothing narrowed the query. With a
+  // search or filter applied it just matched nothing, and asking for a scan
+  // would send the user to redo an inventory they already have.
+  const isFiltered = Boolean(appliedSearch || pkgType || vmFilter);
+
   const table = (
     <CustomTable
       id={tableId}
@@ -153,8 +160,10 @@ const VmPackages = ({ accountId, cloudResourceId, embedded = false, vmNames = NO
       pageNumber={page + 1}
       totalRows={total}
       onPageChange={changePage}
-      emptyHeading='No package inventory'
-      emptySubHeading='Run a scan on a VM to collect its installed packages.'
+      emptyHeading={isFiltered ? 'No packages match these filters' : 'No package inventory'}
+      emptySubHeading={
+        isFiltered ? 'Try adjusting or clearing the search, Package Type, or VM filters.' : 'Run a scan on a VM to collect its installed packages.'
+      }
       showUpdatedEmptyData={true}
     />
   );

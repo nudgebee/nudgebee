@@ -33,7 +33,8 @@ func (m DatadogEventsExecuteTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
 		Properties: map[string]core.ToolSchemaProperty{
-			"command": {Type: core.ToolSchemaTypeString, Description: "The Datadog event query to execute (e.g., 'tags:env:prod,source:kubernetes')."},
+			"instance": instanceProperty,
+			"command":  {Type: core.ToolSchemaTypeString, Description: "The Datadog event query to execute (e.g., 'tags:env:prod,source:kubernetes')."},
 		},
 		Required: []string{"command"},
 	}

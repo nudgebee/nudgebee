@@ -4,6 +4,8 @@ import { Box } from '@mui/material';
 import CustomTable from '@shared/tables/CustomTable';
 import Text from '@shared/format/Text';
 import { ds } from '@utils/colors';
+import { safeJSONParse } from 'src/utils/common';
+import { summarizeResources } from '@components/k8s/investigate/cards/cardSummaries';
 
 class ResourceCard {
   constructor(evidenceData, index) {
@@ -18,7 +20,10 @@ class ResourceCard {
   }
 
   getHighLightsData = () => {
-    return this.enricherData?.insight || [];
+    const stored = this.enricherData?.insight;
+    if (stored?.length > 0) return stored;
+    const data = this.enricherData?.data;
+    return summarizeResources(typeof data === 'string' ? safeJSONParse(data) : data);
   };
 
   getContentComponents = () => {

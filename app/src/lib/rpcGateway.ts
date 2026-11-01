@@ -9,7 +9,7 @@ import {
   type TypeNode,
   type ValueNode,
 } from 'graphql';
-import { decodeSessionJWT, decrypt } from '@lib/internal';
+import { authenticateApiToken, isApiToken } from '@lib/apiToken';
 import { readSessionToken } from '@lib/sessionCookie';
 import { isSessionRevoked } from '@lib/sessionRevocation';
 import { loadActionInputSchema, loadRpcRoutes, type RpcRoute, type SchemaFieldInfo } from '@lib/rpcRoutes';
@@ -104,59 +104,35 @@ export type AuthContext = {
   jwt: JWT;
 };
 
-// Synthesize a JWT-shaped object from a decoded session JWT. Used in the
-// Bearer-only flow (non-browser callers like nbctl) where there's no
-// NextAuth cookie, so getToken({req}) returns null and we have to derive
-// the same shape from the bearer token's decoded payload.
-//
-// Bearer tokens minted by /api/auth/token are tenant-scoped by design:
-// super-admin elevation flags (isSuperAdmin / isSuperAdminReadonly) are
-// set by the EE elevator at NextAuth session creation, not stored in the
-// signed JWT itself. So the synthesized JWT here will never carry those
-// flags — Bearer callers can't perform super-admin operations.
-function synthesizeJwtFromBearer(rawJwt: string): Promise<JWT | null> {
-  return decodeSessionJWT(rawJwt)
-    .then((decoded) => {
-      const p = decoded.payload as Record<string, unknown>;
-      const userId = p.user_id as string | undefined;
-      if (!userId) return null;
-      const synth: Record<string, unknown> = {
-        id: userId,
-        sub: userId,
-        tenant: { id: (p.tenant_id as string) ?? '' },
-        roles: (p.allowed_roles as string[]) ?? [],
-        permissions: (p.permissions as string[]) ?? [],
-        accountIds: (p.account_ids as string[]) ?? [],
-        readOnlyAccountIds: (p.readonly_account_ids as string[]) ?? [],
-        namespacedAccountIds: (p.namespaced_account_ids as string[]) ?? [],
-        namespacedReadOnlyAccountIds: (p.namespaced_readonly_account_ids as string[]) ?? [],
-      };
-      if (Array.isArray(p.token_scopes)) synth.tokenScopes = p.token_scopes;
-      return synth as unknown as JWT;
-    })
-    .catch(() => null);
-}
-
 export async function authenticateRequest(req: NextApiRequest): Promise<AuthContext | null> {
   let token: string | null = null;
+  // Set on the PAT flow only: a PAT resolves straight to a session, so the
+  // JWT comes back from the lookup rather than from the cookie.
+  let apiTokenJwt: JWT | null = null;
   if (req.headers.authorization) {
     const splits = req.headers.authorization.split(' ');
     if (splits.length > 1) {
-      try {
-        token = await decrypt(splits[1]);
-      } catch {
-        // malformed/tampered Bearer — treat as no token, fall through to cookie path
+      const bearer = splits[1];
+      // A raw `sk-nb-…` token is the only bearer this gateway accepts. Anything
+      // else falls through to the cookie path — including the encrypted session
+      // JWTs the removed /api/auth/token exchange used to mint.
+      if (isApiToken(bearer)) {
+        const apiTokenAuth = await authenticateApiToken(bearer);
+        if (!apiTokenAuth) return null; // unknown / expired / suspended — reject
+        // Forward the minted session JWT upstream, never the PAT itself:
+        // actions with forward_client_headers decode this bearer.
+        token = apiTokenAuth.token;
+        apiTokenJwt = apiTokenAuth.jwt;
       }
     }
   }
   let jwt = await readSessionToken(req);
   const fromCookie = !!jwt && !token;
-  // Bearer-only flow (no NextAuth cookie): decode the bearer JWT and
-  // synthesize the JWT shape buildSessionVariables expects. Without this,
-  // callers like nbctl get 401 even though the token is valid.
-  if (token && !jwt) {
-    jwt = await synthesizeJwtFromBearer(token);
-    if (!jwt) return null; // verifiable failure — reject
+  // A presented PAT is authoritative even when the caller also carries a
+  // NextAuth cookie: running as the cookie's user while forwarding the PAT's
+  // session upstream would split identity across the two hops.
+  if (apiTokenJwt) {
+    jwt = apiTokenJwt;
   }
   // Browser flow: jwt comes from the NextAuth cookie and is sufficient on
   // its own — no Bearer token is forwarded. `token` stays empty; downstream
@@ -355,6 +331,15 @@ export type ForwardError =
 
 export type ForwardResult = { ok: true; payload: unknown } | { ok: false; error: ForwardError };
 
+// A timeout signal (AbortSignal.timeout) firing means the upstream was too slow,
+// not that the caller left, so it is reported as unreachable and logged as such.
+function abortedError(opts: ForwardOptions, url: string): ForwardError {
+  if ((opts.signal?.reason as { name?: string } | undefined)?.name === 'TimeoutError') {
+    return { kind: 'upstream_unreachable', method: opts.method, url, detail: 'timed out' };
+  }
+  return { kind: 'client_disconnected', method: opts.method, url };
+}
+
 export async function forwardAction(opts: ForwardOptions): Promise<ForwardResult> {
   const route = routes[opts.method];
   if (!route) return { ok: false, error: { kind: 'method_not_found', method: opts.method } };
@@ -482,7 +467,7 @@ export async function forwardAction(opts: ForwardOptions): Promise<ForwardResult
       signal: opts.signal,
     });
   } catch (err: unknown) {
-    if (opts.signal?.aborted) return { ok: false, error: { kind: 'client_disconnected', method: opts.method, url: upstreamUrl } };
+    if (opts.signal?.aborted) return { ok: false, error: abortedError(opts, upstreamUrl) };
     const detail = err instanceof Error ? err.message : String(err);
     return { ok: false, error: { kind: 'upstream_unreachable', method: opts.method, url: upstreamUrl, detail } };
   }
@@ -492,7 +477,7 @@ export async function forwardAction(opts: ForwardOptions): Promise<ForwardResult
   try {
     rawBody = await upstream.text();
   } catch (err: unknown) {
-    if (opts.signal?.aborted) return { ok: false, error: { kind: 'client_disconnected', method: opts.method, url: upstreamUrl } };
+    if (opts.signal?.aborted) return { ok: false, error: abortedError(opts, upstreamUrl) };
     const detail = err instanceof Error ? err.message : String(err);
     return { ok: false, error: { kind: 'upstream_unreachable', method: opts.method, url: upstreamUrl, detail } };
   }
@@ -811,6 +796,9 @@ export function bypassGraphQLAsServer(opts: {
   // source this from a trusted server-only value (license.tenantId, etc.)
   // — never from a client-supplied header.
   tenantOverride?: string;
+  // See ForwardOptions.signal. Server callers pass AbortSignal.timeout(...)
+  // to bound a call that must not hold up the request it runs inside.
+  signal?: AbortSignal;
 }): Promise<GraphQLBypassResult> {
   return tryBypassGraphQL({
     query: opts.query,
@@ -819,6 +807,7 @@ export function bypassGraphQLAsServer(opts: {
     traceparent: opts.traceparent,
     requestId: opts.requestId,
     tenantOverride: opts.tenantOverride,
+    signal: opts.signal,
   });
 }
 

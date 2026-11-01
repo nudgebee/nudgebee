@@ -370,7 +370,7 @@ const CloudAccountServices = (props: {
           ),
       });
 
-      data.push({ component: <Currency prefix={currencySymbol} value={item.sum_recommendation_estimated_savings?.toFixed(2) ?? '-'} /> });
+      data.push({ component: <Currency prefix='$' value={item.sum_recommendation_estimated_savings?.toFixed(2) ?? '-'} /> });
       data.push({
         component: (
           <Box display={'flex'} justifyContent={'flex-end'} alignItems={'center'}>
@@ -1047,7 +1047,7 @@ const CloudAccountResources = (props: {
           data.push({
             component: (
               <Box sx={{ textAlign: 'center', width: '100%' }}>
-                <Currency prefix={props.currencySymbol} value={item.sum_recommendation_estimated_savings?.toFixed(2) ?? '-'} />
+                <Currency prefix='$' value={item.sum_recommendation_estimated_savings?.toFixed(2) ?? '-'} />
               </Box>
             ),
           });

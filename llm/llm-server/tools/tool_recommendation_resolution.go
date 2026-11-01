@@ -91,6 +91,7 @@ func (m RecommendationResolutionExecuteTool) InputSchema() core.ToolSchema {
 }
 
 func (m RecommendationResolutionExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	nbRequestContext = nbRequestContext.ForTarget()
 	resp, _, err := sqlToolCall(nbRequestContext, input.Command, "recommendation_resolution_view", recommendationResolutionView, 10, nil)
 	if err == nil {
 		resp.References = []core.NBToolResponseReference{

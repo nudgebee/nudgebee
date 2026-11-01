@@ -84,7 +84,7 @@ func CheckBudgetLimits(tenantId, accountId, module string, logger *slog.Logger) 
 		// Step 1: Tenant daily cost
 		if tenantConfig.DailyCostEnabled {
 			limit := resolveLimit(tenantConfig.DailyCostLimit, getSystemDefaultDailyCostLimit(EntityTypeTenant))
-			usage, err := GetTenantDailyTokenUsage(dbManager, tenantId, module)
+			usage, err := cachedEntityTokenUsage(dbManager, EntityTypeTenant, tenantId, module, "day")
 			if err != nil {
 				logger.Error("budget: error checking tenant daily cost", "error", err, "tenant_id", tenantId, "module", module)
 			} else if usage >= limit {
@@ -97,7 +97,7 @@ func CheckBudgetLimits(tenantId, accountId, module string, logger *slog.Logger) 
 		// Step 2: Tenant monthly cost
 		if tenantConfig.MonthlyCostEnabled {
 			limit := resolveLimit(tenantConfig.MonthlyCostLimit, getSystemDefaultMonthlyCostLimit(EntityTypeTenant, module))
-			usage, err := GetTenantTokenUsage(dbManager, tenantId, module)
+			usage, err := cachedEntityTokenUsage(dbManager, EntityTypeTenant, tenantId, module, "month")
 			if err != nil {
 				logger.Error("budget: error checking tenant monthly cost", "error", err, "tenant_id", tenantId, "module", module)
 			} else if usage >= limit {
@@ -145,7 +145,7 @@ func CheckBudgetLimits(tenantId, accountId, module string, logger *slog.Logger) 
 	// Step 5: Account daily cost
 	if accountConfig.DailyCostEnabled {
 		limit := resolveLimit(accountConfig.DailyCostLimit, getSystemDefaultDailyCostLimit(EntityTypeAccount))
-		usage, err := GetAccountDailyTokenUsage(dbManager, accountId, module)
+		usage, err := cachedEntityTokenUsage(dbManager, EntityTypeAccount, accountId, module, "day")
 		if err != nil {
 			logger.Error("budget: error checking account daily cost", "error", err, "account_id", accountId, "module", module)
 		} else if usage >= limit {
@@ -158,7 +158,7 @@ func CheckBudgetLimits(tenantId, accountId, module string, logger *slog.Logger) 
 	// Step 6: Account monthly cost
 	if accountConfig.MonthlyCostEnabled {
 		limit := resolveLimit(accountConfig.MonthlyCostLimit, getSystemDefaultMonthlyCostLimit(EntityTypeAccount, module))
-		usage, err := GetAccountTokenUsage(dbManager, accountId, module)
+		usage, err := cachedEntityTokenUsage(dbManager, EntityTypeAccount, accountId, module, "month")
 		if err != nil {
 			logger.Error("budget: error checking account monthly cost", "error", err, "account_id", accountId, "module", module)
 		} else if usage >= limit {

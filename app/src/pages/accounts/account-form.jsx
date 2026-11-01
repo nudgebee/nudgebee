@@ -210,6 +210,8 @@ export default function AddAccountForm() {
             return <ListIntegrations integrationName={'cubeapm'} />;
           case 'cubeapm_webhook':
             return <ListIntegrations integrationName={'cubeapm_webhook'} />;
+          case 'signoz_webhook':
+            return <ListIntegrations integrationName={'signoz_webhook'} />;
           case 'azure_monitor_webhook':
             return <ListIntegrations integrationName={'azure_monitor_webhook'} />;
           case 'ssh':
@@ -232,6 +234,8 @@ export default function AddAccountForm() {
             return <ListIntegrations integrationName={'splunk_observability_platform'} />;
           case 'splunk_enterprise':
             return <ListIntegrations integrationName={'splunk_enterprise'} />;
+          case 'grafana_tempo':
+            return <ListIntegrations integrationName={'grafana_tempo'} />;
           case 'splunk_webhook':
             return <ListIntegrations integrationName={'splunk_webhook'} />;
           case 'solarwinds':
@@ -246,6 +250,8 @@ export default function AddAccountForm() {
             return <ListIntegrations integrationName={'gcp_monitoring_webhook'} />;
           case 'workflow_webhook':
             return <ListIntegrations integrationName={'workflow_webhook'} />;
+          case 'event_webhook':
+            return <ListIntegrations integrationName={'event_webhook'} />;
           case 'vm_agent':
             return <ListIntegrations integrationName={'vm_agent'} />;
           case 'mssql':

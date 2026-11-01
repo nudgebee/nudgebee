@@ -1,5 +1,6 @@
 // Shared config and load profiles for the per-service k6 scripts.
 // Every knob is an env var, so the same script runs locally (docker) and in-cluster (run.sh).
+import { sleep } from 'k6';
 
 export function env(name, fallback) {
   const v = __ENV[name];
@@ -60,6 +61,9 @@ export function scenarios(exec, { timeUnit: defaultTimeUnit = '1s', gracefulStop
       };
     case 'soak':
       return { soak: constant(rate * 0.7, env('DURATION', '1h')) };
+    case 'users':
+      // Closed model: VUS users each loop request, think time, request for DURATION.
+      return { users: { executor: 'constant-vus', exec, vus: Number(env('VUS', '20')), duration: env('DURATION', '5m'), gracefulStop } };
     case 'spike':
       return {
         spike: ramping(rate * 0.1, [
@@ -71,7 +75,7 @@ export function scenarios(exec, { timeUnit: defaultTimeUnit = '1s', gracefulStop
         ]),
       };
     default:
-      throw new Error(`unknown PROFILE ${profile}; use smoke, baseline, stress, soak or spike`);
+      throw new Error(`unknown PROFILE ${profile}; use smoke, baseline, stress, soak, spike or users`);
   }
 }
 
@@ -100,4 +104,12 @@ export function weightedPicker(items) {
     }
     return items[items.length - 1];
   };
+}
+
+// Pause between one user's requests under the users profile, THINK_TIME seconds ("1-3"
+// picks uniformly in that range). Arrival-rate profiles skip it: there a pause only holds VUs.
+export function thinkTime() {
+  if (env('PROFILE', 'smoke') !== 'users') return;
+  const [lo, hi = lo] = env('THINK_TIME', '1-3').split('-').map(Number);
+  sleep(lo + Math.random() * (hi - lo));
 }

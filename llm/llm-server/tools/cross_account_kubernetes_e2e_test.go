@@ -187,6 +187,18 @@ for context in contexts:
 	require.Contains(t, body, fixture.context2+"="+fixture.expectedUID2)
 }
 
+// A shell loop picks each cluster through a variable. The script text names
+// none; each expanded kubectl invocation must run on the cluster it names.
+func TestCrossAccountKubernetesShellLoopUsesEachContextE2E(t *testing.T) {
+	fixture := loadCrossAccountKubernetesE2E(t)
+	response, callErr := fixture.runShell(t, fmt.Sprintf(
+		`for c in %s %s; do echo "$c=$(kubectl --context $c get namespace kube-system -o jsonpath='{.metadata.uid}')"; done`,
+		fixture.context1, fixture.context2))
+	body := requireShellSuccess(t, response, callErr)
+	require.Contains(t, body, fixture.context1+"="+fixture.expectedUID1)
+	require.Contains(t, body, fixture.context2+"="+fixture.expectedUID2)
+}
+
 func TestCrossAccountKubernetesVirtualConfigListsAuthorizedContextsE2E(t *testing.T) {
 	fixture := loadCrossAccountKubernetesE2E(t)
 	response, err := fixture.runShell(t, "kubectl config get-contexts -o name")

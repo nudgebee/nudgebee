@@ -211,6 +211,24 @@ func isUserConversationSource(source ConversationSource) bool {
 	return false
 }
 
+// seedOriginalQuery records, on a top-level invocation, the question the
+// conversation started with and whether a person wrote it. Reports whether the
+// invocation is top level; a request arriving under a parent already carries
+// both and is left alone.
+//
+// "A person wrote it" is the live-chat allowlist on purpose. Those are the
+// sources where a person's question is later paraphrased by agents, so it has
+// to be kept apart from their paraphrases. On the single query endpoints the
+// person's text is itself the command that runs, and is read as that.
+func seedOriginalQuery(request *NBAgentRequest) bool {
+	if request.OriginalQuery != "" {
+		return false
+	}
+	request.OriginalQuery = request.Query
+	request.OriginalQueryFromUser = isUserConversationSource(request.ConversationSource)
+	return true
+}
+
 // useStaticAcknowledgment reports whether to skip the LLM and return a fast
 // static acknowledgment instead of generating a tailored one. True for:
 //   - non-user conversations (event RCA / automation / etc. — no user is

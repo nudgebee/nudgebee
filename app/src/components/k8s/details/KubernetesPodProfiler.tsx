@@ -8,7 +8,6 @@ import FilterDropdown from '@ui/FilterDropdown';
 import { Button as DsButton } from '@ui/Button';
 import Tooltip from '@ui/Tooltip';
 import DownloadButton from '@shared/buttons/DownloadButton';
-import zlib from 'zlib';
 import { generateRandomUUID, type CustomDropDownProps } from 'src/utils/common';
 import apiKubernetes1 from '@api1/kubernetes1';
 import SvgRenderer from '@shared/viewers/SvgRenderer';
@@ -18,6 +17,18 @@ import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { DEFAULT_TITLE, getNubiIconUrl } from '@hooks/useTenantBranding';
 import { ds } from '@utils/colors';
+import {
+  AUTO_DETECT_LANGUAGE,
+  artifactsFromAgentResponse,
+  base64ToBuffer,
+  buildProfileRequest,
+  decodeProfile,
+  itemGroupsFromFindings,
+  languageForFramework,
+  reportedLanguage,
+  unzipToText,
+  type ProfilerItem,
+} from './podProfilerArtifacts';
 
 type ProfilerState = {
   svgData: Base64Data[];
@@ -44,6 +55,7 @@ type Base64Data = {
 };
 
 type OutputOptions = {
+  auto: CustomDropDownProps[];
   java: CustomDropDownProps[];
   python: CustomDropDownProps[];
   node: CustomDropDownProps[];
@@ -62,7 +74,11 @@ const KubernetesPodProfiler: React.FC<KubernetesPodProfilerProps> = ({ accountId
     isLoading: false,
     errorMsg: '',
   });
-  const [selectLang, setSelectLang] = useState(query.framework || 'go');
+  // Preselect the runtime the pod page detected; with none (or one we have no
+  // profiler for) let the agent resolve it instead of guessing a language.
+  const [selectLang, setSelectLang] = useState(() => languageForFramework(query.framework));
+  const langPickedRef = useRef(false);
+  const [detectedLang, setDetectedLang] = useState('');
   const [outputTypeOptions, setOutputTypeOptions] = useState<CustomDropDownProps[]>([]);
   const [selectedOutputType, setSelectedOutputType] = useState('');
   const [profileTaskId, setProfileTaskId] = useState('');
@@ -75,6 +91,10 @@ const KubernetesPodProfiler: React.FC<KubernetesPodProfilerProps> = ({ accountId
 
   // Pre-defined output type options for each language
   const OUTPUT_OPTIONS: OutputOptions = {
+    auto: [
+      { label: 'CPU', value: 'cpu' },
+      { label: 'Memory', value: 'memory' },
+    ],
     java: [
       { label: 'Java Flight Recorder', value: 'jfr' },
       { label: 'Thread Dump', value: 'threaddump' },
@@ -98,6 +118,7 @@ const KubernetesPodProfiler: React.FC<KubernetesPodProfilerProps> = ({ accountId
   };
 
   const LANGUAGE_OPTIONS = [
+    { label: 'Auto-detect', value: AUTO_DETECT_LANGUAGE },
     { label: 'Java', value: 'java' },
     { label: 'Python', value: 'python' },
     { label: 'Go', value: 'go' },
@@ -110,9 +131,17 @@ const KubernetesPodProfiler: React.FC<KubernetesPodProfilerProps> = ({ accountId
   // Initialize with external findings data if provided
   useEffect(() => {
     if (readOnlyMode && findings.length > 0) {
-      processProfilerData(findings);
+      processProfilerData(itemGroupsFromFindings(findings));
     }
   }, [findings, readOnlyMode]);
+
+  // The pod page looks the runtime up after this tab can already be open, so
+  // adopt it when it lands, unless a language has been picked by hand.
+  useEffect(() => {
+    if (!langPickedRef.current) {
+      setSelectLang(languageForFramework(query.framework));
+    }
+  }, [query.framework]);
 
   // Update output options when language changes (only if not in read-only mode)
   useEffect(() => {
@@ -142,8 +171,7 @@ const KubernetesPodProfiler: React.FC<KubernetesPodProfilerProps> = ({ accountId
         base64_profile: profilerState.pprofData,
       });
       const svgProfile = response?.data?.data?.applications_convert_profile?.data?.svg_profile || '';
-      const gzData = base64Converter(svgProfile);
-      const unzippedData = await unzipData(gzData);
+      const unzippedData = await unzipToText(base64ToBuffer(svgProfile));
       setProfilerState((prevState) => ({
         ...prevState,
         svgData: [
@@ -171,55 +199,8 @@ const KubernetesPodProfiler: React.FC<KubernetesPodProfilerProps> = ({ accountId
     }
   }, [profilerState.pprofData]);
 
-  // Helper functions
-  const getProfilerType = (): string | null => (['python', 'node', 'go'].includes(selectLang) ? selectedOutputType : '');
-
-  const getOutputType = (): string => (['java'].includes(selectLang) ? selectedOutputType : 'flamegraph');
-
-  const findPySpyCmdReplaceWithPid = (data: string): string => {
-    const regex = /py-spy[^\n]*\.svg/g;
-    const matches = data.match(regex);
-
-    if (!matches?.length) {
-      return data;
-    }
-
-    let _result = data;
-    for (const match of matches) {
-      const pidMatch = match.match(/--pid=(\d+)/);
-      if (pidMatch?.[1]) {
-        _result = _result.replace(match, 'Process Id: ' + pidMatch[1]);
-      }
-    }
-    return _result;
-  };
-
-  const base64Converter = (data: string): Buffer => {
-    const cleanData = data.replace(/^b'|'$/g, '');
-    return Buffer.from(cleanData, 'base64');
-  };
-
-  const unzipData = async (gzData: Buffer): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      zlib.unzip(gzData, (err, unzippedBuffer) => {
-        if (err) {
-          console.error('Error unzipping the file:', err);
-          reject(err);
-        } else {
-          resolve(unzippedBuffer.toString('utf8').replace(/\n$/, ''));
-        }
-      });
-    });
-  };
-
-  const processProfilerData = async (findings: any[]): Promise<void> => {
-    const base64Datas: Base64Data[] = [];
-    const txtData = [];
-    const jfrData = [];
-    let pprofData: any = '';
-    let fileExtension = '';
-
-    if (!findings?.length) {
+  const processProfilerData = async (groups: ProfilerItem[][]): Promise<void> => {
+    if (!groups.length) {
       setProfilerState((prev) => ({
         ...prev,
         isLoading: false,
@@ -228,90 +209,9 @@ const KubernetesPodProfiler: React.FC<KubernetesPodProfilerProps> = ({ accountId
       return;
     }
 
-    for (const finding of findings) {
-      const evidences = finding.evidence;
-      if (!evidences?.length) {
-        continue;
-      }
-
-      for (const evidence of evidences) {
-        try {
-          const dataObjects = JSON.parse(evidence.data);
-
-          if (!Array.isArray(dataObjects)) {
-            continue;
-          }
-
-          // Process SVG data
-          const svgItems = dataObjects.filter((item) => item.type === 'svg');
-          for (const item of svgItems) {
-            base64Datas.push({
-              fileName: item.filename,
-              data: findPySpyCmdReplaceWithPid(atob(item.data.replace(/^b'|'$/g, ''))),
-            });
-          }
-
-          // Process SVG.GZ data
-          const svgGzItems = dataObjects.filter(
-            (item) => item.type === 'gz' && (item.filename.endsWith('svg.gz') || item.filename.endsWith('pprof.svg.gz'))
-          );
-
-          if (svgGzItems.length) {
-            const gzData = base64Converter(svgGzItems[0].data);
-            const unzippedData = await unzipData(gzData);
-            base64Datas.push({
-              fileName: `${query.pod_name}.svg`,
-              data: unzippedData,
-            });
-          }
-
-          // Process TXT.GZ data
-          const txtGzItems = dataObjects.filter((item) => item.type === 'gz' && item.filename.endsWith('txt.gz'));
-          if (txtGzItems.length) {
-            fileExtension = 'txt';
-            for (const item of txtGzItems) {
-              const gzData = base64Converter(item.data);
-              const unzipped = await unzipData(gzData);
-              txtData.push({
-                fileName: item.filename.replace('.gz', ''),
-                data: unzipped,
-              });
-            }
-          }
-
-          // Process JFR.GZ data
-          const jfrGzItems = dataObjects.filter((item) => item.type === 'gz' && item.filename.endsWith('jfr.gz'));
-          if (jfrGzItems.length) {
-            fileExtension = 'jfr';
-            for (const item of jfrGzItems) {
-              const gzData = base64Converter(item.data);
-              const unzipped = await unzipData(gzData);
-              jfrData.push({
-                fileName: item.filename.replace('.gz', ''),
-                data: unzipped,
-              });
-            }
-          }
-
-          // Process PPROF.GZ data
-          const pprofGzItems = dataObjects.filter((item) => item.type === 'gz' && item.filename.endsWith('pprof.gz'));
-
-          if (pprofGzItems.length) {
-            fileExtension = 'pprof.gz';
-            pprofData = pprofGzItems[0].data.replace(/^b'|'$/g, '');
-          }
-        } catch (error) {
-          console.error('Error processing evidence data:', error);
-        }
-      }
-    }
-
+    const decoded = await decodeProfile(groups, query.pod_name);
     setProfilerState({
-      svgData: base64Datas,
-      txtData: txtData,
-      jfrData: jfrData,
-      pprofData,
-      fileExt: fileExtension,
+      ...decoded,
       isLoading: false,
       errorMsg: '',
     });
@@ -322,10 +222,14 @@ const KubernetesPodProfiler: React.FC<KubernetesPodProfilerProps> = ({ accountId
       return;
     } // Skip processing failures in read-only mode
 
+    let errorMsg = data.error_message || 'Fail to generate profiler data';
+    if (selectLang === AUTO_DETECT_LANGUAGE) {
+      errorMsg = `${errorMsg.replace(/[.\s]+$/, '')}. If the language could not be detected, select it under Language and submit again.`;
+    }
     setProfilerState((prev) => ({
       ...prev,
       isLoading: false,
-      errorMsg: data.error_message || 'Fail to generate profiler data',
+      errorMsg,
     }));
     return;
   };
@@ -349,17 +253,20 @@ const KubernetesPodProfiler: React.FC<KubernetesPodProfilerProps> = ({ accountId
       isLoading: true,
       errorMsg: '',
     }));
+    setDetectedLang('');
+    // Keep the language this profile ran with, even if the pod page's runtime
+    // lookup lands afterwards.
+    langPickedRef.current = true;
 
     try {
-      const data = {
-        account_id: accountId,
-        pod_name: query?.pod_name,
+      const data = buildProfileRequest({
+        accountId,
+        podName: query?.pod_name,
         namespace: query?.namespace_name,
-        application_language: selectLang,
-        profile_duration: parseInt(profileDuration),
-        profile_type: getProfilerType(),
-        output_type: getOutputType(),
-      };
+        language: selectLang,
+        selection: selectedOutputType,
+        durationSeconds: parseInt(profileDuration),
+      });
       const response = await apiKubernetes1.applicationProfile(data);
       const applicationProfile = response?.data?.data?.applications_execute_profile?.data || {};
       const errors = response?.data?.errors || [];
@@ -399,7 +306,9 @@ const KubernetesPodProfiler: React.FC<KubernetesPodProfilerProps> = ({ accountId
         setProfileTaskStatus(newStatus);
 
         if (newStatus == 'COMPLETED') {
-          processProfilerData(getProfileStatus.base64_profile?.data?.findings || []);
+          const artifacts = artifactsFromAgentResponse(getProfileStatus.base64_profile?.data);
+          setDetectedLang(reportedLanguage(artifacts.lang));
+          processProfilerData(artifacts.groups);
         } else if (newStatus == 'FAILED') {
           processFailure(getProfileStatus);
         } else if (newStatus !== 'COMPLETED') {
@@ -423,6 +332,7 @@ const KubernetesPodProfiler: React.FC<KubernetesPodProfilerProps> = ({ accountId
       return;
     } // Disable reset in read-only mode
 
+    setDetectedLang('');
     setProfilerState({
       svgData: [],
       txtData: [],
@@ -590,6 +500,7 @@ const KubernetesPodProfiler: React.FC<KubernetesPodProfilerProps> = ({ accountId
                 value={selectLang}
                 onSelect={(event: any) => {
                   resetData();
+                  langPickedRef.current = true;
                   setSelectLang(event.target.value);
                 }}
                 size='sm'
@@ -655,6 +566,11 @@ const KubernetesPodProfiler: React.FC<KubernetesPodProfilerProps> = ({ accountId
           )}
           {!readOnlyMode && !selectLang && (
             <Typography sx={{ color: 'var(--ds-red-500)', pt: 'var(--ds-space-2)' }}>Please select a language first and click submit.</Typography>
+          )}
+          {!readOnlyMode && selectLang === AUTO_DETECT_LANGUAGE && detectedLang && !profilerState.isLoading && (
+            <Typography sx={{ pt: 'var(--ds-space-2)' }}>
+              {`Detected language: ${LANGUAGE_OPTIONS.find((option) => option.value === detectedLang)?.label || detectedLang}`}
+            </Typography>
           )}
           <Box sx={{ mt: 'var(--ds-space-5)' }}>{renderContent()}</Box>
         </ListingLayout.Body>

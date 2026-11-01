@@ -102,6 +102,16 @@ type Config struct {
 		} `mapstructure:"redis"`
 	} `mapstructure:"cache"`
 
+	MCP struct {
+		// SessionStore selects where direct-mode MCP sessions are kept: "redis"
+		// (the default; shared by all relay pods, so a chat keeps one session
+		// whichever pod serves it) or "memory" (per pod; only for an install
+		// without Redis, and only correct with one relay pod). Uses the
+		// cache.redis connection settings. Env: MCP_SESSION_STORE. See
+		// docs/mcp-sessions.md.
+		SessionStore string `mapstructure:"session_store"`
+	} `mapstructure:"mcp"`
+
 	Workspace struct {
 		// RELAY_WORKSPACE_SHELL_IMAGE - image used for pod_script_run_enricher jobs
 		ShellImage string `mapstructure:"shell_image"`
@@ -189,6 +199,7 @@ func Load() (*Config, error) {
 	_ = v.BindEnv("cache.redis.port", "REDIS_SERVER_PORT")
 	_ = v.BindEnv("cache.redis.username", "REDIS_USER_NAME")
 	_ = v.BindEnv("cache.redis.password", "REDIS_USER_PASSWORD")
+	_ = v.BindEnv("mcp.session_store", "MCP_SESSION_STORE")
 	// 4) Defaults
 	v.SetDefault("security.secret_key", "")
 
@@ -229,6 +240,7 @@ func Load() (*Config, error) {
 	v.SetDefault("cache.redis.port", 6379)
 	v.SetDefault("cache.redis.username", "")
 	v.SetDefault("cache.redis.password", "")
+	v.SetDefault("mcp.session_store", "redis")
 
 	v.SetDefault("otel_service_name", SERVICE_NAME)
 	v.SetDefault("otel_exporter", "console")

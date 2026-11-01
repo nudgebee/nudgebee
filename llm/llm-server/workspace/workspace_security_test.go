@@ -71,6 +71,9 @@ func TestWorkspaceWritableLayout(t *testing.T) {
 		{Name: "runtime-home", MountPath: "/home/appuser"},
 		{Name: "workspace-storage", MountPath: "/tmp/code-analysis"},
 	}, mounts)
+	// All three share the pod's one storage budget; the pod is told so it can
+	// measure them together.
+	require.Equal(t, "/tmp:/home/appuser:/tmp/code-analysis", workspaceStoragePaths(mounts))
 }
 
 func TestApplyWorkspaceSecurityDefaultsPreservesUnrelatedContainerSettings(t *testing.T) {

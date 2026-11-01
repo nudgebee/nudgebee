@@ -115,8 +115,11 @@ func TestSyncWithBaseUpToDateIsNoOp(t *testing.T) {
 	before := strings.TrimSpace(baseSyncGit(t, clone, "rev-parse", "HEAD"))
 	sync := a.syncWithBase("main", "feature")
 
-	if sync.merged || sync.conflicted {
+	if sync.merged || sync.conflicted || sync.preMergeHead != "" {
 		t.Fatalf("expected no merge on an up-to-date branch, got %+v", sync)
+	}
+	if !a.undoLocalBaseMerge(sync) {
+		t.Fatal("undoing a merge that never happened must be a no-op, not a failure")
 	}
 	if sync.behindBy != 0 {
 		t.Fatalf("expected behindBy=0, got %d", sync.behindBy)
@@ -126,49 +129,57 @@ func TestSyncWithBaseUpToDateIsNoOp(t *testing.T) {
 	}
 }
 
-// The core case: base moved, the merge is clean, and the merge commit must
-// reach the remote. A local-only merge is the #36634 failure mode and must not
-// be reported as merged.
-func TestSyncWithBaseCleanMergePushes(t *testing.T) {
+// The core case: base moved and the merge is clean. The merge commit must stay
+// in the workspace, where the superseded check reads it, and must never reach
+// the remote: pushing it re-ran CI on every followup and, on a repository that
+// allows one commit per PR, broke that rule on every run (#39995).
+func TestSyncWithBaseCleanMergeIsNeverPushed(t *testing.T) {
 	origin, clone := baseSyncFixture(t)
 	advanceBase(t, origin, "untouched.txt", "stable\nplus base work\n", "base moves on")
 
 	a := newBaseSyncAgent(clone)
 	a.ensureBaseRefFetched("main")
+	prHead := strings.TrimSpace(baseSyncGit(t, clone, "rev-parse", "HEAD"))
 
 	sync := a.syncWithBase("main", "feature")
 
-	if !sync.merged {
-		t.Fatalf("expected a clean merge, got %+v", sync)
-	}
-	if sync.conflicted {
-		t.Fatal("clean merge must not report conflicts")
+	if sync.merged || sync.conflicted {
+		t.Fatalf("a clean merge is neither pushed nor conflicted, got %+v", sync)
 	}
 	if sync.behindBy != 1 {
 		t.Fatalf("expected behindBy=1, got %d", sync.behindBy)
 	}
-	if sync.commitHash == "" {
-		t.Fatal("expected a commit hash for the merge")
+	if sync.preMergeHead != prHead {
+		t.Fatalf("expected preMergeHead=%s, got %q", prHead, sync.preMergeHead)
 	}
-
-	// The merge must actually be on the remote, not just local.
-	if !a.headPushedToRemote(sync.commitHash, "feature") {
-		t.Fatal("merge commit did not reach the remote")
+	// The remote PR branch is exactly where it was.
+	if !a.headPushedToRemote(prHead, "feature") {
+		t.Fatal("the remote PR branch moved — a clean base merge must not be pushed")
 	}
-	// And it must be a real merge commit (two parents), not a fast-forward or
-	// a squash — the PR's own commit has to survive.
+	// The workspace holds a real merge commit (two parents) carrying the base
+	// content, which is what makes the PR head a descendant of base for the
+	// superseded check.
 	parents := strings.Fields(baseSyncGit(t, clone, "rev-list", "--parents", "-n", "1", "HEAD"))
 	if len(parents) != 3 {
-		t.Fatalf("expected a merge commit with two parents, got %d parent(s): %v", len(parents)-1, parents)
+		t.Fatalf("expected a local merge commit with two parents, got %d parent(s): %v", len(parents)-1, parents)
 	}
-	// Base content must now be present on the PR branch.
-	got := baseSyncGit(t, clone, "show", "HEAD:untouched.txt")
-	if !strings.Contains(got, "plus base work") {
-		t.Fatalf("base content missing after merge: %q", got)
+	if got := baseSyncGit(t, clone, "show", "HEAD:untouched.txt"); !strings.Contains(got, "plus base work") {
+		t.Fatalf("base content missing from the local merge: %q", got)
 	}
-	// No merge left dangling.
+
+	// Undoing it puts the workspace back on the PR's own head with nothing left
+	// over, so nothing the agent pushes afterwards can carry the merge commit.
+	if !a.undoLocalBaseMerge(sync) {
+		t.Fatal("failed to undo the local base merge")
+	}
+	if after := strings.TrimSpace(baseSyncGit(t, clone, "rev-parse", "HEAD")); after != prHead {
+		t.Fatalf("workspace HEAD is %s after the undo, want the PR head %s", after, prHead)
+	}
+	if status := strings.TrimSpace(baseSyncGit(t, clone, "status", "--porcelain")); status != "" {
+		t.Fatalf("workspace is dirty after the undo: %q", status)
+	}
 	if a.mergeInProgress() {
-		t.Fatal("merge should be complete, not in progress")
+		t.Fatal("no merge should be in progress after the undo")
 	}
 }
 
@@ -349,8 +360,14 @@ func TestFinalizeMergeAbortsWhenConflictsRemain(t *testing.T) {
 // merge, leaving the PR as stuck as before.
 func TestFinalizeMergeCommitsMoreFilesThanAutoCommitCap(t *testing.T) {
 	origin, clone := baseSyncFixture(t)
+	baseSyncGit(t, clone, "config", "user.email", "t@t")
+	baseSyncGit(t, clone, "config", "user.name", "t")
+	baseSyncWrite(t, clone, "shared.txt", "line one\npr edit\n")
+	baseSyncGit(t, clone, "commit", "-qam", "pr edits shared file")
+	baseSyncGit(t, clone, "push", "-q", "origin", "feature")
 
-	// Move base by far more files than the auto-commit cap allows.
+	// Move base by far more files than the auto-commit cap allows, and conflict
+	// on one of them: only a conflicted merge is ever pushed.
 	fileCount := autoCommitMaxFiles * 3
 	root := t.TempDir()
 	work := filepath.Join(root, "advance")
@@ -358,6 +375,7 @@ func TestFinalizeMergeCommitsMoreFilesThanAutoCommitCap(t *testing.T) {
 	for i := range fileCount {
 		baseSyncWrite(t, work, fmt.Sprintf("bulk/file_%02d.txt", i), fmt.Sprintf("base content %d\n", i))
 	}
+	baseSyncWrite(t, work, "shared.txt", "line one\nbase edit\n")
 	baseSyncGit(t, work, "add", ".")
 	baseSyncGit(t, work, "commit", "-qm", "large base change")
 	baseSyncGit(t, work, "push", "-q", "origin", "main")
@@ -365,11 +383,17 @@ func TestFinalizeMergeCommitsMoreFilesThanAutoCommitCap(t *testing.T) {
 	a := newBaseSyncAgent(clone)
 	a.ensureBaseRefFetched("main")
 
-	sync := a.syncWithBase("main", "feature")
-	if !sync.merged {
-		t.Fatalf("a large but clean base merge must still land, got %+v", sync)
+	if sync := a.syncWithBase("main", "feature"); !sync.conflicted {
+		t.Fatalf("fixture did not conflict: %+v", sync)
 	}
-	if !a.headPushedToRemote(sync.commitHash, "feature") {
+	baseSyncWrite(t, clone, "shared.txt", "line one\npr edit\nbase edit\n")
+	baseSyncGit(t, clone, "add", "shared.txt")
+
+	committed, head := a.finalizeMerge("feature")
+	if !committed {
+		t.Fatal("a large resolved base merge must still land")
+	}
+	if !a.headPushedToRemote(head, "feature") {
 		t.Fatal("large merge did not reach the remote")
 	}
 	// Every base file must be present — proof nothing was discarded by a cap.
@@ -522,7 +546,7 @@ func TestBuildSystemPromptConflictSection(t *testing.T) {
 		conflictFiles: []string{"api/server.go", "pkg/util/helper.go"},
 	}
 
-	prompt := a.buildSystemPrompt("o/r", "12", "", "", "", "", nil, "main", sync)
+	prompt := a.buildSystemPrompt("o/r", "12", "", "", "", "", nil, "main", sync, "")
 
 	for _, want := range []string{
 		"Merge conflicts with main",
@@ -537,7 +561,7 @@ func TestBuildSystemPromptConflictSection(t *testing.T) {
 	}
 
 	// And no conflict section at all when the merge was clean.
-	clean := a.buildSystemPrompt("o/r", "12", "", "", "", "", nil, "main", baseSyncResult{merged: true})
+	clean := a.buildSystemPrompt("o/r", "12", "", "", "", "", nil, "main", baseSyncResult{behindBy: 4, preMergeHead: "abc123"}, "")
 	if strings.Contains(clean, "Merge conflicts with") {
 		t.Error("clean merge must not emit a conflict section")
 	}

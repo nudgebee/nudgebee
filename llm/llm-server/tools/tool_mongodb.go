@@ -110,7 +110,8 @@ func (m MongoDBTool) Call(nbRequestContext core.NbToolContext, input core.NBTool
 		return core.NBToolResponse{}, fmt.Errorf("no MongoDB integration configured for %s, please configure a MongoDB proxy integration", m.Name())
 	}
 
-	data, err := executeMongoViaProxyAgent(nbRequestContext, m.op().action, nbRequestContext.AccountId)
+	// The account the call reads: another account's MongoDB is relayed there.
+	data, err := executeMongoViaProxyAgent(nbRequestContext, m.op().action, nbRequestContext.DataAccountID())
 	if err != nil {
 		// Propagate the forager error message so the LLM can act on it
 		// (unreachable host, auth failure, etc.) — mirrors parseProxySSHResponse.

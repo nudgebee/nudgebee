@@ -516,22 +516,33 @@ class MSTeamsSettings(BaseSettings):
         "",
         validation_alias=AliasChoices("MS_TEAMS_BOT_ENDPOINT", "ms_teams_bot_endpoint"),
     )
+    # Home tenant of a SingleTenant Azure Bot. Empty for a MultiTenant bot.
+    bot_tenant_id: str = Field(
+        "",
+        validation_alias=AliasChoices("MS_TEAMS_BOT_TENANT_ID", "ms_teams_bot_tenant_id"),
+    )
+    # Signs the data carried by buttons on Teams cards. When unset, cards are
+    # sent without action buttons.
+    action_signing_key: str = Field(
+        "",
+        validation_alias=AliasChoices("MS_TEAMS_ACTION_SIGNING_KEY", "ms_teams_action_signing_key"),
+    )
+    # Chat: a "Thinking…" message updated with Nubi's steps until the answer
+    # replaces it, and answers rendered as cards. Each falls back to plain
+    # text replies when off.
+    thinking_steps_enabled: bool = Field(
+        True,
+        validation_alias=AliasChoices("MS_TEAMS_THINKING_STEPS_ENABLED", "ms_teams_thinking_steps_enabled"),
+    )
+    answer_cards_enabled: bool = Field(
+        True,
+        validation_alias=AliasChoices("MS_TEAMS_ANSWER_CARDS_ENABLED", "ms_teams_answer_cards_enabled"),
+    )
     # Path matches the Next.js callback route at /api/integrations/ms-teams/callback
     redirect_path: str = "/api/integrations/ms-teams/callback"
-    scopes: List[str] = [
-        "User.ReadBasic.All",
-        "User.Read.All",
-        "Team.ReadBasic.All",
-        "Channel.ReadBasic.All",
-        "Channel.Create",
-        "ChannelMessage.Send",
-        "Chat.Create",
-        "Chat.ReadWrite",
-        "ChatMessage.Send",
-    ]
-    max_rate_limit_retries: int = Field(
-        2, validation_alias=AliasChoices("MS_TEAMS_MAX_RATE_LIMIT_RETRIES", "ms_teams_max_rate_limit_retries")
-    )
+    # The bot sends with its own credentials, so Connect only needs the signed-in
+    # user's own profile, to learn which Microsoft tenant is connecting.
+    scopes: List[str] = ["User.Read"]
 
     model_config = SettingsConfigDict(env_prefix="", env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -653,12 +664,6 @@ class NotificationSettings(BaseSettings):
         validation_alias=AliasChoices("NOTIFICATIONS_DELAY_IN_SECONDS", "notifications_delay_in_seconds"),
         description="Delay in milliseconds",
     )
-    enable_batched: bool = Field(
-        False, validation_alias=AliasChoices("ENABLE_BATCHED_NOTIFICATIONS", "enable_batched_notifications")
-    )
-    enable_incident_channel_reply: bool = Field(
-        True, validation_alias=AliasChoices("ENABLE_INCIDENT_CHANNEL_REPLY", "enable_incident_channel_reply")
-    )
     # Global kill switch for Nubi channel awareness; per-tenant enablement is the
     # CHANNEL_AWARENESS feature flag, so nothing activates on this default alone.
     channel_awareness_enabled: bool = Field(
@@ -741,6 +746,11 @@ class NotificationSettings(BaseSettings):
     grouped_redis_ttl_seconds: int = Field(
         3900, validation_alias=AliasChoices("GROUPED_REDIS_TTL_SECONDS", "grouped_redis_ttl_seconds")
     )
+    # An anomaly that clears joins the next grouped anomaly digest, in a
+    # "Resolved" section. Off: its resolve looks for a Slack thread, as before.
+    digest_resolved_enabled: bool = Field(
+        False, validation_alias=AliasChoices("DIGEST_RESOLVED_ENABLED", "digest_resolved_enabled")
+    )
     event_cache_ttl_seconds: int = Field(
         7200,
         gt=0,
@@ -749,7 +759,11 @@ class NotificationSettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="", env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    @field_validator("enable_batched", "enable_incident_channel_reply", "channel_awareness_enabled", mode="before")
+    @field_validator(
+        "channel_awareness_enabled",
+        "digest_resolved_enabled",
+        mode="before",
+    )
     @classmethod
     def parse_bool(cls, v):
         """Parse boolean values from environment variables."""
@@ -903,7 +917,6 @@ GOOGLE_CHAT_REDIRECT_URI = settings.google_chat_redirect_uri
 GOOGLE_AUTH_URL = settings.google_chat.auth_url
 TRACE_INCOMING_REQUESTS = settings.trace_incoming_requests
 RELAY_SERVER_SECRET_KEY = settings.relay_server_secret_key
-SCOPE = settings.ms_teams.scopes
 
 # Cache settings
 CACHE_EXPIRATION_MINUTES = settings.redis.cache_expiration_minutes
@@ -916,8 +929,6 @@ REDIS_USER_PASSWORD = settings.redis.password
 
 # Notification settings
 NOTIFICATIONS_DELAY_IN_SECONDS = settings.notifications.delay_ms
-ENABLE_BATCHED_NOTIFICATIONS = settings.notifications.enable_batched
-ENABLE_INCIDENT_CHANNEL_REPLY = settings.notifications.enable_incident_channel_reply
 
 # Slack settings
 SLACK_AUTH_TYPE = settings.slack.auth_type

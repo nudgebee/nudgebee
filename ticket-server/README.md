@@ -27,7 +27,6 @@ Integration credentials are **not** environment variables — they're stored per
 
 - Go 1.22+
 - A reachable Postgres (primary DB)
-- A reachable ClickHouse only if your changes touch ticket-event analytics; defaults to localhost / fallback values otherwise
 - Redis only if `CACHE_PROVIDER=redis` — defaults to in-memory cache
 
 ## Quickstart
@@ -76,13 +75,12 @@ All routes are mounted under `/tickets` (Gin route group). Common shapes:
 | `POST /tickets/rpc/acknowledge` / `escalate` / `resolve` / `assign` / `transition` / `update` | State transitions on an existing ticket |
 | `POST /tickets/rpc/test-connection` | Validate a candidate integration's credentials                         |
 
-Endpoints prefixed with `/tickets/rpc/` are called by other backend services and require the `X-ACTION-TOKEN` header (value = `ACTION_API_SERVER_TOKEN`).
+Endpoints prefixed with `/tickets/rpc/` are called by other backend services.
 
 ### Example: create a ticket (service-to-service)
 
 ```bash
 curl -X POST http://localhost:8080/tickets/rpc/create-ticket \
-  -H "X-ACTION-TOKEN: $ACTION_API_SERVER_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "tenant_id": "<uuid>",
@@ -110,8 +108,7 @@ Configuration is read via [viper](https://github.com/spf13/viper) — environmen
 
 | Variable                          | Default         | Purpose                                                       |
 |-----------------------------------|-----------------|---------------------------------------------------------------|
-| `ACTION_API_SERVER_TOKEN`         | _empty_         | Shared secret for `/tickets/rpc/*` callers                     |
-| `ACTION_API_SERVER_TOKEN_HEADER`  | `X-ACTION-TOKEN`| Header name for that token                                     |
+| `ACTION_API_SERVER_TOKEN`         | _empty_         | Sent as `X-ACTION-TOKEN` on access checks to services-server   |
 | `SERVICE_API_SERVER_URL`          | `http://services-server:8000` | Upstream services-server URL for callbacks       |
 
 ### Runtime
@@ -119,7 +116,6 @@ Configuration is read via [viper](https://github.com/spf13/viper) — environmen
 | Variable                  | Default        | Purpose                                              |
 |---------------------------|----------------|------------------------------------------------------|
 | `PORT`                    | `8080`         | HTTP port                                             |
-| `ENV`                     | `production`   | Runtime profile                                       |
 
 ### GitHub App (only if using runbook-driven GitHub PRs)
 
@@ -127,15 +123,6 @@ Configuration is read via [viper](https://github.com/spf13/viper) — environmen
 |-----------------------|--------------------------------------------------|
 | `GITHUB_APP_ID`       | GitHub App ID                                     |
 | `GITHUB_PRIVATE_KEY`  | GitHub App private key (PEM)                      |
-
-### ClickHouse (analytics — optional)
-
-| Variable              | Default                  |
-|-----------------------|--------------------------|
-| `CLICKHOUSE_HOST`     | `http://localhost:8123`  |
-| `CLICKHOUSE_USER`     | `default`                |
-| `CLICKHOUSE_PASSWORD` | `default`                |
-| `CLICKHOUSE_DATABASE` | `nudgebee`               |
 
 ### Cache (`/tickets/create-meta` field-schema cache)
 
@@ -154,10 +141,6 @@ Configuration is read via [viper](https://github.com/spf13/viper) — environmen
 
 | Variable                | Default                          | Purpose                                  |
 |-------------------------|----------------------------------|------------------------------------------|
-| `ETL_SERVER_ENDPOINT`   | `http://localhost:5000`          | ETL pipeline URL                         |
-| `ETL_SERVER_TOKEN`      | _empty_                          | ETL auth token                           |
-| `ML_SERVICE_URL`        | `http://localhost:9000`          | ML inference URL                         |
-| `GPT_TOKEN` / `OPENAI_ENDPOINT` / `GPT_MODEL` | `default` / `https://api.openai.com/v1` / `gpt-3.5-turbo` | LLM-assisted ticket enrichment |
 | `OTEL_*`                | various                          | OpenTelemetry tracing — see `otel.go`     |
 
 For the complete list, see [`common/config.go`](common/config.go).

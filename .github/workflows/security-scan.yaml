@@ -1,11 +1,16 @@
 name: Image Security Scan
 
-# Trivy vulnerability scan of every first-party image this repo publishes
+# Grype vulnerability scan of every first-party image this repo publishes
 # (`scan` job) plus the third-party images deployed alongside nudgebee
 # (`scan-deployed` job, Phase 2 — always report-only).
 # Part of the image-hardening program — see docs/security/image-hardening.md.
 #
-# Ratchet model: we gate on FIXABLE CRITICAL/HIGH/MEDIUM only (--ignore-unfixed),
+# Grype, not Trivy: customers scan our images with Grype, and it also matches
+# binaries that were not installed by the OS package manager (e.g. the
+# source-built curl in curlimages/curl, Chrome bundled by Playwright), which
+# Trivy does not see. Scanning with the same tool means our numbers match theirs.
+#
+# Ratchet model: we gate on FIXABLE CRITICAL/HIGH/MEDIUM only (fix.state=fixed),
 # because ~389 baseline findings live in Debian/UBI9/Ubuntu base-OS packages that
 # upstream has not patched yet (those are chased via base migration in Iter 3, not
 # a dependency bump). Un-fixable findings must never be able to keep CI red.
@@ -79,37 +84,41 @@ jobs:
         id: ns
         run: echo "namespace=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install Trivy
+      - name: Install Grype
         env:
-          TRIVY_VERSION: '0.72.0'
+          GRYPE_VERSION: '0.121.0'
         run: |
           set -euo pipefail
-          curl -sfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" -o /tmp/trivy.tgz
-          sudo tar -C /usr/local/bin -xzf /tmp/trivy.tgz trivy
-          trivy --version
+          base="https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}"
+          tgz="grype_${GRYPE_VERSION}_linux_amd64.tar.gz"
+          curl -sfL "$base/$tgz" -o "/tmp/$tgz"
+          curl -sfL "$base/grype_${GRYPE_VERSION}_checksums.txt" -o /tmp/grype_checksums.txt
+          (cd /tmp && grep " $tgz\$" grype_checksums.txt | sha256sum -c -)
+          sudo tar -C /usr/local/bin -xzf "/tmp/$tgz" grype
+          grype version
 
-      - name: Update Trivy vulnerability DB
+      - name: Update Grype vulnerability DB
         # Fetch the latest DB up front, with retries, so every scan runs against
-        # current advisories. Aqua republishes the DB roughly daily; combined with
+        # current advisories. Anchore republishes the DB daily; combined with
         # this workflow's daily schedule, newly-disclosed CVEs surface within ~a
         # day with no code change. Fail-closed: if the DB can't be fetched after
         # retries the job errors, rather than scanning against a stale/empty DB.
-        # The ghcr login above authenticates this pull, avoiding anonymous rate
-        # limits. Scans below run with --skip-db-update to reuse this exact DB.
+        # Scans below run with GRYPE_DB_AUTO_UPDATE=false to reuse this exact DB.
         run: |
           set -euo pipefail
           n=0
-          until trivy image --download-db-only; do
+          until grype db update; do
             n=$((n + 1))
-            if [ "$n" -ge 3 ]; then echo "::error::Trivy DB download failed after $n attempts"; exit 1; fi
+            if [ "$n" -ge 3 ]; then echo "::error::Grype DB download failed after $n attempts"; exit 1; fi
             echo "DB download attempt $n failed; retrying in 15s..."; sleep 15
           done
+          grype db status
 
       - name: Scan ${{ matrix.image }}:${{ matrix.tag || github.event.inputs.tag || 'edge' }}
         env:
@@ -121,35 +130,25 @@ jobs:
           set -euo pipefail
           echo "Scanning $IMAGE_REF"
 
-          # Full table (all severities) for the log; JSON for counting.
-          # --skip-db-update: reuse the DB fetched in the step above (already
-          # current) instead of re-downloading per scan.
-          trivy image --scanners vuln --severity CRITICAL,HIGH,MEDIUM \
-            --skip-db-update --format table "$IMAGE_REF" || true
+          # One scan, two outputs: full table (all severities) for the log,
+          # JSON for counting. `registry:` pulls straight from ghcr using the
+          # login above, no docker daemon pull. GRYPE_DB_AUTO_UPDATE=false
+          # reuses the DB fetched in the step above.
+          GRYPE_DB_AUTO_UPDATE=false grype "registry:$IMAGE_REF" \
+            -o table -o json=result.json
 
-          trivy image --scanners vuln --severity CRITICAL,HIGH,MEDIUM \
-            --skip-db-update --format json -o result.json "$IMAGE_REF"
-
-          # Count fixable (has FixedVersion) vs unfixable, per severity.
-          python3 - "$IMAGE_REF" <<'PY' | tee counts.env
-          import json, sys, os
+          # Count fixable C/H/M for the gate. The per-image counts are reported
+          # once, as a single table, by the `summary` job below.
+          python3 - <<'PY' | tee counts.env
+          import json
           d = json.load(open("result.json"))
-          fx = {"CRITICAL":0,"HIGH":0,"MEDIUM":0}
-          nf = {"CRITICAL":0,"HIGH":0,"MEDIUM":0}
-          for r in d.get("Results") or []:
-              for v in r.get("Vulnerabilities") or []:
-                  s = v.get("Severity")
-                  if s not in fx: continue
-                  (fx if v.get("FixedVersion") else nf)[s] += 1
-          fixable_total = sum(fx.values())
-          ref = sys.argv[1]
-          print(f"FIXABLE_TOTAL={fixable_total}")
-          summary = os.environ["GITHUB_STEP_SUMMARY"]
-          with open(summary, "a") as f:
-              f.write(f"### `{ref}`\n\n")
-              f.write("| | CRITICAL | HIGH | MEDIUM |\n|---|---|---|---|\n")
-              f.write(f"| **fixable** | {fx['CRITICAL']} | {fx['HIGH']} | {fx['MEDIUM']} |\n")
-              f.write(f"| unfixable (no upstream patch) | {nf['CRITICAL']} | {nf['HIGH']} | {nf['MEDIUM']} |\n\n")
+          n = 0
+          for m in d.get("matches") or []:
+              v = m["vulnerability"]
+              if (v.get("severity") or "").upper() in ("CRITICAL", "HIGH", "MEDIUM") \
+                      and (v.get("fix") or {}).get("state") == "fixed":
+                  n += 1
+          print(f"FIXABLE_TOTAL={n}")
           PY
 
           # shellcheck disable=SC1091
@@ -165,7 +164,7 @@ jobs:
       # (parallel, reliable) instead of scanning large images locally.
       - name: Upload scan JSON
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           # Tag suffix only for the pinned-tag entries, so the `edge` artifacts
           # keep their existing `scan-<image>` names. Without it the two
@@ -192,13 +191,13 @@ jobs:
       matrix:
         ref:
           # --- ghcr.io/nudgebee infra mirrors (current values.yaml pins) ---
-          - ghcr.io/nudgebee/postgresql:16.1.0-debian-11-r16-nb1
-          - ghcr.io/nudgebee/postgres:16.10-alpine-nb2
-          - ghcr.io/nudgebee/redis:7.0.12-debian-11-r0-nb2
-          - ghcr.io/nudgebee/rabbitmq:3.13.7-debian-12-r5-nb1
-          - ghcr.io/nudgebee/postgres-exporter:v0.20.1-nb1
-          - ghcr.io/nudgebee/nginx:stable-alpine3.20-slim-nb1
-          - ghcr.io/nudgebee/kubewatch:2.14.1-nb.2
+          - ghcr.io/nudgebee/postgres:16.15-trixie-nb1
+          - ghcr.io/nudgebee/postgres:16.15-alpine-nb1
+          - ghcr.io/nudgebee/redis:7.2.17-alpine
+          - ghcr.io/nudgebee/rabbitmq:4.2.9-management-alpine
+          - ghcr.io/nudgebee/postgres-exporter:v0.20.1-nb2
+          - ghcr.io/nudgebee/nginx:stable-alpine3.24-slim-nb1
+          - ghcr.io/nudgebee/kubewatch:2.14.1-nb.3
           # --- genuinely third-party, pulled from our ghcr clones ---
           # These are the refs the chart actually deploys: values.yaml points
           # temporal.{server,admintools}.image.repository at ghcr.io/nudgebee/*,
@@ -208,52 +207,57 @@ jobs:
           # silently keep reporting on whatever it was pinned to here.
           # temporal-ui not scanned: the Web UI is disabled in the chart (cloned
           # so re-enabling needs no Docker Hub pull, but nothing deploys it).
-          - ghcr.io/nudgebee/qdrant:v1.19.0
-          - ghcr.io/nudgebee/temporal-server:1.31.2
-          - ghcr.io/nudgebee/temporal-admin-tools:1.31.2
+          - ghcr.io/nudgebee/qdrant:v1.19.2-nb1
+          - ghcr.io/nudgebee/temporal-server:1.31.4-nb1
+          - ghcr.io/nudgebee/temporal-admin-tools:1.31.4-nb1
           # --- init / helper images the service charts mount ---
           # global.initImages.curl, global.testImage, and rag-server's
           # .Values.migrationHookImage. Small, but they run in-cluster and were
           # never measured.
-          - ghcr.io/nudgebee/curl:8.10.1
+          - ghcr.io/nudgebee/curl:8.23.0
           - ghcr.io/nudgebee/busybox:1.37.0
-          - ghcr.io/nudgebee/alpine-k8s:1.32.13
+          - ghcr.io/nudgebee/kubectl:1.32.13-nb1
           # --- first-party agents / sidecars built in sibling repos ---
           # Measured here so the daily scan covers the whole deployed surface;
           # fixes land in the k8s-agent / node-agent / forager repos and these
           # refs are bumped on their releases.
-          - ghcr.io/nudgebee/nudgebee-agent:2026-07-21T10-40-18_0ef355a8e27b98e6b54414c6609c527a3ef65159
-          - ghcr.io/nudgebee/application-profiler-bpf:4f4b455
-          - ghcr.io/nudgebee/node-agent:0.1.4
-          - ghcr.io/nudgebee/forager:0.1.2
+          - ghcr.io/nudgebee/nudgebee-agent:2026-11-01T06-36-55_f94ccaa1bf84f6288ffa7b0b86a7721ef67f7fae
+          - ghcr.io/nudgebee/application-profiler-bpf:d4dc1b8
+          - ghcr.io/nudgebee/node-agent:0.1.13
+          - ghcr.io/nudgebee/forager:0.1.5
           # --- agent-chart runtime dependencies (clickhouse mirror + otel) ---
           - ghcr.io/nudgebee/clickhouse:24.12.4-debian-12-r0-nb-3
-          - ghcr.io/nudgebee/opentelemetry-collector-contrib:0.157.0
+          - ghcr.io/nudgebee/opentelemetry-collector-contrib:0.164.0
     steps:
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install Trivy
+      - name: Install Grype
         env:
-          TRIVY_VERSION: '0.72.0'
+          GRYPE_VERSION: '0.121.0'
         run: |
           set -euo pipefail
-          curl -sfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" -o /tmp/trivy.tgz
-          sudo tar -C /usr/local/bin -xzf /tmp/trivy.tgz trivy
-          trivy --version
+          base="https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}"
+          tgz="grype_${GRYPE_VERSION}_linux_amd64.tar.gz"
+          curl -sfL "$base/$tgz" -o "/tmp/$tgz"
+          curl -sfL "$base/grype_${GRYPE_VERSION}_checksums.txt" -o /tmp/grype_checksums.txt
+          (cd /tmp && grep " $tgz\$" grype_checksums.txt | sha256sum -c -)
+          sudo tar -C /usr/local/bin -xzf "/tmp/$tgz" grype
+          grype version
 
-      - name: Update Trivy vulnerability DB
+      - name: Update Grype vulnerability DB
         run: |
           set -euo pipefail
           n=0
-          until trivy image --download-db-only; do
+          until grype db update; do
             n=$((n + 1))
-            if [ "$n" -ge 3 ]; then echo "::error::Trivy DB download failed after $n attempts"; exit 1; fi
+            if [ "$n" -ge 3 ]; then echo "::error::Grype DB download failed after $n attempts"; exit 1; fi
             echo "DB download attempt $n failed; retrying in 15s..."; sleep 15
           done
+          grype db status
 
       - name: Scan ${{ matrix.ref }} (report-only)
         env:
@@ -262,29 +266,9 @@ jobs:
           set -euo pipefail
           echo "Scanning $IMAGE_REF (report-only — upstream-owned)"
 
-          trivy image --scanners vuln --severity CRITICAL,HIGH,MEDIUM \
-            --skip-db-update --format table "$IMAGE_REF" || true
-
-          trivy image --scanners vuln --severity CRITICAL,HIGH,MEDIUM \
-            --skip-db-update --format json -o result.json "$IMAGE_REF"
-
-          python3 - "$IMAGE_REF" <<'PY'
-          import json, sys, os
-          d = json.load(open("result.json"))
-          fx = {"CRITICAL":0,"HIGH":0,"MEDIUM":0}
-          nf = {"CRITICAL":0,"HIGH":0,"MEDIUM":0}
-          for r in d.get("Results") or []:
-              for v in r.get("Vulnerabilities") or []:
-                  s = v.get("Severity")
-                  if s not in fx: continue
-                  (fx if v.get("FixedVersion") else nf)[s] += 1
-          ref = sys.argv[1]
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
-              f.write(f"### `{ref}` (report-only)\n\n")
-              f.write("| | CRITICAL | HIGH | MEDIUM |\n|---|---|---|---|\n")
-              f.write(f"| **fixable** | {fx['CRITICAL']} | {fx['HIGH']} | {fx['MEDIUM']} |\n")
-              f.write(f"| unfixable | {nf['CRITICAL']} | {nf['HIGH']} | {nf['MEDIUM']} |\n\n")
-          PY
+          # Counts are reported by the `summary` job from the uploaded JSON.
+          GRYPE_DB_AUTO_UPDATE=false grype "registry:$IMAGE_REF" \
+            -o table -o json=result.json
 
       - name: Sanitize artifact name
         id: an
@@ -292,8 +276,74 @@ jobs:
 
       - name: Upload scan JSON
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: scan-deployed-${{ steps.an.outputs.name }}
           path: result.json
           retention-days: 14
+
+  # One table for the whole run, so nobody has to scroll ~37 per-image
+  # sections. Built from the per-image JSON artifacts uploaded above; the full
+  # per-CVE tables stay in each scan job's log and in those artifacts.
+  summary:
+    needs: [scan, scan-deployed]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: scan-*
+          path: scans
+
+      - name: Write summary table
+        env:
+          SCAN_RESULT: ${{ needs.scan.result }}
+          DEPLOYED_RESULT: ${{ needs.scan-deployed.result }}
+        run: |
+          python3 - scans <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, os, sys
+          from pathlib import Path
+
+          SEV = ("CRITICAL", "HIGH", "MEDIUM")
+          rows = {"first-party": [], "deployed": []}
+          for f in sorted(Path(sys.argv[1]).glob("*/result.json")):
+              d = json.load(open(f))
+              ref = ((d.get("source") or {}).get("target") or {}).get("userInput") or f.parent.name
+              fx = dict.fromkeys(SEV, 0)
+              nf = dict.fromkeys(SEV, 0)
+              for m in d.get("matches") or []:
+                  v = m["vulnerability"]
+                  s = (v.get("severity") or "").upper()
+                  if s not in fx: continue
+                  (fx if (v.get("fix") or {}).get("state") == "fixed" else nf)[s] += 1
+              kind = "deployed" if f.parent.name.startswith("scan-deployed-") else "first-party"
+              rows[kind].append((ref.removeprefix("registry:"), fx, nf))
+
+          def cell(n, bold):
+              return f"**{n}**" if bold and n else str(n)
+
+          print("## Image scan summary (Grype, CRITICAL/HIGH/MEDIUM)\n")
+          print(f"Gate: `{os.environ['GATE']}`. Sorted by fixable count, worst first. "
+                "Per-CVE detail: each scan job's log, or the `scan-*` JSON artifacts.\n")
+          titles = {"first-party": "First-party images", "deployed": "Deployed third-party / sibling-repo images (report-only)"}
+          for kind, title in titles.items():
+              r = sorted(rows[kind], key=lambda x: (tuple(-x[1][s] for s in SEV), x[0]))
+              print(f"### {title} ({len(r)})\n")
+              print("| Image | Fixable C | Fixable H | Fixable M | Unfixable C | Unfixable H | Unfixable M |")
+              print("|---|--:|--:|--:|--:|--:|--:|")
+              for ref, fx, nf in r:
+                  print(f"| `{ref}` | " + " | ".join(cell(fx[s], True) for s in SEV) + " | "
+                        + " | ".join(cell(nf[s], False) for s in SEV) + " |")
+              tf = {s: sum(x[1][s] for x in r) for s in SEV}
+              tn = {s: sum(x[2][s] for x in r) for s in SEV}
+              print("| **Total** | " + " | ".join(f"**{tf[s]}**" for s in SEV) + " | "
+                    + " | ".join(f"**{tn[s]}**" for s in SEV) + " |\n")
+
+          bad = {k: os.environ[v] for k, v in (("scan", "SCAN_RESULT"), ("scan-deployed", "DEPLOYED_RESULT"))
+                 if os.environ[v] != "success"}
+          if bad:
+              print("> [!WARNING]\n> Not every scan job succeeded ("
+                    + ", ".join(f"`{k}`: {v}" for k, v in bad.items())
+                    + "); images whose scan failed are missing from these tables.\n")
+          PY

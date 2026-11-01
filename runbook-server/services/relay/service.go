@@ -2,15 +2,33 @@ package relay
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"nudgebee/runbook/common"
 	"nudgebee/runbook/config"
+	"strings"
 	"time"
 )
 
+const errMsgAgentNotConnected = "agent not connected"
+
+func shouldCheckAgent(body ActionExecuteBody) bool {
+	if body.ActionName == "mcp_request" && body.ActionParams["connection_mode"] == "direct" {
+		return false
+	}
+	return body.AgentType == "" || strings.EqualFold(body.AgentType, k8sAgentType)
+}
+
 func ExecuteRelay(body ActionExecuteBody) (map[string]any, error) {
+	if shouldCheckAgent(body) {
+		if !AgentConnected(body.AccountID) {
+			slog.Debug("relay: skipping request, k8s agent not connected",
+				"account_id", body.AccountID, "action", body.ActionName)
+			return make(map[string]any), errors.New(errMsgAgentNotConnected)
+		}
+	}
 
 	relayRequest := RelayExecuteRequest{
 		Body:    body,

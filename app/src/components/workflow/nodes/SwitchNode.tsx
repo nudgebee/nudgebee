@@ -246,7 +246,7 @@ const SwitchNode = ({ id, data, isConnectable, selected, onAddFromHandle }: any)
             cursor: 'help',
           }}
         >
-          Server Error
+          Validation Error
         </div>
       )}
       <BaseNode

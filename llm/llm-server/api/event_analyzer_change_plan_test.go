@@ -2,6 +2,7 @@ package api
 
 import (
 	"testing"
+	"time"
 
 	"nudgebee/llm/agents"
 	"nudgebee/llm/services_server"
@@ -245,4 +246,17 @@ func TestBuildFixModeQuery(t *testing.T) {
 		assert.Contains(t, q, "- `a/b.go`:10-20")
 		assert.Contains(t, q, "implement the part that is missing")
 	})
+}
+
+func TestStaleEvidenceReason(t *testing.T) {
+	now := time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC)
+	ago := func(d time.Duration) *time.Time { ts := now.Add(-d); return &ts }
+	day := 24 * time.Hour
+
+	assert.Empty(t, staleEvidenceReason(ago(2*day), now, 7*day), "recent event")
+	assert.Empty(t, staleEvidenceReason(ago(7*day), now, 7*day), "exactly at the cutoff")
+	assert.Empty(t, staleEvidenceReason(nil, now, 7*day), "unknown start")
+	assert.Empty(t, staleEvidenceReason(ago(180*day), now, 0), "cutoff disabled")
+	// event eab45d8f: fired 2026-03-23, re-analysed 2026-09-22.
+	assert.Contains(t, staleEvidenceReason(ago(183*day), now, 7*day), "183 days ago")
 }

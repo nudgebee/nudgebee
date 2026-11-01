@@ -46,6 +46,12 @@ class ApplicationMetricsCard {
           const workloadAppType = resp.lang;
           const workloadDashboardName = resp?.dashboardName ?? '';
           const data = await getDashboardData(workloadAppType, workloadDashboardName);
+          if (data !== null) {
+            // The card charts a runtime dashboard; it has no figures of its own until it is opened.
+            this.insightData = [
+              { message: `${workloadAppType} runtime dashboard for ${workload}, from 1 hour before the alert to 10 minutes after`, severity: 'Info' },
+            ];
+          }
           return data !== null;
         } catch {
           return false;

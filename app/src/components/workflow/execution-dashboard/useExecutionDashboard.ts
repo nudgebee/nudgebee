@@ -125,6 +125,9 @@ export function useExecutionDashboard() {
   // Flipped by updateFilters / changePage. Gates the URL sync below so the
   // hook never writes to the URL on mount.
   const userChangedFiltersRef = useRef(false);
+  // Width of a relative ("last N") range, which Refresh slides forward to now;
+  // null for an absolute range, which Refresh leaves alone.
+  const liveSpanRef = useRef<number | null>(DEFAULT_RANGE_DAYS * DAY_MS);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -148,6 +151,7 @@ export function useExecutionDashboard() {
     // too so a link copied from that tab lands on the same accounts here.
     const repeatedAccount = router.query.account;
     const fromRepeated = (Array.isArray(repeatedAccount) ? repeatedAccount : [repeatedAccount]).filter(Boolean) as string[];
+    if (from || to) liveSpanRef.current = null;
     const queryAccounts = fromCsv(accountsParam).length ? fromCsv(accountsParam) : fromRepeated.length ? fromRepeated : fromCsv(accountId);
     setFilters((prev) => ({
       startDate: parseDate(from, prev.startDate),
@@ -418,9 +422,11 @@ export function useExecutionDashboard() {
   }, [tenantUserOptions, executions, filters.triggeredBy]);
 
   // Any filter change invalidates the cursor ledger and returns to page 1.
+  // `liveSpanMs` marks a new date range as relative (a picker shortcut).
   const updateFilters = useCallback(
-    (update: Partial<ExecutionDashboardFilters>) => {
+    (update: Partial<ExecutionDashboardFilters>, liveSpanMs?: number) => {
       userChangedFiltersRef.current = true;
+      if (update.endDate) liveSpanRef.current = liveSpanMs && liveSpanMs > 0 ? liveSpanMs : null;
       pageTokensRef.current = {};
       setPage(1);
       setFilters((prev) => ({ ...prev, ...update }));
@@ -452,7 +458,14 @@ export function useExecutionDashboard() {
 
   const refresh = useCallback(() => {
     pageTokensRef.current = {};
-    fetchExecutions();
+    const span = liveSpanRef.current;
+    if (span) {
+      // New dates change filterRequest, so the fetch effect reloads the table.
+      const now = Date.now();
+      setFilters((prev) => ({ ...prev, startDate: new Date(now - span), endDate: new Date(now) }));
+    } else {
+      fetchExecutions();
+    }
     fetchAggregate();
   }, [fetchExecutions, fetchAggregate]);
 

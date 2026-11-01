@@ -17,6 +17,7 @@ import { getBrandTitle } from '@hooks/useTenantBranding';
 import { reportContainsInvestigation } from '@utils/investigationReport';
 import AlertRuleChangeAction from './AlertRuleChangeAction';
 import { buildAlertRuleContext, isAlertRuleChangeApplied } from './remediationAlertRule';
+import { formatClockCompact } from '@shared/format/Datetime';
 
 const STATUS_META = {
   SUCCESS: { text: 'Success', tone: 'success' },
@@ -135,9 +136,7 @@ function formatThresholdContext(res) {
 
 // Human-readable timestamp for when an action was last applied; empty string if unparseable.
 function formatAppliedAt(value) {
-  if (!value) return '';
-  const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? '' : d.toLocaleString();
+  return formatClockCompact(value);
 }
 
 // Reasoning can arrive as an array of points or (defensively) a newline-separated string; normalize
@@ -369,11 +368,77 @@ CodeFixDetails.propTypes = {
   }),
 };
 
+// Where a required change is made, in the operator's words.
+const REQUIRED_CHANGE_WHERE = {
+  deployment_source: 'Deployment source (chart or GitOps values)',
+  code: 'Application code',
+  infrastructure: 'Infrastructure',
+  dependency: 'Dependency',
+  process: 'Process',
+};
+
+// A fix no command applies durably: the operator makes this change in its source.
+export function RequiredChangeDetails({ change }) {
+  const where = REQUIRED_CHANGE_WHERE[trimmedString(change?.where)] || 'Change required';
+  return (
+    <Box
+      sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)', fontSize: 'var(--ds-text-small)' }}
+      data-testid='remediation-required-change'
+    >
+      <Box sx={{ fontWeight: 'var(--ds-font-weight-medium)' }}>{`Change required — ${where}`}</Box>
+      {trimmedString(change?.target) ? <Box sx={{ color: 'var(--ds-gray-600)' }}>{change.target}</Box> : null}
+      <Box>{change.change}</Box>
+    </Box>
+  );
+}
+
+RequiredChangeDetails.propTypes = {
+  change: PropTypes.shape({ where: PropTypes.string, target: PropTypes.string, change: PropTypes.string }).isRequired,
+};
+
+// Improvements the incident does not need. Kept apart from the actions so they never read as its fix.
+export function OptionalHardening({ items }) {
+  return (
+    <Card variant='tinted' tone='neutral' size='sm' elevation='flat'>
+      <Box
+        sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)', fontSize: 'var(--ds-text-small)' }}
+        data-testid='remediation-optional-hardening'
+      >
+        <Box sx={{ fontWeight: 'var(--ds-font-weight-medium)' }}>Optional hardening — not required to resolve this incident</Box>
+        {items.map((h, i) => (
+          <Box key={i}>
+            {trimmedString(h?.target) ? <Box component='span' sx={{ fontWeight: 'var(--ds-font-weight-medium)' }}>{`${h.target}: `}</Box> : null}
+            {h.change}
+            {trimmedString(h?.reason) ? <Box component='span' sx={{ color: 'var(--ds-gray-500)' }}>{` — ${h.reason}`}</Box> : null}
+          </Box>
+        ))}
+      </Box>
+    </Card>
+  );
+}
+
+OptionalHardening.propTypes = {
+  items: PropTypes.arrayOf(PropTypes.shape({ target: PropTypes.string, change: PropTypes.string, reason: PropTypes.string })).isRequired,
+};
+
 // One remediation action: header (label + confidence), the hypothesis it addresses (with reasoning +
 // confidence, shown inline — there is no separate hypotheses box), and its command rows. A per-block
 // "Run" button runs this action's execute → verify one-by-one, stopping on the first failure.
 // A code-fix action carries no command, so it renders the diff instead of command rows.
-function ActionCard({ index, action, hypothesis, accountId, eventId, canRun, appliedAt, onExecuted, codeFix, alertControls, onAlertRuleApplied }) {
+function ActionCard({
+  index,
+  action,
+  hypothesis,
+  accountId,
+  eventId,
+  canRun,
+  appliedAt,
+  onExecuted,
+  codeFix,
+  alertControls,
+  onAlertRuleApplied,
+  after,
+}) {
   const [running, setRunning] = useState(false);
   const execRef = useRef(null);
   const verifyRef = useRef(null);
@@ -392,7 +457,10 @@ function ActionCard({ index, action, hypothesis, accountId, eventId, canRun, app
   // A change to the alert rule is applied from the card, not by a command, and is not the code fix.
   const ruleChange = action?.alert_rule_change || null;
   const ruleChangeApplied = ruleChange ? isAlertRuleChangeApplied(ruleChange, alertControls) : false;
-  const showCodeFix = !execCmd && !ruleChange && trimmedString(action?.kind).toLowerCase() === 'fix' && !!codeFix;
+  // A fix that states its own required change (chart values, infrastructure, another team's process)
+  // is not the code fix either: attaching the event's diff to it showed an unrelated change.
+  const requiredChange = action?.required_change && trimmedString(action.required_change.change) ? action.required_change : null;
+  const showCodeFix = !execCmd && !ruleChange && !requiredChange && trimmedString(action?.kind).toLowerCase() === 'fix' && !!codeFix;
 
   // Run the action's execute command, then (only if it succeeded) its verify command. Rollback is
   // never auto-run. Each row shows its own output live as it runs.
@@ -426,6 +494,7 @@ function ActionCard({ index, action, hypothesis, accountId, eventId, canRun, app
             </Box>
           </Box>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
+            {after ? <Label tone={after.applied ? 'neutral' : 'warning'} size='sm' textTransform='none' text={`After “${after.name}”`} /> : null}
             {kindMeta ? <Label tone={kindMeta.tone} size='sm' text={kindMeta.text} /> : null}
             {appliedAt ? <Label tone='success' size='sm' text={appliedLabel ? `Applied · ${appliedLabel}` : 'Applied'} /> : null}
             {ruleChangeApplied ? <Label tone='success' size='sm' text='Applied' /> : null}
@@ -438,7 +507,16 @@ function ActionCard({ index, action, hypothesis, accountId, eventId, canRun, app
               >{`${confidence}% likely to resolve`}</Box>
             ) : null}
             {execCmd ? (
-              <Tooltip title={!canRun ? 'Requires write access' : 'Run this action (execute, then verify), stopping on failure'} placement='bottom'>
+              <Tooltip
+                title={
+                  !canRun
+                    ? 'Requires write access'
+                    : after && !after.applied
+                    ? `Apply “${after.name}” first: this change has no effect without it`
+                    : 'Run this action (execute, then verify), stopping on failure'
+                }
+                placement='bottom'
+              >
                 <span>
                   <Button
                     tone={appliedAt ? 'secondary' : 'primary'}
@@ -470,6 +548,7 @@ function ActionCard({ index, action, hypothesis, accountId, eventId, canRun, app
             {hypConfidence !== null ? <Box component='span' sx={{ color: 'var(--ds-gray-500)' }}>{` — ${hypConfidence}% likely cause`}</Box> : null}
           </Box>
         ) : null}
+        {requiredChange ? <RequiredChangeDetails change={requiredChange} /> : null}
         {showCodeFix ? <CodeFixDetails codeFix={codeFix} /> : null}
         {ruleChange ? (
           <AlertRuleChangeAction
@@ -551,7 +630,41 @@ ActionCard.propTypes = {
   codeFix: PropTypes.object,
   alertControls: PropTypes.object,
   onAlertRuleApplied: PropTypes.func,
+  // The action this one must follow; applied is false until that action has run here.
+  after: PropTypes.shape({ name: PropTypes.string.isRequired, applied: PropTypes.bool.isRequired }),
 };
+
+// afterOf resolves an action's "after" to the action it names, and whether that one has been applied.
+// A command-less prerequisite (a required change) is made outside the panel, so it cannot be known.
+export function afterOf(action, actions, executedCommands) {
+  const name = trimmedString(action?.after);
+  if (!name) return null;
+  const prior = (actions || []).find((a) => trimmedString(a?.action) === name);
+  if (!prior) return null;
+  const cmd = trimmedString(prior.execute_command);
+  return { name, applied: cmd ? !!executedCommands?.[cmd] : false };
+}
+
+// noActionsText is the sentence shown in place of the action list when the plan has none. The
+// root-cause card above already prints the summary whenever the plan has a root cause, so printing
+// it here too put the same paragraph on screen twice.
+export function noActionsText(plan) {
+  if (plan?.root_cause && plan?.summary) return '';
+  return plan?.summary || 'No automated remediation is recommended: the root cause is not conclusive enough.';
+}
+
+// isRemediationPlan reports whether a response is a plan rather than an empty or error body.
+export function isRemediationPlan(value) {
+  return !!value && typeof value === 'object' && Array.isArray(value.actions);
+}
+
+// runnableActionCount is how many of the plan's actions the operator can carry out from the panel:
+// those with a command to run, or a change to the alert rule to apply. A fix stated as a change to
+// make elsewhere (chart values, application code) is listed but is not something to run here.
+export function runnableActionCount(plan) {
+  if (!isRemediationPlan(plan)) return 0;
+  return plan.actions.filter((a) => trimmedString(a?.execute_command) || a?.alert_rule_change).length;
+}
 
 // RemediationPanel renders below the investigation analysis. "Generate Remediation" reuses the
 // already-computed investigation as context (no re-investigation) and turns it into a structured plan
@@ -565,8 +678,11 @@ ActionCard.propTypes = {
 // treating it as resolved suppressed the panel's whole point on almost every event.
 const RESOLVED_STATUSES = ['RESOLVED', 'CLOSED'];
 
-const RemediationPanel = ({ accountId, eventId, nbStatus }) => {
-  const [plan, setPlan] = useState(null);
+// The page owns the saved plan: it reads it once (savedPlan, with savedPlanReady false until that
+// read settles) so the tab can count the plan's actions before the tab is opened, and it is told
+// about a plan generated here through onPlanChange. The panel never reads the saved plan itself.
+const RemediationPanel = ({ accountId, eventId, nbStatus, savedPlan, savedPlanReady, onPlanChange }) => {
+  const [plan, setPlan] = useState(savedPlanReady && isRemediationPlan(savedPlan) ? savedPlan : null);
   // The event's alert rule and what can be changed on it: sent with generate so the
   // plan can propose a rule fix, and read back to show when that fix is applied.
   const [alertControls, setAlertControls] = useState(null);
@@ -710,8 +826,9 @@ const RemediationPanel = ({ accountId, eventId, nbStatus }) => {
         console.error('RemediationPanel: failed to fetch alert rule controls', err);
       }
       const res = await apiKubernetes.generateRemediation(accountId, eventId, context, artifacts, alertRule);
-      if (res && typeof res === 'object' && Array.isArray(res.actions)) {
+      if (isRemediationPlan(res)) {
         setPlan(res);
+        onPlanChange?.(res);
       } else {
         setError('Could not generate a remediation plan for this event.');
       }
@@ -722,39 +839,41 @@ const RemediationPanel = ({ accountId, eventId, nbStatus }) => {
     }
   };
 
-  // On mount: restore the saved plan + past runs, and generate one if the event has none. The panel is
-  // keyed on event + investigation refresh in the parent, so a fresh mount corresponds to a completed
-  // investigation for this event.
+  // Once the page's read of the saved plan has settled: restore that plan + past runs, and generate
+  // a plan if the event has none. The panel is keyed on event + investigation refresh in the parent,
+  // so a fresh mount corresponds to a completed investigation for this event.
   //
   // This mount only happens when the Remediation tab is opened (TabPanel renders its children behind
   // `value === index`), so generation follows someone actually looking for a remediation. It is
   // bounded by the saved-plan check — a plan is generated once per event, not once per visit — and by
-  // autoTriggered, which holds across the StrictMode double-mount.
+  // autoTriggered, which holds across the StrictMode double-mount. Waiting for savedPlanReady is
+  // what keeps a tab opened before that read finishes from generating a plan that already exists.
   //
   // The generation itself is not budget-checked server-side, so this is the only place that decides
   // whether the call happens. Anything that needs to cap it belongs on the endpoint, not here.
   useEffect(() => {
+    if (!savedPlanReady) return undefined;
     let cancelled = false;
     const init = async () => {
-      let loaded = false;
-      try {
-        const saved = await apiKubernetes.getRemediation(accountId, eventId);
-        if (saved && typeof saved === 'object' && Array.isArray(saved.actions)) {
-          loaded = true;
-          if (!cancelled) setPlan(saved);
+      const loaded = isRemediationPlan(savedPlan);
+      if (loaded) {
+        setPlan(savedPlan);
+        try {
           // A restored rule change shows Applied from the rule's live state.
-          if (saved.actions.some((a) => a?.alert_rule_change)) loadAlertControls();
+          if (savedPlan.actions.some((a) => a?.alert_rule_change)) loadAlertControls();
           // A restored plan holds no diff (only generate() sees the analysis record), so fetch it
           // when the plan actually has a command-less fix to show it against. Skipped otherwise so
           // the common all-commands plan costs no extra request.
-          const needsCodeFix = saved.actions.some((a) => trimmedString(a?.kind).toLowerCase() === 'fix' && !trimmedString(a?.execute_command));
+          const needsCodeFix = savedPlan.actions.some(
+            (a) => trimmedString(a?.kind).toLowerCase() === 'fix' && !trimmedString(a?.execute_command) && !trimmedString(a?.required_change?.change)
+          );
           if (needsCodeFix) {
             const rec = await apiKubernetes.generateAiRecommendation(accountId, eventId, 'pod_log_analysis');
             if (!cancelled && mountedRef.current) setCodeFix(extractCodeFix(rec));
           }
+        } catch (err) {
+          console.error('RemediationPanel: failed to load the code fix for the saved plan', err);
         }
-      } catch (err) {
-        console.error('RemediationPanel: failed to load saved plan', err);
       }
       await loadExecutions();
       if (cancelled) return;
@@ -768,8 +887,9 @@ const RemediationPanel = ({ accountId, eventId, nbStatus }) => {
     return () => {
       cancelled = true;
     };
+    // Runs when the page's read settles, not when a plan generated here comes back as savedPlan.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [savedPlanReady]);
 
   const resolvedBanner = isResolved ? (
     <Card variant='tinted' tone='neutral' size='sm' elevation='flat'>
@@ -821,6 +941,7 @@ const RemediationPanel = ({ accountId, eventId, nbStatus }) => {
     if (key) hypByText[key] = h;
   });
   const actions = Array.isArray(plan.actions) ? plan.actions : [];
+  const hardening = Array.isArray(plan.optional_hardening) ? plan.optional_hardening.filter((h) => trimmedString(h?.change)) : [];
 
   return (
     <Box sx={{ mt: 'var(--ds-space-5)', display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)' }}>
@@ -851,9 +972,7 @@ const RemediationPanel = ({ accountId, eventId, nbStatus }) => {
 
       {actions.length === 0 ? (
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
-          <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)' }}>
-            {plan.summary || 'No automated remediation is recommended: the root cause is not conclusive enough.'}
-          </Box>
+          {noActionsText(plan) ? <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)' }}>{noActionsText(plan)}</Box> : null}
           {hypotheses.map((h, i) => (
             <HypothesisBlock key={i} hypothesis={h} />
           ))}
@@ -886,10 +1005,13 @@ const RemediationPanel = ({ accountId, eventId, nbStatus }) => {
               codeFix={codeFix}
               alertControls={alertControls}
               onAlertRuleApplied={loadAlertControls}
+              after={afterOf(action, actions, executedCommands)}
             />
           ))}
         </>
       )}
+
+      {hardening.length ? <OptionalHardening items={hardening} /> : null}
     </Box>
   );
 };
@@ -898,6 +1020,9 @@ RemediationPanel.propTypes = {
   accountId: PropTypes.string,
   eventId: PropTypes.string,
   nbStatus: PropTypes.string,
+  savedPlan: PropTypes.object,
+  savedPlanReady: PropTypes.bool,
+  onPlanChange: PropTypes.func,
 };
 
 export default RemediationPanel;

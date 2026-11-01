@@ -161,3 +161,74 @@ export const CategoryListing: string[] = [
   'TOOL',
   'CLOUD_COMMAND',
 ];
+
+// ---- Audit Log deep links ---------------------------------------------------
+// A screen that just performed an audited action links to Admin > Audit Log with
+// the filter bar pre-filled, so the user lands on that entry instead of the full
+// list. buildAuditLogUrl writes the query params; AuditsTable reads them back
+// once on mount through parseAuditLogParams. No params = the default view.
+// The names are prefixed so no other Admin tab mistakes them for its own filters.
+
+const AUDIT_LOG_PATH = '/user-management';
+const AUDIT_LOG_HASH = '#access-users/audit-log';
+
+const LINK_PARAM = {
+  account: 'auditAccount',
+  category: 'auditCategory',
+  target: 'auditTarget',
+  start: 'auditStart',
+  end: 'auditEnd',
+} as const;
+
+// Half-width of the time window placed around `at`: wide enough to absorb the gap
+// between the caller's timestamp and the audit row's event_time, tight enough to
+// isolate the one action.
+const AUDIT_LINK_WINDOW_MS = 5 * 60 * 1000;
+
+export interface AuditLogLinkFilters {
+  accountId?: string;
+  /** A CategoryListing value, e.g. 'ALERT_MANAGER'. */
+  category?: string;
+  /** The audit row's event_target, e.g. an alert rule key. */
+  target?: string;
+  /** When the audited action happened. Omit to keep the page's default range. */
+  at?: number | string | Date;
+}
+
+export interface AuditLogLinkParams {
+  accountId: string;
+  category: string;
+  target: string;
+  startDate?: number;
+  endDate?: number;
+}
+
+export const buildAuditLogUrl = (filters: AuditLogLinkFilters = {}): string => {
+  const params = new URLSearchParams();
+  if (filters.accountId) params.set(LINK_PARAM.account, filters.accountId);
+  if (filters.category) params.set(LINK_PARAM.category, filters.category);
+  if (filters.target) params.set(LINK_PARAM.target, filters.target);
+  const at = filters.at == null ? NaN : new Date(filters.at).getTime();
+  if (Number.isFinite(at)) {
+    params.set(LINK_PARAM.start, String(at - AUDIT_LINK_WINDOW_MS));
+    params.set(LINK_PARAM.end, String(at + AUDIT_LINK_WINDOW_MS));
+  }
+  const query = params.toString();
+  return `${AUDIT_LOG_PATH}${query ? `?${query}` : ''}${AUDIT_LOG_HASH}`;
+};
+
+export const parseAuditLogParams = (search: string): AuditLogLinkParams => {
+  const params = new URLSearchParams(search);
+  const category = params.get(LINK_PARAM.category) || '';
+  const startDate = Number(params.get(LINK_PARAM.start));
+  const endDate = Number(params.get(LINK_PARAM.end));
+  // Both ends or neither, and only a range Date can represent — the table calls toISOString() on it.
+  const hasRange = startDate > 0 && endDate > startDate && !Number.isNaN(new Date(endDate).getTime());
+  return {
+    accountId: params.get(LINK_PARAM.account) || '',
+    // An unknown category has no option in the filter bar, so it would filter invisibly.
+    category: CategoryListing.includes(category) ? category : '',
+    target: params.get(LINK_PARAM.target) || '',
+    ...(hasRange ? { startDate, endDate } : {}),
+  };
+};

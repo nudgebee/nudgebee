@@ -1166,6 +1166,7 @@ type IncidentAssembly {
   cause: AssemblyCause
   impact: [AssemblyItem]
   chronic: [AssemblyItem]
+  same_node: [AssemblyItem]
   window: AssemblyWindow
   truncated: Boolean
   seed_occurrences: Int
@@ -2016,6 +2017,12 @@ type Query {
   ): security_list_vm_scan_statuses_output
 }
 
+type Query {
+  security_list_vm_scan_datasources(
+    object: security_list_vm_scan_datasources_input!
+  ): security_list_vm_scan_datasources_output
+}
+
 type Mutation {
   slo_config_create(
     request: SLOCreateRequest!
@@ -2076,6 +2083,13 @@ type Query {
     column_transformations: [QueryColumnTransformationRequest!]
     group_by: [String!]
   ): SpendGroupingsResponse
+}
+
+type Query {
+  spend_currency_v2(
+    where: SpendCurrencyWhereRequest
+    limit: Int
+  ): SpendCurrencyResponse
 }
 
 type Query {
@@ -3361,6 +3375,15 @@ input SpendGroupingsWhereRequest {
   amount: QueryWhereFloatRequest
 }
 
+input SpendCurrencyWhereRequest {
+  _and: [SpendCurrencyWhereRequest]
+  _or: [SpendCurrencyWhereRequest]
+  _not: SpendCurrencyWhereRequest
+  tenant_id: QueryWhereStringRequest
+  account_id: QueryWhereStringRequest
+  exclude_aggregate: QueryWhereBooleanRequest
+}
+
 input resource_filter_request {
   name: String!
   type: String!
@@ -3551,6 +3574,10 @@ input security_scan_vm_account_input {
 }
 
 input security_list_vm_scan_statuses_input {
+  account_id: String!
+}
+
+input security_list_vm_scan_datasources_input {
   account_id: String!
 }
 
@@ -6538,6 +6565,7 @@ type AzureBulkOnboardAccountResultOutput {
   account_id: String!
   status: String!
   error: String
+  warning: String
 }
 
 type AzureBulkOnboardOutput {
@@ -6928,6 +6956,16 @@ type SpendGroupingsResponse {
   rows: [SpendGroupingsRowResponse]
 }
 
+type SpendCurrencyResponse {
+  rows: [SpendCurrencyRowResponse]
+}
+
+type SpendCurrencyRowResponse {
+  tenant_id: String
+  account_id: String
+  currency_type: String
+}
+
 type SpendSummaryWindowsResponse {
   rows: [SpendSummaryWindowsRowResponse]
 }
@@ -7098,6 +7136,10 @@ type security_scan_vm_account_output {
 }
 
 type security_list_vm_scan_statuses_output {
+  data: [jsonb]!
+}
+
+type security_list_vm_scan_datasources_output {
   data: [jsonb]!
 }
 
@@ -9696,6 +9738,17 @@ type KnowledgebaseOutput {
   last_loaded_at: timestamp
   note_category: String
   context_tags: [String!]
+  kinds: [String!]
+  shapes: [String!]
+  capabilities: [String!]
+  capability_details: [CapabilityDetail!]
+}
+
+type CapabilityDetail {
+  name: String!
+  description: String
+  surface: String
+  scope: String
 }
 
 type CreateKBResponse {

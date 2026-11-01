@@ -604,7 +604,7 @@ export const PANEL_TEMPLATES: PanelTemplate[] = [
       title: 'CPU requests vs allocatable',
       description:
         'What workloads have reserved, against what the nodes can hand out. Read next to actual utilisation: a high number here with a low number there is over-request.',
-      expr: '100 * sum(kube_pod_container_resource_requests{resource="cpu"}) / sum(kube_node_status_allocatable{resource="cpu"})',
+      expr: '100 * sum(max by (namespace, pod, container) (kube_pod_container_resource_requests{resource="cpu"})) / sum(max by (node) (kube_node_status_allocatable{resource="cpu"}))',
       unit: '%',
     }),
   },
@@ -616,7 +616,7 @@ export const PANEL_TEMPLATES: PanelTemplate[] = [
     panel: metricPanel({
       title: 'Memory requests vs allocatable',
       description: 'Reserved memory against what the nodes can hand out.',
-      expr: '100 * sum(kube_pod_container_resource_requests{resource="memory"}) / sum(kube_node_status_allocatable{resource="memory"})',
+      expr: '100 * sum(max by (namespace, pod, container) (kube_pod_container_resource_requests{resource="memory"})) / sum(max by (node) (kube_node_status_allocatable{resource="memory"}))',
       unit: '%',
     }),
   },

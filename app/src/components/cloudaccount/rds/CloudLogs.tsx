@@ -11,6 +11,7 @@ import Datetime from '@shared/format/Datetime';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 import observability from '@api1/observability';
+import { unwrapGraphQL } from '@lib/HttpService';
 import { ds } from '@utils/colors';
 
 interface CloudLogsProps {
@@ -107,7 +108,15 @@ const CloudLogs: React.FC<CloudLogsProps> = ({ accountId, resourceId, region, se
         },
       });
 
-      const logs = response?.data?.data?.logs_list?.logs || [];
+      // A failed query comes back as HTTP 200 with a top-level `errors` array;
+      // unwrapGraphQL throws on it so the reason surfaces instead of an empty list.
+      const result = unwrapGraphQL(response, 'Failed to fetch logs');
+      // A non-GraphQL failure (502/504, network) leaves result undefined with no
+      // errors[] to throw on — surface it instead of an empty list.
+      if (!result) {
+        throw new Error('Failed to fetch logs');
+      }
+      const logs = result?.logs_list?.logs || [];
       setData(logs);
     } catch (err: any) {
       setError(err.message || 'Failed to fetch logs');

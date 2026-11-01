@@ -1,0 +1,772 @@
+{
+ "over_caps": {
+  "discord": {
+   "content": "⚠️ 11 anomalies detected across 2 account(s)",
+   "embeds": [
+    {
+     "color": 16750848,
+     "description": "• **CPU Anomaly detected for svc-0 in namespace payments** — HIGH/FIRING on `payments/svc-0`\n• **CPU Anomaly detected for svc-1 in namespace payments** — HIGH/FIRING on `payments/svc-1`\n• **CPU Anomaly detected for svc-2 in namespace payments** — HIGH/FIRING on `payments/svc-2`\n• **CPU Anomaly detected for svc-3 in namespace payments** — HIGH/FIRING on `payments/svc-3`\n• **CPU Anomaly detected for svc-4 in namespace payments** — HIGH/FIRING on `payments/svc-4`\n• **CPU Anomaly detected for svc-5 in namespace payments** — HIGH/FIRING on `payments/svc-5`\n• **CPU Anomaly detected for svc-6 in namespace payments** — HIGH/FIRING on `payments/svc-6`\n• **CPU Anomaly detected for svc-7 in namespace payments** — HIGH/FIRING on `payments/svc-7`\n…and 1 more anomalies in this account.",
+     "title": "Account: prod-eu",
+     "url": "https://app.example.com/kubernetes/details/acc-1?tab=2&subtab=6#events/anomaly"
+    },
+    {
+     "color": 16750848,
+     "description": "• **Cloud Spend Anomaly: service-9 in prod-aws increased by 38.0%** — HIGH/FIRING on `—/service-9`\n• **Cloud Spend Anomaly: service-10 in prod-aws increased by 38.0%** — HIGH/FIRING on `—/service-10`",
+     "title": "Account: prod-aws",
+     "url": "https://app.example.com/kubernetes/details/acc-2?tab=2&subtab=6#events/anomaly"
+    }
+   ]
+  },
+  "google_chat": {
+   "text": "🚨 *11 Anomalies detected across 2 accounts*\n\n*Account:* <https://app.example.com/kubernetes/details/acc-1?tab=2&subtab=6#events/anomaly|prod-eu>\n• *CPU Anomaly detected for svc-0 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *CPU Anomaly detected for svc-1 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *CPU Anomaly detected for svc-2 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *CPU Anomaly detected for svc-3 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *CPU Anomaly detected for svc-4 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *CPU Anomaly detected for svc-5 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *CPU Anomaly detected for svc-6 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *CPU Anomaly detected for svc-7 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *CPU Anomaly detected for svc-8 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n*Account:* <https://app.example.com/kubernetes/details/acc-2?tab=2&subtab=6#events/anomaly|prod-aws>\n• *Cloud Spend Anomaly: service-9 in prod-aws increased by 38.0%*\n  - Namespace: ** | Type: *cloud_account*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *Cloud Spend Anomaly: service-10 in prod-aws increased by 38.0%*\n  - Namespace: ** | Type: *cloud_account*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n‼️ Review detected anomalies and investigate impacted workloads in your clusters."
+  },
+  "ms_teams": {
+   "$schema": "https://adaptivecards.io/schemas/adaptive-card.json",
+   "body": [
+    {
+     "size": "Large",
+     "text": "🚨 **11 Anomalies detected across 2 accounts**",
+     "type": "TextBlock",
+     "weight": "Bolder",
+     "wrap": true
+    },
+    {
+     "separator": true,
+     "text": " ",
+     "type": "TextBlock"
+    },
+    {
+     "spacing": "Medium",
+     "text": "**Account:** [prod-eu](https://app.example.com/kubernetes/details/acc-1?tab=2&subtab=6#events/anomaly)",
+     "type": "TextBlock",
+     "weight": "Bolder",
+     "wrap": true
+    },
+    {
+     "text": "- **CPU Anomaly detected for svc-0 in namespace payments**",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Namespace: *payments* | Type: *deployment*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Priority: *HIGH* | Status: *FIRING*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Started at: 14 Jul 2026 06:20 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "- **CPU Anomaly detected for svc-1 in namespace payments**",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Namespace: *payments* | Type: *deployment*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Priority: *HIGH* | Status: *FIRING*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Started at: 14 Jul 2026 06:20 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "- **CPU Anomaly detected for svc-2 in namespace payments**",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Namespace: *payments* | Type: *deployment*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Priority: *HIGH* | Status: *FIRING*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Started at: 14 Jul 2026 06:20 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "- **CPU Anomaly detected for svc-3 in namespace payments**",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Namespace: *payments* | Type: *deployment*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Priority: *HIGH* | Status: *FIRING*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Started at: 14 Jul 2026 06:20 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "- **CPU Anomaly detected for svc-4 in namespace payments**",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Namespace: *payments* | Type: *deployment*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Priority: *HIGH* | Status: *FIRING*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Started at: 14 Jul 2026 06:20 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "- **CPU Anomaly detected for svc-5 in namespace payments**",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Namespace: *payments* | Type: *deployment*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Priority: *HIGH* | Status: *FIRING*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Started at: 14 Jul 2026 06:20 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "- **CPU Anomaly detected for svc-6 in namespace payments**",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Namespace: *payments* | Type: *deployment*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Priority: *HIGH* | Status: *FIRING*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Started at: 14 Jul 2026 06:20 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "- **CPU Anomaly detected for svc-7 in namespace payments**",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Namespace: *payments* | Type: *deployment*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Priority: *HIGH* | Status: *FIRING*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Started at: 14 Jul 2026 06:20 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "- **CPU Anomaly detected for svc-8 in namespace payments**",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Namespace: *payments* | Type: *deployment*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Priority: *HIGH* | Status: *FIRING*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Started at: 14 Jul 2026 06:20 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "separator": true,
+     "text": " ",
+     "type": "TextBlock"
+    },
+    {
+     "spacing": "Medium",
+     "text": "**Account:** [prod-aws](https://app.example.com/kubernetes/details/acc-2?tab=2&subtab=6#events/anomaly)",
+     "type": "TextBlock",
+     "weight": "Bolder",
+     "wrap": true
+    },
+    {
+     "text": "- **Cloud Spend Anomaly: service-9 in prod-aws increased by 38.0%**",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Namespace: ** | Type: *cloud_account*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Priority: *HIGH* | Status: *FIRING*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Started at: 14 Jul 2026 06:20 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "- **Cloud Spend Anomaly: service-10 in prod-aws increased by 38.0%**",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Namespace: ** | Type: *cloud_account*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Priority: *HIGH* | Status: *FIRING*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Started at: 14 Jul 2026 06:20 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "separator": true,
+     "text": " ",
+     "type": "TextBlock"
+    },
+    {
+     "spacing": "Medium",
+     "text": "‼️ Review detected anomalies and investigate impacted workloads in your clusters.",
+     "type": "TextBlock",
+     "wrap": true
+    }
+   ],
+   "msteams": {
+    "width": "Full"
+   },
+   "type": "AdaptiveCard",
+   "version": "1.4"
+  },
+  "slack": {
+   "attachments": [
+    {
+     "actions": [
+      {
+       "style": "primary",
+       "text": "Details",
+       "type": "button",
+       "url": "https://app.example.com/investigate?accountId=acc-1&id=e-0&utm=slack"
+      }
+     ],
+     "callback_id": "nb_link_actions",
+     "color": "#D97A2B",
+     "fallback": "CPU Anomaly detected for svc-0 in namespace payments",
+     "mrkdwn_in": [
+      "text"
+     ],
+     "text": "*CPU Anomaly detected for svc-0 in namespace payments*\nCurrent *820m* vs baseline *140m*\nHigh priority · svc-0 (payments) · Acct: prod-eu · started <!date^1784010000^{date_short_pretty} {time}|14 Jul 2026 06:20 AM UTC>"
+    },
+    {
+     "actions": [
+      {
+       "style": "primary",
+       "text": "Details",
+       "type": "button",
+       "url": "https://app.example.com/investigate?accountId=acc-1&id=e-1&utm=slack"
+      }
+     ],
+     "callback_id": "nb_link_actions",
+     "color": "#D97A2B",
+     "fallback": "CPU Anomaly detected for svc-1 in namespace payments",
+     "mrkdwn_in": [
+      "text"
+     ],
+     "text": "*CPU Anomaly detected for svc-1 in namespace payments*\nCurrent *820m* vs baseline *140m*\nHigh priority · svc-1 (payments) · Acct: prod-eu · started <!date^1784010000^{date_short_pretty} {time}|14 Jul 2026 06:20 AM UTC>"
+    },
+    {
+     "actions": [
+      {
+       "style": "primary",
+       "text": "Details",
+       "type": "button",
+       "url": "https://app.example.com/investigate?accountId=acc-1&id=e-2&utm=slack"
+      }
+     ],
+     "callback_id": "nb_link_actions",
+     "color": "#D97A2B",
+     "fallback": "CPU Anomaly detected for svc-2 in namespace payments",
+     "mrkdwn_in": [
+      "text"
+     ],
+     "text": "*CPU Anomaly detected for svc-2 in namespace payments*\nCurrent *820m* vs baseline *140m*\nHigh priority · svc-2 (payments) · Acct: prod-eu · started <!date^1784010000^{date_short_pretty} {time}|14 Jul 2026 06:20 AM UTC>"
+    },
+    {
+     "actions": [
+      {
+       "style": "primary",
+       "text": "Details",
+       "type": "button",
+       "url": "https://app.example.com/investigate?accountId=acc-1&id=e-3&utm=slack"
+      }
+     ],
+     "callback_id": "nb_link_actions",
+     "color": "#D97A2B",
+     "fallback": "CPU Anomaly detected for svc-3 in namespace payments",
+     "mrkdwn_in": [
+      "text"
+     ],
+     "text": "*CPU Anomaly detected for svc-3 in namespace payments*\nCurrent *820m* vs baseline *140m*\nHigh priority · svc-3 (payments) · Acct: prod-eu · started <!date^1784010000^{date_short_pretty} {time}|14 Jul 2026 06:20 AM UTC>"
+    },
+    {
+     "actions": [
+      {
+       "style": "primary",
+       "text": "Details",
+       "type": "button",
+       "url": "https://app.example.com/investigate?accountId=acc-1&id=e-4&utm=slack"
+      }
+     ],
+     "callback_id": "nb_link_actions",
+     "color": "#D97A2B",
+     "fallback": "CPU Anomaly detected for svc-4 in namespace payments",
+     "mrkdwn_in": [
+      "text"
+     ],
+     "text": "*CPU Anomaly detected for svc-4 in namespace payments*\nCurrent *820m* vs baseline *140m*\nHigh priority · svc-4 (payments) · Acct: prod-eu · started <!date^1784010000^{date_short_pretty} {time}|14 Jul 2026 06:20 AM UTC>"
+    },
+    {
+     "actions": [
+      {
+       "style": "primary",
+       "text": "View All Anomalies",
+       "type": "button",
+       "url": "https://app.example.com/troubleshoot?accountIds=acc-1%2Cacc-2&source=anomaly&start_time=1784007900000&end_time=1784012400000&utm=slack#all-events/all"
+      }
+     ],
+     "callback_id": "nb_link_actions",
+     "color": "#94A3B8",
+     "fallback": "View all anomalies",
+     "mrkdwn_in": [
+      "text"
+     ],
+     "text": "_+6 more anomalies detected_"
+    }
+   ],
+   "blocks": [
+    {
+     "text": {
+      "text": "11 anomalies detected across 2 accounts",
+      "type": "plain_text"
+     },
+     "type": "header"
+    },
+    {
+     "type": "divider"
+    }
+   ],
+   "text": "11 anomalies detected across 2 accounts",
+   "unfurl_links": false
+  }
+ },
+ "resolved_status": {
+  "discord": {
+   "content": "⚠️ 3 anomalies detected across 1 account(s)",
+   "embeds": [
+    {
+     "color": 16750848,
+     "description": "• **CPU Anomaly detected for svc-0 in namespace payments** — HIGH/FIRING on `payments/svc-0`\n• **CPU Anomaly detected for svc-1 in namespace payments** — HIGH/RESOLVED on `payments/svc-1`\n• **CPU Anomaly detected for svc-2 in namespace payments** — HIGH/closed on `payments/svc-2`",
+     "title": "Account: prod-eu",
+     "url": "https://app.example.com/kubernetes/details/acc-1?tab=2&subtab=6#events/anomaly"
+    }
+   ]
+  },
+  "google_chat": {
+   "text": "🚨 *3 Anomalies detected across 1 accounts*\n\n*Account:* <https://app.example.com/kubernetes/details/acc-1?tab=2&subtab=6#events/anomaly|prod-eu>\n• *CPU Anomaly detected for svc-0 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *CPU Anomaly detected for svc-1 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *RESOLVED*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *CPU Anomaly detected for svc-2 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *closed*\n  - Started at: 14 Jul 2026 06:20 AM\n\n‼️ Review detected anomalies and investigate impacted workloads in your clusters."
+  },
+  "ms_teams": {
+   "$schema": "https://adaptivecards.io/schemas/adaptive-card.json",
+   "body": [
+    {
+     "size": "Large",
+     "text": "🚨 **3 Anomalies detected across 1 accounts**",
+     "type": "TextBlock",
+     "weight": "Bolder",
+     "wrap": true
+    },
+    {
+     "separator": true,
+     "text": " ",
+     "type": "TextBlock"
+    },
+    {
+     "spacing": "Medium",
+     "text": "**Account:** [prod-eu](https://app.example.com/kubernetes/details/acc-1?tab=2&subtab=6#events/anomaly)",
+     "type": "TextBlock",
+     "weight": "Bolder",
+     "wrap": true
+    },
+    {
+     "text": "- **CPU Anomaly detected for svc-0 in namespace payments**",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Namespace: *payments* | Type: *deployment*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Priority: *HIGH* | Status: *FIRING*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Started at: 14 Jul 2026 06:20 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "- **CPU Anomaly detected for svc-1 in namespace payments**",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Namespace: *payments* | Type: *deployment*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Priority: *HIGH* | Status: *RESOLVED*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Started at: 14 Jul 2026 06:20 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "- **CPU Anomaly detected for svc-2 in namespace payments**",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Namespace: *payments* | Type: *deployment*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Priority: *HIGH* | Status: *closed*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Started at: 14 Jul 2026 06:20 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "separator": true,
+     "text": " ",
+     "type": "TextBlock"
+    },
+    {
+     "spacing": "Medium",
+     "text": "‼️ Review detected anomalies and investigate impacted workloads in your clusters.",
+     "type": "TextBlock",
+     "wrap": true
+    }
+   ],
+   "msteams": {
+    "width": "Full"
+   },
+   "type": "AdaptiveCard",
+   "version": "1.4"
+  },
+  "slack": {
+   "attachments": [
+    {
+     "actions": [
+      {
+       "style": "primary",
+       "text": "Details",
+       "type": "button",
+       "url": "https://app.example.com/investigate?accountId=acc-1&id=e-0&utm=slack"
+      }
+     ],
+     "callback_id": "nb_link_actions",
+     "color": "#D97A2B",
+     "fallback": "CPU Anomaly detected for svc-0 in namespace payments",
+     "mrkdwn_in": [
+      "text"
+     ],
+     "text": "*CPU Anomaly detected for svc-0 in namespace payments*\nCurrent *820m* vs baseline *140m*\nHigh priority · svc-0 (payments) · Acct: prod-eu · started <!date^1784010000^{date_short_pretty} {time}|14 Jul 2026 06:20 AM UTC>"
+    },
+    {
+     "actions": [
+      {
+       "style": "primary",
+       "text": "Details",
+       "type": "button",
+       "url": "https://app.example.com/investigate?accountId=acc-1&id=e-1&utm=slack"
+      }
+     ],
+     "callback_id": "nb_link_actions",
+     "color": "#D97A2B",
+     "fallback": "CPU Anomaly detected for svc-1 in namespace payments",
+     "mrkdwn_in": [
+      "text"
+     ],
+     "text": "*CPU Anomaly detected for svc-1 in namespace payments*\nCurrent *820m* vs baseline *140m*\nHigh priority · svc-1 (payments) · Acct: prod-eu · started <!date^1784010000^{date_short_pretty} {time}|14 Jul 2026 06:20 AM UTC>"
+    },
+    {
+     "actions": [
+      {
+       "style": "primary",
+       "text": "Details",
+       "type": "button",
+       "url": "https://app.example.com/investigate?accountId=acc-1&id=e-2&utm=slack"
+      }
+     ],
+     "callback_id": "nb_link_actions",
+     "color": "#D97A2B",
+     "fallback": "CPU Anomaly detected for svc-2 in namespace payments",
+     "mrkdwn_in": [
+      "text"
+     ],
+     "text": "*CPU Anomaly detected for svc-2 in namespace payments*\nCurrent *820m* vs baseline *140m*\nHigh priority · svc-2 (payments) · Acct: prod-eu · started <!date^1784010000^{date_short_pretty} {time}|14 Jul 2026 06:20 AM UTC>"
+    }
+   ],
+   "blocks": [
+    {
+     "text": {
+      "text": "3 anomalies detected in prod-eu",
+      "type": "plain_text"
+     },
+     "type": "header"
+    },
+    {
+     "type": "divider"
+    }
+   ],
+   "text": "3 anomalies detected in prod-eu",
+   "unfurl_links": false
+  }
+ },
+ "truncated": {
+  "google_chat": {
+   "text": "🚨 *24 Anomalies detected across 3 accounts*\n\n*Account:* <https://app.example.com/kubernetes/details/acc-0?tab=2&subtab=6#events/anomaly|cluster-0>\n• *CPU Anomaly detected for svc-0 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *CPU Anomaly detected for svc-3 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *CPU Anomaly detected for svc-6 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *CPU Anomaly detected for svc-9 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *CPU Anomaly detected for svc-12 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *CPU Anomaly detected for svc-15 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *CPU Anomaly detected for svc-18 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *CPU Anomaly detected for svc-21 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n*Account:* <https://app.example.com/kubernetes/details/acc-1?tab=2&subtab=6#events/anomaly|cluster-1>\n• *CPU Anomaly detected for svc-1 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *CPU Anomaly detected for svc-4 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *CPU Anomaly detected for svc-7 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *CPU Anomaly detected for svc-10 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *CPU Anomaly detected for svc-13 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *CPU Anomaly detected for svc-16 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *CPU Anomaly detected for svc-19 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *CPU Anomaly detected for svc-22 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n*Account:* <https://app.example.com/kubernetes/details/acc-2?tab=2&subtab=6#events/anomaly|cluster-2>\n• *CPU Anomaly detected for svc-2 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *CPU Anomaly detected for svc-5 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n• *CPU Anomaly detected for svc-8 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 1..."
+  }
+ },
+ "under_caps": {
+  "discord": {
+   "content": "⚠️ 2 anomalies detected across 2 account(s)",
+   "embeds": [
+    {
+     "color": 16750848,
+     "description": "• **CPU Anomaly detected for svc-0 in namespace payments** — HIGH/FIRING on `payments/svc-0`",
+     "title": "Account: prod-eu",
+     "url": "https://app.example.com/kubernetes/details/acc-1?tab=2&subtab=6#events/anomaly"
+    },
+    {
+     "color": 16750848,
+     "description": "• **Cloud Spend Anomaly: service-1 in prod-aws increased by 38.0%** — HIGH/FIRING on `—/service-1`",
+     "title": "Account: prod-aws",
+     "url": "https://app.example.com/kubernetes/details/acc-2?tab=2&subtab=6#events/anomaly"
+    }
+   ]
+  },
+  "google_chat": {
+   "text": "🚨 *2 Anomalies detected across 2 accounts*\n\n*Account:* <https://app.example.com/kubernetes/details/acc-1?tab=2&subtab=6#events/anomaly|prod-eu>\n• *CPU Anomaly detected for svc-0 in namespace payments*\n  - Namespace: *payments* | Type: *deployment*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n*Account:* <https://app.example.com/kubernetes/details/acc-2?tab=2&subtab=6#events/anomaly|prod-aws>\n• *Cloud Spend Anomaly: service-1 in prod-aws increased by 38.0%*\n  - Namespace: ** | Type: *cloud_account*\n  - Priority: *HIGH* | Status: *FIRING*\n  - Started at: 14 Jul 2026 06:20 AM\n\n‼️ Review detected anomalies and investigate impacted workloads in your clusters."
+  },
+  "ms_teams": {
+   "$schema": "https://adaptivecards.io/schemas/adaptive-card.json",
+   "body": [
+    {
+     "size": "Large",
+     "text": "🚨 **2 Anomalies detected across 2 accounts**",
+     "type": "TextBlock",
+     "weight": "Bolder",
+     "wrap": true
+    },
+    {
+     "separator": true,
+     "text": " ",
+     "type": "TextBlock"
+    },
+    {
+     "spacing": "Medium",
+     "text": "**Account:** [prod-eu](https://app.example.com/kubernetes/details/acc-1?tab=2&subtab=6#events/anomaly)",
+     "type": "TextBlock",
+     "weight": "Bolder",
+     "wrap": true
+    },
+    {
+     "text": "- **CPU Anomaly detected for svc-0 in namespace payments**",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Namespace: *payments* | Type: *deployment*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Priority: *HIGH* | Status: *FIRING*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Started at: 14 Jul 2026 06:20 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "separator": true,
+     "text": " ",
+     "type": "TextBlock"
+    },
+    {
+     "spacing": "Medium",
+     "text": "**Account:** [prod-aws](https://app.example.com/kubernetes/details/acc-2?tab=2&subtab=6#events/anomaly)",
+     "type": "TextBlock",
+     "weight": "Bolder",
+     "wrap": true
+    },
+    {
+     "text": "- **Cloud Spend Anomaly: service-1 in prod-aws increased by 38.0%**",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Namespace: ** | Type: *cloud_account*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Priority: *HIGH* | Status: *FIRING*",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "  Started at: 14 Jul 2026 06:20 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "separator": true,
+     "text": " ",
+     "type": "TextBlock"
+    },
+    {
+     "spacing": "Medium",
+     "text": "‼️ Review detected anomalies and investigate impacted workloads in your clusters.",
+     "type": "TextBlock",
+     "wrap": true
+    }
+   ],
+   "msteams": {
+    "width": "Full"
+   },
+   "type": "AdaptiveCard",
+   "version": "1.4"
+  },
+  "slack": {
+   "attachments": [
+    {
+     "actions": [
+      {
+       "style": "primary",
+       "text": "Details",
+       "type": "button",
+       "url": "https://app.example.com/investigate?accountId=acc-1&id=e-0&utm=slack"
+      }
+     ],
+     "callback_id": "nb_link_actions",
+     "color": "#D97A2B",
+     "fallback": "CPU Anomaly detected for svc-0 in namespace payments",
+     "mrkdwn_in": [
+      "text"
+     ],
+     "text": "*CPU Anomaly detected for svc-0 in namespace payments*\nCurrent *820m* vs baseline *140m*\nHigh priority · svc-0 (payments) · Acct: prod-eu · started <!date^1784010000^{date_short_pretty} {time}|14 Jul 2026 06:20 AM UTC>"
+    },
+    {
+     "actions": [
+      {
+       "style": "primary",
+       "text": "Details",
+       "type": "button",
+       "url": "https://app.example.com/investigate?accountId=acc-2&id=e-1&utm=slack"
+      }
+     ],
+     "callback_id": "nb_link_actions",
+     "color": "#D97A2B",
+     "fallback": "Cloud Spend Anomaly: service-1 in prod-aws increased by 38.0%",
+     "mrkdwn_in": [
+      "text"
+     ],
+     "text": "*Cloud Spend Anomaly: service-1 in prod-aws increased by 38.0%*\nDaily spend of *$208.00* for service-1 in account prod-aws exceeds baseline average of *$14.00*\nZ-score *4.20* · *+$194 (+38.0%)* · expected *$14*\nHigh priority · service-1 · Acct: prod-aws · started <!date^1784010000^{date_short_pretty} {time}|14 Jul 2026 06:20 AM UTC>"
+    }
+   ],
+   "blocks": [
+    {
+     "text": {
+      "text": "2 anomalies detected across 2 accounts",
+      "type": "plain_text"
+     },
+     "type": "header"
+    },
+    {
+     "type": "divider"
+    }
+   ],
+   "text": "2 anomalies detected across 2 accounts",
+   "unfurl_links": false
+  }
+ }
+}

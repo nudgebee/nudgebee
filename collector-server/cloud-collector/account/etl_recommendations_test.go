@@ -7,6 +7,7 @@ import (
 	"nudgebee/collector/cloud/security"
 	"os"
 	"testing"
+	"time"
 
 	_ "nudgebee/collector/cloud/providers/aws"
 	_ "nudgebee/collector/cloud/providers/gcloud"
@@ -179,4 +180,32 @@ func TestStoreRecommendationGCloudStorage(t *testing.T) {
 	})
 	assert.Nil(t, err)
 	assert.NotEmpty(t, response)
+}
+
+func TestResourceCreatedAtPrefersCloudCreationTime(t *testing.T) {
+	cloudCreated := time.Date(2025, 9, 26, 10, 0, 0, 0, time.UTC)
+	firstStored := time.Date(2026, 9, 17, 9, 0, 0, 0, time.UTC)
+	zero := time.Time{}
+	epoch := time.UnixMilli(0).UTC()
+
+	cases := []struct {
+		name           string
+		cloudCreatedOn *time.Time
+		firstStored    *time.Time
+		want           *time.Time
+	}{
+		{"cloud creation time wins over first stored", &cloudCreated, &firstStored, &cloudCreated},
+		{"zero creation time falls back to first stored", &zero, &firstStored, &firstStored},
+		{"epoch creation time falls back to first stored", &epoch, &firstStored, &firstStored},
+		{"missing creation time falls back to first stored", nil, &firstStored, &firstStored},
+		{"both missing stays missing", nil, nil, nil},
+		{"zero first stored stays missing", nil, &zero, nil},
+		{"epoch first stored stays missing", nil, &epoch, nil},
+		{"zero creation time and zero first stored stays missing", &zero, &zero, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, resourceCreatedAt(tc.cloudCreatedOn, tc.firstStored))
+		})
+	}
 }

@@ -51,10 +51,17 @@ type eventFacts struct {
 	StartsAt       time.Time
 	EndsAt         time.Time
 	Labels         map[string]string
+	Owner          string // the workload a pod belongs to; commands change it, not the pod
+	OwnerKind      string
 }
+
+// remediationNow is the moment the facts describe. Production reads the clock; the audit replay sets
+// it to an incident's own time, so firings, recoveries and attempts that came later stay out of it.
+var remediationNow = func() time.Time { return time.Now().UTC() }
 
 // buildRemediationFacts renders the structured facts as markdown sections appended to the
 // investigation. Returns "" when nothing could be read.
+// Facts only; reasoning from them is the prompt's job, so it generalises past any rule.
 func buildRemediationFacts(ctx *security.RequestContext, accountId, eventId string) string {
 	if strings.TrimSpace(eventId) == "" || strings.TrimSpace(accountId) == "" {
 		return ""
@@ -69,11 +76,15 @@ func buildRemediationFacts(ctx *security.RequestContext, accountId, eventId stri
 		return ""
 	}
 
+	now := remediationNow()
+	config, ownership := configSection(ctx, dbms, accountId, ev)
 	sections := []string{
-		incidentSection(ctx, dbms, accountId, eventId, ev),
+		incidentSection(ctx, dbms, accountId, eventId, ev, now),
 		targetSection(ctx, dbms, accountId, ev),
-		configSection(ctx, dbms, accountId, ev),
-		attemptsSection(ctx, dbms, accountId, eventId),
+		conclusionSection(loadChangePlan(ctx, dbms, accountId, eventId)),
+		ownership,
+		config,
+		attemptsSection(ctx, dbms, accountId, eventId, ev.SubjectNS, now),
 	}
 	return withinBudget(nonEmpty(sections))
 }
@@ -129,10 +140,11 @@ func loadEventFacts(ctx *security.RequestContext, dbms *common.DatabaseManager, 
 	row := dbms.Db.QueryRowx(
 		`SELECT COALESCE(title,''), COALESCE(aggregation_key,''), COALESCE(subject_type,''),
 		        COALESCE(subject_name,''), COALESCE(subject_namespace,''), COALESCE(subject_node,''),
-		        COALESCE(fingerprint,''), starts_at, ends_at, COALESCE(labels,'{}'::jsonb)
+		        COALESCE(fingerprint,''), starts_at, ends_at, COALESCE(labels,'{}'::jsonb),
+		        COALESCE(subject_owner,''), COALESCE(subject_owner_kind,'')
 		   FROM events WHERE id = $1 AND cloud_account_id = $2`, eventId, accountId)
 	if err := row.Scan(&ev.Title, &ev.AggregationKey, &ev.SubjectType, &ev.SubjectName, &ev.SubjectNS,
-		&ev.Region, &ev.Fingerprint, &startsAt, &endsAt, &labelsIn); err != nil {
+		&ev.Region, &ev.Fingerprint, &startsAt, &endsAt, &labelsIn, &ev.Owner, &ev.OwnerKind); err != nil {
 		ctx.GetLogger().Warn("remediation facts: event lookup failed", "error", err)
 		return nil
 	}
@@ -174,8 +186,7 @@ func scalarString(v any) string {
 // incidentSection states when the incident started and how long ago that was, and says outright
 // that the stored status is not evidence of recovery: cloud alarm events are written with equal
 // start and end times, so they are stored CLOSED/RESOLVED at ingest while the alarm still fires.
-func incidentSection(ctx *security.RequestContext, dbms *common.DatabaseManager, accountId, eventId string, ev *eventFacts) string {
-	now := time.Now().UTC()
+func incidentSection(ctx *security.RequestContext, dbms *common.DatabaseManager, accountId, eventId string, ev *eventFacts, now time.Time) string {
 	lines := []string{"## Incident"}
 	if name := firstNonEmpty(ev.AggregationKey, ev.Title); name != "" {
 		lines = append(lines, fmt.Sprintf("Alert: %s", name))
@@ -191,21 +202,22 @@ func incidentSection(ctx *security.RequestContext, dbms *common.DatabaseManager,
 		}
 		lines = append(lines, line+".")
 	}
-	if occ := occurrenceLine(ctx, dbms, accountId, eventId); occ != "" {
+	if occ := occurrenceLine(ctx, dbms, accountId, eventId, now); occ != "" {
 		lines = append(lines, occ)
 	}
 	if last := lastFiredLine(ctx, dbms, accountId, eventId, ev, now); last != "" {
 		lines = append(lines, last)
 	}
-	// The stored status is stamped at ingest, so it proves nothing — but the facts above and the
-	// observed state below do, and pointing only at the prose made the model ignore them.
-	lines = append(lines, "The event's stored status is stamped when the alert is ingested and is not evidence "+
-		"that the incident ended. Judge that from when the alert last fired, the observed state below, and the "+
+	// Recorded evidence only: status is set at ingest, and a same-finding_id re-fire records no new
+	// firing, so "has not fired since" told the model an active alert was over.
+	lines = append(lines, "The event's stored status is not evidence that the incident ended, and a missing "+
+		"firing record is not evidence that the alert stopped: re-fires of the same alert are not always recorded. "+
+		"Judge whether the problem is still present from the recorded firings, the observed state below, and the "+
 		"investigation's own observations.")
 	return strings.Join(lines, "\n")
 }
 
-func occurrenceLine(ctx *security.RequestContext, dbms *common.DatabaseManager, accountId, eventId string) string {
+func occurrenceLine(ctx *security.RequestContext, dbms *common.DatabaseManager, accountId, eventId string, now time.Time) string {
 	var (
 		occurrence int
 		firstSeen  sql.NullTime
@@ -216,24 +228,26 @@ func occurrenceLine(ctx *security.RequestContext, dbms *common.DatabaseManager, 
 		`SELECT d.occurrence_number, d.absolute_first_seen_at
 		   FROM event_duplicates d JOIN events e ON e.fingerprint = d.fingerprint
 		  WHERE e.id = $1 AND e.cloud_account_id = $2 AND d.cloud_account_id = e.cloud_account_id
-		  ORDER BY d.occurrence_number DESC LIMIT 1`, eventId, accountId).Scan(&occurrence, &firstSeen)
+		    AND d.created_at <= $3
+		  ORDER BY d.occurrence_number DESC LIMIT 1`, eventId, accountId, now).Scan(&occurrence, &firstSeen)
 	if err != nil || occurrence <= 1 || !firstSeen.Valid {
 		return ""
 	}
-	return fmt.Sprintf("This alert has fired %d times, first seen %s. A fix that only restores service "+
+	return fmt.Sprintf("This alert has at least %d recorded firings, first seen %s. A fix that only restores service "+
 		"has been tried before or the cause recurs.", occurrence, firstSeen.Time.UTC().Format(time.RFC3339))
 }
 
-// lastFiredLine says when this alert last happened, which is what decides whether remediation is
-// still needed. Prose describes the incident as it was investigated, sometimes days earlier.
+// lastFiredLine states the latest RECORDED firing of this alert. Prose describes the incident as it was
+// investigated, sometimes days earlier. It is a lower bound: a later re-fire may not be recorded.
 func lastFiredLine(ctx *security.RequestContext, dbms *common.DatabaseManager, accountId, eventId string, ev *eventFacts, now time.Time) string {
 	lastFired := ev.StartsAt
 	var recurrence sql.NullTime
 	err := dbms.Db.QueryRowx(
 		`SELECT MAX(d.created_at)
 		   FROM event_duplicates d JOIN events e ON e.fingerprint = d.fingerprint
-		  WHERE e.id = $1 AND e.cloud_account_id = $2 AND d.cloud_account_id = e.cloud_account_id`,
-		eventId, accountId).Scan(&recurrence)
+		  WHERE e.id = $1 AND e.cloud_account_id = $2 AND d.cloud_account_id = e.cloud_account_id
+		    AND d.created_at <= $3`,
+		eventId, accountId, now).Scan(&recurrence)
 	if err == nil && recurrence.Valid && recurrence.Time.After(lastFired) {
 		lastFired = recurrence.Time
 	}
@@ -241,11 +255,11 @@ func lastFiredLine(ctx *security.RequestContext, dbms *common.DatabaseManager, a
 		return ""
 	}
 
-	line := fmt.Sprintf("Last fired: %s (%s ago).", lastFired.UTC().Format(time.RFC3339), humanDuration(now.Sub(lastFired.UTC())))
-	if !ev.EndsAt.IsZero() {
-		line += fmt.Sprintf(" The alert recorded an end at %s.", ev.EndsAt.UTC().Format(time.RFC3339))
+	line := fmt.Sprintf("Latest recorded firing: %s (%s ago).", lastFired.UTC().Format(time.RFC3339), humanDuration(now.Sub(lastFired.UTC())))
+	if ev.EndsAt.After(ev.StartsAt) && !ev.EndsAt.After(now) {
+		line += fmt.Sprintf(" The source recorded an end at %s.", ev.EndsAt.UTC().Format(time.RFC3339))
 	}
-	return line + " Decide from this and the observed state below whether remediation is still needed."
+	return line
 }
 
 // targetSection names what the command has to act on. The investigation mentions these in prose,
@@ -305,26 +319,110 @@ type inventoryResource struct {
 
 // configSection states the target's stored configuration and the resources it points at: what a
 // rollback restores, and side paths like a queue's dead-letter target the investigation never saw.
-func configSection(ctx *security.RequestContext, dbms *common.DatabaseManager, accountId string, ev *eventFacts) string {
+// For a pod it adds the owning workload: pod rows carry no limits or deploy annotations, and commands
+// change the owner. Ownership is returned apart so budget trimming of config never drops it.
+func configSection(ctx *security.RequestContext, dbms *common.DatabaseManager, accountId string, ev *eventFacts) (config, ownership string) {
 	region, required := regionScope(tools.GetCloudProviderForAccount(accountId), ev.Region)
 	if required && region == "" {
 		// A cloud resource is identified by its region; without one, any row we returned would be a
 		// guess the plan would then build commands from.
-		return ""
+		return "", ""
 	}
 	subject := loadResource(dbms, accountId, ev.SubjectName, region, ev.SubjectType, ev.SubjectNS)
-	if subject == nil {
-		return ""
+	var owner *inventoryResource
+	if ev.Owner != "" && !strings.EqualFold(ev.Owner, ev.SubjectName) && ev.SubjectNS != "" {
+		owner = loadResource(dbms, accountId, ev.Owner, region, ev.OwnerKind, ev.SubjectNS)
 	}
-	blocks := []string{renderResource(subject)}
-	// A resource's config quotes its own identifier too; rendering the subject twice would spend
-	// both neighbour slots on it.
-	for _, arn := range linkedArns(subject.Meta, subject.Arn, maxLinkedConfigs) {
-		if linked := loadResourceByArn(dbms, accountId, arn); linked != nil {
-			blocks = append(blocks, renderResource(linked))
+	if subject == nil && owner == nil {
+		return "", ""
+	}
+	blocks := []string{}
+	workload := owner
+	if workload == nil {
+		workload = subject
+	}
+	if subject != nil {
+		blocks = append(blocks, renderResource(subject))
+		// A resource's config quotes its own identifier too; rendering the subject twice would spend
+		// both neighbour slots on it.
+		for _, arn := range linkedArns(subject.Meta, subject.Arn, maxLinkedConfigs) {
+			if linked := loadResourceByArn(dbms, accountId, arn); linked != nil {
+				blocks = append(blocks, renderResource(linked))
+			}
 		}
 	}
-	return configSectionHeading + "\n" + strings.Join(blocks, "\n")
+	if owner != nil {
+		blocks = append(blocks, "Owning workload (what a command changes): "+renderResource(owner))
+	}
+	if by := managedBy(workload.Meta); by != "" {
+		ownership = fmt.Sprintf("## Deployment ownership\n%s %s is managed by %s: its spec is re-applied from that source on every deploy.",
+			workload.Type, workload.Name, by)
+	}
+	return configSectionHeading + "\n" + strings.Join(blocks, "\n"), ownership
+}
+
+// conclusionSection states the investigation's stored change plan, which is lifted out of its text and
+// never reached a plan before.
+func conclusionSection(plan *codeChangePlan) string {
+	if plan == nil {
+		return ""
+	}
+	lines := []string{"## Investigation conclusion"}
+	switch plan.Kind {
+	case "source":
+		lines = append(lines, "Where the root cause is: application source code.")
+	case "deployment":
+		lines = append(lines, "Where the root cause is: deployment configuration.")
+	}
+	if len(plan.Files) > 0 {
+		lines = append(lines, "Files: "+truncate(strings.Join(plan.Files, ", "), 300))
+	}
+	if plan.Change != "" {
+		lines = append(lines, "Required change: "+truncate(plan.Change, 600))
+	}
+	if plan.TargetValue != "" {
+		lines = append(lines, "Target value: "+truncate(plan.TargetValue, 120))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// loadChangePlan reads the investigation's stored change plan for this event. nil when the
+// investigation concluded none, or stored something else in its analysis column.
+func loadChangePlan(ctx *security.RequestContext, dbms *common.DatabaseManager, accountId, eventId string) *codeChangePlan {
+	var analysis string
+	err := dbms.Db.QueryRowx(
+		`SELECT COALESCE(a.analysis::text,'') FROM event_log_analysis a
+		   JOIN events e ON e.id = a.event_id AND e.cloud_account_id = $2
+		  WHERE a.event_id = $1 AND a.analysis_type = 'investigation'
+		  ORDER BY a.updated_at DESC LIMIT 1`, eventId, accountId).Scan(&analysis)
+	if err != nil {
+		return nil
+	}
+	return unmarshalCodeChangePlan(analysis)
+}
+
+// managedBy names what re-applies a workload on deploy, from the labels and annotations Helm and
+// Argo CD stamp on the objects they own. "" when none is present.
+func managedBy(meta map[string]any) string {
+	config, _ := meta["config"].(map[string]any)
+	labels, _ := config["labels"].(map[string]any)
+	annotations, _ := config["annotations"].(map[string]any)
+	get := func(m map[string]any, k string) string { return scalarString(m[k]) }
+	if app := firstNonEmpty(get(labels, "argocd.argoproj.io/instance"), get(annotations, "argocd.argoproj.io/tracking-id")); app != "" {
+		return "Argo CD application " + truncate(app, 80)
+	}
+	release := get(annotations, "meta.helm.sh/release-name")
+	if release == "" && !strings.EqualFold(get(labels, "app.kubernetes.io/managed-by"), "helm") && meta["is_helm_release"] != true {
+		return ""
+	}
+	out := "Helm"
+	if release != "" {
+		out += " release " + release
+	}
+	if values := get(annotations, "ci.nudgebee.com/helm.values.filePath"); values != "" {
+		out += " (values file " + values + ")"
+	}
+	return out
 }
 
 // regionScope reports which region to match on, and whether a region is required at all.
@@ -627,22 +725,31 @@ type attempt struct {
 	Data      []byte
 	At        time.Time
 	SameEvent bool
+	// FiredAfter counts recorded firings after the attempt: the outcome a value read-back can't see.
+	FiredAfter int
+	LastFired  sql.NullTime
 }
 
 // attemptsSection lists what was already tried for this alert, here and on earlier firings. Without
 // it a regenerate proposes the failed command again, or claims no fix exists while a PR sits open.
-func attemptsSection(ctx *security.RequestContext, dbms *common.DatabaseManager, accountId, eventId string) string {
+func attemptsSection(ctx *security.RequestContext, dbms *common.DatabaseManager, accountId, eventId, subjectNS string, now time.Time) string {
 	rows, err := dbms.Db.Queryx(
 		`SELECT er.type, COALESCE(er.type_reference_id,''), COALESCE(er.status,''),
 		        COALESCE(er.pr_lifecycle_state,''), COALESCE(er.data->>'pr_branch', er.data->>'branch', ''),
-		        COALESCE(er.data,'{}'::jsonb), er.created_at, (er.event_id = e.id) AS same_event
+		        COALESCE(er.data,'{}'::jsonb), er.created_at, (er.event_id = e.id) AS same_event,
+		        fired.n, fired.last
 		   FROM event_resolution er
 		   JOIN events other ON other.id = er.event_id
 		   JOIN events e ON e.id = $1 AND e.cloud_account_id = $2
+		  CROSS JOIN LATERAL (
+		        SELECT count(*) AS n, MAX(d.created_at) AS last FROM event_duplicates d
+		         WHERE d.fingerprint = e.fingerprint AND d.cloud_account_id = $2 AND d.created_at > er.created_at AND d.created_at <= $4
+		  ) fired
 		  WHERE er.type IN ('CommandExecution', 'PullRequest')
 		    AND other.cloud_account_id = $2
 		    AND other.fingerprint = e.fingerprint
-		  ORDER BY er.created_at DESC LIMIT $3`, eventId, accountId, maxAttempts)
+		    AND er.created_at <= $4
+		  ORDER BY er.created_at DESC LIMIT $3`, eventId, accountId, 4*maxAttempts, now) // headroom: attemptInScope filters after
 	if err != nil {
 		ctx.GetLogger().Warn("remediation facts: attempt lookup failed", "error", err)
 		return ""
@@ -650,9 +757,12 @@ func attemptsSection(ctx *security.RequestContext, dbms *common.DatabaseManager,
 	defer func() { _ = rows.Close() }()
 
 	lines := []string{}
-	for rows.Next() {
+	for rows.Next() && len(lines) < maxAttempts {
 		var a attempt
-		if err := rows.Scan(&a.Kind, &a.Ref, &a.Status, &a.Lifecycle, &a.Branch, &a.Data, &a.At, &a.SameEvent); err != nil {
+		if err := rows.Scan(&a.Kind, &a.Ref, &a.Status, &a.Lifecycle, &a.Branch, &a.Data, &a.At, &a.SameEvent, &a.FiredAfter, &a.LastFired); err != nil {
+			continue
+		}
+		if !attemptInScope(a, subjectNS) {
 			continue
 		}
 		lines = append(lines, renderAttempt(a))
@@ -670,6 +780,16 @@ func attemptsSection(ctx *security.RequestContext, dbms *common.DatabaseManager,
 		"the fix to recommend, so name it."
 }
 
+// attemptInScope drops kubectl attempts in another namespace: a demo/cart patch recorded on a
+// benchmark-server alert steered the next plan into patching cart.
+func attemptInScope(a attempt, subjectNS string) bool {
+	if a.Kind != "CommandExecution" || subjectNS == "" || !strings.HasPrefix(strings.TrimSpace(a.Ref), "kubectl ") {
+		return true
+	}
+	ns := tools.KubectlNamespace(a.Ref)
+	return ns == "" || ns == subjectNS
+}
+
 func renderAttempt(a attempt) string {
 	scope := "an earlier firing of this alert"
 	if a.SameEvent {
@@ -685,13 +805,32 @@ func renderAttempt(a attempt) string {
 		if a.Branch != "" {
 			line += fmt.Sprintf(" (branch %s)", truncate(a.Branch, 120))
 		}
-		return line + " -> " + state
+		line += " -> " + state
+		if state == "merged" {
+			// ponytail: no merge SHA is stored for fix PRs, so "deployed" cannot be checked against the
+			// running image; firings after the merge are the evidence. Store the SHA to check it exactly.
+			line += " (whether the merge is deployed is not recorded)"
+		}
+		return line + firedAfterNote(a)
 	}
 	line := fmt.Sprintf("- %s on %s: ran %s -> %s", at, scope, truncate(a.Ref, 200), strings.ToLower(firstNonEmpty(a.Status, "unknown")))
 	if v := verifyOutcome(a.Data); v != "" {
 		line += ", " + v
 	}
-	return line
+	return line + firedAfterNote(a)
+}
+
+// firedAfterNote states a recorded firing after an attempt; with none it says nothing, since re-fires
+// aren't always recorded.
+func firedAfterNote(a attempt) string {
+	if a.FiredAfter == 0 {
+		return ""
+	}
+	note := fmt.Sprintf("; a firing of this alert was recorded after it (%d recorded)", a.FiredAfter)
+	if a.LastFired.Valid {
+		note += ", last at " + a.LastFired.Time.UTC().Format(time.RFC3339)
+	}
+	return note
 }
 
 func verifyOutcome(data []byte) string {

@@ -5,13 +5,13 @@
 # OSS installs use the public GHCR mirror of our internal cloud-collector base
 # image (Alpine + pre-baked tooling). EE deploys override RUNTIME_BASE to their
 # internal registry via --build-arg.
-ARG RUNTIME_BASE=ghcr.io/nudgebee/nudgebee-cloud-collector-base:alpine3.22
+ARG RUNTIME_BASE=ghcr.io/nudgebee/nudgebee-cloud-collector-base:alpine3.23
 
-FROM golang:1.26.6-alpine AS build-stage
+FROM ghcr.io/nudgebee/golang:1.26.10-alpine AS build-stage
 
 # Use the builder image's bundled Go toolchain, never an auto-downloaded one.
 # GOTOOLCHAIN=local guarantees the compile uses whatever go the base image ships
-# (currently 1.26.6) and future-proofs a base bump: raising the builder to
+# (currently 1.26.10) and future-proofs a base bump: raising the builder to
 # golang:1.26.7-alpine automatically compiles with 1.26.7 — with a hardcoded
 # version this line would silently download and reuse the old toolchain. It also
 # gives the `go build` layer a distinct cache key so edge.yaml's registry cache
@@ -43,6 +43,14 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 FROM ${RUNTIME_BASE}
 
 WORKDIR /app
+
+# Refresh OS packages here, not only in the base: the GHCR base tag is pushed by
+# hand, so its packages (and CA bundle) go stale between rebuilds. Bumping
+# OS_PKG_EPOCH changes this layer's cache key so the registry cache can't serve a
+# stale package layer (same convention as api-server/services).
+# W44 pulls ca-certificates 20261020, which drops the distrusted emSign ECC Root CA - G3.
+ARG OS_PKG_EPOCH=2026-W44
+RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" && apk upgrade --no-cache
 
 # tini as PID 1: CLI tools invoked by this server (az, gcloud, ...) can spawn
 # background subprocesses they never wait on. Once their parent exits, those

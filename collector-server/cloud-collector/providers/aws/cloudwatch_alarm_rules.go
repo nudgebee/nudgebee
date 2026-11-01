@@ -147,19 +147,5 @@ func compositeAlarmRule(alarm cwtypes.CompositeAlarm, regionName, accountNumber 
 // the collector cannot dial (me-south-1 for Janus) failed the whole rule sync
 // every day, and no alarm from any region was stored.
 func skipAlarmRegion(logger *slog.Logger, err error, regionName string) bool {
-	switch {
-	case isRegionEndpointMissing(err):
-		logger.Debug("skipping region without cloudwatch endpoint", "region", regionName)
-	case isServiceUnavailableInRegion(err):
-		logger.Info("skipping region where cloudwatch rejects the request as unavailable", "error", err, "region", regionName)
-	case isRegionUnreachable(err):
-		logger.Warn("skipping unreachable cloudwatch region endpoint", "error", err, "region", regionName)
-	case isRegionDisabled(err):
-		logger.Info("skipping cloudwatch region not enabled for this account", "error", err, "region", regionName)
-	case isThrottleError(err):
-		logger.Warn("skipping rate-limited cloudwatch region; will retry next sync", "error", err, "region", regionName)
-	default:
-		return false
-	}
-	return true
+	return skipRegion(logger, err, regionName, "service", "cloudwatch alarm rules")
 }

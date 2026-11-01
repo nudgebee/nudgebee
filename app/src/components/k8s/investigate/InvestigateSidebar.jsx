@@ -16,11 +16,12 @@ import { Label } from '@ui/Label';
 import { Button } from '@ui/Button';
 import { Link } from '@ui/Link';
 import NBStatusBadge from '@shared/widgets/NBStatusBadge';
-import ScoreDisplay from '@shared/widgets/ScoreDisplay';
-import PriorityPinControl from '@shared/widgets/PriorityPinControl';
+import TriageScore from '@shared/widgets/TriageScore';
 import InvestigateDropdown from '@components/k8s/investigate/InvestigateDropdown';
 import { EventOccurrenceRows, EventStateRows, useEventOccurrence } from '@components/k8s/investigate/EventStateRows';
 import k8sApi from '@api1/kubernetes';
+import { SOURCE_SEVERITY_INFO } from '@api1/triage';
+import { describeContainerMemory } from '@components/k8s/investigate/podFacts';
 import { hasWriteAccess, getUserSession } from '@lib/auth';
 import { snackbar } from '@shared/snackbarService';
 import { exitCodeMapping, snakeToTitleCase } from 'src/utils/common';
@@ -68,13 +69,24 @@ const rowSx = {
 };
 const valueTextSx = { color: ds.gray[700], lineHeight: '1.4' };
 
-const Row = ({ label, children, testId }) => (
+// `info` puts an icon after the value whose hover says what the row means.
+const Row = ({ label, children, testId, info }) => (
   <Box sx={rowSx} data-testid={testId}>
     <Text value={label} secondaryText />
-    <Box sx={{ minWidth: 0, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: ds.space[1] }}>{children}</Box>
+    <Box sx={{ minWidth: 0, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: ds.space[1] }}>
+      {children}
+      {info && (
+        <Tooltip title={info} arrow placement='bottom'>
+          {/* SafeIcon can't hold a ref, and without one the tooltip never opens. */}
+          <Box component='span' sx={{ display: 'inline-flex' }}>
+            <SafeIcon src={infoIcon} alt='info' style={{ width: '13px', height: '13px', cursor: 'pointer', filter: 'opacity(0.5)' }} />
+          </Box>
+        </Tooltip>
+      )}
+    </Box>
   </Box>
 );
-Row.propTypes = { label: PropTypes.string, children: PropTypes.node, testId: PropTypes.string };
+Row.propTypes = { label: PropTypes.string, children: PropTypes.node, testId: PropTypes.string, info: PropTypes.string };
 
 // "pod" → "Pod", "ec2_instance" → "Ec2 Instance"; "Where" when the event has no type.
 const subjectLabel = (type) => {
@@ -335,6 +347,7 @@ function InvestigateSidebar({
     (pd) => pd?.lastStatus && (pd.lastStatus.state || pd.lastStatus.exitCode !== undefined || pd.lastStatus.reason)
   );
   const restarts = podDetails?.data?.restarts;
+  const containersReady = podDetails?.data?.containersReady;
   const showHowOften = !!occurrence || (isK8s && (restarts > 0 || othersData?.length > 0));
 
   return (
@@ -465,31 +478,32 @@ function InvestigateSidebar({
             closedEvidenceUrl={closedEvidenceUrl}
             onToggleStatus={handleToggleAlertStatus}
           />
-          <Row label='Severity'>
+          {/* This row and Triage below can disagree, and nothing said why. This one is what the
+              alert's source set; the Triage row already explains its own score on hover. */}
+          <Row label='Source Severity' info={SOURCE_SEVERITY_INFO}>
             <Label text={row?.priority || '-'} margin='0' />
           </Row>
-          <Row label='Triage'>
-            {row?.computed_score !== null && row?.computed_score !== undefined && (
-              <ScoreDisplay
+          {row?.computed_score !== null && row?.computed_score !== undefined && (
+            <Row label='Triage'>
+              <TriageScore
+                layout='inline'
                 score={row?.computed_score}
                 priority={row?.computed_priority}
                 scoreFactors={row?.score_factors}
                 confidence={row?.score_confidence}
-              >
-                <PriorityPinControl
-                  eventId={row?.id}
-                  accountId={row?.cloud_account_id || router.query.accountId}
-                  currentPriority={row?.computed_priority}
-                  currentScore={row?.computed_score}
-                  currentScoreFactors={row?.score_factors}
-                  canWrite={hasWriteAccess(router.query.accountId)}
-                  onChanged={(newPriority, newScore, newFactors) => {
-                    onRowChange?.((prev) => ({ ...prev, computed_priority: newPriority, computed_score: newScore, score_factors: newFactors }));
-                  }}
-                  align='end'
-                />
-              </ScoreDisplay>
-            )}
+                eventId={row?.id}
+                accountId={row?.cloud_account_id || router.query.accountId}
+                canWrite={hasWriteAccess(router.query.accountId)}
+                onChanged={(newPriority, newScore, newFactors) => {
+                  onRowChange?.((prev) => ({ ...prev, computed_priority: newPriority, computed_score: newScore, score_factors: newFactors }));
+                }}
+                align='end'
+              />
+            </Row>
+          )}
+          {/* The triage-status dropdown is its own field, not part of the score — split
+              out of the Triage row per the triage-score design handoff. */}
+          <Row label='Status'>
             <NBStatusBadge
               eventId={row?.id}
               currentStatus={row?.nb_status || 'OPEN'}
@@ -526,6 +540,24 @@ function InvestigateSidebar({
 
         {isK8s && hasCrashDetails && (
           <Section title='Container' testId='sidebar-container'>
+            {containersReady?.total > 0 && (
+              // The same two-column grid as the container rows below, so the values line up.
+              <Box
+                sx={{
+                  display: 'grid',
+                  alignItems: 'flex-start',
+                  gridTemplateColumns: `${ds.space.mul(1, 25)} minmax(0, 1fr)`,
+                  gap: 'var(--ds-space-1)',
+                }}
+              >
+                <Text value={'Ready'} secondaryText />
+                <Text
+                  value={`${containersReady.ready} of ${containersReady.total} ${containersReady.total === 1 ? 'container' : 'containers'}`}
+                  secondaryText
+                  sx={{ color: containersReady.ready < containersReady.total ? ds.red[500] : ds.gray[700] }}
+                />
+              </Box>
+            )}
             {podDetails?.data?.containers?.length > 0 && (
               <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
                 {podDetails?.data?.containers?.map((pd, index) => (
@@ -575,6 +607,12 @@ function InvestigateSidebar({
                             <>
                               <Text value={'Status'} secondaryText />
                               <Text value={pd.status.state} secondaryText sx={{ color: ds.gray[700] }} />
+                            </>
+                          )}
+                          {describeContainerMemory(pd) && (
+                            <>
+                              <Text value={'Memory'} secondaryText />
+                              <Text value={describeContainerMemory(pd)} secondaryText sx={{ color: ds.gray[700] }} />
                             </>
                           )}
                         </>

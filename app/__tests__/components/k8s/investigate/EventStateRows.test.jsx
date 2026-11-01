@@ -71,6 +71,11 @@ describe('event occurrences', () => {
     // Ends at this event (plus the microsecond slack), so the count includes it.
     expect(earlier[2].end_date.toISOString()).toBe('2026-09-14T09:00:03.197Z');
     expect(earlier[5]).toEqual({ name: 'starts_at', order: 'asc' });
+    // Grouped on starts_at: without a unit the query engine truncates it to the day,
+    // so same-day firings tie and "Last one" reads as midnight.
+    const toTheSecond = [{ name: 'starts_at', expr: 'date_unit', args: ['second'] }];
+    expect(earlier[6]).toEqual(toTheSecond);
+    expect(later[6]).toEqual(toTheSecond);
     // One millisecond later, so an event on the boundary is not counted twice.
     expect(later[2].start_date.toISOString()).toBe('2026-09-14T09:00:03.198Z');
 

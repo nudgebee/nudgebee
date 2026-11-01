@@ -316,8 +316,10 @@ const ClusterSummary = ({ accountId, ec2Summary = {}, serviceName = '' }: any) =
               },
             }}
           />
-          <Stat size='md' label={labels.storageVolume} value={ebsVolumeCount || '-'} />
-          <Stat size='md' label={labels.networkInterface} value={nicsCount || '-'} />
+          {/* Pre-stringified: Stat's number path renders a numeric 0 as '-' (formatNumber),
+              and the ticket's standard for empty counts is 0. */}
+          <Stat size='md' label={labels.storageVolume} value={String(ebsVolumeCount)} />
+          <Stat size='md' label={labels.networkInterface} value={String(nicsCount)} />
         </Box>
         {uniqueInstanceTypes?.size > 0 && (
           <>
@@ -464,7 +466,7 @@ const EC2UtilizationAndHealth = ({ accountId, clusterSummary = {}, serviceName }
             label='Fired Alarm Count'
             value={
               <Box sx={{ display: 'inline-flex', alignItems: 'baseline', gap: ds.space[2] }}>
-                <Box component='span'>{clusterSummary?.events_aggregate?.aggregate?.count ?? '-'}</Box>
+                <Box component='span'>{clusterSummary?.events_aggregate?.aggregate?.count ?? 0}</Box>
                 <Typography component='span' sx={{ fontSize: ds.text.caption, color: ds.gray[400], whiteSpace: 'nowrap' }}>
                   last 7 days
                 </Typography>
@@ -479,7 +481,7 @@ const EC2UtilizationAndHealth = ({ accountId, clusterSummary = {}, serviceName }
             label='Optimize Count'
             value={
               <Box component='span' className='stat-value-affordance' sx={{ transition: `color ${ds.motion.micro} ${ds.motion.ease}` }}>
-                {clusterSummary?.recommendation_aggregate?.aggregate?.count ?? '-'}
+                {clusterSummary?.recommendation_aggregate?.aggregate?.count ?? 0}
               </Box>
             }
             onClick={handleOptimizeClick}

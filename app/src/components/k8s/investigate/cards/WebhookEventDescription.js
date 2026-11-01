@@ -1,5 +1,6 @@
 import DescriptionIcon from '@assets/kubernetes/description-icon.svg';
 import MarkDowns from '@shared/viewers/MarkDowns';
+import { summarizeDescription } from './cardSummaries';
 
 class WebhookEventDescription {
   constructor(evidenceData, event, index) {
@@ -18,6 +19,7 @@ class WebhookEventDescription {
     const eventData = this.evidenceData;
     if (eventData?.data?.name == 'Event Description') {
       this.webhookData = eventData;
+      this.insightData = summarizeDescription(eventData.data.data);
       this.renderContent = true;
     }
     return this.renderContent;

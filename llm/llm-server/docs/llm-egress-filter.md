@@ -100,6 +100,28 @@ they are opt-in. Extension-registered entropy detectors should cap candidate
 token length (current extension uses 512 chars) so multi-KB base64 blobs
 don't burn O(n) Shannon-entropy compute per call.
 
+### False-positive controls (EE)
+
+Tuned against the historical LLM-payload corpus rather than by example. Each
+check suppresses a shape that is data, not a credential, and is paired with
+a test proving the credential version of that shape still fires
+(`ee/egressfilter/fp_regression_test.go`):
+
+- **Entropy gate** — base64 is judged as a whole block (joined across `/`,
+  `%2F`, and fixed-width wrapped lines): labelled digests, SOPS ciphertext,
+  certificate/public-key/signature PEM bodies, blocks that decode to readable
+  text with nothing secret in it (decoded text is rescanned), and >512-char
+  blocks that decode to binary are skipped; key material (PEM `PRIVATE KEY`,
+  DER private keys, PKCS#12/JKS keystores, PGP secret keys) never is.
+  Word-built names (branches, migrations, test names) and values of `*_id` /
+  pagination-cursor fields are identifiers. Hits wholly inside another
+  rule's hit are dropped as duplicates.
+- **generic-kv-secret** — the value must be a literal: comparisons, code
+  (`cfg.get(`, `self.x`), references and bind parameters (`${X}`, `$1`,
+  `%s`), placeholders, masks, paths and public keys are skipped.
+- **credit-card** — card grouping and issuer prefix/length (IIN) are checked
+  on top of Luhn; values of id fields are skipped.
+
 ## 5. Extending the rule set
 
 Every detector is a `Filter`:
@@ -250,6 +272,61 @@ GET    /api/admin/egressfilter/tenants             # debug list (max 100)
 PATCH applies removes first, then adds, so callers don't need to think
 about ordering. Per-tenant budgets: ≤500 allowlist entries,
 ≤100 disabled_rules.
+
+## 6b. Tool-output redaction
+
+The wrapper above sees the outbound request only; it never touches what is
+stored. Tool output is the main way credentials enter a conversation (a pod's
+environment, a log line that printed a connection string, a manifest with an
+inline token), and once the model has read one it can reuse it in later
+commands. So credential values are also replaced in every tool output right
+after the tool returns, before the output is saved to
+`llm_conversation_tool_calls` or shown to the model:
+`egressfilter.RedactToolOutput` (`tool_output.go`), called from the planner
+tool call (data and error text), custom-agent tool calls, watch observations
+and the event analyzer.
+
+**What is replaced.** Only the value; names, hosts and quotes stay, so the
+output is still useful: `DB_PASSWORD=[REDACTED:secret-assignment]`,
+`postgresql://app:[REDACTED:url-password]@db:5432/x`. The rules are a
+tool-output set in `tool_output_rules.go`:
+
+| Rule id | Matches |
+|---|---|
+| `url-password` | the password in `scheme://user:password@host` |
+| `secret-assignment` | the value of `NAME=value`, `NAME: value` or `"name": "value"` when NAME ends in a secret word (password, secret, token, api_key, credentials, …) |
+| `k8s-env-secret` | the `value:` of a Kubernetes env entry whose `name:` ends in a secret word |
+| `private-key-block` | a whole `-----BEGIN … PRIVATE KEY-----` block |
+| `authorization-header` | the credential after `Authorization: Bearer/Basic/Token` |
+| `aws-access-key-id`, `github-pat`, `github-fine-grained-pat`, `gitlab-pat`, `slack-bot-token`, `gcp-api-key`, `openai-api-key`, `anthropic-api-key`, `google-oauth-client-secret` | tokens by their own shape (same ids as the outbound rules for the same format) |
+
+References, placeholders, masked values, code that names a secret
+(`api_key=api_key`, `account.AccessKey`) and file paths are kept. These rules
+are **not** in the outbound registry: the outbound rules (and the EE entropy
+backstop) cover whole matches, which would hide key names and hosts in tool
+output. The placeholders do not trip the outbound rules on the next call.
+
+**Settings.** It follows the egress filter settings except the mode:
+
+| Setting | Effect on tool output |
+|---|---|
+| `LLM_SERVER_EGRESSFILTER_ENABLED` / `_SECRETS_ENABLED` false | not redacted |
+| `LLM_SERVER_EGRESSFILTER_TOOL_OUTPUT_REDACT_ENABLED` false | not redacted (kill switch for this path only) |
+| tenant `enabled=false` | not redacted for the tenant |
+| tenant `disabled_agents` | not redacted for those agents |
+| env + tenant allowlist | allowlisted values are kept |
+| tenant `disabled_rules` | those rule ids are skipped |
+| `mode` (detect / enforce / redact) | **no effect**: it governs the outbound request only. Tool output is redacted whenever the scanner is on, so the default `detect` still keeps credentials out of the model's context and the stored tool calls. |
+
+**Visibility.** Each redaction emits a `FilterEvent` (mode `redact`, source
+`tool_result`, `Hit.Tool` set, `Redactions[].Placeholder` filled), the log
+line `egressfilter: tool output redacted`, and the scan metrics with
+`provider=tool_output` and the tool name as `model`.
+
+The planner prompt fragment `security_rules` tells the model what a
+placeholder means: never recover or reuse a redacted value, reference the
+credential where it lives (an env var inside the pod) or use the integration
+tool, and say in its answer that credentials were found, without the value.
 
 ## 7. Errors
 
@@ -429,6 +506,7 @@ per-detector flags sit underneath.
 | `LLM_SERVER_EGRESSFILTER_ENABLED` | `true` | **Master switch.** When false, the LLM factory does not install the wrapper at all — no decorator, no metric emission, no payload serialization, zero overhead. Per-detector flags below have no effect until this is true. |
 | `LLM_SERVER_EGRESSFILTER_SECRETS_ENABLED` | `true` | Per-detector knob for the secrets scanner. When master is on and this is true, `Scan` runs against every outbound payload. |
 | `LLM_SERVER_EGRESSFILTER_SECRETS_MODE` | `detect` | One of `detect` or `enforce`. `ParseMode` accepts the legacy alias `audit` (treated as `detect`); any other string also falls back to `detect`. Whether `enforce` actually blocks depends on whether an `ActionGate` is registered (see §6). |
+| `LLM_SERVER_EGRESSFILTER_TOOL_OUTPUT_REDACT_ENABLED` | `true` | Redact credential values in tool output before it is stored or shown to the model (see §6b). Applies only when the master and secrets switches are on; the mode does not affect it. |
 | `LLM_SERVER_EGRESSFILTER_ALLOWLIST` | unset | Comma-separated list of values to exclude from detection even if they match a rule. Typical use: vendor docs samples (`AKIAIOSFODNN7EXAMPLE`, `AIzaSyExampleKey...`) so enforce mode doesn't block prompts that quote documentation. Loaded once at startup; runtime changes require a restart. Match semantics: strict bytewise equality on the matched substring — no prefix, no regex, no case folding. Whitespace around each comma-separated entry is trimmed; empty entries are skipped. |
 | `LLM_SERVER_EGRESSFILTER_PII_NER_ENABLED` | `false` | Enables the NER (named-entity recognition) branch of the scrubber. NER is fuzzy on ops text and is opt-in for the same reasons on the scrubber itself. |
 | `LLM_SERVER_EGRESSFILTER_PII_TIMEOUT_SECONDS` | `10` | Per-request timeout for the `/scrub` HTTP call. Non-positive values fall back to 10s. |

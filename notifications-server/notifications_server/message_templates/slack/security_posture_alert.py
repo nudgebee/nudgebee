@@ -43,13 +43,27 @@ def get_security_posture_alert_message_params(**params) -> SecurityPostureAlertP
     return SecurityPostureAlertParams(**params)
 
 
-def _flatten(params: SecurityPostureAlertParams) -> List[Tuple[str, DigestRecommendation]]:
-    flat: List[Tuple[str, DigestRecommendation]] = []
-    for acc_data in params.recommendations_by_account.values():
+def _flatten(params: SecurityPostureAlertParams) -> List[Tuple[str, str, DigestRecommendation]]:
+    flat: List[Tuple[str, str, DigestRecommendation]] = []
+    for acc_id, acc_data in params.recommendations_by_account.items():
         for rec in acc_data.recommendations:
-            flat.append((acc_data.account_name, rec))
-    flat.sort(key=lambda t: (0 if t[1].severity == "Critical" else 1, -t[1].finops_score))
+            flat.append((acc_id, acc_data.account_name, rec))
+    flat.sort(key=lambda t: (0 if t[2].severity == "Critical" else 1, -t[2].finops_score))
     return flat
+
+
+def _security_alert_url(account_id: str, account_type: str, base_url: str) -> str:
+    """Mirrors securityFindingURL in
+    api-server/services/reports/security_posture_accounts.go — keep both in
+    sync. Only kubernetes accounts have a per-account security page; vm/cloud
+    accounts land on the cross-account /optimise Security tab instead.
+    """
+    base = base_url.rstrip("/")
+    if account_type == "vm":
+        return f"{base}/optimise?utm=security-alert#security/vm-vulnerabilities"
+    if account_type == "cloud":
+        return f"{base}/optimise?utm=security-alert#security/cloud-posture"
+    return f"{base}/kubernetes/details/{account_id}?accountId={account_id}&utm=security-alert#security/image-scan"
 
 
 def get_security_posture_alert_message_template(params: SecurityPostureAlertParams) -> Dict[str, Any]:
@@ -58,8 +72,8 @@ def get_security_posture_alert_message_template(params: SecurityPostureAlertPara
     scope = accounts_scope([acc.account_name for acc in params.recommendations_by_account.values()])
 
     flat = _flatten(params)
-    criticals = [(name, rec) for name, rec in flat if rec.severity == "Critical"]
-    highs = [(name, rec) for name, rec in flat if rec.severity != "Critical"]
+    criticals = [t for t in flat if t[2].severity == "Critical"]
+    highs = [t for t in flat if t[2].severity != "Critical"]
 
     # Critical-only in the message; top 5 high when there are no criticals.
     if criticals:
@@ -96,7 +110,7 @@ def get_security_posture_alert_message_template(params: SecurityPostureAlertPara
     ]
 
     attachments = []
-    for account_name, rec in shown:
+    for _account_id, account_name, rec in shown:
         badge = f" `{rec.severity.upper()}`" if rec.severity else ""
         title = f"{format_rule_name(rec.rule_name)} — {short_resource_name(rec.resource_name)}"
         actions = None
@@ -119,23 +133,17 @@ def get_security_posture_alert_message_template(params: SecurityPostureAlertPara
         footer_lines.append(f"_+{remaining} more in the dashboard_")
     footer_actions = None
     if account_count == 1:
-        only_account = next(iter(params.recommendations_by_account))
-        view_all_url = (
-            f"{base_url.rstrip('/')}/kubernetes/details/{only_account}"
-            f"?accountId={only_account}&utm=security-alert#security/image-scan"
-        )
+        only_account_id, only_account = next(iter(params.recommendations_by_account.items()))
+        view_all_url = _security_alert_url(only_account_id, only_account.account_type, base_url)
         footer_actions = [link_button(view_all_label, view_all_url, style="primary")]
+    elif shown:
+        # Land on the account of the top finding shown above, not an arbitrary one.
+        top_account_id = shown[0][0]
+        top_account = params.recommendations_by_account[top_account_id]
+        view_all_url = _security_alert_url(top_account_id, top_account.account_type, base_url)
+        footer_lines.append(f"View all findings on <{view_all_url}|{settings.urls.branding_name}>")
     else:
-        # No cross-account security view exists — land on the first account's instead.
-        first_account = next(iter(params.recommendations_by_account), None)
-        if first_account:
-            view_all_url = (
-                f"{base_url.rstrip('/')}/kubernetes/details/{first_account}"
-                f"?accountId={first_account}&utm=security-alert#security/image-scan"
-            )
-            footer_lines.append(f"View all findings on <{view_all_url}|{settings.urls.branding_name}>")
-        else:
-            footer_lines.append(f"View all findings on {settings.urls.branding_link('slack')}")
+        footer_lines.append(f"View all findings on {settings.urls.branding_link('slack')}")
     attachments.append(
         neutral_footer_attachment(
             text="\n".join(footer_lines),
