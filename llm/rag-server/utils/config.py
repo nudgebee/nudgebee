@@ -280,6 +280,8 @@ class Config:
     # llm-server — used by platform_capability_sync.py. Optional: unset
     # simply means platform_capability rows never populate.
     llm_server_url = os.environ.get("LLM_SERVER_URL", "")
+    llm_server_token = os.environ.get("LLM_SERVER_TOKEN", "")
+    llm_server_token_header = os.environ.get("LLM_SERVER_TOKEN_HEADER", "X-ACTION-TOKEN")
 
 
 class OTELConfig:

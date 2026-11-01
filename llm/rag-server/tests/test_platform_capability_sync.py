@@ -41,6 +41,26 @@ def _fake_engine(conn):
 @pytest.fixture(autouse=True)
 def _reset_llm_server_url(monkeypatch):
     monkeypatch.setattr(Config, "llm_server_url", "http://llm-server:8005")
+    monkeypatch.setattr(Config, "llm_server_token", "llm-service-secret")
+    monkeypatch.setattr(Config, "llm_server_token_header", "X-ACTION-TOKEN")
+
+
+@pytest.mark.parametrize("header", ["X-ACTION-TOKEN", "X-CUSTOM-LLM-TOKEN"])
+def test_fetch_catalog_authenticates_to_llm_server(monkeypatch, header):
+    monkeypatch.setattr(Config, "llm_server_token_header", header)
+    response = MagicMock()
+    response.json.return_value = {"capabilities": [{"name": "kubectl_execute"}]}
+    post = MagicMock(return_value=response)
+    monkeypatch.setattr(httpx, "post", post)
+
+    assert sync._fetch_catalog("acct-1") == [{"name": "kubectl_execute"}]
+    post.assert_called_once_with(
+        "http://llm-server:8005/v1/capabilities/catalog",
+        json={"account_id": "acct-1"},
+        headers={header: "llm-service-secret"},
+        timeout=30.0,
+    )
+    response.raise_for_status.assert_called_once()
 
 
 def test_noop_when_llm_server_url_unset(monkeypatch):
