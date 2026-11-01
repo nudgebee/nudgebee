@@ -168,7 +168,7 @@ func GetDynatraceConfigs(sc *security.RequestContext, accountId string) (string,
 	apiToken := ""
 	baseURL := ""
 
-	dynatraceIntegrations, err := core.ListIntegrationConfigs(sc, accountId, IntegrationDynatrace)
+	dynatraceIntegrations, err := core.ListActiveIntegrationConfigs(sc, accountId, IntegrationDynatrace)
 	if err != nil {
 		return apiToken, baseURL, fmt.Errorf("failed to list dynatrace integration configs: %w", err)
 	}
