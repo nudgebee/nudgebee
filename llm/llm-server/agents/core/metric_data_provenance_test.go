@@ -27,7 +27,7 @@ func TestMetricQueryReturnedNoData(t *testing.T) {
 		{"Splunk zero series", "splunk_metrics_query", `{"results":[{"total_series":0,"payload":[]}]}`, true, ToolStatusSuccess},
 		{"Splunk missing total series with empty payload", "splunk_metrics_query", `{"results":[{"payload":[]}]}`, true, ToolStatusSuccess},
 		{"Splunk missing total series with data", "splunk_metrics_query", `{"results":[{"payload":[{}]}]}`, false, ToolStatusSuccess},
-		{"OpenObserve empty flattened result", "openobserve_metrics_execute", `[]`, true, ToolStatusSuccess},
+		{"unknown tool is not treated as a metric read", "unregistered_metrics_tool", `[]`, false, ToolStatusSuccess},
 		{"zero-valued metric is data", "datadog_metrics_execute", `{"series":[{"pointlist":[[1720000000000,0]]}]}`, false, ToolStatusSuccess},
 		{"kubectl empty mutation success", "kubectl_execute", plannerToolNoData, false, ToolStatusEmptyResult},
 		{"failed metric query is not a successful empty read", "prometheus_execute", plannerToolNoData, false, ToolStatusFailure},
