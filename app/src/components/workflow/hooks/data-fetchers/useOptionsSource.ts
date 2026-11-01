@@ -19,6 +19,7 @@ export class OptionsSourceError extends Error {
 type OptionItem = { label: string; value: string; description?: string };
 type FetcherFn = (formValues: Record<string, any>) => Promise<OptionItem[]>;
 type GuardFn = (formValues: Record<string, any>) => boolean;
+const shownTransitionWarnings = new Set<string>();
 
 /**
  * Registry of guard functions keyed by options_source type.
@@ -217,7 +218,9 @@ const OPTIONS_SOURCE_FETCHERS: Record<string, FetcherFn> = {
     const transitionMeta = meta?.data?.tickets_get_transition_meta;
     const rawOptions = transitionMeta?.data;
     const warning = transitionMeta?.warning;
-    if (warning) {
+    const warningKey = `${integrationId}:${warning}`;
+    if (warning && !shownTransitionWarnings.has(warningKey)) {
+      shownTransitionWarnings.add(warningKey);
       snackbar.warning(warning);
     }
     const options = Array.isArray(rawOptions) ? rawOptions : [];

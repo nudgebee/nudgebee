@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -286,6 +287,263 @@ func TestGetGithubIssueWithClient_NotFoundAndGoneAreErrNotFound(t *testing.T) {
 			_, err := getGithubIssueWithClient(ctx, client, owner, repo, 99, owner+"/"+repo)
 			if !errors.Is(err, ticket.ErrNotFound) {
 				t.Fatalf("err = %v, want it to wrap ticket.ErrNotFound", err)
+			}
+		})
+	}
+}
+
+func TestPageCursorPaginationAndCap(t *testing.T) {
+	cursor := "next"
+	next, more, err := pageCursor(githubPageInfo{HasNextPage: true, EndCursor: &cursor}, "projects", 1)
+	if err != nil || !more || next != cursor {
+		t.Fatalf("pageCursor() = (%q, %t, %v), want next cursor", next, more, err)
+	}
+
+	_, more, err = pageCursor(githubPageInfo{HasNextPage: true, EndCursor: &cursor}, "projects", maxGitHubGraphQLPages)
+	if err == nil || more || !strings.Contains(err.Error(), "pagination limit") {
+		t.Fatalf("pageCursor() at cap = (%t, %v), want pagination error", more, err)
+	}
+}
+
+func TestGithubGraphQLErrorsPermissionCodesOnly(t *testing.T) {
+	for _, code := range []string{"INSUFFICIENT_SCOPES", "FORBIDDEN", "NOT_FOUND"} {
+		err := githubGraphQLErrors([]githubGraphQLError{{Message: "arbitrary message", Type: code}})
+		var permissionErr *githubProjectsPermissionError
+		if !errors.As(err, &permissionErr) {
+			t.Errorf("code %q should be treated as permission error, got %v", code, err)
+		}
+	}
+	if err := githubGraphQLErrors([]githubGraphQLError{{Message: "forbidden by wording only"}}); err == nil {
+		t.Error("message text alone should not trigger permission fallback")
+	}
+}
+
+func TestProjectStatusValuesUsesInlineOptionsAndExactSelectors(t *testing.T) {
+	var graphqlRequests int
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		graphqlRequests++
+		var request struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode GraphQL request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(request.Query, "projectsV2"):
+			_, _ = w.Write([]byte(`{"data":{"repository":{"projectsV2":{"nodes":[{"id":"P1","title":"Board","number":1}],"pageInfo":{"hasNextPage":false}}}}}`))
+		case strings.Contains(request.Query, "fields(first"):
+			_, _ = w.Write([]byte(`{"data":{"node":{"fields":{"nodes":[{"id":"F1","name":"Status","options":[{"id":"O1","name":"Ready"},{"id":"O2","name":"Done"}]}],"pageInfo":{"hasNextPage":false}}}}}`))
+		default:
+			t.Fatalf("unexpected GraphQL query: %s", request.Query)
+		}
+	})
+	client, srv := newTestGithubClient(t, handler)
+	defer srv.Close()
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+
+	values, err := projectStatusValues(ctx, client, "owner", "repo")
+	if err != nil {
+		t.Fatalf("projectStatusValues() error = %v", err)
+	}
+	if graphqlRequests != 2 {
+		t.Fatalf("GraphQL requests = %d, want 2 (options must be inline)", graphqlRequests)
+	}
+	status := values[2].(map[string]interface{})
+	if status["value"] != "github-project:P1:F1:O1" {
+		t.Fatalf("status value = %v, want exact selector", status["value"])
+	}
+	if status["id"] != "github-project:P1:F1:O1" {
+		t.Fatalf("status id = %v, want exact encoded selector", status["id"])
+	}
+}
+
+func TestUpdateProjectStatusResolvesNamesAndEncodedSelectors(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      string
+		itemProject string
+		secondItem  bool
+		wantOption  string
+		wantErr     string
+	}{
+		{name: "plain case insensitive", status: "in progress", itemProject: "P1", wantOption: "O1"},
+		{name: "encoded selector", status: "github-project:P1:F1:O2", itemProject: "P1", secondItem: true, wantOption: "O2"},
+		{name: "plain punctuation", status: "Ready: QA", itemProject: "P1", wantOption: "O1"},
+		{name: "ambiguous", status: "ready", itemProject: "P1", secondItem: true, wantErr: "ambiguous"},
+		{name: "unlinked", status: "QA", itemProject: "P1", wantErr: "not linked"},
+		{name: "encoded unlinked project", status: "github-project:P3:F1:O1", itemProject: "P1", wantErr: "not linked"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var mutationVariables map[string]interface{}
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request struct {
+					Query     string                 `json:"query"`
+					Variables map[string]interface{} `json:"variables"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Fatalf("decode GraphQL request: %v", err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case strings.Contains(request.Query, "projectItems"):
+					items := `{"id":"I1","project":{"id":"P1","title":"Board","number":1}}`
+					if test.secondItem {
+						items += `,{"id":"I2","project":{"id":"P2","title":"Other","number":2}}`
+					}
+					_, _ = fmt.Fprintf(w, `{"data":{"repository":{"issue":{"projectItems":{"nodes":[%s],"pageInfo":{"hasNextPage":false}}}}}}`, items)
+				case strings.Contains(request.Query, "fields(first"):
+					name := "Ready"
+					if test.name == "plain case insensitive" {
+						name = "In Progress"
+					}
+					if test.name == "plain punctuation" {
+						name = test.status
+					}
+					if test.name == "unlinked" {
+						name = "Ready"
+					}
+					_, _ = fmt.Fprintf(w, `{"data":{"node":{"fields":{"nodes":[{"id":"F1","name":"Status","options":[{"id":"O1","name":"%s"},{"id":"O2","name":"Done"}]}],"pageInfo":{"hasNextPage":false}}}}}`, name)
+				case strings.Contains(request.Query, "updateProjectV2ItemFieldValue"):
+					mutationVariables = request.Variables
+					_, _ = w.Write([]byte(`{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"I1"}}}}`))
+				default:
+					t.Fatalf("unexpected GraphQL query: %s", request.Query)
+				}
+			})
+			client, srv := newTestGithubClient(t, handler)
+			defer srv.Close()
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+
+			err := (&GitHubService{}).updateProjectStatus(ctx, client, "owner", "repo", 7, test.status)
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(strings.ToLower(err.Error()), test.wantErr) {
+					t.Fatalf("error = %v, want %q", err, test.wantErr)
+				}
+				if mutationVariables != nil {
+					t.Fatal("a rejected Project selection must not mutate the issue")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("updateProjectStatus() error = %v", err)
+			}
+			for key, want := range map[string]string{"projectId": "P1", "itemId": "I1", "fieldId": "F1", "optionId": test.wantOption} {
+				if mutationVariables[key] != want {
+					t.Errorf("mutation %s = %v, want %s", key, mutationVariables[key], want)
+				}
+			}
+		})
+	}
+}
+
+func TestGitHubProjectPagination(t *testing.T) {
+	for _, fetcher := range []struct {
+		name  string
+		path  []string
+		fetch func(*gin.Context, *github.Client) (int, error)
+	}{
+		{"projects", []string{"data", "repository", "projectsV2"}, func(ctx *gin.Context, client *github.Client) (int, error) {
+			rows, err := fetchProjects(ctx, client, "owner", "repo")
+			return len(rows), err
+		}},
+		{"fields", []string{"data", "node", "fields"}, func(ctx *gin.Context, client *github.Client) (int, error) {
+			rows, err := fetchProjectFields(ctx, client, "P1")
+			return len(rows), err
+		}},
+		{"items", []string{"data", "repository", "issue", "projectItems"}, func(ctx *gin.Context, client *github.Client) (int, error) {
+			rows, err := fetchIssueProjectItems(ctx, client, "owner", "repo", 7)
+			return len(rows), err
+		}},
+	} {
+		for _, capped := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/capped=%t", fetcher.name, capped), func(t *testing.T) {
+				requests := 0
+				client, srv := newTestGithubClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					requests++
+					var request struct {
+						Variables map[string]interface{} `json:"variables"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+						t.Error(err)
+						w.WriteHeader(400)
+						return
+					}
+					if requests == 1 && request.Variables["cursor"] != nil {
+						t.Errorf("first cursor = %v", request.Variables["cursor"])
+					}
+					if requests > 1 && request.Variables["cursor"] != "next" {
+						t.Errorf("next cursor = %v", request.Variables["cursor"])
+					}
+					body := map[string]interface{}{
+						"nodes":    []map[string]interface{}{{"id": fmt.Sprintf("row%d", requests)}},
+						"pageInfo": map[string]interface{}{"hasNextPage": capped || requests == 1, "endCursor": "next"},
+					}
+					for i := len(fetcher.path) - 1; i >= 0; i-- {
+						body = map[string]interface{}{fetcher.path[i]: body}
+					}
+					w.Header().Set("Content-Type", "application/json")
+					if err := json.NewEncoder(w).Encode(body); err != nil {
+						t.Error(err)
+					}
+				}))
+				defer srv.Close()
+				ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+				count, err := fetcher.fetch(ctx, client)
+				if capped {
+					if err == nil || !strings.Contains(err.Error(), "pagination limit") || requests != maxGitHubGraphQLPages {
+						t.Fatalf("count=%d requests=%d error=%v, want bounded pagination failure", count, requests, err)
+					}
+				} else if err != nil || count != 2 || requests != 2 {
+					t.Fatalf("count=%d requests=%d error=%v, want both pages", count, requests, err)
+				}
+			})
+		}
+	}
+}
+
+func TestGitHubProjectPermissionFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		status      int
+		body        string
+		rateLimited bool
+		fallback    bool
+	}{
+		{"missing scope", 200, `{"errors":[{"message":"arbitrary", "type":"INSUFFICIENT_SCOPES"}]}`, false, true},
+		{"unauthorized", 401, `{"message":"credentials required"}`, false, true},
+		{"forbidden", 403, `{"message":"not accessible"}`, false, true},
+		{"not found", 404, `{"message":"not found"}`, false, true},
+		{"primary rate limit", 403, `{"message":"rate limit"}`, true, false},
+		{"mixed GraphQL errors", 200, `{"errors":[{"type":"FORBIDDEN"},{"type":"RATE_LIMITED"}]}`, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, srv := newTestGithubClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if tc.rateLimited {
+					w.Header().Set("X-RateLimit-Remaining", "0")
+				}
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			result, err := fetchGitHubProjectTransitionMetaWithClient(ctx, client, "owner/repo")
+			if !tc.fallback {
+				if err == nil {
+					t.Fatal("non-permission failure must not be hidden as fallback")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			meta := result.(map[string]interface{})
+			options := meta["data"].([]interface{})
+			if len(options) != 2 || meta["warning"] == "" {
+				t.Fatalf("fallback=%v, want open/closed and warning", meta)
 			}
 		})
 	}
