@@ -98,18 +98,19 @@ func authHandlerMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// Actual user authentication happens at the api-server layer; this token
-		// authenticates service-to-service callers (frontend gateway, notifications-server, etc.).
-		if config.Config.LlmServerToken == "" {
-			logger.Error("main: service token is not configured", "path", c.Request.URL.Path, "method", c.Request.Method)
-			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"message": "service authentication is not configured"})
-			return
-		}
-		authHeader := c.Request.Header.Get(config.Config.LlmServerTokenHeader)
-		if subtle.ConstantTimeCompare([]byte(authHeader), []byte(config.Config.LlmServerToken)) != 1 {
-			logger.Error("main: invalid service token", "path", c.Request.URL.Path, "method", c.Request.Method)
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"message": "invalid " + config.Config.LlmServerTokenHeader})
-			return
+		// Single auth contract: if LLM_SERVER_TOKEN is configured, every
+		// request must carry a matching header; if it's unset, the gate is a
+		// no-op. Actual user authentication happens at the api-server layer
+		// — this token only authenticates service-to-service callers
+		// (frontend gateway, notifications-server, etc.) when the operator
+		// chose to enforce it.
+		if config.Config.LlmServerToken != "" {
+			authHeader := c.Request.Header.Get(config.Config.LlmServerTokenHeader)
+			if authHeader != config.Config.LlmServerToken {
+				logger.Error("main: invalid service token", "path", c.Request.URL.Path, "method", c.Request.Method)
+				c.AbortWithStatusJSON(401, gin.H{"message": "invalid " + config.Config.LlmServerTokenHeader})
+				return
+			}
 		}
 		c.Set(CTX_IS_PUBLIC, false)
 		c.Next()

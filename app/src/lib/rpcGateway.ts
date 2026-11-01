@@ -446,7 +446,8 @@ export async function forwardAction(opts: ForwardOptions): Promise<ForwardResult
   // llm-server: LLM_SERVER_TOKEN, cloud-collector-server:
   // CLOUD_COLLECTOR_SERVER_TOKEN). No silent fallback: a missing or
   // misspelled env in the yaml results in no header sent, and the
-  // destination rejects the request. rpcRoutes.ts warns at startup
+  // destination decides based on its own leniency (e.g. llm-server allows
+  // an empty token but rejects a wrong one). rpcRoutes.ts warns at startup
   // for any action that lacks a headers block so misconfigurations surface
   // early instead of failing at request time.
   for (const h of route.headers) {
