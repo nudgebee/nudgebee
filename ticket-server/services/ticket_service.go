@@ -830,6 +830,7 @@ func UpdateTicket(ctx *gin.Context, ticket models.Ticket, updateFields models.Up
 			}
 		}
 	}
+	updateFields.Status = ticketStatusToPersist(configuration.Tool, updateFields.Status)
 	syncTicketToDB(ticket.TicketID, ticket.IntegrationID, updateFields)
 	return nil
 }
@@ -861,6 +862,17 @@ func ListTicketsFromProvider(ctx *gin.Context, integrationID, tenantID string, p
 	}
 
 	return result, nil
+}
+
+// A GitHub Project field is separate from the issue state stored in tickets.status.
+func ticketStatusToPersist(tool, status string) string {
+	if tool != "github" {
+		return status
+	}
+	if strings.EqualFold(status, "open") || strings.EqualFold(status, "closed") {
+		return strings.ToLower(status)
+	}
+	return ""
 }
 
 // TransitionTicket changes the status of a ticket.
@@ -897,6 +909,8 @@ func TransitionTicket(ctx *gin.Context, ticket models.Ticket, status string) err
 	if err := manager.Transition(ctx, configuration, ticket.TicketID, status); err != nil {
 		return err
 	}
-	syncTicketToDB(ticket.TicketID, ticket.IntegrationID, models.UpdateFields{Status: status})
+	if storedStatus := ticketStatusToPersist(configuration.Tool, status); storedStatus != "" {
+		syncTicketToDB(ticket.TicketID, ticket.IntegrationID, models.UpdateFields{Status: storedStatus})
+	}
 	return nil
 }

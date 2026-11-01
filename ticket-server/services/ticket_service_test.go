@@ -7,6 +7,25 @@ import (
 	"nudgebee/tickets-server/models"
 )
 
+func TestTicketStatusPersistence(t *testing.T) {
+	for _, tc := range []struct{ tool, requested, want string }{
+		{"github", "github-project:P1:F1:O1", ""},
+		{"github", "Ready", ""},
+		{"github", "In Progress", ""},
+		{"github", "Open", "open"},
+		{"github", "CLOSED", "closed"},
+		{"github", "", ""},
+		{"jira", "Ready", "Ready"},
+		{"gitlab", "closed", "closed"},
+	} {
+		t.Run(tc.tool+"/"+tc.requested, func(t *testing.T) {
+			if got := ticketStatusToPersist(tc.tool, tc.requested); got != tc.want {
+				t.Fatalf("local status = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // unlinkedTicketResponse must surface the ticket that was actually created
 // upstream (ID/URL/platform), not an error, and its message must tell the
 // caller not to retry — a retry with no local row to dedup against is what

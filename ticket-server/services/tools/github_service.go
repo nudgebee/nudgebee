@@ -284,7 +284,11 @@ type Template struct {
 }
 
 type githubGraphQLError struct {
-	Message string `json:"message"`
+	Message    string `json:"message"`
+	Type       string `json:"type"`
+	Extensions struct {
+		Code string `json:"code"`
+	} `json:"extensions"`
 }
 
 type githubProjectStatusOption struct {
@@ -298,62 +302,54 @@ type githubPageInfo struct {
 }
 
 type githubProjectStatusField struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID      string                      `json:"id"`
+	Name    string                      `json:"name"`
+	Options []githubProjectStatusOption `json:"options"`
 }
 
 type githubProject struct {
-	ID     string                       `json:"id"`
-	Title  string                       `json:"title"`
-	Number int                          `json:"number"`
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Number int    `json:"number"`
 }
 
 type githubProjectItem struct {
-	ID      string         `json:"id"`
+	ID      string        `json:"id"`
 	Project githubProject `json:"project"`
 }
 
-type githubProjectsPageQuery struct {
+type githubProjectsPageResponse struct {
 	Errors []githubGraphQLError `json:"errors"`
-	Data struct {
+	Data   struct {
 		Repository struct {
 			ProjectsV2 struct {
 				Nodes    []githubProject `json:"nodes"`
-				PageInfo githubPageInfo `json:"pageInfo"`
+				PageInfo githubPageInfo  `json:"pageInfo"`
 			} `json:"projectsV2"`
 		} `json:"repository"`
 	} `json:"data"`
 }
 
-type githubProjectFieldsQuery struct {
+type githubProjectFieldsResponse struct {
 	Errors []githubGraphQLError `json:"errors"`
-	Data struct {
+	Data   struct {
 		Node struct {
 			Fields struct {
 				Nodes    []githubProjectStatusField `json:"nodes"`
-				PageInfo githubPageInfo `json:"pageInfo"`
+				PageInfo githubPageInfo             `json:"pageInfo"`
 			} `json:"fields"`
 		} `json:"node"`
 	} `json:"data"`
 }
 
-type githubProjectOptionsQuery struct {
+type githubIssueProjectItemsPageResponse struct {
 	Errors []githubGraphQLError `json:"errors"`
-	Data struct {
-		Node struct {
-			Options []githubProjectStatusOption `json:"options"`
-		} `json:"node"`
-	} `json:"data"`
-}
-
-type githubIssueProjectItemsPageQuery struct {
-	Errors []githubGraphQLError `json:"errors"`
-	Data struct {
+	Data   struct {
 		Repository struct {
 			Issue struct {
 				ProjectItems struct {
 					Nodes    []githubProjectItem `json:"nodes"`
-					PageInfo githubPageInfo `json:"pageInfo"`
+					PageInfo githubPageInfo      `json:"pageInfo"`
 				} `json:"projectItems"`
 			} `json:"issue"`
 		} `json:"repository"`
@@ -470,7 +466,7 @@ func FetchGitHubIssueCreateMeta(ctx *gin.Context, configuration models.TicketCon
 	return map[string]interface{}{"data": []Template{template}}, nil
 }
 
-const githubProjectsPageQuery = `query($owner: String!, $repo: String!, $cursor: String) {
+const githubProjectsQuery = `query($owner: String!, $repo: String!, $cursor: String) {
 	repository(owner: $owner, name: $repo) {
 		projectsV2(first: 100, after: $cursor) {
 			nodes { id title number }
@@ -484,7 +480,11 @@ const githubProjectFieldsQuery = `query($id: ID!, $cursor: String) {
 		... on ProjectV2 {
 			fields(first: 100, after: $cursor) {
 				nodes {
-					... on ProjectV2SingleSelectField { id name }
+					... on ProjectV2SingleSelectField {
+						id
+						name
+						options { id name }
+					}
 				}
 				pageInfo { hasNextPage endCursor }
 			}
@@ -492,15 +492,7 @@ const githubProjectFieldsQuery = `query($id: ID!, $cursor: String) {
 	}
 }`
 
-const githubProjectOptionsQuery = `query($id: ID!) {
-	node(id: $id) {
-		... on ProjectV2SingleSelectField {
-			options { id name }
-		}
-	}
-}`
-
-const githubIssueProjectItemsPageQuery = `query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+const githubIssueProjectItemsQuery = `query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
 	repository(owner: $owner, name: $repo) {
 		issue(number: $number) {
 			projectItems(first: 100, after: $cursor) {
@@ -520,11 +512,16 @@ func githubGraphQLRequest(ctx *gin.Context, githubClient *github.Client, query s
 		return fmt.Errorf("failed to create GitHub GraphQL request: %w", err)
 	}
 	if _, err := githubClient.Do(ctx, req, response); err != nil {
+		var rateLimitErr *github.RateLimitError
+		var abuseErr *github.AbuseRateLimitError
+		if errors.As(err, &rateLimitErr) || errors.As(err, &abuseErr) {
+			return fmt.Errorf("GitHub GraphQL request failed: %w", err)
+		}
 		var githubErr *github.ErrorResponse
 		if errors.As(err, &githubErr) && githubErr.Response != nil &&
 			(githubErr.Response.StatusCode == http.StatusUnauthorized ||
-				(githubErr.Response.StatusCode == http.StatusForbidden) &&
-					!strings.Contains(strings.ToLower(githubErr.Message), "rate limit")) {
+				githubErr.Response.StatusCode == http.StatusForbidden ||
+				githubErr.Response.StatusCode == http.StatusNotFound) {
 			return &githubProjectsPermissionError{err: fmt.Errorf("GitHub Projects lookup is unauthorized: %w", err)}
 		}
 		return fmt.Errorf("GitHub GraphQL request failed: %w", err)
@@ -549,17 +546,6 @@ func pageCursor(pageInfo githubPageInfo, context string, page int) (string, bool
 	return *pageInfo.EndCursor, true, nil
 }
 
-func isProjectsPermissionMessage(message string) bool {
-	message = strings.ToLower(message)
-	if strings.Contains(message, "rate limit") {
-		return false
-	}
-	return strings.Contains(message, "resource not accessible") ||
-		strings.Contains(message, "insufficient permission") ||
-		strings.Contains(message, "does not have access") ||
-		strings.Contains(message, "forbidden")
-}
-
 func githubClientForConfiguration(ctx *gin.Context, configuration models.TicketConfigurations) (*github.Client, error) {
 	if configuration.AuthType != "application" {
 		return clients.CreateGithubClient(configuration.Password), nil
@@ -578,9 +564,14 @@ func githubGraphQLErrors(errors []githubGraphQLError) error {
 	err := fmt.Errorf("GitHub Projects status lookup failed: %s", errors[0].Message)
 	allPermissionErrors := true
 	for _, graphqlErr := range errors {
-		if !isProjectsPermissionMessage(graphqlErr.Message) {
+		code := graphqlErr.Type
+		if code == "" {
+			code = graphqlErr.Extensions.Code
+		}
+		switch strings.ToUpper(code) {
+		case "INSUFFICIENT_SCOPES", "FORBIDDEN", "NOT_FOUND":
+		default:
 			allPermissionErrors = false
-			break
 		}
 	}
 	if allPermissionErrors {
@@ -593,7 +584,7 @@ func fetchProjectFields(ctx *gin.Context, client *github.Client, projectID strin
 	var fields []githubProjectStatusField
 	var cursor *string
 	for page := 1; ; page++ {
-		var response githubProjectFieldsQuery
+		var response githubProjectFieldsResponse
 		if err := githubGraphQLRequest(ctx, client, githubProjectFieldsQuery, map[string]interface{}{"id": projectID, "cursor": cursor}, &response); err != nil {
 			return nil, err
 		}
@@ -612,23 +603,12 @@ func fetchProjectFields(ctx *gin.Context, client *github.Client, projectID strin
 	}
 }
 
-func fetchFieldOptions(ctx *gin.Context, client *github.Client, fieldID string) ([]githubProjectStatusOption, error) {
-	var response githubProjectOptionsQuery
-	if err := githubGraphQLRequest(ctx, client, githubProjectOptionsQuery, map[string]interface{}{"id": fieldID}, &response); err != nil {
-		return nil, err
-	}
-	if err := githubGraphQLErrors(response.Errors); err != nil {
-		return nil, err
-	}
-	return response.Data.Node.Options, nil
-}
-
 func fetchProjects(ctx *gin.Context, client *github.Client, owner, repo string) ([]githubProject, error) {
 	var projects []githubProject
 	var cursor *string
 	for page := 1; ; page++ {
-		var response githubProjectsPageQuery
-		if err := githubGraphQLRequest(ctx, client, githubProjectsPageQuery, map[string]interface{}{"owner": owner, "repo": repo, "cursor": cursor}, &response); err != nil {
+		var response githubProjectsPageResponse
+		if err := githubGraphQLRequest(ctx, client, githubProjectsQuery, map[string]interface{}{"owner": owner, "repo": repo, "cursor": cursor}, &response); err != nil {
 			return nil, err
 		}
 		if err := githubGraphQLErrors(response.Errors); err != nil {
@@ -654,7 +634,7 @@ func projectStatusValues(ctx *gin.Context, client *github.Client, owner, repo st
 	type transitionOption struct {
 		id, name, value string
 	}
-	options := []transitionOption{
+	statusOptions := []transitionOption{
 		{id: "open", name: "open", value: "open"},
 		{id: "closed", name: "closed", value: "closed"},
 	}
@@ -667,27 +647,23 @@ func projectStatusValues(ctx *gin.Context, client *github.Client, owner, repo st
 			if !strings.EqualFold(field.Name, "Status") {
 				continue
 			}
-			options, err := fetchFieldOptions(ctx, client, field.ID)
-			if err != nil {
-				return nil, err
-			}
-			for _, option := range options {
+			for _, option := range field.Options {
 				if option.ID == "" || option.Name == "" {
 					continue
 				}
 				value := fmt.Sprintf("github-project:%s:%s:%s", project.ID, field.ID, option.ID)
-				options = append(options, transitionOption{
-					id: option.ID, name: fmt.Sprintf("Project #%d %s: %s", project.Number, project.Title, option.Name), value: value,
+				statusOptions = append(statusOptions, transitionOption{
+					id: value, name: fmt.Sprintf("Project #%d %s: %s", project.Number, project.Title, option.Name), value: value,
 				})
 			}
 		}
 	}
-	labelCounts := make(map[string]int, len(options))
-	for _, option := range options {
+	labelCounts := make(map[string]int, len(statusOptions))
+	for _, option := range statusOptions {
 		labelCounts[option.name]++
 	}
-	values := make([]interface{}, 0, len(options))
-	for _, option := range options {
+	values := make([]interface{}, 0, len(statusOptions))
+	for _, option := range statusOptions {
 		name := option.name
 		if labelCounts[name] > 1 {
 			idSuffix := option.id
@@ -706,6 +682,10 @@ func FetchGitHubProjectTransitionMeta(ctx *gin.Context, configuration models.Tic
 	if err != nil {
 		return nil, err
 	}
+	return fetchGitHubProjectTransitionMetaWithClient(ctx, client, repoKey)
+}
+
+func fetchGitHubProjectTransitionMetaWithClient(ctx *gin.Context, client *github.Client, repoKey string) (interface{}, error) {
 	parts := strings.Split(repoKey, "/")
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("invalid github project key %q: expected format 'owner/repo'", repoKey)
@@ -731,8 +711,8 @@ func fetchIssueProjectItems(ctx *gin.Context, client *github.Client, owner, repo
 	var items []githubProjectItem
 	var cursor *string
 	for page := 1; ; page++ {
-		var response githubIssueProjectItemsPageQuery
-		if err := githubGraphQLRequest(ctx, client, githubIssueProjectItemsPageQuery, map[string]interface{}{"owner": owner, "repo": repo, "number": issueNumber, "cursor": cursor}, &response); err != nil {
+		var response githubIssueProjectItemsPageResponse
+		if err := githubGraphQLRequest(ctx, client, githubIssueProjectItemsQuery, map[string]interface{}{"owner": owner, "repo": repo, "number": issueNumber, "cursor": cursor}, &response); err != nil {
 			return nil, err
 		}
 		if err := githubGraphQLErrors(response.Errors); err != nil {
@@ -750,18 +730,25 @@ func fetchIssueProjectItems(ctx *gin.Context, client *github.Client, owner, repo
 	}
 }
 
+type githubProjectStatusSelection struct {
+	itemID, projectID, fieldID, optionID string
+}
+
 func (s *GitHubService) updateProjectStatus(ctx *gin.Context, githubClient *github.Client, owner, repo string, issueNumber int, status string) error {
-	parts := strings.Split(status, ":")
-	if len(parts) != 4 || parts[0] != "github-project" || parts[1] == "" || parts[2] == "" || parts[3] == "" {
+	status = strings.TrimSpace(status)
+	encodedParts := strings.Split(status, ":")
+	encoded := len(encodedParts) == 4 && encodedParts[0] == "github-project" &&
+		encodedParts[1] != "" && encodedParts[2] != "" && encodedParts[3] != ""
+	if strings.HasPrefix(status, "github-project:") && !encoded {
 		return fmt.Errorf("invalid GitHub Project status selection; choose a current Project status option")
 	}
 	items, err := fetchIssueProjectItems(ctx, githubClient, owner, repo, issueNumber)
 	if err != nil {
 		return err
 	}
-	var match *struct{ itemID, projectID, fieldID, optionID string }
+	var match *githubProjectStatusSelection
 	for _, item := range items {
-		if item.Project.ID != parts[1] {
+		if encoded && item.Project.ID != encodedParts[1] {
 			continue
 		}
 		fields, err := fetchProjectFields(ctx, githubClient, item.Project.ID)
@@ -769,25 +756,26 @@ func (s *GitHubService) updateProjectStatus(ctx *gin.Context, githubClient *gith
 			return err
 		}
 		for _, field := range fields {
-			if field.ID != parts[2] || !strings.EqualFold(field.Name, "Status") {
+			if !strings.EqualFold(field.Name, "Status") ||
+				(encoded && field.ID != encodedParts[2]) {
 				continue
 			}
-			options, err := fetchFieldOptions(ctx, githubClient, field.ID)
-			if err != nil {
-				return err
-			}
-			for _, option := range options {
-				if option.ID == parts[3] {
+			for _, option := range field.Options {
+				if (encoded && option.ID == encodedParts[3]) ||
+					(!encoded && strings.EqualFold(option.Name, status)) {
 					if match != nil {
 						return fmt.Errorf("GitHub issue %s/%s#%d has an ambiguous Project status selection; refusing transition", owner, repo, issueNumber)
 					}
-					match = &struct{ itemID, projectID, fieldID, optionID string }{item.ID, item.Project.ID, field.ID, option.ID}
+					match = &githubProjectStatusSelection{
+						itemID: item.ID, projectID: item.Project.ID, fieldID: field.ID,
+						optionID: option.ID,
+					}
 				}
 			}
 		}
 	}
 	if match == nil {
-		return fmt.Errorf("GitHub issue %s/%s#%d is not linked to the selected Project status (it may be missing, stale, or unauthorized)", owner, repo, issueNumber)
+		return fmt.Errorf("GitHub issue %s/%s#%d is not linked to Project status %q (it may be missing, stale, or unauthorized)", owner, repo, issueNumber, status)
 	}
 
 	var mutation githubProjectStatusMutation
@@ -803,8 +791,8 @@ func (s *GitHubService) updateProjectStatus(ctx *gin.Context, githubClient *gith
 	}`, map[string]interface{}{
 		"projectId": match.projectID,
 		"itemId":    match.itemID,
-		"fieldId":    match.fieldID,
-		"optionId":   match.optionID,
+		"fieldId":   match.fieldID,
+		"optionId":  match.optionID,
 	}, &mutation); err != nil {
 		return err
 	}

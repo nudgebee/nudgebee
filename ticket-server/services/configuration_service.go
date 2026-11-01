@@ -1185,7 +1185,7 @@ func FetchTransitionMetadata(ctx *gin.Context, request models.IssueTemplateMetaR
 	if !ok {
 		return nil, fmt.Errorf("ticket transitions not supported for tool %s (integration %s)", config.Tool, config.ID)
 	}
-	provider, ok := manager.(ticket.TransitionMetadataProvider)
+	provider, ok := manager.(ticketmgr.TransitionMetadataProvider)
 	if !ok {
 		return map[string]interface{}{"data": []interface{}{}}, nil
 	}
