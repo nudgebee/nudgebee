@@ -155,7 +155,11 @@ ENV GOCACHE=/tmp/code-analysis/shared-cache/go-build \
     GRADLE_USER_HOME=/tmp/code-analysis/shared-cache/gradle
 
 # Install Azure CLI in a venv to isolate its dependencies (e.g. urllib3 2.x)
-# from system Python packages used by apk-installed aws-cli
+# from system Python packages used by apk-installed aws-cli.
+# The system packages aws-cli runs on are then upgraded past Alpine's py3-*
+# builds, which lag these fixes: certifi (GHSA-6q48-6c7w-9gw2), urllib3
+# (GHSA-mf9v-mfxr-j63j), and setuptools' vendored jaraco.context and wheel
+# (84.2.1 vendors 6.1.0 / 0.46.3; GHSA-58pv-8j8x-9vj2, GHSA-8rrh-rw8j-w5fx).
 RUN apk add --no-cache --virtual .build-deps \
     gcc \
     musl-dev \
@@ -169,7 +173,8 @@ RUN apk add --no-cache --virtual .build-deps \
     /opt/azure-cli-venv/bin/pip install --no-cache-dir --upgrade pip && \
     /opt/azure-cli-venv/bin/pip install --no-cache-dir azure-cli "cryptography>=48.0.1" && \
     ln -s /opt/azure-cli-venv/bin/az /usr/local/bin/az && \
-    pip install --no-cache-dir --break-system-packages --upgrade "cryptography>=48.0.1" && \
+    pip install --no-cache-dir --break-system-packages --upgrade \
+        "cryptography>=48.0.1" "certifi>=2026.10.18" "urllib3>=2.7.0,<3" "setuptools>=84.2.1" && \
     apk del .build-deps
 
 # Pre-install Azure CLI extensions to a fixed directory.
@@ -232,6 +237,22 @@ RUN npm install --no-save --prefix /tmp/tarfix "tar@${TAR_VERSION}" \
                     -type d -path '*/node_modules/tar' -prune -print); do \
          grep -q "\"version\": \"${TAR_VERSION}\"" "$d/package.json" \
            || { echo "ERROR: unpatched pnpm vendored tar at $d"; exit 1; }; \
+       done
+
+# Patch npm's bundled undici the same way: every npm release up to 12.2.1 ships
+# 6.29.0 (GHSA-xjj6-f33q-929c, HIGH). undici has no dependencies and this is a
+# patch-level bump. Bump UNDICI_VERSION when the scan flags it again.
+ARG UNDICI_VERSION=6.29.1
+RUN npm install --no-save --prefix /tmp/undicifix "undici@${UNDICI_VERSION}" \
+    && for d in $(find /usr/local/lib/node_modules/npm \
+                    -type d -path '*/node_modules/undici' -prune -print); do \
+         rm -rf "$d" && cp -R /tmp/undicifix/node_modules/undici "$d"; \
+       done \
+    && rm -rf /tmp/undicifix \
+    && for d in $(find /usr/local/lib/node_modules/npm \
+                    -type d -path '*/node_modules/undici' -prune -print); do \
+         grep -q "\"version\": \"${UNDICI_VERSION}\"" "$d/package.json" \
+           || { echo "ERROR: unpatched npm bundled undici at $d"; exit 1; }; \
        done
 
 # Copy Go toolchain and golangci-lint from builder.
