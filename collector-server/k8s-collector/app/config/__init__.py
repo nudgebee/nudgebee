@@ -93,6 +93,7 @@ class Settings(BaseSettings):
     LLM_SERVER_ENDPOINT: str = "http://llm-server:8000"
     # Sent as X-ACTION-TOKEN; llm-server refuses requests without it once its LLM_SERVER_TOKEN is set.
     LLM_SERVER_TOKEN: str = ""
+    LLM_SERVER_TOKEN_HEADER: str = "X-ACTION-TOKEN"
     EKS_VERSIONS_SUPPORT: ClassVar[Dict[str, Dict[str, str]]] = {
         "1.32": {
             "upstream_release": "2024-12-11",
