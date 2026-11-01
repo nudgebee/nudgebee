@@ -24,9 +24,9 @@ import "os"
 // .github/workflows/scanner-images-verify.yaml, so a pin that 404s fails CI
 // instead of surfacing as an ImagePullBackOff at scan time.
 const (
-	defaultTrivyImage     = "ghcr.io/nudgebee/trivy:0.76.1-nb1"
-	defaultPopeyeImage    = "ghcr.io/nudgebee/popeye:v0.11.1-nudgebee.1"
-	defaultKubeBenchImage = "ghcr.io/nudgebee/kube-bench:v0.16.0-nb1"
+	defaultTrivyImage     = "ghcr.io/nudgebee/trivy:0.76.1-nb2"
+	defaultPopeyeImage    = "ghcr.io/nudgebee/popeye:v0.11.1-nudgebee.2"
+	defaultKubeBenchImage = "ghcr.io/nudgebee/kube-bench:v0.16.0-nb2"
 	defaultNovaImage      = "ghcr.io/nudgebee/nova:2026-05-22T07-15-34_decaacbbf56e1789c3299a89f790b8e824ab741c"
 )
 

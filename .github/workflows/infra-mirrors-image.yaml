@@ -119,6 +119,8 @@ jobs:
           # a patched Go. Drop both once an upstream release carries the fixes.
           - { image: temporal-server,      context: deploy/kubernetes/nudgebee-mirrors/temporal-server,      tag: 1.31.4-nb1 }
           - { image: temporal-admin-tools, context: deploy/kubernetes/nudgebee-mirrors/temporal-admin-tools, tag: 1.31.4-nb1 }
+          # Debian re-mirror of the official image (apt upgrade; same Qdrant version).
+          - { image: qdrant,               context: deploy/kubernetes/nudgebee-mirrors/qdrant,               tag: v1.19.2-nb1 }
         plat:
           - { arch: amd64, platform: linux/amd64, runner: ubuntu-latest }
           - { arch: arm64, platform: linux/arm64, runner: ubuntu-24.04-arm }

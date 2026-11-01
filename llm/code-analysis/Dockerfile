@@ -155,7 +155,11 @@ ENV GOCACHE=/tmp/code-analysis/shared-cache/go-build \
     GRADLE_USER_HOME=/tmp/code-analysis/shared-cache/gradle
 
 # Install Azure CLI in a venv to isolate its dependencies (e.g. urllib3 2.x)
-# from system Python packages used by apk-installed aws-cli
+# from system Python packages used by apk-installed aws-cli.
+# The system packages aws-cli runs on are then upgraded past Alpine's py3-*
+# builds, which lag these fixes: certifi (GHSA-6q48-6c7w-9gw2), urllib3
+# (GHSA-mf9v-mfxr-j63j), and setuptools' vendored jaraco.context and wheel
+# (84.2.1 vendors 6.1.0 / 0.46.3; GHSA-58pv-8j8x-9vj2, GHSA-8rrh-rw8j-w5fx).
 RUN apk add --no-cache --virtual .build-deps \
     gcc \
     musl-dev \
@@ -170,8 +174,7 @@ RUN apk add --no-cache --virtual .build-deps \
     /opt/azure-cli-venv/bin/pip install --no-cache-dir azure-cli "cryptography>=48.0.1" && \
     ln -s /opt/azure-cli-venv/bin/az /usr/local/bin/az && \
     pip install --no-cache-dir --break-system-packages --upgrade \
-        "cryptography>=48.0.1" "urllib3>=2.8.0" "certifi>=2026.10.18" "jmespath>=1.1.0" \
-        "setuptools==80.10.2" && \
+        "cryptography>=48.0.1" "certifi>=2026.10.18" "urllib3>=2.7.0,<3" "jmespath>=1.1.0" "setuptools>=84.2.1" && \
     apk del .build-deps
 # urllib3 2.8.0 warns on the `strict` argument Alpine's botocore still passes, once
 # per aws call. Silence that one warning so it stays out of command output.
@@ -239,16 +242,21 @@ RUN npm install --no-save --prefix /tmp/tarfix "tar@${TAR_VERSION}" \
            || { echo "ERROR: unpatched pnpm vendored tar at $d"; exit 1; }; \
        done
 
-# Patch npm's bundled undici. npm 11.21.1 is the newest 11.x and bundles undici
-# 6.29.0. undici is pure JS and this is a patch-level bump, the same technique as
-# the pnpm tar fix above. Bump UNDICI_VERSION when a scan flags it again.
+# Patch npm's bundled undici the same way: every npm release up to 12.2.1 ships
+# 6.29.0 (GHSA-xjj6-f33q-929c, HIGH). undici has no dependencies and this is a
+# patch-level bump. Bump UNDICI_VERSION when the scan flags it again.
 ARG UNDICI_VERSION=6.29.1
 RUN npm install --no-save --prefix /tmp/undicifix "undici@${UNDICI_VERSION}" \
-    && rm -rf /usr/local/lib/node_modules/npm/node_modules/undici \
-    && cp -R /tmp/undicifix/node_modules/undici /usr/local/lib/node_modules/npm/node_modules/undici \
+    && for d in $(find /usr/local/lib/node_modules/npm \
+                    -type d -path '*/node_modules/undici' -prune -print); do \
+         rm -rf "$d" && cp -R /tmp/undicifix/node_modules/undici "$d"; \
+       done \
     && rm -rf /tmp/undicifix \
-    && grep -q "\"version\": \"${UNDICI_VERSION}\"" /usr/local/lib/node_modules/npm/node_modules/undici/package.json \
-    && npm --version
+    && for d in $(find /usr/local/lib/node_modules/npm \
+                    -type d -path '*/node_modules/undici' -prune -print); do \
+         grep -q "\"version\": \"${UNDICI_VERSION}\"" "$d/package.json" \
+           || { echo "ERROR: unpatched npm bundled undici at $d"; exit 1; }; \
+       done
 
 # Copy Go toolchain and golangci-lint from builder.
 # Builder uses golang:1.26-alpine; matching that here keeps build/vet runnable
