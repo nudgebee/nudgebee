@@ -183,6 +183,7 @@ jobs:
           - { image: kubectl,           tag: 1.32.13-nb1 }
           - { image: temporal-server,      tag: 1.31.4-nb1 }
           - { image: temporal-admin-tools, tag: 1.31.4-nb1 }
+          - { image: qdrant,               tag: v1.19.2-nb1 }
     steps:
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
