@@ -1,0 +1,71 @@
+{
+  "date": "2026-11-01",
+  "source_commit": "67aa83fd8c5800681c6d920ba9c17518dbd09f06",
+  "provider": "public.ecr.aws/zinclabs/openobserve:v0.80.2",
+  "source_crud": "Actual OpenObserveAlertRuleSource CreateAlertRule, UpdateAlertRule and DeleteAlertRule; only credential database lookup uses sqlmock.",
+  "receiver": "HTTP server in the disposable provider network namespace; ZO_SSRF_ALLOW_LOOPBACK=true only for this server.",
+  "input": {
+    "sql_log_rows": 2,
+    "sql_value": 1,
+    "promql_up_value": 1
+  },
+  "enabled_observation_seconds": 110,
+  "enabled_counts": {
+    "PR864-scheduled-sql-fire": 3,
+    "PR864-scheduled-prom-below": 3
+  },
+  "quiet_controls": {
+    "sql_count_greater_than_5": 0,
+    "promql_up_greater_than_5": 0
+  },
+  "updates": {
+    "sql": "WHERE value > 99",
+    "promql": "BELOW 0"
+  },
+  "fresh_rows_matching_original_sql_after_update": 2,
+  "updated_observation_seconds": 75,
+  "updated_counts": {
+    "PR864-scheduled-sql-fire": 3,
+    "PR864-scheduled-prom-below": 3
+  },
+  "delete": "All four source deletes passed; provider readback returned HTTP 404 for each ID.",
+  "captured_payloads": [
+    {
+      "alert_count": "2",
+      "alert_name": "PR864-scheduled-sql-fire",
+      "alert_operator": ">",
+      "alert_start_time": "2026-11-01T11:42:23",
+      "alert_threshold": "1",
+      "alert_url": "http://localhost:53326/web/alerts",
+      "org_name": "default",
+      "status": "firing",
+      "stream_name": "logs",
+      "stream_type": "logs"
+    },
+    {
+      "alert_count": "1",
+      "alert_name": "PR864-scheduled-prom-below",
+      "alert_operator": ">=",
+      "alert_start_time": "2026-11-01T11:44:00",
+      "alert_threshold": "1",
+      "alert_url": "http://localhost:53326/web/alerts",
+      "org_name": "default",
+      "status": "firing",
+      "stream_name": "up",
+      "stream_type": "metrics"
+    }
+  ],
+  "nudgebee_captured_payload_replay": {
+    "handler": "actual genericWebhookHandler(openobserve)",
+    "database": "disposable PostgreSQL 16 with existing webhook scenario schema",
+    "verified": [
+      "two distinct captured rule payloads returned HTTP 200",
+      "both raw and parsed delivery rows persisted",
+      "tenant/account identity and original alert names retained",
+      "missing/wrong tokens returned HTTP 400 without storing additional rows"
+    ],
+    "queue": "closed local broker port deliberately exercised synchronous fallback",
+    "not_verified": "incident/event-rule persistence, subject inventory enrichment and LLM investigation; fixture lacks those tables/services"
+  },
+  "boundary": "Provider scheduled evaluation and HTTP delivery; not a complete deployed Nudgebee incident/investigation pipeline."
+}
