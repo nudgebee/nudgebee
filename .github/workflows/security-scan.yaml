@@ -222,7 +222,7 @@ jobs:
           # fixes land in the k8s-agent / node-agent / forager repos and these
           # refs are bumped on their releases.
           - ghcr.io/nudgebee/nudgebee-agent:2026-11-01T06-36-55_f94ccaa1bf84f6288ffa7b0b86a7721ef67f7fae
-          - ghcr.io/nudgebee/application-profiler-bpf:d4dc1b8
+          - ghcr.io/nudgebee/application-profiler-bpf:e1a00b7
           - ghcr.io/nudgebee/node-agent:0.1.13
           - ghcr.io/nudgebee/forager:0.1.5
           # --- agent-chart runtime dependencies (clickhouse mirror + otel) ---
