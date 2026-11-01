@@ -1,4 +1,4 @@
-FROM ghcr.io/nudgebee/alpine:3.22
+FROM ghcr.io/nudgebee/alpine:3.23
 
 # Install curl for making HTTP requests and bc for floating point math.
 # OS-package cache-bust: bumping OS_PKG_EPOCH (ISO week) changes this layer's
