@@ -54,6 +54,36 @@ RUN go install github.com/cli/cli/v2/cmd/gh@v2.103.3
 # behave differently depending on which execution path served the call.
 RUN go install gitlab.com/gitlab-org/cli/cmd/glab@v1.126.0
 
+# --- Stage 1c: Fetch a patched browser and Node.js runtime ---
+# playwright-go pins Playwright 1.62.1, which installs Chromium 151 and Node
+# 24.19.0, and has no newer release. Chrome security fixes ship faster than either
+# project moves, so take chrome-headless-shell from Chrome for Testing (the same
+# source Playwright downloads from) and Node from nodejs.org, and swap them in
+# below. Bump these pins and checksums by hand: Grype does not recognise
+# chrome-headless-shell, so a stale browser here still scans clean. Remove this
+# stage once playwright-go ships a Playwright with a current browser.
+FROM ubuntu:noble AS browser-fetcher
+ARG TARGETARCH
+ARG CHROME_VERSION=156.0.8078.80
+ARG NODE_VERSION=24.22.2
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip xz-utils \
+    && case "${TARGETARCH}" in \
+         amd64) chrome_arch=linux64; chrome_sha=547dcd374e02961bf998f6046a267644f8502225c36bb78ca307dab32a0b3eb4; \
+                node_arch=x64; node_sha=48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75 ;; \
+         arm64) chrome_arch=linux-arm64; chrome_sha=5bb6a00a4285c13303d3f72c5afdb70f144ea7a93eed462365a52b69631c9607; \
+                node_arch=arm64; node_sha=eb187837a2230d4047161ac0be008584e16b46f726e9c9490ee35dc6b17d9ba8 ;; \
+         *) echo "unsupported arch: ${TARGETARCH}" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSLo /tmp/chrome.zip "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/${chrome_arch}/chrome-headless-shell-${chrome_arch}.zip" \
+    && echo "${chrome_sha}  /tmp/chrome.zip" | sha256sum -c - \
+    && curl -fsSLo /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" \
+    && echo "${node_sha}  /tmp/node.tar.xz" | sha256sum -c - \
+    && mkdir -p /out \
+    && unzip -q /tmp/chrome.zip -d /tmp \
+    && mv "/tmp/chrome-headless-shell-${chrome_arch}" /out/chrome-headless-shell \
+    && tar -xJf /tmp/node.tar.xz -C /tmp \
+    && cp "/tmp/node-v${NODE_VERSION}-linux-${node_arch}/bin/node" /out/node
+
 # --- Stage 2: Install Playwright browsers and copy playwright-go CLI ---
 FROM ubuntu:noble AS playwright-installer
 
@@ -96,11 +126,34 @@ RUN chmod +x /usr/bin/gh /usr/bin/glab
 COPY --from=go-builder /go/bin/playwright /usr/local/bin/playwright
 RUN chmod +x /usr/local/bin/playwright
 
-# Install Playwright browsers using the playwright-go CLI, which will pull in its own dependencies
+# Install the headless shell with the playwright-go CLI, which also pulls in the
+# system libraries it needs. The crawl tool launches headless, which runs this
+# binary, so the full Chromium build is not installed.
 RUN /usr/local/bin/playwright --version \
     && mkdir -p /root/.cache \
-    && /usr/local/bin/playwright install --with-deps chromium chromium-headless-shell \
+    && /usr/local/bin/playwright install --with-deps chromium-headless-shell \
     && rm -rf /root/.cache/ms-playwright/ffmpeg-* \
     && ls -lh /root/.cache/ms-playwright
+
+# Replace Playwright's browser and Node with the patched ones from browser-fetcher,
+# at the paths the driver expects. Playwright's arm64 layout is its own Chromium
+# build, not Chrome for Testing, so the directory and file names differ per arch.
+ARG TARGETARCH
+COPY --from=browser-fetcher /out/chrome-headless-shell /opt/chrome-headless-shell
+COPY --from=browser-fetcher /out/node /tmp/node
+RUN set -eu; \
+    shell_dir=$(ls -d /root/.cache/ms-playwright/chromium_headless_shell-*); \
+    case "${TARGETARCH}" in \
+      amd64) exe_dir=chrome-headless-shell-linux64; exe=chrome-headless-shell ;; \
+      arm64) exe_dir=chrome-linux; exe=headless_shell ;; \
+      *) echo "unsupported arch: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    rm -rf "${shell_dir:?}"/chrome-*; \
+    mkdir -p "${shell_dir}/${exe_dir}"; \
+    ln -s /opt/chrome-headless-shell/chrome-headless-shell "${shell_dir}/${exe_dir}/${exe}"; \
+    "${shell_dir}/${exe_dir}/${exe}" --version; \
+    install -m 0755 /tmp/node /root/.cache/ms-playwright-go/*/node; \
+    rm /tmp/node; \
+    /root/.cache/ms-playwright-go/*/node --version
 
 WORKDIR /app

@@ -247,7 +247,8 @@ func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, q
 	parsedSpans := make([]ParsedSpan, 0, len(t.spans))
 	byTrace := make(map[string][]*ParsedSpan, len(t.spans))
 	bySpanID := make(map[string]*ParsedSpan, len(t.spans))
-	parentMap := make(map[string][]*ParsedSpan, len(t.spans)) // parent_span_id -> children
+	type spanKey struct{ traceID, spanID string }
+	parentMap := make(map[spanKey][]*ParsedSpan, len(t.spans))
 
 	var earliestTime, latestTime time.Time
 
@@ -286,7 +287,10 @@ func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, q
 		psp := &parsedSpans[len(parsedSpans)-1]
 		bySpanID[psp.Span.SpanID] = psp
 		byTrace[psp.Span.TraceID] = append(byTrace[psp.Span.TraceID], psp)
-		parentMap[psp.Span.ParentSpanID] = append(parentMap[psp.Span.ParentSpanID], psp)
+		if s.TraceID != "" && s.ParentSpanID != "" {
+			key := spanKey{s.TraceID, s.ParentSpanID}
+			parentMap[key] = append(parentMap[key], psp)
+		}
 	}
 
 	// ---- Namespace backfill ----
@@ -519,7 +523,10 @@ func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, q
 		span := p.Span
 
 		// children of this span (i.e., spans where this span is parent)
-		children := parentMap[span.SpanID]
+		if span.TraceID == "" || span.SpanID == "" {
+			continue
+		}
+		children := parentMap[spanKey{span.TraceID, span.SpanID}]
 		if len(children) == 0 {
 			continue
 		}

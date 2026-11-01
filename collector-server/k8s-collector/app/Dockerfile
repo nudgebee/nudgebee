@@ -40,6 +40,10 @@ RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" && apk upgrade --no-cache
 # setuptools copies that Trivy flags (still unpatched in pip 26.2.2).
 RUN if python -m pip --version >/dev/null 2>&1; then python -m pip uninstall -y pip; fi
 
+# The production stage builds nothing, so remove the compilers the base preinstalls.
+# They are unused at runtime, and binutils carries scanner findings.
+RUN apk del --no-cache build-base gcc libc-dev musl-dev
+
 WORKDIR /app
 ENV PYTHONPATH=/app
 

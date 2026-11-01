@@ -1,0 +1,99 @@
+{{- if .Values.postgresql.enabled }}
+{{- $r := include "nudgebee.postgresql.values" . | fromYaml }}
+{{- $name := include "nudgebee.postgresql.primaryFullname" . }}
+{{- $a := $r.audit }}
+{{- /*
+The Bitnami image generated postgresql.conf and pg_hba.conf at startup and kept
+them outside PGDATA (/opt/bitnami/postgresql/conf), so the official image
+would find neither. These are the same files, from the same values.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ printf "%s-configuration" $name }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "nudgebee.postgresql.labels" (dict "custom" $r.commonLabels "root" $) | nindent 4 }}
+    app.kubernetes.io/component: primary
+data:
+  postgresql.conf: |-
+    {{- if $r.primary.configuration }}
+    {{- include "nudgebee.postgresql.tpl" (dict "value" $r.primary.configuration "root" $) | nindent 4 }}
+    {{- else }}
+    listen_addresses = '*'
+    port = '{{ $r.containerPorts.postgresql }}'
+    wal_level = 'replica'
+    fsync = 'on'
+    max_wal_size = '400MB'
+    max_wal_senders = '16'
+    wal_keep_size = '128MB'
+    hot_standby = 'on'
+    log_connections = '{{ $a.logConnections }}'
+    log_disconnections = '{{ $a.logDisconnections }}'
+    log_hostname = '{{ $a.logHostname }}'
+    client_min_messages = '{{ $a.clientMinMessages }}'
+    {{- with $a.logLinePrefix }}
+    log_line_prefix = '{{ . }}'
+    {{- end }}
+    {{- with $a.logTimezone }}
+    log_timezone = '{{ . }}'
+    {{- end }}
+    {{- /* pgaudit is not in the official image; with no pgaudit.log set it audited nothing. */}}
+    {{- $libs := without (splitList "," (replace " " "" (toString $r.postgresqlSharedPreloadLibraries))) "pgaudit" "" }}
+    {{- with $libs }}
+    shared_preload_libraries = '{{ join "," . }}'
+    {{- end }}
+    {{- /* Bitnami always had a conf.d; here it only exists when there is extended config to include. */}}
+    {{- if or $r.primary.extendedConfiguration $r.primary.existingExtendedConfigmap }}
+    include_dir = 'conf.d'
+    {{- end }}
+    {{- end }}
+  pg_hba.conf: |-
+    {{- if $r.primary.pgHbaConfiguration }}
+    {{- include "nudgebee.postgresql.tpl" (dict "value" $r.primary.pgHbaConfiguration "root" $) | nindent 4 }}
+    {{- else }}
+    host     all             all             0.0.0.0/0               md5
+    host     all             all             ::/0                    md5
+    local    all             all                                     md5
+    host     all             all        127.0.0.1/32                 md5
+    host     all             all        ::1/128                      md5
+    {{- end }}
+{{- if and $r.primary.extendedConfiguration (not $r.primary.existingExtendedConfigmap) }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ printf "%s-extended-configuration" $name }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "nudgebee.postgresql.labels" (dict "custom" $r.commonLabels "root" $) | nindent 4 }}
+    app.kubernetes.io/component: primary
+data:
+  override.conf: |-
+    {{- include "nudgebee.postgresql.tpl" (dict "value" $r.primary.extendedConfiguration "root" $) | nindent 4 }}
+{{- end }}
+{{- if and $r.metrics.enabled $r.metrics.customMetrics }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ printf "%s-metrics" $name }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "nudgebee.postgresql.labels" (dict "custom" $r.commonLabels "root" $) | nindent 4 }}
+data:
+  custom-metrics.yaml: {{ toYaml $r.metrics.customMetrics | quote }}
+{{- end }}
+{{- if and $r.primary.initdb.scripts (not $r.primary.initdb.scriptsConfigMap) }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ printf "%s-init-scripts" $name }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "nudgebee.postgresql.labels" (dict "custom" $r.commonLabels "root" $) | nindent 4 }}
+data:
+  {{- include "nudgebee.postgresql.tpl" (dict "value" $r.primary.initdb.scripts "root" $) | nindent 2 }}
+{{- end }}
+{{- end }}

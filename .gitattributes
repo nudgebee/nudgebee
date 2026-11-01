@@ -2,3 +2,6 @@
 *.bat text eol=crlf
 *.cmd text eol=crlf
 *.ahk text eol=crlf
+# Append-only decision log: every entry is inserted at the top, so independent
+# edits (EE->OSS cherry-picks, parallel PRs) clash on the same lines. Keep both.
+docs/architecture-decisions.md merge=union

@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
-FROM node:25-alpine AS base
+FROM node:26-alpine AS base
 # Refresh the base image's Alpine OS packages to the latest patch level. The
-# node:25-alpine tag lags Alpine security releases (e.g. openssl/libssl3), so
+# node:26-alpine tag lags Alpine security releases (e.g. openssl/libssl3), so
 # without this the runtime inherits fixed-upstream OS CVEs. Applied on the shared
 # base so deps/builder/runner all get the patched packages. Bumping OS_PKG_EPOCH
 # changes this layer's cache key so the registry cache can't serve a stale

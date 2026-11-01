@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/big"
+	"math"
 	"nudgebee/services/account"
 	"nudgebee/services/common"
 	"nudgebee/services/config"
@@ -16,6 +16,7 @@ import (
 	"nudgebee/services/tenant"
 	"nudgebee/services/user"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -195,6 +196,34 @@ func toInt64(v interface{}) int64 {
 	case []uint8:
 		var n int64
 		_, _ = fmt.Sscan(string(val), &n)
+		return n
+	default:
+		return 0
+	}
+}
+
+// toFloat64 coerces numeric values scanned from SQL or JSON into float64.
+// lib/pq + sqlx.MapScan typically yield string or []uint8 for numeric/decimal
+// columns, and float64 for float8. Unparseable input returns 0; note that
+// "NaN" is a valid Postgres numeric and parses to NaN, so callers doing
+// arithmetic must reject non-finite values themselves.
+func toFloat64(v interface{}) float64 {
+	switch val := v.(type) {
+	case float64:
+		return val
+	case float32:
+		return float64(val)
+	case int64:
+		return float64(val)
+	case int:
+		return float64(val)
+	case int32:
+		return float64(val)
+	case string:
+		n, _ := strconv.ParseFloat(val, 64)
+		return n
+	case []uint8:
+		n, _ := strconv.ParseFloat(string(val), 64)
 		return n
 	default:
 		return 0
@@ -448,7 +477,9 @@ func SendDailyHighlightEmailReport(context *security.RequestContext, request Ten
 			continue
 		}
 
-		totalPotentialSavings := calculateTotalPotentialSavings(highlight1["data"].(map[string]interface{})["recommendation_groupings"].(map[string]interface{}))
+		h1Data, _ := highlight1["data"].(map[string]interface{})
+		recommendationGroupings, _ := h1Data["recommendation_groupings"].(map[string]interface{})
+		totalPotentialSavings := calculateTotalPotentialSavings(recommendationGroupings)
 
 		context.GetLogger().Info("preparing daily_highlight_report email to ", "users", slog.AnyValue(emails), "tenant", tenant.Id)
 		insights.Data["recommendation_security_groupings_v2"] = map[string]interface{}{"rows": []interface{}{}}
@@ -476,16 +507,15 @@ func isPayloadEmpty(insights common.GqlResponse) bool {
 }
 
 func calculateTotalPotentialSavings(data map[string]interface{}) float64 {
-	totalSavings := big.NewFloat(0)
-	rows := data["rows"].([]query.QueryRow)
-	for _, row := range rows {
-		if sumEstimatedSavings, ok := row["sum_estimated_savings"].(float64); ok {
-			totalSavings = new(big.Float).Add(totalSavings, big.NewFloat(sumEstimatedSavings))
+	var totalSavings float64
+	for _, row := range toStringMapSlice(rowsOf(data)) {
+		// Skip zero, NaN and ±Inf: Postgres numeric accepts 'NaN', and a
+		// non-finite value would poison the running total.
+		if s := toFloat64(row["sum_estimated_savings"]); s != 0 && !math.IsNaN(s) && !math.IsInf(s, 0) {
+			totalSavings += s
 		}
 	}
-
-	totalSavingsFloat, _ := totalSavings.Float64()
-	return totalSavingsFloat
+	return totalSavings
 }
 
 func SendDailyAgentStatusEmail(context *security.RequestContext, query TenantReportRequest) error {

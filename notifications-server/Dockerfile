@@ -31,6 +31,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # setuptools copies that Trivy flags (still unpatched in pip 26.2.2).
 RUN if python -m pip --version >/dev/null 2>&1; then python -m pip uninstall -y pip; fi
 
+# Native wheels are built by now, so remove the compilers the base preinstalls.
+# They are unused at runtime, and binutils carries scanner findings.
+RUN apk del --no-cache build-base gcc libc-dev musl-dev
+
 # Copy application source code
 COPY notifications_server notifications_server
 

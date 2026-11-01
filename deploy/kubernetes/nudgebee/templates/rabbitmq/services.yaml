@@ -1,0 +1,105 @@
+{{- if .Values.rabbitmq.enabled }}
+{{- $r := include "nudgebee.rabbitmq.values" . | fromYaml }}
+{{- $fullname := include "nudgebee.rabbitmq.fullname" . }}
+{{- $svc := $r.service }}
+{{- $podLabels := merge (dict) ($r.podLabels | default (dict)) ($r.commonLabels | default (dict)) }}
+{{- /* Every service reaches RabbitMQ as `rabbitmq` (RABBIT_MQ_HOST in secrets-nudgebee.yaml). */}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ include "nudgebee.rabbitmq.namespace" . | quote }}
+  labels:
+    {{- include "nudgebee.rabbitmq.labels" (dict "custom" (merge (dict) ($svc.labels | default (dict)) ($r.commonLabels | default (dict))) "root" $) | nindent 4 }}
+  {{- with (merge (dict) ($svc.annotations | default (dict)) ($r.commonAnnotations | default (dict))) }}
+  annotations:
+    {{- include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $svc.type }}
+  {{- with $svc.clusterIP }}
+  clusterIP: {{ . }}
+  {{- end }}
+  {{- if eq $svc.type "LoadBalancer" }}
+  {{- with $svc.loadBalancerIP }}
+  loadBalancerIP: {{ . }}
+  {{- end }}
+  {{- with $svc.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  allocateLoadBalancerNodePorts: {{ $svc.allocateLoadBalancerNodePorts }}
+  {{- end }}
+  {{- if or (eq $svc.type "LoadBalancer") (eq $svc.type "NodePort") }}
+  externalTrafficPolicy: {{ $svc.externalTrafficPolicy | quote }}
+  {{- end }}
+  {{- with $svc.sessionAffinity }}
+  sessionAffinity: {{ . }}
+  {{- end }}
+  {{- with $svc.sessionAffinityConfig }}
+  sessionAffinityConfig:
+    {{- include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) | nindent 4 }}
+  {{- end }}
+  {{- with $svc.externalIPs }}
+  externalIPs:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  ports:
+    {{- $ports := list }}
+    {{- /* Bitnami rendered amqp whenever TLS was off (TLS is rejected in validate.yaml). */}}
+    {{- $ports = append $ports (list "amqp" "amqp") }}
+    {{- if $svc.epmdPortEnabled }}{{- $ports = append $ports (list "epmd" "epmd") }}{{- end }}
+    {{- if $svc.distPortEnabled }}{{- $ports = append $ports (list "dist" "dist") }}{{- end }}
+    {{- if $svc.managerPortEnabled }}{{- $ports = append $ports (list "manager" "stats") }}{{- end }}
+    {{- if $r.metrics.enabled }}{{- $ports = append $ports (list "metrics" "metrics") }}{{- end }}
+    {{- range $ports }}
+    {{- $key := index . 0 }}
+    - name: {{ get $svc.portNames $key }}
+      port: {{ get $svc.ports $key }}
+      targetPort: {{ index . 1 }}
+      {{- if eq $svc.type "ClusterIP" }}
+      nodePort: null
+      {{- else if and (or (eq $svc.type "NodePort") (eq $svc.type "LoadBalancer")) (get $svc.nodePorts $key) }}
+      nodePort: {{ get $svc.nodePorts $key }}
+      {{- end }}
+    {{- end }}
+    {{- with $svc.extraPorts }}
+    {{- include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) | nindent 4 }}
+    {{- end }}
+  selector:
+    {{- include "nudgebee.rabbitmq.matchLabels" (dict "custom" $podLabels "root" $) | nindent 4 }}
+---
+# Governing Service of the StatefulSet (its spec.serviceName); the node names
+# resolve through it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nudgebee.rabbitmq.headlessName" . }}
+  namespace: {{ include "nudgebee.rabbitmq.namespace" . | quote }}
+  labels:
+    {{- include "nudgebee.rabbitmq.labels" (dict "custom" $r.commonLabels "root" $) | nindent 4 }}
+  {{- with (merge (dict) (($svc.headless | default (dict)).annotations | default (dict)) ($svc.annotationsHeadless | default (dict)) ($r.commonAnnotations | default (dict))) }}
+  annotations:
+    {{- include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) | nindent 4 }}
+  {{- end }}
+spec:
+  clusterIP: None
+  ports:
+    - name: {{ $svc.portNames.epmd }}
+      port: {{ $svc.ports.epmd }}
+      targetPort: epmd
+    - name: {{ $svc.portNames.amqp }}
+      port: {{ $svc.ports.amqp }}
+      targetPort: amqp
+    - name: {{ $svc.portNames.dist }}
+      port: {{ $svc.ports.dist }}
+      targetPort: dist
+    {{- if $svc.managerPortEnabled }}
+    - name: {{ $svc.portNames.manager }}
+      port: {{ $svc.ports.manager }}
+      targetPort: stats
+    {{- end }}
+  selector:
+    {{- include "nudgebee.rabbitmq.matchLabels" (dict "custom" $podLabels "root" $) | nindent 4 }}
+  publishNotReadyAddresses: true
+{{- end }}
