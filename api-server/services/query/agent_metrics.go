@@ -32,7 +32,16 @@ func processAgentMetrices(query QueryRequest, context *security.RequestContext, 
 		}
 		resourceIds := []string{}
 		if binary["resource_id"] != nil && binary["resource_id"][In] != nil {
-			resourceIds = binary["resource_id"][In].([]string)
+			ids, ok := asStringSlice(binary["resource_id"][In])
+			if !ok {
+				return QueryResponse{
+					Errors: []common.Error{
+						common.ErrorBadRequest("resource_id._in must be an array of strings"),
+					},
+					ExecutionTimeMs: time.Since(startTime).Milliseconds(),
+				}, nil
+			}
+			resourceIds = ids
 			delete(binary, "resource_id")
 		} else if binary["resource_id"] != nil && binary["resource_id"][Eq] != nil {
 			resourceIds = append(resourceIds, binary["resource_id"][Eq].(string))
@@ -80,7 +89,16 @@ func processAgentMetrices(query QueryRequest, context *security.RequestContext, 
 
 		metrics := []string{}
 		if binary["metric"] != nil && binary["metric"][In] != nil {
-			metrics = binary["metric"][In].([]string)
+			names, ok := asStringSlice(binary["metric"][In])
+			if !ok {
+				return QueryResponse{
+					Errors: []common.Error{
+						common.ErrorBadRequest("metric._in must be an array of strings"),
+					},
+					ExecutionTimeMs: time.Since(startTime).Milliseconds(),
+				}, nil
+			}
+			metrics = names
 			delete(binary, "metric")
 		} else if binary["metric"] != nil && binary["metric"][Eq] != nil {
 			metrics = append(metrics, binary["metric"][Eq].(string))
@@ -217,5 +235,27 @@ func processAgentMetrices(query QueryRequest, context *security.RequestContext, 
 			ExecutionTimeMs: time.Since(startTime).Milliseconds(),
 		}, nil
 
+	}
+}
+
+// asStringSlice converts JSON-decoded _in filter values to []string.
+// Encoding/json decodes arrays into []any, while some callers may already
+// pass []string — both must work without panicking on a type assertion.
+func asStringSlice(v any) ([]string, bool) {
+	switch s := v.(type) {
+	case []string:
+		return s, true
+	case []any:
+		out := make([]string, 0, len(s))
+		for _, item := range s {
+			str, ok := item.(string)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, str)
+		}
+		return out, true
+	default:
+		return nil, false
 	}
 }
