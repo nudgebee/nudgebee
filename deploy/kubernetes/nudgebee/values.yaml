@@ -564,7 +564,7 @@ services-server:
   # Carries ADMIN_EMAIL and the bundled agent's credential when either is in use.
   extraEnvFromSecret: 'nudgebee-bootstrap'
   env:
-    NOVA_IMAGE: 'ghcr.io/nudgebee/nova:2026-05-22T07-15-34_decaacbbf56e1789c3299a89f790b8e824ab741c'
+    NOVA_IMAGE: 'ghcr.io/nudgebee/nova:2026-11-01T06-52-28_672e9c0c399afd5b92709ce34a52434e6f05d603'
     TRIVY_IMAGE: 'ghcr.io/nudgebee/trivy:0.76.1-nb2'
     POPEYE_IMAGE: 'ghcr.io/nudgebee/popeye:v0.11.1-nudgebee.2'
     KUBE_BENCH_IMAGE: 'ghcr.io/nudgebee/kube-bench:v0.16.0-nb2'

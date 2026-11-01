@@ -197,7 +197,7 @@ jobs:
           - ghcr.io/nudgebee/rabbitmq:4.2.9-management-alpine
           - ghcr.io/nudgebee/postgres-exporter:v0.20.1-nb2
           - ghcr.io/nudgebee/nginx:stable-alpine3.24-slim-nb1
-          - ghcr.io/nudgebee/kubewatch:2.14.1-nb.2
+          - ghcr.io/nudgebee/kubewatch:2.14.1-nb.3
           # --- genuinely third-party, pulled from our ghcr clones ---
           # These are the refs the chart actually deploys: values.yaml points
           # temporal.{server,admintools}.image.repository at ghcr.io/nudgebee/*,
@@ -227,7 +227,7 @@ jobs:
           - ghcr.io/nudgebee/forager:0.1.2
           # --- agent-chart runtime dependencies (clickhouse mirror + otel) ---
           - ghcr.io/nudgebee/clickhouse:24.12.4-debian-12-r0-nb-3
-          - ghcr.io/nudgebee/opentelemetry-collector-contrib:0.157.0
+          - ghcr.io/nudgebee/opentelemetry-collector-contrib:0.164.0
     steps:
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
