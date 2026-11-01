@@ -43,6 +43,10 @@ RUN apk add --no-cache \
 RUN pip install --no-cache-dir --break-system-packages --upgrade \
     "cryptography>=48.0.1" "certifi>=2026.10.18" "urllib3>=2.7.0,<3" "setuptools>=84.2.1"
 
+# urllib3 2.8.0 warns on the `strict` argument Alpine's botocore still passes, once
+# per aws call. Silence that one warning so it stays out of CLI results.
+ENV PYTHONWARNINGS=ignore::FutureWarning:urllib3.poolmanager
+
 # Azure CLI. Install azure-cli and the patched floors in one resolver pass so
 # pip satisfies all constraints simultaneously (azure-cli-core declares a bare
 # `cryptography` requirement with no ceiling, so >=50 resolves cleanly). This
