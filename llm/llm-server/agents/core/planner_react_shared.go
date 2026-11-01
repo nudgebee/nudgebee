@@ -107,8 +107,6 @@ func metricQueryReturnedNoData(toolName, response string) bool {
 			}
 		}
 		return true
-	case "openobserve_metrics_execute":
-		return response == "" || response == plannerToolNoData || response == "[]"
 	default:
 		return false
 	}
