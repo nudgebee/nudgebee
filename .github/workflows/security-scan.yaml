@@ -207,7 +207,7 @@ jobs:
           # silently keep reporting on whatever it was pinned to here.
           # temporal-ui not scanned: the Web UI is disabled in the chart (cloned
           # so re-enabling needs no Docker Hub pull, but nothing deploys it).
-          - ghcr.io/nudgebee/qdrant:v1.19.2
+          - ghcr.io/nudgebee/qdrant:v1.19.2-nb1
           - ghcr.io/nudgebee/temporal-server:1.31.4-nb1
           - ghcr.io/nudgebee/temporal-admin-tools:1.31.4-nb1
           # --- init / helper images the service charts mount ---
