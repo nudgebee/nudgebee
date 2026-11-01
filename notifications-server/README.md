@@ -143,7 +143,7 @@ All configuration is via environment variables. Defaults assume a Kubernetes dep
 | `NOTIFICATION_DB_URL` | `postgresql://postgres:password@127.0.0.1:5432/nudgebee` | Async Postgres DSN |
 | `BASE_URL` | *(empty)* | Frontend base URL used in outbound links |
 | `ACTION_API_SERVER_TOKEN` | required | Shared token for services-server calls, including branding lookups |
-| `LLM_SERVER_TOKEN` | required for LLM calls | Shared token sent to llm-server |
+| `LLM_SERVER_TOKEN` | *(empty)* | Shared secret for LLM callbacks |
 
 ### RabbitMQ
 

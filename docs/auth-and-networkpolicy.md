@@ -38,14 +38,14 @@ Every internal RPC carries:
 
 | Header / field | Set by | Trusted to mean |
 |---|---|---|
-| `X-ACTION-TOKEN: <per-service token>` | `app/` BFF, `llm-server`, and any other service-to-service caller | Caller is a legitimate Nudgebee service. Same header name across api-server, rag-server, services-server, cloud-collector, and llm-server — but the *value* is per-destination (`ACTION_API_SERVER_TOKEN`, `CLOUD_COLLECTOR_SERVER_TOKEN`, `LLM_SERVER_TOKEN`, etc.), so a leak of one backend's token doesn't open the others. |
+| `X-ACTION-TOKEN: <per-service token>` | `app/` BFF, `llm-server`, and any other service-to-service caller | Caller is a legitimate Nudgebee service. Same header name across api-server, rag-server, services-server, and cloud-collector — but the *value* is per-destination (`ACTION_API_SERVER_TOKEN`, `CLOUD_COLLECTOR_SERVER_TOKEN`, `RAG_SERVER_TOKEN`, etc.), so a leak of one backend's token doesn't open the others. |
 | `X-SECRET-KEY: <RELAY_SERVER_SECRET_KEY>` | `app/` BFF | Caller is a legitimate Nudgebee service, on the relay-server's *internal* (cloud-platform-facing) routes only. |
 | `X-Tenant-Id` | `app/` BFF | The session-resolved tenant ID. Downstream uses this for row scoping. |
 | `X-User-Id` | `app/` BFF | The session-resolved user ID. Downstream uses this for audit and per-user checks. |
 | Body fields like `account_id`, `tenant_id` | Caller (possibly user) | Validated against the session-resolved tenant inside the handler. |
 
 The shared static tokens (`ACTION_API_SERVER_TOKEN`,
-`CLOUD_COLLECTOR_SERVER_TOKEN`, `LLM_SERVER_TOKEN`, `RAG_SERVER_TOKEN`,
+`CLOUD_COLLECTOR_SERVER_TOKEN`, `RAG_SERVER_TOKEN`,
 `RELAY_SERVER_SECRET_KEY`, ...) live in the
 `nudgebee` k8s secret and are mounted into every pod that needs to
 talk to a backend service. They are *not* per-user tokens — they
@@ -58,7 +58,7 @@ layer keeping that blast radius contained; per-service token values
 ensure that compromising one *config map's value* doesn't yield the
 others.
 
-The services-server, cloud-collector, and llm-server service-token
+The services-server and cloud-collector service-token
 middlewares fail closed: a missing server token logs an error and returns
 503; a configured token with a missing or incorrect request header returns
 401. Their existing per-service route exemptions remain unchanged.
