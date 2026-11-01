@@ -223,8 +223,17 @@ jobs:
           # refs are bumped on their releases.
           - ghcr.io/nudgebee/nudgebee-agent:2026-11-01T06-36-55_f94ccaa1bf84f6288ffa7b0b86a7721ef67f7fae
           - ghcr.io/nudgebee/application-profiler-bpf:e1a00b7
+          - ghcr.io/nudgebee/application-profiler-jvm:e1a00b7
+          - ghcr.io/nudgebee/application-profiler-perf:e1a00b7
+          - ghcr.io/nudgebee/application-profiler-python:e1a00b7
+          - ghcr.io/nudgebee/application-profiler-ruby:e1a00b7
           - ghcr.io/nudgebee/node-agent:0.1.14
           - ghcr.io/nudgebee/forager:0.1.5
+          # --- on-demand scanner images the platform launches ---
+          - ghcr.io/nudgebee/nova:2026-11-01T06-52-28_672e9c0c399afd5b92709ce34a52434e6f05d603
+          - ghcr.io/nudgebee/kube-bench:v0.16.0-nb2
+          - ghcr.io/nudgebee/trivy:0.76.1-nb2
+          - ghcr.io/nudgebee/popeye:v0.11.1-nudgebee.2
           # --- agent-chart runtime dependencies (clickhouse mirror + otel) ---
           - ghcr.io/nudgebee/clickhouse:24.12.4-debian-12-r0-nb-3
           - ghcr.io/nudgebee/opentelemetry-collector-contrib:0.164.0
