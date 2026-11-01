@@ -11,9 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// Single auth contract: if LLM_SERVER_TOKEN is configured every request
-// must carry a matching header; if unset, the gate is a no-op. These tests
-// pin both branches plus the path-based skips (/health, /api/v1/workspace).
+// Every non-exempt request requires LLM_SERVER_TOKEN. Missing server config
+// returns 503; invalid request credentials return 401.
 func TestAuthHandlerMiddleware(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -32,6 +31,8 @@ func TestAuthHandlerMiddleware(t *testing.T) {
 		r.GET("/api/v1/workspace/anything", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
 		r.GET("/api/admin/prompts/config", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
 		r.POST("/v1/llm-config/test-connection", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
+		r.GET("/swagger/doc.json", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
+		r.GET("/openapi.json", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
 		return r
 	}
 
@@ -64,17 +65,19 @@ func TestAuthHandlerMiddleware(t *testing.T) {
 		assert.Equal(t, http.StatusUnauthorized, do(r, "GET", "/api/admin/prompts/config", "wrong"))
 	})
 
-	t.Run("token unset: any header value passes", func(t *testing.T) {
+	t.Run("token unset: requests fail closed", func(t *testing.T) {
 		config.Config.LlmServerToken = ""
 		r := build()
-		assert.Equal(t, http.StatusOK, do(r, "GET", "/api/admin/prompts/config", ""))
-		assert.Equal(t, http.StatusOK, do(r, "GET", "/api/admin/prompts/config", "anything"))
+		assert.Equal(t, http.StatusServiceUnavailable, do(r, "GET", "/api/admin/prompts/config", ""))
+		assert.Equal(t, http.StatusServiceUnavailable, do(r, "GET", "/api/admin/prompts/config", "anything"))
 	})
 
-	t.Run("health and workspace paths skip the gate regardless", func(t *testing.T) {
+	t.Run("health, docs, and workspace paths skip the gate regardless", func(t *testing.T) {
 		config.Config.LlmServerToken = "secret"
 		r := build()
 		assert.Equal(t, http.StatusOK, do(r, "GET", "/health", ""))
+		assert.Equal(t, http.StatusOK, do(r, "GET", "/swagger/doc.json", ""))
+		assert.Equal(t, http.StatusOK, do(r, "GET", "/openapi.json", ""))
 		assert.Equal(t, http.StatusOK, do(r, "GET", "/api/v1/workspace/anything", ""))
 	})
 }

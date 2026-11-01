@@ -1,0 +1,202 @@
+{
+  "before_revision": "58552017c24b596fe5bf01ec2878b6c70eb43cca",
+  "after_revision": "3ec59d73b124810763e05d64f68e11eee10cc5c7",
+  "runtime": {
+    "kind": "0.33.0",
+    "kubernetes": "1.37.0",
+    "helm": "3.22.1",
+    "postgres_image": "postgres:16-alpine",
+    "workflow_registry": "local contract fixture",
+    "rag_runtime": "actual sync/config/db modules in health probe"
+  },
+  "binary_sha256": {
+    "before": "3b52ca894d39914ebc412dd79156f90551b05c1f7a9855ee0ad170b08d3a578c",
+    "after": "cc6656f68db1282fa1f665396c5adcbcc542d34dc8dee915d3fd65e527a73d57"
+  },
+  "templates": {
+    "before": [
+      {
+        "source": "deploy\\kubernetes\\nudgebee\\templates\\secrets-nudgebee.yaml",
+        "harness": "templates\\secrets-nudgebee.yaml",
+        "sha256": "d1be15e2f98664b4dbb01395a900b6e2bd989b65acd52a1acffda720cfb24fc9"
+      },
+      {
+        "source": "deploy\\kubernetes\\nudgebee\\templates\\_helpers.tpl",
+        "harness": "templates\\_helpers.tpl",
+        "sha256": "abfb21f8caff5c230486cb008f8c423b6f0a096db530ff0385f5ef00a8d65150"
+      },
+      {
+        "source": "deploy\\kubernetes\\llm-server\\templates\\deployment.yaml",
+        "harness": "charts\\llm-server\\templates\\deployment.yaml",
+        "sha256": "309eecea883bc18f714b02d8828c6effc15075e50eae1f627a436e022014c191"
+      },
+      {
+        "source": "deploy\\kubernetes\\llm-server\\templates\\service.yaml",
+        "harness": "charts\\llm-server\\templates\\service.yaml",
+        "sha256": "d5426839f003216bf02e2eaaa2edb8030a96674fe7e3a0cd4cd06115df163652"
+      },
+      {
+        "source": "deploy\\kubernetes\\llm-server\\templates\\serviceaccount.yaml",
+        "harness": "charts\\llm-server\\templates\\serviceaccount.yaml",
+        "sha256": "25aa0cf9e99e11f28d7b23decba52ea9c870c1cda814b7e04915f03391eebd0c"
+      },
+      {
+        "source": "deploy\\kubernetes\\llm-server\\templates\\_helpers.tpl",
+        "harness": "charts\\llm-server\\templates\\_helpers.tpl",
+        "sha256": "162c2577ca873ffb6c4fa43047868b3ba22923c337face98b9ec2670bea28c79"
+      },
+      {
+        "source": "deploy\\kubernetes\\rag-server\\templates\\deployment.yaml",
+        "harness": "charts\\rag-server\\templates\\deployment.yaml",
+        "sha256": "d622c8fe6e622efbfc804335ab9e21e04cb168c373383bf8c2bc05ebd58525a5"
+      },
+      {
+        "source": "deploy\\kubernetes\\rag-server\\templates\\service.yaml",
+        "harness": "charts\\rag-server\\templates\\service.yaml",
+        "sha256": "9ac40be61fe859fd919454128de01316c99f4d1302d1a2de02e242ae816a97f1"
+      },
+      {
+        "source": "deploy\\kubernetes\\rag-server\\templates\\serviceaccount.yaml",
+        "harness": "charts\\rag-server\\templates\\serviceaccount.yaml",
+        "sha256": "77a1dc29f1166b06b815bcc8fd7d686e0483d4fdf370fb46ed2cb0ce66366723"
+      },
+      {
+        "source": "deploy\\kubernetes\\rag-server\\templates\\_helpers.tpl",
+        "harness": "charts\\rag-server\\templates\\_helpers.tpl",
+        "sha256": "7c20c67a051e529e9a97c441808a521e1b39aee13436e63a0dd3a61fff13dbc5"
+      }
+    ],
+    "after": [
+      {
+        "source": "deploy\\kubernetes\\nudgebee\\templates\\secrets-nudgebee.yaml",
+        "harness": "templates\\secrets-nudgebee.yaml",
+        "sha256": "199af23207279933afa2241eab5607132cb09265714d38a83c282c2de3692a6e"
+      },
+      {
+        "source": "deploy\\kubernetes\\nudgebee\\templates\\_helpers.tpl",
+        "harness": "templates\\_helpers.tpl",
+        "sha256": "abfb21f8caff5c230486cb008f8c423b6f0a096db530ff0385f5ef00a8d65150"
+      },
+      {
+        "source": "deploy\\kubernetes\\llm-server\\templates\\deployment.yaml",
+        "harness": "charts\\llm-server\\templates\\deployment.yaml",
+        "sha256": "309eecea883bc18f714b02d8828c6effc15075e50eae1f627a436e022014c191"
+      },
+      {
+        "source": "deploy\\kubernetes\\llm-server\\templates\\service.yaml",
+        "harness": "charts\\llm-server\\templates\\service.yaml",
+        "sha256": "d5426839f003216bf02e2eaaa2edb8030a96674fe7e3a0cd4cd06115df163652"
+      },
+      {
+        "source": "deploy\\kubernetes\\llm-server\\templates\\serviceaccount.yaml",
+        "harness": "charts\\llm-server\\templates\\serviceaccount.yaml",
+        "sha256": "25aa0cf9e99e11f28d7b23decba52ea9c870c1cda814b7e04915f03391eebd0c"
+      },
+      {
+        "source": "deploy\\kubernetes\\llm-server\\templates\\_helpers.tpl",
+        "harness": "charts\\llm-server\\templates\\_helpers.tpl",
+        "sha256": "162c2577ca873ffb6c4fa43047868b3ba22923c337face98b9ec2670bea28c79"
+      },
+      {
+        "source": "deploy\\kubernetes\\rag-server\\templates\\deployment.yaml",
+        "harness": "charts\\rag-server\\templates\\deployment.yaml",
+        "sha256": "d622c8fe6e622efbfc804335ab9e21e04cb168c373383bf8c2bc05ebd58525a5"
+      },
+      {
+        "source": "deploy\\kubernetes\\rag-server\\templates\\service.yaml",
+        "harness": "charts\\rag-server\\templates\\service.yaml",
+        "sha256": "9ac40be61fe859fd919454128de01316c99f4d1302d1a2de02e242ae816a97f1"
+      },
+      {
+        "source": "deploy\\kubernetes\\rag-server\\templates\\serviceaccount.yaml",
+        "harness": "charts\\rag-server\\templates\\serviceaccount.yaml",
+        "sha256": "77a1dc29f1166b06b815bcc8fd7d686e0483d4fdf370fb46ed2cb0ce66366723"
+      },
+      {
+        "source": "deploy\\kubernetes\\rag-server\\templates\\_helpers.tpl",
+        "harness": "charts\\rag-server\\templates\\_helpers.tpl",
+        "sha256": "7c20c67a051e529e9a97c441808a521e1b39aee13436e63a0dd3a61fff13dbc5"
+      }
+    ]
+  },
+  "results": {
+    "baseline": {
+      "matching": 400,
+      "wrong": 400,
+      "empty": 400,
+      "absent": 400,
+      "catalog_count": 196,
+      "stored_count": 196,
+      "obsolete_removed": true,
+      "collection_preserved": true
+    },
+    "after": {
+      "matching": 400,
+      "wrong": 401,
+      "empty": 401,
+      "absent": 401,
+      "catalog_count": 196,
+      "stored_count": 196,
+      "obsolete_removed": true,
+      "collection_preserved": true
+    },
+    "repeat": {
+      "matching": 400,
+      "wrong": 401,
+      "empty": 401,
+      "absent": 401,
+      "catalog_count": 196,
+      "stored_count": 196,
+      "obsolete_removed": true,
+      "collection_preserved": true
+    },
+    "old_to_new": {
+      "old_revision": 6,
+      "new_revision": 7,
+      "generated_llm_token_length": 64,
+      "independent_action_token": true,
+      "action_token_preserved": true,
+      "encryption_key_preserved": true,
+      "both_pods_replaced": true
+    },
+    "repeat_upgrade": {
+      "revision": 8,
+      "llm_token_preserved": true,
+      "both_pods_replaced": true
+    },
+    "unconfigured_server": {
+      "health": 200,
+      "matching": 503,
+      "wrong": 503,
+      "empty": 503,
+      "absent": 503,
+      "failed_sync_preserved_rows": true
+    },
+    "external_secret": {
+      "health": 200,
+      "matching": 400,
+      "wrong": 401,
+      "empty": 401,
+      "absent": 401,
+      "catalog_count": 196,
+      "stored_count": 196,
+      "obsolete_removed": true,
+      "collection_preserved": true
+    },
+    "external_secret_preserved": true,
+    "external_secret_empty": {
+      "health": 200,
+      "matching": 503,
+      "wrong": 503,
+      "empty": 503,
+      "absent": 503,
+      "failed_sync_preserved_rows": true
+    },
+    "offline_explicit_token_stable": true,
+    "fresh_secret_install_and_upgrade": {
+      "generated_llm_token_length": 64,
+      "independent_action_token": true,
+      "llm_token_preserved": true
+    }
+  }
+}

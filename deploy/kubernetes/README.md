@@ -228,6 +228,10 @@ Before flipping production traffic onto the install:
 
 ## Upgrade flow
 
+Before enabling strict LLM service authentication, follow the
+[LLM service-token upgrade guide](../../docs/llm-service-token-upgrade.md) to
+coordinate callers and provision stable values for external Secrets or offline GitOps.
+
 ```bash
 helm upgrade nudgebee oci://ghcr.io/nudgebee/charts/nudgebee \
   -n nudgebee \
