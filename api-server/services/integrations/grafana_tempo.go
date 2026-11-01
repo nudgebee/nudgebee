@@ -282,13 +282,12 @@ func (GrafanaTempo) TestConnection(sc *security.RequestContext, config []core.In
 }
 
 // GetGrafanaTempoConfig retrieves and decrypts the Tempo configuration for an account.
-// An empty accountId is refused: ListIntegrationConfigs only filters by account when one
-// is given, so it would otherwise return another account's Tempo.
+// An account ID is required to select its active integration.
 func GetGrafanaTempoConfig(sc *security.RequestContext, accountId string) (GrafanaTempoConfig, error) {
 	if accountId == "" {
 		return GrafanaTempoConfig{}, fmt.Errorf("account_id is required to resolve a Grafana Tempo integration")
 	}
-	configs, err := core.ListIntegrationConfigs(sc, accountId, IntegrationGrafanaTempo)
+	configs, err := core.ListActiveIntegrationConfigs(sc, accountId, IntegrationGrafanaTempo)
 	if err != nil {
 		return GrafanaTempoConfig{}, fmt.Errorf("failed to list Grafana Tempo integration configs: %w", err)
 	}

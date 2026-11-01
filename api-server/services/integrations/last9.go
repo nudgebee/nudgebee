@@ -158,7 +158,7 @@ func GetLast9Configs(sc *security.RequestContext, accountId string) (string, str
 	username := ""
 	password := ""
 
-	last9Integrations, err := core.ListIntegrationConfigs(sc, accountId, IntegrationLast9)
+	last9Integrations, err := core.ListActiveIntegrationConfigs(sc, accountId, IntegrationLast9)
 	if err != nil {
 		return endpoint, username, password, fmt.Errorf("failed to list last9 integration configs: %w", err)
 	}

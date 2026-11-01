@@ -205,7 +205,7 @@ func lookupIntegrationConfigs(ctx *security.RequestContext, accountId, provider,
 
 	// The resolver DTO carries no Configs; re-list to get the populated config
 	// values (same path GetPinotConfig uses).
-	dtos, err := core.ListIntegrationConfigs(ctx, accountId, provider)
+	dtos, err := core.ListActiveIntegrationConfigs(ctx, accountId, provider)
 	if err != nil || len(dtos) == 0 {
 		return nil, false
 	}

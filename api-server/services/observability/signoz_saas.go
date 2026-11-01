@@ -45,7 +45,7 @@ func (s *SignozSaasSource) ExpandedLabelKeys() map[string][]string { return sign
 // its credentials. Logging in is left to signozDo, which caches the token and
 // detects the login API of the SigNoz release behind the URL.
 func (s *SignozSaasSource) GetSignozAuth(ctx *security.RequestContext, accountId string) (signozclient.Credentials, error) {
-	integrationDto, err := core.ListIntegrationConfigs(ctx, accountId, "signoz")
+	integrationDto, err := core.ListActiveIntegrationConfigs(ctx, accountId, "signoz")
 	if err != nil {
 		return signozclient.Credentials{}, fmt.Errorf("failed to get signoz integration: %w", err)
 	}
@@ -74,7 +74,7 @@ func signozCredentials(configs []core.IntegrationConfigValue) (signozclient.Cred
 	for _, config := range configs {
 		stored[config.Name] = config
 	}
-	// value reads one stored config value. ListIntegrationConfigs returns
+	// value reads one stored config value. ListActiveIntegrationConfigs returns
 	// values raw — it does not decrypt — and secrets (signoz_password,
 	// signoz_api_key) are stored with is_encrypted=true, so without this SigNoz
 	// receives ciphertext and answers 401. (Legacy rows saved with

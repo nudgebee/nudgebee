@@ -24,7 +24,7 @@ func patchIntegrationLookup(t *testing.T, provider, source string, dto *core.Int
 		func(_ *security.RequestContext, _, _, _, _ string) (string, string, *core.IntegrationDto, error) {
 			return provider, source, dto, nil
 		})
-	patches.ApplyFunc(core.ListIntegrationConfigs,
+	patches.ApplyFunc(core.ListActiveIntegrationConfigs,
 		func(_ *security.RequestContext, _ string, _ string) ([]core.IntegrationDto, error) {
 			return dtos, nil
 		})

@@ -389,7 +389,7 @@ func (m *AzureAppInsights) ValidateAzureAppInsightsConfig(cfg AzureAppInsightsCo
 }
 
 func GetAzureAppInsightConfigs(sc *security.RequestContext, accountId string) (AzureAppInsightsConfig, error) {
-	appInsightsIntegrations, err := core.ListIntegrationConfigs(sc, accountId, IntegrationAzureAppInsights)
+	appInsightsIntegrations, err := core.ListActiveIntegrationConfigs(sc, accountId, IntegrationAzureAppInsights)
 	if err != nil {
 		return AzureAppInsightsConfig{}, fmt.Errorf("failed to list azure integration configs: %w", err)
 	}
