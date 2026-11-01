@@ -5216,6 +5216,23 @@ actions:
       - role: k8s_namespace_admin
       - role: account_admin
       - role: tenant_admin
+  - name: tickets_get_transition_meta
+    comment: Get status choices for ticket transitions without create-ticket fields
+    definition:
+      kind: "synchronous"
+      handler: '{{TICKET_SERVICE_URL}}/tickets/transition-meta'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_usage
+      - role: tenant_admin_readonly
+      - role: k8s_namespace_admin_readonly
+      - role: account_admin_readonly
+      - role: k8s_namespace_admin
+      - role: account_admin
+      - role: tenant_admin
   - name: tickets_get_field_values
     comment: Query selectable field values from the tracker
     definition:
@@ -7911,6 +7928,7 @@ custom_types:
     - name: MonitoringResponse
     - name: MonitoringRowResponse
     - name: ticket_create_meta_response
+    - name: ticket_transition_meta_response
     - name: ticket_field_values_response
     - name: recommendation_job_create_output
     - name: MonitoringEventsResponse

@@ -34,6 +34,10 @@ func (s *GitHubService) GetCreateMeta(ctx *gin.Context, config models.TicketConf
 	return FetchGitHubIssueCreateMeta(ctx, config, projectKey)
 }
 
+func (s *GitHubService) GetTransitionMeta(ctx *gin.Context, config models.TicketConfigurations, projectKey string) (interface{}, error) {
+	return FetchGitHubProjectTransitionMeta(ctx, config, projectKey)
+}
+
 func (s *GitHubService) AddComment(ctx *gin.Context, config models.TicketConfigurations, t models.Ticket) error {
 	return AddGithubComment(ctx, config, t)
 }
@@ -279,24 +283,95 @@ type Template struct {
 	Fields map[string]FieldInfo `json:"fields"`
 }
 
+type githubGraphQLError struct {
+	Message    string `json:"message"`
+	Type       string `json:"type"`
+	Extensions struct {
+		Code string `json:"code"`
+	} `json:"extensions"`
+}
+
+type githubProjectStatusOption struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type githubPageInfo struct {
+	HasNextPage bool    `json:"hasNextPage"`
+	EndCursor   *string `json:"endCursor"`
+}
+
+type githubProjectStatusField struct {
+	ID      string                      `json:"id"`
+	Name    string                      `json:"name"`
+	Options []githubProjectStatusOption `json:"options"`
+}
+
+type githubProject struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Number int    `json:"number"`
+}
+
+type githubProjectItem struct {
+	ID      string        `json:"id"`
+	Project githubProject `json:"project"`
+}
+
+type githubProjectsPageResponse struct {
+	Errors []githubGraphQLError `json:"errors"`
+	Data   struct {
+		Repository struct {
+			ProjectsV2 struct {
+				Nodes    []githubProject `json:"nodes"`
+				PageInfo githubPageInfo  `json:"pageInfo"`
+			} `json:"projectsV2"`
+		} `json:"repository"`
+	} `json:"data"`
+}
+
+type githubProjectFieldsResponse struct {
+	Errors []githubGraphQLError `json:"errors"`
+	Data   struct {
+		Node struct {
+			Fields struct {
+				Nodes    []githubProjectStatusField `json:"nodes"`
+				PageInfo githubPageInfo             `json:"pageInfo"`
+			} `json:"fields"`
+		} `json:"node"`
+	} `json:"data"`
+}
+
+type githubIssueProjectItemsPageResponse struct {
+	Errors []githubGraphQLError `json:"errors"`
+	Data   struct {
+		Repository struct {
+			Issue struct {
+				ProjectItems struct {
+					Nodes    []githubProjectItem `json:"nodes"`
+					PageInfo githubPageInfo      `json:"pageInfo"`
+				} `json:"projectItems"`
+			} `json:"issue"`
+		} `json:"repository"`
+	} `json:"data"`
+}
+
+type githubProjectStatusMutation struct {
+	Errors []githubGraphQLError `json:"errors"`
+	Data   struct {
+		UpdateProjectV2ItemFieldValue struct {
+			ProjectV2Item struct {
+				ID string `json:"id"`
+			} `json:"projectV2Item"`
+		} `json:"updateProjectV2ItemFieldValue"`
+	} `json:"data"`
+}
+
 // FetchGitHubIssueCreateMeta fetches and formats the GitHub issue create metadata.
 func FetchGitHubIssueCreateMeta(ctx *gin.Context, configuration models.TicketConfigurations, repoKey string) (any, error) {
-	var githubClient *github.Client
-
-	var err error
-	if configuration.AuthType != "application" {
-		githubClient = clients.CreateGithubClient(configuration.Password)
-	} else {
-		installationIDStr := configuration.Password
-		var installationID int64
-		installationID, err = strconv.ParseInt(installationIDStr, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid installation ID: %w", err)
-		}
-		githubClient, err = clients.CreateGithubClientWithInstallationToken(ctx, installationID)
-		if err != nil {
-			return nil, err
-		}
+	githubClient, err := githubClientForConfiguration(ctx, configuration)
+	if err != nil {
+		return nil, err
 	}
 
 	parts := strings.Split(repoKey, "/")
@@ -389,6 +464,342 @@ func FetchGitHubIssueCreateMeta(ctx *gin.Context, configuration models.TicketCon
 	// Match the Jira shape: {data: [template]}. The RPC action exposes this
 	// as `tickets_get_create_meta.data`, which the frontend iterates.
 	return map[string]interface{}{"data": []Template{template}}, nil
+}
+
+const githubProjectsQuery = `query($owner: String!, $repo: String!, $cursor: String) {
+	repository(owner: $owner, name: $repo) {
+		projectsV2(first: 100, after: $cursor) {
+			nodes { id title number }
+			pageInfo { hasNextPage endCursor }
+		}
+	}
+}`
+
+const githubProjectFieldsQuery = `query($id: ID!, $cursor: String) {
+	node(id: $id) {
+		... on ProjectV2 {
+			fields(first: 100, after: $cursor) {
+				nodes {
+					... on ProjectV2SingleSelectField {
+						id
+						name
+						options { id name }
+					}
+				}
+				pageInfo { hasNextPage endCursor }
+			}
+		}
+	}
+}`
+
+const githubIssueProjectItemsQuery = `query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+	repository(owner: $owner, name: $repo) {
+		issue(number: $number) {
+			projectItems(first: 100, after: $cursor) {
+				nodes { id project { id title number } }
+				pageInfo { hasNextPage endCursor }
+			}
+		}
+	}
+}`
+
+func githubGraphQLRequest(ctx *gin.Context, githubClient *github.Client, query string, variables map[string]interface{}, response interface{}) error {
+	req, err := githubClient.NewRequest(http.MethodPost, "graphql", map[string]interface{}{
+		"query":     query,
+		"variables": variables,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create GitHub GraphQL request: %w", err)
+	}
+	if _, err := githubClient.Do(ctx, req, response); err != nil {
+		var rateLimitErr *github.RateLimitError
+		var abuseErr *github.AbuseRateLimitError
+		if errors.As(err, &rateLimitErr) || errors.As(err, &abuseErr) {
+			return fmt.Errorf("GitHub GraphQL request failed: %w", err)
+		}
+		var githubErr *github.ErrorResponse
+		if errors.As(err, &githubErr) && githubErr.Response != nil &&
+			(githubErr.Response.StatusCode == http.StatusUnauthorized ||
+				githubErr.Response.StatusCode == http.StatusForbidden ||
+				githubErr.Response.StatusCode == http.StatusNotFound) {
+			return &githubProjectsPermissionError{err: fmt.Errorf("GitHub Projects lookup is unauthorized: %w", err)}
+		}
+		return fmt.Errorf("GitHub GraphQL request failed: %w", err)
+	}
+	return nil
+}
+
+type githubProjectsPermissionError struct{ err error }
+
+func (e *githubProjectsPermissionError) Error() string { return e.err.Error() }
+func (e *githubProjectsPermissionError) Unwrap() error { return e.err }
+
+const maxGitHubGraphQLPages = 100
+
+func pageCursor(pageInfo githubPageInfo, context string, page int) (string, bool, error) {
+	if !pageInfo.HasNextPage {
+		return "", false, nil
+	}
+	if page >= maxGitHubGraphQLPages || pageInfo.EndCursor == nil || *pageInfo.EndCursor == "" {
+		return "", false, fmt.Errorf("GitHub Projects %s exceeded the pagination limit of %d pages", context, maxGitHubGraphQLPages)
+	}
+	return *pageInfo.EndCursor, true, nil
+}
+
+func githubClientForConfiguration(ctx *gin.Context, configuration models.TicketConfigurations) (*github.Client, error) {
+	if configuration.AuthType != "application" {
+		return clients.CreateGithubClient(configuration.Password), nil
+	}
+	installationID, err := strconv.ParseInt(configuration.Password, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid installation ID: %w", err)
+	}
+	return clients.CreateGithubClientWithInstallationToken(ctx, installationID)
+}
+
+func githubGraphQLErrors(errors []githubGraphQLError) error {
+	if len(errors) == 0 {
+		return nil
+	}
+	err := fmt.Errorf("GitHub Projects status lookup failed: %s", errors[0].Message)
+	allPermissionErrors := true
+	for _, graphqlErr := range errors {
+		code := graphqlErr.Type
+		if code == "" {
+			code = graphqlErr.Extensions.Code
+		}
+		switch strings.ToUpper(code) {
+		case "INSUFFICIENT_SCOPES", "FORBIDDEN", "NOT_FOUND":
+		default:
+			allPermissionErrors = false
+		}
+	}
+	if allPermissionErrors {
+		return &githubProjectsPermissionError{err: err}
+	}
+	return err
+}
+
+func fetchProjectFields(ctx *gin.Context, client *github.Client, projectID string) ([]githubProjectStatusField, error) {
+	var fields []githubProjectStatusField
+	var cursor *string
+	for page := 1; ; page++ {
+		var response githubProjectFieldsResponse
+		if err := githubGraphQLRequest(ctx, client, githubProjectFieldsQuery, map[string]interface{}{"id": projectID, "cursor": cursor}, &response); err != nil {
+			return nil, err
+		}
+		if err := githubGraphQLErrors(response.Errors); err != nil {
+			return nil, err
+		}
+		fields = append(fields, response.Data.Node.Fields.Nodes...)
+		next, more, err := pageCursor(response.Data.Node.Fields.PageInfo, "fields", page)
+		if err != nil {
+			return nil, err
+		}
+		if !more {
+			return fields, nil
+		}
+		cursor = &next
+	}
+}
+
+func fetchProjects(ctx *gin.Context, client *github.Client, owner, repo string) ([]githubProject, error) {
+	var projects []githubProject
+	var cursor *string
+	for page := 1; ; page++ {
+		var response githubProjectsPageResponse
+		if err := githubGraphQLRequest(ctx, client, githubProjectsQuery, map[string]interface{}{"owner": owner, "repo": repo, "cursor": cursor}, &response); err != nil {
+			return nil, err
+		}
+		if err := githubGraphQLErrors(response.Errors); err != nil {
+			return nil, err
+		}
+		projects = append(projects, response.Data.Repository.ProjectsV2.Nodes...)
+		next, more, err := pageCursor(response.Data.Repository.ProjectsV2.PageInfo, "projects", page)
+		if err != nil {
+			return nil, err
+		}
+		if !more {
+			return projects, nil
+		}
+		cursor = &next
+	}
+}
+
+func projectStatusValues(ctx *gin.Context, client *github.Client, owner, repo string) ([]interface{}, error) {
+	projects, err := fetchProjects(ctx, client, owner, repo)
+	if err != nil {
+		return nil, err
+	}
+	type transitionOption struct {
+		id, name, value string
+	}
+	statusOptions := []transitionOption{
+		{id: "open", name: "open", value: "open"},
+		{id: "closed", name: "closed", value: "closed"},
+	}
+	for _, project := range projects {
+		fields, err := fetchProjectFields(ctx, client, project.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, field := range fields {
+			if !strings.EqualFold(field.Name, "Status") {
+				continue
+			}
+			for _, option := range field.Options {
+				if option.ID == "" || option.Name == "" {
+					continue
+				}
+				value := fmt.Sprintf("github-project:%s:%s:%s", project.ID, field.ID, option.ID)
+				statusOptions = append(statusOptions, transitionOption{
+					id: value, name: fmt.Sprintf("Project #%d %s: %s", project.Number, project.Title, option.Name), value: value,
+				})
+			}
+		}
+	}
+	labelCounts := make(map[string]int, len(statusOptions))
+	for _, option := range statusOptions {
+		labelCounts[option.name]++
+	}
+	values := make([]interface{}, 0, len(statusOptions))
+	for _, option := range statusOptions {
+		name := option.name
+		if labelCounts[name] > 1 {
+			idSuffix := option.id
+			if len(idSuffix) > 8 {
+				idSuffix = idSuffix[len(idSuffix)-8:]
+			}
+			name = fmt.Sprintf("%s (%s)", name, idSuffix)
+		}
+		values = append(values, map[string]interface{}{"id": option.id, "name": name, "value": option.value})
+	}
+	return values, nil
+}
+
+func FetchGitHubProjectTransitionMeta(ctx *gin.Context, configuration models.TicketConfigurations, repoKey string) (interface{}, error) {
+	client, err := githubClientForConfiguration(ctx, configuration)
+	if err != nil {
+		return nil, err
+	}
+	return fetchGitHubProjectTransitionMetaWithClient(ctx, client, repoKey)
+}
+
+func fetchGitHubProjectTransitionMetaWithClient(ctx *gin.Context, client *github.Client, repoKey string) (interface{}, error) {
+	parts := strings.Split(repoKey, "/")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid github project key %q: expected format 'owner/repo'", repoKey)
+	}
+	values, err := projectStatusValues(ctx, client, parts[0], parts[1])
+	if err != nil {
+		var permissionErr *githubProjectsPermissionError
+		if errors.As(err, &permissionErr) {
+			return map[string]interface{}{
+				"data": []interface{}{
+					map[string]interface{}{"id": "open", "name": "open", "value": "open"},
+					map[string]interface{}{"id": "closed", "name": "closed", "value": "closed"},
+				},
+				"warning": "GitHub Projects status choices are unavailable because this token is not authorized to read Projects; open/closed remain available.",
+			}, nil
+		}
+		return nil, err
+	}
+	return map[string]interface{}{"data": values}, nil
+}
+
+func fetchIssueProjectItems(ctx *gin.Context, client *github.Client, owner, repo string, issueNumber int) ([]githubProjectItem, error) {
+	var items []githubProjectItem
+	var cursor *string
+	for page := 1; ; page++ {
+		var response githubIssueProjectItemsPageResponse
+		if err := githubGraphQLRequest(ctx, client, githubIssueProjectItemsQuery, map[string]interface{}{"owner": owner, "repo": repo, "number": issueNumber, "cursor": cursor}, &response); err != nil {
+			return nil, err
+		}
+		if err := githubGraphQLErrors(response.Errors); err != nil {
+			return nil, err
+		}
+		items = append(items, response.Data.Repository.Issue.ProjectItems.Nodes...)
+		next, more, err := pageCursor(response.Data.Repository.Issue.ProjectItems.PageInfo, "issue project items", page)
+		if err != nil {
+			return nil, err
+		}
+		if !more {
+			return items, nil
+		}
+		cursor = &next
+	}
+}
+
+type githubProjectStatusSelection struct {
+	itemID, projectID, fieldID, optionID string
+}
+
+func (s *GitHubService) updateProjectStatus(ctx *gin.Context, githubClient *github.Client, owner, repo string, issueNumber int, status string) error {
+	status = strings.TrimSpace(status)
+	encodedParts := strings.Split(status, ":")
+	encoded := len(encodedParts) == 4 && encodedParts[0] == "github-project" &&
+		encodedParts[1] != "" && encodedParts[2] != "" && encodedParts[3] != ""
+	if strings.HasPrefix(status, "github-project:") && !encoded {
+		return fmt.Errorf("invalid GitHub Project status selection; choose a current Project status option")
+	}
+	items, err := fetchIssueProjectItems(ctx, githubClient, owner, repo, issueNumber)
+	if err != nil {
+		return err
+	}
+	var match *githubProjectStatusSelection
+	for _, item := range items {
+		if encoded && item.Project.ID != encodedParts[1] {
+			continue
+		}
+		fields, err := fetchProjectFields(ctx, githubClient, item.Project.ID)
+		if err != nil {
+			return err
+		}
+		for _, field := range fields {
+			if !strings.EqualFold(field.Name, "Status") ||
+				(encoded && field.ID != encodedParts[2]) {
+				continue
+			}
+			for _, option := range field.Options {
+				if (encoded && option.ID == encodedParts[3]) ||
+					(!encoded && strings.EqualFold(option.Name, status)) {
+					if match != nil {
+						return fmt.Errorf("GitHub issue %s/%s#%d has an ambiguous Project status selection; refusing transition", owner, repo, issueNumber)
+					}
+					match = &githubProjectStatusSelection{
+						itemID: item.ID, projectID: item.Project.ID, fieldID: field.ID,
+						optionID: option.ID,
+					}
+				}
+			}
+		}
+	}
+	if match == nil {
+		return fmt.Errorf("GitHub issue %s/%s#%d is not linked to Project status %q (it may be missing, stale, or unauthorized)", owner, repo, issueNumber, status)
+	}
+
+	var mutation githubProjectStatusMutation
+	if err := githubGraphQLRequest(ctx, githubClient, `mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+		updateProjectV2ItemFieldValue(input: {
+			projectId: $projectId
+			itemId: $itemId
+			fieldId: $fieldId
+			value: { singleSelectOptionId: $optionId }
+		}) {
+			projectV2Item { id }
+		}
+	}`, map[string]interface{}{
+		"projectId": match.projectID,
+		"itemId":    match.itemID,
+		"fieldId":   match.fieldID,
+		"optionId":  match.optionID,
+	}, &mutation); err != nil {
+		return err
+	}
+	if len(mutation.Errors) > 0 {
+		return fmt.Errorf("GitHub Project status update failed: %s", mutation.Errors[0].Message)
+	}
+	return nil
 }
 
 // listAllRepoAssignees returns up to 1000 users that can be assigned to issues
@@ -697,17 +1108,26 @@ func (s *GitHubService) Update(ctx *gin.Context, config models.TicketConfigurati
 		return fmt.Errorf("invalid issue number: %w", err)
 	}
 
+	isRESTState := strings.EqualFold(updateFields.Status, "open") || strings.EqualFold(updateFields.Status, "closed")
+	if updateFields.Status != "" && !isRESTState &&
+		(len(updateFields.AssigneeList()) > 0 || updateFields.Description != "" || len(updateFields.Labels) > 0) {
+		return fmt.Errorf("GitHub Project status transitions cannot be combined with REST issue field updates")
+	}
+
 	issueRequest := &github.IssueRequest{}
 	hasUpdates := false
 
 	if updateFields.Status != "" {
 		// GitHub uses "open" or "closed" states
 		state := strings.ToLower(updateFields.Status)
-		if state != "open" && state != "closed" {
-			return fmt.Errorf("invalid status for GitHub: %s. Use 'open' or 'closed'", updateFields.Status)
+		if state == "open" || state == "closed" {
+			issueRequest.State = &state
+			hasUpdates = true
+		} else {
+			if err := s.updateProjectStatus(ctx, githubClient, owner, repo, issueNumber, updateFields.Status); err != nil {
+				return err
+			}
 		}
-		issueRequest.State = &state
-		hasUpdates = true
 	}
 
 	if assignees := updateFields.AssigneeList(); len(assignees) > 0 {
@@ -741,7 +1161,7 @@ func (s *GitHubService) Update(ctx *gin.Context, config models.TicketConfigurati
 	return nil
 }
 
-// Transition changes the state of a GitHub issue (open/closed)
+// Transition changes a GitHub issue state or its linked Project v2 Status.
 func (s *GitHubService) Transition(ctx *gin.Context, config models.TicketConfigurations, ticketID string, status string) error {
 	return s.Update(ctx, config, ticketID, models.UpdateFields{Status: status})
 }

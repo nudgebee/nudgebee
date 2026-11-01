@@ -48,6 +48,12 @@ type TicketManager interface {
 	List(ctx *gin.Context, config models.TicketConfigurations, params models.ListParams) (*models.ListResult, error)
 }
 
+// TransitionMetadataProvider exposes status choices without coupling them to
+// create-ticket metadata.
+type TransitionMetadataProvider interface {
+	GetTransitionMeta(ctx *gin.Context, config models.TicketConfigurations, projectKey string) (interface{}, error)
+}
+
 // IncidentManager extends TicketManager with incident-specific operations.
 // This interface is implemented by incident management tools like PagerDuty and ZenDuty.
 type IncidentManager interface {
