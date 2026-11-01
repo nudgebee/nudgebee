@@ -219,7 +219,7 @@ func isExternalProviderSource(source string) bool {
 		"cloudwatch": true, "azure_monitor": true, "gcp_monitoring": true,
 		"splunk": true, "elasticsearch": true, "loki": true,
 		"signoz": true, "grafana": true, "chronosphere_user": true,
-		"openobserve": true,
+		"openobserve":            true,
 		"cubeapm":                true,
 		prometheusUserSourceName: true,
 	}
