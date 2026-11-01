@@ -44,7 +44,16 @@ func processAgentMetrices(query QueryRequest, context *security.RequestContext, 
 			resourceIds = ids
 			delete(binary, "resource_id")
 		} else if binary["resource_id"] != nil && binary["resource_id"][Eq] != nil {
-			resourceIds = append(resourceIds, binary["resource_id"][Eq].(string))
+			id, ok := asString(binary["resource_id"][Eq])
+			if !ok {
+				return QueryResponse{
+					Errors: []common.Error{
+						common.ErrorBadRequest("resource_id._eq must be a string"),
+					},
+					ExecutionTimeMs: time.Since(startTime).Milliseconds(),
+				}, nil
+			}
+			resourceIds = append(resourceIds, id)
 			delete(binary, "resource_id")
 		}
 
@@ -101,7 +110,16 @@ func processAgentMetrices(query QueryRequest, context *security.RequestContext, 
 			metrics = names
 			delete(binary, "metric")
 		} else if binary["metric"] != nil && binary["metric"][Eq] != nil {
-			metrics = append(metrics, binary["metric"][Eq].(string))
+			name, ok := asString(binary["metric"][Eq])
+			if !ok {
+				return QueryResponse{
+					Errors: []common.Error{
+						common.ErrorBadRequest("metric._eq must be a string"),
+					},
+					ExecutionTimeMs: time.Since(startTime).Milliseconds(),
+				}, nil
+			}
+			metrics = append(metrics, name)
 			delete(binary, "metric")
 		}
 
@@ -236,6 +254,12 @@ func processAgentMetrices(query QueryRequest, context *security.RequestContext, 
 		}, nil
 
 	}
+}
+
+// asString safely asserts a filter value to string without panicking.
+func asString(v any) (string, bool) {
+	s, ok := v.(string)
+	return s, ok
 }
 
 // asStringSlice converts JSON-decoded _in filter values to []string.

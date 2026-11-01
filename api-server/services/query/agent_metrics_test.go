@@ -37,3 +37,18 @@ func TestAsStringSlice_RejectsWrongType(t *testing.T) {
 	_, ok = asStringSlice(nil)
 	assert.False(t, ok)
 }
+
+func TestAsString_String(t *testing.T) {
+	got, ok := asString("resource-a")
+	require.True(t, ok)
+	assert.Equal(t, "resource-a", got)
+}
+
+func TestAsString_RejectsNonString(t *testing.T) {
+	_, ok := asString(42)
+	assert.False(t, ok)
+	_, ok = asString(nil)
+	assert.False(t, ok)
+	_, ok = asString([]any{"x"})
+	assert.False(t, ok)
+}
