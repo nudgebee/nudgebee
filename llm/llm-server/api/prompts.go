@@ -24,9 +24,8 @@ func getUserFromContext(c *gin.Context) string {
 
 // handlePromptsApis registers all prompt management endpoints.
 //
-// Auth is enforced by the global authHandlerMiddleware wired in cmd/main.go:
-// if LLM_SERVER_TOKEN is configured, every request must carry a matching
-// header; if unset, the gate is a no-op. No per-group middleware needed.
+// Auth is enforced by the global authHandlerMiddleware wired in cmd/main.go.
+// No per-group middleware is needed.
 func handlePromptsApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 	adminGroup := r.Group("/api/admin/prompts")
 

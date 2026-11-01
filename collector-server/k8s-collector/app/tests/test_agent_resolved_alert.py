@@ -108,6 +108,25 @@ def _agent_message(status, ends_at=_ZERO_TIME, source="prometheus"):
     }
 
 
+class TestLLMTriggerAuthentication(unittest.TestCase):
+    def test_llm_trigger_sends_destination_token_and_identity(self):
+        response = mock.Mock()
+        response.json.return_value = {"data": {"response": []}}
+        for header in ("X-ACTION-TOKEN", "X-CUSTOM-LLM-TOKEN"):
+            with self.subTest(header=header), mock.patch.object(
+                eh.Configs, "LLM_SERVER_TOKEN", "llm-service-secret"
+            ), mock.patch.object(eh.Configs, "LLM_SERVER_TOKEN_HEADER", header), mock.patch.object(
+                eh.requests, "post", return_value=response
+            ) as post:
+                result = eh.LLMTriggerHandler()._execute_llm_action("t-1", "acct-1", "check health", "u-1", "f-1")
+
+            self.assertFalse(result.error)
+            self.assertEqual(post.call_args.kwargs["headers"][header], "llm-service-secret")
+            self.assertEqual(post.call_args.kwargs["headers"]["x-tenant-id"], "t-1")
+            self.assertEqual(post.call_args.kwargs["headers"]["x-user-id"], "u-1")
+            self.assertEqual(json.loads(post.call_args.kwargs["data"])["account_id"], "acct-1")
+
+
 class TestAgentAlertResolution(unittest.TestCase):
     def _resolution(self, message):
         return eh._agent_alert_resolution(message["finding"], message["evidence"])

@@ -29,7 +29,12 @@ def _any_active_account_id() -> str | None:
 
 def _fetch_catalog(account_id: str) -> List[Dict[str, Any]]:
     url = Config.llm_server_url.rstrip("/") + "/v1/capabilities/catalog"
-    resp = httpx.post(url, json={"account_id": account_id}, timeout=_TIMEOUT_SECONDS)
+    resp = httpx.post(
+        url,
+        json={"account_id": account_id},
+        headers={Config.llm_server_token_header: Config.llm_server_token},
+        timeout=_TIMEOUT_SECONDS,
+    )
     resp.raise_for_status()
     body: Dict[str, Any] = resp.json()
     capabilities: List[Dict[str, Any]] = body.get("capabilities", [])
