@@ -3005,6 +3005,8 @@ func CountTraces(context *security.RequestContext, fetchTracesRequest TracesV3Re
 	return source.CountTraces(context, fetchTracesRequest)
 }
 
+var ErrTraceProviderNotConfigured = errors.New("GetTraces trace provider (trace_provider) is required")
+
 func GetTraces(context *security.RequestContext, fetchTracesRequest TracesV3Request) (TracesResult, error) {
 	if fetchTracesRequest.AccountId == "" {
 		return TracesResult{}, fmt.Errorf("account_id is required")
@@ -3016,7 +3018,7 @@ func GetTraces(context *security.RequestContext, fetchTracesRequest TracesV3Requ
 	}
 
 	if traceProvider == "" {
-		return TracesResult{}, fmt.Errorf("GetTraces trace provider (trace_provider) is required")
+		return TracesResult{}, ErrTraceProviderNotConfigured
 	}
 	source, err := resolveTraceSource(context, fetchTracesRequest.AccountId, traceProvider, integrationSource)
 	if err != nil {
