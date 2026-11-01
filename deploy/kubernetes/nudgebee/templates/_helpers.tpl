@@ -65,7 +65,11 @@ error or a half-switched StatefulSet.
 {{- define "nudgebee.failOnBitnamiDefaults" -}}
 {{- $found := list -}}
 {{- range $k := list "postgresql" "rabbitmq" "redis" -}}
-  {{- $tag := toString ((((get $.Values $k) | default (dict)).image | default (dict)).tag) -}}
+  {{- $tag := "" -}}
+  {{- $v := get $.Values $k -}}
+  {{- if and (kindIs "map" $v) (kindIs "map" $v.image) -}}
+    {{- $tag = toString $v.image.tag -}}
+  {{- end -}}
   {{- if regexMatch "-debian-[0-9]+-r[0-9]+" $tag -}}
     {{- $found = append $found (printf "%s.image.tag=%s" $k $tag) -}}
   {{- end -}}
