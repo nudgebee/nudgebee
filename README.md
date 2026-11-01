@@ -32,18 +32,18 @@ Nudgebee puts AI agents to work on your team's repeatable ops work, across incid
 
 This repo is the platform. Agents, docs, tooling and content live in their own repos:
 
-| Repo | Purpose |
-| ---- | ------- |
-| [nudgebee-docs](https://github.com/nudgebee/nudgebee-docs) | Public documentation, published at [docs.nudgebee.com](https://docs.nudgebee.com) |
-| [nbctl](https://github.com/nudgebee/nbctl) | Command-line interface; also runs as an MCP server |
-| [k8s-agent](https://github.com/nudgebee/k8s-agent) | In-cluster Kubernetes agent: state, events, metrics, logs and traces |
-| [node-agent](https://github.com/nudgebee/node-agent) | Per-node eBPF agent for container and host metrics, logs and L7 traffic |
-| [kubewatch](https://github.com/nudgebee/kubewatch) | Kubernetes resource watcher with workload sync |
-| [application-profiler](https://github.com/nudgebee/application-profiler) | On-demand profiling (flamegraphs, heap/thread dumps, pprof) without restarting pods |
-| [forager](https://github.com/nudgebee/forager) | Lightweight agent that relays data from databases, HTTP APIs and MCP servers |
-| [automation-templates](https://github.com/nudgebee/automation-templates) | System runbook templates synced into the runbook server |
-| [nudgebee-playbooks](https://github.com/nudgebee/nudgebee-playbooks) | Workflow definitions for cross-platform service restart and diagnosis |
-| [nudgebee-scenario-lab](https://github.com/nudgebee/nudgebee-scenario-lab) | Disposable AWS lab that injects real incidents for Nudgebee to detect and explain |
+| Repo                                                                                                                                   | Purpose                                                                                         |
+| -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| [nudgebee-docs](https://github.com/nudgebee/nudgebee-docs)                                                                             | Public documentation, published at [docs.nudgebee.com](https://docs.nudgebee.com)               |
+| [nbctl](https://github.com/nudgebee/nbctl)                                                                                             | Command-line interface; also runs as an MCP server                                              |
+| [k8s-agent](https://github.com/nudgebee/k8s-agent)                                                                                     | In-cluster Kubernetes agent: state, events, metrics, logs and traces                            |
+| [node-agent](https://github.com/nudgebee/node-agent)                                                                                   | Per-node eBPF agent for container and host metrics, logs and L7 traffic                         |
+| [kubewatch](https://github.com/nudgebee/kubewatch)                                                                                     | Kubernetes resource watcher with workload sync                                                  |
+| [application-profiler](https://github.com/nudgebee/application-profiler)                                                               | On-demand profiling (flamegraphs, heap/thread dumps, pprof) without restarting pods             |
+| [forager](https://github.com/nudgebee/forager)                                                                                         | Lightweight agent that relays data from databases, HTTP APIs and MCP servers                    |
+| [automation-templates](https://github.com/nudgebee/automation-templates)                                                               | System runbook templates synced into the runbook server                                         |
+| [nudgebee-playbooks](https://github.com/nudgebee/nudgebee-playbooks)                                                                   | Workflow definitions for cross-platform service restart and diagnosis                           |
+| [nudgebee-scenario-lab](https://github.com/nudgebee/nudgebee-scenario-lab)                                                             | Disposable AWS lab that injects real incidents for Nudgebee to detect and explain               |
 | [kubepug](https://github.com/nudgebee/kubepug), [nova](https://github.com/nudgebee/nova), [popeye](https://github.com/nudgebee/popeye) | Nudgebee forks of Kubernetes checkers: deprecated APIs, outdated Helm charts, cluster sanitizer |
 
 ## Quick Start (Local Development)
