@@ -7,6 +7,7 @@ import (
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
+	"strings"
 )
 
 const TracesDefaultAgentName = "traces_default"
@@ -34,6 +35,18 @@ func (l TracesDefaultAgent) GetDescription() string {
 }
 
 func (l TracesDefaultAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
+	if strings.EqualFold(strings.TrimSpace(l.provider.Provider), "openobserve") {
+		toolName := tools.ToolOpenObserveTracesExecute
+		return core.NBAgentPrompt{
+			Role:         "OpenObserve traces investigator",
+			Instructions: []string{"Query OpenObserve traces with read-only SQL. Use openobserve_traces_execute for every trace question; provide a SELECT statement or a WHERE predicate and the requested time window. Summarize the returned evidence without exposing the query or tool name."},
+			Constraints:  []string{"Only use openobserve_traces_execute to query traces.", "Never expose internal queries or tool names in the final answer."},
+			ToolUsage: map[string][]string{
+				toolName: {"Use this tool for read-only SQL queries against the configured OpenObserve trace stream. A full SELECT must use that stream; a WHERE predicate is wrapped with it. Range or start_time/end_time set the time window."},
+			},
+			OutputFormat: "A concise summary with relevant trace evidence.",
+		}
+	}
 	providerName := l.provider.Provider
 	if providerName == "" {
 		providerName = "the configured trace provider"
@@ -126,6 +139,12 @@ func (l TracesDefaultAgent) GetSystemPrompt(ctx *security.RequestContext, query 
 }
 
 func (p TracesDefaultAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
+	if strings.EqualFold(strings.TrimSpace(p.provider.Provider), "openobserve") {
+		if tool, ok := toolcore.GetNBTool(p.accountId, tools.ToolOpenObserveTracesExecute); ok {
+			return []toolcore.NBTool{tool}
+		}
+		return nil
+	}
 	toolList := []toolcore.NBTool{}
 	if tracesTool, ok := toolcore.GetNBTool(p.accountId, tools.ToolGetTracesDefault); ok {
 		toolList = append(toolList, tracesTool)

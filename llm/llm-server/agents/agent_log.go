@@ -35,6 +35,7 @@ const FetchLogsDirectToolName = "fetch_logs_direct"
 func init() {
 	// Register as a tool too (not just an agent) so other agents can delegate to it by name.
 	toolDescription := `Retrieves and analyzes logs from various sources (Kubernetes, Loki, Elasticsearch, Datadog, Signoz) by translating natural language questions into log queries. Handles its own resource discovery (e.g., finding the correct pod name or namespace) and runs investigation loops over saved log files when the user is asking about root causes.`
+	toolDescription += " Supports OpenObserve using read-only SQL."
 	toolInput := "Provide a log question in natural language, preserving the user's wording verbatim: investigation wording (why/root cause/diagnose/troubleshoot), enumeration wording (list/summarize errors), or routine wording (recent/tail logs) — the agent's mode classifier routes off this wording."
 	toolOutput := "Markdown answer with cited log evidence (timestamps, error signatures). Investigations include a 5-Why causality chain and a time-window callout when errors cluster."
 
@@ -93,6 +94,9 @@ func (l *LogAgent) GetName() string { return LogsAgentName }
 func (l *LogAgent) GetNameAliases() []string { return []string{"Logs"} }
 
 func (l *LogAgent) GetDescription() string {
+	if strings.EqualFold(strings.TrimSpace(l.provider.Provider), "openobserve") {
+		return `Queries OpenObserve logs with read-only SQL and summarizes evidence from the configured organization.`
+	}
 	return `Retrieves and analyzes logs from various sources (Kubernetes, Loki, Elasticsearch, Datadog, Signoz) by translating natural language questions into log queries. Handles its own resource discovery (e.g., finding the correct pod name or namespace) and runs investigation loops over saved log files when the user is asking about root causes. Use this for: fetching application or container logs, searching log entries by keyword or time range, troubleshooting pod/container errors via log output, correlating logs across services. Do NOT use for: querying performance metrics (use ` + "`metrics`" + ` agent), running kubectl commands (use ` + "`kubectl`" + ` or ` + "`kubectl_execute`" + `), or querying Kubernetes events (use ` + "`events`" + ` agent).
 
 When invoking this agent, preserve the user's intent wording in the per-step query:
@@ -113,6 +117,12 @@ func (l *LogAgent) GetModelCategory() core.ModelTier {
 
 func (l *LogAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
 	l.toolsOnce.Do(func() {
+		if strings.EqualFold(strings.TrimSpace(l.provider.Provider), "openobserve") {
+			if tool, ok := toolcore.GetNBTool(l.accountId, tools.ToolOpenObserveLogsExecute); ok {
+				l.tools = []toolcore.NBTool{tool}
+			}
+			return
+		}
 		// Direct resource_search_execute tool, not the resource_search agent
 		// — the agent-as-tool fans out to Datadog/cloud resource search even
 		// for pure-Kubernetes questions that never need those backends.
@@ -132,6 +142,18 @@ func (l *LogAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NB
 // shared/mode-specific instruction blocks in agent_log_prompts.go, plus
 // routineAppAnchor (ROUTINE mode only, see its doc comment).
 func (l *LogAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
+	if strings.EqualFold(strings.TrimSpace(l.provider.Provider), "openobserve") {
+		toolName := tools.ToolOpenObserveLogsExecute
+		return core.NBAgentPrompt{
+			Role:         "OpenObserve logs investigator",
+			Instructions: []string{"Query OpenObserve logs with read-only SQL. Use openobserve_logs_execute for each logs question; provide a SELECT statement or a WHERE predicate and the requested time window. Summarize the returned evidence without exposing the query or tool name."},
+			Constraints:  []string{"Only use openobserve_logs_execute to query logs.", "Never expose internal queries or tool names in the final answer."},
+			ToolUsage: map[string][]string{
+				toolName: {"Use this tool for read-only SQL queries against the configured OpenObserve log stream. A full SELECT must use that stream; a WHERE predicate is wrapped with it. Range or start_time/end_time set the time window."},
+			},
+			OutputFormat: "A concise summary with relevant log evidence and timestamps.",
+		}
+	}
 	mode := classifyLogModeV3(query.Query, query.OriginalQuery)
 
 	var instructions []string

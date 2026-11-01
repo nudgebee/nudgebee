@@ -72,6 +72,9 @@ func (l TracesDefaultAgentV2) GetName() string {
 }
 
 func (l TracesDefaultAgentV2) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
+	if strings.EqualFold(strings.TrimSpace(l.provider.Provider), "openobserve") {
+		return l.TracesDefaultAgent.GetSupportedTools(ctx)
+	}
 	toolList := []toolcore.NBTool{}
 	if tracesTool, ok := toolcore.GetNBTool(l.accountId, tools.ToolTracesExecuteV2); ok {
 		toolList = append(toolList, tracesTool)
@@ -116,6 +119,9 @@ func filterDiscoveredTraceAttributes(labels []string, advertised map[string]stri
 }
 
 func (l TracesDefaultAgentV2) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
+	if strings.EqualFold(strings.TrimSpace(l.provider.Provider), "openobserve") {
+		return l.TracesDefaultAgent.GetSystemPrompt(ctx, query)
+	}
 	operators := resolveTraceQueryOperators(l.provider.Capabilities.SupportedOperators)
 	labelMappings := l.provider.Capabilities.LabelMappings
 
