@@ -53,8 +53,10 @@ func main() {
 		panic(err)
 	}
 	paths := map[string]string{
+		"react3": "llm/llm-server/prompts/default/v1/planners/react_3_base.yaml",
 		"react4": "llm/llm-server/prompts/default/v1/planners/react_4_base.yaml",
 		"qwen3":  "llm/llm-server/prompts/models/qwen/v1/planners/react_3_base.yaml",
+		"qwen4":  "llm/llm-server/prompts/models/qwen/v1/planners/react_4_base.yaml",
 		"critic": "llm/llm-server/prompts/default/v1/planners/react_critiquer.yaml",
 	}
 	manifest := map[string]any{"baseline": baseline, "prompt_paths": paths, "model": "opencode/beam-free", "samples": len(cases()), "runtime_flags": "is_investigation=true,is_top_level=true; other boolean gates=false; empty optional rule fragments"}
