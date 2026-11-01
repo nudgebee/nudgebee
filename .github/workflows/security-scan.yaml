@@ -223,7 +223,7 @@ jobs:
           # refs are bumped on their releases.
           - ghcr.io/nudgebee/nudgebee-agent:2026-11-01T06-36-55_f94ccaa1bf84f6288ffa7b0b86a7721ef67f7fae
           - ghcr.io/nudgebee/application-profiler-bpf:d4dc1b8
-          - ghcr.io/nudgebee/node-agent:0.1.12
+          - ghcr.io/nudgebee/node-agent:0.1.13
           - ghcr.io/nudgebee/forager:0.1.5
           # --- agent-chart runtime dependencies (clickhouse mirror + otel) ---
           - ghcr.io/nudgebee/clickhouse:24.12.4-debian-12-r0-nb-3
