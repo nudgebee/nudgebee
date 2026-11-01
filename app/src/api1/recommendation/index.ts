@@ -2900,10 +2900,14 @@ const apiRecommendations = {
   // tenant's optimization recommendation data. Used to populate filter dropdowns
   // (e.g. the Optimization Trigger config) directly from real data instead of a
   // hardcoded list that silently drifts as new rules are added on the backend.
-  async getDistinctOptimizationRules(): Promise<{ category: string; rule_name: string }[]> {
+  async getDistinctOptimizationRules(accountId?: string): Promise<{ category: string; rule_name: string }[]> {
+    const where = {
+      category: { _in: ['RightSizing', 'InfraUpgrade', 'Configuration', 'K8sSpotRecommendation'] },
+      ...(accountId ? { account_id: { _eq: accountId } } : {}),
+    };
     const query = `
     query GetDistinctOptimizationRules {
-      recommendation_groupings_v2(where: {category: {_in: ["RightSizing", "InfraUpgrade", "Configuration", "K8sSpotRecommendation"]}}, group_by: ["category", "rule_name"]) {
+      recommendation_groupings_v2(where: __WHERE__, group_by: ["category", "rule_name"]) {
         rows {
           category
           rule_name
@@ -2912,7 +2916,7 @@ const apiRecommendations = {
     }
     `;
 
-    const response = await queryGraphQL(query, 'GetDistinctOptimizationRules');
+    const response = await queryGraphQL(query.replace('__WHERE__', gqlStringify(where, [])), 'GetDistinctOptimizationRules');
     const rows = response?.data?.data?.recommendation_groupings_v2?.rows || [];
     return rows.filter(
       (row: any): row is { category: string; rule_name: string } => typeof row?.category === 'string' && typeof row?.rule_name === 'string'

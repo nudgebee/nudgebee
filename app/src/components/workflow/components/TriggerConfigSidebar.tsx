@@ -570,25 +570,30 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
     }
   };
 
-  const fetchOptimizationRuleOptions = async () => {
+  useEffect(() => {
+    if (!open || triggerType !== 'optimization') return;
+    let cancelled = false;
+    setOptimizationRulePairs([]);
     setIsLoadingOptimizationRules(true);
-    try {
-      const pairs = await recommendationApi.getDistinctOptimizationRules();
-      setOptimizationRulePairs(pairs || []);
-    } catch (error) {
-      console.error('Failed to fetch optimization rule options:', error);
-      setOptimizationRulePairs([]);
-    } finally {
-      setIsLoadingOptimizationRules(false);
-    }
-  };
+    recommendationApi
+      .getDistinctOptimizationRules(optimizationClusters[0])
+      .then((pairs) => {
+        if (!cancelled) setOptimizationRulePairs(pairs || []);
+      })
+      .catch((error) => {
+        if (!cancelled) console.error('Failed to fetch optimization rule options:', error);
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingOptimizationRules(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, triggerType, optimizationClusters[0]]);
 
   useEffect(() => {
     if (open && triggerType === 'event') {
       fetchEventFilterOptions();
-    }
-    if (open && triggerType === 'optimization') {
-      fetchOptimizationRuleOptions();
     }
   }, [open, triggerType, filterScopeKey]);
 
@@ -1061,6 +1066,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
           const value = e.target.value || '';
           const newClusters = value ? [value] : [];
           setOptimizationClusters(newClusters);
+          setOptimizationRuleNames([]);
           const selectedCategory = optimizationCategories[0] || '';
           if (!isOptimizationCategoryAllowedFor(providerOf(value), selectedCategory)) {
             setOptimizationCategories([]);
@@ -1068,7 +1074,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
             updateOptimizationTrigger({ clusters: newClusters, categories: [], rule_names: [] });
             return;
           }
-          updateOptimizationTrigger({ clusters: newClusters });
+          updateOptimizationTrigger({ clusters: newClusters, rule_names: [] });
         }}
         placeholder='Select cluster'
         required={false}
