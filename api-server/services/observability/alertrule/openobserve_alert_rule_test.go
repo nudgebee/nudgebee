@@ -147,7 +147,7 @@ func TestOpenObserveAlertHTTPPaths(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer response.Body.Close()
+			defer func() { _ = response.Body.Close() }()
 			if response.StatusCode != http.StatusCreated {
 				t.Errorf("status = %d", response.StatusCode)
 			}
@@ -157,11 +157,19 @@ func TestOpenObserveAlertHTTPPaths(t *testing.T) {
 
 func TestOpenObserveAlertRequestRejectsMissingIDAndUnsupportedMethod(t *testing.T) {
 	for _, method := range []string{http.MethodPut, http.MethodDelete} {
-		if _, err := openObserveAlertRequest(method, openObserveAlertConfig{}, "", nil); err == nil {
+		response, err := openObserveAlertRequest(method, openObserveAlertConfig{}, "", nil)
+		if response != nil {
+			_ = response.Body.Close()
+		}
+		if err == nil {
 			t.Errorf("%s with no ID accepted", method)
 		}
 	}
-	if _, err := openObserveAlertRequest(http.MethodPatch, openObserveAlertConfig{}, "id", nil); err == nil {
+	response, err := openObserveAlertRequest(http.MethodPatch, openObserveAlertConfig{}, "id", nil)
+	if response != nil {
+		_ = response.Body.Close()
+	}
+	if err == nil {
 		t.Error("unsupported method accepted")
 	}
 }
