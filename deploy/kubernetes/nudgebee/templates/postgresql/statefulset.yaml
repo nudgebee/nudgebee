@@ -210,7 +210,10 @@ spec:
               trap 'pg_ctl -D "$PGDATA" -m fast -w stop >/dev/null' EXIT
               idx="from pg_index i join pg_class c on c.oid=i.indexrelid join pg_am a on a.oid=c.relam where a.amname='btree' and c.relpersistence <> 't' and i.indisvalid and i.indisready and exists (select 1 from pg_attribute att where att.attrelid = c.oid and att.attcollation <> 0)"
               skipped=""
-              dbs=$(q -d postgres -c "select datname from pg_database where datallowconn and datlocprovider = 'c' and datcollversion is distinct from pg_database_collation_actual_version(oid)")
+              # template1 first: CREATE DATABASE fails while it is mismatched,
+              # and it is small. Then smallest first, so a large database that
+              # runs out the budget leaves as few others behind as possible.
+              dbs=$(q -d postgres -c "select datname from pg_database where datallowconn and datlocprovider = 'c' and datcollversion is distinct from pg_database_collation_actual_version(oid) order by datname <> 'template1', pg_database_size(oid)")
               [ -n "$dbs" ] || { echo "No collation version mismatch."; exit 0; }
               while IFS= read -r db; do
                 t=$(left)
