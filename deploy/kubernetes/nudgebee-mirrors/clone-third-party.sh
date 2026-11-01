@@ -15,7 +15,6 @@ NS="${GHCR_NAMESPACE:-ghcr.io/nudgebee}"
 
 # src -> dst:tag
 IMAGES=(
-  "docker.io/qdrant/qdrant:v1.19.2 qdrant:v1.19.2"
   # Temporal. The upstream chart defaults these to docker.io/temporalio/*; the
   # chart's temporal.{server,admintools,web}.image.repository values point at
   # these clones. web/ui is disabled in values.yaml but cloned anyway so
