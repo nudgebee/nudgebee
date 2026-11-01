@@ -26,6 +26,7 @@ import {
   type FilterValues,
 } from '../utils/eventFilter';
 import { EVENT_ACCOUNT_TEMPLATE, accessibleAccountOptions, triggerListenAccounts } from '../utils/listenAccounts';
+import { isOptimizationCategoryAllowedFor, optimizationCategoryOptionsFor } from '../utils/optimizationCategories';
 import {
   type AccountFilterValues,
   type FilterValuesByAccount,
@@ -569,25 +570,30 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
     }
   };
 
-  const fetchOptimizationRuleOptions = async () => {
+  useEffect(() => {
+    if (!open || triggerType !== 'optimization') return;
+    let cancelled = false;
+    setOptimizationRulePairs([]);
     setIsLoadingOptimizationRules(true);
-    try {
-      const pairs = await recommendationApi.getDistinctOptimizationRules();
-      setOptimizationRulePairs(pairs || []);
-    } catch (error) {
-      console.error('Failed to fetch optimization rule options:', error);
-      setOptimizationRulePairs([]);
-    } finally {
-      setIsLoadingOptimizationRules(false);
-    }
-  };
+    recommendationApi
+      .getDistinctOptimizationRules(optimizationClusters[0])
+      .then((pairs) => {
+        if (!cancelled) setOptimizationRulePairs(pairs || []);
+      })
+      .catch((error) => {
+        if (!cancelled) console.error('Failed to fetch optimization rule options:', error);
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingOptimizationRules(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, triggerType, optimizationClusters[0]]);
 
   useEffect(() => {
     if (open && triggerType === 'event') {
       fetchEventFilterOptions();
-    }
-    if (open && triggerType === 'optimization') {
-      fetchOptimizationRuleOptions();
     }
   }, [open, triggerType, filterScopeKey]);
 
@@ -694,6 +700,14 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
   // Memoized because this component re-renders on every keystroke of its text fields.
   const selectedOptimizationCategory = optimizationCategories[0] || '';
   const selectedOptimizationRule = optimizationRuleNames[0] || '';
+  // The selected Cluster's provider decides which recommendation sources apply: a Kubernetes
+  // account also sees Spot Instance, a cloud account doesn't. Unknown provider (nothing picked
+  // or the account list hasn't loaded) keeps every option, matching the pre-filter behavior.
+  const selectedOptimizationClusterProvider = providerOf(optimizationClusters[0]);
+  const optimizationCategoryOptions = useMemo(
+    () => optimizationCategoryOptionsFor(selectedOptimizationClusterProvider, selectedOptimizationCategory),
+    [selectedOptimizationClusterProvider, selectedOptimizationCategory]
+  );
   const optimizationRuleOptions = useMemo(() => {
     const seen = new Set<string>();
     const options = optimizationRulePairs
@@ -1008,16 +1022,6 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
     }
   };
 
-  // Canonical recommendation categories, matching the Optimize Recommendations page
-  // (CATEGORY_FILTER_OPTIONS / WIDGET_CATEGORIES). Values must match the DB `category`
-  // verbatim — the backend matches the trigger's `categories` param against event.category.
-  const OPTIMIZATION_CATEGORY_OPTIONS = [
-    { label: 'Right Sizing', value: 'RightSizing' },
-    { label: 'Infra Upgrade', value: 'InfraUpgrade' },
-    { label: 'Config', value: 'Configuration' },
-    { label: 'Spot Instance', value: 'K8sSpotRecommendation' },
-  ];
-
   // Params as they are persisted on the trigger. Shared with the simulator, which
   // has to check the payload against exactly what will be saved.
   const buildOptimizationParams = (categories: string[], ruleNames: string[], clusters: string[]): Record<string, string[]> => {
@@ -1062,7 +1066,15 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
           const value = e.target.value || '';
           const newClusters = value ? [value] : [];
           setOptimizationClusters(newClusters);
-          updateOptimizationTrigger({ clusters: newClusters });
+          setOptimizationRuleNames([]);
+          const selectedCategory = optimizationCategories[0] || '';
+          if (!isOptimizationCategoryAllowedFor(providerOf(value), selectedCategory)) {
+            setOptimizationCategories([]);
+            setOptimizationRuleNames([]);
+            updateOptimizationTrigger({ clusters: newClusters, categories: [], rule_names: [] });
+            return;
+          }
+          updateOptimizationTrigger({ clusters: newClusters, rule_names: [] });
         }}
         placeholder='Select cluster'
         required={false}
@@ -1098,7 +1110,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
         required={false}
         error=''
         fieldType='select'
-        options={OPTIMIZATION_CATEGORY_OPTIONS}
+        options={optimizationCategoryOptions}
         onSelect={() => {}}
         customRender={null}
         limitTags={0}
