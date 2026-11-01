@@ -1,0 +1,97 @@
+{
+  "date": "2026-11-01",
+  "implementation_commit": "499e0ddba035ff5bed2cb9558acec58d19a99155",
+  "browser": "Chrome via Playwright CLI, headless",
+  "boundary": "Actual sidebar, category helpers, FormField and DS Select; exact source-extracted API method/gqlStringify; fixture transport/accounts; simulator, schedule, unrelated APIs and icons excluded.",
+  "source_hashes": {
+    "src/api1/recommendation/index.ts:getDistinctOptimizationRules": "e46ecb2ae50adbc8f798ef540ba7a203f32a473d2ffb17ffda6d85b414da677b",
+    "src/lib/HttpService.ts:gqlStringify": "863b0624807724493a7af9aec94641f9ef8ed0eb3ba41756c9b94a4bb23690ff",
+    "src/components/workflow/components/TriggerConfigSidebar.tsx": "98fbfdb0aaf55ed43b0d3f34e3b9ec0179da551d2bf06f1b2a00f8d84389d9f5",
+    "src/components/workflow/utils/optimizationCategories.ts": "c4f49fdfec1cc73955c9d8ef8ca2383b0263e8b168856a30c103160c74666207",
+    "src/components/common/forms/FormComponents.jsx": "0bfb62385c6241cac5d5bcab285ffb12cab061490c42160be600411ad5fe56b7",
+    "src/components/common/ds/Select.tsx": "010f4de4eb319b70a017b4ed7a2572093cb539408c8a0bf8d4be8ead675ec416"
+  },
+  "fixture_hashes": {
+    "build.cjs": "bfaa94c826fcba183d26840cfae9493360bb1cd36a6062319f2203e592294d7e",
+    "entry.tsx": "a5a823d5916e334a5662f86ee5d883af0c82dfe1cad21c9b83f766514df89878",
+    "server.cjs": "bbef8b6036a6cca772d364f006acbd17bc96be31cc6f8e4b92d0e4c3f25660c3",
+    "browser-case.js": "8c9b615154437a5b0ae2094d3a7a815530f8705568c836c934f471372881cd1c",
+    "app.js": "a12b89b1abb9323bef75c3b866a0d6920191c082980e2325212415013f23552a"
+  },
+  "results": {
+    "checks": [
+      "Account switch clears saved rule; AWS response survives older Kubernetes response",
+      "Save emits AWS account and AWS rule",
+      "Cloud account hides Kubernetes-only category",
+      "Saved cloud Spot category restored; explicit category change clears rule and removes legacy category",
+      "Cleared account queries tenant-wide rule options"
+    ],
+    "saved": {
+      "type": "optimization",
+      "params": {
+        "categories": [
+          "RightSizing"
+        ],
+        "rule_names": [
+          "aws_idle_instance"
+        ],
+        "clusters": [
+          "aws"
+        ]
+      }
+    },
+    "events": [
+      {
+        "event": "request",
+        "scope": "",
+        "query": "\n    query GetDistinctOptimizationRules {\n      recommendation_groupings_v2(where: {category:{_in:[\"RightSizing\",\"InfraUpgrade\",\"Configuration\",\"K8sSpotRecommendation\"]}}, group_by: [\"category\", \"rule_name\"]) {\n        rows {\n          category\n          rule_name\n        }\n      }\n    }\n    "
+      },
+      {
+        "event": "response",
+        "scope": ""
+      },
+      {
+        "event": "request",
+        "scope": "k8s",
+        "query": "\n    query GetDistinctOptimizationRules {\n      recommendation_groupings_v2(where: {category:{_in:[\"RightSizing\",\"InfraUpgrade\",\"Configuration\",\"K8sSpotRecommendation\"]},account_id:{_eq:\"k8s\"}}, group_by: [\"category\", \"rule_name\"]) {\n        rows {\n          category\n          rule_name\n        }\n      }\n    }\n    "
+      },
+      {
+        "event": "request",
+        "scope": "aws",
+        "query": "\n    query GetDistinctOptimizationRules {\n      recommendation_groupings_v2(where: {category:{_in:[\"RightSizing\",\"InfraUpgrade\",\"Configuration\",\"K8sSpotRecommendation\"]},account_id:{_eq:\"aws\"}}, group_by: [\"category\", \"rule_name\"]) {\n        rows {\n          category\n          rule_name\n        }\n      }\n    }\n    "
+      },
+      {
+        "event": "response",
+        "scope": "aws"
+      },
+      {
+        "event": "response",
+        "scope": "k8s"
+      },
+      {
+        "event": "request",
+        "scope": "",
+        "query": "\n    query GetDistinctOptimizationRules {\n      recommendation_groupings_v2(where: {category:{_in:[\"RightSizing\",\"InfraUpgrade\",\"Configuration\",\"K8sSpotRecommendation\"]}}, group_by: [\"category\", \"rule_name\"]) {\n        rows {\n          category\n          rule_name\n        }\n      }\n    }\n    "
+      },
+      {
+        "event": "response",
+        "scope": ""
+      },
+      {
+        "event": "request",
+        "scope": "aws",
+        "query": "\n    query GetDistinctOptimizationRules {\n      recommendation_groupings_v2(where: {category:{_in:[\"RightSizing\",\"InfraUpgrade\",\"Configuration\",\"K8sSpotRecommendation\"]},account_id:{_eq:\"aws\"}}, group_by: [\"category\", \"rule_name\"]) {\n        rows {\n          category\n          rule_name\n        }\n      }\n    }\n    "
+      },
+      {
+        "event": "request",
+        "scope": "",
+        "query": "\n    query GetDistinctOptimizationRules {\n      recommendation_groupings_v2(where: {category:{_in:[\"RightSizing\",\"InfraUpgrade\",\"Configuration\",\"K8sSpotRecommendation\"]}}, group_by: [\"category\", \"rule_name\"]) {\n        rows {\n          category\n          rule_name\n        }\n      }\n    }\n    "
+      },
+      {
+        "event": "response",
+        "scope": ""
+      }
+    ],
+    "bundle": "rebuilt after fixture useMemo stability fix"
+  }
+}
