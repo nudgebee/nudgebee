@@ -1,4 +1,5 @@
 {{- if .Values.redis.enabled }}
+{{- include "nudgebee.failOnBitnamiDefaults" . }}
 {{- $fullname := include "nudgebee.redis.fullname" . }}
 {{- $master := .Values.redis.master }}
 {{- $persistence := $master.persistence }}

@@ -265,6 +265,7 @@ psp:
 
 {{/* .Values.postgresql merged over the Bitnami defaults. Use: $r := include "nudgebee.postgresql.values" . | fromYaml */}}
 {{- define "nudgebee.postgresql.values" -}}
+{{- include "nudgebee.failOnBitnamiDefaults" . -}}
 {{- $d := include "nudgebee.postgresql.defaults" . | fromYaml -}}
 {{- toYaml (mergeOverwrite $d (deepCopy .Values.postgresql)) -}}
 {{- end -}}

@@ -243,6 +243,7 @@ resources: {}
 
 {{/* .Values.rabbitmq merged over the Bitnami defaults. Use: $r := include "nudgebee.rabbitmq.values" . | fromYaml */}}
 {{- define "nudgebee.rabbitmq.values" -}}
+{{- include "nudgebee.failOnBitnamiDefaults" . -}}
 {{- $d := include "nudgebee.rabbitmq.defaults" . | fromYaml -}}
 {{- toYaml (mergeOverwrite $d (deepCopy .Values.rabbitmq)) -}}
 {{- end -}}
