@@ -1,81 +1,76 @@
-# LibreNMS Read-Only Scope Proposal
+# Network-device discovery through forager
 
-**Status: draft proposal for maintainer review.** This memo narrows the first
-release described in [PR #860](https://github.com/nudgebee/nudgebee/pull/860)
-and [issue #861](https://github.com/nudgebee/nudgebee/issues/861); it is not an
-approved design.
+**Status: draft for maintainer review.** This revises the proposal for
+[issue #861](https://github.com/nudgebee/nudgebee/issues/861) and the
+[network-discovery assessment](https://github.com/nudgebee/nudgebee/pull/860).
+It proposes extensions to the existing discovery pipeline; it does not add a
+standalone api-server LibreNMS connector.
 
-## Proposed first release
+## Start from the existing discovery pipeline
 
-Import only **devices, interfaces, and active alerts** from LibreNMS. Keep the
-connector read-only: it may list and refresh those records, but it must not
-acknowledge, close, suppress, create, or otherwise mutate LibreNMS alerts or
-configuration. Metrics, topology edges, and native SNMP polling are not part
-of this release.
+Forager runs inside the customer network and registers a discovery datasource.
+The api-server orchestration already provides:
 
-The evidence supports **LibreNMS API v0** for the first implementation: the
-official [API documentation](https://docs.librenms.org/API/) documents v0 and
-the [v1 documentation](https://docs.librenms.org/API/v1/) labels v1 beta and
-disabled by default. This is a version recommendation, not a claim about the
-versions Nudgebee will support; the owner must choose the supported LibreNMS
-version range after a live compatibility check.
+| Concern | Existing path |
+|---|---|
+| Network scope | `DiscoveryLabels.AllowedCIDRs` and `discovery_sweep` in [cron.go](../api-server/services/vmpackage/cron.go) |
+| Inventory | `discovery_inventory` with versioned SSH content packs in [discovery.go](../api-server/services/vmpackage/discovery.go) |
+| Scheduling | Cron sweep and queue-consumer orchestration in [cron.go](../api-server/services/vmpackage/cron.go) |
+| Account scope | The agent's `own` account and explicit `discovery_target` link in [admin.go](../api-server/services/vmpackage/admin.go) |
+| Resource matching | Existing-resource matching and the `vm-<ip>` fallback in [resource_match.go](../api-server/services/vmpackage/resource_match.go) |
 
-## Identity and provenance boundary
+These mechanisms answer the reachability, scheduling, and account-mapping
+questions raised in the earlier memo. Credentials remain in the customer
+network. Network devices should enter the same discovery → resource-match →
+knowledge-graph path as SSH-discovered hosts, with the required network-device
+schema extensions reviewed explicitly.
 
-The connector should follow the existing account-scoped integration and graph
-patterns rather than introduce a parallel tenant model:
+## Native SNMP inventory first
 
-- Resolve credentials through the existing integration configuration path,
-  which requires an account mapping for integrations that are not explicitly
-  tenant-scoped: [`integration_config.go`](../api-server/services/integrations/core/integration_config.go)
-  and [`interface.go`](../api-server/services/integrations/core/interface.go).
-- Stamp every node and edge with the originating `TenantID`, the selected
-  `CloudAccountID`, and a distinct source name. Those fields are part of the
-  graph model in [`types.go`](../api-server/services/knowledge_graph/core/types.go).
-- Use the registered-source path in [`sources/registry.go`](../api-server/services/knowledge_graph/sources/registry.go)
-  and the six-part graph identity convention in
-  [`unique_key_builder.go`](../api-server/services/knowledge_graph/core/unique_key_builder.go):
-  provider, account, location, node type, hierarchy, and name.
+Propose SNMP as another forager inventory method beside SSH. The agent-side
+implementation would use GoSNMP, with OID/vendor normalization supplied through
+versioned content packs. The forager code lives in the agent repository, so this
+requires coordinated agent and content-pack work.
 
-**Proposal:** a LibreNMS instance must have an explicit stable source-instance
-identity within the selected tenant/account scope, and device/interface/alert
-keys must use stable identifiers proven by the target deployment. Do not use a
-display name alone when it can collide. The repository does not establish a
-LibreNMS instance field, endpoint field, or multi-account mapping rule, so
-those remain implementation decisions; fail closed rather than merge records
-when the required identity or scope is absent.
+Reuse the existing datasource, allowed CIDRs, scheduling, and target-account
+association. Preserve bounded request/retry behavior, and never send SNMP
+credentials to api-server or persist them in inventory output. Adding an SNMP
+method must not reinterpret an existing SSH inventory result or assign a
+switch/router the current VM fallback identity without an agreed mapping.
 
-## Owner decisions still required
+## Optional LibreNMS source
 
-- Whether the Nudgebee service can reach each customer’s LibreNMS HTTPS endpoint
-  directly, or whether an in-network agent/proxy is required.
-- The supported LibreNMS version range and the deployment used for a live API
-  compatibility proof.
-- Refresh cadence, stale-record handling, and retention/tombstone policy.
-- Whether one LibreNMS integration may map to multiple Nudgebee accounts, and
-  how its source-instance identity is stored.
+LibreNMS may be an optional read-only source accessed by forager inside the same
+network. It would feed normalized device/interface inventory into the same
+pipeline, rather than introduce a second inventory, api-server connector, or
+account-identity model.
 
-## Explicit exclusions
+Start with API v0 device/interface reads, subject to a live compatibility check
+against a maintainer-approved LibreNMS release. Do not add alert writes,
+acknowledgements, configuration changes, raw metric ingestion, or topology
+edges to that first source. Alert ingestion, if later required, needs a separate
+mapping and lifecycle decision rather than treating an alert as device inventory.
 
-- **Topology:** defer neighbor edges until the deployed API exposes the needed
-  data with stable identifiers; the API overview does not document a dedicated
-  neighbor endpoint. The discovery modules’ LLDP/CDP/FDP capability is not
-  itself proof of a stable API contract:
-  [discovery support](https://docs.librenms.org/Support/Discovery%20Support/).
-- **Native SNMP:** defer until deployment reachability, credential handling,
-  polling/retry limits, and OID/vendor normalization are proven.
-- **Alert writes:** defer until an explicit write authorization and lifecycle
-  contract exists; the first release remains read-only.
+## Decisions still required
+
+- Graph node types and relationships for switches, routers, and interfaces.
+- Stable identifiers and reconciliation rules across SNMP, SSH, LibreNMS, and
+  already-known cloud resources; the VM matching fallback is not a network-device
+  identity contract.
+- Agent inventory schema/content-pack contract and compatibility with older agents.
+- Supported SNMP security modes, vendor/OID coverage, request budgets, and the
+  supported LibreNMS release range.
+- Stale-record and partial-failure behavior, including what evidence is required
+  before an absent inventory item may be retired.
 
 ## Acceptance checklist
 
-- [ ] A maintainer approves the supported LibreNMS version range and a live
-      API v0 compatibility proof covers devices, interfaces, and active alerts.
-- [ ] `accountId` is present and non-empty before resolving integration
-      configuration or executing any account-scoped query; a missing or empty
-      `accountId` fails fast without falling back to data from another account.
-- [ ] Repeated reads produce stable graph identities and retain source,
-      tenant, and account provenance without cross-tenant mixing.
-- [ ] The connector performs no alert or LibreNMS configuration writes.
-- [ ] Reachability, refresh cadence, stale handling, and retention have explicit
-      owner decisions before implementation starts.
+- [ ] Maintainers approve the agent/content-pack scope and network-device schema.
+- [ ] A device discovered through either source follows the existing target-account
+      association and resource-match path, retaining tenant/account provenance.
+- [ ] Repeated reads retain stable identities; overlapping sources do not create
+      competing devices, and separate tenants/accounts remain isolated.
+- [ ] Credentials stay in-network and no source performs configuration/alert writes.
+- [ ] A bounded live agent run observes the expected device/interface inventory;
+      failure and partial-result checks preserve previously known resources.
+
