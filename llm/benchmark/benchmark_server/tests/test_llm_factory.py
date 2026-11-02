@@ -1,39 +1,14 @@
-"""Isolated factory tests using the SDK and loopback HTTP only."""
+"""OpenAI judge factory wiring and local SDK request tests."""
 
-import ast
 import json
-import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from threading import Thread
-from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from langchain_openai import ChatOpenAI
-from pydantic import SecretStr
 
-
-def _load_openai_factory(config, constructor):
-    source_path = Path(__file__).parents[1] / "common" / "llm.py"
-    source = ast.parse(source_path.read_text(encoding="utf-8"))
-    factory_node = next(
-        node
-        for node in source.body
-        if isinstance(node, ast.FunctionDef) and node.name == "get_openai_llm"
-    )
-    namespace = {
-        "Config": config,
-        "ChatOpenAI": constructor,
-        "SecretStr": SecretStr,
-        "logger": logging.getLogger(__name__),
-    }
-    module = ast.Module(body=[factory_node], type_ignores=[])
-    exec(
-        compile(module, str(source_path), "exec"),
-        namespace,
-    )
-    return namespace["get_openai_llm"]
+from benchmark_server.common.llm import get_openai_llm
+from benchmark_server.utils.utils import Config
 
 
 @pytest.mark.parametrize(
@@ -46,20 +21,15 @@ def _load_openai_factory(config, constructor):
         ("", "", None),
     ],
 )
-def test_openai_judge_factory_endpoint(endpoint, api_type, expected_url):
-    # Avoid importing unrelated provider SDKs.
+def test_openai_judge_factory_endpoint(endpoint, api_type, expected_url, monkeypatch):
+    monkeypatch.setattr(Config, "eval_llm_provider_api_endpoint", endpoint)
+    monkeypatch.setattr(Config, "eval_llm_provider_api_type", api_type)
+    monkeypatch.setattr(Config, "eval_llm_provider_api_key", "judge-test-key")
     client = object()
     constructor = Mock(return_value=client)
-    factory = _load_openai_factory(
-        SimpleNamespace(
-            eval_llm_provider_api_endpoint=endpoint,
-            eval_llm_provider_api_type=api_type,
-            eval_llm_provider_api_key="judge-test-key",
-        ),
-        constructor,
-    )
+    monkeypatch.setattr("benchmark_server.common.llm.ChatOpenAI", constructor)
 
-    assert factory("judge-model") is client
+    assert get_openai_llm("judge-model") is client
     constructor.assert_called_once()
     kwargs = constructor.call_args.kwargs
     assert kwargs["base_url"] == expected_url
@@ -69,7 +39,7 @@ def test_openai_judge_factory_endpoint(endpoint, api_type, expected_url):
     assert kwargs["streaming"] is True
 
 
-def test_openai_judge_factory_uses_configured_endpoint_over_http():
+def test_openai_judge_factory_uses_configured_endpoint_over_http(monkeypatch):
     requests = []
 
     class OpenAIHandler(BaseHTTPRequestHandler):
@@ -116,17 +86,14 @@ def test_openai_judge_factory_uses_configured_endpoint_over_http():
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        factory = _load_openai_factory(
-            SimpleNamespace(
-                eval_llm_provider_api_endpoint=(
-                    f"http://127.0.0.1:{server.server_port}/v1"
-                ),
-                eval_llm_provider_api_type="openai",
-                eval_llm_provider_api_key="judge-test-key",
-            ),
-            ChatOpenAI,
+        monkeypatch.setattr(
+            Config,
+            "eval_llm_provider_api_endpoint",
+            f"http://127.0.0.1:{server.server_port}/v1",
         )
-        llm = factory("judge-model")
+        monkeypatch.setattr(Config, "eval_llm_provider_api_type", "openai")
+        monkeypatch.setattr(Config, "eval_llm_provider_api_key", "judge-test-key")
+        llm = get_openai_llm("judge-model")
         assert str(llm.root_client.base_url).rstrip("/") == (
             f"http://127.0.0.1:{server.server_port}/v1"
         )
