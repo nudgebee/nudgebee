@@ -9,8 +9,8 @@
 # is unchanged. Keep the 1.32 line unless the supported cluster range moves. The
 # upstream release binary is built on an old Go and no 1.32.x release is newer,
 # so build the same tag on a patched toolchain, the technique the postgres gosu
-# and redis wait-for-port mirrors use. x/net, x/text and spdystream are replaced
-# with their patched releases; kubectl vendors old copies of all three.
+# and redis wait-for-port mirrors use. x/net, x/text, x/oauth2 and spdystream
+# are replaced with their patched releases; kubectl vendors old copies of all four.
 
 # Stage 1: rebuild kubectl on a patched Go toolchain.
 FROM ghcr.io/nudgebee/golang:1.26.10-alpine AS kubectl
@@ -23,7 +23,8 @@ WORKDIR /src
 RUN rm -rf vendor \
     && go work edit -go=1.26.0 \
         -replace golang.org/x/net=golang.org/x/net@v0.60.0 \
-        -replace golang.org/x/text=golang.org/x/text@v0.39.0 \
+        -replace golang.org/x/text=golang.org/x/text@v0.42.0 \
+        -replace golang.org/x/oauth2=golang.org/x/oauth2@v0.27.0 \
         -replace github.com/moby/spdystream=github.com/moby/spdystream@v0.5.1 \
     && go work sync
 RUN go build -trimpath \
