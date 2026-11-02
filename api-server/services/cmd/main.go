@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
 	"fmt"
@@ -69,7 +70,9 @@ func authHandlerMiddleware() gin.HandlerFunc {
 		}
 
 		authHeader := c.Request.Header.Get(config.Config.ServiceApiServerTokenHeader)
-		if subtle.ConstantTimeCompare([]byte(authHeader), []byte(config.Config.ServiceApiServerToken)) == 1 {
+		authHeaderHash := sha256.Sum256([]byte(authHeader))
+		tokenHash := sha256.Sum256([]byte(config.Config.ServiceApiServerToken))
+		if subtle.ConstantTimeCompare(authHeaderHash[:], tokenHash[:]) == 1 {
 			c.Set(CTX_IS_PUBLIC, false)
 			c.Next()
 			return

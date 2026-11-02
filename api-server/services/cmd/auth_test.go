@@ -55,7 +55,7 @@ func TestAuthHandlerMiddleware(t *testing.T) {
 	t.Run("configured token rejects missing and wrong headers", func(t *testing.T) {
 		config.Config.ServiceApiServerToken = "secret"
 		r := build()
-		for _, token := range []string{"", "wrong"} {
+		for _, token := range []string{"", "wrong", "secrex"} {
 			if got := status(r, http.MethodGet, "/private", token); got != http.StatusUnauthorized {
 				t.Errorf("token %q: got %d, want %d", token, got, http.StatusUnauthorized)
 			}

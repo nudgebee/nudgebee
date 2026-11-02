@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"fmt"
 	"log/slog"
@@ -70,7 +71,9 @@ func authHandlerMiddleware() gin.HandlerFunc {
 		}
 
 		authHeader := c.Request.Header.Get(config.Config.CloudCollectorServerTokenHeader)
-		if subtle.ConstantTimeCompare([]byte(authHeader), []byte(config.Config.CloudCollectorServerToken)) == 1 {
+		authHeaderHash := sha256.Sum256([]byte(authHeader))
+		tokenHash := sha256.Sum256([]byte(config.Config.CloudCollectorServerToken))
+		if subtle.ConstantTimeCompare(authHeaderHash[:], tokenHash[:]) == 1 {
 			c.Set(CTX_IS_PUBLIC, false)
 			c.Next()
 			return
