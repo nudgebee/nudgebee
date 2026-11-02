@@ -27,6 +27,9 @@
 # busybox image to distroless static, which drops busybox's unfixed CVEs: the
 # exporter needs no shell, and the chart's probes are HTTP.
 #
+# -nb3 adds x/net 0.62.0 and x/crypto 0.58.0 (1 CRITICAL / 8 HIGH, GO-2026-6612
+# and others). Grype's direct image scan missed them; see security-scan.yaml.
+#
 # The ldflags mirror what upstream's promu build stamps, so
 # `postgres_exporter_build_info` keeps reporting version 0.20.1 rather than an
 # empty string, since dashboards and alerts key on that label. PGEXP_REVISION is
@@ -39,7 +42,8 @@ RUN apk add --no-cache git \
     && git clone --depth 1 --branch "${PGEXP_VERSION}" \
         https://github.com/prometheus-community/postgres_exporter /src
 WORKDIR /src
-RUN go get golang.org/x/text@v0.42.0 && go mod tidy
+RUN go get golang.org/x/text@v0.43.0 golang.org/x/net@v0.62.0 golang.org/x/crypto@v0.58.0 \
+    && go mod tidy
 RUN go build -trimpath \
       -ldflags="-X github.com/prometheus/common/version.Version=${PGEXP_VERSION#v} \
                 -X github.com/prometheus/common/version.Revision=${PGEXP_REVISION} \

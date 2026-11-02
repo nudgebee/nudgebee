@@ -101,7 +101,7 @@ jobs:
           # -nb2 rebuilds the exporter on a patched Go and x/text, on a distroless
           # runtime (v0.20.1 is the newest release, so no tag bump clears these).
           # Needs a Go build stage — the shared build step handles it.
-          - { image: postgres-exporter, context: deploy/kubernetes/nudgebee-mirrors/postgres-exporter, tag: v0.20.1-nb2 }
+          - { image: postgres-exporter, context: deploy/kubernetes/nudgebee-mirrors/postgres-exporter, tag: v0.20.1-nb3 }
           # Alpine re-mirrors of official images (apk upgrade; no version change).
           # postgres also swaps in a gosu rebuilt on a patched Go (the image's
           # prebuilt gosu carries Go-stdlib CVEs); needs a Go build stage.
@@ -114,7 +114,7 @@ jobs:
           - { image: kube-bench,        context: deploy/kubernetes/nudgebee-mirrors/kube-bench,        tag: v0.16.0-nb2 }
           # kubectl + /bin/sh only, for the rag-server migration hook. Replaces the
           # alpine/k8s toolbox clone; same kubectl source tag, rebuilt on a patched Go.
-          - { image: kubectl,           context: deploy/kubernetes/nudgebee-mirrors/kubectl,           tag: 1.32.13-nb1 }
+          - { image: kubectl,           context: deploy/kubernetes/nudgebee-mirrors/kubectl,           tag: 1.32.13-nb2 }
           # Upstream 1.31.4 images with their Go binaries rebuilt from the same tags on
           # a patched Go. Drop both once an upstream release carries the fixes.
           - { image: temporal-server,      context: deploy/kubernetes/nudgebee-mirrors/temporal-server,      tag: 1.31.4-nb1 }
@@ -174,13 +174,13 @@ jobs:
       matrix:
         include:
           - { image: clickhouse,        tag: 24.12.4-debian-12-r0-nb-3 }
-          - { image: postgres-exporter, tag: v0.20.1-nb2 }
+          - { image: postgres-exporter, tag: v0.20.1-nb3 }
           - { image: postgres,          tag: 16.15-alpine-nb1 }
           - { image: postgres,          tag: 16.15-trixie-nb1 }
           - { image: nginx,             tag: stable-alpine3.24-slim-nb1 }
           - { image: trivy,             tag: 0.76.1-nb2 }
           - { image: kube-bench,        tag: v0.16.0-nb2 }
-          - { image: kubectl,           tag: 1.32.13-nb1 }
+          - { image: kubectl,           tag: 1.32.13-nb2 }
           - { image: temporal-server,      tag: 1.31.4-nb1 }
           - { image: temporal-admin-tools, tag: 1.31.4-nb1 }
           - { image: qdrant,               tag: v1.19.2-nb1 }
