@@ -1,6 +1,7 @@
 package query
 
 import (
+	"fmt"
 	"nudgebee/services/cloud"
 	"nudgebee/services/common"
 	"nudgebee/services/security"
@@ -15,6 +16,27 @@ var statsNameMap = map[string]string{
 	"avg": "Average",
 	"min": "Minimum",
 	"max": "Maximum",
+}
+
+func convertFilterValueToStrings(value any) ([]string, error) {
+	switch values := value.(type) {
+	case string:
+		return []string{values}, nil
+	case []string:
+		return values, nil
+	case []any:
+		strings := make([]string, len(values))
+		for i, value := range values {
+			stringValue, ok := value.(string)
+			if !ok {
+				return nil, fmt.Errorf("value at index %d must be a string, got %T", i, value)
+			}
+			strings[i] = stringValue
+		}
+		return strings, nil
+	default:
+		return nil, fmt.Errorf("expected string, []string, or []any, got %T", value)
+	}
 }
 
 func processAgentMetrices(query QueryRequest, context *security.RequestContext, startTime time.Time) (QueryResponse, error) {
@@ -32,10 +54,28 @@ func processAgentMetrices(query QueryRequest, context *security.RequestContext, 
 		}
 		resourceIds := []string{}
 		if binary["resource_id"] != nil && binary["resource_id"][In] != nil {
-			resourceIds = binary["resource_id"][In].([]string)
+			var err error
+			resourceIds, err = convertFilterValueToStrings(binary["resource_id"][In])
+			if err != nil {
+				return QueryResponse{
+					Errors: []common.Error{
+						common.ErrorBadRequest(fmt.Sprintf("invalid resource_id _in filter: %v", err)),
+					},
+					ExecutionTimeMs: time.Since(startTime).Milliseconds(),
+				}, nil
+			}
 			delete(binary, "resource_id")
 		} else if binary["resource_id"] != nil && binary["resource_id"][Eq] != nil {
-			resourceIds = append(resourceIds, binary["resource_id"][Eq].(string))
+			var err error
+			resourceIds, err = convertFilterValueToStrings(binary["resource_id"][Eq])
+			if err != nil {
+				return QueryResponse{
+					Errors: []common.Error{
+						common.ErrorBadRequest(fmt.Sprintf("invalid resource_id _eq filter: %v", err)),
+					},
+					ExecutionTimeMs: time.Since(startTime).Milliseconds(),
+				}, nil
+			}
 			delete(binary, "resource_id")
 		}
 
@@ -80,10 +120,28 @@ func processAgentMetrices(query QueryRequest, context *security.RequestContext, 
 
 		metrics := []string{}
 		if binary["metric"] != nil && binary["metric"][In] != nil {
-			metrics = binary["metric"][In].([]string)
+			var err error
+			metrics, err = convertFilterValueToStrings(binary["metric"][In])
+			if err != nil {
+				return QueryResponse{
+					Errors: []common.Error{
+						common.ErrorBadRequest(fmt.Sprintf("invalid metric _in filter: %v", err)),
+					},
+					ExecutionTimeMs: time.Since(startTime).Milliseconds(),
+				}, nil
+			}
 			delete(binary, "metric")
 		} else if binary["metric"] != nil && binary["metric"][Eq] != nil {
-			metrics = append(metrics, binary["metric"][Eq].(string))
+			var err error
+			metrics, err = convertFilterValueToStrings(binary["metric"][Eq])
+			if err != nil {
+				return QueryResponse{
+					Errors: []common.Error{
+						common.ErrorBadRequest(fmt.Sprintf("invalid metric _eq filter: %v", err)),
+					},
+					ExecutionTimeMs: time.Since(startTime).Milliseconds(),
+				}, nil
+			}
 			delete(binary, "metric")
 		}
 
