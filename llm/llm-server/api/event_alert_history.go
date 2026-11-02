@@ -45,7 +45,8 @@ func alertHistoryFileName(eventId string) string {
 // level, for the days up to the incident, and returns the prompt note naming
 // the file — or "" when the rule has no level (a state or presence test, or no
 // rule), the series cannot be told apart from others, or the query fails — and
-// the report's "Becomes critical" line, read from the same series.
+// the "Becomes critical" line computed from the same series, which the report
+// gets when the agent wrote none.
 //
 // The investigation answers "will it become critical, and when" from this
 // series. Left to the agent, it analysed the 10-minute evidence window or
@@ -123,15 +124,17 @@ collect:
 		return "", ""
 	}
 	body := string(raw)
-	var critical string
+	var critical, nextNote string
 	if isProm {
+		next, hasLevel := alertNextLevel(ctx, repo, accountId, event.AggregationKey, series, op, level)
+		nextNote = nextLevelNote(next, hasLevel)
 		// An alert that has ended is read as it stood when it fired: its end says
 		// nothing about what was coming.
 		var asOf time.Time
 		if hasWindow && window.End != nil && event.StartsAt != nil {
 			asOf = *event.StartsAt
 		}
-		critical = alertCriticalLine(ctx, repo, accountId, event.AggregationKey, series, op, level, []byte(body), asOf)
+		critical = alertCriticalLine(next, hasLevel, series, op, level, []byte(body), asOf)
 	}
 	file := saveOverflowToWorkspace(ctx, accountId, sessionId, alertHistoryFileName(event.Id), body)
 	if file == "" {
@@ -143,8 +146,8 @@ collect:
 	}
 	ctx.GetLogger().Info("analyzer: alert metric history saved", "event_id", event.Id, "file", file)
 	return fmt.Sprintf("## Alert Metric History\nThe metric this alert compares (`%s`; it fires when %s %s), up to %s, is saved as `%s` in %d views, one series each: %s. "+
-		"Use it with analyze_metric_series to say how the metric moved before the alert: the normal-level view for its usual level and slow climbs, the now view for how it is moving at the alert.",
-		core.TruncateHead(series, 300), op, strconv.FormatFloat(level, 'g', -1, 64), common.FormatPresentationTime(&end), file, len(views), alertHistoryViewNames(views)), critical
+		"Use it with analyze_metric_series to say how the metric moved before the alert: the normal-level view for its usual level and slow climbs, the now view for how it is moving at the alert.%s",
+		core.TruncateHead(series, 300), op, strconv.FormatFloat(level, 'g', -1, 64), common.FormatPresentationTime(&end), file, len(views), alertHistoryViewNames(views), nextNote), critical
 }
 
 // executeAlarmCli runs a read-only cloud CLI command for the account; tests

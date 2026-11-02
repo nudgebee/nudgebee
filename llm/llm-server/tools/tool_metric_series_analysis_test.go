@@ -1080,3 +1080,28 @@ func TestAnalyzeMetricSeries_RecentClimbInSteps(t *testing.T) {
 		assert.Nil(t, a.TrendSinceClimb, a.Summary)
 	})
 }
+
+func TestAnalyzeMetricSeries_ClimbAfterAReset(t *testing.T) {
+	// A pool that filled, was reset by a restart, held at 0 and began filling
+	// again: 2 hours of one-minute readings as they stood on a test cluster.
+	vals := make([]float64, 0, 121)
+	for i := 0; i < 55; i++ {
+		vals = append(vals, 0)
+	}
+	for i := 0; i < 42; i++ {
+		vals = append(vals, math.Min(1, 0.05*float64(i/2+1)))
+	}
+	for i := 0; i < 12; i++ {
+		vals = append(vals, 0)
+	}
+	for i := 0; i < 12; i++ {
+		vals = append(vals, 0.05*float64(i/2+1)+0.1)
+	}
+	a := buildMetricSeriesReport("f", []msSeries{msTestSeries(time.Minute, vals)}, nil,
+		[]msThreshold{{Value: 1, Direction: "above", Label: "limit"}}, "").Series[0]
+	require.NotNil(t, a.TrendSinceClimb, a.Summary)
+	assert.InDelta(t, 1.5, a.TrendSinceClimb.RatePerHour, 0.2)
+	reach := a.Thresholds[0].TimeToReach
+	require.NotNil(t, reach, a.Thresholds[0].NotForecastReason)
+	assert.InDelta(t, 0.4, reach.HoursEstimate, 0.08, "0.4 to 1 at 0.025 a minute is 24 minutes, not diluted by the flat readings")
+}

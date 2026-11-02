@@ -128,7 +128,11 @@ func ProjectAlertHistory(raw []byte, level float64, direction string, asOf time.
 	if p.Past && p.PastSince.IsZero() {
 		p.PastSince = p.At
 	}
+	// The rate the forecast rests on, not the whole window's.
 	trend := a.Trend
+	if a.TrendSinceShift != nil {
+		trend = a.TrendSinceShift
+	}
 	if a.TrendSinceClimb != nil {
 		trend = a.TrendSinceClimb
 		p.Since, _ = time.Parse(time.RFC3339, a.ClimbingSince)

@@ -385,15 +385,35 @@ func nextCriticalLevel(rules []events.EventRuleExpr, alert, series, op string, l
 	return criticalLevel{}, false
 }
 
-// alertCriticalLine reads the saved history against the next level. It is read
-// when the investigation starts: the metric can cross the level before the
-// report is written, and what was known at the alert is the point of the line.
-func alertCriticalLine(ctx *security.RequestContext, repo *events.EventAnalysisRepository, accountId, alert, series, op string, level float64, history []byte, asOf time.Time) string {
+// alertNextLevel is the next level for an alert's series, read from the account's
+// rules.
+func alertNextLevel(ctx *security.RequestContext, repo *events.EventAnalysisRepository, accountId, alert, series, op string, level float64) (criticalLevel, bool) {
 	rules, err := repo.ListEventRuleExprs(ctx, accountId)
 	if err != nil {
 		ctx.GetLogger().Warn("analyzer: rules not read for the critical level", "error", err)
 	}
-	next, hasLevel := nextCriticalLevel(rules, alert, series, op, level)
+	return nextCriticalLevel(rules, alert, series, op, level)
+}
+
+// nextLevelNote tells the investigation the level its "Becomes critical" line
+// answers for. The agent passed only the alert's own level to the analysis and
+// ignored the tool's hint to pass the next one; a limit it was never told is
+// not one it can look up.
+func nextLevelNote(next criticalLevel, hasLevel bool) string {
+	if !hasLevel {
+		return " No further level is defined for this metric."
+	}
+	level := strconv.FormatFloat(next.value, 'g', -1, 64)
+	if next.name != "" {
+		return fmt.Sprintf(" The next level is %s, where `%s` fires. Pass it as a threshold to analyze_metric_series on the now view.", level, next.name)
+	}
+	return fmt.Sprintf(" The next level is %s, the limit this metric is a share of. Pass it as a threshold to analyze_metric_series on the now view.", level)
+}
+
+// alertCriticalLine reads the saved history against the next level. It is read
+// when the investigation starts: the metric can cross the level before the
+// report is written, and what was known at the alert is the point of the line.
+func alertCriticalLine(next criticalLevel, hasLevel bool, series, op string, level float64, history []byte, asOf time.Time) string {
 	_, scale, share := tools.AlertSeriesLimit(series, op)
 	if !hasLevel && share {
 		return "" // already at the end of its scale, and the alert says so
@@ -465,13 +485,25 @@ func climbWords(p tools.AlertProjection, fraction bool) string {
 	return "moving " + words
 }
 
+// criticalLineRe matches a "Becomes critical" line, the agent's or the computed one.
+var criticalLineRe = regexp.MustCompile(`(?m)^[ \t]*[-*][ \t]+\*\*Bec(omes|ame) critical:\*\*`)
+
+// fallbackCriticalLine is the computed line when the report has no line of its
+// own: the agent's carries its citation, so it is the one to keep.
+func fallbackCriticalLine(report, line string) string {
+	if criticalLineRe.MatchString(report) {
+		return ""
+	}
+	return line
+}
+
 // joinOutlookLines puts the lines that are set under one another.
 func joinOutlookLines(lines ...string) string {
 	return strings.Join(slices.DeleteFunc(lines, func(l string) bool { return l == "" }), "\n")
 }
 
 // outlookLineRe matches an outlook line the agent or an earlier run wrote.
-var outlookLineRe = regexp.MustCompile(`(?m)^[ \t]*[-*][ \t]+\*\*(Getting worse|Will it happen again|Becomes critical|Became critical):\*\*.*\n?`)
+var outlookLineRe = regexp.MustCompile(`(?m)^[ \t]*[-*][ \t]+\*\*(Getting worse|Will it happen again):\*\*.*\n?`)
 
 // outlookAsOfRe reads the time an outlook line was computed for.
 var outlookAsOfRe = regexp.MustCompile(`\*\*Will it happen again:\*\*.*\(as of (\w+ \d+ \d\d:\d\d) UTC\)`)
@@ -526,14 +558,22 @@ func withOutlookLine(report, line string) string {
 	at := quick + 1
 	for i := quick + 1; i < len(lines) && !strings.HasPrefix(lines[i], "### "); i++ {
 		if strings.Contains(lines[i], "**Hurting now:**") {
-			// Past the bullet's wrapped continuation lines.
-			for at = i + 1; at < len(lines) && strings.TrimSpace(lines[at]) != "" &&
-				(lines[at][0] == ' ' || lines[at][0] == '\t') && !strings.HasPrefix(strings.TrimSpace(lines[at]), "- "); at++ {
+			at = pastWrappedLines(lines, i+1)
+			if at < len(lines) && criticalLineRe.MatchString(lines[at]) {
+				at = pastWrappedLines(lines, at+1)
 			}
 			break
 		}
 	}
 	return strings.Join(slices.Insert(lines, at, line), "\n")
+}
+
+// pastWrappedLines is the first line from at that does not continue a bullet.
+func pastWrappedLines(lines []string, at int) int {
+	for ; at < len(lines) && strings.TrimSpace(lines[at]) != "" &&
+		(lines[at][0] == ' ' || lines[at][0] == '\t') && !strings.HasPrefix(strings.TrimSpace(lines[at]), "- "); at++ {
+	}
+	return at
 }
 
 // mergeFirings folds firings closer than firingMergeGap to the previous one.

@@ -1356,6 +1356,25 @@ func analyzeMetricSeries(s msSeries, thresholds []msThreshold) seriesAnalysis {
 		}
 	}
 
+	// A level that held and then began to climb, as a leak does after a restart:
+	// the held readings would dilute a line from the shift, so forecast from
+	// where the climb began.
+	if out.HeldLevel != nil {
+		seg := pts[out.latestStep.idx:]
+		lo, hi := seg[0].v, seg[0].v
+		for _, p := range seg {
+			lo, hi = math.Min(lo, p.v), math.Max(hi, p.v)
+		}
+		if k, tr := msRecentClimb(seg, hi-lo); tr != nil {
+			climb := seg[k:]
+			out.onset = &seg[k]
+			out.levelBefore = msMedianOf(seg[:k])
+			out.ClimbingSince = seg[k].at.Format(time.RFC3339)
+			out.TrendSinceClimb = tr
+			fc = msForecastBasis{pts: climb, spanH: climb[len(climb)-1].at.Sub(climb[0].at).Hours(), trend: tr}
+		}
+	}
+
 	// A climb that began recently: nothing above read the window, so forecast
 	// from where the climb began.
 	if out.Trend != nil && !out.Trend.Steady && out.climbSteps == 0 && out.HeldLevel == nil {

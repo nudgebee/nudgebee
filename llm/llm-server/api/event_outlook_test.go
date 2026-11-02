@@ -294,8 +294,27 @@ func TestCriticalWords(t *testing.T) {
 		"No critical level is set for this metric. Now 40 at Nov 2 10:19 UTC, moving about 6 an hour.")
 }
 
-func TestWithOutlookLineReplacesCriticalLine(t *testing.T) {
-	report := "### 🔍 Quick Investigation\n- **Hurting now:** No.\n- **Becomes critical:** old.\n- **Alert:** Real.\n"
-	got := withOutlookLine(report, joinOutlookLines("- **Becomes critical:** new.", "", "- **Will it happen again:** Likely."))
-	assert.Equal(t, "### 🔍 Quick Investigation\n- **Hurting now:** No.\n- **Becomes critical:** new.\n- **Will it happen again:** Likely.\n- **Alert:** Real.\n", got)
+func TestWithOutlookLineKeepsCriticalLine(t *testing.T) {
+	agent := "- **Becomes critical:** Around 10:42 [Analyze Metric Series - E6](#task-1).\n"
+	report := "### 🔍 Quick Investigation\n- **Hurting now:** No.\n" + agent + "- **Will it happen again:** old.\n- **Alert:** Real.\n"
+
+	assert.Empty(t, fallbackCriticalLine(report, "- **Becomes critical:** computed."), "the agent's line stands")
+	got := withOutlookLine(report, joinOutlookLines(fallbackCriticalLine(report, "- **Becomes critical:** computed."), "- **Will it happen again:** new."))
+	assert.Equal(t, "### 🔍 Quick Investigation\n- **Hurting now:** No.\n"+agent+"- **Will it happen again:** new.\n- **Alert:** Real.\n", got)
+
+	bare := "### 🔍 Quick Investigation\n- **Hurting now:** No.\n- **Alert:** Real.\n"
+	got = withOutlookLine(bare, joinOutlookLines(fallbackCriticalLine(bare, "- **Becomes critical:** computed."), "- **Will it happen again:** new."))
+	assert.Equal(t, "### 🔍 Quick Investigation\n- **Hurting now:** No.\n- **Becomes critical:** computed.\n- **Will it happen again:** new.\n- **Alert:** Real.\n", got)
+}
+
+func TestWithOutlookLineKeepsWrappedCriticalLine(t *testing.T) {
+	report := "### 🔍 Quick Investigation\n- **Hurting now:** No.\n- **Becomes critical:** Around 10:42\n  [Analyze Metric Series - E6](#task-1).\n- **Alert:** Real.\n"
+	got := withOutlookLine(report, "- **Will it happen again:** new.")
+	assert.Equal(t, "### 🔍 Quick Investigation\n- **Hurting now:** No.\n- **Becomes critical:** Around 10:42\n  [Analyze Metric Series - E6](#task-1).\n- **Will it happen again:** new.\n- **Alert:** Real.\n", got)
+}
+
+func TestNextLevelNote(t *testing.T) {
+	assert.Contains(t, nextLevelNote(criticalLevel{value: 1, name: "PoolExhausted"}, true), "The next level is 1, where `PoolExhausted` fires.")
+	assert.Contains(t, nextLevelNote(criticalLevel{value: 100}, true), "The next level is 100, the limit this metric is a share of.")
+	assert.Contains(t, nextLevelNote(criticalLevel{}, false), "No further level is defined")
 }

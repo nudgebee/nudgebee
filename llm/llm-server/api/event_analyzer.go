@@ -3467,7 +3467,7 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 			// measured on real investigations.
 			check := recordConfirmingCheck(ctx, dbManager, investigationResponse, investigationMessageId, request.EventId, request.AccountId, workloadNamespace, workloadName, eventData.Title)
 			cleaned := stripConfirmingCheckBlock(stripChangePlanBlock(investigationResponse))
-			cleaned = withOutlookLine(cleaned, joinOutlookLines(criticalLine, eventOutlookLine(ctx, eventAnalysisRepo, request.AccountId, eventData, time.Now())))
+			cleaned = withOutlookLine(cleaned, joinOutlookLines(fallbackCriticalLine(cleaned, criticalLine), eventOutlookLine(ctx, eventAnalysisRepo, request.AccountId, eventData, time.Now())))
 			response.Summary = cleaned
 			investigationText = cleaned
 			err = eventAnalysisRepo.UpsertEventAnalysis(ctx, request.EventId, marshalInvestigationAnalysis(changePlan, check), cleaned, string(events.AnalysisStatusCompleted), eventData.Fingerprint, request.AccountId, eventData.AggregationKey, events.AnalysisTypeInvestigation)
