@@ -10,7 +10,7 @@
  * accounts only.
  */
 export type PanelDatasource = 'metrics' | 'logs' | 'traces' | 'nudgebee' | 'redis' | 'rabbitmq' | 'postgresql' | 'kubectl';
-export type PanelType = 'timeseries' | 'stat' | 'gauge' | 'table' | 'bar' | 'text';
+export type PanelType = 'timeseries' | 'stat' | 'gauge' | 'table' | 'bar' | 'pie' | 'histogram' | 'text';
 
 export const COMMAND_DATASOURCES: PanelDatasource[] = ['redis', 'rabbitmq', 'postgresql', 'kubectl'];
 
@@ -127,6 +127,29 @@ export interface PanelTableOptions {
 }
 
 /**
+ * One author-configured drill-down offered when a point on a timeseries panel is
+ * clicked — the chart counterpart of a table column's `link`.
+ */
+export interface PanelDataLink {
+  /** Menu label for the link, e.g. "Open logs". */
+  title: string;
+  /**
+   * An IN-APP path with `{{token}}` placeholders filled from the clicked point:
+   * a series label (`{{pod}}`, `{{namespace}}`), the account (`{{__account_id}}`),
+   * the panel's range (`{{__from}}` / `{{__to}}`) or the clicked instant
+   * (`{{__time}}`). Relative only — see isSafeLinkUrl, and the matching check in
+   * the server's validateDataLinks.
+   */
+  url: string;
+}
+
+/** `options` on a panel that renders as a timeseries chart. */
+export interface PanelChartOptions {
+  /** Drill-down links offered on a point click. See PanelDataLink. */
+  data_links?: PanelDataLink[];
+}
+
+/**
  * The colours a threshold step may take.
  *
  * A NAME, not a value: a stored panel is rendered by every viewer in whatever
@@ -171,11 +194,20 @@ export interface PanelThresholdStep {
   applies_to?: PanelThresholdAppliesTo;
   /** The account an `account` step is about. Ignored for the other two. */
   account_id?: string;
+  /**
+   * How long the value must STAY past the line, in seconds, before the step
+   * fires — "≥ 70 for 5 minutes". A whole number of minutes, two to sixty.
+   * Absent means the step fires on the latest sample alone, which is what every
+   * step written before this field did. Judged only on a time-series panel; a
+   * stat or gauge judges one sample, so a step carrying a hold is not drawn
+   * there and the editor offers to remove the hold.
+   */
+  for?: number;
 }
 
 /**
- * `options` on a panel that evaluates thresholds — `stat` and `gauge`, the two
- * that show ONE number and so have something unambiguous to compare.
+ * `options` on a panel that evaluates thresholds — `stat` and `gauge`, which
+ * show ONE number, and `timeseries`, which judges every drawn line on its own.
  */
 export interface PanelThresholdOptions {
   /** Stored in whatever order they were authored; the renderer sorts. */
@@ -257,11 +289,32 @@ export interface Panel {
   unit?: string;
   /** Backs the `text` panel type. */
   content?: string;
-  options?: PanelTableOptions & PanelThresholdOptions & PanelCombineOptions & PanelFilterOptions & Record<string, unknown>;
+  options?: PanelTableOptions & PanelChartOptions & PanelThresholdOptions & PanelCombineOptions & PanelFilterOptions & Record<string, unknown>;
+}
+
+/**
+ * A dashboard-wide dropdown. A `query` variable (the default) offers the values
+ * of `label_key` across the series `query` returns; a `custom` one offers `values`.
+ */
+export interface DashboardVariable {
+  name: string;
+  label?: string;
+  type?: 'query' | 'custom' | 'nudgebee';
+  query?: string;
+  label_key?: string;
+  values?: string[];
+  /** A `nudgebee` variable offers what this column of this table holds. */
+  table?: string;
+  column?: string;
+  /** Lets a viewer pick several values at once. */
+  multi?: boolean;
+  /** Sent as written when nothing is picked, in place of `.*`. */
+  all_value?: string;
 }
 
 export interface DashboardDefinition {
   panels: Panel[];
+  variables?: DashboardVariable[];
   time_from?: string;
   refresh?: string;
 }
@@ -282,6 +335,8 @@ export interface Dashboard {
   created_at?: string;
   updated_at?: string;
   version?: number;
+  /** Display name of `updated_by`. Returned by get and save, not by list. */
+  updated_by_name?: string;
 }
 
 /** What a listing that only links to dashboards reads — see listDashboardsBrief. */
@@ -312,6 +367,11 @@ export interface DashboardSaveRequest {
   status?: string;
   message?: string;
   bindings?: DashboardBinding[];
+  /**
+   * The `version` this copy was read at. An update whose copy is no longer the
+   * latest is refused with a 409 rather than overwriting the newer save.
+   */
+  expected_version?: number;
 }
 
 export interface DashboardListRequest {

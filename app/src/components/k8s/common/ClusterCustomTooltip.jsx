@@ -61,7 +61,10 @@ const ClusterCustomTooltip = ({ showTooltip = false, usage = 0, available = 0, l
         width: ds.space.mul(0, 95),
         p: 'var(--ds-space-1) var(--ds-space-1)',
         zIndex: 2,
-        left: ds.space.mul(0, 82),
+        // Sits just past the dial's right edge; the gauge wrapper is the positioned
+        // ancestor and now carries the dial's own width, so this tracks it at any size.
+        left: '100%',
+        ml: ds.space[1],
         top: ds.space.mul(0, 32),
       }}
     >

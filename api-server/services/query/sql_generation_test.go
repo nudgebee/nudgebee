@@ -1384,6 +1384,36 @@ func TestSQLGen_RealTable_SecurityV2_CrossAccountPushdown(t *testing.T) {
 		"outer tenant filter must still be enforced alongside the pushed-down hints")
 }
 
+// A dashboard panel on this table filters is_active = true ("findings on images
+// that are still deployed"). The column was declared on the table while its SQL
+// never selected it, so every request naming it — as a filter or as a column —
+// died in Postgres with `column "is_active" does not exist`.
+func TestSQLGen_RealTable_SecurityV2_IsActiveIsSelected(t *testing.T) {
+	td, ok := GetTableMetadata("recommendation_security_v2")
+	require.True(t, ok)
+	_, declared := td.Columns["is_active"]
+	require.True(t, declared, "is_active is part of the table's contract")
+
+	where := securityCrossAccountWhere()
+	where.Binary["is_active"] = map[BinaryWhereClauseType]any{Eq: true}
+	req := QueryRequest{
+		Table:   "recommendation_security_v2",
+		Columns: cols("severity", "image", "is_active"),
+		Where:   where,
+		OrderBy: []QueryOrderBy{{Column: "created_at", Order: "desc"}},
+		Limit:   25,
+	}
+	sql, err := GenerateSqlQuery(superAdminCtx(), "", req, td)
+	require.NoError(t, err)
+
+	// Selected by the table itself: true exactly when an active pod runs the image.
+	assert.Regexp(t, `\(cr\.image IS NOT NULL\)\s+AS is_active`, sql)
+	// And only active pods are joined, which is what makes "it joined" the test.
+	assert.Contains(t, sql, "pc.is_active IS NOT FALSE")
+	// The filter reaches the outer query as written.
+	assert.Regexp(t, `is_active\s*=\s*true`, sql)
+}
+
 func TestSQLGen_RealTable_SecurityGroupings_HeavyPath_CrossAccountPushdown(t *testing.T) {
 	td, ok := GetTableMetadata("recommendation_security_groupings_v2")
 	require.True(t, ok)

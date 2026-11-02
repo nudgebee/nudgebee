@@ -25,6 +25,7 @@ import { toast as snackbar } from '@ui/Toast';
 import TriageScore from '@shared/widgets/TriageScore';
 import Chip from '@ui/Chip';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
+import { isRollingShortcut } from '@shared/widgets/dateRangeShortcuts';
 
 // MUI icons used by the toolbar action cluster
 import IosShareOutlinedIcon from '@mui/icons-material/IosShareOutlined';
@@ -69,25 +70,13 @@ import WorkflowIcon from '@assets/WorkflowIcon';
 // shape of persisted filter values changes so old entries are ignored.
 export const TROUBLESHOOT_EVENTS_FILTER_STORAGE_KEY = 'troubleshoot:events:filters:v1';
 
-// Known shortcut durations from CustomDateTimeRangePicker, kept in sync so we can
-// rehydrate a relative time selection ("Current Week", "Last 24 Hours", ...) by
-// recomputing from `now` instead of restoring stale absolute timestamps.
-const KNOWN_SHORTCUT_DURATIONS_MS = new Set([
-  5 * 60 * 1000,
-  10 * 60 * 1000,
-  15 * 60 * 1000,
-  30 * 60 * 1000,
-  60 * 60 * 1000,
-  3 * 60 * 60 * 1000,
-  6 * 60 * 60 * 1000,
-  12 * 60 * 60 * 1000,
-  24 * 60 * 60 * 1000,
-  7 * 24 * 60 * 60 * 1000,
-]);
-
+// A rolling shortcut ("Last 24 Hours", ...) is rehydrated by recomputing from `now`
+// instead of restoring stale absolute timestamps. `isRollingShortcut` is the picker's
+// own test, so this never drifts from it. Calendar shortcuts (Current Week, Current
+// Month, Last Month) are not rolling — their saved absolute bounds are restored as-is.
 const resolveEffectiveRange = (range) => {
   const shortcut = range?.shortcutClickTime;
-  if (typeof shortcut === 'number' && KNOWN_SHORTCUT_DURATIONS_MS.has(shortcut)) {
+  if (typeof shortcut === 'number' && isRollingShortcut(shortcut)) {
     const now = Date.now();
     return { startDate: now - shortcut, endDate: now };
   }
@@ -407,7 +396,7 @@ const KubernetesEventsTable = ({
 
     if (startTime && endTime) {
       const urlShortcut = Number(getValidParam(router.query.time_shortcut));
-      if (!isTroubleshootPage && Number.isFinite(urlShortcut) && KNOWN_SHORTCUT_DURATIONS_MS.has(urlShortcut)) {
+      if (!isTroubleshootPage && Number.isFinite(urlShortcut) && isRollingShortcut(urlShortcut)) {
         const now = Date.now();
         return { startDate: now - urlShortcut, endDate: now, shortcutClickTime: urlShortcut };
       }
@@ -420,7 +409,7 @@ const KubernetesEventsTable = ({
     // restored if the saved end date is still in the past 30 days; older
     // saved ranges fall through to the per-page default.
     const persistedShortcut = persisted?.shortcutClickTime;
-    if (typeof persistedShortcut === 'number' && KNOWN_SHORTCUT_DURATIONS_MS.has(persistedShortcut)) {
+    if (typeof persistedShortcut === 'number' && isRollingShortcut(persistedShortcut)) {
       const now = Date.now();
       return { startDate: now - persistedShortcut, endDate: now, shortcutClickTime: persistedShortcut };
     }

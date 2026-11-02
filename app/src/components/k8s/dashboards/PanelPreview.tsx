@@ -5,6 +5,7 @@ import { Chip } from '@ui/Chip';
 import { ds } from '@utils/colors';
 import type { AccountOption, Panel } from '@api1/dashboards';
 import DashboardPanel from './DashboardPanel';
+import { panelQueryWindow } from './dashboardRange';
 import { panelMinHeight } from './panelDefaults';
 import { resolvePanelAccounts } from './panelAccounts';
 import {
@@ -100,7 +101,7 @@ const PanelPreview: React.FC<Props> = ({ panel, accountOptions, variables, start
       description: panel.description,
       content: panel.content,
       unit: panel.unit,
-      // Thresholds and how the accounts combine are judged on the fetched data, not part of the fetch.
+      // Thresholds are judged on the fetched data, not part of the fetch.
       options: panel.options,
     }),
     [settled, panel.title, panel.description, panel.content, panel.unit, panel.options]
@@ -126,7 +127,9 @@ const PanelPreview: React.FC<Props> = ({ panel, accountOptions, variables, start
     );
     if (scopeNote) notes.push(scopeNote);
   } else if (preview.type !== 'text') {
-    notes.push(previewRangeLabel(startTime, endTime));
+    // The window the panel actually ran over — longer than the range on a table with a minimum.
+    const ran = panelQueryWindow(preview, startTime, endTime);
+    notes.push(previewRangeLabel(ran.startTime, ran.endTime));
     if (scopeNote) notes.push(scopeNote);
   }
 

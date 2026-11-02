@@ -53,6 +53,7 @@ const (
 	ConversationSourceInvestigation        ConversationSource = "Investigation"
 	ConversationSourceInstantNotification  ConversationSource = "InstantNotification"
 	ConversationSourceWorkflowBuilder      ConversationSource = "WorkflowBuilder"
+	ConversationSourceDashboardBuilder     ConversationSource = "DashboardBuilder"
 	ConversationSourceUserInvestigationCLI ConversationSource = "UserInvestigationCli"
 	ConversationSourceOptimize             ConversationSource = "Optimize"
 	ConversationSourceAutomation           ConversationSource = "Automation"

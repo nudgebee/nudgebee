@@ -46,6 +46,13 @@ describe('convertNativeDashboard', () => {
     });
   });
 
+  it('round-trips a histogram panel rather than skipping it on re-import', () => {
+    const dash = { ...DASHBOARD, definition: { panels: [{ ...PANEL, id: 7, type: 'histogram' }] } };
+    const result = convertNativeDashboard(dash, SCOPE);
+    expect(result.definition.panels).toHaveLength(1);
+    expect(result.definition.panels[0].type).toBe('histogram');
+  });
+
   it('falls back to the importer’s default scope when nothing is mapped, and says so', () => {
     // Account ids are tenant-local, so the file's own scope cannot be trusted
     // in the tenant importing it.
@@ -76,6 +83,12 @@ describe('convertNativeDashboard', () => {
     const gauge = { ...PANEL, id: 6, type: 'gauge' };
     const result = convertNativeDashboard({ title: 'Utilisation', definition: { panels: [gauge] } }, SCOPE);
     expect(result.definition.panels.map((p) => p.type)).toEqual(['gauge']);
+  });
+
+  it('round-trips a pie panel rather than skipping it on re-import', () => {
+    const pie = { ...PANEL, id: 7, type: 'pie' };
+    const result = convertNativeDashboard({ title: 'Shares', definition: { panels: [pie] } }, SCOPE);
+    expect(result.definition.panels.map((p) => p.type)).toEqual(['pie']);
   });
 
   it('keeps an entity panel’s query object', () => {

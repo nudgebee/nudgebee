@@ -150,20 +150,20 @@ export class DashboardsLocators extends CommonLocators {
   }
 
   /**
-   * Opens the toolbar's "New dashboard" menu and returns once its items are
-   * mounted. The three authoring entry points are DropdownMenu items, so none of
-   * them is in the DOM until the trigger has been clicked — clicking one
+   * Opens the toolbar's "New dashboard" chooser and returns once its cards are
+   * mounted. The four authoring entry points are cards in a modal, so none of
+   * them is in the DOM until the button has been clicked — clicking one
    * straight off the toolbar waits out its full timeout on an element that was
    * never going to appear.
    *
-   * Retried as a whole: the menu closes on an outside click, and the click that
-   * opens it can land while the listing is still swapping its skeleton for rows.
+   * Retried as a whole: the click that opens it can land while the listing is
+   * still swapping its skeleton for rows.
    */
   async openAuthoringMenu(): Promise<void> {
     await expect(async () => {
-      // Only click when the menu is shut. An open MUI menu lays its own invisible
-      // backdrop over the page, including over the trigger, so a second click on an
-      // already-open menu lands on the backdrop and waits out its timeout.
+      // Only click when the chooser is shut. An open modal lays its backdrop over
+      // the page, including over the button, so a second click on an already-open
+      // chooser lands on the backdrop and waits out its timeout.
       if (!(await this.newBlankDashboardBtn.isVisible().catch(() => false))) {
         await this.newDashboardBtn.click({ timeout: 5000 });
       }
@@ -171,19 +171,19 @@ export class DashboardsLocators extends CommonLocators {
     }).toPass({ timeout: 30000, intervals: [500, 1000, 2000] });
   }
 
-  /** Opens the blank-dashboard editor from the authoring menu. */
+  /** Opens the blank-dashboard editor from the authoring chooser. */
   async startBlankDashboard(): Promise<void> {
     await this.openAuthoringMenu();
     await this.newBlankDashboardBtn.click();
   }
 
-  /** Opens the Import dashboard modal from the authoring menu. */
+  /** Opens the Import dashboard modal from the authoring chooser. */
   async openImportModal(): Promise<void> {
     await this.openAuthoringMenu();
     await this.importDashboardBtn.click();
   }
 
-  /** Opens the template gallery from the authoring menu. */
+  /** Opens the template gallery from the authoring chooser. */
   async openTemplateGallery(): Promise<void> {
     await this.openAuthoringMenu();
     await this.templateGalleryBtn.click();

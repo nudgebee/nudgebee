@@ -1796,6 +1796,8 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 	groupV2.POST("/metrics-query", metricsQueryHandler)
 
+	groupV2.POST("/dashboard-generate", dashboardGenerateHandler(tracer, meter))
+
 	// Deprecated alias for /metrics-query, kept because the app and llm-server deploy
 	// independently: during a rollout an app still on the old build calls this path,
 	// and removing it would 404 every AI-tab request until both services land. Delete

@@ -25,6 +25,7 @@
  * server, whose message comes back into this editor when Save refuses.
  */
 import type { AccountOption, DashboardDefinition, Panel } from '@api1/dashboards';
+import { readVariables } from './dashboardVariables';
 import { convertNativeDashboard, isNativeDashboard, panelSourceKey, parseImportJson } from './nativeImport';
 import { referencedVariables } from './templating';
 
@@ -57,6 +58,19 @@ const PANEL_FIELDS: [string, boolean][] = [
   ['content', true],
   ['options', true],
 ];
+const VARIABLE_FIELDS: [string, boolean][] = [
+  ['name', false],
+  ['label', true],
+  ['type', true],
+  ['query', true],
+  ['label_key', true],
+  ['values', true],
+  ['table', true],
+  ['column', true],
+  ['multi', true],
+  ['all_value', true],
+];
+const VARIABLE_KEYS = new Set(VARIABLE_FIELDS.map(([key]) => key));
 const TARGET_FIELDS: [string, boolean][] = [
   ['ref_id', false],
   ['expr', true],
@@ -71,7 +85,7 @@ const MAP_FIELDS = new Set(['options', 'query']);
 
 const PANEL_KEYS = new Set([...PANEL_FIELDS.map(([k]) => k), 'account_id']);
 const TARGET_KEYS = new Set(TARGET_FIELDS.map(([k]) => k));
-const DEFINITION_KEYS = new Set(['panels', 'time_from', 'refresh']);
+const DEFINITION_KEYS = new Set(['panels', 'variables', 'time_from', 'refresh']);
 /**
  * What the editor accepts at the top level. `accounts` is the Export's block of
  * account labels — accepted so an exported file can be pasted back, never shown
@@ -135,6 +149,10 @@ function projectPanel(panel: unknown): unknown {
   });
 }
 
+function projectVariable(variable: unknown): unknown {
+  return isPlainObject(variable) ? project(variable, VARIABLE_FIELDS, (_key, value) => value) : variable;
+}
+
 function projectDashboard(model: any): EditableDashboard {
   const definition = isPlainObject(model?.definition) ? model.definition : {};
   return {
@@ -142,6 +160,7 @@ function projectDashboard(model: any): EditableDashboard {
     description: typeof model?.description === 'string' ? model.description : '',
     definition: {
       panels: (Array.isArray(definition.panels) ? definition.panels : []).map(projectPanel) as Panel[],
+      ...(Array.isArray(definition.variables) && definition.variables.length > 0 ? { variables: definition.variables.map(projectVariable) } : {}),
       ...(typeof definition.time_from === 'string' && definition.time_from ? { time_from: definition.time_from } : {}),
       ...(typeof definition.refresh === 'string' && definition.refresh ? { refresh: definition.refresh } : {}),
     },
@@ -205,6 +224,15 @@ export function readDashboardJson(text: string, accountOptions: Pick<AccountOpti
   }
   for (const key of Object.keys(model.definition)) {
     if (!DEFINITION_KEYS.has(key)) warnings.push(`"definition.${key}" is not a dashboard setting, so it is ignored.`);
+  }
+
+  // Before anything reads them: the draft renders these as dropdowns the moment Apply stores them.
+  errors.push(...readVariables(model.definition.variables).errors);
+  if (errors.length > 0) return { ok: false, errors };
+  for (const raw of model.definition.variables || []) {
+    for (const key of Object.keys(raw)) {
+      if (!VARIABLE_KEYS.has(key)) warnings.push(`Variable "${raw.name}": "${key}" is not a variable setting, so it is dropped.`);
+    }
   }
 
   const dashboard = projectDashboard(model);
@@ -272,12 +300,13 @@ export function readDashboardJson(text: string, accountOptions: Pick<AccountOpti
       )
     );
   const had = variables(before);
-  const brought = [...variables(touched)].filter((v) => !had.has(v));
+  const declared = new Set((dashboard.definition.variables || []).map((v) => v.name));
+  const brought = [...variables(touched)].filter((v) => !had.has(v) && !declared.has(v));
   if (brought.length > 0) {
     warnings.push(
       `Queries reference ${brought
         .map((v) => `$${v}`)
-        .join(', ')}. Those are filled in only when a dashboard is opened from a page that supplies them.`
+        .join(', ')}. Those are filled in only when the dashboard declares them under Variables, or is opened from a page that supplies them.`
     );
   }
 

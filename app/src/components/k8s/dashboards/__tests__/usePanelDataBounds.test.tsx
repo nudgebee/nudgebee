@@ -91,8 +91,21 @@ describe('usePanelData bounds the answer', () => {
 
     expect(result.current.data?.series).toHaveLength(MAX_CHART_SERIES);
     // The busiest survive: values are 0..4797, so the top of the range.
-    expect(result.current.data?.series[0].label).toBe(`{pod="pod-${4798 - MAX_CHART_SERIES}"}`);
+    // One label collapses to its value — `pod-4778`, not `{pod="pod-4778"}`.
+    expect(result.current.data?.series[0].label).toBe(`pod-${4798 - MAX_CHART_SERIES}`);
     expect(result.current.warning).toContain(`${MAX_CHART_SERIES} busiest of 4798`);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('bins every series for a histogram rather than capping to the busiest, with no warning', async () => {
+    metricsQuery.mockResolvedValue(answerWith(4798));
+    const { result } = render(metricsPanel('histogram'));
+    await waitFor(() => expect(result.current.data).not.toBeNull());
+
+    // A histogram pools values into buckets and draws no per-series mark, so the
+    // chart cap does not apply — it reads all the series, and nothing is "left out".
+    expect(result.current.data?.series).toHaveLength(4798);
+    expect(result.current.warning).toBeNull();
     expect(result.current.error).toBeNull();
   });
 
@@ -170,5 +183,34 @@ describe('usePanelData gives up on a request that never answers', () => {
     expect(result.current.error?.kind).toBe('failed');
     expect(result.current.error?.message).toMatch(/30s/);
     expect(result.current.data).toBeNull();
+  });
+});
+
+/*
+ * On a capped chart the thresholds decide which lines are kept. Editing a step
+ * must re-rank the lines already fetched — without asking the provider again.
+ */
+describe('usePanelData keeps the lines a chart’s thresholds need', () => {
+  beforeEach(() => metricsQuery.mockReset());
+  afterEach(cleanup);
+
+  it('re-ranks the fetched lines when a step changes, without refetching', async () => {
+    const count = MAX_CHART_SERIES + 5;
+    // pod-0 is the quietest line, so a peak ranking drops it first.
+    const QUIET = 'pod-0';
+    metricsQuery.mockResolvedValue(answerWith(count));
+    const plain = metricsPanel('timeseries');
+    const { result, rerender } = renderHook(
+      ({ panel }: { panel: Panel }) => usePanelData({ panel, accounts, variables: {}, startTime: 0, endTime: HOUR, immediate: true }),
+      { initialProps: { panel: plain } }
+    );
+    await waitFor(() => expect(result.current.data?.series.length).toBe(MAX_CHART_SERIES));
+    expect(result.current.data?.series.map((s) => s.label)).not.toContain(QUIET);
+
+    const withStep = { ...plain, options: { thresholds: [{ value: 1, color: 'red', op: 'lt' }] } } as Panel;
+    await act(async () => rerender({ panel: withStep }));
+    await waitFor(() => expect(result.current.data?.series.map((s) => s.label)).toContain(QUIET));
+    expect(metricsQuery).toHaveBeenCalledTimes(1);
+    expect(result.current.data?.capped).toEqual({ shown: MAX_CHART_SERIES, total: count });
   });
 });

@@ -54,6 +54,8 @@ const (
 	VizGauge      = "gauge"
 	VizTable      = "table"
 	VizBar        = "bar"
+	VizPie        = "pie"
+	VizHistogram  = "histogram"
 	VizText       = "text"
 )
 
@@ -152,11 +154,32 @@ type Panel struct {
 	Options map[string]any `json:"options,omitempty"`
 }
 
+// Variable is one dashboard-wide dropdown. A query variable offers the values
+// of LabelKey across the series Query returns; a custom one offers Values; a
+// nudgebee one offers what Column of the query engine's Table holds.
+type Variable struct {
+	Name  string `json:"name"`
+	Label string `json:"label,omitempty"`
+	// Type is "query", "custom" or "nudgebee"; empty reads as "query".
+	Type     string   `json:"type,omitempty"`
+	Query    string   `json:"query,omitempty"`
+	LabelKey string   `json:"label_key,omitempty"`
+	Values   []string `json:"values,omitempty"`
+	Table    string   `json:"table,omitempty"`
+	Column   string   `json:"column,omitempty"`
+	// Multi lets a viewer pick several values at once.
+	Multi bool `json:"multi,omitempty"`
+	// AllValue is sent as written when nothing is picked, in place of ".*".
+	AllValue string `json:"all_value,omitempty"`
+}
+
 // Definition is the whole panel document. Stored as one JSONB blob because
 // panels are always read and written together and nothing queries them by
 // inner field.
 type Definition struct {
 	Panels []Panel `json:"panels"`
+	// Variables are the dropdowns a viewer picks from; panels use them as $name.
+	Variables []Variable `json:"variables,omitempty"`
 	// TimeFrom is a relative default range for the dashboard, e.g. "now-6h".
 	TimeFrom string `json:"time_from,omitempty"`
 	Refresh  string `json:"refresh,omitempty"`
@@ -180,6 +203,9 @@ type Dashboard struct {
 	// Version is the highest revision number in dashboard_versions. Populated on
 	// Get, omitted on List to keep the listing a single query.
 	Version int `json:"version,omitempty"`
+	// UpdatedByName is the display name of UpdatedBy, so the editor can say who
+	// saved over a stale copy. Populated on Get only, like Version.
+	UpdatedByName string `json:"updated_by_name,omitempty"`
 }
 
 type Binding struct {
@@ -227,6 +253,11 @@ type SaveRequest struct {
 	Bindings    []Binding  `json:"bindings,omitempty"`
 	// Message is an optional changelog line stored on the new version row.
 	Message string `json:"message,omitempty"`
+	// ExpectedVersion is the Version the caller's copy was read at. On an update
+	// that no longer matches the latest revision, Save refuses with ErrConflict
+	// instead of overwriting whatever was saved in between. 0 skips the check,
+	// so callers that predate it keep their behaviour.
+	ExpectedVersion int `json:"expected_version,omitempty"`
 }
 
 type DeleteRequest struct {

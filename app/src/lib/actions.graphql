@@ -268,6 +268,12 @@ type Mutation {
   ): AIGetMetricsQueryResponse
 }
 
+type Mutation {
+  ai_generate_dashboard(
+    request: AIGenerateDashboardRequest!
+  ): AIGenerateDashboardResponse
+}
+
 type Query {
   ai_generate_workflow(
     request: AIGenerateWorkflowRequest!
@@ -4374,6 +4380,13 @@ input AIGetMetricsQueryRequest {
   index: String
 }
 
+input AIGenerateDashboardRequest {
+  account_id: String!
+  query: String!
+  user_id: String
+  async: Boolean
+}
+
 input AIGetLogQueryRequest {
   account_id: String!
   query: String!
@@ -7955,6 +7968,10 @@ type AIGeneratedQuery {
   conversation_id: String
   message_id: String
   session_id: String
+}
+
+type AIGenerateDashboardResponse {
+  data: AIGeneratedQuery!
 }
 
 type AIGetLogQueryResponse {
@@ -12897,6 +12914,7 @@ input DashboardSaveRequest {
   status: String
   message: String
   bindings: [DashboardBindingInput]
+  expected_version: Int
 }
 
 type Dashboard {
@@ -12915,6 +12933,7 @@ type Dashboard {
   created_at: Datetime
   updated_at: Datetime
   version: Int
+  updated_by_name: String
 }
 
 type DashboardBinding {

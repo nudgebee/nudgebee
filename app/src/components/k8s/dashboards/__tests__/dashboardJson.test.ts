@@ -219,3 +219,45 @@ describe('what the JSON editor warns about', () => {
     expect(warningsOf(edited((d) => d.definition.panels.splice(0, 1)))).toEqual([]);
   });
 });
+
+describe('readDashboardJson with variables', () => {
+  const saved = { title: 'd', description: '', definition: { panels: [] } } as any;
+  const read = (variables: unknown, panels: unknown[] = []) =>
+    readDashboardJson(JSON.stringify({ title: 'd', definition: { panels, variables } }), [], saved) as any;
+  const good = { name: 'env', type: 'custom', values: ['a'], multi: true };
+
+  it.each([
+    ['a null entry', [null]],
+    ['values as text', [{ name: 'a', type: 'custom', values: 'dev,prod' }]],
+    ['values as numbers', [{ name: 'a', type: 'custom', values: [1] }]],
+    ['a repeated name', [good, good]],
+  ])('refuses %s, so Apply cannot take the page down', (_name, variables) => {
+    expect(read(variables).ok).toBe(false);
+  });
+
+  it('warns about a setting it will drop', () => {
+    const result = read([{ ...good, labelKey: 'x' }]);
+    expect(result.warnings.join()).toContain('labelKey');
+    expect(result.dashboard.definition.variables[0]).not.toHaveProperty('labelKey');
+  });
+
+  it('takes reordered keys as no change', () => {
+    const current = { ...saved, definition: { panels: [], variables: [{ name: 'env', multi: true, type: 'custom', values: ['a'] }] } };
+    const text = JSON.stringify({ title: 'd', definition: { panels: [], variables: [{ values: ['a'], multi: true, name: 'env', type: 'custom' }] } });
+    expect((readDashboardJson(text, [], current) as any).changed).toBe(false);
+  });
+
+  it('does not warn about a variable the dashboard declares', () => {
+    const panel = {
+      id: 1,
+      title: 'p',
+      type: 'timeseries',
+      datasource: 'metrics',
+      account_type: 'kubernetes',
+      grid_pos: { x: 0, y: 0, w: 6, h: 8 },
+      targets: [{ ref_id: 'A', expr: 'up{n=~"$env"}' }],
+    };
+    expect(read([good], [panel]).warnings.join()).not.toContain('$env');
+    expect(read(undefined, [panel]).warnings.join()).toContain('$env');
+  });
+});

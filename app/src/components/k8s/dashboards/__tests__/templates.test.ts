@@ -63,6 +63,41 @@ describe('widget library', () => {
     }
   });
 
+  it('keeps the dashboard time range off the widgets that list open recommendations', () => {
+    // "Savings opportunity by account" on the default Last 1 Hour showed the few
+    // recommendations raised that hour — no savings — instead of the standing total.
+    const ids = [
+      'savings-by-rule',
+      'savings-by-account',
+      'savings-by-service',
+      'top-savings-resources',
+      'critical-recommendations',
+      'rightsizing-recommendations',
+    ];
+    for (const id of ids) {
+      const template = PANEL_TEMPLATES.find((t) => t.id === id)!;
+      expect(template.panel.targets![0].time_column).toBe('');
+    }
+    // A widget about things that happened still follows the picker.
+    const events = PANEL_TEMPLATES.find((t) => t.id === 'noisiest-issues')!;
+    expect(events.panel.targets![0].time_column).toBe('starts_at');
+  });
+
+  it('filters events by P-value on the platform priority, not on the source’s wording', () => {
+    // `priority` holds what the alert source said (HIGH, MEDIUM, …); P0–P3 is the platform's own triage, in
+    // computed_priority. A P-value compared against `priority` matches nothing, on any tenant, and the panel
+    // reads as a quiet estate.
+    for (const template of PANEL_TEMPLATES) {
+      const where = JSON.stringify((template.panel.targets?.[0] as { query?: { where?: unknown } })?.query?.where ?? {});
+      expect(`${template.id}: ${where}`).not.toMatch(/"priority":\{[^}]*"P\d/);
+    }
+    const p0p1 = PANEL_TEMPLATES.find((t) => t.id === 'p0-p1-events');
+    const query = p0p1?.panel.targets?.[0].query as { where?: unknown; columns: { name: string }[] };
+    expect(JSON.stringify(query.where)).toContain('"computed_priority":{"_in":["P0","P1"]}');
+    // The column that says which of the two it is.
+    expect(query.columns.map((c) => c.name)).toContain('computed_priority');
+  });
+
   it('copies a widget pre-scoped, and shares no state with the library', () => {
     const template = PANEL_TEMPLATES.find((t) => t.id === 'noisiest-issues')!;
     const copy = panelFromTemplate(template, [{ id: 7 } as any], ACCOUNTS);

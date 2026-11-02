@@ -21,3 +21,28 @@ describe('LLMAnswerRenderer tilde handling', () => {
     expect(container.innerHTML).toContain('<del>dropped</del>');
   });
 });
+
+// A dashboard generation answers with the whole definition; flattened into the
+// generic table it read as rows of nested JSON. It is summarised instead.
+describe('LLMAnswerRenderer dashboard answers', () => {
+  it('summarises a generated dashboard by title and panels', () => {
+    const dashboard = {
+      title: 'Cluster health',
+      description: 'Headline numbers then trends.',
+      definition: {
+        panels: [
+          { title: 'Ready nodes', type: 'stat' },
+          { title: 'CPU by node', type: 'timeseries' },
+        ],
+      },
+      warnings: ['"Pie": dropped — unsupported panel type "piechart"'],
+    };
+    const { container } = render(<LLMAnswerRenderer toolCall={{ text: JSON.stringify(dashboard) }} />);
+
+    expect(container.textContent).toContain('Cluster health — 2 panels');
+    expect(container.textContent).toContain('Ready nodes (stat)');
+    expect(container.textContent).toContain('CPU by node (timeseries)');
+    expect(container.textContent).toContain('unsupported panel type');
+    expect(container.querySelector('table')).toBeNull();
+  });
+});

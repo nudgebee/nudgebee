@@ -11,7 +11,7 @@ import nbClickhouse from '@components/dashboards/apps/nb_clickhouse.json';
 import otelNodejs from '@components/dashboards/apps/otel_nodejs.json';
 
 const SCOPE: PanelScope = { account_type: 'K8s', account_ids: [] };
-const VALID_TYPES = new Set(['timeseries', 'stat', 'gauge', 'table', 'bar', 'text']);
+const VALID_TYPES = new Set(['timeseries', 'stat', 'gauge', 'table', 'bar', 'pie', 'histogram', 'text']);
 
 describe('parseGrafanaJson', () => {
   it('accepts a bare dashboard model and the API-wrapped form', () => {
@@ -122,6 +122,31 @@ describe('convertGrafanaDashboard', () => {
       SCOPE
     );
     expect(result.definition.panels.map((p) => p.type)).toEqual(['gauge', 'stat']);
+  });
+
+  it('imports a Grafana histogram as a histogram', () => {
+    const result = convertGrafanaDashboard(
+      {
+        title: 'latency',
+        panels: [{ id: 1, type: 'histogram', title: 'request duration', targets: [{ refId: 'A', expr: 'request_duration_seconds' }] }],
+      },
+      SCOPE
+    );
+    expect(result.definition.panels.map((p) => p.type)).toEqual(['histogram']);
+  });
+
+  it('imports a Grafana pie chart (modern and legacy plugin) as a pie instead of skipping it', () => {
+    const result = convertGrafanaDashboard(
+      {
+        title: 'pies',
+        panels: [
+          { id: 1, type: 'piechart', title: 'by namespace', targets: [{ refId: 'A', expr: 'sum by (namespace) (up)' }] },
+          { id: 2, type: 'grafana-piechart-panel', title: 'legacy pie', targets: [{ refId: 'A', expr: 'up' }] },
+        ],
+      },
+      SCOPE
+    );
+    expect(result.definition.panels.map((p) => p.type)).toEqual(['pie', 'pie']);
   });
 
   it('warns about variables nothing on this page can fill', () => {

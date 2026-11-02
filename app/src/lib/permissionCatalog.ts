@@ -316,7 +316,8 @@ function refineAiModule(name: string): string {
   if (name.includes('_function')) return 'ai_functions';
   if (name.includes('_gc')) return 'ai_guardrails';
   if (name.includes('_rca')) return 'ai_rca';
-  if (name.includes('_query') || name.includes('_workflow') || name.includes('_recommendation')) return 'ai_generation';
+  if (name.includes('_query') || name.includes('_workflow') || name.includes('_dashboard') || name.includes('_recommendation'))
+    return 'ai_generation';
   return 'ai_misc';
 }
 

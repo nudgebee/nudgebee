@@ -5,6 +5,8 @@ import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import LinkIcon from '@mui/icons-material/Link';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import Chart from '@ui/Chart';
+import { SERIES_PALETTE } from '@shared/charts/chartPlugins';
+import { formatStat } from '@shared/charts/legendChips';
 import { Banner } from '@ui/Banner';
 import { Chip } from '@ui/Chip';
 import { Link } from '@ui/Link';
@@ -24,16 +26,39 @@ import Memory from '@shared/format/Memory';
 import NumberFormat from '@shared/format/Number';
 import { formatDurationInTrace } from '@utils/common';
 import type { AccountOption, Panel } from '@api1/dashboards';
-import { addedColumns, columnSettings, panelColumnsOf, renderRowUrl } from './panelColumns';
+import { addedColumns, columnSettings, panelColumnsOf, renderDataLinks, renderRowUrl } from './panelColumns';
+// A drill-down menu opens at the clicked point — an arbitrary cursor position,
+// not a trigger element — so it composes the overlay surface directly rather
+// than DropdownMenu, which anchors to and opens from a trigger it clones.
+import { OverlayItem, OverlaySurface } from '@ui/internal/Overlay';
 import PanelAccountBreakdown, { BreakdownRows, breachedPlacement, breakdownPlacement } from './PanelAccountBreakdown';
 import PanelGauge from './PanelGauge';
-import { hasThresholds, OP_PHRASE, OP_SYMBOL, opOf, panelBreaches, thresholdTone, type Breach } from './panelThresholds';
+import {
+  forOf,
+  holdLabel,
+  isLinePanel,
+  lineBreaches,
+  pastBreaches,
+  type PastBreach,
+  OP_PHRASE,
+  OP_SYMBOL,
+  opOf,
+  panelBreaches,
+  panelThresholdsOf,
+  showsOneNumber,
+  thresholdTone,
+  type Breach,
+  type LineBreaches,
+  type PanelBreaches,
+} from './panelThresholds';
+import { thresholdChartPlugin, type ThresholdDrawing } from './panelThresholdChart';
 import PanelState, { type PanelStateTone } from './PanelState';
 import { usePanelData, type ColumnKind, type PanelData, type PanelErrorKind, type PanelSeries } from './usePanelData';
 import { applyAccountFilter, describePanelScope, effectiveFilterAccount, panelQueryAccounts, resolvePanelAccounts } from './panelAccounts';
+import { panelQueryWindow } from './dashboardRange';
 import PanelColumnFilters, { PanelFilterMenu } from './PanelColumnFilters';
 import { appliedViewerFilters, loadViewerFilterValues, viewerFilterColumns, type ViewerFilter } from './panelViewerFilters';
-import { combineOf, consolidatedSeries, lastValue, metricLabel, statTotal } from './panelSeries';
+import { combineOf, consolidatedSeries, histogramBins, lastValue, metricLabel, statTotal } from './panelSeries';
 import { downloadNodeAsPng, EXPORT_HIDE_ATTR, PANEL_PENDING_ATTR } from './panelImage';
 import { withPanelParam } from './panelLink';
 import type { VariableValues } from './templating';
@@ -149,16 +174,63 @@ function formatValue(value: number | null | undefined, unit?: string): string {
   return unit ? `${rounded} ${unit}` : rounded;
 }
 
-/** The badge's text: the crossed line, and whose number crossed it when that is not the one on the card. */
+/** A series label short enough for a badge; the hover carries the whole thing. */
+const BADGE_LABEL_CHARS = 28;
+function shortLabel(label: string): string {
+  return label.length > BADGE_LABEL_CHARS ? `${label.slice(0, BADGE_LABEL_CHARS - 1)}…` : label;
+}
+
+/** "10:42" — the local clock time of an epoch-ms instant, for the hover's "to 10:42". */
+function clockTime(ms: number): string {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** "≥ 70", or "≥ 70 for 5m" for a step with a hold. */
+function stepLabel(b: Breach): string {
+  const hold = forOf(b.step);
+  return `${OP_SYMBOL[opOf(b.step)]} ${b.step.value}${hold !== undefined ? ` for ${holdLabel(hold)}` : ''}`;
+}
+
+/**
+ * The badge's text: the crossed line, and whose number crossed it when that is
+ * not the one on the card — an account's figure on a stat, a series on a chart.
+ */
 function breachLabel(b: Breach): string {
-  const line = `${OP_SYMBOL[opOf(b.step)]} ${b.step.value}`;
+  const line = stepLabel(b);
+  if (b.line) return `${shortLabel(b.line)} ${line}`;
   return b.account ? `${b.account} ${line}` : line;
 }
 
-/** The badge's hover: the same breach as a sentence, with the number that crossed. */
+/**
+ * The badge's hover: the same breach as a sentence, with the number that crossed.
+ * A hold says which samples it rests on — the chart evaluates once, at the end
+ * of the range it was opened on, so "for the 5 minutes to 10:42" is what is true.
+ */
 function breachSentence(b: Breach, unit?: string): string {
+  const hold = forOf(b.step);
+  if (b.line) {
+    if (hold !== undefined && b.from !== undefined && b.to !== undefined) {
+      return `${b.line}: every sample from ${clockTime(b.from)} to ${clockTime(b.to)} was ${OP_PHRASE[opOf(b.step)]} ${b.step.value} — ${holdLabel(
+        hold
+      )} or longer. Latest ${formatValue(b.value, unit)}.`;
+    }
+    return `${b.line} is at ${formatValue(b.value, unit)}, ${OP_PHRASE[opOf(b.step)]} the ${b.step.value} threshold.`;
+  }
   const phrase = `${OP_PHRASE[opOf(b.step)]} the ${b.step.value} threshold.`;
   return b.account ? `${b.account} is at ${formatValue(b.value, unit)}, ${phrase}` : `${formatValue(b.value, unit)} is ${phrase}`;
+}
+
+/** How many earlier breaches a hover spells out; the rest are counted. */
+const PAST_BREACH_LINES = 5;
+
+/** One line's finished breaches, as a sentence. */
+function pastBreachSentence(b: PastBreach, unit?: string): string {
+  const times = b.count === 1 ? 'once' : `${b.count} times`;
+  return `${b.line} went ${OP_PHRASE[opOf(b.step)]} the ${b.step.value} threshold ${times}, last at ${clockTime(b.lastAt)}. Worst ${formatValue(
+    b.worst,
+    unit
+  )}.`;
 }
 
 const NUMBER_CELL_SX = { textAlign: 'right', fontSize: ds.text.caption, fontWeight: 'var(--ds-font-weight-regular)', color: 'var(--ds-gray-700)' };
@@ -233,11 +305,13 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
   // Nothing picked yet means the first account, not "no account": a panel that waits for a choice shows an
   // empty box, and one account costs the same single request whether it was chosen or defaulted to. A pick
   // the panel has since been re-scoped away from falls back to that same default — see the rule for why.
-  // Metrics is the exception: those panels answer for every account at once — a chart merges the accounts'
-  // series, a stat adds their numbers up — so an unmade choice means ALL of them and the picker stays empty
-  // until the viewer narrows it. Unless "all of them" is ONE account — the panel's scope, or what the dashboard
-  // filter left of it — in which case the picker shows that account as the selection it effectively is.
-  const effectiveAccountId = effectiveFilterAccount(accountId, panelAccounts, panel.datasource === 'metrics' && panelAccounts.length !== 1);
+  // Metrics and `nudgebee` panels are the exception: they answer for every account at once — a chart merges
+  // the accounts' series, a stat adds their numbers up, the query engine takes the whole list in one call — so
+  // an unmade choice means ALL of them and the picker stays empty until the viewer narrows it. Unless "all of
+  // them" is ONE account — the panel's scope, or what the dashboard filter left of it — in which case the
+  // picker shows that account as the selection it effectively is.
+  const answersEveryAccount = panel.datasource === 'metrics' || panel.datasource === 'nudgebee';
+  const effectiveAccountId = effectiveFilterAccount(accountId, panelAccounts, answersEveryAccount && panelAccounts.length !== 1);
   const selectedOption = filterOptions.find((o) => o.value === effectiveAccountId) || null;
   // The hook takes a list so a panel scoped to one account still works without a
   // selection; the picker just never supplies more than one. With no pick, the
@@ -275,12 +349,24 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
     () => panelQueryAccounts(scopedAccounts, accountFilter, panel.datasource === 'nudgebee').accounts.map((a) => a.value),
     [scopedAccounts, accountFilter, panel.datasource]
   );
+  // What this panel's queries run over: the dashboard's range, or the table's
+  // minimum window where that is longer — an hour of a table written once a
+  // day is empty. See panelQueryWindow.
+  const queryWindow = React.useMemo(() => panelQueryWindow(panel, startTime, endTime), [panel, startTime, endTime]);
   const loadFilterValues = React.useCallback(
-    (column: string) => loadViewerFilterValues({ panel, column, accountIds: queriedAccountIds, variables, startTime, endTime }),
-    [panel, queriedAccountIds, variables, startTime, endTime]
+    (column: string) =>
+      loadViewerFilterValues({
+        panel,
+        column,
+        accountIds: queriedAccountIds,
+        variables,
+        startTime: queryWindow.startTime,
+        endTime: queryWindow.endTime,
+      }),
+    [panel, queriedAccountIds, variables, queryWindow]
   );
   // A value list belongs to the accounts and the window it was read for.
-  const filterScopeKey = `${queriedAccountIds.join(',')}|${startTime}|${endTime}`;
+  const filterScopeKey = `${queriedAccountIds.join(',')}|${queryWindow.startTime}|${queryWindow.endTime}`;
 
   // Composite rather than a sum: either counter moving changes the key, and no
   // pair of values can collide the way `dashboard + panel` could.
@@ -339,8 +425,8 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
     accountFilter,
     viewerFilters: activeFilters,
     variables,
-    startTime,
-    endTime,
+    startTime: queryWindow.startTime,
+    endTime: queryWindow.endTime,
     refreshKey,
     enabled: (seen || forceLoad) && !sampleData,
     // `forceLoad` is the preview and the PNG capture — panels someone is waiting
@@ -353,6 +439,41 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
   const data = sampleData ?? fetched;
   const error = sampleData ? null : fetchError;
   const warning = sampleData ? null : fetchWarning;
+  // A sample was never queried, so it has no window to speak of.
+  const widened = sampleData ? undefined : queryWindow.widened;
+
+  // Drill-down links: a point click opens a menu of the panel's configured links
+  // with the clicked series' labels, account and the panel's range filled in.
+  const dataLinks = panel.options?.data_links;
+  const hasDataLinks = Array.isArray(dataLinks) && dataLinks.length > 0;
+  const [pointLinks, setPointLinks] = React.useState<{ title: string; href: string }[]>([]);
+  // An invisible, cursor-positioned anchor the menu hangs off, so it opens at the
+  // clicked point without the shared chart component having to own the overlay.
+  const pointAnchorRef = React.useRef<HTMLSpanElement | null>(null);
+  const handlePointClick = React.useCallback(
+    (info: { datasetIndex?: number; epochTimestamp?: number | null; clientX?: number; clientY?: number }) => {
+      if (!data || !hasDataLinks) return;
+      // `datasetIndex` indexes the same `drawn` list the chart was given — each
+      // account's lines, then the consolidated one, which carries no account and
+      // so resolves no account-dependent link.
+      const drawn = [...data.series, ...consolidatedSeries(data.series)];
+      const series = typeof info.datasetIndex === 'number' ? drawn[info.datasetIndex] : undefined;
+      const links = renderDataLinks(dataLinks, {
+        metric: series?.metric,
+        accountId: series?.accountId,
+        from: String(queryWindow.startTime),
+        to: String(queryWindow.endTime),
+        time: info.epochTimestamp != null ? String(info.epochTimestamp) : undefined,
+      });
+      if (!links.length) return;
+      if (pointAnchorRef.current && info.clientX != null && info.clientY != null) {
+        pointAnchorRef.current.style.left = `${info.clientX}px`;
+        pointAnchorRef.current.style.top = `${info.clientY}px`;
+      }
+      setPointLinks(links);
+    },
+    [data, hasDataLinks, dataLinks, queryWindow]
+  );
 
   /** Nothing to draw yet — no data and no error. */
   const pending = panel.type !== 'text' && !data && !error;
@@ -400,7 +521,7 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
    * comes back as rows whatever the panel type says.
    */
   const stat = React.useMemo(() => {
-    if (!data || data.table || !hasThresholds(panel.type) || data.series.length === 0) return null;
+    if (!data || data.table || !showsOneNumber(panel.type) || data.series.length === 0) return null;
     return statTotal(
       data.series,
       (panel.targets || []).map((t) => t.ref_id || 'A'),
@@ -416,7 +537,29 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
    * thresholds, which is every panel authored before them, resolves to nothing
    * and keeps its plain frame.
    */
-  const breaches = React.useMemo(() => panelBreaches(panel, stat, shownAccounts), [panel, stat, shownAccounts]);
+  const breaches = React.useMemo<PanelBreaches | LineBreaches>(
+    () =>
+      isLinePanel(panel.type)
+        ? lineBreaches(panel, data?.series || [], data?.timestamps, shownAccounts, { start: startTime, end: endTime })
+        : panelBreaches(panel, stat, shownAccounts),
+    [panel, data, stat, shownAccounts, startTime, endTime]
+  );
+  /** Breaches this chart's range holds that are over; the badge above only speaks for now. */
+  const earlier = React.useMemo(
+    () => pastBreaches(panel, data?.series || [], data?.timestamps, shownAccounts, { start: startTime, end: endTime }),
+    [panel, data, shownAccounts, startTime, endTime]
+  );
+  const earlierCount = earlier.reduce((sum, b) => sum + b.count, 0);
+  /** A chart's thresholds have more to say than a stat's: where the holds were met, and what could not be judged. */
+  const lineVerdict = 'spans' in breaches ? breaches : undefined;
+  /**
+   * What the chart plugin draws. A ref, read at draw time: chart.js receives its
+   * plugins once, at creation, so a plugin built per render would keep drawing
+   * the first render's steps after an edit in the preview.
+   */
+  const thresholdDrawing = React.useRef<ThresholdDrawing>({ steps: [], spans: [] });
+  thresholdDrawing.current = { steps: isLinePanel(panel.type) ? panelThresholdsOf(panel) : [], spans: lineVerdict?.spans || [] };
+  const thresholdPlugin = React.useMemo(() => thresholdChartPlugin(() => thresholdDrawing.current), []);
   const breach = breaches.frame?.step;
   const tone = breach ? thresholdTone(breach.color) : undefined;
 
@@ -649,11 +792,162 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
           });
           return <CustomTable headers={headers} tableData={rows} />;
         }
+        case 'pie': {
+          // One slice per series — its latest value, labelled as the table case does.
+          // Deliberately NOT consolidatedSeries: a pie's whole is the sum of its
+          // slices, so an "All accounts" total would count every account twice.
+          const byAccount = data.series.some((s) => s.accountLabel);
+          const slices = data.series
+            .map((s) => ({ label: byAccount ? metricLabel(s) : s.label, value: lastValue(s.values) }))
+            .filter((sl): sl is { label: string; value: number } => typeof sl.value === 'number' && sl.value > 0);
+          // A slice cannot be negative, so non-positive values are dropped — said
+          // out loud below, the way the cap warning names the series it left out.
+          const omitted = data.series.length - slices.length;
+          if (slices.length === 0) {
+            return (
+              <Box sx={{ height: '100%' }}>
+                <PanelState tone='empty' title='Nothing to chart' description='A pie needs positive values — check the query.' />
+              </Box>
+            );
+          }
+          // Pie + legend fill the panel: side by side on a wide panel (a square pie
+          // left, a scrolling list of name + value right), stacked on a narrow one —
+          // switched by a CONTAINER query so it follows the panel's own width, not
+          // the viewport's. The pie fills its square cell (DoughnutChart size='fill')
+          // so it grows with the panel instead of a fixed box in wasted space.
+          return (
+            <Box sx={{ height: '100%', containerType: 'inline-size', overflow: 'hidden' }}>
+              <Box
+                sx={{
+                  height: '100%',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: ds.space[2],
+                  p: ds.space[2],
+                  overflow: 'hidden',
+                  '@container (min-width: 320px)': { flexDirection: 'row', justifyContent: 'center' },
+                }}
+              >
+                <Box
+                  sx={{
+                    flexShrink: 0,
+                    alignSelf: 'center',
+                    aspectRatio: '1 / 1',
+                    // Cap the pie at a fixed square so it never balloons on a wide/tall
+                    // panel; it still shrinks on a small one. Stacked: width-bound.
+                    width: 'min(100%, 200px)',
+                    // Row: height-bound instead, so the pie stays constant regardless
+                    // of how wide the panel gets and the legend takes the rest.
+                    '@container (min-width: 320px)': { width: 'auto', height: 'min(100%, 200px)' },
+                  }}
+                >
+                  <Chart.Doughnut
+                    values={slices.map((sl) => sl.value)}
+                    labels={slices.map((sl) => sl.label)}
+                    colors={SERIES_PALETTE}
+                    cutout='0%'
+                    size='fill'
+                    displayLegend={false}
+                    id={`pie-${panel.id}`}
+                    formatValue={(raw: number) => formatStat(raw, panel.unit)}
+                  />
+                </Box>
+                <Box
+                  sx={{
+                    width: '100%',
+                    flex: 1,
+                    minHeight: 0,
+                    overflowY: 'auto',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: ds.space[1],
+                    '@container (min-width: 320px)': { width: 'auto', maxHeight: '100%', pl: ds.space[2] },
+                  }}
+                >
+                  {slices.map((sl, i) => (
+                    <Box key={`${sl.label}-${i}`} sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1], minWidth: 0 }}>
+                      <Box
+                        sx={{
+                          width: ds.space[2],
+                          height: ds.space[2],
+                          borderRadius: ds.radius.sm,
+                          background: SERIES_PALETTE[i % SERIES_PALETTE.length],
+                          flexShrink: 0,
+                        }}
+                      />
+                      <Typography
+                        variant='caption'
+                        sx={{ color: ds.gray[600], whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}
+                      >
+                        {sl.label}
+                      </Typography>
+                      <Typography variant='caption' sx={{ color: ds.gray[500], ml: 'auto', pl: ds.space[2], flexShrink: 0 }}>
+                        {formatStat(sl.value, panel.unit)}
+                      </Typography>
+                    </Box>
+                  ))}
+                  {omitted > 0 && (
+                    <Typography variant='caption' sx={{ color: ds.gray[500] }}>
+                      {`${omitted} non-positive ${omitted === 1 ? 'value' : 'values'} omitted`}
+                    </Typography>
+                  )}
+                </Box>
+              </Box>
+            </Box>
+          );
+        }
         case 'bar':
           // Stacked, so on a multi-account panel each account is a segment and the
           // stack's height is the consolidated view — no total series needed, and
           // one would double the stack.
           return <Chart.Bar data={data.series.map((s) => s.values)} labels={data.labels} chartLabel={data.series.map((s) => s.label)} />;
+        case 'histogram': {
+          // The distribution of every value the query reported over the range —
+          // one bar per equal-width bucket, counting the samples that fell in it.
+          // Reuses the bar renderer; the x-axis is value buckets, not time.
+          const hist = histogramBins(data.series);
+          if (!hist) {
+            return (
+              <Box sx={{ height: '100%' }}>
+                <PanelState tone='empty' title='Nothing to chart' description='A histogram needs numeric values — check the query.' />
+              </Box>
+            );
+          }
+          const binLabels = hist.bins.map((b) => formatStat(b.lo, panel.unit));
+          const counts = hist.bins.map((b) => b.count);
+          return (
+            <Chart.Bar
+              dataset={[{ label: 'Count', data: counts, backgroundColor: ds.blue[500], categoryPercentage: 1, barPercentage: 1, borderRadius: 2 }]}
+              labels={binLabels}
+              maxHeight={chartHeight}
+              options={{
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                  legend: { display: false },
+                  tooltip: {
+                    callbacks: {
+                      // The bar sits at its bucket's lower edge; name the whole range.
+                      title: (items: { dataIndex: number }[]) => {
+                        const b = hist.bins[items[0].dataIndex];
+                        return `${formatStat(b.lo, panel.unit)} – ${formatStat(b.hi, panel.unit)}`;
+                      },
+                      label: (item: { raw: number }) => `${item.raw} ${item.raw === 1 ? 'sample' : 'samples'}`,
+                    },
+                  },
+                },
+                scales: {
+                  // Buckets can be many; let the axis thin its own ticks rather than
+                  // stack thirty labels on top of each other.
+                  x: { ticks: { autoSkip: true, maxRotation: 0 } },
+                  y: { beginAtZero: true, ticks: { precision: 0 } },
+                },
+              }}
+            />
+          );
+        }
         case 'timeseries':
         default: {
           // Each account's own lines, then the series that adds them up — dashed
@@ -661,6 +955,8 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
           // parts it sums. Its colour is left to the chart, as every line's is:
           // naming one colour would switch off the automatic palette for the rest.
           const drawn = [...data.series, ...consolidatedSeries(data.series)];
+          // The threshold lines and hold bands; a no-op on a panel without steps.
+          // Spans index `data.series`, which `drawn` starts with, so they line up.
           // Chart.Line = @shared/charts/LineCharts (chart.js).
           return (
             <Chart.Line
@@ -671,12 +967,14 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
               minHeight={chartHeight}
               dynamicHeight={false}
               legendOptions={{ renderer: 'html', unit: panel.unit }}
+              customPlugins={[thresholdPlugin]}
+              onDataPointClick={hasDataLinks ? handlePointClick : undefined}
             />
           );
         }
       }
     },
-    [panel, data, stat, breaches, filtering]
+    [panel, data, stat, breaches, thresholdPlugin, filtering, hasDataLinks, handlePointClick]
   );
   const drawing = React.useMemo(() => renderDrawing(CHART_HEIGHT), [renderDrawing]);
   // Built only while the modal is open, so a closed one costs no second chart.
@@ -696,6 +994,7 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
           <PanelState
             tone={ERROR_TONE[error.kind]}
             title={error.message}
+            description={error.detail}
             icon={error.kind === 'filter' ? <FilterAltOutlinedIcon sx={{ fontSize: 18 }} /> : undefined}
             action={errorAction(error.kind)}
           />
@@ -784,21 +1083,77 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
         {breaches.frame && tone && (
           <Tooltip
             title={
-              breaches.all.length === 1 ? (
-                breachSentence(breaches.frame, panel.unit)
-              ) : (
-                <Box sx={{ display: 'grid', gap: ds.space[0] }}>
-                  {breaches.all.map((b, i) => (
-                    // Positional: the list is derived fresh from the data and never reordered in place.
-                    <span key={i}>{breachSentence(b, panel.unit)}</span>
-                  ))}
-                </Box>
-              )
+              <Box sx={{ display: 'grid', gap: ds.space[0] }}>
+                {breaches.all.map((b, i) => (
+                  // Positional: the list is derived fresh from the data and never reordered in place.
+                  <span key={i}>{breachSentence(b, panel.unit)}</span>
+                ))}
+                {/* A line the chart never drew is a line it never judged. */}
+                {lineVerdict && data?.capped && (
+                  <span>
+                    Judged on the {data.capped.shown} lines shown, of {data.capped.total}.
+                  </span>
+                )}
+              </Box>
             }
           >
             <Box component='span' data-testid={`panel-threshold-${panel.id}`} sx={{ display: 'inline-flex', cursor: 'help' }}>
               <Chip size='2xs' tone={tone.chip}>
                 {breachLabel(breaches.frame)}
+                {breaches.all.length > 1 ? ` +${breaches.all.length - 1}` : ''}
+              </Chip>
+            </Box>
+          </Tooltip>
+        )}
+        {/* Quiet on purpose: this is history, so it never takes the frame's colour. */}
+        {earlierCount > 0 && (
+          <Tooltip
+            title={
+              <Box sx={{ display: 'grid', gap: ds.space[0] }}>
+                {earlier.slice(0, PAST_BREACH_LINES).map((b) => (
+                  <span key={b.line}>{pastBreachSentence(b, panel.unit)}</span>
+                ))}
+                {earlier.length > PAST_BREACH_LINES && <span>+{earlier.length - PAST_BREACH_LINES} more lines.</span>}
+                <span>Over, in this time range. A spike between two chart samples is not seen; a shorter range samples more often.</span>
+                {data?.capped && (
+                  <span>
+                    Judged on the {data.capped.shown} lines shown, of {data.capped.total}.
+                  </span>
+                )}
+              </Box>
+            }
+          >
+            <Box component='span' data-testid={`panel-threshold-past-${panel.id}`} sx={{ display: 'inline-flex', cursor: 'help' }}>
+              <Chip size='2xs' tone='subtle'>
+                {earlierCount} earlier
+              </Chip>
+            </Box>
+          </Tooltip>
+        )}
+        {/* A hold the chart cannot judge at this range is said, not skipped: a
+            plain frame would read as "nothing crossed" when nothing was checked. */}
+        {lineVerdict && lineVerdict.tooCoarse.length > 0 && (
+          <Tooltip
+            title={`At this range the chart has fewer than two samples inside a ${holdLabel(
+              Math.min(...lineVerdict.tooCoarse.map((step) => forOf(step) || 0))
+            )} hold, so that threshold cannot be judged. Pick a shorter time range.`}
+          >
+            <Box component='span' data-testid={`panel-threshold-coarse-${panel.id}`} sx={{ display: 'inline-flex', cursor: 'help' }}>
+              <Chip size='2xs' tone='subtle'>
+                Zoom in to judge {holdLabel(Math.min(...lineVerdict.tooCoarse.map((step) => forOf(step) || 0)))} hold
+              </Chip>
+            </Box>
+          </Tooltip>
+        )}
+        {lineVerdict && lineVerdict.tooCoarse.length === 0 && lineVerdict.tooLong.length > 0 && (
+          <Tooltip
+            title={`This time range is too short to contain a whole ${holdLabel(
+              Math.max(...lineVerdict.tooLong.map((step) => forOf(step) || 0))
+            )} hold, so that threshold cannot be judged. Pick a longer time range.`}
+          >
+            <Box component='span' data-testid={`panel-threshold-short-${panel.id}`} sx={{ display: 'inline-flex', cursor: 'help' }}>
+              <Chip size='2xs' tone='subtle'>
+                Widen range to judge {holdLabel(Math.max(...lineVerdict.tooLong.map((step) => forOf(step) || 0)))} hold
               </Chip>
             </Box>
           </Tooltip>
@@ -809,6 +1164,19 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
           <Chip size='2xs' tone='subtle'>
             {panel.datasource}
           </Chip>
+        )}
+        {/* A panel reading a longer window than the toolbar names has to say so:
+            a week of spend under "Last 1 Hour" would be read as an hour's. */}
+        {widened && (
+          <Tooltip
+            title={`${widened.table} is recorded once a day, so a shorter range would show little or nothing. This panel shows the ${widened.days} days up to the end of the selected range.`}
+          >
+            <Box component='span' data-testid={`panel-window-${panel.id}`} sx={{ display: 'inline-flex', cursor: 'help' }}>
+              <Chip size='2xs' tone='subtle'>
+                Showing {widened.days} days
+              </Chip>
+            </Box>
+          </Tooltip>
         )}
         <Box sx={{ flex: 1 }} />
         {!editing && (
@@ -922,6 +1290,11 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
               <Chip size='2xs' tone='neutral'>
                 {shownLabel}
               </Chip>
+              {widened && (
+                <Chip size='2xs' tone='neutral'>
+                  {`Showing ${widened.days} days`}
+                </Chip>
+              )}
               {/* The modal draws the filtered answer, so it says what it was filtered by. */}
               {appliedViewerFilters(activeFilters).map((f) => (
                 <Chip key={f.column} size='2xs' tone='neutral'>
@@ -938,6 +1311,32 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
           {body(viewDrawing, VIEW_CHART_HEIGHT)}
         </Box>
       </Modal>
+      {/* Drill-down menu, opened at the clicked point (the anchor is moved there).
+          Links open in a new tab, like a table row's link — following in place
+          would lose the dashboard you were watching, its range and its filter. */}
+      <span ref={pointAnchorRef} aria-hidden style={{ position: 'fixed', width: 0, height: 0 }} />
+      <OverlaySurface
+        anchorEl={pointAnchorRef.current}
+        open={pointLinks.length > 0}
+        onClose={() => setPointLinks([])}
+        role='menu'
+        minWidth={180}
+        disablePortal={false}
+      >
+        {pointLinks.map((link, i) => (
+          <OverlayItem
+            key={`${link.href}-${i}`}
+            size='sm'
+            id={`panel-${panel.id}-datalink-${i}`}
+            onClick={() => {
+              window.open(link.href, '_blank', 'noopener');
+              setPointLinks([]);
+            }}
+          >
+            {link.title}
+          </OverlayItem>
+        ))}
+      </OverlaySurface>
     </Box>
   );
 });

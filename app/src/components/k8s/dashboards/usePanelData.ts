@@ -4,10 +4,11 @@ import apiDashboards, { isCommandDatasource, type AccountOption, type Panel, typ
 import { draftFromQuery, findTable, renderEntityQuery, type EntityColumnFormat, type EntityQueryDraft } from './entityQuery';
 import { runTracePanel } from './traceQuery';
 import { panelQueryAccounts, resolvePanelAccounts } from './panelAccounts';
-import { AWS_METRICS_PROVIDER, ES_PROVIDER, isAwsAccount } from './panelProviders';
+import { ES_PROVIDER, metricsProviderFields } from './panelProviders';
 import { accountPrefixed, alignSeries, toRawSeries, type RawSeries } from './panelSeries';
 import { acquirePanelSlot } from './panelQueue';
 import { accountCappedWarning, capSeriesByAccount, MAX_CHART_SERIES, MAX_TABLE_SERIES, PANEL_TIMEOUT_MS, panelStep } from './panelBounds';
+import { breachingLinePreference, linePreferenceKey } from './panelThresholds';
 import { convertNumberToTimestamp } from 'src/utils/common';
 import { renderTemplate, type VariableValues } from './templating';
 import { appliedViewerFilters, withViewerFilters, type ViewerFilter } from './panelViewerFilters';
@@ -18,6 +19,10 @@ export interface PanelSeries {
   values: (number | null)[];
   /** The account this series came from, on a panel that queried several. See RawSeries. */
   accountLabel?: string;
+  /** The account's id, resolved from its label — what a drill-down link's path needs. Absent on a consolidated series. */
+  accountId?: string;
+  /** The series' PromQL label map, kept for chart data-link token substitution. See RawSeries. */
+  metric?: Record<string, string>;
   /** True for the series that adds the accounts up — see consolidatedSeries. */
   consolidated?: boolean;
 }
@@ -47,11 +52,13 @@ export type PanelErrorKind = 'config' | 'blocked' | 'filter' | 'failed';
 export interface PanelError {
   kind: PanelErrorKind;
   message: string;
+  /** The provider's own reason, when it gave one — a PromQL syntax error, an unreachable endpoint. */
+  detail?: string;
 }
 
 /** The common case: something downstream broke. */
-function failure(message: string): PanelError {
-  return { kind: 'failed', message };
+function failure(message: string, detail?: string): PanelError {
+  return detail ? { kind: 'failed', message, detail } : { kind: 'failed', message };
 }
 
 export interface PanelData {
@@ -76,6 +83,12 @@ export interface PanelData {
    * and a cluster reporting nothing is often the one worth looking at.
    */
   emptyAccounts?: string[];
+  /**
+   * How many series the chart is drawing out of how many the query returned,
+   * when the cap in panelBounds trimmed it. A chart judging its thresholds says
+   * so in the hover, since a line it never drew is a line it never judged.
+   */
+  capped?: { shown: number; total: number };
 }
 
 interface Options {
@@ -119,6 +132,13 @@ export function usePanelData({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<PanelError | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
+  /**
+   * The last metrics answer, before the series cap — kept so that editing a
+   * chart's thresholds can re-rank the lines it keeps without refetching. See
+   * shapeMetrics.
+   */
+  const lastMetrics = useRef<MetricsAnswer | null>(null);
+  const preferKey = linePreferenceKey(panel);
 
   const scoped = resolvePanelAccounts(panel, accounts);
   // `nudgebee` panels reach the query engine, which takes every account in one
@@ -140,7 +160,7 @@ export function usePanelData({
     (panel.targets || []).map((t) => [
       t.ref_id,
       renderTemplate(t.expr || '', variables),
-      t.query ? renderEntityQuery(t.query, (v) => renderTemplate(v, variables)) : undefined,
+      t.query ? renderEntityQuery(t.query, (v, f) => renderTemplate(v, variables, f), variables) : undefined,
       t.legend_format,
       t.hide,
     ])
@@ -224,6 +244,8 @@ export function usePanelData({
     if (!enabled || !(admitted || immediate)) return;
     const targets = (panel.targets || []).filter((t) => !t.hide);
     setWarning(null);
+    // A new request: the kept answer belongs to the query being replaced.
+    lastMetrics.current = null;
     // Nothing to resolve a provider from. Say so rather than rendering an empty
     // chart that reads as "these accounts have no data".
     if (resolved.length === 0) {
@@ -291,7 +313,7 @@ export function usePanelData({
       // traces panel resolves to exactly one (auto-selected, or picked). The
       // traces client takes no signal, so the deadline is the only bound here.
       runTracePanel(
-        draftFromQuery(renderEntityQuery(stored, (v) => renderTemplate(v, variables))),
+        draftFromQuery(renderEntityQuery(stored, (v, f) => renderTemplate(v, variables, f), variables)),
         resolved[0].value,
         startTime,
         endTime,
@@ -328,7 +350,7 @@ export function usePanelData({
       const stored = targets[0]?.query;
       const query = stored
         ? withViewerFilters(
-            renderEntityQuery(stored, (v) => renderTemplate(v, variables)),
+            renderEntityQuery(stored, (v, f) => renderTemplate(v, variables, f), variables),
             viewerFilters || []
           )
         : undefined;
@@ -378,7 +400,7 @@ export function usePanelData({
     if (panel.datasource === 'logs') {
       setLoading(true);
       setError(null);
-      const query = renderTemplate(targets[0]?.expr || '', variables);
+      const query = renderTemplate(targets[0]?.expr || '', variables, 'logql');
       const prefixWithAccountLabel = resolved.length > 1;
 
       Promise.allSettled(
@@ -510,7 +532,7 @@ export function usePanelData({
     // A stat, gauge or table shows one value per series, so a single instant
     // sample is the whole answer. A table used to run the range query and keep
     // the last point — a 24h increase recomputed at every step, then thrown away.
-    const singleValue = panel.type === 'stat' || panel.type === 'gauge' || panel.type === 'table';
+    const singleValue = panel.type === 'stat' || panel.type === 'gauge' || panel.type === 'table' || panel.type === 'pie';
     // Sized to the panel, not left to the provider: the agent's default is 60s
     // whatever the range, which made Last 7 days 10k points per series.
     const step = panelStep(startTime, endTime);
@@ -521,8 +543,7 @@ export function usePanelData({
         // It supersedes the AWS default: an author who picked Prometheus for a
         // panel meant it, and silently redirecting one account to CloudWatch would
         // run PromQL against a backend that cannot read it.
-        const provider = panel.provider || (isAwsAccount(account) ? AWS_METRICS_PROVIDER : '');
-        const cloudwatch = provider === AWS_METRICS_PROVIDER;
+        const { cloudwatch, fields } = metricsProviderFields(panel, account);
         // CloudWatch has no instant form — it always answers with a range.
         const instant = !cloudwatch && singleValue;
         return observability.metricsQuery(
@@ -533,14 +554,7 @@ export function usePanelData({
             end_time: endTime,
             instant,
             ...(instant ? {} : { step_interval: step }),
-            // CloudWatch is never an account's DEFAULT metrics provider: it is not an integration that can
-            // carry that flag, so it must be named — and named with its source, since it resolves only as
-            // `user` and the server would otherwise fall back to `agent` and reject the pair. Every other
-            // provider leaves the source for the server to resolve per account.
-            ...(provider ? { metric_provider: provider, ...(cloudwatch ? { metric_provider_source: 'user' } : {}) } : {}),
-            // The ES metrics path reads its index out of `metric_name` — the slot the
-            // request contract gives it, per resolveESMetricsIndex. Not a mistake here.
-            ...(provider === ES_PROVIDER && panel.provider_index ? { request: { metric_name: panel.provider_index } } : {}),
+            ...fields,
           },
           controller.signal
         );
@@ -551,6 +565,8 @@ export function usePanelData({
         const raw: RawSeries[] = [];
         const failed: string[] = [];
         const empty: string[] = [];
+        const failedKeys: FailedKey[] = [];
+        const reasons: string[] = [];
 
         settled.forEach((outcome, i) => {
           const account = resolved[i];
@@ -559,10 +575,23 @@ export function usePanelData({
           const gqlErrors = outcome.status === 'fulfilled' ? (outcome.value as any)?.data?.errors : null;
           if (outcome.status === 'rejected' || gqlErrors?.length) {
             failed.push(account.label);
+            // A deadline or an unmount never gets here — `cancelled` returned above — so a rejection is the
+            // request itself failing, and its message is the reason.
+            const reason = outcome.status === 'rejected' ? String(outcome.reason?.message || '') : gatewayMessage(gqlErrors);
+            if (reason) reasons.push(reason);
             return;
           }
-          const results = (outcome.value as any)?.data?.data?.metrics_list?.results || [];
+          const results: any[] = (outcome.value as any)?.data?.data?.metrics_list?.results || [];
+          // A query that failed comes back as an empty key carrying `error`, not as a failed request.
+          // Read as an empty answer, a broken query or an unreachable provider "matched nothing".
+          const keyErrors = results.filter((r) => r?.error);
           const answered = toRawSeries(results, legendByKey);
+          if (keyErrors.length > 0 && answered.length === 0) {
+            failed.push(account.label);
+            reasons.push(String(keyErrors[0].error));
+            return;
+          }
+          for (const r of keyErrors) failedKeys.push({ key: String(r.query_key), account: account.label });
           if (answered.length === 0) empty.push(account.label);
           for (const s of answered) {
             raw.push(prefixWithAccount ? { ...s, label: accountPrefixed(account.label, s.label), accountLabel: account.label } : s);
@@ -570,34 +599,15 @@ export function usePanelData({
         });
 
         if (failed.length === resolved.length) {
-          setError(failure(`Could not load data for ${failed.join(', ')}.`));
+          setError(failure(`Could not load data for ${failed.join(', ')}.`, reasons[0]));
           setData(null);
           return;
         }
-        // Bounded before anything is aligned or drawn: Chart.js makes a dataset
-        // of every series and the legend a chip of each, and a per-pod query
-        // over a day of ephemeral pods answered with 4,798 of them. The viewer
-        // is told what was left out rather than shown a chart missing lines.
-        // Per account, not overall: one loud cluster would otherwise take every
-        // slot and the quiet ones would vanish with nothing saying they were asked.
-        const { kept, perAccount } = capSeriesByAccount(raw, panel.type === 'table' ? MAX_TABLE_SERIES : MAX_CHART_SERIES);
-        const notes: string[] = [];
-        // "No answer", not "no data": these accounts were asked and did not reply,
-        // which is a different fact from replying with nothing — and the one that
-        // matters when the panel adds the replies up.
-        // A stat or gauge carries this on the card — "2 of 3 accounts", with the
-        // account named on hover — so the banner would say it twice.
-        if (failed.length > 0 && panel.type !== 'stat' && panel.type !== 'gauge') {
-          notes.push(`No answer from ${failed.join(', ')} — showing the rest.`);
-        }
-        const capped = accountCappedWarning(perAccount);
-        if (capped) notes.push(capped);
-        if (notes.length > 0) setWarning(notes.join(' '));
-        // Aligned across ALL accounts at once, so a series that only one account
-        // reports still sits at the right point on the shared axis.
-        // The step the accounts were asked for is also what reconciles their
-        // answers — see snapToStep, which no-ops on a single-account panel.
-        setData({ ...alignSeries(kept, step), failedAccounts: failed, emptyAccounts: empty });
+        const answer: MetricsAnswer = { raw, failed, empty, failedKeys, step, accounts: resolved };
+        lastMetrics.current = answer;
+        const shaped = shapeMetrics(answer, panel);
+        if (shaped.warning) setWarning(shaped.warning);
+        setData(shaped.data);
       })
       .finally(settle);
 
@@ -623,7 +633,102 @@ export function usePanelData({
     immediate,
   ]);
 
+  // Thresholds are judged on the fetched data, not part of the fetch — but on a
+  // capped chart they decide which lines are kept. A changed step re-ranks the
+  // answer already in hand rather than asking the provider again.
+  useEffect(() => {
+    const answer = lastMetrics.current;
+    if (!answer || !preferKey) return;
+    const shaped = shapeMetrics(answer, panel);
+    if (!shaped.data.capped) return;
+    setWarning(shaped.warning);
+    setData(shaped.data);
+    // Only the preference matters here; the fetch effect owns everything else.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preferKey]);
+
   return { data, loading, error, warning };
+}
+
+/** One query of a panel that failed on an account where its other queries answered. */
+interface FailedKey {
+  key: string;
+  account: string;
+}
+
+/** A metrics answer as fetched: every series, before the cap. */
+interface MetricsAnswer {
+  raw: RawSeries[];
+  failed: string[];
+  empty: string[];
+  failedKeys: FailedKey[];
+  step: number;
+  /** The accounts asked, so a series' account label can be turned back into an id. */
+  accounts: { value: string; label: string }[];
+}
+
+/**
+ * Caps, aligns and annotates a metrics answer for drawing.
+ *
+ * Bounded before anything is aligned or drawn: Chart.js makes a dataset of every
+ * series and the legend a chip of each, and a per-pod query over a day of
+ * ephemeral pods answered with 4,798 of them. The viewer is told what was left
+ * out rather than shown a chart missing lines. Per account, not overall: one
+ * loud cluster would otherwise take every slot and the quiet ones would vanish
+ * with nothing saying they were asked. A chart with thresholds keeps the lines
+ * that have crossed one ahead of the busiest — see breachingLinePreference.
+ */
+function shapeMetrics(answer: MetricsAnswer, panel: Panel): { data: PanelData; warning: string | null } {
+  const { raw, failed, empty, failedKeys, step, accounts } = answer;
+  const idByLabel = new Map(accounts.map((a) => [a.label, a.value]));
+  const prefer = breachingLinePreference(panel, (s) =>
+    s.accountLabel ? idByLabel.get(s.accountLabel) : accounts.length === 1 ? accounts[0].value : undefined
+  );
+  // A histogram bins every value into buckets rather than drawing one mark per
+  // series, so the per-series chart cap — there because Chart.js cannot draw
+  // thousands of lines — does not apply: it reads all the series it was given,
+  // and capping would quietly bin a fraction of the data and warn about the rest.
+  const seriesLimit = panel.type === 'table' ? MAX_TABLE_SERIES : panel.type === 'histogram' ? Infinity : MAX_CHART_SERIES;
+  const { kept, perAccount } = capSeriesByAccount(raw, seriesLimit, prefer);
+  const shownCount = perAccount.reduce((n, a) => n + a.kept, 0);
+  const totalCount = perAccount.reduce((n, a) => n + a.total, 0);
+  const notes: string[] = [];
+  // "No answer", not "no data": these accounts were asked and did not reply,
+  // which is a different fact from replying with nothing — and the one that
+  // matters when the panel adds the replies up.
+  // A stat or gauge carries this on the card — "2 of 3 accounts", with the
+  // account named on hover — so the banner would say it twice.
+  if (failed.length > 0 && panel.type !== 'stat' && panel.type !== 'gauge') {
+    notes.push(`No answer from ${failed.join(', ')} — showing the rest.`);
+  }
+  // Said on every panel type: a stat would otherwise add up query A alone and show it as the whole answer.
+  if (failedKeys.length > 0) {
+    const keys = [...new Set(failedKeys.map((f) => f.key))];
+    const where = accounts.length > 1 ? ` on ${[...new Set(failedKeys.map((f) => f.account))].join(', ')}` : '';
+    notes.push(`Query ${keys.join(', ')} failed${where} — showing the rest.`);
+  }
+  const capped = accountCappedWarning(perAccount);
+  if (capped) notes.push(capped);
+  // Same rule the `prefer` function above uses: a multi-account series carries
+  // its account label, a single-account panel's series carry none and all belong
+  // to the one account asked. A chart data-link's path needs the id, not the
+  // display label — see renderDataLinks.
+  const accountIdFor = (label?: string) => (label ? idByLabel.get(label) : accounts.length === 1 ? accounts[0].value : undefined);
+  const aligned = alignSeries(kept, step);
+  return {
+    // Aligned across ALL accounts at once, so a series that only one account
+    // reports still sits at the right point on the shared axis.
+    // The step the accounts were asked for is also what reconciles their
+    // answers — see snapToStep, which no-ops on a single-account panel.
+    data: {
+      ...aligned,
+      series: aligned.series.map((s) => ({ ...s, accountId: accountIdFor(s.accountLabel) })),
+      failedAccounts: failed,
+      emptyAccounts: empty,
+      ...(totalCount > shownCount ? { capped: { shown: shownCount, total: totalCount } } : {}),
+    },
+    warning: notes.length > 0 ? notes.join(' ') : null,
+  };
 }
 
 /** Relabels an entity result with the builder's column labels, and marks which columns are timestamps. */

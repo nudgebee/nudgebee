@@ -106,6 +106,17 @@ describe('tablesFor', () => {
     expect(events.timeColumn).toBe('starts_at');
   });
 
+  it('opens a table of standing state with the time range off, a column still at hand', () => {
+    // Open recommendations are not events: inside the dashboard's default hour
+    // there are a handful, and a savings panel summed those to nothing.
+    for (const table of ['recommendations_v2', 'recommendation_groupings_v2']) {
+      const draft = defaultDraft(table);
+      expect(draft.applyTimeRange).toBe(false);
+      // Still chosen, so switching the range on needs no second pick.
+      expect(draft.timeColumn).not.toBe('');
+    }
+  });
+
   it('starts a traces panel on the grouping table', () => {
     // "What is slow" is the question a traces panel is usually built to answer,
     // and latency percentiles exist only on the aggregate.
@@ -288,6 +299,29 @@ describe('buildEntityQuery', () => {
 });
 
 describe('draftFromQuery', () => {
+  it('restores the time range from the stored time column, not from the table default', () => {
+    // The column is stored beside the query. Nodes default to the range ON;
+    // a panel saved with it off has to come back off.
+    const query = buildEntityQuery(defaultDraft('k8s_nodes_v2'));
+
+    const off = draftFromQuery(query, '');
+    expect(off.applyTimeRange).toBe(false);
+    // Still chosen, so switching the range on needs no second pick.
+    expect(off.timeColumn).toBe('node_creation_time');
+
+    expect(draftFromQuery(query, 'updated_at')).toMatchObject({ applyTimeRange: true, timeColumn: 'updated_at' });
+
+    // A caller reading only the query's shape gets the table default.
+    expect(draftFromQuery(query)).toMatchObject({ applyTimeRange: true, timeColumn: 'node_creation_time' });
+  });
+
+  it('gives a panel with no stored query the table default, whatever it is told about the column', () => {
+    // A new panel has nothing stored to restore: "no time column" there is not a choice of off.
+    expect(draftFromQuery(undefined, '')).toEqual(defaultDraft());
+    expect(draftFromQuery({}, '')).toEqual(defaultDraft());
+    expect(draftFromQuery(undefined, '').applyTimeRange).toBe(true);
+  });
+
   it('reads a stored query back into the builder', () => {
     const original = { ...defaultDraft(), filters: [{ column: 'priority', operator: '_in', value: 'P0, P1' }], limit: 25, sortDesc: false };
     const restored = draftFromQuery(buildEntityQuery(original));
@@ -495,5 +529,50 @@ describe('brand placeholders', () => {
     for (const table of tablesFor('nudgebee')) {
       expect(`${table.description} ${table.detail}`).not.toMatch(BRAND_TOKEN);
     }
+  });
+});
+
+describe('renderEntityQuery with a dropdown', () => {
+  const query = (operator: string, value: unknown) => ({ table: 'events_v2', where: { _and: [{ _binary: { status: { [operator]: value } } }] } });
+  const run = (operator: string, value: unknown, picked: { values: string[]; all: boolean; allValue?: string }) => {
+    const variables = { n: picked };
+    return renderEntityQuery(query(operator, value), (v, f) => renderTemplate(v, variables, f), variables);
+  };
+  const filter = (rendered: any) => rendered.where?._and?.[0]?._binary?.status;
+
+  it('drops the filter on All, whatever the operator, and an emptied where with it', () => {
+    for (const operator of ['_eq', '_in', '_regex', '_neq']) {
+      expect(run(operator, '$n', { values: ['a', 'b'], all: true }).where).toBeUndefined();
+    }
+  });
+
+  it('keeps the other filters when one is dropped', () => {
+    const stored = { table: 'events_v2', where: { _and: [{ _binary: { status: { _eq: '$n' } } }, { _binary: { title: { _eq: 'x' } } }] } };
+    const variables = { n: { values: [], all: true } };
+    const rendered: any = renderEntityQuery(stored, (v, f) => renderTemplate(v, variables, f), variables);
+    expect(rendered.where._and).toEqual([{ _binary: { title: { _eq: 'x' } } }]);
+  });
+
+  it('turns several picks on `is` into `is one of`, and `is not` into `is none of`', () => {
+    expect(filter(run('_eq', '$n', { values: ['a', 'b'], all: false }))).toEqual({ _in: ['a', 'b'] });
+    expect(filter(run('_neq', '$n', { values: ['a', 'b'], all: false }))).toEqual({ _not_in: ['a', 'b'] });
+    expect(filter(run('_eq', '$n', { values: ['a'], all: false }))).toEqual({ _eq: 'a' });
+  });
+
+  it('sends a real list to `is one of`, stored as a list or a token', () => {
+    expect(filter(run('_in', ['$n'], { values: ['a', 'b'], all: false }))).toEqual({ _in: ['a', 'b'] });
+    expect(filter(run('_in', '$n', { values: ['a', 'b'], all: false }))).toEqual({ _in: ['a', 'b'] });
+  });
+
+  it('escapes a regex filter once, as the engine reads the pattern directly', () => {
+    expect(filter(run('_regex', '$n', { values: ['prod.east', 'b'], all: false }))).toEqual({ _regex: 'prod\\.east|b' });
+  });
+
+  it('sends a custom All value as written', () => {
+    expect(filter(run('_regex', '$n', { values: [], all: true, allValue: 'a.+' }))).toEqual({ _regex: 'a.+' });
+  });
+
+  it('fills a token inside a longer value without regex text', () => {
+    expect(filter(run('_ilike', '%$n%', { values: ['a.b'], all: false }))).toEqual({ _ilike: '%a.b%' });
   });
 });

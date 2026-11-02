@@ -667,7 +667,7 @@ func TestMetricsDiscoveryProviderFor(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, metricsDiscoveryProviderFor(tc.provider), tc.why)
+			assert.Equal(t, tc.want, MetricsDiscoveryProviderFor(tc.provider), tc.why)
 		})
 	}
 }
