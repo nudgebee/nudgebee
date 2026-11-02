@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 
 	"github.com/stretchr/testify/assert"
@@ -21,6 +22,12 @@ func (f fixedOutputTool) Call(core.NbToolContext, core.NBToolCallRequest) (core.
 
 type unclassifiedTool struct{ core.NBTool }
 
+type classifiedTool struct{ core.NBTool }
+
+func (classifiedTool) InferToolRequestType(*security.RequestContext, string, string) (core.ToolRequestType, error) {
+	return core.ToolRequestTypeRead, nil
+}
+
 func TestCappedOutputToolCapsResult(t *testing.T) {
 	long := CappedOutputTool{NBTool: fixedOutputTool{output: strings.Repeat("x", 100)}, MaxChars: 10, Hint: "narrow it"}
 	out, err := long.Call(core.NbToolContext{}, core.NBToolCallRequest{})
@@ -36,7 +43,7 @@ func TestCappedOutputToolCapsResult(t *testing.T) {
 // The wrapper must not hide a read-only tool's classification: unclassified
 // calls are logged as such by the approval check (#39880 C7).
 func TestCappedOutputToolForwardsClassification(t *testing.T) {
-	read, err := CappedOutputTool{NBTool: MetricsListTool{}}.InferToolRequestType(nil, "metrics_list", "{}")
+	read, err := CappedOutputTool{NBTool: classifiedTool{}}.InferToolRequestType(nil, "metrics_list", "{}")
 	require.NoError(t, err)
 	assert.Equal(t, core.ToolRequestTypeRead, read)
 
