@@ -2428,7 +2428,7 @@ class Events:
             if (
                 cached_entry
                 and cached_entry.get("account_id")
-                and str(cached_entry.get("tenant_id")) == await self._teams_workspace_of(teams_account_id)
+                and await self._in_teams_workspace(cached_entry.get("tenant_id"), teams_account_id)
             ):
                 LOG.debug(f"Continuing existing Teams conversation for {conversation_id}")
                 user_id = await self._thread_sender_async(cached_entry, user_email)
@@ -2473,7 +2473,7 @@ class Events:
         # A Teams chat only ever sees the workspace its Microsoft tenant is connected
         # to, never the asker's other workspaces.
         workspace = await self._teams_workspace_of(teams_account_id)
-        tenants = [t for t in tenants or [] if str(t) == workspace]
+        tenants = [t for t in tenants or [] if str(t) == workspace] if workspace else []
 
         if not user_id or not tenants:
             LOG.warning("No Nudgebee account found for Teams user email: %s", user_email)
@@ -2539,6 +2539,13 @@ class Events:
                 return ms_teams_aad_tenant_owner(session, aad_tenant_id, enabled_only=True)
 
         return await asyncio.to_thread(owner)
+
+    async def _in_teams_workspace(self, tenant_id, aad_tenant_id) -> bool:
+        """Whether tenant_id is the NudgeBee tenant this Microsoft tenant is connected to."""
+        if not tenant_id:
+            return False
+        workspace = await self._teams_workspace_of(aad_tenant_id)
+        return workspace is not None and str(tenant_id) == workspace
 
     def _teams_alert_of_thread(self, conversation_id, aad_tenant_id):
         """The alert card a Teams thread hangs off, as {tenant_id, account_id,
@@ -2630,7 +2637,7 @@ class Events:
                 return
 
             account = self._get_offered_account(cached_entry, cluster_id)
-            if not account or str(account.get("tenant")) != await self._teams_workspace_of(teams_account_id):
+            if not account or not await self._in_teams_workspace(account.get("tenant"), teams_account_id):
                 await self.common_service.teams_reply(activity, CLUSTER_NOT_FOUND, teams_account_id)
                 return
 
@@ -2681,9 +2688,7 @@ class Events:
         try:
             cached_entry = await self.cache.aio.get_event_entry(thread_ts)
 
-            if not cached_entry or str(cached_entry.get("tenant_id")) != await self._teams_workspace_of(
-                teams_account_id
-            ):
+            if not cached_entry or not await self._in_teams_workspace(cached_entry.get("tenant_id"), teams_account_id):
                 LOG.warning(f"No cached entry found for thread {thread_ts}")
                 await self.common_service.teams_reply(activity, get_session_expired_message(), teams_account_id)
                 return

@@ -327,8 +327,9 @@ def test_the_workspace_is_the_enabled_owner_of_the_microsoft_tenant():
     assert owner.call_args.args[1:] == ("aad",) and owner.call_args.kwargs == {"enabled_only": True}
 
 
-def test_a_thread_on_another_workspace_starts_over():
-    events = _message_events(_entry(account_id=ACCOUNT, tenant_id=OTHER_NB_TENANT))
+@pytest.mark.parametrize("tenant_id", [OTHER_NB_TENANT, None])
+def test_a_thread_on_another_workspace_starts_over(tenant_id):
+    events = _message_events(_entry(account_id=ACCOUNT, tenant_id=tenant_id))
     events._process_teams_message.assert_not_called()
     events._request_account_confirmation_and_cache_event.assert_called_once()
 
