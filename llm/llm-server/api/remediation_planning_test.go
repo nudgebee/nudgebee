@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -427,7 +428,7 @@ func newPlanningFixture(t *testing.T) *planningFixture {
 		s, ok := f.messages[row.MessageId]
 		return s, f.answer, ok
 	})
-	swap(t, &proposePlanningPlan, func(_ *security.RequestContext, row events.PlanningRequest, _, _ string) (RemediationPlan, string, error) {
+	swap(t, &proposePlanningPlan, func(_ *security.RequestContext, row events.PlanningRequest, _ planTurn, _, _ string) (RemediationPlan, string, error) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.stored = append(f.stored, row)
@@ -841,7 +842,7 @@ func TestProposedPlanKeepsCauseKeyAndHardening(t *testing.T) {
 		"execute_command":"kubectl set resources deployment api -n shop --limits=memory=1Gi"}],
 		"cause_key":{"what":"Deployment/api","how":"OOMKilled","against":"Memory_Limit"},
 		"optional_hardening":[{"target":"deployment api","change":"add a memory alert at 80% of the limit","reason":"warn before the next kill"}]}`
-	plan, version, err := proposePlan(f.ctx(), f.account, f.event, withBoth)
+	plan, version, err := proposePlan(f.ctx(), f.account, f.event, planTurn{}, withBoth)
 	require.NoError(t, err)
 	require.NotEmpty(t, version)
 	require.NotNil(t, plan.CauseKey)
@@ -852,7 +853,7 @@ func TestProposedPlanKeepsCauseKeyAndHardening(t *testing.T) {
 	assert.Equal(t, []any{map[string]any{"target": "deployment api", "change": "add a memory alert at 80% of the limit", "reason": "warn before the next kill"}},
 		got["optional_hardening"])
 
-	plan, _, err = proposePlan(f.ctx(), f.account, f.event, testPlanJSON)
+	plan, _, err = proposePlan(f.ctx(), f.account, f.event, planTurn{}, testPlanJSON)
 	require.NoError(t, err)
 	assert.Equal(t, events.CauseKey{}, *plan.CauseKey)
 	assert.Empty(t, plan.OptionalHardening)
@@ -1244,7 +1245,7 @@ func TestAgentWrittenPlanIsAddedToTheChatWithTheLoopOff(t *testing.T) {
 		VALUES ($1, 'fp-1', '{}', 'INV: the api pod is OOMKilled at 512Mi', 'COMPLETED', $2, 'agg', 'investigation')`, f.event, f.account)
 	require.NoError(t, err)
 	stubLoopOn(t, false)
-	_, version, err := proposePlan(f.ctx(), f.account, f.event, testPlanJSON)
+	_, version, err := proposePlan(f.ctx(), f.account, f.event, planTurn{}, testPlanJSON)
 	require.NoError(t, err)
 	require.NotEmpty(t, version)
 	assert.Equal(t, 1, appended, "loop off: the plan is in the alert's chat")
@@ -1277,4 +1278,133 @@ func TestPlanningKnowledgeHintsReadTheEvent(t *testing.T) {
 	assert.Equal(t, []string{"QueueBacklogHigh"}, planningKnowledgeHints(events.PlanningRequest{EventId: event, AccountId: account}))
 	assert.Empty(t, planningKnowledgeHints(events.PlanningRequest{EventId: event, AccountId: uuid.NewString()}), "another account's event is not read")
 	assert.Empty(t, planningKnowledgeHints(events.PlanningRequest{EventId: uuid.NewString(), AccountId: account}), "a missing event gives no hints")
+}
+
+func TestSourceLineFindsTheQuotedLine(t *testing.T) {
+	const runbook = "# Queue backlog\n\n## Step 3: Check the **consumers** first\nkubectl get pods -l app=worker\n4. Restart pod\nDo not restart &amp; do not scale\n* **Bump the limit** - short-term\n"
+	cases := []struct{ name, step, want string }{
+		{"the line as written", "## Step 3: Check the **consumers** first", "Step 3: Check the consumers first"},
+		{"with a read's line number", "3: Step 3: Check the consumers first", "Step 3: Check the consumers first"},
+		{"different case and spacing", "step 3:  check the CONSUMERS first", "Step 3: Check the consumers first"},
+		{"part of a line", "check the consumers first", "Step 3: Check the consumers first"},
+		{"a short whole line", "4. Restart pod", "4. Restart pod"},
+		{"a bullet in bold", "Bump the limit", "Bump the limit - short-term"},
+		{"an escaped line", "Do not restart & do not scale", "Do not restart & do not scale"},
+		{"the first line of several", "kubectl get pods -l app=worker\nthen wait", "kubectl get pods -l app=worker"},
+		{"too short to be a part of a line", "restart", ""},
+		{"not in the document", "Scale the worker to three replicas", ""},
+		{"a number alone", "14: ", ""},
+		{"empty", "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, sourceLine(runbook, c.step))
+		})
+	}
+}
+
+func TestResolvePlanSources(t *testing.T) {
+	turn := planTurn{ConversationId: "conversation", MessageId: "message"}
+	swap(t, &loadedDocuments, func(_ context.Context, accountId string, got planTurn) (map[string]loadedDocument, error) {
+		assert.Equal(t, "account", accountId)
+		assert.Equal(t, turn, got)
+		return map[string]loadedDocument{
+			"knowledge:a": {Title: "Queue runbook", Content: "Step 3: Check the consumers\n", Url: "https://wiki.example.com/queue"},
+			"knowledge:b": {Title: "Disk runbook", Content: "Step 1: Expand the volume\n"},
+		}, nil
+	})
+	plan := RemediationPlan{Actions: []RemediationAction{
+		{Action: "checked", Source: &PlanSource{Handle: "knowledge:a", Step: "12: Step 3: Check the consumers", Document: "from the model", Url: "https://evil.example.com"}},
+		{Action: "a second load's handle", Source: &PlanSource{Handle: "knowledge:c", Step: "Step 1: Expand the volume"}},
+		{Action: "the wrong document named", Source: &PlanSource{Handle: "knowledge:a", Step: "Step 1: Expand the volume"}},
+		{Action: "in no document", Source: &PlanSource{Handle: "knowledge:a", Step: "Step 9: Purge the queue now"}},
+		{Action: "no source"},
+	}}
+	notes := resolvePlanSources(security.NewRequestContextForTenantAdmin("tenant"), "account", turn, &plan)
+
+	assert.Equal(t, &PlanSource{Document: "Queue runbook", Step: "Step 3: Check the consumers", Url: "https://wiki.example.com/queue"}, plan.Actions[0].Source)
+	disk := &PlanSource{Document: "Disk runbook", Step: "Step 1: Expand the volume"}
+	assert.Equal(t, disk, plan.Actions[1].Source)
+	assert.Equal(t, disk, plan.Actions[2].Source)
+	assert.Nil(t, plan.Actions[3].Source)
+	assert.Nil(t, plan.Actions[4].Source)
+	require.Len(t, notes, 1)
+	assert.Equal(t, "source_not_in_a_loaded_document", notes[0].Rule)
+}
+
+func TestResolvePlanSourcesClearsAPlanWithNoTurn(t *testing.T) {
+	swap(t, &loadedDocuments, func(context.Context, string, planTurn) (map[string]loadedDocument, error) { return nil, nil })
+	plan := RemediationPlan{Actions: []RemediationAction{{Action: "a", Source: &PlanSource{Document: "X", Step: "Y", Url: "https://evil.example.com"}}}}
+	notes := resolvePlanSources(security.NewRequestContextForTenantAdmin("tenant"), "account", planTurn{}, &plan)
+	assert.Nil(t, plan.Actions[0].Source)
+	assert.Len(t, notes, 1)
+}
+
+func TestWebLinkOpensOnlyPages(t *testing.T) {
+	assert.Equal(t, "https://wiki.example.com/a?b=1", webLink(" https://wiki.example.com/a?b=1 "))
+	for _, link := range []string{"javascript:alert(1)", "file:///etc/passwd", "kb-id:abc", "/relative", ""} {
+		assert.Empty(t, webLink(link), link)
+	}
+}
+
+func TestSourceMarkdown(t *testing.T) {
+	assert.Empty(t, sourceMarkdown(nil))
+	assert.Equal(t, "From runbook Queue runbook: Step 3", sourceMarkdown(&PlanSource{Document: "Queue runbook", Step: "Step 3"}))
+	assert.Equal(t, "From runbook [Queue (old)](https://wiki.example.com/q): Step 3",
+		sourceMarkdown(&PlanSource{Document: "Queue [old]", Step: "Step 3", Url: "https://wiki.example.com/q"}))
+	assert.Equal(t, "From runbook [Queue](https://wiki.example.com/q_%28a%29): Step 3",
+		sourceMarkdown(&PlanSource{Document: "Queue\nsecond line", Step: "Step 3", Url: "https://wiki.example.com/q_(a)"}))
+
+	cited := RemediationAction{Action: "Check consumers", Kind: RemediationKindFix, ExecuteCommand: "kubectl get pods",
+		Source: &PlanSource{Document: "Queue runbook", Step: "Step 3", Url: "https://wiki.example.com/q"}}
+	const line = "From runbook [Queue runbook](https://wiki.example.com/q): Step 3"
+	assert.Contains(t, optionText(cited, 0, -1), line, "the alert's thread")
+	assert.Contains(t, planMarkdown(RemediationPlan{Actions: []RemediationAction{cited}}), line, "the conversation")
+}
+
+// A stored plan keeps a step's source when the turn loaded the document, read from the turn's own reference rows, and
+// not when another turn did.
+func TestStoredPlanCitesTheDocumentItsTurnLoaded(t *testing.T) {
+	f := newPlanningFixture(t)
+	swap(t, &targetReader, func(*security.RequestContext, string, []targetSpec) []targetRead { return nil })
+	_, err := f.db.Exec(`INSERT INTO event_log_analysis (event_id, event_fingerprint, analysis, summary, status, cloud_account_id, event_aggregation_key, analysis_type)
+		VALUES ($1, 'fp-1', '{}', 'INV: the api pod is OOMKilled at 512Mi', 'COMPLETED', $2, 'agg', 'investigation')`, f.event, f.account)
+	require.NoError(t, err)
+	_, err = f.db.Exec(`CREATE TABLE llm_conversation_references (account_id text, conversation_id text, message_id text,
+		reference_id text, reference_type varchar, metadata jsonb)`)
+	require.NoError(t, err)
+	reference := func(messageId, referenceId, metadata string) {
+		t.Helper()
+		_, err := f.db.Exec(`INSERT INTO llm_conversation_references VALUES ($1, 'conversation', $2, $3, 'knowledge_base', $4)`,
+			f.account, messageId, referenceId, metadata)
+		require.NoError(t, err)
+	}
+	reference("loaded", "https://wiki.example.com/oom", `{"handle":"knowledge:a","name":"OOM runbook","content":"1. **Raise the limit** first\n"}`)
+	reference("linked", "kb:hash", `{"handle":"knowledge:b","name":"OOM runbook","content":"1. **Raise the limit** first\n","url":"https://wiki.example.com/oom2"}`)
+	reference("unsafe", "javascript:alert(1)", `{"handle":"knowledge:c","name":"OOM runbook","content":"1. **Raise the limit** first\n"}`)
+	reference("skill", "skill-id", `{"name":"OOM runbook","content":"1. **Raise the limit** first\n"}`)
+
+	written := `{"root_cause":"512Mi limit","summary":"Raise the memory limit","actions":[{"action":"Raise limit","kind":"fix",
+		"execute_command":"kubectl set resources deployment api -n shop --limits=memory=1Gi",
+		"source":{"handle":"knowledge:a","step":"7: 1. **Raise the limit** first","url":"https://evil.example.com"}}]}`
+	storedSource := func(message string) any {
+		t.Helper()
+		_, _, err := proposePlan(f.ctx(), f.account, f.event, planTurn{ConversationId: "conversation", MessageId: message}, written)
+		require.NoError(t, err)
+		var analysis string
+		require.NoError(t, f.db.Get(&analysis, `SELECT analysis FROM event_log_analysis WHERE event_id = $1 AND analysis_type = 'remediation'`, f.event))
+		var plan struct {
+			Actions []map[string]any `json:"actions"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(analysis), &plan))
+		require.Len(t, plan.Actions, 1)
+		return plan.Actions[0]["source"]
+	}
+
+	assert.Equal(t, map[string]any{"document": "OOM runbook", "step": "1. Raise the limit first", "url": "https://wiki.example.com/oom"}, storedSource("loaded"))
+	assert.Equal(t, map[string]any{"document": "OOM runbook", "step": "1. Raise the limit first", "url": "https://wiki.example.com/oom2"}, storedSource("linked"),
+		"a link kept on the reference, with a reference id that is no link")
+	assert.Equal(t, map[string]any{"document": "OOM runbook", "step": "1. Raise the limit first"}, storedSource("unsafe"), "no link a browser should not open")
+	assert.Nil(t, storedSource("skill"), "a row with no handle was not a loaded document")
+	assert.Nil(t, storedSource("another-turn"))
 }

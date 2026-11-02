@@ -391,3 +391,15 @@ func TestSkillReferenceMetadata_DocumentKeepsPage(t *testing.T) {
 		toolcore.NBToolResponseReference{Text: "runbook", Url: "https://kb/1", Snippet: huge})
 	assert.LessOrEqual(t, len(got["content"].(string)), knowledge.MaxKnowledgeReferenceBytes)
 }
+
+func TestSkillReferenceMetadataKeepsTheDocumentsHandleAndLink(t *testing.T) {
+	got := skillReferenceMetadata(AgentReferenceKindKBDocument, "load_skills", toolcore.NBToolResponseReference{
+		Text: "Queue runbook", Snippet: "Step 1", Handle: "knowledge:a", SourceUrl: "https://wiki.example.com/queue"})
+	assert.Equal(t, "knowledge:a", got["handle"])
+	assert.Equal(t, "https://wiki.example.com/queue", got["url"])
+	assert.Equal(t, "Step 1", got["content"])
+
+	got = skillReferenceMetadata(AgentReferenceKindSkill, "load_skills", toolcore.NBToolResponseReference{Text: "skill"})
+	assert.NotContains(t, got, "handle")
+	assert.NotContains(t, got, "url")
+}

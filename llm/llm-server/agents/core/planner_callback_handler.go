@@ -307,6 +307,12 @@ func skillReferenceMetadata(kind, tool string, ref toolcore.NBToolResponseRefere
 		}
 		metadata["content"] = TruncateHead(snippet, limit)
 	}
+	if ref.Handle != "" {
+		metadata["handle"] = ref.Handle
+	}
+	if ref.SourceUrl != "" {
+		metadata["url"] = ref.SourceUrl
+	}
 	return metadata
 }
 

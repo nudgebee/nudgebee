@@ -244,6 +244,11 @@ type NBToolResponseReference struct {
 	// of a category, so it cannot tell a reader WHICH page or figure was used —
 	// the Additional Contexts panel renders this instead when it is set.
 	Snippet string `json:"snippet,omitempty"`
+	// Handle is the handle the model was given for this document, and SourceUrl the page it came from.
+	// A remediation step cites the document by Handle (api/remediation_source.go), which reads both
+	// back from the saved reference along with Snippet.
+	Handle    string `json:"handle,omitempty"`
+	SourceUrl string `json:"source_url,omitempty"`
 }
 
 type NBToolResponse struct {

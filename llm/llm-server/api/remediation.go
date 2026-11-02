@@ -200,6 +200,8 @@ type RemediationAction struct {
 	// Automation, when set, is a run of one of the account's own automations in place of a command
 	// (remediation_automation.go); a step has one or the other.
 	Automation *PlanAutomation `json:"automation,omitempty"`
+	// Source, when set, is the runbook line this step follows, checked against the document (remediation_source.go).
+	Source *PlanSource `json:"source,omitempty"`
 }
 
 // HardeningItem is an improvement the incident does not require; kept apart from actions so it never reads as the fix.
@@ -655,6 +657,8 @@ func processRemediationGenerate(c *gin.Context, tracer trace.Tracer, meter metri
 		return
 	}
 
+	// The planner model has no turn, so nothing backs a source it wrote.
+	trace.Validation = append(trace.Validation, resolvePlanSources(ctx, request.AccountId, planTurn{}, &plan)...)
 	respondWithStoredPlan(c, ctx.GetLogger(), plan, func() (string, error) {
 		return storeRemediationPlan(ctx, conversationId, request, plan, trace)
 	})
@@ -744,6 +748,9 @@ func planMarkdown(plan RemediationPlan) string {
 		}
 		if a.TradeOff != "" {
 			fmt.Fprintf(&b, "\n\n> **Trade-off:** %s", a.TradeOff)
+		}
+		if line := sourceMarkdown(a.Source); line != "" {
+			fmt.Fprintf(&b, "\n\n%s", line)
 		}
 	}
 	return b.String()

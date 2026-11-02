@@ -612,6 +612,9 @@ func optionText(a RemediationAction, index, after int) string {
 	if t := oneLine(a.TradeOff, 160); t != "" {
 		line += " · Heads-up: " + t
 	}
+	if source := sourceMarkdown(a.Source); source != "" {
+		line += "\n" + source
+	}
 	return text + "\n" + line
 }
 

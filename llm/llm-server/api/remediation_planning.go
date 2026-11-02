@@ -970,7 +970,7 @@ func proposeFromPlanningTurn(ctx toolcore.NbToolContext, findings, planJSON stri
 	if !claimed {
 		return "", errors.New("propose_fix: this planning turn is already writing its plan; it writes one")
 	}
-	plan, version, err := proposePlanningPlan(ctx.Ctx, row, findings, planJSON)
+	plan, version, err := proposePlanningPlan(ctx.Ctx, row, turnOf(ctx), findings, planJSON)
 	if err != nil {
 		_ = events.ReleasePlanningProposal(context.Background(), db, row.Id)
 		return "", fmt.Errorf("propose_fix: the plan was not stored (%v). Correct it and call propose_fix again", err)
@@ -984,7 +984,7 @@ func proposeFromPlanningTurn(ctx toolcore.NbToolContext, findings, planJSON stri
 // proposePlanningPlan stores planJSON as the request's plan and returns it with its version. A plan with no
 // actions is stored (Nubi found nothing to run); one the alert closed before gets "Closed on its own at ...".
 // A var so tests can stub it.
-var proposePlanningPlan = func(ctx *security.RequestContext, row events.PlanningRequest, findings, planJSON string) (RemediationPlan, string, error) {
+var proposePlanningPlan = func(ctx *security.RequestContext, row events.PlanningRequest, turn planTurn, findings, planJSON string) (RemediationPlan, string, error) {
 	var written struct {
 		Actions []json.RawMessage `json:"actions"`
 	}
@@ -994,6 +994,7 @@ var proposePlanningPlan = func(ctx *security.RequestContext, row events.Planning
 		allowEmpty: true,
 		revision:   &PlanRevision{Kind: row.Kind, Reasons: row.Reasons, Note: row.Note, Findings: truncate(strings.TrimSpace(findings), 2000)},
 		adjust:     func(plan *RemediationPlan) { markClosedOnItsOwn(plan, closedAt) },
+		turn:       turn,
 	})
 }
 

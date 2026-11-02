@@ -36,7 +36,7 @@ import { ANNOTATIONS } from '@lib/annotationKeys';
 import { toAssistantLabel } from '@hooks/useTenantBranding';
 import { formatClockCompact } from '@shared/format/Datetime';
 import { truncateText } from '@utils/common';
-import { OptionalHardening } from './RemediationPanel';
+import { OptionalHardening, StepSource } from './RemediationPanel';
 import { readData } from '../resolutionStatus';
 import { alertSessionOf } from '../investigationSession';
 import {
@@ -387,6 +387,7 @@ function OptionRow({
           ) : null}
         </Box>
       ) : null}
+      <StepSource source={action?.source} testId={`remediation-loop-option-source-${index}`} />
       {/* What runs, on one line that scrolls rather than breaking mid-word. */}
       {run ? (
         <Box data-testid={`remediation-loop-option-command-${index}`}>

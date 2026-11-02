@@ -131,7 +131,7 @@ func (m LoadSkillsTool) callWorkspaceKnowledge(ctx core.NbToolContext, input cor
 	if err != nil {
 		return knowledgeFailure(err)
 	}
-	refs := []core.NBToolResponseReference{{Text: c.Title, Url: c.ReferenceID, Type: "knowledge_base", Description: knowledge.KnowledgePurposeGuidance(c.Purpose), Snippet: strings.ToValidUTF8(page.String(), "")}}
+	refs := []core.NBToolResponseReference{{Text: c.Title, Url: c.ReferenceID, Type: "knowledge_base", Description: knowledge.KnowledgePurposeGuidance(c.Purpose), Snippet: strings.ToValidUTF8(page.String(), ""), Handle: c.ID, SourceUrl: c.URL}}
 	result := fmt.Sprintf("%s\nTitle: %s\nHandle: %s\nSize: %d bytes. Use load_skills with this handle and keyword or start_line for selective reads.\n%s", knowledge.KnowledgePurposeGuidance(c.Purpose), c.Title, c.ID, c.Bytes, text)
 	if c.Path != "" {
 		refs = append(refs, core.NBToolResponseReference{Text: c.Title, Url: c.Path, Type: "file", Query: c.ID, Description: knowledge.KnowledgePurposeGuidance(c.Purpose) + " Read through load_skills using " + c.ID})

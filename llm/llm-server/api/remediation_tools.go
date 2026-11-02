@@ -74,10 +74,12 @@ Pass your findings (what you checked, what it showed, why the current plan does 
  "actions": [{"action": "short name", "title": "...", "hypothesis": "the hypothesis it addresses", "kind": "fix" or "mitigation", "confidence": 0-100,
    "execute_command": "one command", "verify_command": "a read that shows it worked", "rollback_command": "how to undo it",
    "after": "the action name of the step this one runs after, if any", "trade_off": "...",
+   "source": {"handle": "the Handle of the document, from load_skills", "step": "the document's line this step follows, copied exactly"},
    "required_change": {"where": "code" | "deployment_source" | "infrastructure" | "dependency" | "process", "target": "the file, values key or resource", "change": "the exact change", "repo": "the repository, when known", "reason": "why it fixes the cause"}}],
  "cause_key": {"what": "...", "how": "...", "against": "..."},
  "optional_hardening": [{"target": "...", "change": "...", "reason": "..."}]}
 cause_key names the cause in a few words, without numbers: what failed (kind and name), how it failed (oom, crashloop, timeout), and against what (the limit, dependency or change it hit). Write it the same way for the same cause on every firing; leave a part empty when it is not established.
+Set source on a step taken from a runbook you loaded in this turn, and only then; a person sees it on the step.
 A change the incident needs that no command applies durably (in code, a deployment source such as chart values or a Deployment spec, infrastructure, a dependency or a process) is a step with an empty execute_command and a required_change; never put it in optional_hardening. While the alert fires, also offer a mitigation command that buys time when one exists, kind "mitigation", stating in trade_off what it does not fix.
 optional_hardening lists improvements the incident does not need to resolve (prevention), never a fix step; it may be empty.
 Each command is one invocation on this alert's own account (kubectl, helm or argocd on a cluster; aws, az or gcloud on a cloud account), with real values: no placeholders, no shell syntax, no flags that choose another cluster or identity. Each execute_command makes its change itself: it never fetches a file or manifest from a URL, and a patch to a value that holds a whole document (a ConfigMap key holding JSON or YAML) passes the whole document with only your change. The summary describes exactly these commands. NudgeBee validates the plan as it validates its own; a refusal says what to correct. A person must confirm each command before it runs. The event and account are this conversation's own.`
@@ -435,7 +437,7 @@ func proposeFromChat(ctx toolcore.NbToolContext, findings, planJSON string) (str
 	} else if reason != "" {
 		return "", errors.New("propose_fix: " + reason)
 	}
-	plan, _, err := proposePlan(ctx.Ctx, ctx.AccountId, eventId, planJSON)
+	plan, _, err := proposePlan(ctx.Ctx, ctx.AccountId, eventId, turnOf(ctx), planJSON)
 	if err != nil {
 		return "", fmt.Errorf("propose_fix: the plan was not stored (%v). Correct it and call propose_fix again", err)
 	}
@@ -657,7 +659,7 @@ func proposeFix(ctx toolcore.NbToolContext, findings, planJSON string) (string, 
 	if n != 1 {
 		return "", errors.New("propose_fix: this follow-up already proposed a plan; it proposes once")
 	}
-	plan, version, err := proposePlan(ctx.Ctx, run.AccountId, run.EventId, planJSON)
+	plan, version, err := proposePlan(ctx.Ctx, run.AccountId, run.EventId, turnOf(ctx), planJSON)
 	if err != nil {
 		// Nothing was proposed: free the slot so the agent may correct the plan or report.
 		_ = events.ReleaseFollowupProposal(context.Background(), db, run.Id)
@@ -671,19 +673,17 @@ func proposeFix(ctx toolcore.NbToolContext, findings, planJSON string) (string, 
 
 // proposePlan stores planJSON, written by an agent, as the event's new plan and returns it with its version.
 // A var so tests can stub it.
-var proposePlan = func(ctx *security.RequestContext, accountId, eventId, planJSON string) (RemediationPlan, string, error) {
+var proposePlan = func(ctx *security.RequestContext, accountId, eventId string, turn planTurn, planJSON string) (RemediationPlan, string, error) {
 	var written struct {
 		Actions []json.RawMessage `json:"actions"`
 	}
 	_ = json.Unmarshal([]byte(planJSON), &written)
-	return storeNewPlan(ctx, accountId, eventId, writtenPlan(planJSON), len(written.Actions))
+	return storeNewPlanWith(ctx, accountId, eventId, writtenPlan(planJSON), len(written.Actions), planStoreOptions{turn: turn})
 }
 
-// storeNewPlan rebuilds the event's plan from lastPlanInputs via write (nil: the planner model) and stores it. An
-// agent-written plan that validation stripped an action from is refused with what was removed, so the agent fixes
-// it rather than a person getting a short plan; the planner's "nothing to run" is stored.
-func storeNewPlan(ctx *security.RequestContext, accountId, eventId string, write func(system, human string) (string, error), written int) (RemediationPlan, string, error) {
-	return storeNewPlanWith(ctx, accountId, eventId, write, written, planStoreOptions{})
+// turnOf is the turn of a tool call.
+func turnOf(ctx toolcore.NbToolContext) planTurn {
+	return planTurn{ConversationId: ctx.ConversationId, MessageId: ctx.MessageId}
 }
 
 // planStoreOptions are what a planning turn adds to storeNewPlan.
@@ -694,10 +694,15 @@ type planStoreOptions struct {
 	revision *PlanRevision
 	// adjust changes the plan last, before it is stored.
 	adjust func(*RemediationPlan)
+	// turn is the turn that wrote the plan, whose documents its steps may cite.
+	turn planTurn
 }
 
-// storeNewPlanWith is storeNewPlan with options. With the loop on, an agent's plan also goes through the repair
-// pass (targetStateRefusal), and every plan gets its cause key and revision (stampLoopPlan).
+// storeNewPlanWith rebuilds the event's plan from lastPlanInputs via write (nil: the planner model) and stores it. An
+// agent-written plan that validation stripped an action from is refused with what was removed, so the agent fixes
+// it rather than a person getting a short plan; the planner's "nothing to run" is stored. With the loop on, an agent's
+// plan also goes through the repair pass (targetStateRefusal), and every plan gets its cause key and revision
+// (stampLoopPlan).
 func storeNewPlanWith(ctx *security.RequestContext, accountId, eventId string, write func(system, human string) (string, error), written int, opts planStoreOptions) (RemediationPlan, string, error) {
 	request := lastPlanInputs(ctx, accountId, eventId)
 	conversationId := remediationConversationID(ctx, accountId, eventId)
@@ -725,6 +730,7 @@ func storeNewPlanWith(ctx *security.RequestContext, accountId, eventId string, w
 			}
 		}
 	}
+	trace.Validation = append(trace.Validation, resolvePlanSources(ctx, accountId, opts.turn, &plan)...)
 	if loop {
 		var prev *RemediationPlan
 		prevVersion := ""

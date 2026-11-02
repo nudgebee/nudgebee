@@ -6,6 +6,7 @@ import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded';
 import { Button } from '@ui/Button';
 import { Card } from '@ui/Card';
 import { Label } from '@ui/Label';
+import { Link } from '@ui/Link';
 import { Modal } from '@ui/Modal';
 import { Input } from '@ui/Input';
 import { CodeBlock } from '@ui/CodeBlock';
@@ -572,6 +573,37 @@ function isUnknownOutcomeRefusal(message) {
 }
 
 // Improvements the incident does not need. Kept apart from the actions so they never read as its fix.
+// StepSource names the runbook line a step follows. The server checked the line against the document, and the
+// text is the document's own, so it reads as a citation rather than as NudgeBee's words.
+export function StepSource({ source, testId }) {
+  const document = trimmedString(source?.document);
+  const step = trimmedString(source?.step);
+  if (!document || !step) return null;
+  const url = trimmedString(source?.url);
+  return (
+    <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', overflowWrap: 'anywhere' }} data-testid={testId}>
+      {'From runbook '}
+      {url ? (
+        <Link href={url} openInNew secondaryText>
+          {document}
+        </Link>
+      ) : (
+        document
+      )}
+      {`: ${step}`}
+    </Box>
+  );
+}
+
+StepSource.propTypes = {
+  source: PropTypes.shape({
+    document: PropTypes.string,
+    step: PropTypes.string,
+    url: PropTypes.string,
+  }),
+  testId: PropTypes.string,
+};
+
 export function OptionalHardening({ items, title = 'Optional hardening — not required to resolve this incident' }) {
   return (
     <Card variant='tinted' tone='neutral' size='sm' elevation='flat'>
@@ -861,6 +893,7 @@ export function ActionCard({
     >
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)' }}>
         {action?.title ? <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)' }}>{action.title}</Box> : null}
+        <StepSource source={action?.source} testId={`remediation-source-${index + 1}`} />
         {tradeOff ? (
           <Card variant='tinted' tone='warning' size='sm' elevation='flat' data-testid={`remediation-trade-off-${index + 1}`}>
             <Box sx={{ fontSize: 'var(--ds-text-small)' }}>

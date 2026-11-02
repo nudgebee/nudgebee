@@ -1747,6 +1747,34 @@ func TestAlertOfSession(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// alertSessionDao answers sessionOf for a conversation of the alert.
+type alertSessionDao struct {
+	core.IConversationDao
+	session string
+}
+
+func (d alertSessionDao) GetConversation(string) (core.Conversation, error) {
+	return core.Conversation{SessionID: d.session}, nil
+}
+
+// A plan proposed from the alert's chat may cite what that chat turn loaded.
+func TestChatProposalPassesItsTurn(t *testing.T) {
+	f, ctx := chatFixture(t)
+	withMetastore(t, f.db)
+	ctx.ConversationId, ctx.MessageId = uuid.NewString(), uuid.NewString()
+	previous := core.GetConversationDao()
+	t.Cleanup(func() { core.SetConversationDao(previous) })
+	core.SetConversationDao(alertSessionDao{session: "event-fp-1"})
+	var got planTurn
+	swap(t, &proposePlan, func(_ *security.RequestContext, _, _ string, turn planTurn, _ string) (RemediationPlan, string, error) {
+		got = turn
+		return RemediationPlan{Summary: "Raise the memory limit"}, "version-2", nil
+	})
+	_, err := proposeFromChat(ctx, "the limit is 512Mi", testPlanJSON)
+	require.NoError(t, err)
+	assert.Equal(t, planTurn{ConversationId: ctx.ConversationId, MessageId: ctx.MessageId}, got)
+}
+
 // A proposal from the alert's chat waits for a run and its check to finish, and is capped per 24 hours.
 func TestChatProposalRefusal(t *testing.T) {
 	f, ctx := chatFixture(t)
@@ -1859,6 +1887,7 @@ type followupFixture struct {
 	during     []func(ctx toolcore.NbToolContext)
 	messages   map[string]followupMessage // each turn's message, by id
 	proposals  []followupRun
+	proposedBy planTurn
 	proposeErr error
 	waits      []watch.CreateInput // the watches requestRecheck made, in order
 	waitIds    []uuid.UUID
@@ -1948,9 +1977,10 @@ func newFollowupFixture(t *testing.T) *followupFixture {
 		m, ok := f.messages[run.MessageId]
 		return m.status, m.response, ok
 	})
-	swap(t, &proposePlan, func(_ *security.RequestContext, accountId, eventId, planJSON string) (RemediationPlan, string, error) {
+	swap(t, &proposePlan, func(_ *security.RequestContext, accountId, eventId string, turn planTurn, planJSON string) (RemediationPlan, string, error) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		f.proposedBy = turn
 		f.proposals = append(f.proposals, followupRun{AccountId: accountId, EventId: eventId, Command: planJSON})
 		if f.proposeErr != nil {
 			return RemediationPlan{}, "", f.proposeErr
@@ -2308,6 +2338,7 @@ func TestProposeFix(t *testing.T) {
 	assert.Contains(t, out, "A person must confirm")
 	require.Len(t, f.proposals, 2)
 	assert.Equal(t, followupRun{AccountId: f.account, EventId: f.event, Command: testPlanJSON}, f.proposals[1], "the run's event and account, the model's plan")
+	assert.Equal(t, turn, f.proposedBy.MessageId, "the plan's steps may cite what this turn loaded")
 	fu := f.followup(run)
 	assert.Equal(t, "version-2", fu["proposed_plan_version"])
 	assert.Contains(t, fu["findings"], "OOMKilled again")

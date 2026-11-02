@@ -6,6 +6,7 @@ import {
   latestOutcome,
   OptionalHardening,
   RequiredChangeDetails,
+  StepSource,
   afterOf,
   noActionsText,
   runnableActionCount,
@@ -17,6 +18,26 @@ jest.mock('@api1/kubernetes', () => ({ __esModule: true, default: { executeRemed
 
 // confirmButton is the dialog's own button of that name, not the card's.
 const confirmButton = async (name) => within(await screen.findByRole('dialog')).getByRole('button', { name });
+
+// A step that follows a runbook names the runbook and its line, linking to the runbook when it has a page.
+describe('StepSource', () => {
+  it('links the runbook and shows its line', () => {
+    render(<StepSource source={{ document: 'Queue runbook', step: 'Step 3: Check the consumers', url: 'https://wiki.example.com/q' }} />);
+    expect(screen.getByRole('link', { name: /Queue runbook/ })).toHaveAttribute('href', 'https://wiki.example.com/q');
+    expect(screen.getByText(/Step 3: Check the consumers/)).toBeInTheDocument();
+  });
+
+  it('names a runbook with no page without a link', () => {
+    render(<StepSource source={{ document: 'Queue runbook', step: 'Step 3: Check the consumers' }} />);
+    expect(screen.getByText(/From runbook Queue runbook/)).toBeInTheDocument();
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
+  });
+
+  it('shows nothing for a step with no source', () => {
+    const { container } = render(<StepSource source={null} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+});
 
 // A fix no command applies (a chart value, a node pool) is shown as the change to make, not as the
 // event's code diff.
