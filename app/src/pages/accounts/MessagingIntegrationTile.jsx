@@ -9,6 +9,7 @@ import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { Select } from '@ui/Select';
 import { Input } from '@ui/Input';
 import { Checkbox } from '@ui/Checkbox';
+import { Chip } from '@ui/Chip';
 import Datetime from '@shared/format/Datetime';
 import { Modal } from '@ui/Modal';
 import { toast as snackbar } from '@ui/Toast';
@@ -65,6 +66,11 @@ const MessagingIntegrationTile = ({
   const [teamOptions, setTeamOptions] = useState([]);
   const [teamName, setTeamName] = useState('');
   const [isSendingTest, setIsSendingTest] = useState(false);
+  // Teams: one row per team connected to this workspace, and the team the
+  // Disconnect dialog is open for.
+  const [teamRows, setTeamRows] = useState([]);
+  const [teamRowsFailed, setTeamRowsFailed] = useState(false);
+  const [teamToDisconnect, setTeamToDisconnect] = useState(null);
 
   const [openInstallModal, setOpenInstallModal] = useState(false);
   const [botToken, setBotToken] = useState('');
@@ -105,6 +111,41 @@ const MessagingIntegrationTile = ({
       .finally(() => setLoadedFor(provider));
   };
 
+  // Teams: the teams connected to this workspace.
+  const listTeamRows = () => {
+    apiIntegrations
+      .listIntegrations({ type: 'ms_teams_team', status: 'enabled', limit: 100 })
+      .then((res) => {
+        const rows = res?.data?.data?.integrations_list?.rows;
+        if (!Array.isArray(rows)) {
+          setTeamRowsFailed(true);
+          return;
+        }
+        setTeamRowsFailed(false);
+        setTeamRows(
+          rows.map((row) => {
+            const raw = row.integration_config_values;
+            const parsed = Array.isArray(raw) ? raw : safeJSONParse(raw);
+            const values = Array.isArray(parsed) ? parsed : [];
+            const cfg = Object.fromEntries(values.map((c) => [c.name, c.value]));
+            return {
+              id: row.name,
+              name: cfg.team_name || row.name,
+              connectedBy: row.updated_by_display_name || row.created_by_display_name || '',
+              connectedAt: cfg.bound_at || row.updated_at || row.created_at,
+            };
+          })
+        );
+      })
+      .catch(() => setTeamRowsFailed(true));
+  };
+
+  const refreshTeams = () => {
+    listMessagingPlatform();
+    fetchChannelList();
+    listTeamRows();
+  };
+
   // Fetch available channels
   const fetchChannelList = () => {
     setIsLoadingChannels(true);
@@ -138,6 +179,9 @@ const MessagingIntegrationTile = ({
   useEffect(() => {
     listMessagingPlatform();
     fetchChannelList();
+    if (provider === 'ms_teams') {
+      listTeamRows();
+    }
 
     return () => {
       if (intervalIdRef.current) {
@@ -252,38 +296,31 @@ const MessagingIntegrationTile = ({
     setOpenModal(true);
   };
 
-  const getMenuItems = (acc) => {
+  const getMenuItems = () => {
+    if (provider === 'ms_teams') {
+      return isTenantAdmin() ? [{ label: 'Disconnect this team', id: 'disconnect_team' }] : [];
+    }
     if (!hasWriteAccess()) return [];
-    const items = [{ label: provider === 'ms_teams' ? 'Disconnect' : 'Delete', id: 'delete' }];
+    const items = [{ label: 'Delete', id: 'delete' }];
     if (provider === 'discord') {
       items.push({ label: 'Update Token', id: 'update_token' });
     }
-    if (provider === 'ms_teams') {
-      const channelsArray = Array.isArray(acc?.channels?.channels) ? acc.channels.channels : [];
-      const channelList = channelsArray.map((c) => c.label || c.name) || [];
-      if (channelList.length > 0) {
-        items.push({ label: 'Edit', id: 'edit' });
-      }
-    } else {
-      const channels = safeJSONParse(installationData[0]?.channels);
-      if (channels?.name?.length > 0) {
-        items.push({ label: 'Edit', id: 'edit' });
-      }
+    const channels = safeJSONParse(installationData[0]?.channels);
+    if (channels?.name?.length > 0) {
+      items.push({ label: 'Edit', id: 'edit' });
     }
     return items;
   };
 
   const onMenuClick = (menuItem, acc) => {
-    if (menuItem.id === 'delete') {
+    if (menuItem.id === 'disconnect_team') {
+      setTeamToDisconnect(acc);
+    } else if (menuItem.id === 'delete') {
       setDeleteConfig(true);
     } else if (menuItem.id === 'update_token') {
       setOpenInstallModal(true);
     } else if (menuItem.id === 'edit') {
-      if (provider === 'ms_teams') {
-        openUpdateModal(acc);
-      } else {
-        openUpdateModal(acc, installationData[0]);
-      }
+      openUpdateModal(acc, installationData[0]);
     }
   };
 
@@ -291,27 +328,26 @@ const MessagingIntegrationTile = ({
     let table = [];
 
     if (provider === 'ms_teams') {
-      for (let acc of installationData || []) {
-        const channelsArray = Array.isArray(acc?.channels?.channels) ? acc.channels.channels : [];
-        const channelList = channelsArray.map((c) => c.label || c.name) || [];
-        const teamName = acc?.channels?.team_name || '';
-
+      // Only once the workspace is connected: a team row can outlive its marker briefly.
+      const defaultTeamId = installationData?.[0]?.channels?.team_id;
+      for (let team of installationData?.length ? teamRows : []) {
         table.push([
-          { component: <Text value={acc.username} /> },
-          { component: <Datetime value={acc.created_at} /> },
-          { component: teamName ? <Text value={teamName} /> : <></> },
           {
-            component:
-              channelList.length === 0 && isTenantAdmin() ? (
-                <DsButton id={`map-channel-${table.length + 1}`} size='sm' onClick={() => openUpdateModal(acc)}>
-                  Map Channel
-                </DsButton>
-              ) : (
-                <Text value={channelList.join(', ')} />
-              ),
+            component: (
+              <Stack direction='row' spacing={1} alignItems='center'>
+                <Text value={team.name} />
+                {team.id === defaultTeamId && (
+                  <Chip variant='tag' size='sm' tone='neutral'>
+                    default channel
+                  </Chip>
+                )}
+              </Stack>
+            ),
           },
+          { component: <Text value={team.connectedBy || '—'} /> },
+          { component: <Datetime value={team.connectedAt} /> },
           {
-            component: <ThreeDotsMenu sx={{ ...action.primary }} menuItems={getMenuItems(acc)} data={acc} onMenuClick={onMenuClick} />,
+            component: <ThreeDotsMenu sx={{ ...action.primary }} menuItems={getMenuItems(team)} data={team} onMenuClick={onMenuClick} />,
           },
         ]);
       }
@@ -354,7 +390,7 @@ const MessagingIntegrationTile = ({
     }
 
     setTableData(table);
-  }, [installationData]);
+  }, [installationData, teamRows]);
 
   const closeModal = () => {
     setOpenModal(false);
@@ -439,8 +475,7 @@ const MessagingIntegrationTile = ({
         .then((res) => {
           if (res?.success) {
             snackbar.success(`${displayName} disconnected`);
-            listMessagingPlatform();
-            fetchChannelList();
+            refreshTeams();
           } else {
             snackbar.error(res?.error || `Failed to disconnect ${displayName}`);
           }
@@ -498,9 +533,35 @@ const MessagingIntegrationTile = ({
       });
   };
 
-  const isConnected = tableData?.length > 0;
+  const handleDisconnectTeam = () => {
+    const team = teamToDisconnect;
+    if (!team) return;
+    setIsLoading(true);
+    apiAccount
+      .deleteMsTeamsTeam(team.id)
+      .then((res) => {
+        if (res?.success) {
+          snackbar.success(`Team ${team.name} disconnected`);
+        } else {
+          snackbar.error(res?.error || `Failed to disconnect team ${team.name}`);
+        }
+      })
+      .catch(() => snackbar.error(`Failed to disconnect team ${team.name}`))
+      .finally(() => {
+        setIsLoading(false);
+        setTeamToDisconnect(null);
+        refreshTeams();
+      });
+  };
 
-  const showConnectPrompt = hasLoaded && !isLoading && tableData?.length === 0;
+  // Teams is connected while the workspace has its connection, even before the team list lands.
+  const isConnected = provider === 'ms_teams' ? installationData?.length > 0 : tableData?.length > 0;
+  const teamsDefault = installationData?.[0]?.channels;
+  const teamsDefaultLabel = teamsDefault?.channels?.[0]?.id
+    ? `${teamsDefault.team_name || ''} › ${teamsDefault.channels[0].label || teamsDefault.channels[0].name || ''}`
+    : '';
+
+  const showConnectPrompt = hasLoaded && !isLoading && !isConnected;
 
   // Sections under the installation table, one tab each. Webhook targets need no
   // app install, so they stay available before Connect; the other two only render
@@ -604,6 +665,29 @@ const MessagingIntegrationTile = ({
             {provider === 'ms_teams'
               ? `Every team connected to this workspace is disconnected and its channel-account mappings are removed. Notification rules that send to those teams stop delivering. To connect a team again, @mention the ${getBrandTitle()} app in it and open the link it posts.`
               : 'Deleting this installation will remove all channel routings specified in the notification rules.'}
+          </Typography>
+        </Box>
+      </Modal>
+
+      <Modal
+        open={!!teamToDisconnect}
+        handleClose={() => setTeamToDisconnect(null)}
+        title={`Disconnect team ${teamToDisconnect?.name || ''}?`}
+        width='sm'
+        actionButtons={
+          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: ds.space[3], p: `${ds.space[3]} ${ds.space[5]}` }}>
+            <DsButton tone='secondary' size='sm' onClick={() => setTeamToDisconnect(null)} disabled={isLoading}>
+              Cancel
+            </DsButton>
+            <DsButton id='disconnect-ms-teams-team-btn' tone='danger' size='sm' onClick={handleDisconnectTeam} loading={isLoading}>
+              Disconnect
+            </DsButton>
+          </Box>
+        }
+      >
+        <Box sx={{ padding: ds.space[5] }}>
+          <Typography sx={{ fontFamily: 'var(--ds-font-display)', fontSize: ds.text.body, color: ds.brand[500], lineHeight: 1.5 }}>
+            {`This team stops getting notifications from this workspace, and its channel-account mappings are removed. The ${getBrandTitle()} app stays in the team: anyone who can connect it can connect it again from a new link, to this or another workspace. To remove the app, remove it from the team in Microsoft Teams.`}
           </Typography>
         </Box>
       </Modal>
@@ -761,11 +845,30 @@ const MessagingIntegrationTile = ({
             {provider === 'ms_teams' && hasLoaded && isConnected && (
               <Box
                 id='ms-teams-connected-teams'
-                sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1], p: `${ds.space[3]} ${ds.space[4]}` }}
+                sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2], p: `${ds.space[3]} ${ds.space[4]}` }}
               >
-                <Typography sx={{ fontSize: ds.text.body, color: ds.gray[700] }}>
-                  Connected teams: {teamOptions.map((team) => team.label || team.value).join(', ') || '—'}
-                </Typography>
+                {teamRowsFailed && (
+                  <Typography sx={{ fontSize: ds.text.body, color: ds.red[600] }}>
+                    Couldn't load the connected teams. Reload the page to try again.
+                  </Typography>
+                )}
+                <Stack direction='row' spacing={2} alignItems='center'>
+                  <Typography id='ms-teams-default-channel' sx={{ fontSize: ds.text.body, color: ds.gray[700] }}>
+                    Default channel: <b>{teamsDefaultLabel || 'not set'}</b>
+                  </Typography>
+                  {isTenantAdmin() && (
+                    <DsButton id='ms-teams-default-channel-btn' size='sm' tone='secondary' onClick={() => openUpdateModal(installationData[0])}>
+                      {teamsDefaultLabel ? 'Change' : 'Choose'}
+                    </DsButton>
+                  )}
+                  {isTenantAdmin() && (
+                    <Box sx={{ ml: 'auto !important' }}>
+                      <DsButton id='ms-teams-disconnect-all-btn' size='sm' tone='secondary' onClick={() => setDeleteConfig(true)}>
+                        Disconnect all
+                      </DsButton>
+                    </Box>
+                  )}
+                </Stack>
                 <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600] }}>{teamsConnectHint()}</Typography>
               </Box>
             )}

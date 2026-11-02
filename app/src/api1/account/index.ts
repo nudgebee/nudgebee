@@ -227,6 +227,15 @@ mutation DeleteMessagingPlatform($object: messaging_platform_delete_input!) {
 // messaging_platforms row of it is never a connection.
 const withoutLegacyTeams = (rows: any[]) => (Array.isArray(rows) ? rows.filter((r) => r?.platform !== 'ms_teams') : []);
 
+export const DELETE_MS_TEAMS_TEAM = `
+mutation DeleteMsTeamsTeam($team_id: String!) {
+  notifications_delete_ms_teams_team(team_id: $team_id) {
+    success
+    error
+  }
+}
+`;
+
 export const DELETE_MS_TEAMS_CONNECTION = `
 mutation DeleteMsTeamsConnection {
   notifications_delete_ms_teams_connection {
@@ -667,6 +676,10 @@ const apiAccount = {
       console.log('Failed to delete message-', err);
       return err;
     }
+  },
+  deleteMsTeamsTeam: async function (teamId: string) {
+    const response = await queryGraphQL(DELETE_MS_TEAMS_TEAM, 'DeleteMsTeamsTeam', { team_id: teamId });
+    return response?.data?.data?.notifications_delete_ms_teams_team;
   },
   deleteMsTeamsConnection: async function () {
     const response = await queryGraphQL(DELETE_MS_TEAMS_CONNECTION, 'DeleteMsTeamsConnection', {});

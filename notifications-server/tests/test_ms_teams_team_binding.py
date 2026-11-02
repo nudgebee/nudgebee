@@ -18,6 +18,7 @@ from notifications_server.models.models import (
     IntegrationConfigValue,
     MessagingPlatform,
 )
+from notifications_server.security import secrets
 from notifications_server.services import cache as cache_module
 from notifications_server.services import messaging_installations as mi
 from notifications_server.services.ms_teams import team_binding as tb
@@ -402,6 +403,85 @@ def test_disconnect_releases_every_team_and_removes_the_connection(engine, locks
         assert tb.team_owner(session, T1) is None, "a message in T1 now gets the not-connected reply"
 
 
+def _default(workspace, group, channel="19:ops@thread.tacv2", encrypted=False):
+    marker = _marker(workspace)
+    values = {"default_team_id": group, "default_team_name": "Ops", "default_channel_id": channel}
+    return [marker] + [
+        IntegrationConfigValue(
+            id=uuid.uuid4(),
+            integration_id=marker.id,
+            name=k,
+            value=secrets.encrypt(v) if encrypted else v,
+            is_encrypted=encrypted,
+        )
+        for k, v in values.items()
+    ]
+
+
+def _marker_config(engine, workspace):
+    with Session(engine) as session:
+        marker = session.query(Integration).filter(
+            Integration.type == tb.MARKER_TYPE, Integration.tenant_id == workspace
+        )
+        return mi._decrypt_config(
+            session.query(IntegrationConfigValue).filter(IntegrationConfigValue.integration_id == marker.one().id).all()
+        )
+
+
+def _disconnect_team(engine, workspace, group):
+    with Session(engine) as session:
+        return tb.disconnect_team(session, workspace, group)
+
+
+def test_disconnecting_one_team_releases_it_and_drops_its_mappings(engine, locks):
+    _add(engine, *_team_row(T1, W1), *_team_row(T2, W1), *_default(W1, T2), _mapping(W1, T1), _mapping(W1, T2))
+    assert _disconnect_team(engine, W1, T1) == tb.RELEASED_TEAM
+    assert tb.RELEASED_AT in _config(engine, T1)
+    rows, mappings = _state(engine)
+    assert rows == {
+        (tb.TEAM_TYPE, T1, W1): "released",
+        (tb.TEAM_TYPE, T2, W1): "enabled",
+        (tb.MARKER_TYPE, AAD, W1): "enabled",
+    }
+    assert mappings == [(W1, T2)]
+    assert _marker_config(engine, W1)["default_team_id"] == T2, "another team's default stays"
+    assert locks == [[str(W1)]]
+
+
+@pytest.mark.parametrize("encrypted", [False, True])
+def test_disconnecting_the_default_team_clears_the_default(engine, locks, encrypted, monkeypatch):
+    monkeypatch.setattr(secrets.settings, "nudgebee_encryption_key", "00" * 32)
+    _add(engine, *_team_row(T1, W1), *_team_row(T2, W1), *_default(W1, T1, encrypted=encrypted))
+    assert _disconnect_team(engine, W1, T1) == tb.RELEASED_TEAM
+    assert not set(tb.DEFAULT_KEYS) & set(_marker_config(engine, W1))
+
+
+def test_disconnecting_the_last_team_removes_the_connection(engine, locks):
+    _add(engine, *_team_row(T1, W1), *_default(W1, T1))
+    assert _disconnect_team(engine, W1, T1) == tb.RELEASED_TEAM
+    rows, _ = _state(engine)
+    assert rows == {(tb.TEAM_TYPE, T1, W1): "released"}
+
+
+def test_a_workspace_cannot_disconnect_a_team_it_does_not_own(engine, locks):
+    _add(engine, *_team_row(T1, W1), *_team_row(T2, W2, status="released"), _marker(W1), _mapping(W1, T1))
+    assert _disconnect_team(engine, W2, T1) == tb.NOT_FOUND, "another workspace's team"
+    assert _disconnect_team(engine, W2, T2) == tb.NOT_FOUND, "already released"
+    assert _disconnect_team(engine, W1, "group-unknown") == tb.NOT_FOUND
+    assert _disconnect_team(engine, W1, "") == tb.NOT_FOUND
+    rows, mappings = _state(engine)
+    assert rows[(tb.TEAM_TYPE, T1, W1)] == "enabled" and mappings == [(W1, T1)]
+
+
+def test_removing_the_app_from_the_default_team_clears_the_default(engine, locks):
+    _add(engine, *_team_row(T1, W1), *_team_row(T2, W1), *_default(W1, T1))
+    assert _release(engine, T1, None) == tb.RELEASED_TEAM
+    assert not set(tb.DEFAULT_KEYS) & set(_marker_config(engine, W1))
+    _add(engine, *_team_row("group-3", W2), *_team_row("group-4", W2), *_default(W2, "group-4"))
+    assert _release(engine, "group-3", None) == tb.RELEASED_TEAM
+    assert _marker_config(engine, W2)["default_team_id"] == "group-4"
+
+
 # ------------------------------- who a conversation belongs to -------------------------------
 
 
@@ -521,6 +601,32 @@ def test_the_disconnect_endpoint_disconnects_the_callers_workspace():
         refused = asyncio.run(routes.disconnect_ms_teams(request, {"session_variables": {}}))
     assert json.loads(refused.body)["success"] is False
     assert disconnect.call_count == 1
+
+
+def test_the_disconnect_team_endpoint_acts_only_in_the_callers_workspace():
+    import asyncio
+    import json
+
+    from notifications_server.routers import common as routes
+    from notifications_server.routers.common import verify_action_token
+
+    route = next(r for r in routes.router.routes if r.path == "/api/integrations/ms-teams/disconnect-team")
+    assert [d.dependency for d in route.dependencies] == [verify_action_token]
+    request = SimpleNamespace(headers={})
+    body = {"session_variables": {"tenant_id": str(W1)}, "input": {"team_id": T1}}
+    with (
+        mock.patch.object(routes, "Session"),
+        mock.patch.object(routes, "disconnect_team", return_value=tb.RELEASED_TEAM) as disconnect,
+    ):
+        assert json.loads(asyncio.run(routes.disconnect_ms_teams_team(request, body)).body) == {"success": True}
+        assert disconnect.call_args.args[1:] == (str(W1), T1)
+        disconnect.return_value = tb.NOT_FOUND
+        assert json.loads(asyncio.run(routes.disconnect_ms_teams_team(request, body)).body)["success"] is False
+        no_team = {"session_variables": {"tenant_id": str(W1)}, "input": {}}
+        assert json.loads(asyncio.run(routes.disconnect_ms_teams_team(request, no_team)).body)["success"] is False
+        no_tenant = {"session_variables": {}, "input": {"team_id": T1}}
+        assert json.loads(asyncio.run(routes.disconnect_ms_teams_team(request, no_tenant)).body)["success"] is False
+    assert disconnect.call_count == 2
 
 
 def test_a_chat_whose_tenant_is_not_an_object_acts_in_no_workspace():

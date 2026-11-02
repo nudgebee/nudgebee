@@ -11,7 +11,7 @@ per-workspace advisory lock."""
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 from botbuilder.schema import Activity, ActivityTypes
 from sqlalchemy import or_, text, update
@@ -37,6 +37,8 @@ TEAM_CONFIG_KEYS = ("team_thread_id", "team_name", "service_url", "aad_tenant_id
 BOUND_AT = "bound_at"
 # When the team was last released. A link minted before it can't bind the team.
 RELEASED_AT = "released_at"
+# The marker's default destination. Cleared when its team is released.
+DEFAULT_KEYS = ("default_team_id", "default_team_name", "default_channel_id", "default_channel_name")
 
 CONNECTED = "connected"
 ALREADY_CONNECTED = "already_connected"
@@ -44,6 +46,7 @@ TEAM_LINKED_ELSEWHERE = "team_linked_elsewhere"
 OTHER_MICROSOFT_TENANT = "other_microsoft_tenant"
 LINK_EXPIRED = "expired"
 RELEASED_TEAM, UNCHANGED = "released", "unchanged"
+NOT_FOUND = "not_found"
 
 
 def aad_tenant_id_from_account_id(account_id: Optional[str]) -> str:
@@ -160,6 +163,37 @@ def _drop_markers(session, workspace) -> None:
         synchronize_session=False
     )
     session.query(Integration).filter(Integration.id.in_(ids)).delete(synchronize_session=False)
+
+
+def _release(session, workspace, rows: List[Integration], now: datetime) -> None:
+    """Mark rows released, expiring links minted before now, and clear the
+    workspace's default destination when it is in one of them."""
+    for row in rows:
+        row.status = RELEASED
+        row.updated_at = now
+        _write_config_values(session, row.id, {RELEASED_AT: now.isoformat()})
+    group_ids = {row.name for row in rows}
+    for marker in _markers(session, workspace).all():
+        rows = (
+            session.query(IntegrationConfigValue)
+            .filter(
+                IntegrationConfigValue.integration_id == marker.id, IntegrationConfigValue.name == "default_team_id"
+            )
+            .all()
+        )
+        if _decrypt_config(rows).get("default_team_id") in group_ids:
+            session.query(IntegrationConfigValue).filter(
+                IntegrationConfigValue.integration_id == marker.id, IntegrationConfigValue.name.in_(DEFAULT_KEYS)
+            ).delete(synchronize_session=False)
+
+
+def _drop_mappings(session, workspace, group_ids: List[str]) -> None:
+    if group_ids:
+        session.query(ChannelAccountMapping).filter(
+            ChannelAccountMapping.tenant_id == workspace,
+            ChannelAccountMapping.platform == MARKER_TYPE,
+            ChannelAccountMapping.team_id.in_(group_ids),
+        ).delete(synchronize_session=False)
 
 
 def _drop_markers_if_unused(session, workspace) -> None:
@@ -430,10 +464,27 @@ def release_team(session, aad_group_id, event_time: Optional[datetime] = None) -
                 return UNCHANGED
         except ValueError:
             LOG.warning("Teams team %s has an unreadable %s %r", aad_group_id, BOUND_AT, bound_at)
-    now = utc_now()
-    row.status = RELEASED
-    row.updated_at = now
-    _write_config_values(session, row.id, {RELEASED_AT: now.isoformat()})
+    _release(session, workspace, [row], utc_now())
+    session.flush()
+    _drop_markers_if_unused(session, workspace)
+    session.commit()
+    _forget_installs({workspace})
+    return RELEASED_TEAM
+
+
+def disconnect_team(session, workspace, aad_group_id) -> str:
+    """Unbind one team of a workspace, from NudgeBee: release it, delete the
+    workspace's channel mappings for it, and drop the marker if it was the last.
+    The bot stays in the team. A team not bound to this workspace is refused.
+    Returns RELEASED_TEAM or NOT_FOUND."""
+    workspace = uuid.UUID(str(workspace))
+    _lock(session, {workspace})
+    row = _team_row(session, aad_group_id) if aad_group_id else None
+    if row is None or row.status != ENABLED or row.tenant_id != workspace:
+        session.rollback()
+        return NOT_FOUND
+    _release(session, workspace, [row], utc_now())
+    _drop_mappings(session, workspace, [row.name])
     session.flush()
     _drop_markers_if_unused(session, workspace)
     session.commit()
@@ -451,18 +502,8 @@ def disconnect_workspace(session, workspace) -> int:
         .filter(Integration.type == TEAM_TYPE, Integration.tenant_id == workspace, Integration.status == ENABLED)
         .all()
     )
-    now = utc_now()
-    for row in teams:
-        row.status = RELEASED
-        row.updated_at = now
-        _write_config_values(session, row.id, {RELEASED_AT: now.isoformat()})
-    group_ids = [row.name for row in teams]
-    if group_ids:
-        session.query(ChannelAccountMapping).filter(
-            ChannelAccountMapping.tenant_id == workspace,
-            ChannelAccountMapping.platform == MARKER_TYPE,
-            ChannelAccountMapping.team_id.in_(group_ids),
-        ).delete(synchronize_session=False)
+    _release(session, workspace, teams, utc_now())
+    _drop_mappings(session, workspace, [row.name for row in teams])
     _drop_markers(session, workspace)
     session.commit()
     _forget_installs({workspace})

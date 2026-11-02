@@ -145,7 +145,7 @@ export default function AddAccountForm() {
                 key='ms_teams'
                 provider='ms_teams'
                 displayName='Microsoft Teams'
-                headers={['User Name', 'Installed At', 'Team Name', 'Channels', '', '']}
+                headers={['Team', 'Connected by', 'Connected', { name: '', width: '1%' }]}
                 mappingMode='team-multi'
               />
             );

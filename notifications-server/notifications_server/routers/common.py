@@ -20,7 +20,7 @@ from notifications_server.services.channel_watch import ChannelWatchService
 from notifications_server.services.common import CommonService
 from notifications_server.services import remediation_thread
 from notifications_server.services.message import MessageService
-from notifications_server.services.ms_teams.team_binding import disconnect_workspace
+from notifications_server.services.ms_teams.team_binding import NOT_FOUND, disconnect_team, disconnect_workspace
 from notifications_server.services.rules import NotificationRulesService
 from notifications_server.services.route_check import RouteCheckService
 from notifications_server.clients.google_chat_app_client import GoogleChatAppClient
@@ -586,6 +586,32 @@ async def disconnect_ms_teams(request: Request, body: Dict[Any, Any]):
         return JSONResponse({"success": False, "error": "Unable to disconnect Microsoft Teams"})
     LOG.info("Microsoft Teams disconnected for tenant %s; %s teams released", tenant, released)
     return JSONResponse({"success": True, "released_teams": released})
+
+
+def _disconnect_ms_teams_team_sync(tenant, team_id):
+    with Session(sync_engine) as session:
+        return disconnect_team(session, tenant, team_id)
+
+
+@router.post("/integrations/ms-teams/disconnect-team", dependencies=[Depends(verify_action_token)])
+async def disconnect_ms_teams_team(request: Request, body: Dict[Any, Any]):
+    """Disconnect one Microsoft Teams team from the caller's workspace. Only a
+    team bound to that workspace can be disconnected."""
+    tenant = body.get("session_variables", {}).get("tenant_id") or request.headers.get("tenant")
+    if not tenant:
+        return JSONResponse({"success": False, "error": ERROR_TENANT_NOT_FOUND})
+    team_id = (body.get("input") or {}).get("team_id")
+    if not team_id:
+        return JSONResponse({"success": False, "error": "team_id is required"})
+    try:
+        result = await run_in_threadpool(_disconnect_ms_teams_team_sync, tenant, team_id)
+    except Exception:
+        LOG.exception("Error disconnecting Microsoft Teams team %s for tenant %s", team_id, tenant)
+        return JSONResponse({"success": False, "error": "Unable to disconnect the team"})
+    if result == NOT_FOUND:
+        return JSONResponse({"success": False, "error": "This team isn't connected to this workspace"})
+    LOG.info("Microsoft Teams team %s disconnected for tenant %s", team_id, tenant)
+    return JSONResponse({"success": True})
 
 
 @router.post("/integrations/messaging/invalidate-cache", dependencies=[Depends(verify_action_token)])
