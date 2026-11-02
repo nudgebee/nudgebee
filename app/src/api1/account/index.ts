@@ -223,6 +223,20 @@ mutation DeleteMessagingPlatform($object: messaging_platform_delete_input!) {
 }
 `;
 
+// MS Teams is connected only through its integration (a bound team): a legacy
+// messaging_platforms row of it is never a connection.
+const withoutLegacyTeams = (rows: any[]) => (Array.isArray(rows) ? rows.filter((r) => r?.platform !== 'ms_teams') : []);
+
+export const DELETE_MS_TEAMS_CONNECTION = `
+mutation DeleteMsTeamsConnection {
+  notifications_delete_ms_teams_connection {
+    success
+    released_teams
+    error
+  }
+}
+`;
+
 export const INSERT_ACC_ATTRIBUTE = `
 mutation InsertAccountAttribute($object: cloud_account_attrs_upsert_input!) {
   cloud_account_attrs_upsert(object: $object) {
@@ -301,24 +315,27 @@ const apiAccount = {
       }
       const response = await queryGraphQL(LIST_MESSAGING_PLATFORMS_ACTION, 'ListMessagingPlatforms', { object });
       return {
-        data: response?.data?.data?.messagingplatforms_list?.data || [],
+        data: withoutLegacyTeams(response?.data?.data?.messagingplatforms_list?.data || []),
       };
     } catch (err) {
       console.log('Failed to fetch platform', { platform_type, err });
       return err;
     }
   },
-  // Unified Slack/MS Teams installs across the legacy messaging_platforms table and
-  // the new integrations storage (token encrypted at rest). Integration installs win
-  // over legacy (one per tenant). Normalized to the legacy install shape so the
-  // messaging modal renders both identically; `_origin` routes channel edits/deletes.
+  // Unified Slack installs across the legacy messaging_platforms table and the new
+  // integrations storage (token encrypted at rest). Integration installs win over
+  // legacy (one per tenant). MS Teams comes only from its integration. Normalized to
+  // the legacy install shape so the messaging modal renders both identically;
+  // `_origin` routes channel edits/deletes.
   getMessagingInstallations: async function (platform_type: string) {
     let legacy: any[] = [];
     try {
-      const lr: any = await queryGraphQL(LIST_MESSAGING_PLATFORMS_ACTION, 'ListMessagingPlatforms', {
-        object: { platform: platform_type },
-      });
-      legacy = lr?.data?.data?.messagingplatforms_list?.data || [];
+      if (platform_type !== 'ms_teams') {
+        const lr: any = await queryGraphQL(LIST_MESSAGING_PLATFORMS_ACTION, 'ListMessagingPlatforms', {
+          object: { platform: platform_type },
+        });
+        legacy = lr?.data?.data?.messagingplatforms_list?.data || [];
+      }
     } catch {
       legacy = [];
     }
@@ -386,7 +403,7 @@ const apiAccount = {
     try {
       const response = await queryGraphQL(LIST_MESSAGING_PLATFORMS_ACTION, 'ListMessagingPlatforms', { object: {} });
       return {
-        data: response?.data?.data?.messagingplatforms_list?.data,
+        data: withoutLegacyTeams(response?.data?.data?.messagingplatforms_list?.data || []),
       };
     } catch (err) {
       console.log(`Failed to list messaging platform- `, err);
@@ -408,7 +425,7 @@ const apiAccount = {
       const lr: any = await queryGraphQL(LIST_MESSAGING_PLATFORMS_ACTION, 'ListMessagingPlatforms', { object: {} });
       if (lr instanceof Error) throw lr;
       if (lr?.data?.errors?.length) throw new Error(lr.data.errors[0]?.message || 'ListMessagingPlatforms failed');
-      (lr?.data?.data?.messagingplatforms_list?.data || []).forEach((m: { platform?: string }) => {
+      withoutLegacyTeams(lr?.data?.data?.messagingplatforms_list?.data || []).forEach((m: { platform?: string }) => {
         if (m?.platform) connected.add(m.platform);
       });
     } catch (err) {
@@ -451,7 +468,8 @@ const apiAccount = {
   async getAllAccount() {
     try {
       const cloudProviders = ['K8s', 'AWS', 'Azure', 'GCP', 'CloudFoundry', 'SelfHosted'];
-      const messagingPlatforms = ['slack', 'ms_teams', 'google_chat', 'discord'];
+      // MS Teams is read from its integration rows only.
+      const messagingPlatforms = ['slack', 'google_chat', 'discord'];
       const integrationTypes = [
         'github',
         'gitlab',
@@ -649,6 +667,10 @@ const apiAccount = {
       console.log('Failed to delete message-', err);
       return err;
     }
+  },
+  deleteMsTeamsConnection: async function () {
+    const response = await queryGraphQL(DELETE_MS_TEAMS_CONNECTION, 'DeleteMsTeamsConnection', {});
+    return response?.data?.data?.notifications_delete_ms_teams_connection;
   },
   insertAccAttr: async function (data: any) {
     try {

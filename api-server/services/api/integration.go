@@ -65,7 +65,7 @@ func handleIntegrationApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.Me
 	})
 
 	// Internal: one-off, operator-triggered backfill of legacy messaging_platforms
-	// (Slack / MS Teams) into the encrypted integrations table. Idempotent and
+	// (Slack) into the encrypted integrations table. Idempotent and
 	// cross-tenant; X-ACTION-TOKEN is enforced by the global middleware. Operators
 	// POST here once after deploying the storage migration.
 	groupV2.POST("/messaging/backfill", func(c *gin.Context) {

@@ -4,7 +4,7 @@ import json
 import logging
 import re
 import uuid
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Set
 
 import aiohttp
 import requests
@@ -26,13 +26,13 @@ from notifications_server.services.channel_context import ChannelContextService
 from notifications_server.services.common import THREAD_CONTEXT_MARKER, latest_slack_notification
 from notifications_server.services.messaging_installations import (
     load_installation_by_team,
-    load_ms_teams_installation_by_aad_tenant,
-    ms_teams_aad_tenant_owner,
 )
 from notifications_server.services.ms_teams import card_actions, connect_link
 from notifications_server.services.ms_teams import thinking as teams_thinking
 from notifications_server.services.ms_teams.answer_card import answer_card
 from notifications_server.services.ms_teams.bot_sender import TeamsBotError, card_activity, get_sender
+from notifications_server.services.ms_teams.activity import in_team, mentions_bot
+from notifications_server.services.ms_teams.team_binding import workspaces_for
 from notifications_server.services.slack_images import collect_slack_images
 from notifications_server.services import slack_progress
 from notifications_server.services.actions import (
@@ -2324,19 +2324,32 @@ class Events:
             and activity.value.get("action_type") == "select_followup_option"
         )
 
-    async def _teams_tenant_not_connected(self, aad_tenant_id) -> bool:
-        """True when no enabled Teams connection is linked to this Microsoft
-        tenant. A failed check counts as connected, which keeps today's replies."""
+    async def _teams_workspaces(self, activity) -> Set[str]:
+        """The workspaces this Teams conversation may act in: the team's owner in
+        a channel (none while the team isn't connected), or in a personal or
+        group chat every workspace with a team connected in its Microsoft tenant."""
 
-        def _load():
+        def load():
             with Session(self.session.get_bind()) as session:
-                return load_ms_teams_installation_by_aad_tenant(session, aad_tenant_id)
+                return workspaces_for(session, activity)
 
-        try:
-            return await asyncio.to_thread(_load) is None
-        except Exception as e:
-            LOG.warning("Checking the Teams connection for tenant %s failed: %s", aad_tenant_id, e)
-            return False
+        return await asyncio.to_thread(load)
+
+    async def _reply_team_not_connected(self, activity, teams_account_id):
+        """In a team that isn't connected: a connect link for whoever mentioned the
+        bot, when they can have one, or how to get the team connected."""
+        if mentions_bot(activity) and not card_actions.is_card_action(activity):
+            url, reason = await connect_link.mention_link(activity)
+        else:
+            url, reason = None, None
+        if url:
+            card = self.common_service.create_teams_connect_card(url)
+        elif reason == connect_link.RATE_LIMITED:
+            await self.common_service.teams_reply(activity, connect_link.LINK_ALREADY_SENT, teams_account_id)
+            return
+        else:
+            card = self.common_service.create_teams_not_connected_card()
+        await self.common_service.teams_reply_with_card(activity, card, teams_account_id)
 
     async def _reply_unidentified_user(self, activity, aad_user_id, teams_account_id):
         LOG.warning(f"Unable to get email for Teams user {aad_user_id}")
@@ -2375,10 +2388,9 @@ class Events:
                 LOG.debug("Skipping bot's own message")
                 return
 
-            if connect_link.offerable(activity) and await self._teams_tenant_not_connected(teams_account_id):
-                await self.common_service.teams_reply_with_card(
-                    activity, self.common_service.create_teams_not_connected_card(), teams_account_id
-                )
+            workspaces = await self._teams_workspaces(activity)
+            if in_team(activity) and not workspaces:
+                await self._reply_team_not_connected(activity, teams_account_id)
                 return
 
             user_email = await self.common_service.get_teams_user_info(aad_user_id, teams_account_id, activity)
@@ -2394,14 +2406,14 @@ class Events:
 
             # A message in an alert's thread is about that alert, so it runs on the alert's account, and whoever
             # can't access that account is told so, on every message or pick, not only the thread's first.
-            alert = self._teams_alert_of_thread(conversation_id, teams_account_id)
+            alert = self._teams_alert_of_thread(conversation_id, workspaces)
             if alert and not await self._alert_account_user_async(alert, user_email):
                 await self.common_service.teams_reply(activity, NO_ALERT_ACCOUNT_ACCESS, teams_account_id)
                 return
 
             if self._is_cluster_selection(activity):
                 await self._handle_teams_cluster_selection_and_query_llm(
-                    activity, activity.value["cluster"], thread_ts, teams_account_id
+                    activity, activity.value["cluster"], thread_ts, teams_account_id, workspaces
                 )
                 return
 
@@ -2409,7 +2421,7 @@ class Events:
                 followup_option = activity.value.get("followup_option")
                 if followup_option:
                     await self._handle_teams_followup_selection_and_query_llm(
-                        activity, followup_option, thread_ts, teams_account_id, user_email
+                        activity, followup_option, thread_ts, teams_account_id, user_email, workspaces
                     )
                 else:
                     LOG.warning("Follow-up selection activity received without a followup_option value.")
@@ -2425,11 +2437,7 @@ class Events:
                 return
 
             cached_entry = await self.cache.aio.get_event_entry(thread_ts)
-            if (
-                cached_entry
-                and cached_entry.get("account_id")
-                and await self._in_teams_workspace(cached_entry.get("tenant_id"), teams_account_id)
-            ):
+            if cached_entry and cached_entry.get("account_id") and str(cached_entry.get("tenant_id")) in workspaces:
                 LOG.debug(f"Continuing existing Teams conversation for {conversation_id}")
                 user_id = await self._thread_sender_async(cached_entry, user_email)
                 if not user_id:
@@ -2451,6 +2459,7 @@ class Events:
                 teams_account_id,
                 thread_ts,
                 user_email,
+                workspaces,
                 alert=alert,
             )
 
@@ -2467,13 +2476,13 @@ class Events:
         teams_account_id,
         thread_ts,
         user_email,
+        workspaces,
         alert=None,
     ):
         user_id, tenants = validate_and_get_user_tenants(user_email)
-        # A Teams chat only ever sees the workspace its Microsoft tenant is connected
-        # to, never the asker's other workspaces.
-        workspace = await self._teams_workspace_of(teams_account_id)
-        tenants = [t for t in tenants or [] if str(t) == workspace] if workspace else []
+        # A team channel sees only the team's workspace; a personal or group chat,
+        # the asker's workspaces that have a team connected in this Microsoft tenant.
+        tenants = [t for t in tenants or [] if str(t) in workspaces]
 
         if not user_id or not tenants:
             LOG.warning("No Nudgebee account found for Teams user email: %s", user_email)
@@ -2531,35 +2540,20 @@ class Events:
                 teams_account_id,
             )
 
-    async def _teams_workspace_of(self, aad_tenant_id) -> Optional[str]:
-        """The NudgeBee tenant this Microsoft tenant is connected to, or None."""
-
-        def owner():
-            with Session(self.session.get_bind()) as session:
-                return ms_teams_aad_tenant_owner(session, aad_tenant_id, enabled_only=True)
-
-        return await asyncio.to_thread(owner)
-
-    async def _in_teams_workspace(self, tenant_id, aad_tenant_id) -> bool:
-        """Whether tenant_id is the NudgeBee tenant this Microsoft tenant is connected to."""
-        if not tenant_id:
-            return False
-        workspace = await self._teams_workspace_of(aad_tenant_id)
-        return workspace is not None and str(tenant_id) == workspace
-
-    def _teams_alert_of_thread(self, conversation_id, aad_tenant_id):
+    def _teams_alert_of_thread(self, conversation_id, workspaces):
         """The alert card a Teams thread hangs off, as {tenant_id, account_id,
         context}, or None outside an alert's thread, or for an alert with no
-        account recorded. Never fatal."""
+        account recorded. Only the conversation's workspaces are looked in.
+        Never fatal."""
         root = card_actions.thread_root_of(conversation_id)
         if not root:
             return None
+        stored, tenant_id = None, None
         try:
-            with Session(self.session.get_bind()) as session:
-                tenant_id = ms_teams_aad_tenant_owner(session, aad_tenant_id, enabled_only=True)
-            if not tenant_id:
-                return None
-            stored = card_actions.stored_card(tenant_id, card_actions.channel_of(conversation_id), root)
+            for tenant_id in sorted(workspaces):
+                stored = card_actions.stored_card(tenant_id, card_actions.channel_of(conversation_id), root)
+                if stored:
+                    break
         except Exception as e:
             LOG.warning("Looking up the Teams card under thread %s failed: %s", conversation_id, e)
             return None
@@ -2614,7 +2608,9 @@ class Events:
                 activity, updated_entry, cleaned_text, teams_account_id, skip_confirmation_message=True
             )
 
-    async def _handle_teams_cluster_selection_and_query_llm(self, activity, cluster_id, thread_ts, teams_account_id):
+    async def _handle_teams_cluster_selection_and_query_llm(
+        self, activity, cluster_id, thread_ts, teams_account_id, workspaces
+    ):
         try:
             cached_entry = await self.cache.aio.get_event_entry(thread_ts)
 
@@ -2637,7 +2633,7 @@ class Events:
                 return
 
             account = self._get_offered_account(cached_entry, cluster_id)
-            if not account or not await self._in_teams_workspace(account.get("tenant"), teams_account_id):
+            if not account or str(account.get("tenant")) not in workspaces:
                 await self.common_service.teams_reply(activity, CLUSTER_NOT_FOUND, teams_account_id)
                 return
 
@@ -2682,13 +2678,13 @@ class Events:
         return await self.common_service.teams_update_clicked_card(activity, card)
 
     async def _handle_teams_followup_selection_and_query_llm(
-        self, activity, followup_option, thread_ts, teams_account_id, user_email
+        self, activity, followup_option, thread_ts, teams_account_id, user_email, workspaces
     ):
         cached_entry, thinking = None, False
         try:
             cached_entry = await self.cache.aio.get_event_entry(thread_ts)
 
-            if not cached_entry or not await self._in_teams_workspace(cached_entry.get("tenant_id"), teams_account_id):
+            if not cached_entry or str(cached_entry.get("tenant_id")) not in workspaces:
                 LOG.warning(f"No cached entry found for thread {thread_ts}")
                 await self.common_service.teams_reply(activity, get_session_expired_message(), teams_account_id)
                 return

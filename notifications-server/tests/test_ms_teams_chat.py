@@ -153,24 +153,24 @@ def test_the_welcome_uses_the_app_name_and_the_brand(monkeypatch):
     assert "@Nubi" in connected_text and "@Acme" not in connected_text
 
 
-def test_an_unconnected_tenant_is_asked_to_connect():
+def test_an_unconnected_chat_is_told_to_connect_a_team_with_no_link():
     card = CommonService.create_teams_welcome_card(False)
-    assert _action_titles(card) == ["Connect Microsoft Teams"]
-    assert card["actions"][0]["url"].endswith("/user-management#integrations")
-    assert "Sign up" in json.dumps(card)
+    text = json.dumps(card)
+    assert "actions" not in card and "/user-management" not in text
+    assert "@mention it there" in text and "Sign up" in text
 
 
-@pytest.mark.parametrize("owner, connected", [("tenant-1", True), (None, False)])
-def test_the_welcome_card_follows_the_connection(owner, connected):
+@pytest.mark.parametrize("workspaces, connected", [({"tenant-1"}, True), (set(), False)])
+def test_the_welcome_card_follows_the_connection(workspaces, connected):
     service = CommonService.__new__(CommonService)
     service.session = mock.Mock()
     service.teams_reply_with_card = mock.AsyncMock(return_value=True)
-    activity = SimpleNamespace(channel_data={"tenant": {"id": "aad-1"}})
-    with mock.patch("notifications_server.services.common.ms_teams_aad_tenant_owner", return_value=owner) as owner_of:
+    activity = SimpleNamespace(channel_data={"tenant": {"id": "aad-1"}}, conversation=None)
+    with mock.patch("notifications_server.services.common.workspaces_for", return_value=workspaces) as workspaces_for:
         asyncio.run(service.teams_send_welcome_message(activity))
-    assert owner_of.call_args.args[1] == "aad-1" and owner_of.call_args.kwargs == {"enabled_only": True}
+    assert workspaces_for.call_args.args[1] is activity
     card = service.teams_reply_with_card.call_args.args[1]
-    assert ("Connect Microsoft Teams" in _action_titles(card)) is not connected
+    assert ("Mention" in json.dumps(card)) is connected
 
 
 # ------------------------------- account picker -------------------------------
@@ -186,7 +186,7 @@ def _events():
     events.cache = mock.Mock()
     events.cache.aio = AsyncCache(events.cache)
     events.session = mock.Mock()
-    events._teams_workspace_of = mock.AsyncMock(return_value=NB_TENANT)
+    events._teams_workspaces = mock.AsyncMock(return_value={NB_TENANT})
     return events
 
 
@@ -201,7 +201,9 @@ def test_picking_an_account_turns_the_picker_into_the_account():
     ]
     account = {"id": ACCOUNT, "account_name": "k8s-dev", "tenant": NB_TENANT}
     with mock.patch("notifications_server.services.events.get_account_by_id", return_value=account):
-        asyncio.run(events._handle_teams_cluster_selection_and_query_llm(ASKER_CLICK, ACCOUNT, THREAD, "aad"))
+        asyncio.run(
+            events._handle_teams_cluster_selection_and_query_llm(ASKER_CLICK, ACCOUNT, THREAD, "aad", {NB_TENANT})
+        )
     card = events.common_service.teams_update_clicked_card.call_args.args[1]
     assert card["body"][0]["text"] == "Working with **k8s-dev**"
     events.common_service.teams_reply.assert_not_called()
@@ -216,14 +218,15 @@ def test_the_confirmation_is_sent_when_the_picker_cant_be_updated():
     ]
     account = {"id": ACCOUNT, "account_name": "k8s-dev", "tenant": NB_TENANT}
     with mock.patch("notifications_server.services.events.get_account_by_id", return_value=account):
-        asyncio.run(events._handle_teams_cluster_selection_and_query_llm(ASKER_CLICK, ACCOUNT, THREAD, "aad"))
+        asyncio.run(
+            events._handle_teams_cluster_selection_and_query_llm(ASKER_CLICK, ACCOUNT, THREAD, "aad", {NB_TENANT})
+        )
     assert "k8s-dev" in events.common_service.teams_reply.call_args.args[1]
 
 
 def test_the_channel_mapping_is_looked_up_without_the_thread_suffix():
     events = _events()
     events._teams_alert_of_thread = mock.Mock(return_value=None)
-    events._teams_workspace_of = mock.AsyncMock(return_value=NB_TENANT)
     events._resolve_mapped_account_async = mock.AsyncMock(return_value=None)
     events._get_valid_accounts_async = mock.AsyncMock(return_value=[])
     events._extract_conversation_reference = mock.Mock(return_value=REF)
@@ -232,7 +235,7 @@ def test_the_channel_mapping_is_looked_up_without_the_thread_suffix():
     ):
         asyncio.run(
             events._request_account_confirmation_and_cache_event(
-                "aad-user", SimpleNamespace(), "why?", THREAD, "1800", "aad", THREAD, "dana@example.com"
+                "aad-user", SimpleNamespace(), "why?", THREAD, "1800", "aad", THREAD, "dana@example.com", {NB_TENANT}
             )
         )
     assert events._resolve_mapped_account_async.call_args.args[:2] == ("ms_teams", "19:ops")
@@ -241,8 +244,7 @@ def test_the_channel_mapping_is_looked_up_without_the_thread_suffix():
 OTHER_NB_TENANT = "bbbbbbbb-2222-4222-8222-222222222222"
 
 
-def _ask(events, user_tenants, workspace):
-    events._teams_workspace_of = mock.AsyncMock(return_value=workspace)
+def _ask(events, user_tenants, workspaces):
     events._teams_alert_of_thread = mock.Mock(return_value=None)
     events._resolve_mapped_account_async = mock.AsyncMock(return_value=None)
     events._get_valid_accounts_async = mock.AsyncMock(return_value=[])
@@ -253,22 +255,29 @@ def _ask(events, user_tenants, workspace):
     ):
         asyncio.run(
             events._request_account_confirmation_and_cache_event(
-                "aad-user", SimpleNamespace(), "why?", THREAD, "1800", "aad", THREAD, "dana@example.com"
+                "aad-user", SimpleNamespace(), "why?", THREAD, "1800", "aad", THREAD, "dana@example.com", workspaces
             )
         )
 
 
-def test_the_picker_offers_only_the_connected_workspace():
+def test_the_picker_offers_only_the_conversations_workspaces():
     events = _events()
-    _ask(events, [OTHER_NB_TENANT, NB_TENANT], NB_TENANT)
+    _ask(events, [OTHER_NB_TENANT, NB_TENANT], {NB_TENANT})
     assert events._resolve_mapped_account_async.call_args.args[3] == [NB_TENANT]
     assert events._get_valid_accounts_async.call_args.args[1] == [NB_TENANT]
 
 
-@pytest.mark.parametrize("workspace", [OTHER_NB_TENANT, None])
-def test_a_user_outside_the_connected_workspace_gets_nothing(workspace):
+def test_a_chat_offers_every_eligible_workspace_of_the_asker():
     events = _events()
-    _ask(events, [NB_TENANT], workspace)
+    third = "dddddddd-4444-4444-8444-444444444444"
+    _ask(events, [OTHER_NB_TENANT, NB_TENANT], {NB_TENANT, OTHER_NB_TENANT, third})
+    assert events._get_valid_accounts_async.call_args.args[1] == [OTHER_NB_TENANT, NB_TENANT]
+
+
+@pytest.mark.parametrize("workspaces", [{OTHER_NB_TENANT}, set()])
+def test_a_user_outside_the_connected_workspace_gets_nothing(workspaces):
+    events = _events()
+    _ask(events, [NB_TENANT], workspaces)
     events._get_valid_accounts_async.assert_not_called()
     events._resolve_mapped_account_async.assert_not_called()
     events.common_service.teams_reply.assert_called_once()
@@ -302,7 +311,9 @@ def test_a_pick_from_another_workspace_is_refused():
     )
     account = {"id": ACCOUNT, "account_name": "elsewhere", "tenant": OTHER_NB_TENANT}
     with mock.patch("notifications_server.services.events.get_account_by_id", return_value=account):
-        asyncio.run(events._handle_teams_cluster_selection_and_query_llm(ASKER_CLICK, ACCOUNT, THREAD, "aad"))
+        asyncio.run(
+            events._handle_teams_cluster_selection_and_query_llm(ASKER_CLICK, ACCOUNT, THREAD, "aad", {NB_TENANT})
+        )
     events.cache.update_event_entry.assert_not_called()
     events.common_service.teams_reply.assert_called_once()
 
@@ -311,20 +322,38 @@ def test_a_followup_on_another_workspace_is_refused():
     events = _events()
     events.cache.get_event_entry.return_value = _entry(tenant_id=OTHER_NB_TENANT)
     events.async_query_llm_server = mock.AsyncMock()
-    asyncio.run(events._handle_teams_followup_selection_and_query_llm(SimpleNamespace(), "more", THREAD, "aad"))
+    asyncio.run(
+        events._handle_teams_followup_selection_and_query_llm(
+            SimpleNamespace(), "more", THREAD, "aad", "dana@example.com", {NB_TENANT}
+        )
+    )
     events.async_query_llm_server.assert_not_called()
     events.common_service.teams_reply.assert_called_once()
 
 
-def test_the_workspace_is_the_enabled_owner_of_the_microsoft_tenant():
+def test_the_workspaces_come_from_the_conversation():
     events = _events()
-    del events._teams_workspace_of
+    del events._teams_workspaces
+    activity = SimpleNamespace()
     with (
-        mock.patch("notifications_server.services.events.ms_teams_aad_tenant_owner", return_value=NB_TENANT) as owner,
+        mock.patch("notifications_server.services.events.workspaces_for", return_value={NB_TENANT}) as workspaces_for,
         mock.patch("notifications_server.services.events.Session"),
     ):
-        assert asyncio.run(events._teams_workspace_of("aad")) == NB_TENANT
-    assert owner.call_args.args[1:] == ("aad",) and owner.call_args.kwargs == {"enabled_only": True}
+        assert asyncio.run(events._teams_workspaces(activity)) == {NB_TENANT}
+    assert workspaces_for.call_args.args[1] is activity
+
+
+def test_a_message_in_a_team_that_isnt_connected_gets_only_the_not_connected_reply():
+    events = _events()
+    events._teams_workspaces = mock.AsyncMock(return_value=set())
+    events._extract_activity_info = mock.Mock(return_value=(THREAD, "aad-user", "why?", "1800", "aad"))
+    events._is_bot_message = mock.Mock(return_value=False)
+    events._reply_team_not_connected = mock.AsyncMock()
+    events.common_service.get_teams_user_info = mock.AsyncMock()
+    activity = SimpleNamespace(conversation=SimpleNamespace(conversation_type="channel"))
+    asyncio.run(events.handle_message_event(activity))
+    events._reply_team_not_connected.assert_awaited_once_with(activity, "aad")
+    events.common_service.get_teams_user_info.assert_not_called()
 
 
 @pytest.mark.parametrize("tenant_id", [OTHER_NB_TENANT, None])
@@ -351,10 +380,9 @@ def test_thread_root_and_card_text():
     assert ca.card_text(malformed) == "Pod: checkout"
 
 
-def _alert_events(stored, owner=NB_TENANT):
+def _alert_events(stored):
     events = _events()
     patches = (
-        mock.patch("notifications_server.services.events.ms_teams_aad_tenant_owner", return_value=owner),
         mock.patch.object(ca, "stored_card", return_value=stored),
         mock.patch("notifications_server.services.events.Session"),
     )
@@ -364,8 +392,8 @@ def _alert_events(stored, owner=NB_TENANT):
 def test_an_alert_thread_gives_its_account_and_card_text():
     card = get_ms_teams_finding_message_template(FINDING, NB_TENANT)
     events, patches = _alert_events({"kind": "finding", "card": card, "account_id": ACCOUNT})
-    with patches[0], patches[1] as stored_card, patches[2]:
-        alert = events._teams_alert_of_thread(THREAD, "aad")
+    with patches[0] as stored_card, patches[1]:
+        alert = events._teams_alert_of_thread(THREAD, {NB_TENANT})
     assert stored_card.call_args.args == (NB_TENANT, "19:ops", "1700")
     assert alert["account_id"] == ACCOUNT and "Pod crash looping" in alert["context"]
 
@@ -381,8 +409,8 @@ def test_an_alert_thread_gives_its_account_and_card_text():
 )
 def test_no_alert_outside_an_alert_thread_or_without_an_account(conversation, stored):
     events, patches = _alert_events(stored)
-    with patches[0], patches[1], patches[2]:
-        assert events._teams_alert_of_thread(conversation, "aad") is None
+    with patches[0], patches[1]:
+        assert events._teams_alert_of_thread(conversation, {NB_TENANT}) is None
 
 
 ALERT = {"tenant_id": NB_TENANT, "account_id": ACCOUNT, "context": "Pod crash looping"}
@@ -454,7 +482,16 @@ def test_an_alert_thread_runs_on_the_alerts_account_never_a_mapped_or_picked_one
     ):
         asyncio.run(
             events._request_account_confirmation_and_cache_event(
-                "aad-user", SimpleNamespace(), "why?", THREAD, "1800", "aad", THREAD, "dana@example.com", alert=ALERT
+                "aad-user",
+                SimpleNamespace(),
+                "why?",
+                THREAD,
+                "1800",
+                "aad",
+                THREAD,
+                "dana@example.com",
+                {NB_TENANT},
+                alert=ALERT,
             )
         )
     assert events._handle_mapped_account_teams.call_args.args[0] == {"id": ACCOUNT}
@@ -582,7 +619,7 @@ def test_an_answer_too_big_for_a_card_falls_back_to_text():
 def test_an_answer_card_carries_signed_feedback_buttons():
     card, answer_id = Events._teams_answer_card(_entry(), "All good")
     feedback = [a for a in card["actions"] if a.get("id", "").startswith(ca.FEEDBACK_ID)]
-    params = ca.verify(feedback[0]["data"][ca.FEEDBACK_DATA], ca.FEEDBACK, NB_TENANT)
+    params = ca.verify(feedback[0]["data"][ca.FEEDBACK_DATA], ca.FEEDBACK, {NB_TENANT})
     assert params == {
         "tenant_id": NB_TENANT,
         "account_id": ACCOUNT,
@@ -864,7 +901,7 @@ def _rate(activity, posted=True):
     sender = mock.Mock()
     response = SimpleNamespace(ok=posted, status_code=200 if posted else 400)
     with (
-        mock.patch.object(ca, "_tenant_for", return_value=uuid.UUID(NB_TENANT)),
+        mock.patch.object(ca, "_allowed_for", return_value={NB_TENANT}),
         mock.patch.object(actions_module, "validate_and_get_user_tenants", return_value=("user-1", [NB_TENANT])),
         mock.patch(
             "notifications_server.repositories.user_repository.get_llm_conversation_by_session",

@@ -99,7 +99,7 @@ describe('the Microsoft Teams connect page', () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe('/api/integrations/ms-teams/link');
     expect(JSON.parse(init.body)).toEqual({ token: linkToken(), tenant_id: 'tenant-1' });
-    expect(screen.getByTestId('ms-teams-connect-body')).toHaveTextContent('Microsoft Teams is connected to Acme Prod.');
+    expect(screen.getByTestId('ms-teams-connect-body')).toHaveTextContent('Team Platform is connected to Acme Prod.');
     expect(screen.getByTestId('ms-teams-connect-integrations-btn')).toHaveAttribute('href', INTEGRATIONS);
   });
 
@@ -109,16 +109,25 @@ describe('the Microsoft Teams connect page', () => {
   });
 
   it.each([
-    [400, { code: 'expired' }, 'This link has expired. Connect from Acme → Integrations → Microsoft Teams.'],
+    [400, { code: 'expired' }, 'This link has expired. @mention Nubi in the team for a new one.'],
     [
       400,
       { code: 'wrong_user' },
-      'This link is for the person who added Nubi to this team. Sign in to Acme with their account, or connect from Integrations.',
+      'This link is for the person it was posted for. Sign in to Acme with their account, or @mention Nubi in the team for a link of your own.',
     ],
     [400, { code: 'invalid' }, "This link isn't valid. Open it from Teams again."],
     [403, { code: 'role_missing' }, 'Only a Acme admin can connect Microsoft Teams.'],
-    [400, { code: 'tenant_linked_elsewhere' }, 'This Microsoft tenant is connected to another Acme workspace. Contact support to move it.'],
-    [400, { code: 'already_connected' }, 'Microsoft Teams is already connected to this workspace.'],
+    [
+      400,
+      { code: 'team_linked_elsewhere' },
+      'This team is connected to another Acme workspace. To move it, remove Nubi from the team, add it back, and open the new link.',
+    ],
+    [
+      400,
+      { code: 'other_microsoft_tenant' },
+      "This workspace's Microsoft Teams teams are in another Microsoft tenant. Disconnect Microsoft Teams in this workspace first, or connect this team to another workspace.",
+    ],
+    [400, { code: 'already_connected' }, 'This team is already connected to this workspace.'],
     [409, { code: 'workspace_changed' }, 'Your workspace changed in another tab. Open the link from Teams again.'],
     [500, { code: 'error' }, 'Something went wrong. Try again from Teams.'],
     [401, { error: 'not_authenticated' }, 'Something went wrong. Try again from Teams.'],
@@ -135,7 +144,7 @@ describe('the Microsoft Teams connect page', () => {
     upstream(400, { code: 'wrong_user' });
     openLink(linkToken());
     fireEvent.click(screen.getByTestId('ms-teams-connect-confirm-btn'));
-    await screen.findByText(/This link is for the person who added Nubi/);
+    await screen.findByText(/This link is for the person it was posted for/);
     expect(screen.getByTestId('ms-teams-connect-integrations-btn')).toHaveAttribute('href', INTEGRATIONS);
   });
 

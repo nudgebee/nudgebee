@@ -32,17 +32,19 @@ function readLink(token: string): LinkDetails | null {
 function outcomeMessage(outcome: Outcome, brand: string, assistant: string): React.ReactNode {
   switch (outcome.code) {
     case 'expired':
-      return `This link has expired. Connect from ${brand} → Integrations → Microsoft Teams.`;
+      return `This link has expired. @mention ${assistant} in the team for a new one.`;
     case 'invalid':
       return "This link isn't valid. Open it from Teams again.";
     case 'role_missing':
       return `Only a ${brand} admin can connect Microsoft Teams.`;
     case 'wrong_user':
-      return `This link is for the person who added ${assistant} to this team. Sign in to ${brand} with their account, or connect from Integrations.`;
-    case 'tenant_linked_elsewhere':
-      return `This Microsoft tenant is connected to another ${brand} workspace. Contact support to move it.`;
+      return `This link is for the person it was posted for. Sign in to ${brand} with their account, or @mention ${assistant} in the team for a link of your own.`;
+    case 'team_linked_elsewhere':
+      return `This team is connected to another ${brand} workspace. To move it, remove ${assistant} from the team, add it back, and open the new link.`;
+    case 'other_microsoft_tenant':
+      return `This workspace's Microsoft Teams teams are in another Microsoft tenant. Disconnect Microsoft Teams in this workspace first, or connect this team to another workspace.`;
     case 'already_connected':
-      return 'Microsoft Teams is already connected to this workspace.';
+      return 'This team is already connected to this workspace.';
     case 'workspace_changed':
       return 'Your workspace changed in another tab. Open the link from Teams again.';
     default:
@@ -114,7 +116,7 @@ export default function MsTeamsConnectPage(): JSX.Element {
           tone='success'
           message={
             <>
-              Microsoft Teams is connected to <b>{tenant?.name}</b>.
+              Team <b>{details.team}</b> is connected to <b>{tenant?.name}</b>.
             </>
           }
         />

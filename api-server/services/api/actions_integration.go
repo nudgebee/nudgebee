@@ -197,7 +197,7 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		}
 
 		if err := core.CheckMsTeamsGenericWrite(ctx.GetSecurityContext().GetTenantId(), request.IntegrationName,
-			request.IntegrationId, request.IntegrationConfigName); err != nil {
+			request.IntegrationId, request.IntegrationConfigName, request.IntegrationConfigValues); err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
 		}
@@ -291,6 +291,11 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		err = common.ValidateStruct(request)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		if err := core.CheckMsTeamsGenericDeleteOrStatus(request.IntegrationName); err != nil {
+			RespondError(c, err)
 			return
 		}
 
@@ -408,6 +413,11 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		err = common.ValidateStruct(request)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		if err = core.CheckMsTeamsGenericDeleteOrStatus(request.IntegrationName); err != nil {
+			RespondError(c, err)
 			return
 		}
 

@@ -53,32 +53,32 @@ def signing_key(monkeypatch):
 
 def test_signed_data_round_trips_for_its_action_and_tenant():
     raw = ca.sign(ca.SUPPRESS, {"tenant_id": NB_TENANT, "scope": "fingerprint"})
-    assert ca.verify(raw, ca.SUPPRESS, NB_TENANT)["scope"] == "fingerprint"
+    assert ca.verify(raw, ca.SUPPRESS, {NB_TENANT})["scope"] == "fingerprint"
     assert json.loads(raw)["kid"] == ca.KEY_ID
 
 
 def test_signed_data_is_refused_for_another_tenant_action_or_key():
     raw = ca.sign(ca.SUPPRESS, {"tenant_id": NB_TENANT})
-    assert ca.verify(raw, ca.SUPPRESS, OTHER_TENANT) is None
-    assert ca.verify(raw, "approve", NB_TENANT) is None
-    assert ca.verify(json.dumps({**json.loads(raw), "kid": "0"}), ca.SUPPRESS, NB_TENANT) is None
+    assert ca.verify(raw, ca.SUPPRESS, {OTHER_TENANT}) is None
+    assert ca.verify(raw, "approve", {NB_TENANT}) is None
+    assert ca.verify(json.dumps({**json.loads(raw), "kid": "0"}), ca.SUPPRESS, {NB_TENANT}) is None
     settings.ms_teams.action_signing_key = "rotated"
-    assert ca.verify(raw, ca.SUPPRESS, NB_TENANT) is None
+    assert ca.verify(raw, ca.SUPPRESS, {NB_TENANT}) is None
 
 
 def test_tampered_or_expired_data_is_refused():
     raw = json.loads(ca.sign(ca.SUPPRESS, {"tenant_id": NB_TENANT, "duration_hours": 1}))
     raw["body"]["action_params"]["duration_hours"] = 168
-    assert ca.verify(json.dumps(raw), ca.SUPPRESS, NB_TENANT) is None
+    assert ca.verify(json.dumps(raw), ca.SUPPRESS, {NB_TENANT}) is None
     with mock.patch.object(ca.time, "time", return_value=time.time() - ca.MAX_AGE_SECONDS - 60):
         old = ca.sign(ca.SUPPRESS, {"tenant_id": NB_TENANT})
-    assert ca.verify(old, ca.SUPPRESS, NB_TENANT) is None
-    assert ca.verify("not json", ca.SUPPRESS, NB_TENANT) is None
-    assert ca.verify(json.dumps(["not", "a", "dict"]), ca.SUPPRESS, NB_TENANT) is None
+    assert ca.verify(old, ca.SUPPRESS, {NB_TENANT}) is None
+    assert ca.verify("not json", ca.SUPPRESS, {NB_TENANT}) is None
+    assert ca.verify(json.dumps(["not", "a", "dict"]), ca.SUPPRESS, {NB_TENANT}) is None
     for signature in (12345, None, {"v0": "x"}):
         forged = json.loads(ca.sign(ca.SUPPRESS, {"tenant_id": NB_TENANT}))
         forged["signature"] = signature
-        assert ca.verify(json.dumps(forged), ca.SUPPRESS, NB_TENANT) is None
+        assert ca.verify(json.dumps(forged), ca.SUPPRESS, {NB_TENANT}) is None
 
 
 # ------------------------------- card content -------------------------------
@@ -90,7 +90,7 @@ def test_a_bot_finding_card_offers_suppress_with_every_choice_signed():
     assert suppress["id"] == ca.SUPPRESS_ACTION_ID and ca.has_actions(card)
     choices = suppress["card"]["body"][0]["choices"]
     assert len(choices) == 7
-    params = [ca.verify(c["value"], ca.SUPPRESS, NB_TENANT) for c in choices]
+    params = [ca.verify(c["value"], ca.SUPPRESS, {NB_TENANT}) for c in choices]
     assert {(p["scope"], p["duration_hours"]) for p in params} == {
         ("fingerprint", 1),
         ("fingerprint", 4),
@@ -232,7 +232,9 @@ def _run(activity, *, tenant=NB_TENANT, user=("user-1", [NB_TENANT]), allowed=Tr
     common = SimpleNamespace(teams_reply=mock.AsyncMock())
     sender = mock.Mock()
     with (
-        mock.patch.object(ca, "_tenant_for", return_value=uuid.UUID(tenant) if tenant else None),
+        mock.patch.object(
+            ca, "_allowed_for", return_value=tenant if isinstance(tenant, set) else ({tenant} if tenant else set())
+        ),
         mock.patch.object(actions_module, "validate_and_get_user_tenants", return_value=user),
         mock.patch.object(actions_common, "can_manage_triage_rules", return_value=allowed) as permission,
         mock.patch.object(actions_common, "create_suppress_rule", return_value=created) as create,
@@ -303,11 +305,28 @@ def test_someone_outside_the_workspace_is_refused(store):
     assert result.replies == [actions_common.USER_NOT_FOUND_MESSAGE]
 
 
-def test_a_click_from_an_unconnected_or_other_microsoft_tenant_is_refused(store):
+def test_a_click_from_an_unconnected_team_or_a_card_signed_for_another_workspace_is_refused(store):
     for tenant in (None, OTHER_TENANT):
         result = _run(_click(), tenant=tenant)
         result.create.assert_not_called()
         assert result.replies == [actions_common.UNABLE_TO_PROCESS_REQUEST]
+
+
+def test_a_click_acts_for_the_workspace_its_card_was_signed_for(store):
+    # In a chat several workspaces can be allowed; the signed one is acted for.
+    result = _run(_click(), tenant={OTHER_TENANT, NB_TENANT}, user=("user-1", [OTHER_TENANT, NB_TENANT]))
+    assert result.create.call_args.args[:2] == (NB_TENANT, "user-1")
+    assert result.claim.call_args.args[0] == f"{NB_TENANT}:1700:{ca.SUPPRESS}"
+
+
+def test_the_allowed_workspaces_come_from_the_clicks_conversation():
+    activity = _click()
+    with (
+        mock.patch.object(ca, "Session"),
+        mock.patch.object(ca, "workspaces_for", return_value={NB_TENANT}) as workspaces_for,
+    ):
+        assert ca._allowed_for(activity) == {NB_TENANT}
+    assert workspaces_for.call_args.args[1] is activity
 
 
 def test_no_choice_asks_for_one(store):
@@ -347,7 +366,7 @@ def test_a_failed_card_update_still_reports_in_the_thread(store):
     sender = mock.Mock()
     sender.update.side_effect = TeamsBotError("Microsoft Teams returned 404", status=404)
     with (
-        mock.patch.object(ca, "_tenant_for", return_value=uuid.UUID(NB_TENANT)),
+        mock.patch.object(ca, "_allowed_for", return_value={NB_TENANT}),
         mock.patch.object(actions_module, "validate_and_get_user_tenants", return_value=("user-1", [NB_TENANT])),
         mock.patch.object(actions_common, "can_manage_triage_rules", return_value=True),
         mock.patch.object(actions_common, "create_suppress_rule", return_value=True),
@@ -365,8 +384,9 @@ def test_a_failed_card_update_still_reports_in_the_thread(store):
 def test_a_button_click_is_routed_to_the_card_action_not_the_empty_message_reply():
     events = events_module.Events.__new__(events_module.Events)
     events.common_service = SimpleNamespace(get_teams_user_info=mock.AsyncMock(return_value="dana@example.com"))
+    events._teams_workspaces = mock.AsyncMock(return_value={NB_TENANT})
     activity = SimpleNamespace(
-        conversation=SimpleNamespace(id="19:ops;messageid=1700"),
+        conversation=SimpleNamespace(id="19:ops;messageid=1700", conversation_type="channel"),
         from_property=SimpleNamespace(aad_object_id="user-1", role="user"),
         text=None,
         id="1701",
@@ -456,7 +476,7 @@ def test_an_approval_card_gets_one_signed_button_per_option():
     card = _approval_card()
     buttons = [a for a in card["actions"] if a["id"].startswith(ca.APPROVAL_ID)]
     assert [b["title"] for b in buttons] == ["Approve", "Reject"]
-    signed = [ca.verify(b["data"][ca.APPROVAL_DATA], ca.APPROVE, NB_TENANT) for b in buttons]
+    signed = [ca.verify(b["data"][ca.APPROVAL_DATA], ca.APPROVE, {NB_TENANT}) for b in buttons]
     assert [(p["token"], p["status"]) for p in signed] == [("run-1:task-2", "approve"), ("run-1:task-2", "reject")]
     assert ca.has_actions(card)
     assert not ca.has_actions(ca.without_approval(card))
@@ -615,7 +635,7 @@ def _run_approval(activity, *, decision=Decision.DECIDED, user=("user-1", [NB_TE
     common = SimpleNamespace(teams_reply=mock.AsyncMock())
     sender = mock.Mock()
     with (
-        mock.patch.object(ca, "_tenant_for", return_value=uuid.UUID(NB_TENANT)),
+        mock.patch.object(ca, "_allowed_for", return_value={NB_TENANT}),
         mock.patch.object(actions_module, "validate_and_get_user_tenants", return_value=user),
         mock.patch.object(ca.workflow_approval, "decide", return_value=decision) as post,
         mock.patch.object(ca.Cache, "claim_card_action", return_value=claimed),
@@ -752,7 +772,7 @@ def test_a_bot_finding_card_offers_ask_nubi_with_signed_data():
     card = get_ms_teams_finding_message_template(FINDING, NB_TENANT)
     assert _ids(card)[1:] == [ca.ASK_NUBI_ID, ca.SUPPRESS_ACTION_ID]
     ask = card["actions"][1]
-    params = ca.verify(ask["data"][ca.ASK_NUBI_DATA], ca.ASK_NUBI, NB_TENANT)
+    params = ca.verify(ask["data"][ca.ASK_NUBI_DATA], ca.ASK_NUBI, {NB_TENANT})
     assert (params["event_id"], params["account_id"]) == ("event-1", ACCOUNT)
     assert ask["data"][ca.ACTION_KEY] == ca.ASK_NUBI
 
@@ -787,7 +807,7 @@ def _run_ask(activity, *, user=("user-1", [NB_TENANT]), claimed=True):
     common = SimpleNamespace(teams_reply=mock.AsyncMock())
     sender = mock.Mock()
     with (
-        mock.patch.object(ca, "_tenant_for", return_value=uuid.UUID(NB_TENANT)),
+        mock.patch.object(ca, "_allowed_for", return_value={NB_TENANT}),
         mock.patch.object(actions_module, "validate_and_get_user_tenants", return_value=user),
         mock.patch.object(ca.Cache, "claim_teams_analysis", return_value=claimed),
         mock.patch.object(ca.Cache, "release_teams_analysis") as release,
@@ -1072,7 +1092,7 @@ def test_a_click_that_cant_start_the_worker_clears_the_card(store):
 def _run_ask_raw(activity):
     common = SimpleNamespace(teams_reply=mock.AsyncMock())
     with (
-        mock.patch.object(ca, "_tenant_for", return_value=uuid.UUID(NB_TENANT)),
+        mock.patch.object(ca, "_allowed_for", return_value={NB_TENANT}),
         mock.patch.object(actions_module, "validate_and_get_user_tenants", return_value=("user-1", [NB_TENANT])),
         mock.patch.object(ca.Cache, "claim_teams_analysis", return_value=True),
         mock.patch.object(ca.Cache, "release_teams_analysis"),

@@ -145,7 +145,6 @@ export default function AddAccountForm() {
                 key='ms_teams'
                 provider='ms_teams'
                 displayName='Microsoft Teams'
-                installUrl='/api/integrations/ms-teams/install'
                 headers={['User Name', 'Installed At', 'Team Name', 'Channels', '', '']}
                 mappingMode='team-multi'
               />

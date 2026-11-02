@@ -79,6 +79,21 @@ export const splitTeamsValue = (value: string) => {
   return { teamId, channelId };
 };
 
+// One Teams option per channel of every team, grouped under its team. A picked
+// option reads "Team › Channel", or just the channel when there is one team. The
+// value names both.
+export const teamsChannelOptions = (teams: { value: string; label: string; channels: DestinationOption[] }[]): DestinationOption[] =>
+  teams.flatMap((team) => {
+    const teamName = team.label || team.value;
+    return (team.channels || []).map((channel) => ({
+      value: teamsValue(team.value, channel.value),
+      label: channel.label,
+      group: teamName,
+      searchText: teamName,
+      selectedLabel: teams.length > 1 ? `${teamName} › ${channel.label}` : channel.label,
+    }));
+  });
+
 const integrationRows = (res: any) => res?.data?.data?.integrations_list?.rows || [];
 
 // Every place a rule can send to in this tenant: installed apps' channels and

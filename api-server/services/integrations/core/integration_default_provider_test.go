@@ -143,3 +143,26 @@ func TestGetIntegrationByConfigNameValues_DefaultPrefersTheUsersChoice(t *testin
 	assert.Equal(t, "int-ch", got.Id)
 	assert.NoError(t, pkgMock.ExpectationsWereMet())
 }
+
+// notifications-server writes the Microsoft Teams types, so every lookup of
+// them reads the database.
+func TestGetIntegrationByTypeNeverCachesMicrosoftTeams(t *testing.T) {
+	teamsRows := func() *sqlmock.Rows {
+		return sqlmock.NewRows([]string{"id", "name", "source", "type"}).AddRow("int-teams", "tenant-a", "user", "ms_teams")
+	}
+	pkgMock.ExpectQuery(matchPlainByType.String()).WillReturnRows(teamsRows())
+	pkgMock.ExpectQuery(matchPlainByType.String()).WillReturnRows(teamsRows())
+	for range 2 {
+		got, err := GetIntegrationByType(ctxForTenant(t, testTenant), "acc-teams", "ms_teams")
+		require.NoError(t, err)
+		require.NotNil(t, got)
+	}
+	pkgMock.ExpectQuery(matchDefaultOrdered.String()).WillReturnRows(teamsRows())
+	pkgMock.ExpectQuery(matchDefaultOrdered.String()).WillReturnRows(teamsRows())
+	for range 2 {
+		_, err := GetIntegrationByTypePreferringDefault(
+			ctxForTenant(t, testTenant), "acc-teams-default", "ms_teams_team", "default_metrics_provider")
+		require.NoError(t, err)
+	}
+	assert.NoError(t, pkgMock.ExpectationsWereMet())
+}

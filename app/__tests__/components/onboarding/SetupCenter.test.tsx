@@ -694,22 +694,36 @@ describe('SetupCenter', () => {
     expect(screen.queryByTestId('integration-modal')).not.toBeInTheDocument();
   });
 
-  // #41112: Slack and Teams have no form of their own — connecting is a
-  // single "open this OAuth URL" action, so there's nothing to show in the
-  // modal slot at all. SetupCenter must call the real install flow directly.
-  it.each([
-    ['SLACK', 'slack', '/api/integrations/slack/install'],
-    ['MSTEAMS', 'msteams', '/api/integrations/ms-teams/install'],
-  ])('starts the %s OAuth install directly, opening no modal', async (route, provider, installUrl) => {
+  // Slack has no form of its own — connecting is a single "open this
+  // OAuth URL" action, so there's nothing to show in the modal slot at all.
+  // SetupCenter must call the real install flow directly.
+  it.each([['SLACK', 'slack', '/api/integrations/slack/install']])(
+    'starts the %s OAuth install directly, opening no modal',
+    async (route, provider, installUrl) => {
+      mockGetAllAccount.mockResolvedValue(payload([k8s]));
+      render(<SetupCenter />);
+
+      fireEvent.click(await screen.findByText('Notifications and ticketing'));
+      fireEvent.click(await screen.findByTestId(`setup-provider-${route.toLowerCase()}`));
+
+      await waitFor(() => expect(mockOpenChatOAuthInstall).toHaveBeenCalledWith(provider, installUrl, expect.any(Function)));
+      expect(screen.queryByTestId('integration-modal')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('ds-modal-stub')).not.toBeInTheDocument();
+    }
+  );
+
+  it('opens the Teams page that says how to connect a team, with no sign-in popup', async () => {
+    const open = jest.spyOn(window, 'open').mockReturnValue(null);
     mockGetAllAccount.mockResolvedValue(payload([k8s]));
     render(<SetupCenter />);
 
     fireEvent.click(await screen.findByText('Notifications and ticketing'));
-    fireEvent.click(await screen.findByTestId(`setup-provider-${route.toLowerCase()}`));
+    fireEvent.click(await screen.findByTestId('setup-provider-msteams'));
 
-    await waitFor(() => expect(mockOpenChatOAuthInstall).toHaveBeenCalledWith(provider, installUrl, expect.any(Function)));
+    await waitFor(() => expect(open).toHaveBeenCalledWith('/accounts/account-form?cloudProvider=msteams', '_blank', 'noopener'));
+    expect(mockOpenChatOAuthInstall).not.toHaveBeenCalled();
     expect(screen.queryByTestId('integration-modal')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('ds-modal-stub')).not.toBeInTheDocument();
+    open.mockRestore();
   });
 
   it('refreshes readiness once the Slack/Teams popup closes', async () => {

@@ -19,13 +19,12 @@ const (
 	MsTeamsTeamConfigAppId       = "app_id"
 )
 
-// MsTeamsTeam is a Teams team that has the NudgeBee bot installed. notifications-
-// server writes it from Bot Framework install events, bound to the tenant whose
-// ms_teams integration is named after the team's Microsoft tenant. The row's
-// primary key on the integrations table is the team's Entra group id, stored in
-// integrations.name; a partial unique index on (name) WHERE type =
-// 'ms_teams_team' keeps it globally unique. Uninstall disables the row rather
-// than deleting it.
+// MsTeamsTeam is a Teams team, keyed by its Entra group id in integrations.name;
+// a partial unique index on (name) WHERE type = 'ms_teams_team' keeps it
+// globally unique. notifications-server alone writes it: status 'enabled' means
+// bound to tenant_id by the bot's connect link with the app in the team; any
+// other status ('released' once the app leaves) means unbound, and tenant_id is
+// then only history. Readers select status = 'enabled'.
 type MsTeamsTeam struct{}
 
 func (MsTeamsTeam) Name() string {

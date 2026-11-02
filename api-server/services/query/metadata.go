@@ -4128,7 +4128,7 @@ var table_metadata = map[string]TableDefinition{
 					tenant_id,
 					json_agg(json_build_object('id', id, 'username', username, 'team_name', team_name, 'created_at', created_at, 'team_id', team_id, 'channels', channels, 'platform', platform) ORDER BY team_name) as messaging_platforms
 				FROM messaging_platforms
-				WHERE platform IN ('slack', 'ms_teams', 'google_chat')
+				WHERE platform IN ('slack', 'google_chat')
 				GROUP BY tenant_id
 			),
 			integrations_agg AS (
@@ -4143,7 +4143,7 @@ var table_metadata = map[string]TableDefinition{
 					'postgresql', 'rabbitmq', 'mysql', 'redis', 'confluence', 'clickhouse',
 					'datadog', 'argocd', 'llm', 'loggly', 'loki', 'signoz',
 					'azure_app_insights', 'prometheus', 'otel_clickhouse', 'chronosphere',
-					'ssh', 'observe', 'jaeger', 'ES', 'newrelic', 'newrelic_webhook'
+					'ssh', 'observe', 'jaeger', 'ES', 'newrelic', 'newrelic_webhook', 'ms_teams'
 				)
 				GROUP BY tenant_id
 			)

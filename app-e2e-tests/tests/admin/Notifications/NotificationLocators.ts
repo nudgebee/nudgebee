@@ -30,7 +30,6 @@ export class NotificationLocators extends CommonLocators {
   readonly ruleError!: Locator;
 
   readonly slackChannelSelector!: Locator;
-  readonly msTeamsGroupSelector!: Locator;
   readonly msTeamsChannelSelector!: Locator;
   readonly gChatChannelSelector!: Locator;
   readonly emailInput!: Locator;
@@ -72,7 +71,6 @@ export class NotificationLocators extends CommonLocators {
     this.ruleError = page.locator("#rule-error");
 
     this.slackChannelSelector = page.locator("#slack-channel");
-    this.msTeamsGroupSelector = page.locator("#msteam-groups");
     this.msTeamsChannelSelector = page.locator("#msteam-channel");
     this.gChatChannelSelector = page.locator("#gchat-channel");
     this.emailInput = page.locator("#email-input");

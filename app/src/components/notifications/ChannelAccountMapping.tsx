@@ -17,6 +17,7 @@ import apiAccount from '@api1/account';
 import { canManage } from '@lib/auth';
 import { ds } from 'src/utils/colors';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
+import { splitTeamsValue, teamsChannelOptions, teamsValue } from './rules/destinations';
 
 const renderAccountGroupIcon = (accountProvider: string) => <CloudProviderIcon cloud_provider={accountProvider} width='14px' height='14px' />;
 
@@ -36,7 +37,6 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
 
   const [cloudAccounts, setCloudAccounts] = useState<any[]>([]);
   const [channels, setChannels] = useState<any[]>([]);
-  const [teams, setTeams] = useState<any[]>([]);
   const [messagingPlatform, setMessagingPlatform] = useState<any>(null);
   const [channelNameMap, setChannelNameMap] = useState<Record<string, string>>({});
   const [teamNameMap, setTeamNameMap] = useState<Record<string, string>>({});
@@ -92,7 +92,15 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
       const teamMap: Record<string, string> = {};
 
       if (provider === 'ms_teams') {
-        setTeams(data.map((item: any) => ({ label: item.name, value: item.id, channels: item.channels, teamId: item.id })));
+        setChannels(
+          teamsChannelOptions(
+            data.map((item: any) => ({
+              label: item.name,
+              value: item.id,
+              channels: (item.channels || []).map((c: any) => ({ label: c.name, value: c.id })),
+            }))
+          )
+        );
         // For MS Teams, build map from all team channels and teams
         data.forEach((team: any) => {
           // Build team name map
@@ -321,13 +329,6 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
     }
   };
 
-  const handleTeamChange = (next: string) => {
-    setSelectedTeam(next);
-    setSelectedChannel('');
-    const team = teams.find((t: any) => t.value === next);
-    setChannels(team?.channels?.map((item: any) => ({ label: item.name, value: item.id })) || []);
-  };
-
   if (!isConfigured) {
     return null;
   }
@@ -409,29 +410,22 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
           />
 
           {provider === 'ms_teams' ? (
-            <>
-              <Select
-                id='team'
-                label='Team'
-                required
-                value={selectedTeam}
-                options={teams}
-                onChange={handleTeamChange}
-                disabled={isLoadingChannels}
-                placeholder={isLoadingChannels ? 'Loading…' : 'Select team'}
-              />
-              <Select
-                id='channel'
-                key={`channel-${selectedTeam}`}
-                label='Channel'
-                required
-                value={selectedChannel}
-                options={channels}
-                onChange={(next) => setSelectedChannel(next)}
-                disabled={!selectedTeam || isLoadingChannels}
-                placeholder={!selectedTeam ? 'Select a team first' : isLoadingChannels ? 'Loading…' : 'Select channel'}
-              />
-            </>
+            <Select
+              id='channel'
+              label='Channel'
+              required
+              value={selectedChannel ? teamsValue(selectedTeam, selectedChannel) : ''}
+              grouped
+              defaultGroupsOpen
+              options={channels}
+              onChange={(next) => {
+                const { teamId, channelId } = splitTeamsValue(next);
+                setSelectedTeam(teamId);
+                setSelectedChannel(channelId);
+              }}
+              disabled={isLoadingChannels}
+              placeholder={isLoadingChannels ? 'Loading…' : 'Select channel'}
+            />
           ) : (
             <Select
               id='channel'

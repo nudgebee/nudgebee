@@ -1,15 +1,15 @@
-"""Connect Microsoft Teams from the bot, without a Microsoft sign-in.
+"""Connect a Microsoft Teams team to a workspace from the bot.
 
-While a Microsoft tenant isn't connected, the bot's welcome card in a team
-channel carries a link for the person who added the bot. Signed in to NudgeBee
-as an admin with that same email, they open it and confirm, which connects the
-Microsoft tenant to their workspace.
+While a team isn't connected, the bot's welcome card in it carries a link for
+the person who added the bot, and an @mention of the bot gets a link for the
+person who mentioned it. Signed in to NudgeBee as an admin with that same email,
+they open it and confirm, which binds the team to their workspace.
 
 The link is bound to that person rather than to their email domain, so another
-employee can't claim the tenant for a workspace of their own. It names them
-only by a keyed hash of their sign-in name (UPN): the card sits in channel
-history, readable by every member and guest. Guests, other tenants, personal
-accounts, public mailbox domains and admin-only accounts get no link."""
+employee can't claim the team for a workspace of their own. It names them only
+by a keyed hash of their sign-in name (UPN): the card sits in channel history,
+readable by every member and guest. Guests, other tenants, personal accounts,
+public mailbox domains and admin-only accounts get no link."""
 
 import asyncio
 import base64
@@ -18,14 +18,15 @@ import hmac
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Dict, Optional, Tuple
 
 from notifications_server.configs.settings import settings
+from notifications_server.services.cache import Cache
 from notifications_server.services.ms_teams import card_actions
 from notifications_server.services.ms_teams.activity import channel_data_of
-from notifications_server.services.ms_teams.bot_installations import apply_team_change
 from notifications_server.services.ms_teams.bot_sender import TeamRef, TeamsBotError, get_sender
-from notifications_server.services.ms_teams.ms_teams import CONNECTED, connect_ms_teams_tenant
+from notifications_server.services.ms_teams.team_binding import bind_team
 from notifications_server.utils.action_requests import ActionRequestBody, verify_action_request
 
 LOG = logging.getLogger(__name__)
@@ -85,6 +86,10 @@ PUBLIC_MAIL_DOMAINS = frozenset(
     }
 )
 INVALID, EXPIRED, WRONG_USER = "invalid", "expired", "wrong_user"
+RATE_LIMITED = "rate_limited"
+LINK_ALREADY_SENT = "Use the link I posted a few minutes ago."
+# One link per person per team from @mentions in this window.
+MENTION_LINK_SECONDS = 300
 TEAM_FIELDS = ("team_aad_group_id", "team_thread_id", "team_name", "service_url", "aad_tenant_id", "app_id")
 INSTALLER_HASH_PREFIX = "ms_teams_connect_installer:"
 
@@ -110,13 +115,10 @@ def email_domain(value) -> Optional[str]:
 
 def unavailable_reason(activity) -> Optional[str]:
     """Why Connect from the bot is off here: key_unset without the signing key,
-    not_channel outside a team channel. None when it's on. Whether the Microsoft
-    tenant is connected is the caller's check."""
+    not_channel outside a team channel. None when it's on. Whether the team is
+    connected is the caller's check."""
     if not card_actions.buttons_enabled():
         return "key_unset"
-    conversation = getattr(activity, "conversation", None)
-    if getattr(conversation, "conversation_type", None) != "channel":
-        return "not_channel"
     channel_data = channel_data_of(activity)
     if not ((channel_data.get("team") or {}).get("aadGroupId") and (channel_data.get("tenant") or {}).get("id")):
         return "not_channel"
@@ -218,8 +220,9 @@ def mint(params: dict) -> str:
 
 
 async def _installer_link(activity) -> Tuple[Optional[str], Optional[str]]:
-    """(the connect page with a link for whoever added the bot, None), or
-    (None, why there's no link)."""
+    """(the connect page with a link for the activity's sender, None), or
+    (None, why there's no link). The sender is whoever added the bot, for the
+    welcome card, or whoever mentioned it."""
     reason = unavailable_reason(activity)
     if reason:
         return None, reason
@@ -259,10 +262,28 @@ async def link_url(activity) -> Optional[str]:
     return url
 
 
+async def mention_link(activity) -> Tuple[Optional[str], Optional[str]]:
+    """For an @mention in a team that isn't connected: (the connect page with a
+    link for whoever mentioned the bot, None), or (None, why there's none).
+    RATE_LIMITED when that person already got one in this team within
+    MENTION_LINK_SECONDS."""
+    url, reason = await _installer_link(activity)
+    if reason:
+        aad_tenant_id = (channel_data_of(activity).get("tenant") or {}).get("id")
+        LOG.info("No connect link for an @mention in Microsoft tenant %s: %s", aad_tenant_id, reason)
+        return None, reason
+    team_id = (channel_data_of(activity).get("team") or {}).get("aadGroupId")
+    sender = activity.from_property
+    person = sender.aad_object_id or sender.id
+    if not await Cache().aio.claim_teams_connect_link(team_id, person, MENTION_LINK_SECONDS):
+        return None, RATE_LIMITED
+    return url, None
+
+
 def _checked(token) -> Optional[Tuple[dict, float]]:
     """(params, age in seconds) of a link we signed, or None. Like
-    card_actions._checked, without its NudgeBee tenant check: a link is minted
-    before any tenant is known."""
+    card_actions._checked, without its workspace check: a link is minted
+    before any workspace is known."""
     try:
         payload = json.loads(base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)))
         if payload.get("kid") != card_actions.KEY_ID:
@@ -299,39 +320,26 @@ def _login(user_email) -> Optional[str]:
 
 
 def redeem(session, token, tenant_id, user_email: str) -> str:
-    """Connect the link's Microsoft tenant to tenant_id, as user_email, which
-    must be the sign-in name of whoever added the bot. Returns CONNECTED or a
+    """Bind the link's team to tenant_id, as user_email, which must be the
+    sign-in name of the person the link was minted for. Returns CONNECTED or a
     refusal code."""
     params, refusal = verify(token)
     if refusal:
         return refusal
+    minted_at = datetime.fromtimestamp(time.time() - _checked(token)[1], tz=timezone.utc)
     installer = params.get("installer")
-    aad_tenant_id = params.get("aad_tenant_id")
-    if not (installer and isinstance(installer, str) and aad_tenant_id and isinstance(aad_tenant_id, str)):
+    team = {k: params.get(k) or "" for k in TEAM_FIELDS}
+    if not (
+        installer
+        and isinstance(installer, str)
+        and all(isinstance(team[k], str) for k in TEAM_FIELDS)
+        and team["aad_tenant_id"]
+        and team["team_aad_group_id"]
+    ):
         return INVALID
     login = _login(user_email)
     if not login or not hmac.compare_digest(installer_hash(login).encode(), installer.encode()):
         return WRONG_USER
-
-    outcome = connect_ms_teams_tenant(
-        session,
-        tenant_id,
-        aad_tenant_id,
-        installed_by=user_email,
-        client_id=None,
-        user_email=user_email,
-        audit_attr={"confirmed_by": user_email},
+    return bind_team(
+        session, team, tenant_id, actor=user_email, audit_attr={"confirmed_by": user_email}, minted_at=minted_at
     )
-    if outcome != CONNECTED:
-        return outcome
-    # The team the link came from, so its channels can be picked right away.
-    # The connection already stands, and the team is recorded on its next
-    # message anyway, so a failure here doesn't fail the connect.
-    try:
-        apply_team_change(
-            session, {"action": "upsert", "from_message": False, **{k: params.get(k) or "" for k in TEAM_FIELDS}}
-        )
-    except Exception as e:
-        session.rollback()
-        LOG.warning("Recording the Teams team for a connect link failed: %s", e)
-    return CONNECTED

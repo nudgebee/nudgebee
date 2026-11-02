@@ -71,6 +71,8 @@ export interface SelectOption {
   group?: string;
   /** Extra text the search also matches, e.g. a raw key behind a formatted label. */
   searchText?: string;
+  /** What the closed field shows once this option is picked. Defaults to `label`. */
+  selectedLabel?: React.ReactNode;
 }
 
 /** Options may be plain strings (label and value the same) or SelectOption objects. */
@@ -499,7 +501,7 @@ export function Select(props: SelectProps) {
 
     if (!props.multiple) {
       const opt = optionsByValue.get(props.value as string);
-      return <>{opt?.label ?? props.value}</>;
+      return <>{opt?.selectedLabel ?? opt?.label ?? props.value}</>;
     }
 
     // Multi-mode: render the labels that fit, then '+N' for the rest

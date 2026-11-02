@@ -41,16 +41,16 @@ from notifications_server.services.ms_teams.bot_sender import (
     card_activity,
     get_sender,
     load_teams,
+    require_bot_connector_url,
 )
 from notifications_server.services.messaging_installations import (
     load_installation,
     load_installation_by_team,
-    load_ms_teams_installation_by_aad_tenant,
     load_installations,
-    ms_teams_aad_tenant_owner,
 )
 from notifications_server.services.ms_teams.activity import channel_data_of
 from notifications_server.services.ms_teams.bot_installations import store_team_name
+from notifications_server.services.ms_teams.team_binding import eligible, workspaces_for
 from notifications_server.services.ms_teams import connect_link
 
 from botbuilder.core import TurnContext, BotFrameworkAdapterSettings, BotFrameworkAdapter
@@ -118,6 +118,13 @@ def _slack_retry_after(error):
     return str(headers.get("retry-after", "")).strip()
 
 
+def _ask_an_admin_to_connect() -> str:
+    return (
+        f"Ask a {settings.urls.branding_name} admin to @mention {settings.urls.assistant_name} here "
+        "to connect this team."
+    )
+
+
 def latest_slack_notification(session, fingerprint, tenant_id=None, account_id=None):
     """The newest Slack first post of fingerprint, the alert's thread, scoped to tenant_id and
     account_id when given. A tenant may have Slack, Discord and Teams rows for one fingerprint, and
@@ -172,8 +179,9 @@ class CommonService:
             if platform == "google_chat":
                 return self.get_google_chat_channels(tenant)
 
-            # Slack/MS Teams may live in the integrations table (token encrypted) or
-            # the legacy messaging_platforms table; load_installations unions both.
+            # Slack may live in the integrations table (token encrypted) or the legacy
+            # messaging_platforms table; load_installations unions both. MS Teams is
+            # integrations only.
             installations = load_installations(self.session, tenant, platform)
             messaging_platform = installations[0] if installations else None
             if not messaging_platform:
@@ -922,7 +930,8 @@ class CommonService:
 
     def _get_messaging_platform(self, tenant_id, team_id, platform):
         # Slack callers may target a specific workspace by team_id; MS Teams/Google
-        # Chat resolve by tenant. Unions integrations + legacy messaging_platforms.
+        # Chat resolve by tenant. Unions integrations + legacy messaging_platforms
+        # (Slack only).
         # team_id is caller-supplied, so it only selects among this tenant's
         # installs — it must never reach another tenant's workspace.
         if team_id and platform == "slack":
@@ -2314,10 +2323,8 @@ class CommonService:
                 LOG.warning("No AAD user ID provided")
                 return None
 
-            messaging_platform = load_ms_teams_installation_by_aad_tenant(self.session, teams_account_id)
-
-            if not messaging_platform:
-                LOG.debug(f"No Teams messaging platform found for teams account {teams_account_id}")
+            if not eligible(self.session, teams_account_id):
+                LOG.debug(f"No Teams team is connected in Microsoft tenant {teams_account_id}")
                 return None
 
             user_email = await sender_email(activity) if activity is not None else None
@@ -2448,11 +2455,11 @@ class CommonService:
 
     @staticmethod
     def create_teams_welcome_card(connected: bool, connect_url: Optional[str] = None, integrations_only: bool = False):
-        """The card shown when the app is added. A Microsoft tenant already
-        connected to NudgeBee gets how-to-use; otherwise, how to connect: with
-        connect_url, its button carries a connect link for whoever added the
-        app; with integrations_only, it points to Integrations instead, for
-        someone who can't have a link."""
+        """The card shown when the app is added. A connected team gets how-to-use;
+        otherwise, how to connect: with connect_url, its button carries a connect
+        link for whoever added the app; with integrations_only, it says to ask an
+        admin, for someone who can't have a link. In a personal or group chat
+        that isn't connected, how to connect a team."""
         from notifications_server.services.bot_messages import SIGNUP_URL
 
         branding_name = settings.urls.branding_name
@@ -2547,7 +2554,7 @@ class CommonService:
                     "type": "TextBlock",
                     "text": (
                         f"This button works for 7 days and only for the person who added {assistant_name}. "
-                        f"After that, connect from {branding_name} → Integrations."
+                        f"After that, @mention {assistant_name} here for a new one."
                     ),
                     "wrap": True,
                     "size": "Small",
@@ -2555,28 +2562,15 @@ class CommonService:
                 },
             ]
         elif integrations_only:
-            card["body"].append(
-                {
-                    "type": "TextBlock",
-                    "text": (
-                        f"Connect Microsoft Teams in {branding_name} to get alerts and ask questions here. "
-                        f"Connect from {branding_name} → Integrations → Microsoft Teams."
-                    ),
-                    "wrap": True,
-                }
-            )
-            card["actions"] = [
-                {
-                    "type": "Action.OpenUrl",
-                    "title": "Open Integrations",
-                    "url": f"{settings.base_url}/user-management#integrations",
-                }
-            ]
+            card["body"].append({"type": "TextBlock", "text": _ask_an_admin_to_connect(), "wrap": True})
         else:
             card["body"] += [
                 {
                     "type": "TextBlock",
-                    "text": f"Connect Microsoft Teams in {branding_name} to get alerts and ask questions here.",
+                    "text": (
+                        f"To get alerts and ask questions, add {assistant_name} to a team and @mention it there "
+                        f"to connect that team to {branding_name}."
+                    ),
                     "wrap": True,
                 },
                 {
@@ -2586,13 +2580,6 @@ class CommonService:
                     "size": "Small",
                     "isSubtle": True,
                 },
-            ]
-            card["actions"] = [
-                {
-                    "type": "Action.OpenUrl",
-                    "title": "Connect Microsoft Teams",
-                    "url": f"{settings.base_url}/user-management#integrations",
-                }
             ]
 
         return card
@@ -2605,7 +2592,7 @@ class CommonService:
             # Get conversation reference from the incoming activity
             conversation_reference = TurnContext.get_conversation_reference(activity)
 
-            # Trust the service URL for this conversation
+            require_bot_connector_url(activity.service_url)
             MicrosoftAppCredentials.trust_service_url(activity.service_url)
 
             # Define the callback function that sends the card
@@ -2646,7 +2633,7 @@ class CommonService:
             # Get conversation reference from the incoming activity
             conversation_reference = TurnContext.get_conversation_reference(activity)
 
-            # Trust the service URL for this conversation
+            require_bot_connector_url(activity.service_url)
             MicrosoftAppCredentials.trust_service_url(activity.service_url)
 
             # Define the callback function that sends the message
@@ -2690,6 +2677,7 @@ class CommonService:
                 ),
             )
 
+            require_bot_connector_url(conversation_ref_dict.get("service_url"))
             MicrosoftAppCredentials.trust_service_url(conversation_ref_dict.get("service_url"))
 
             async def send_message_callback(turn_context: TurnContext):
@@ -2730,6 +2718,7 @@ class CommonService:
                 ),
             )
 
+            require_bot_connector_url(conversation_ref_dict.get("service_url"))
             MicrosoftAppCredentials.trust_service_url(conversation_ref_dict.get("service_url"))
 
             async def send_card_callback(turn_context: TurnContext):
@@ -2865,10 +2854,12 @@ class CommonService:
             return {"success": False, "platform": "google_chat", "error": "Unexpected error; see server logs"}
 
     async def teams_send_welcome_message(self, activity: Activity) -> bool:
-        """Send welcome message when bot is added to a Teams conversation."""
+        """Send welcome message when bot is added to a Teams conversation: in a
+        team, connected or with a connect link for whoever added the app; in a
+        personal or group chat, the plain welcome."""
         aad_tenant_id = (channel_data_of(activity).get("tenant") or {}).get("id")
         try:
-            connected = bool(ms_teams_aad_tenant_owner(self.session, aad_tenant_id, enabled_only=True))
+            connected = bool(workspaces_for(self.session, activity))
         except Exception as e:
             LOG.warning("Checking the Teams connection for tenant %s failed: %s", aad_tenant_id, e)
             self.session.rollback()
@@ -2886,10 +2877,21 @@ class CommonService:
 
     @staticmethod
     def create_teams_not_connected_card() -> dict:
-        """The bot's reply to a message in a team whose Microsoft tenant isn't
-        connected: where to connect in NudgeBee. It never carries a connect
-        link; only the welcome card does, for whoever added the app."""
+        """The bot's reply to a message in a team that isn't connected to a
+        workspace, from someone who can't have a connect link."""
+        return {
+            "type": "AdaptiveCard",
+            ADAPTIVE_CARD_SCHEMA_KEY: ADAPTIVE_CARD_SCHEMA_URL,
+            "version": "1.4",
+            "body": [{"type": "TextBlock", "text": _ask_an_admin_to_connect(), "wrap": True}],
+        }
+
+    @staticmethod
+    def create_teams_connect_card(connect_url: str) -> dict:
+        """The bot's reply to an @mention in a team that isn't connected: a
+        connect link for whoever mentioned it."""
         branding_name = settings.urls.branding_name
+        assistant_name = settings.urls.assistant_name
         return {
             "type": "AdaptiveCard",
             ADAPTIVE_CARD_SCHEMA_KEY: ADAPTIVE_CARD_SCHEMA_URL,
@@ -2897,16 +2899,23 @@ class CommonService:
             "body": [
                 {
                     "type": "TextBlock",
-                    "text": f"Connect Microsoft Teams from {branding_name} → Integrations → Microsoft Teams.",
+                    "text": f"Connect this team to {branding_name} to get alerts and ask questions here.",
                     "wrap": True,
-                }
-            ],
-            "actions": [
+                },
                 {
-                    "type": "Action.OpenUrl",
-                    "title": "Open Integrations",
-                    "url": f"{settings.base_url}/user-management#integrations",
-                }
+                    "type": "ActionSet",
+                    "actions": [{"type": "Action.OpenUrl", "title": "Connect this team", "url": connect_url}],
+                },
+                {
+                    "type": "TextBlock",
+                    "text": (
+                        f"This button works for 7 days and only for the person who mentioned {assistant_name}, "
+                        f"signed in to {branding_name} as an admin."
+                    ),
+                    "wrap": True,
+                    "size": "Small",
+                    "isSubtle": True,
+                },
             ],
         }
 

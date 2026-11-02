@@ -6,6 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
 from notifications_server import engine, sync_engine, slack_app, teams_app
 from notifications_server.configs.settings import settings
@@ -19,6 +20,7 @@ from notifications_server.services.channel_watch import ChannelWatchService
 from notifications_server.services.common import CommonService
 from notifications_server.services import remediation_thread
 from notifications_server.services.message import MessageService
+from notifications_server.services.ms_teams.team_binding import disconnect_workspace
 from notifications_server.services.rules import NotificationRulesService
 from notifications_server.services.route_check import RouteCheckService
 from notifications_server.clients.google_chat_app_client import GoogleChatAppClient
@@ -563,6 +565,27 @@ async def send_test_notification(request: Request, body: Dict[Any, Any]):
     except Exception:
         LOG.exception("Error in send_test_notification endpoint")
         return JSONResponse({"success": False, "error": "Unexpected error"})
+
+
+def _disconnect_ms_teams_sync(tenant):
+    with Session(sync_engine) as session:
+        return disconnect_workspace(session, tenant)
+
+
+@router.post("/integrations/ms-teams/disconnect", dependencies=[Depends(verify_action_token)])
+async def disconnect_ms_teams(request: Request, body: Dict[Any, Any]):
+    """Disconnect Microsoft Teams from the caller's workspace: every team bound
+    to it is released, and their channel mappings and the connection removed."""
+    tenant = body.get("session_variables", {}).get("tenant_id") or request.headers.get("tenant")
+    if not tenant:
+        return JSONResponse({"success": False, "error": ERROR_TENANT_NOT_FOUND})
+    try:
+        released = await run_in_threadpool(_disconnect_ms_teams_sync, tenant)
+    except Exception:
+        LOG.exception("Error disconnecting Microsoft Teams for tenant %s", tenant)
+        return JSONResponse({"success": False, "error": "Unable to disconnect Microsoft Teams"})
+    LOG.info("Microsoft Teams disconnected for tenant %s; %s teams released", tenant, released)
+    return JSONResponse({"success": True, "released_teams": released})
 
 
 @router.post("/integrations/messaging/invalidate-cache", dependencies=[Depends(verify_action_token)])

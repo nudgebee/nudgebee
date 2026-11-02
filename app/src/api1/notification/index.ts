@@ -247,7 +247,8 @@ const apiNotifications = {
       } catch {
         integrationPlatforms = [];
       }
-      const overridden = new Set(integrationPlatforms.map((p) => p.platform));
+      // MS Teams is connected only through its integration (a bound team), never a legacy row.
+      const overridden = new Set(['ms_teams', ...integrationPlatforms.map((p) => p.platform)]);
       const merged = platforms.filter((p: any) => !overridden.has(p.platform)).concat(integrationPlatforms);
       return { messaging_platforms: merged };
     } catch {

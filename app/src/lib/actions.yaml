@@ -5095,6 +5095,17 @@ actions:
       - role: tenant_admin
       - role: account_admin
     comment: Send a test notification to verify messaging integration
+  - name: notifications_delete_ms_teams_connection
+    definition:
+      kind: synchronous
+      handler: '{{NOTIFICATION_SERVICE_URL}}/api/integrations/ms-teams/disconnect'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: NOTIFICATION_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Disconnect Microsoft Teams from the workspace, releasing every team bound to it
   - name: notification_rule_delete
     definition:
       kind: synchronous

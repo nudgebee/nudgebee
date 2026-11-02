@@ -92,6 +92,7 @@ def _events(entries):
     events.common_service = mock.Mock(app_id="A1")
     events.common_service.teams_reply = mock.AsyncMock()
     events.session = mock.Mock()
+    events._teams_workspaces = mock.AsyncMock(return_value={TENANT})
     events._validate_user_access_to_account = lambda user, tenant, account: user in CAN_ACCESS and account == ACCOUNT
 
     async def access(user, tenant, account):

@@ -130,7 +130,8 @@ describe('POST /api/integrations/ms-teams/link', () => {
     [{ code: 'invalid' }],
     [{ code: 'expired' }],
     [{ code: 'wrong_user' }],
-    [{ code: 'tenant_linked_elsewhere' }],
+    [{ code: 'team_linked_elsewhere' }],
+    [{ code: 'other_microsoft_tenant' }],
     [{ code: 'already_connected' }],
   ])('passes a refusal through: %j', async (body) => {
     signedIn();

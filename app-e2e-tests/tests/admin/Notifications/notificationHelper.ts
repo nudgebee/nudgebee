@@ -130,15 +130,16 @@ export async function configureChannels(
   if (
     channelConfig.msTeamsGroup &&
     channelConfig.msTeamsChannel &&
-    (await locators.msTeamsGroupSelector.isVisible())
+    (await locators.msTeamsChannelSelector.isVisible())
   ) {
-    const groupSelected = await selectFromFilterDropdown(page, locators.msTeamsGroupSelector, channelConfig.msTeamsGroup);
-
-    if (groupSelected) {
-      await locators.msTeamsChannelSelector.waitFor({ state: "visible" });
-      const channelSelected = await selectFromFilterDropdown(page, locators.msTeamsChannelSelector, channelConfig.msTeamsChannel);
-      if (channelSelected) anyConfigured = true;
-    }
+    // One "Team › Channel" picker; the team name is left out when the workspace has one team.
+    const channelSelected =
+      (await selectFromFilterDropdown(
+        page,
+        locators.msTeamsChannelSelector,
+        `${channelConfig.msTeamsGroup} › ${channelConfig.msTeamsChannel}`,
+      )) || (await selectFromFilterDropdown(page, locators.msTeamsChannelSelector, channelConfig.msTeamsChannel));
+    if (channelSelected) anyConfigured = true;
   }
 
   const isDev = process.env.E2E_ENVIRONMENT === "dev";

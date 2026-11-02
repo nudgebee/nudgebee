@@ -1699,7 +1699,9 @@ class MessageService:
     async def get_installed_platforms(session, **kwargs):
         filter_conditions = {key: value for key, value in kwargs.items() if value is not None}
         result = await session.execute(select(MessagingPlatform).filter_by(**filter_conditions))
-        installs = list(result.scalars().all())
+        # Google Chat and MS Teams are integrations-only now; ignore any stale legacy
+        # messaging_platforms row of theirs so it can't be delivered to.
+        installs = [ip for ip in result.scalars().all() if ip.platform not in ("google_chat", "ms_teams")]
         for ip in installs:
             ip._origin = ORIGIN_LEGACY
         tenant_id = filter_conditions.get("tenant_id")

@@ -24,8 +24,8 @@ from notifications_server.configs.settings import URLRoutes, settings
 from notifications_server.models.models import SentNotifications
 from notifications_server.services import auto_optimize_approval, delivery_records, workflow_approval
 from notifications_server.services.cache import Cache
-from notifications_server.services.messaging_installations import ms_teams_aad_tenant_owner
 from notifications_server.services.ms_teams.bot_sender import TeamsBotError, card_activity, get_sender
+from notifications_server.services.ms_teams.team_binding import workspaces_for
 from notifications_server.services.workflow_approval import Decision
 from notifications_server.utils.action_requests import ActionRequestBody, sign_action_request, verify_action_request
 from notifications_server.utils.datetime_utils import utc_now
@@ -142,9 +142,9 @@ def sign(action_name: str, params: dict) -> str:
     return json.dumps({"kid": KEY_ID, "body": body.model_dump(exclude_none=True), "signature": signature})
 
 
-def _checked(raw, action_name: str, tenant_id):
-    """(params, age in seconds) of button data we signed for this action and this
-    NudgeBee tenant, or None."""
+def _checked(raw, action_name: str, allowed):
+    """(params, age in seconds) of button data we signed for this action and for
+    one of the allowed NudgeBee tenants, or None."""
     try:
         payload = json.loads(raw) if isinstance(raw, str) else raw
         if payload.get("kid") != KEY_ID:
@@ -157,23 +157,23 @@ def _checked(raw, action_name: str, tenant_id):
     except Exception:
         return None
     params = body.action_params or {}
-    if not tenant_id or str(params.get("tenant_id")) != str(tenant_id):
+    if str(params.get("tenant_id")) not in {str(t) for t in allowed or ()}:
         return None
     return params, time.time() - body.timestamp
 
 
-def verify(raw, action_name: str, tenant_id) -> Optional[dict]:
+def verify(raw, action_name: str, allowed) -> Optional[dict]:
     """The params of signed button data, or None unless it was signed by us for
-    this action and this NudgeBee tenant within MAX_AGE_SECONDS."""
-    checked = _checked(raw, action_name, tenant_id)
+    this action and one of the allowed NudgeBee tenants within MAX_AGE_SECONDS."""
+    checked = _checked(raw, action_name, allowed)
     if not checked or not -300 <= checked[1] <= MAX_AGE_SECONDS:
         return None
     return checked[0]
 
 
-def expired(raw, action_name: str, tenant_id) -> bool:
+def expired(raw, action_name: str, allowed) -> bool:
     """True for genuine button data that is too old to use."""
-    checked = _checked(raw, action_name, tenant_id)
+    checked = _checked(raw, action_name, allowed)
     return bool(checked) and checked[1] > MAX_AGE_SECONDS
 
 
@@ -523,9 +523,11 @@ def is_card_action(activity) -> bool:
     return isinstance(activity.value, dict) and bool(activity.value.get(ACTION_KEY))
 
 
-def _tenant_for(aad_tenant_id):
+def _allowed_for(activity):
+    """The NudgeBee tenants a click in this conversation may act for: the team's
+    owner in a channel, or the eligible workspaces in a personal or group chat."""
     with Session(sync_engine) as session:
-        return ms_teams_aad_tenant_owner(session, aad_tenant_id, enabled_only=True)
+        return workspaces_for(session, activity)
 
 
 async def handle(common_service, activity, user_email, aad_tenant_id) -> None:
@@ -558,14 +560,15 @@ async def _suppress(common_service, activity, user_email, aad_tenant_id) -> None
     raw = activity.value.get(SUPPRESS_CHOICE)
     if not raw:
         return await reply(PICK_A_DURATION)
-    tenant_id = await asyncio.to_thread(_tenant_for, aad_tenant_id)
-    params = verify(raw, SUPPRESS, tenant_id)
+    allowed = await asyncio.to_thread(_allowed_for, activity)
+    params = verify(raw, SUPPRESS, allowed)
     duration_hours = int((params or {}).get("duration_hours") or 0)
     if not (params and params.get("account_id") and params.get("scope") and duration_hours > 0):
-        if expired(raw, SUPPRESS, tenant_id):
+        if expired(raw, SUPPRESS, allowed):
             return await reply(_branded(SUPPRESS_CARD_TOO_OLD))
         LOG.warning("Rejecting a Teams suppress click with invalid data")
         return await reply(UNABLE_TO_PROCESS_REQUEST)
+    tenant_id = uuid.UUID(str(params["tenant_id"]))
     account_id = params["account_id"]
 
     user_id, tenants = await asyncio.to_thread(validate_and_get_user_tenants, user_email)
@@ -670,13 +673,14 @@ async def _approve(common_service, activity, user_email, aad_tenant_id) -> None:
     raw = activity.value.get(APPROVAL_DATA) or activity.value.get(APPROVAL_CHOICE)
     if not raw:
         return await reply(PICK_AN_OPTION)
-    tenant_id = await asyncio.to_thread(_tenant_for, aad_tenant_id)
-    params = verify(raw, APPROVE, tenant_id)
+    allowed = await asyncio.to_thread(_allowed_for, activity)
+    params = verify(raw, APPROVE, allowed)
     if not (params and params.get("token") and params.get("status")):
-        if expired(raw, APPROVE, tenant_id):
+        if expired(raw, APPROVE, allowed):
             return await reply(_branded(APPROVAL_CARD_TOO_OLD))
         LOG.warning("Rejecting a Teams approval click with invalid data")
         return await reply(UNABLE_TO_PROCESS_REQUEST)
+    tenant_id = uuid.UUID(str(params["tenant_id"]))
 
     # The approval token is the authority to decide, as on Slack; the clicker
     # must also be a user of the workspace the approval belongs to.
@@ -785,13 +789,14 @@ async def _ask_nubi(common_service, activity, user_email, aad_tenant_id) -> None
         await common_service.teams_reply(activity, text, aad_tenant_id)
 
     raw = activity.value.get(ASK_NUBI_DATA)
-    tenant_id = await asyncio.to_thread(_tenant_for, aad_tenant_id)
-    params = verify(raw, ASK_NUBI, tenant_id) if raw else None
+    allowed = await asyncio.to_thread(_allowed_for, activity)
+    params = verify(raw, ASK_NUBI, allowed) if raw else None
     if not (params and params.get("event_id") and params.get("account_id")):
-        if raw and expired(raw, ASK_NUBI, tenant_id):
+        if raw and expired(raw, ASK_NUBI, allowed):
             return await reply(_branded(ASK_NUBI_CARD_TOO_OLD))
         LOG.warning("Rejecting a Teams Ask Nubi click with invalid data")
         return await reply(UNABLE_TO_PROCESS_REQUEST)
+    tenant_id = uuid.UUID(str(params["tenant_id"]))
 
     # As on Slack, anyone in the workspace can ask: the alert is already
     # visible in this channel.
@@ -1096,13 +1101,14 @@ async def _feedback(common_service, activity, user_email, aad_tenant_id) -> None
         await common_service.teams_reply(activity, text, aad_tenant_id)
 
     raw = activity.value.get(FEEDBACK_DATA)
-    tenant_id = await asyncio.to_thread(_tenant_for, aad_tenant_id)
-    params = verify(raw, FEEDBACK, tenant_id) if raw else None
+    allowed = await asyncio.to_thread(_allowed_for, activity)
+    params = verify(raw, FEEDBACK, allowed) if raw else None
     if not (params and params.get("answer_id") and params.get("account_id") and params.get("session_id")):
-        if raw and expired(raw, FEEDBACK, tenant_id):
+        if raw and expired(raw, FEEDBACK, allowed):
             return await reply(FEEDBACK_CARD_TOO_OLD)
         LOG.warning("Rejecting a Teams feedback click with invalid data")
         return await reply(UNABLE_TO_PROCESS_REQUEST)
+    tenant_id = uuid.UUID(str(params["tenant_id"]))
 
     user_id, tenants = await asyncio.to_thread(validate_and_get_user_tenants, user_email)
     if not user_id or str(tenant_id) not in {str(t) for t in tenants or []}:

@@ -2730,7 +2730,8 @@ func GetIntegrationByTypePreferringDefault(
 	// this can never serve the differently-ordered row the shared lookup cached.
 	cacheKey := accountId + ":" + integrationType + ":" +
 		context.GetSecurityContext().GetTenantId() + ":default=" + defaultColumn
-	if value, ok := cachedIntegrationByType(cacheKey); ok {
+	cacheable := !IsMsTeamsOwnedType(integrationType)
+	if value, ok := cachedIntegrationByType(cacheKey); cacheable && ok {
 		return value, nil
 	}
 
@@ -2776,7 +2777,9 @@ func GetIntegrationByTypePreferringDefault(
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	storeIntegrationByType(cacheKey, result)
+	if cacheable {
+		storeIntegrationByType(cacheKey, result)
+	}
 	return result, nil
 }
 
@@ -2785,10 +2788,12 @@ func GetIntegrationByType(
 	accountId string,
 	integrationType string,
 ) (*IntegrationDto, error) {
-	// Check cache first
+	// Check cache first. notifications-server writes the Microsoft Teams types,
+	// so a cached answer for them could outlive the row.
 	cacheKey := accountId + ":" + integrationType + ":" + context.GetSecurityContext().GetTenantId()
+	cacheable := !IsMsTeamsOwnedType(integrationType)
 	integrationByTypeCache.RLock()
-	if entry, ok := integrationByTypeCache.entries[cacheKey]; ok {
+	if entry, ok := integrationByTypeCache.entries[cacheKey]; cacheable && ok {
 		if time.Now().Before(entry.expiresAt) {
 			integrationByTypeCache.RUnlock()
 			return entry.value, nil
@@ -2848,12 +2853,14 @@ func GetIntegrationByType(
 	}
 
 	// Cache the result (including nil)
-	integrationByTypeCache.Lock()
-	integrationByTypeCache.entries[cacheKey] = integrationCacheEntry{
-		value:     result,
-		expiresAt: time.Now().Add(integrationCacheTTL),
+	if cacheable {
+		integrationByTypeCache.Lock()
+		integrationByTypeCache.entries[cacheKey] = integrationCacheEntry{
+			value:     result,
+			expiresAt: time.Now().Add(integrationCacheTTL),
+		}
+		integrationByTypeCache.Unlock()
 	}
-	integrationByTypeCache.Unlock()
 
 	return result, nil
 }

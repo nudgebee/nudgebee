@@ -865,6 +865,18 @@ class Cache:
             LOG.exception(f"Error deduping event {event_id}: {e}")
             return True
 
+    def claim_teams_connect_link(self, team_id, person_id, ttl_seconds):
+        """True for the first Teams connect link a person asks for in a team
+        until the claim expires. Fails open (True) when Redis is unavailable."""
+        if not self._ensure_connection():
+            return True
+        try:
+            key = f"teams_connect_link:{team_id}:{person_id}"
+            return bool(self.redis_client.set(key, "1", nx=True, ex=ttl_seconds))
+        except redis.RedisError as e:
+            LOG.exception(f"Error claiming a Teams connect link for team {team_id}: {e}")
+            return True
+
     def claim_card_action(self, key, ttl_seconds):
         """First click on a card action wins (True) until the claim expires.
         Only a fast path: the stored card is what refuses repeats. Fails open

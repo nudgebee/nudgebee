@@ -29,7 +29,7 @@ def _events():
     events.cache = mock.Mock()
     events.cache.aio = AsyncCache(events.cache)
     events.session = mock.Mock()
-    events._teams_workspace_of = mock.AsyncMock(return_value=TENANT)
+    events._teams_workspaces = mock.AsyncMock(return_value={TENANT})
     return events
 
 
@@ -154,13 +154,13 @@ def _teams_entry(**extra):
 
 def _teams_pick(events, clicker, account_id=ACCOUNT_ID):
     activity = SimpleNamespace(from_property=SimpleNamespace(aad_object_id=clicker))
-    asyncio.run(events._handle_teams_cluster_selection_and_query_llm(activity, account_id, "19:ops", "aad"))
+    asyncio.run(events._handle_teams_cluster_selection_and_query_llm(activity, account_id, "19:ops", "aad", {TENANT}))
 
 
 def test_teams_the_picker_remembers_what_it_offered():
     events = _events()
     events._teams_alert_of_thread = mock.Mock(return_value=None)
-    events._teams_workspace_of = mock.AsyncMock(return_value=TENANT)
+    events._teams_workspaces = mock.AsyncMock(return_value={TENANT})
     events._resolve_mapped_account_async = mock.AsyncMock(return_value=None)
     events._get_valid_accounts_async = mock.AsyncMock(return_value=OFFERED)
     events._extract_conversation_reference = mock.Mock(return_value={"conversation_id": "19:ops"})
@@ -170,7 +170,7 @@ def test_teams_the_picker_remembers_what_it_offered():
     ):
         asyncio.run(
             events._request_account_confirmation_and_cache_event(
-                "aad-asker", SimpleNamespace(), "why?", "19:ops", "1800", "aad", "19:ops", "dana@example.com"
+                "aad-asker", SimpleNamespace(), "why?", "19:ops", "1800", "aad", "19:ops", "dana@example.com", {TENANT}
             )
         )
     assert stored == [[ACCOUNT_ID, SECOND_ID]]

@@ -546,12 +546,6 @@ class MSTeamsSettings(BaseSettings):
         True,
         validation_alias=AliasChoices("MS_TEAMS_ANSWER_CARDS_ENABLED", "ms_teams_answer_cards_enabled"),
     )
-    # Path matches the Next.js callback route at /api/integrations/ms-teams/callback
-    redirect_path: str = "/api/integrations/ms-teams/callback"
-    # The bot sends with its own credentials, so Connect only needs the signed-in
-    # user's own profile, to learn which Microsoft tenant is connecting.
-    scopes: List[str] = ["User.Read"]
-
     model_config = SettingsConfigDict(env_prefix="", env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @property
@@ -885,11 +879,6 @@ class Settings(BaseSettings):
 
     # Computed properties (derived from other settings)
     @property
-    def ms_teams_redirect_uri(self) -> str:
-        """Full MS Teams OAuth redirect URI."""
-        return f"{self.base_url}{self.ms_teams.redirect_path}"
-
-    @property
     def google_chat_redirect_uri(self) -> str:
         """Full Google Chat OAuth redirect URI."""
         return f"{self.base_url}{self.google_chat.redirect_path}"
@@ -943,7 +932,6 @@ def public_ip() -> str:
 
 # Application URLs
 BASE_URL = settings.base_url
-MS_TEAMS_REDIRECT_URI = settings.ms_teams_redirect_uri
 GOOGLE_CHAT_REDIRECT_URI = settings.google_chat_redirect_uri
 GOOGLE_AUTH_URL = settings.google_chat.auth_url
 TRACE_INCOMING_REQUESTS = settings.trace_incoming_requests

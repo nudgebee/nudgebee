@@ -10,6 +10,7 @@ import random
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlparse
 
 from botbuilder.schema import (
     Activity,
@@ -42,6 +43,17 @@ RETRY_READ_STATUSES = {412, 429, 502, 504}
 MAX_ATTEMPTS = 3
 MAX_RETRY_WAIT_SECONDS = 10
 CHANNEL_CACHE_SECONDS = 600
+# The Bot Connector hosts of Microsoft Teams (commercial, GCC, GCC High, DoD).
+# The bot's token goes only to these: a stored service URL is never trusted
+# for its own sake.
+BOT_CONNECTOR_HOSTS = frozenset(
+    {
+        "smba.trafficmanager.net",
+        "smba.infra.gcc.teams.microsoft.com",
+        "smba.infra.gov.teams.microsoft.us",
+        "smba.infra.dod.teams.microsoft.us",
+    }
+)
 
 # Messages naming the product hold {brand}, filled by _branded when raised: the
 # deployment's branding can change while the server runs.
@@ -63,6 +75,23 @@ class TeamsBotError(Exception):
     def __init__(self, message: str, status: Optional[int] = None):
         super().__init__(message)
         self.status = status
+
+
+def is_bot_connector_url(service_url) -> bool:
+    """Whether a service URL is an https URL on a Microsoft Teams Bot Connector host."""
+    try:
+        parsed = urlparse(service_url or "")
+        port = parsed.port
+    except (TypeError, ValueError):
+        return False
+    return parsed.scheme == "https" and (parsed.hostname or "") in BOT_CONNECTOR_HOSTS and port in (None, 443)
+
+
+def require_bot_connector_url(service_url) -> None:
+    """Raise TeamsBotError, and log, unless the URL is a Bot Connector URL."""
+    if not is_bot_connector_url(service_url):
+        LOG.error("Refusing a Microsoft Teams service URL outside the Bot Connector: %r", service_url)
+        raise TeamsBotError("Microsoft Teams service URL is not a Bot Connector URL")
 
 
 class AppNotInTeamError(TeamsBotError):
@@ -102,7 +131,7 @@ def _team_query(tenant_id, aad_group_id: Optional[str] = None):
     query = select(Integration).where(
         Integration.type == TEAM_TYPE,
         Integration.tenant_id == tenant_id,
-        Integration.status != "disabled",
+        Integration.status == "enabled",
     )
     if aad_group_id:
         query = query.where(Integration.name == aad_group_id)
@@ -110,7 +139,7 @@ def _team_query(tenant_id, aad_group_id: Optional[str] = None):
 
 
 def load_teams(session, tenant_id) -> List[TeamRef]:
-    """Sync: every team with the bot installed for this tenant."""
+    """Sync: every team bound to this tenant."""
     teams = []
     for integ in session.execute(_team_query(tenant_id).order_by(Integration.name)).scalars().all():
         rows = session.query(IntegrationConfigValue).filter(IntegrationConfigValue.integration_id == integ.id).all()
@@ -169,10 +198,12 @@ class TeamsBotSender:
         self._channel_cache: Dict[str, tuple] = {}
 
     def _connector(self, service_url: str) -> ConnectorClient:
+        require_bot_connector_url(service_url)
         MicrosoftAppCredentials.trust_service_url(service_url)
         return _only_connect_retries(ConnectorClient(self._credentials, base_url=service_url))
 
     def _teams_connector(self, service_url: str) -> TeamsConnectorClient:
+        require_bot_connector_url(service_url)
         MicrosoftAppCredentials.trust_service_url(service_url)
         return _only_connect_retries(TeamsConnectorClient(self._credentials, base_url=service_url))
 
@@ -198,6 +229,8 @@ class TeamsBotSender:
                         "Microsoft Teams still returned %s for %s after %.1fs of retries", status, target, waited
                     )
                 raise TeamsBotError(f"Microsoft Teams returned {status}", status=status) from e
+            except TeamsBotError:
+                raise
             except Exception as e:
                 raise TeamsBotError(f"Microsoft Teams request failed: {type(e).__name__}") from e
         raise TeamsBotError("Microsoft Teams request did not complete")

@@ -10,7 +10,6 @@ from unittest import mock
 import pytest
 from msrest.exceptions import HttpOperationError
 
-from notifications_server.configs import settings
 from notifications_server.services import common as common_module
 from notifications_server.services import message as message_module
 from notifications_server.services.common import CommonService
@@ -46,10 +45,6 @@ def _sender_with(connector):
 
 
 # ------------------------------- sender -------------------------------
-
-
-def test_connect_asks_only_for_the_signed_in_profile():
-    assert settings.ms_teams.scopes == ["User.Read"]
 
 
 def test_send_returns_the_teams_message_id():
@@ -424,24 +419,6 @@ def test_members_are_looked_up_in_the_team_not_the_thread():
 
 
 # ------------------------------- storage -------------------------------
-def test_connect_stores_no_graph_token():
-    from notifications_server.services.ms_teams import ms_teams as ms_teams_module
-
-    with (
-        mock.patch.object(ms_teams_module, "find_installation_by_tenant_and_platform", return_value=[]),
-        mock.patch.object(ms_teams_module, "ms_teams_aad_tenant_owner", return_value=None),
-        mock.patch.object(ms_teams_module, "upsert_messaging_integration") as upsert,
-        mock.patch.object(ms_teams_module, "get_user_id_by_email", return_value=None),
-        mock.patch.object(ms_teams_module, "create_audit_request"),
-    ):
-        ms_teams_module.connect_ms_teams_tenant(
-            mock.Mock(), "nb-tenant", "tenant-a", "admin@example.com", "object-1", "admin@example.com"
-        )
-    config = upsert.call_args.kwargs["config"]
-    assert not {"access_token", "refresh_token", "token_expires_at"} & set(config), "earlier tokens are left alone"
-    assert upsert.call_args.kwargs["name"] == "tenant-a"
-
-
 def test_saving_a_messaging_connection_clears_the_cached_installs_after_commit():
     import uuid
 
@@ -485,7 +462,7 @@ def test_a_cache_failure_doesnt_fail_saving_the_connection():
         assert integ.name == "tenant-a"
 
 
-def test_load_teams_returns_only_enabled_teams_of_the_tenant():
+def test_load_teams_returns_only_bound_teams_of_the_tenant():
     import uuid
 
     from sqlalchemy import create_engine
@@ -509,7 +486,11 @@ def test_load_teams_returns_only_enabled_teams_of_the_tenant():
 
     with Session(engine) as session:
         session.add_all(
-            team(nb, "group-b") + team(nb, "group-a") + team(nb, "group-off", "disabled") + team(other, "group-x")
+            team(nb, "group-b")
+            + team(nb, "group-a")
+            + team(nb, "group-off", "disabled")
+            + team(nb, "group-gone", "released")
+            + team(other, "group-x")
         )
         session.commit()
         teams = bs.load_teams(session, nb)
@@ -562,9 +543,7 @@ def test_a_failed_or_emailless_lookup_is_not_cached():
 
 def test_nubi_identifies_the_sender_through_the_bot(svc):
     with (
-        mock.patch.object(
-            common_module, "load_ms_teams_installation_by_aad_tenant", return_value=SimpleNamespace(tenant_id="nb")
-        ),
+        mock.patch.object(common_module, "eligible", return_value={"nb"}),
         mock.patch.object(common_module, "sender_email", mock.AsyncMock(return_value="dana@example.com")),
     ):
         svc.session.query.return_value.filter.return_value.first.return_value = None
@@ -679,6 +658,8 @@ def _sender_over_http():
     return sender
 
 
+# The stand-in is a local http server, so it isn't a Bot Connector host.
+@mock.patch.object(bs, "require_bot_connector_url", mock.Mock())
 def test_a_send_that_gets_a_gateway_error_reaches_teams_once():
     server = _CountingServer(502)
     try:
@@ -689,6 +670,7 @@ def test_a_send_that_gets_a_gateway_error_reaches_teams_once():
     assert server.requests == ["POST"]
 
 
+@mock.patch.object(bs, "require_bot_connector_url", mock.Mock())
 def test_reads_are_retried_by_us_alone():
     server = _CountingServer(502)
     team = bs.TeamRef("int-1", "nb", "group-1", "19:general@thread.tacv2", "Platform", server.url)
@@ -698,3 +680,18 @@ def test_reads_are_retried_by_us_alone():
     finally:
         server.close()
     assert server.requests == ["GET"] * bs.MAX_ATTEMPTS
+
+
+@pytest.mark.parametrize("method", ["teams_reply", "teams_reply_with_card"])
+def test_a_reply_to_a_service_url_outside_the_bot_connector_is_refused(method):
+    service = CommonService.__new__(CommonService)
+    service.teams_adapter = mock.Mock(continue_conversation=mock.AsyncMock())
+    activity = SimpleNamespace(service_url="https://attacker.example/")
+    content = "hi" if method == "teams_reply" else {"type": "AdaptiveCard"}
+    with (
+        mock.patch.object(common_module.TurnContext, "get_conversation_reference", return_value=mock.Mock()),
+        mock.patch.object(common_module.MicrosoftAppCredentials, "trust_service_url") as trust,
+    ):
+        assert asyncio.run(getattr(service, method)(activity, content, "aad")) is False
+    trust.assert_not_called()
+    service.teams_adapter.continue_conversation.assert_not_called()

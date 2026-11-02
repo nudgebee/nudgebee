@@ -1922,10 +1922,13 @@ func UpdateIntegrationStatusByPk(ctx *security.RequestContext, request Integrati
 	}
 
 	// Verify integration belongs to tenant
-	var count int64
-	err = manager.Db.Get(&count, "SELECT count(*) FROM integrations WHERE tenant_id = $1 AND id = $2", ctx.GetSecurityContext().GetTenantId(), request.Id)
-	if err != nil || count == 0 {
+	var integrationType string
+	err = manager.Db.Get(&integrationType, "SELECT type FROM integrations WHERE tenant_id = $1 AND id = $2", ctx.GetSecurityContext().GetTenantId(), request.Id)
+	if err != nil {
 		return IntegrationUpdateStatusByPkResponse{}, common.ErrorBadRequest("Integration not found")
+	}
+	if common.IsMsTeamsOwnedIntegrationType(integrationType) {
+		return IntegrationUpdateStatusByPkResponse{}, common.ErrMsTeamsDisconnectOnly
 	}
 
 	// A status change resets integrations.health in the database (trigger,
@@ -1971,8 +1974,8 @@ func DeleteNotificationRule(ctx *security.RequestContext, request NotificationRu
 // (platform, teamID, channelID), for a specific unique-violation message.
 // excludeID skips a given mapping id (an update never conflicts with itself).
 // Returns empty strings if the owning row can't be resolved (e.g. dangling FK).
-func conflictingChannelMapping(manager *database.DatabaseManager, platform, teamID, channelID, excludeID string) (accountName, tenantName string) {
-	query := `SELECT ca.account_name, t.name
+func conflictingChannelMapping(manager *database.DatabaseManager, platform, teamID, channelID, excludeID string) (accountName, tenantName, tenantID string) {
+	query := `SELECT ca.account_name, t.name, m.tenant_id::text
 		FROM notification_channel_account_mappings m
 		JOIN cloud_accounts ca ON ca.id = m.account_id
 		JOIN tenant t ON t.id = m.tenant_id
@@ -1983,22 +1986,42 @@ func conflictingChannelMapping(manager *database.DatabaseManager, platform, team
 		args = append(args, excludeID)
 	}
 	query += " LIMIT 1"
-	if err := manager.Db.QueryRowx(query, args...).Scan(&accountName, &tenantName); err != nil {
-		return "", ""
+	if err := manager.Db.QueryRowx(query, args...).Scan(&accountName, &tenantName, &tenantID); err != nil {
+		return "", "", ""
 	}
-	return accountName, tenantName
+	return accountName, tenantName, tenantID
 }
 
 // channelMappingConflictError builds the "already mapped" message for a
 // unique-violation on notification_channel_account_mappings, naming the
-// account and tenant that already hold the mapping when they can be
-// resolved, falling back to a generic message otherwise.
-func channelMappingConflictError(manager *database.DatabaseManager, platform, teamID, channelID, excludeID string) error {
-	accountName, tenantName := conflictingChannelMapping(manager, platform, teamID, channelID, excludeID)
-	if accountName == "" {
+// account and tenant that already hold the mapping when they are the caller's
+// own, falling back to a generic message otherwise: another tenant's account
+// and name are never shown.
+func channelMappingConflictError(manager *database.DatabaseManager, callerTenantID, platform, teamID, channelID, excludeID string) error {
+	accountName, tenantName, tenantID := conflictingChannelMapping(manager, platform, teamID, channelID, excludeID)
+	if accountName == "" || tenantID != callerTenantID {
 		return common.ErrorConflict("This channel is already mapped")
 	}
 	return common.ErrorConflict(fmt.Sprintf("%s is already mapped with account %s in %s tenant", channelID, accountName, tenantName))
+}
+
+// requireOwnTeamsTeam refuses a Microsoft Teams mapping to a team that isn't
+// bound to the caller's tenant.
+func requireOwnTeamsTeam(manager *database.DatabaseManager, tenantID, platform, teamID string) error {
+	if !strings.EqualFold(platform, "ms_teams") {
+		return nil
+	}
+	var count int64
+	err := manager.Db.Get(&count,
+		`SELECT count(*) FROM integrations WHERE tenant_id = $1 AND type = 'ms_teams_team' AND name = $2 AND status = 'enabled'`,
+		tenantID, teamID)
+	if err != nil {
+		return common.ErrorInternal("Error checking the Microsoft Teams team")
+	}
+	if count == 0 {
+		return common.ErrorBadRequest("This Microsoft Teams team isn't connected to this workspace")
+	}
+	return nil
 }
 
 func CreateNotificationChannelMapping(ctx *security.RequestContext, request NotificationChannelMappingCreateRequest) (NotificationChannelMappingCreateResponse, error) {
@@ -2017,6 +2040,9 @@ func CreateNotificationChannelMapping(ctx *security.RequestContext, request Noti
 	if err != nil {
 		return NotificationChannelMappingCreateResponse{}, err
 	}
+	if err := requireOwnTeamsTeam(manager, ctx.GetSecurityContext().GetTenantId(), request.Platform, request.TeamId); err != nil {
+		return NotificationChannelMappingCreateResponse{}, err
+	}
 
 	var resp NotificationChannelMappingCreateResponse
 	err = manager.Db.QueryRowx(
@@ -2028,7 +2054,7 @@ func CreateNotificationChannelMapping(ctx *security.RequestContext, request Noti
 	).StructScan(&resp)
 	if err != nil {
 		if pgUniqueViolation(err) {
-			return NotificationChannelMappingCreateResponse{}, channelMappingConflictError(manager, request.Platform, request.TeamId, request.ChannelId, "")
+			return NotificationChannelMappingCreateResponse{}, channelMappingConflictError(manager, ctx.GetSecurityContext().GetTenantId(), request.Platform, request.TeamId, request.ChannelId, "")
 		}
 		ctx.GetLogger().Error("Error creating notification channel mapping", "error", err)
 		return NotificationChannelMappingCreateResponse{}, common.ErrorInternal("Error creating notification channel mapping")
@@ -2081,6 +2107,16 @@ func UpdateNotificationChannelMapping(ctx *security.RequestContext, request Noti
 	if err != nil {
 		return NotificationChannelMappingUpdateResponse{}, err
 	}
+	// Platform isn't part of the update request (it never changes), so it is
+	// read from the row being updated.
+	var platform string
+	if err := manager.Db.Get(&platform, "SELECT platform FROM notification_channel_account_mappings WHERE id = $1 AND tenant_id = $2",
+		request.Id, ctx.GetSecurityContext().GetTenantId()); err != nil {
+		return NotificationChannelMappingUpdateResponse{}, common.ErrorBadRequest("Notification channel mapping not found")
+	}
+	if err := requireOwnTeamsTeam(manager, ctx.GetSecurityContext().GetTenantId(), platform, request.TeamId); err != nil {
+		return NotificationChannelMappingUpdateResponse{}, err
+	}
 
 	var resp NotificationChannelMappingUpdateResponse
 	err = manager.Db.QueryRowx(
@@ -2093,11 +2129,7 @@ func UpdateNotificationChannelMapping(ctx *security.RequestContext, request Noti
 	).StructScan(&resp)
 	if err != nil {
 		if pgUniqueViolation(err) {
-			// Platform isn't part of the update request (it never changes), so
-			// resolve it from the row being updated to look up the conflict.
-			var platform string
-			_ = manager.Db.Get(&platform, "SELECT platform FROM notification_channel_account_mappings WHERE id = $1", request.Id)
-			return NotificationChannelMappingUpdateResponse{}, channelMappingConflictError(manager, platform, request.TeamId, request.ChannelId, request.Id)
+			return NotificationChannelMappingUpdateResponse{}, channelMappingConflictError(manager, ctx.GetSecurityContext().GetTenantId(), platform, request.TeamId, request.ChannelId, request.Id)
 		}
 		ctx.GetLogger().Error("Error updating notification channel mapping", "error", err)
 		return NotificationChannelMappingUpdateResponse{}, common.ErrorInternal("Error updating notification channel mapping")

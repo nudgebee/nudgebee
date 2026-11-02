@@ -1,6 +1,5 @@
-"""Connect Microsoft Teams from the bot: who gets a link on the welcome card,
-what the link carries, who can redeem it, and why a reply to a message never
-carries one.
+"""Connect a Microsoft Teams team from the bot: who gets a link on the welcome
+card or for an @mention, what the link carries, and who can redeem it.
 
 Activities and members are shaped like Microsoft's documented samples
 (conversationUpdate when a bot is added to a team, a channel message, and the
@@ -9,6 +8,7 @@ deserialized as the Bot Connector does, so its sign-in name, tenant and role
 exist only in additional_properties."""
 
 import asyncio
+import datetime
 import base64
 import hashlib
 import hmac
@@ -18,7 +18,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import pytest
-from botbuilder.schema import Activity, ChannelAccount
+from botbuilder.schema import Activity, ChannelAccount, Entity
 from msrest.exceptions import HttpOperationError
 
 from notifications_server.configs import settings
@@ -31,7 +31,7 @@ from notifications_server.services.ms_teams import bot_sender as bs
 from notifications_server.services.ms_teams import card_actions
 from notifications_server.services.ms_teams import connect_link as cl
 from notifications_server.services.ms_teams import identity
-from notifications_server.services.ms_teams import ms_teams as ms_teams_module
+from notifications_server.services.ms_teams import team_binding as tb
 from notifications_server.utils.action_requests import ActionRequestBody, sign_action_request
 
 SERVICE_URL = "https://smba.trafficmanager.net/amer/"
@@ -92,6 +92,7 @@ def channel_message(conversation_type="channel"):
             "recipient": {"id": BOT, "name": "Nubi"},
             "text": "<at>Nubi</at> how is the infra?",
             "textFormat": "plain",
+            "entities": [{"type": "mention", "mentioned": {"id": BOT, "name": "Nubi"}, "text": "<at>Nubi</at>"}],
             "channelData": channel_data,
         }
     )
@@ -442,11 +443,23 @@ def _session_with(*rows):
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session
 
-    from notifications_server.models.models import Base, Integration, IntegrationConfigValue, MessagingPlatform
+    from notifications_server.models.models import (
+        Base,
+        ChannelAccountMapping,
+        Integration,
+        IntegrationConfigValue,
+        MessagingPlatform,
+    )
 
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(
-        engine, tables=[Integration.__table__, IntegrationConfigValue.__table__, MessagingPlatform.__table__]
+        engine,
+        tables=[
+            Integration.__table__,
+            IntegrationConfigValue.__table__,
+            MessagingPlatform.__table__,
+            ChannelAccountMapping.__table__,
+        ],
     )
     session = Session(engine)
     session.add_all(rows)
@@ -454,11 +467,11 @@ def _session_with(*rows):
     return session
 
 
-def _connection(name, tenant_id, status="enabled"):
+def _connection(name, tenant_id, status="enabled", type_="ms_teams"):
     from notifications_server.models.models import Integration
 
     return Integration(
-        id=uuid.uuid4(), tenant_id=tenant_id, type="ms_teams", source="user", name=name, status=status, labels={}
+        id=uuid.uuid4(), tenant_id=tenant_id, type=type_, source="user", name=name, status=status, labels={}
     )
 
 
@@ -475,28 +488,36 @@ def _rows(session, type_):
 @pytest.fixture
 def audit(monkeypatch):
     audit = mock.Mock()
-    monkeypatch.setattr(ms_teams_module, "create_audit_request", audit)
-    monkeypatch.setattr(ms_teams_module, "get_user_id_by_email", lambda email: None)
-    monkeypatch.setattr(mi, "Cache", mock.Mock())
+    monkeypatch.setattr(tb, "create_audit_request", audit)
+    monkeypatch.setattr(tb, "get_user_by_email_address", lambda email: None)
+    monkeypatch.setattr(tb, "Cache", mock.Mock())
+    monkeypatch.setattr(tb, "_lock", lambda session, workspaces: None)
+    monkeypatch.setattr(settings.ms_teams, "client_id", "app-1")
     return audit
 
 
-def test_whoever_added_the_bot_connects_and_the_team_is_recorded(audit):
+def test_whoever_added_the_bot_binds_the_team_to_their_workspace(audit):
     session = _session_with()
     with mock.patch.object(session, "close") as close:
-        assert cl.redeem(session, _mint(), NB_TENANT, "dana@contoso.com") == cl.CONNECTED
+        assert cl.redeem(session, _mint(), NB_TENANT, "dana@contoso.com") == tb.CONNECTED
     close.assert_not_called()
     [(connection, cfg)] = _rows(session, "ms_teams")
     assert (connection.name, str(connection.tenant_id), connection.status) == (AAD_TENANT, str(NB_TENANT), "enabled")
     assert cfg == {"app_id": "app-1", "installed_by": "dana@contoso.com"}, "installed_by is who confirmed"
     [(team, team_cfg)] = _rows(session, "ms_teams_team")
-    assert (team.name, str(team.tenant_id), team_cfg["team_name"]) == (TEAM_GROUP, str(NB_TENANT), "Platform")
-    assert audit.call_args.kwargs["event_attr"] == {"status": "success", "confirmed_by": "dana@contoso.com"}
+    assert (team.name, str(team.tenant_id), team.status) == (TEAM_GROUP, str(NB_TENANT), "enabled")
+    assert (team_cfg["team_name"], team_cfg["aad_tenant_id"]) == ("Platform", AAD_TENANT)
+    assert tb.BOUND_AT in team_cfg
+    assert audit.call_args.kwargs["event_attr"] == {
+        "status": "success",
+        "team": TEAM_GROUP,
+        "confirmed_by": "dana@contoso.com",
+    }
 
 
 @pytest.mark.parametrize("email", ["Dana@Contoso.com", "  dana@contoso.com ", "DANA@CONTOSO.COM\n"])
 def test_the_installers_login_matches_whatever_its_case_or_surrounding_whitespace(audit, email):
-    assert cl.redeem(_session_with(), _mint(), NB_TENANT, email) == cl.CONNECTED
+    assert cl.redeem(_session_with(), _mint(), NB_TENANT, email) == tb.CONNECTED
 
 
 def test_someone_else_on_the_same_domain_is_refused(audit):
@@ -531,8 +552,8 @@ def test_the_domain_refusals_are_gone():
         assert not hasattr(cl, removed)
 
 
-@pytest.mark.parametrize("missing", ["installer", "aad_tenant_id"])
-def test_a_link_without_its_tenant_or_installer_is_invalid(audit, missing):
+@pytest.mark.parametrize("missing", ["installer", "aad_tenant_id", "team_aad_group_id"])
+def test_a_link_without_its_tenant_team_or_installer_is_invalid(audit, missing):
     assert cl.redeem(_session_with(), _mint(**{missing: ""}), NB_TENANT, "dana@contoso.com") == cl.INVALID
 
 
@@ -561,33 +582,42 @@ def test_expired_and_invalid_links_connect_nothing(audit):
     assert _rows(session, "ms_teams") == []
 
 
-def test_a_microsoft_tenant_linked_to_another_workspace_is_refused(audit):
-    for status in ("enabled", "disabled"):
-        session = _session_with(_connection(AAD_TENANT, OTHER_NB_TENANT, status=status))
-        assert cl.redeem(session, _mint(), NB_TENANT, "dana@contoso.com") == ms_teams_module.TENANT_LINKED_ELSEWHERE
-        assert [str(c.tenant_id) for c, _ in _rows(session, "ms_teams")] == [str(OTHER_NB_TENANT)]
+def test_a_team_bound_to_another_workspace_is_refused(audit):
+    session = _session_with(_connection(TEAM_GROUP, OTHER_NB_TENANT, type_="ms_teams_team"))
+    assert cl.redeem(session, _mint(), NB_TENANT, "dana@contoso.com") == tb.TEAM_LINKED_ELSEWHERE
+    assert [str(t.tenant_id) for t, _ in _rows(session, "ms_teams_team")] == [str(OTHER_NB_TENANT)]
+    assert _rows(session, "ms_teams") == []
 
 
-def test_a_workspace_already_connected_is_refused(audit):
-    session = _session_with(_connection(OTHER_AAD_TENANT, NB_TENANT))
-    assert cl.redeem(session, _mint(), NB_TENANT, "dana@contoso.com") == ms_teams_module.ALREADY_CONNECTED
-    assert [c.name for c, _ in _rows(session, "ms_teams")] == [OTHER_AAD_TENANT]
+def test_another_workspace_on_the_same_microsoft_tenant_doesnt_block_a_bind(audit):
+    session = _session_with(_connection(AAD_TENANT, OTHER_NB_TENANT))
+    assert cl.redeem(session, _mint(), NB_TENANT, "dana@contoso.com") == tb.CONNECTED
+    assert sorted(str(c.tenant_id) for c, _ in _rows(session, "ms_teams")) == sorted(
+        [str(NB_TENANT), str(OTHER_NB_TENANT)]
+    )
 
 
-def test_a_workspace_reconnects_after_deleting_its_connection(audit):
-    deleted = _connection(AAD_TENANT, NB_TENANT, status="disabled")
-    row_id = deleted.id
-    session = _session_with(deleted)
-    assert cl.redeem(session, _mint(), NB_TENANT, "Dana@contoso.com") == cl.CONNECTED
-    [(connection, cfg)] = _rows(session, "ms_teams")
-    assert (connection.id, connection.status, cfg["installed_by"]) == (row_id, "enabled", "Dana@contoso.com")
+def test_a_link_minted_before_the_team_was_released_is_expired(audit):
+    from notifications_server.models.models import IntegrationConfigValue
+
+    released = _connection(TEAM_GROUP, NB_TENANT, status="released", type_="ms_teams_team")
+    later = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=1)).replace(tzinfo=None)
+    stamp = IntegrationConfigValue(
+        id=uuid.uuid4(), integration_id=released.id, name=tb.RELEASED_AT, value=later.isoformat(), is_encrypted=False
+    )
+    session = _session_with(released, stamp)
+    assert cl.redeem(session, _mint(), NB_TENANT, "dana@contoso.com") == cl.EXPIRED
+    assert [t.status for t, _ in _rows(session, "ms_teams_team")] == ["released"]
+
+    stamp.value = (later - datetime.timedelta(minutes=10)).isoformat()
+    session.merge(stamp)
+    session.commit()
+    assert cl.redeem(session, _mint(), NB_TENANT, "dana@contoso.com") == tb.CONNECTED
 
 
-def test_the_connection_stands_when_recording_the_team_fails(audit):
-    session = _session_with()
-    with mock.patch.object(cl, "apply_team_change", side_effect=RuntimeError("db hiccup")):
-        assert cl.redeem(session, _mint(), NB_TENANT, "dana@contoso.com") == cl.CONNECTED
-    assert len(_rows(session, "ms_teams")) == 1
+def test_a_team_already_bound_to_this_workspace_says_so(audit):
+    session = _session_with(_connection(TEAM_GROUP, NB_TENANT, type_="ms_teams_team"))
+    assert cl.redeem(session, _mint(), NB_TENANT, "dana@contoso.com") == tb.ALREADY_CONNECTED
 
 
 # ------------------------------- the endpoint -------------------------------
@@ -606,7 +636,7 @@ def _post(code, tenant=str(NB_TENANT)):
 
 
 def test_the_endpoint_answers_connected():
-    response, redeem = _post(cl.CONNECTED)
+    response, redeem = _post(tb.CONNECTED)
     assert response == {"status": "connected"}
     assert redeem.call_args.args[1:] == ("the-token", NB_TENANT, "dana@contoso.com")
 
@@ -617,8 +647,9 @@ def test_the_endpoint_answers_connected():
         cl.WRONG_USER,
         cl.EXPIRED,
         cl.INVALID,
-        ms_teams_module.TENANT_LINKED_ELSEWHERE,
-        ms_teams_module.ALREADY_CONNECTED,
+        tb.TEAM_LINKED_ELSEWHERE,
+        tb.OTHER_MICROSOFT_TENANT,
+        tb.ALREADY_CONNECTED,
     ],
 )
 def test_the_endpoint_answers_a_refusal_with_its_code_only(code):
@@ -632,7 +663,7 @@ def test_the_endpoint_needs_the_tenant(tenant):
     from fastapi import HTTPException
 
     with pytest.raises(HTTPException) as exc:
-        _post(cl.CONNECTED, tenant=tenant)
+        _post(tb.CONNECTED, tenant=tenant)
     assert exc.value.status_code == 403
 
 
@@ -660,7 +691,7 @@ def _welcome(activity, sender=None, owner=None):
     service.session = mock.Mock()
     service.teams_reply_with_card = mock.AsyncMock(return_value=True)
     with (
-        mock.patch.object(common_module, "ms_teams_aad_tenant_owner", return_value=owner),
+        mock.patch.object(common_module, "workspaces_for", return_value={owner} if owner else set()),
         mock.patch.object(cl, "get_sender", return_value=sender or _sender()),
     ):
         asyncio.run(service.teams_send_welcome_message(activity))
@@ -678,11 +709,7 @@ def _buttons(card):
     return actions
 
 
-OPEN_INTEGRATIONS = {
-    "type": "Action.OpenUrl",
-    "title": "Open Integrations",
-    "url": f"{settings.base_url}/user-management#integrations",
-}
+ASK_AN_ADMIN = "Ask a Acme admin to @mention Nubi here to connect this team."
 
 
 def test_the_welcome_carries_a_link_for_the_person_who_added_the_bot(monkeypatch):
@@ -696,7 +723,7 @@ def test_the_welcome_carries_a_link_for_the_person_who_added_the_bot(monkeypatch
     assert "Connect Microsoft Teams in Acme to get alerts and ask questions here." in texts
     assert texts[-1] == (
         "This button works for 7 days and only for the person who added Nubi. "
-        "After that, connect from Acme → Integrations."
+        "After that, @mention Nubi here for a new one."
     )
     assert [b["type"] for b in card["body"]][-2:] == ["ActionSet", "TextBlock"], "the line follows the button"
     assert "Sign up" in json.dumps(card)
@@ -713,15 +740,12 @@ def test_the_welcome_carries_a_link_for_the_person_who_added_the_bot(monkeypatch
     ],
     ids=["admin-only", "guest", "public", "404", "bot-error"],
 )
-def test_the_welcome_points_to_integrations_when_the_installer_cant_have_a_link(monkeypatch, sender):
+def test_the_welcome_says_to_ask_an_admin_when_the_installer_cant_have_a_link(monkeypatch, sender):
     monkeypatch.setattr(settings.urls, "branding_name", "Acme")
     monkeypatch.setattr(settings.urls, "assistant_name", "Nubi")
     card = _welcome(bot_added_to_team(), sender)
-    assert _buttons(card) == [OPEN_INTEGRATIONS]
-    assert _texts(card)[-1] == (
-        "Connect Microsoft Teams in Acme to get alerts and ask questions here. "
-        "Connect from Acme → Integrations → Microsoft Teams."
-    )
+    assert _buttons(card) == []
+    assert _texts(card)[-1] == ASK_AN_ADMIN
     assert "#t=" not in json.dumps(card)
     assert "Welcome to Nubi!" in json.dumps(card), "the welcome is still sent"
 
@@ -734,15 +758,18 @@ def test_the_welcome_logs_why_there_is_no_link_and_never_who(caplog):
     assert "dana" not in " ".join(r.getMessage() for r in caplog.records).lower()
 
 
-def test_the_welcome_without_an_installer_points_to_integrations(caplog):
+def test_the_welcome_without_an_installer_has_no_button(caplog, monkeypatch):
+    monkeypatch.setattr(settings.urls, "branding_name", "Acme")
+    monkeypatch.setattr(settings.urls, "assistant_name", "Nubi")
     caplog.set_level("INFO", logger=cl.LOG.name)
     activity = bot_added_to_team()
     activity.from_property = None
-    assert _buttons(_welcome(activity)) == [OPEN_INTEGRATIONS]
+    card = _welcome(activity)
+    assert _buttons(card) == [] and _texts(card)[-1] == ASK_AN_ADMIN
     assert _no_link_logs(caplog)[0].endswith(": no_installer")
 
 
-def test_a_connected_tenant_gets_todays_welcome():
+def test_a_connected_team_gets_todays_welcome():
     sender = _sender()
     assert _welcome(bot_added_to_team(), sender, owner=str(NB_TENANT)) == CommonService.create_teams_welcome_card(True)
     sender._connector(SERVICE_URL).conversations.get_conversation_member.assert_not_called()
@@ -769,7 +796,7 @@ def test_no_link_on_the_welcome_outside_a_team(conversation_type):
 # ------------------------------- replies to messages -------------------------------
 
 
-def _message(activity, connected=False, user_email=None):
+def _message(activity, workspaces=(), user_email=None, claimed=True, sender=None):
     events = Events.__new__(Events)
     events.session = mock.Mock()
     events.common_service = SimpleNamespace(
@@ -777,72 +804,108 @@ def _message(activity, connected=False, user_email=None):
         teams_reply=mock.AsyncMock(),
         teams_reply_with_card=mock.AsyncMock(return_value=True),
         create_teams_not_connected_card=CommonService.create_teams_not_connected_card,
+        create_teams_connect_card=CommonService.create_teams_connect_card,
     )
-    installation = SimpleNamespace(tenant_id=NB_TENANT) if connected else None
     with (
         mock.patch.object(events_module, "Session"),
-        mock.patch.object(events_module, "load_ms_teams_installation_by_aad_tenant", return_value=installation),
-        mock.patch.object(cl, "get_sender", return_value=_sender()) as get_sender,
+        mock.patch.object(events_module, "workspaces_for", return_value=set(workspaces)),
+        mock.patch.object(cl, "get_sender", return_value=sender or _sender()) as get_sender,
+        mock.patch.object(cl.Cache, "claim_teams_connect_link", return_value=claimed) as claim,
     ):
         asyncio.run(events.handle_message_event(activity))
-    return events.common_service, get_sender
+    return SimpleNamespace(common=events.common_service, get_sender=get_sender, claim=claim)
 
 
-def test_a_message_in_a_team_not_connected_points_to_integrations_without_a_lookup(monkeypatch):
+@pytest.fixture
+def acme(monkeypatch):
     monkeypatch.setattr(settings.urls, "branding_name", "Acme")
-    common, get_sender = _message(channel_message())
-    card = common.teams_reply_with_card.call_args.args[1]
-    assert _texts(card) == ["Connect Microsoft Teams from Acme → Integrations → Microsoft Teams."]
-    assert _buttons(card) == [OPEN_INTEGRATIONS]
-    assert "#t=" not in json.dumps(card), "a message never mints a link"
-    get_sender.assert_not_called()
-    assert cl._identities == {}
-    common.get_teams_user_info.assert_not_awaited()
+    monkeypatch.setattr(settings.urls, "assistant_name", "Nubi")
 
 
-def test_a_connected_tenants_no_account_reply_is_unchanged():
+def test_a_mention_in_a_team_not_connected_gets_a_link_for_whoever_mentioned_the_bot(acme):
+    cl._identities.clear()
+    result = _message(channel_message())
+    card = result.common.teams_reply_with_card.call_args.args[1]
+    [button] = _buttons(card)
+    assert button["title"] == "Connect this team" and "#t=" in button["url"]
+    params = _params(_token_of(button["url"]))[0]
+    assert params["installer"] == _expected_installer("dana@contoso.com")
+    assert params["team_aad_group_id"] == TEAM_GROUP
+    assert result.claim.call_args.args == (TEAM_GROUP, "7faf80cb-0000-4000-8000-000000000001", cl.MENTION_LINK_SECONDS)
+    result.common.get_teams_user_info.assert_not_awaited()
+
+
+def test_a_message_that_doesnt_mention_the_bot_gets_no_link_and_keeps_the_slot(acme):
+    activity = channel_message()
+    activity.entities = [Entity().deserialize({"type": "mention", "mentioned": {"id": "29:someone-else"}})]
+    result = _message(activity)
+    card = result.common.teams_reply_with_card.call_args.args[1]
+    assert _texts(card) == [ASK_AN_ADMIN] and _buttons(card) == []
+    result.claim.assert_not_called()
+    result.get_sender.assert_not_called()
+
+
+def test_a_message_without_a_conversation_type_but_with_team_data_is_a_team_message(acme):
+    activity = channel_message()
+    activity.conversation.conversation_type = None
+    result = _message(activity, claimed=False)
+    assert result.common.teams_reply.call_args.args[1] == cl.LINK_ALREADY_SENT
+    result.common.get_teams_user_info.assert_not_awaited()
+
+
+def test_a_second_mention_within_the_window_points_to_the_first_link(acme):
+    cl._identities.clear()
+    result = _message(channel_message(), claimed=False)
+    result.common.teams_reply_with_card.assert_not_awaited()
+    assert result.common.teams_reply.call_args.args[1] == cl.LINK_ALREADY_SENT
+
+
+def test_a_mention_from_someone_who_cant_have_a_link_says_to_ask_an_admin(acme):
+    cl._identities.clear()
+    result = _message(channel_message(), sender=_sender(member(role="guest")))
+    card = result.common.teams_reply_with_card.call_args.args[1]
+    assert _texts(card) == [ASK_AN_ADMIN] and _buttons(card) == []
+    assert "#t=" not in json.dumps(card)
+    result.claim.assert_not_called()
+
+
+def test_without_the_signing_key_a_team_not_connected_says_to_ask_an_admin(acme, monkeypatch):
+    monkeypatch.setattr(settings.ms_teams, "action_signing_key", "")
+    result = _message(channel_message())
+    assert _texts(result.common.teams_reply_with_card.call_args.args[1]) == [ASK_AN_ADMIN]
+    result.get_sender.assert_not_called()
+    result.common.get_teams_user_info.assert_not_awaited()
+
+
+def test_a_connected_teams_no_account_reply_is_unchanged():
     with mock.patch.object(events_module, "get_user_not_found_message", return_value="no account"):
-        common, _ = _message(channel_message(), connected=True)
-    common.get_teams_user_info.assert_awaited_once()
-    common.teams_reply_with_card.assert_not_awaited()
-    assert common.teams_reply.call_args.args[1] == "no account"
+        result = _message(channel_message(), workspaces=[str(NB_TENANT)])
+    result.common.get_teams_user_info.assert_awaited_once()
+    result.common.teams_reply_with_card.assert_not_awaited()
+    assert result.common.teams_reply.call_args.args[1] == "no account"
 
 
 def test_no_connect_card_in_a_personal_chat():
-    common, _ = _message(channel_message("personal"))
-    common.get_teams_user_info.assert_awaited_once()
-    common.teams_reply_with_card.assert_not_awaited()
-
-
-def test_no_connect_card_in_a_team_without_the_signing_key(monkeypatch):
-    monkeypatch.setattr(settings.ms_teams, "action_signing_key", "")
-    common, _ = _message(channel_message())
-    common.get_teams_user_info.assert_awaited_once()
-    common.teams_reply_with_card.assert_not_awaited()
-
-
-def test_a_failed_connection_check_keeps_todays_reply():
-    events = Events.__new__(Events)
-    events.session = mock.Mock()
-    with mock.patch.object(events_module, "Session", side_effect=RuntimeError("db down")):
-        assert asyncio.run(events._teams_tenant_not_connected(AAD_TENANT)) is False
+    result = _message(channel_message("personal"))
+    result.common.get_teams_user_info.assert_awaited_once()
+    result.common.teams_reply_with_card.assert_not_awaited()
 
 
 # ------------------------------- get_teams_user_info -------------------------------
 
 
-def _user_info(installation, email):
+def _user_info(workspaces, email):
     service = CommonService.__new__(CommonService)
     service.session = mock.Mock()
     service.session.query.return_value.filter.return_value.first.return_value = None
     with (
-        mock.patch.object(common_module, "load_ms_teams_installation_by_aad_tenant", return_value=installation),
+        mock.patch.object(common_module, "eligible", return_value=workspaces),
         mock.patch.object(common_module, "sender_email", mock.AsyncMock(return_value=email)),
     ):
         return asyncio.run(service.get_teams_user_info("aad-user", AAD_TENANT, channel_message()))
 
 
 def test_get_teams_user_info_keeps_its_contract():
-    assert _user_info(None, "dana@contoso.com") is None, "no install: None, as before"
-    assert _user_info(SimpleNamespace(), None) is None
-    assert _user_info(SimpleNamespace(), "dana@contoso.com") == "dana@contoso.com"
+    assert _user_info(set(), "dana@contoso.com") is None, "no team connected in the Microsoft tenant: None"
+    assert _user_info({str(NB_TENANT)}, None) is None
+    assert _user_info({str(NB_TENANT)}, "dana@contoso.com") == "dana@contoso.com"

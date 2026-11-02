@@ -237,14 +237,13 @@ const DEDICATED_ACCOUNT_MODALS: Record<string, React.ComponentType<any>> = {
 };
 
 /**
- * Slack and Microsoft Teams connect via a single "open this OAuth URL"
- * action (`account-form.jsx`'s own `installUrl` for each) — no form, so no
- * modal to show at all. `openIntegration` special-cases these two routes
- * before ever touching `integrationModal` state; see its own comment.
+ * Slack connects via a single "open this OAuth URL" action
+ * (`account-form.jsx`'s own `installUrl`) — no form, so no modal to show at
+ * all. `openIntegration` special-cases it before ever touching
+ * `integrationModal` state; see its own comment.
  */
 const CHAT_OAUTH_INSTALL_URLS: Record<string, string> = {
   SLACK: '/api/integrations/slack/install',
-  MSTEAMS: '/api/integrations/ms-teams/install',
 };
 
 /**
@@ -1692,12 +1691,18 @@ const SetupCenter = () => {
         handleAddKnowledgeBase();
         return;
       }
-      // Slack and Teams have no form of their own to show — connecting is a
-      // single "open this OAuth URL, wait for the popup to close" action
-      // (see chatOAuthInstall.ts's own doc comment for why only these two).
-      // There's nothing to put in the modal slot; just start it, and refresh
-      // once the popup closes the same way the real Integrations page does —
-      // it has no success/failure signal either, only the close itself.
+      // A Teams team is connected from Teams itself (the bot's link), so this
+      // opens the page that says how, as the default-channel step does below.
+      if (route === 'MSTEAMS') {
+        window.open(`/accounts/account-form?cloudProvider=${route.toLowerCase()}`, '_blank', 'noopener');
+        return;
+      }
+      // Slack has no form of its own to show — connecting is a single "open
+      // this OAuth URL, wait for the popup to close" action (see
+      // chatOAuthInstall.ts's own doc comment). There's nothing to put in the
+      // modal slot; just start it, and refresh once the popup closes the same
+      // way the real Integrations page does — it has no success/failure signal
+      // either, only the close itself.
       const chatInstallUrl = CHAT_OAUTH_INSTALL_URLS[route];
       if (chatInstallUrl) {
         openChatOAuthInstall(route.toLowerCase(), chatInstallUrl, () => closeIntegrationModal(true));

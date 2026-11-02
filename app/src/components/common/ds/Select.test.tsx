@@ -213,3 +213,20 @@ describe('Select searchText', () => {
     expect(screen.getByText('JobFailure')).toBeInTheDocument();
   });
 });
+
+describe('selectedLabel', () => {
+  const options = [
+    { value: 'team-1/c-1', label: 'alerts', group: 'Eng', selectedLabel: 'Eng › alerts' },
+    { value: 'team-2/c-2', label: 'alerts', group: 'Ops', selectedLabel: 'Ops › alerts' },
+  ];
+
+  it('names the picked option with its selectedLabel in the closed field', () => {
+    render(<Select grouped value='team-2/c-2' onChange={() => {}} options={options} />);
+    expect(screen.getByText('Ops › alerts')).toBeInTheDocument();
+  });
+
+  it('falls back to the label without one', () => {
+    render(<Select value='a' onChange={() => {}} options={[{ value: 'a', label: 'alerts' }]} />);
+    expect(screen.getByText('alerts')).toBeInTheDocument();
+  });
+});

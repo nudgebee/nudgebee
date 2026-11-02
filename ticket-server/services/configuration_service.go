@@ -97,7 +97,7 @@ func LoadExistingConfig(id, tenant, name, tool string) (ExistingConfig, error) {
 	// a zero-length slice is "not found" and a non-nil error is always a real DB failure.
 	var ids []string
 	if id != "" {
-		if err := dbManager.Select(&ids, `SELECT id FROM integrations WHERE id = $1 AND tenant_id = $2 LIMIT 1`, id, tenant); err != nil {
+		if err := dbManager.Select(&ids, `SELECT id FROM integrations WHERE id = $1 AND tenant_id = $2 AND type = $3 LIMIT 1`, id, tenant, tool); err != nil {
 			return result, fmt.Errorf("lookup integration by id: %w", err)
 		}
 	}
@@ -934,10 +934,11 @@ func SaveTicketConfiguration(config models.TicketConfigurations, metadata []map[
 	var integrationID string
 	var foundExisting bool
 
-	// Check if integration exists by ID and belongs to current tenant
+	// Check if integration exists by ID, belongs to current tenant and is this ticket tool,
+	// so the id of any other integration type can't be updated through this path
 	if config.ID != "" && config.Tenant != "" {
 		var count int
-		err := dbManager.Get(&count, `SELECT COUNT(*) FROM integrations WHERE id = $1 AND tenant_id = $2`, config.ID, config.Tenant)
+		err := dbManager.Get(&count, `SELECT COUNT(*) FROM integrations WHERE id = $1 AND tenant_id = $2 AND type = $3`, config.ID, config.Tenant, config.Tool)
 		if err == nil && count > 0 {
 			integrationID = config.ID
 			foundExisting = true

@@ -917,7 +917,7 @@ const Header1 = ({ showBorder = false }) => {
                       {
                         label: 'Teams',
                         icon: <MsTeamsIcon width={18} height={18} />,
-                        onSelect: () => window.open('/api/integrations/ms-teams/install', '_blank', 'noopener'),
+                        onSelect: () => router.push('/accounts/account-form?cloudProvider=msteams'),
                       },
                       {
                         label: 'Google Chat',
