@@ -161,7 +161,9 @@ func runSkillLifecycle(t *testing.T, delegated bool) {
 		}))
 	t.Logf("INVOCATION session=%s", sessionID)
 	require.NoError(t, runErr, "agent invocation")
-	convID, msgID := scenarioLastMsgID(t, sessionID, userID)
+	convID, msgID := resp.ConversationId, resp.MessageId
+	require.NotEmpty(t, convID)
+	require.NotEmpty(t, msgID)
 	t.Logf("INSPECT conversation=%s message=%s", convID, msgID)
 
 	// Persistence is asynchronous. Poll for the exact fixture rather than
