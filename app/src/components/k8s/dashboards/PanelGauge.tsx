@@ -92,7 +92,7 @@ const PanelGauge: React.FC<Props> = ({ value, caption, rowsBelow = 0 }) => {
               padding: 0.03,
               width: 0.3,
             }}
-            pointer={{ elastic: true, animationDelay: 0 }}
+            pointer={{ hide: true }}
           />
         </Box>
       )}

@@ -63,9 +63,52 @@ func Slugify(title string) string {
 	return s
 }
 
+// variableNamePattern is what a panel query can reference as $name; anything
+// else could never be substituted.
+const (
+	VariableTypeQuery    = "query"
+	VariableTypeCustom   = "custom"
+	VariableTypeNudgebee = "nudgebee"
+)
+
+var variableNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+func validateVariables(variables []Variable) error {
+	seen := map[string]bool{}
+	for i, v := range variables {
+		if !variableNamePattern.MatchString(v.Name) {
+			return fmt.Errorf("variable %d: name %q must be letters, digits and underscores", i, v.Name)
+		}
+		if seen[v.Name] {
+			return fmt.Errorf("variable %q is declared twice", v.Name)
+		}
+		seen[v.Name] = true
+		switch v.Type {
+		case "", VariableTypeQuery:
+			if strings.TrimSpace(v.Query) == "" || strings.TrimSpace(v.LabelKey) == "" {
+				return fmt.Errorf("variable %q: query and label_key are required", v.Name)
+			}
+		case VariableTypeCustom:
+			if len(nonEmptyStrings(v.Values)) == 0 {
+				return fmt.Errorf("variable %q: a custom variable needs at least one value", v.Name)
+			}
+		case VariableTypeNudgebee:
+			if strings.TrimSpace(v.Table) == "" || strings.TrimSpace(v.Column) == "" {
+				return fmt.Errorf("variable %q: table and column are required", v.Name)
+			}
+		default:
+			return fmt.Errorf("variable %q: unsupported type %q", v.Name, v.Type)
+		}
+	}
+	return nil
+}
+
 // ValidateDefinition rejects panel documents the renderer cannot draw, so a bad
 // definition fails at save time rather than rendering as a blank panel later.
 func ValidateDefinition(def Definition) error {
+	if err := validateVariables(def.Variables); err != nil {
+		return err
+	}
 	seen := map[int]bool{}
 	for i, p := range def.Panels {
 		if p.Title == "" {

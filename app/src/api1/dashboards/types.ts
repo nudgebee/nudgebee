@@ -292,8 +292,29 @@ export interface Panel {
   options?: PanelTableOptions & PanelChartOptions & PanelThresholdOptions & PanelCombineOptions & PanelFilterOptions & Record<string, unknown>;
 }
 
+/**
+ * A dashboard-wide dropdown. A `query` variable (the default) offers the values
+ * of `label_key` across the series `query` returns; a `custom` one offers `values`.
+ */
+export interface DashboardVariable {
+  name: string;
+  label?: string;
+  type?: 'query' | 'custom' | 'nudgebee';
+  query?: string;
+  label_key?: string;
+  values?: string[];
+  /** A `nudgebee` variable offers what this column of this table holds. */
+  table?: string;
+  column?: string;
+  /** Lets a viewer pick several values at once. */
+  multi?: boolean;
+  /** Sent as written when nothing is picked, in place of `.*`. */
+  all_value?: string;
+}
+
 export interface DashboardDefinition {
   panels: Panel[];
+  variables?: DashboardVariable[];
   time_from?: string;
   refresh?: string;
 }

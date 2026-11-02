@@ -154,11 +154,32 @@ type Panel struct {
 	Options map[string]any `json:"options,omitempty"`
 }
 
+// Variable is one dashboard-wide dropdown. A query variable offers the values
+// of LabelKey across the series Query returns; a custom one offers Values; a
+// nudgebee one offers what Column of the query engine's Table holds.
+type Variable struct {
+	Name  string `json:"name"`
+	Label string `json:"label,omitempty"`
+	// Type is "query", "custom" or "nudgebee"; empty reads as "query".
+	Type     string   `json:"type,omitempty"`
+	Query    string   `json:"query,omitempty"`
+	LabelKey string   `json:"label_key,omitempty"`
+	Values   []string `json:"values,omitempty"`
+	Table    string   `json:"table,omitempty"`
+	Column   string   `json:"column,omitempty"`
+	// Multi lets a viewer pick several values at once.
+	Multi bool `json:"multi,omitempty"`
+	// AllValue is sent as written when nothing is picked, in place of ".*".
+	AllValue string `json:"all_value,omitempty"`
+}
+
 // Definition is the whole panel document. Stored as one JSONB blob because
 // panels are always read and written together and nothing queries them by
 // inner field.
 type Definition struct {
 	Panels []Panel `json:"panels"`
+	// Variables are the dropdowns a viewer picks from; panels use them as $name.
+	Variables []Variable `json:"variables,omitempty"`
 	// TimeFrom is a relative default range for the dashboard, e.g. "now-6h".
 	TimeFrom string `json:"time_from,omitempty"`
 	Refresh  string `json:"refresh,omitempty"`

@@ -31,6 +31,8 @@ import LibraryBooksOutlinedIcon from '@mui/icons-material/LibraryBooksOutlined';
 import SearchIcon from '@mui/icons-material/Search';
 import BackButton from '@shared/buttons/BackButton';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
+import DashboardVariablesModal from './DashboardVariablesModal';
+import { isNudgebeeVariable, sameVariables, useDashboardVariables, variableReach } from './dashboardVariables';
 import Datetime from '@shared/format/Datetime';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { downloadIcon, RefreshIcon, writeIconLight } from '@assets';
@@ -39,7 +41,7 @@ import { getUpstreamStatus } from '@lib/errorMessages';
 import apiDashboards, { EMPTY_DEFINITION, type AccountOption, type Dashboard, type DashboardDefinition, type Panel } from '@api1/dashboards';
 import SortablePanel from './SortablePanel';
 import usePanelResize from './usePanelResize';
-import { downloadNodeAsPng, waitForPanels } from './panelImage';
+import { downloadNodeAsPng, EXPORT_HIDE_ATTR, waitForPanels } from './panelImage';
 import EditDashboardJsonModal from './EditDashboardJsonModal';
 import type { EditableDashboard } from './dashboardJson';
 import PanelEditorModal from './PanelEditorModal';
@@ -86,7 +88,7 @@ const HIGHLIGHT_MS = 2000;
 type Exit = { to: 'edit' } | { to: 'back' } | { to: 'route'; url: string; hashOnly?: boolean };
 
 /** The definition's settings beside its panels. */
-type DashboardSettings = Pick<DashboardDefinition, 'time_from' | 'refresh'>;
+type DashboardSettings = Pick<DashboardDefinition, 'variables' | 'time_from' | 'refresh'>;
 
 /** What one save writes; anything left out is taken from the saved dashboard. */
 type DashboardChange = { title?: string; description?: string; panels?: Panel[]; settings?: DashboardSettings };
@@ -142,10 +144,6 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
     setRefreshToken((n) => n + 1);
   };
 
-  // Substitution values come only from the host page — dashboards declare no
-  // variables of their own.
-  const variables = useMemo(() => context || {}, [context]);
-
   const savedPanels = dashboard.definition?.panels || [];
 
   /*
@@ -180,10 +178,36 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
   const settingsChanged =
     draftSettings !== null &&
     ((draftSettings.time_from || '') !== (dashboard.definition?.time_from || '') ||
-      (draftSettings.refresh || '') !== (dashboard.definition?.refresh || ''));
+      (draftSettings.refresh || '') !== (dashboard.definition?.refresh || '') ||
+      !sameVariables(draftSettings.variables, dashboard.definition?.variables));
 
   const editing = draftPanels !== null;
   const panels = draftPanels ?? savedPanels;
+
+  /*
+   * The dropdowns follow the draft, so an author sees a variable work before
+   * saving it. The choices come from the accounts on screen. The host page's
+   * values win: a dashboard on a detail page is about that page's namespace.
+   */
+  const declaredVariables = useMemo(
+    () => (draftSettings ? draftSettings.variables : dashboard.definition?.variables) || [],
+    [draftSettings, dashboard.definition?.variables]
+  );
+  const variableAccounts = useMemo(() => {
+    if (accountFilter.length > 0) return accounts.filter((a) => accountFilter.includes(a.value));
+    const scoped = new Map(panels.flatMap((p) => resolvePanelAccounts(p, accounts)).map((a) => [a.value, a]));
+    // A dashboard with no scoped panel yet still lists choices, so a variable can be declared before it is used.
+    return scoped.size > 0 ? [...scoped.values()].sort((a, b) => a.value.localeCompare(b.value)) : accounts;
+  }, [accountFilter, panels, accounts]);
+  const dashboardVariables = useDashboardVariables({
+    variables: declaredVariables,
+    accounts: variableAccounts,
+    panels,
+    startTime: range.startDate,
+    endTime: range.endDate,
+    context,
+  });
+  const variables = useMemo(() => ({ ...dashboardVariables.values, ...(context || {}) }), [dashboardVariables.values, context]);
   // Cheap because a definition is a few dozen small objects, and it compares
   // what actually gets written rather than tracking a dirty flag per gesture.
   const dirty =
@@ -205,6 +229,7 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
   const [panelModalOpen, setPanelModalOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [jsonOpen, setJsonOpen] = useState(false);
+  const [variablesOpen, setVariablesOpen] = useState(false);
   /** Set when Save refused JSON the author applied: the editor reopens on it, with the reason. */
   const [jsonReopen, setJsonReopen] = useState<{ error: string } | null>(null);
   /** Whether JSON was applied to the draft since it was last saved or discarded. */
@@ -313,7 +338,9 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
           ...EMPTY_DEFINITION,
           ...(dashboard.definition || {}),
           // Written field by field so a setting the draft removed is removed, not left as saved.
-          ...(change.settings ? { time_from: change.settings.time_from, refresh: change.settings.refresh } : {}),
+          ...(change.settings
+            ? { variables: change.settings.variables, time_from: change.settings.time_from, refresh: change.settings.refresh }
+            : {}),
           panels: change.panels ?? savedPanels,
         },
         // The server writes whatever arrives, an absent list as empty, and this
@@ -442,7 +469,7 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
     setTitleDraft(next.title);
     setDescriptionDraft(next.description);
     setDraftPanels(next.definition.panels);
-    setDraftSettings({ time_from: next.definition.time_from, refresh: next.definition.refresh });
+    setDraftSettings({ variables: next.definition.variables, time_from: next.definition.time_from, refresh: next.definition.refresh });
     jsonApplied.current = true;
     setJsonReopen(null);
     setJsonOpen(false);
@@ -711,6 +738,77 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
   );
 
   /**
+   * The dropdowns get a row of their own, inside the sticky bar: what narrows the panels stays on screen
+   * while they scroll, and however many there are, the title and the actions keep their space. No row
+   * without variables, so a dashboard that has none looks as it did.
+   */
+  const variableRow = declaredVariables.length > 0 && (
+    <Stack
+      direction='row'
+      flexWrap='wrap'
+      alignItems='center'
+      gap={ds.space[2]}
+      data-testid='dashboard-variables-row'
+      {...{ [EXPORT_HIDE_ATTR]: 'true' }}
+    >
+      {declaredVariables.map((v) => {
+        const options = (dashboardVariables.options[v.name] || []).map((o) => ({ value: o, label: o }));
+        const picked = dashboardVariables.selected[v.name] || [];
+        const dropdown = v.multi ? (
+          <FilterDropdown
+            id={`dashboard-variable-${v.name}`}
+            label={v.label || v.name}
+            size='sm'
+            multiple
+            freeSolo={isNudgebeeVariable(v)}
+            isOptionsLoading={Boolean(dashboardVariables.loading[v.name])}
+            limitTag={2}
+            value={picked}
+            options={options}
+            onSelect={(_e: unknown, next: (string | { value: string })[]) =>
+              dashboardVariables.select(
+                v.name,
+                (next || []).map((o) => (typeof o === 'string' ? o : o.value))
+              )
+            }
+          />
+        ) : (
+          <FilterDropdown
+            id={`dashboard-variable-${v.name}`}
+            label={v.label || v.name}
+            size='sm'
+            // A row table's list is read from its newest rows, so a value it left out can still be typed.
+            freeSolo={isNudgebeeVariable(v)}
+            isOptionsLoading={Boolean(dashboardVariables.loading[v.name])}
+            value={picked[0] || ''}
+            options={options}
+            onSelect={(e: { target?: { value?: string } }) => {
+              const value = e?.target?.value;
+              dashboardVariables.select(v.name, value ? [value] : []);
+            }}
+          />
+        );
+        return (
+          <Tooltip key={v.name} title={dashboardVariables.errors[v.name] || variableReach(panels, v.name)}>
+            <span data-testid={`dashboard-variable-control-${v.name}`}>{dropdown}</span>
+          </Tooltip>
+        );
+      })}
+      {Object.values(dashboardVariables.selected).some((picked) => picked.length > 0) && (
+        <Button
+          tone='ghost'
+          size='sm'
+          onClick={dashboardVariables.clear}
+          id='dashboard-variables-clear-btn'
+          data-testid='dashboard-variables-clear-btn'
+        >
+          Clear
+        </Button>
+      )}
+    </Stack>
+  );
+
+  /**
    * One button, two ways to fill it — a blank panel and the library are the same act with a different
    * starting point, and side by side they read as competing choices.
    *
@@ -857,6 +955,9 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
           >
             Edit JSON
           </Button>
+          <Button tone='secondary' onClick={() => setVariablesOpen(true)} id='dashboard-variables-btn' data-testid='dashboard-variables-btn'>
+            Variables
+          </Button>
           <Button tone='secondary' onClick={requestExit} disabled={saving} id='dashboard-discard-btn' data-testid='dashboard-discard-btn'>
             Discard
           </Button>
@@ -897,71 +998,74 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
           py: ds.space[2],
           mb: ds.space[4],
           display: 'flex',
-          alignItems: 'center',
+          flexDirection: 'column',
           gap: ds.space[2],
           backgroundColor: ds.background[100],
           borderBottom: `1px solid ${ds.gray[200]}`,
         }}
       >
-        {onBack && <BackButton id='dashboard-back-btn' onClick={requestBack} />}
-        {editing ? (
-          /* The name and description are plain fields here rather than a
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+          {onBack && <BackButton id='dashboard-back-btn' onClick={requestBack} />}
+          {editing ? (
+            /* The name and description are plain fields here rather than a
              separate rename control: edit mode is already a buffered session
              with its own Save, so a second commit step inside it would be a
              save button in front of a save button. */
-          <Stack direction='row' alignItems='center' gap={1} sx={{ minWidth: 0 }}>
-            <Box sx={{ width: 240 }}>
-              <Input
-                value={titleDraft}
-                onChange={setTitleDraft}
-                disabled={saving}
-                placeholder='Dashboard name'
-                required
-                id='dashboard-title-input'
-                data-testid='dashboard-title-input'
-              />
-            </Box>
-            <Box sx={{ width: 320 }}>
-              <Input
-                value={descriptionDraft}
-                onChange={setDescriptionDraft}
-                disabled={saving}
-                placeholder='Description (optional)'
-                id='dashboard-description-input'
-                data-testid='dashboard-description-input'
-              />
-            </Box>
-          </Stack>
-        ) : (
-          <Stack direction='row' alignItems='center' gap={0.5} sx={{ minWidth: 0 }}>
-            <Box sx={{ minWidth: 0 }}>
-              <Typography sx={{ fontFamily: 'var(--ds-font-display)', fontSize: 18, fontWeight: 650, color: ds.gray[700] }}>
-                {dashboard.title}
-              </Typography>
-            </Box>
-            {/* The description is a tooltip, not a subtitle: it is read once
+            <Stack direction='row' alignItems='center' gap={1} sx={{ minWidth: 0 }}>
+              <Box sx={{ width: 240 }}>
+                <Input
+                  value={titleDraft}
+                  onChange={setTitleDraft}
+                  disabled={saving}
+                  placeholder='Dashboard name'
+                  required
+                  id='dashboard-title-input'
+                  data-testid='dashboard-title-input'
+                />
+              </Box>
+              <Box sx={{ width: 320 }}>
+                <Input
+                  value={descriptionDraft}
+                  onChange={setDescriptionDraft}
+                  disabled={saving}
+                  placeholder='Description (optional)'
+                  id='dashboard-description-input'
+                  data-testid='dashboard-description-input'
+                />
+              </Box>
+            </Stack>
+          ) : (
+            <Stack direction='row' alignItems='center' gap={0.5} sx={{ minWidth: 0 }}>
+              <Box sx={{ minWidth: 0 }}>
+                <Typography sx={{ fontFamily: 'var(--ds-font-display)', fontSize: 18, fontWeight: 650, color: ds.gray[700] }}>
+                  {dashboard.title}
+                </Typography>
+              </Box>
+              {/* The description is a tooltip, not a subtitle: it is read once
                 when you arrive and then costs a line of the sticky bar on every
                 screen after that. Same treatment a panel's description gets. */}
-            {dashboard.description && (
-              <Tooltip title={dashboard.description}>
-                <Box
-                  component='span'
-                  sx={{ display: 'inline-flex', alignItems: 'center', color: ds.gray[400], cursor: 'help' }}
-                  data-testid='dashboard-description'
-                >
-                  <InfoOutlinedIcon sx={{ fontSize: 15 }} />
-                </Box>
-              </Tooltip>
-            )}
-          </Stack>
-        )}
-        {dashboard.is_builtin && (
-          <Chip size='2xs' tone='subtle'>
-            Built-in
-          </Chip>
-        )}
-        <Box sx={{ flex: 1, minWidth: 0 }} />
-        {actions}
+              {dashboard.description && (
+                <Tooltip title={dashboard.description}>
+                  <Box
+                    component='span'
+                    sx={{ display: 'inline-flex', alignItems: 'center', color: ds.gray[400], cursor: 'help' }}
+                    data-testid='dashboard-description'
+                  >
+                    <InfoOutlinedIcon sx={{ fontSize: 15 }} />
+                  </Box>
+                </Tooltip>
+              )}
+            </Stack>
+          )}
+          {dashboard.is_builtin && (
+            <Chip size='2xs' tone='subtle'>
+              Built-in
+            </Chip>
+          )}
+          <Box sx={{ flex: 1, minWidth: 0 }} />
+          {actions}
+        </Box>
+        {variableRow}
       </Box>
 
       {/* No card around the panels: each panel is already a bordered surface,
@@ -1022,6 +1126,20 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
         )}
       </Box>
 
+      <DashboardVariablesModal
+        open={variablesOpen}
+        variables={declaredVariables}
+        panels={panels}
+        onClose={() => setVariablesOpen(false)}
+        onApply={(next) => {
+          setDraftSettings({
+            time_from: draftSettings ? draftSettings.time_from : dashboard.definition?.time_from,
+            refresh: draftSettings ? draftSettings.refresh : dashboard.definition?.refresh,
+            variables: next,
+          });
+          setVariablesOpen(false);
+        }}
+      />
       <EditDashboardJsonModal
         open={jsonOpen}
         current={jsonDraft}

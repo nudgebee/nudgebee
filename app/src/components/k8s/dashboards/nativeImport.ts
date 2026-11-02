@@ -2,6 +2,7 @@ import type { DashboardDefinition, Panel, PanelDatasource, PanelTarget, PanelTyp
 import type { PanelScope } from './panelAccounts';
 import type { GrafanaImportResult } from './grafanaImport';
 import { providerTypeOf } from './panelProviders';
+import { readVariables } from './dashboardVariables';
 import { referencedVariables } from './templating';
 
 /**
@@ -162,21 +163,23 @@ export function convertNativeDashboard(model: any, scope: PanelScope, mappings: 
     );
   }
 
+  // The dashboard-level settings travel with it; a panel import has none.
+  const settings = singlePanel ? {} : definitionSettings(model.definition, warnings);
+  const declared = new Set((settings.variables || []).map((v) => v.name));
   const variables = new Set<string>();
   for (const panel of panels) {
     for (const target of panel.targets || []) {
-      for (const name of referencedVariables(target.expr || '')) variables.add(name);
+      for (const name of referencedVariables(target.expr || '')) if (!declared.has(name)) variables.add(name);
     }
   }
   if (variables.size > 0) {
     warnings.push(
-      `Queries reference ${[...variables].map((v) => `$${v}`).join(', ')}. Those are filled in only when a dashboard is opened from a page that ` +
-        'supplies them — edit the panels to replace them with literal values.'
+      `Queries reference ${[...variables].map((v) => `$${v}`).join(', ')}. Those are filled in only when the dashboard declares them under ` +
+        'Variables, or is opened from a page that supplies them. Declare them, or replace them with literal values.'
     );
   }
 
-  // The dashboard-level settings travel with it; a panel import has none.
-  const definition: DashboardDefinition = { panels, ...(singlePanel ? {} : definitionSettings(model.definition)) };
+  const definition: DashboardDefinition = { panels, ...settings };
   return {
     title: importTitle(model, singlePanel),
     description: typeof model.description === 'string' && !singlePanel ? model.description : '',
@@ -188,11 +191,15 @@ export function convertNativeDashboard(model: any, scope: PanelScope, mappings: 
 }
 
 /** The definition's own settings — its default time range and refresh interval — when the file carries them. */
-function definitionSettings(definition: any): Pick<DashboardDefinition, 'time_from' | 'refresh'> {
+function definitionSettings(definition: any, warnings: string[]): Pick<DashboardDefinition, 'variables' | 'time_from' | 'refresh'> {
   const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
   const timeFrom = text(definition?.time_from);
   const refresh = text(definition?.refresh);
-  return { ...(timeFrom ? { time_from: timeFrom } : {}), ...(refresh ? { refresh } : {}) };
+  const read = readVariables(definition?.variables);
+  // A file with a broken variable still imports its panels, as one with a panel it cannot read does.
+  if (read.errors.length > 0) warnings.push(`Variables were left out: ${read.errors.join(' ')}`);
+  const variables = read.variables.length > 0 ? read.variables : undefined;
+  return { ...(variables ? { variables } : {}), ...(timeFrom ? { time_from: timeFrom } : {}), ...(refresh ? { refresh } : {}) };
 }
 
 function importTitle(model: any, singlePanel: boolean): string {

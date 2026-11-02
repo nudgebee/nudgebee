@@ -90,6 +90,33 @@ export function providerLabel(provider: string): string {
  * additive, and guessing "disabled" from a missing value would hide working
  * accounts from any caller that has not been updated.
  */
+/**
+ * The provider half of a metrics request for one account, and whether that lands on CloudWatch.
+ *
+ * A source that names its provider queries that provider on every account. It supersedes the AWS
+ * default: an author who picked Prometheus meant it.
+ */
+export function metricsProviderFields(
+  source: { provider?: string; provider_index?: string },
+  account: AccountOption
+): { cloudwatch: boolean; fields: Record<string, unknown> } {
+  const provider = source.provider || (isAwsAccount(account) ? AWS_METRICS_PROVIDER : '');
+  const cloudwatch = provider === AWS_METRICS_PROVIDER;
+  return {
+    cloudwatch,
+    fields: {
+      // CloudWatch is never an account's DEFAULT metrics provider: it is not an integration that can
+      // carry that flag, so it must be named — and named with its source, since it resolves only as
+      // `user` and the server would otherwise fall back to `agent` and reject the pair. Every other
+      // provider leaves the source for the server to resolve per account.
+      ...(provider ? { metric_provider: provider, ...(cloudwatch ? { metric_provider_source: 'user' } : {}) } : {}),
+      // The ES metrics path reads its index out of `metric_name` — the slot the
+      // request contract gives it, per resolveESMetricsIndex. Not a mistake here.
+      ...(provider === ES_PROVIDER && source.provider_index ? { request: { metric_name: source.provider_index } } : {}),
+    },
+  };
+}
+
 export function isDisabledAccount(account: AccountOption): boolean {
   const status = (account.status || '').toLowerCase();
   return status !== '' && status !== 'active';

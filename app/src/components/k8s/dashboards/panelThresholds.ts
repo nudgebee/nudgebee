@@ -589,6 +589,104 @@ export function lineBreaches(
   };
 }
 
+/** One line's finished breaches inside the range, at the most severe step it reached. */
+export interface PastBreach {
+  line: string;
+  step: PanelThresholdStep;
+  /** How many separate times the line crossed it. */
+  count: number;
+  /** The worst value across those times, in the step's direction. */
+  worst: number;
+  /** When the latest of them ended, epoch ms. */
+  lastAt: number;
+}
+
+/**
+ * The breaches a chart's range holds that are already over: what `lineBreaches`
+ * rightly leaves out, because it answers "is this breached now?". They never
+ * colour the frame — a panel that recovered an hour ago is not on fire.
+ *
+ *  - A breach is a run of crossing samples. A sample that does not cross ends
+ *    it, and so does a gap longer than twice the line's spacing: a scrape outage
+ *    says nothing either way, so it splits rather than joins.
+ *  - A step with a hold counts a run only if it lasted the hold. A hold too
+ *    short for the chart's step is skipped here; `lineBreaches` already says so.
+ *  - A run still going at the end of a current line is today's breach, not
+ *    history, and is the badge's to report. A line that ended early has no such
+ *    run: a pod that died at 95% is exactly the history this is for.
+ *  - The consolidated total is not judged, for the reason `lineBreaches` gives.
+ *  - A line reports its most severe step only, or a red spike inside an amber
+ *    one would count twice.
+ *
+ * What it can see is what the chart sampled: a spike between two samples leaves
+ * no trace at a wide range.
+ */
+export function pastBreaches(
+  panel: Panel,
+  series: PanelSeries[],
+  timestamps: number[] | undefined,
+  accounts: { value: string; label: string }[],
+  range?: { start: number; end: number }
+): PastBreach[] {
+  if (!isLinePanel(panel.type) || !timestamps || timestamps.length === 0) return [];
+  const steps = panelThresholdsOf(panel);
+  if (steps.length === 0) return [];
+
+  const axisStep = medianSpacing(timestamps);
+  const rangeEnd = range?.end ?? timestamps[timestamps.length - 1];
+  const idByLabel = new Map(accounts.map((a) => [a.label, a.value]));
+  const out: PastBreach[] = [];
+
+  for (const line of series) {
+    if (line.consolidated) continue;
+    const samples: { at: number; value: number }[] = [];
+    line.values.forEach((value, i) => {
+      if (value !== null && value !== undefined && Number.isFinite(value)) samples.push({ at: timestamps[i], value });
+    });
+    if (samples.length === 0) continue;
+
+    const accountId = line.accountLabel ? idByLabel.get(line.accountLabel) : accounts.length === 1 ? accounts[0].value : undefined;
+    const ownStep = medianSpacing(samples.map((p) => p.at)) || axisStep;
+    const tolerance = 2 * ownStep;
+    const last = samples[samples.length - 1];
+    const current = last.at >= rangeEnd - Math.max(2 * Math.max(ownStep, axisStep), STALE_AFTER_MS);
+
+    let found: PastBreach | undefined;
+    for (const step of steps) {
+      if (appliesToOf(step) === 'account' && (accountId === undefined || step.account_id !== accountId)) continue;
+      const hold = forOf(step);
+      if (hold !== undefined && (axisStep <= 0 || hold * 1000 < 2 * axisStep)) continue;
+
+      const worse = (a: number, b: number) => (isUpper(opOf(step)) ? Math.max(a, b) : Math.min(a, b));
+      let count = 0;
+      let worst = 0;
+      let lastAt = 0;
+      let run: { from: number; to: number; worst: number } | undefined;
+      const close = (active: boolean) => {
+        if (run && !active && (hold === undefined || run.to - run.from >= hold * 1000)) {
+          worst = count === 0 ? run.worst : worse(worst, run.worst);
+          lastAt = run.to;
+          count += 1;
+        }
+        run = undefined;
+      };
+      for (const { at, value } of samples) {
+        if (run && at - run.to > tolerance) close(false);
+        if (crosses(step, value)) {
+          run = run ? { ...run, to: at, worst: worse(run.worst, value) } : { from: at, to: at, worst: value };
+        } else {
+          close(false);
+        }
+      }
+      close(current);
+
+      if (count > 0 && (!found || severer(step, found.step) === step)) found = { line: line.label, step, count, worst, lastAt };
+    }
+    if (found) out.push(found);
+  }
+  return out.sort((a, b) => b.lastAt - a.lastAt);
+}
+
 /**
  * Which series a chart with thresholds must keep when the series cap trims it:
  * those whose latest value already crosses one of the steps that applies to

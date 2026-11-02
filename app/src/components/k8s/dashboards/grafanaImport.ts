@@ -134,9 +134,9 @@ export function convertGrafanaDashboard(model: any, scope: PanelScope): GrafanaI
     warnings.push('No panel in this dashboard could be imported.');
   }
 
-  // Variables are substituted only from the host page's context (a workload or
-  // pod detail page). On the dashboards tab nothing supplies them, so the query
-  // runs against the literal `$var` text — which silently returns nothing.
+  // Grafana's own variables do not come across, so a query using one runs against
+  // the literal `$var` text — which silently returns nothing — until the dashboard
+  // declares it, or a host page (a workload or pod detail page) supplies it.
   const variables = new Set<string>();
   for (const panel of panels) {
     for (const target of panel.targets || []) {
@@ -145,8 +145,8 @@ export function convertGrafanaDashboard(model: any, scope: PanelScope): GrafanaI
   }
   if (variables.size > 0) {
     warnings.push(
-      `Queries reference ${[...variables].map((v) => `$${v}`).join(', ')}. Those are filled in only when a dashboard is opened from a page that ` +
-        'supplies them — edit the panels to replace them with literal values.'
+      `Queries reference ${[...variables].map((v) => `$${v}`).join(', ')}. Those are filled in only when the dashboard declares them under ` +
+        'Variables, or is opened from a page that supplies them. Declare them, or replace them with literal values.'
     );
   }
 

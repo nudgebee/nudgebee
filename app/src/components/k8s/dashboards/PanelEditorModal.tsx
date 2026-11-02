@@ -512,6 +512,8 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
   // refused) exactly like one in query A.
   const allExprs = targets.map((t) => t.expr || '').join('\n');
   const templateVars = useMemo(() => referencedVariables(allExprs), [allExprs]);
+  // A dropdown the dashboard declares always has a value; only the rest depend on the host page.
+  const undeclaredVars = useMemo(() => templateVars.filter((v) => !(v in (variables || {}))), [templateVars, variables]);
 
   if (!draft) return null;
 
@@ -1178,7 +1180,7 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                           </Box>
                         </>
                       )}
-                      {templateVars.length > 0 && (
+                      {(commandHelp ? templateVars : undeclaredVars).length > 0 && (
                         <Box sx={{ p: 1.5, border: `1px solid ${ds.amber[300]}`, background: ds.amber[100], borderRadius: ds.radius.md }}>
                           <Typography variant='body2' sx={{ color: ds.gray[700] }}>
                             {commandHelp ? (
@@ -1189,9 +1191,9 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                               </>
                             ) : (
                               <>
-                                This query references {templateVars.map((v) => `$${v}`).join(', ')}. Those are filled in only when the dashboard is
-                                opened from a page that supplies them (a workload or pod detail page). Anywhere else the query runs against the
-                                literal text.
+                                This query references {undeclaredVars.map((v) => `$${v}`).join(', ')}. Those are filled in only when the dashboard
+                                declares them under Variables, or is opened from a page that supplies them (a workload or pod detail page). Anywhere
+                                else the query runs against the literal text.
                               </>
                             )}
                           </Typography>

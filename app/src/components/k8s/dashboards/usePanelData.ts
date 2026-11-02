@@ -4,7 +4,7 @@ import apiDashboards, { isCommandDatasource, type AccountOption, type Panel, typ
 import { draftFromQuery, findTable, renderEntityQuery, type EntityColumnFormat, type EntityQueryDraft } from './entityQuery';
 import { runTracePanel } from './traceQuery';
 import { panelQueryAccounts, resolvePanelAccounts } from './panelAccounts';
-import { AWS_METRICS_PROVIDER, ES_PROVIDER, isAwsAccount } from './panelProviders';
+import { ES_PROVIDER, metricsProviderFields } from './panelProviders';
 import { accountPrefixed, alignSeries, toRawSeries, type RawSeries } from './panelSeries';
 import { acquirePanelSlot } from './panelQueue';
 import { accountCappedWarning, capSeriesByAccount, MAX_CHART_SERIES, MAX_TABLE_SERIES, PANEL_TIMEOUT_MS, panelStep } from './panelBounds';
@@ -160,7 +160,7 @@ export function usePanelData({
     (panel.targets || []).map((t) => [
       t.ref_id,
       renderTemplate(t.expr || '', variables),
-      t.query ? renderEntityQuery(t.query, (v) => renderTemplate(v, variables)) : undefined,
+      t.query ? renderEntityQuery(t.query, (v, f) => renderTemplate(v, variables, f), variables) : undefined,
       t.legend_format,
       t.hide,
     ])
@@ -313,7 +313,7 @@ export function usePanelData({
       // traces panel resolves to exactly one (auto-selected, or picked). The
       // traces client takes no signal, so the deadline is the only bound here.
       runTracePanel(
-        draftFromQuery(renderEntityQuery(stored, (v) => renderTemplate(v, variables))),
+        draftFromQuery(renderEntityQuery(stored, (v, f) => renderTemplate(v, variables, f), variables)),
         resolved[0].value,
         startTime,
         endTime,
@@ -350,7 +350,7 @@ export function usePanelData({
       const stored = targets[0]?.query;
       const query = stored
         ? withViewerFilters(
-            renderEntityQuery(stored, (v) => renderTemplate(v, variables)),
+            renderEntityQuery(stored, (v, f) => renderTemplate(v, variables, f), variables),
             viewerFilters || []
           )
         : undefined;
@@ -400,7 +400,7 @@ export function usePanelData({
     if (panel.datasource === 'logs') {
       setLoading(true);
       setError(null);
-      const query = renderTemplate(targets[0]?.expr || '', variables);
+      const query = renderTemplate(targets[0]?.expr || '', variables, 'logql');
       const prefixWithAccountLabel = resolved.length > 1;
 
       Promise.allSettled(
@@ -543,8 +543,7 @@ export function usePanelData({
         // It supersedes the AWS default: an author who picked Prometheus for a
         // panel meant it, and silently redirecting one account to CloudWatch would
         // run PromQL against a backend that cannot read it.
-        const provider = panel.provider || (isAwsAccount(account) ? AWS_METRICS_PROVIDER : '');
-        const cloudwatch = provider === AWS_METRICS_PROVIDER;
+        const { cloudwatch, fields } = metricsProviderFields(panel, account);
         // CloudWatch has no instant form — it always answers with a range.
         const instant = !cloudwatch && singleValue;
         return observability.metricsQuery(
@@ -555,14 +554,7 @@ export function usePanelData({
             end_time: endTime,
             instant,
             ...(instant ? {} : { step_interval: step }),
-            // CloudWatch is never an account's DEFAULT metrics provider: it is not an integration that can
-            // carry that flag, so it must be named — and named with its source, since it resolves only as
-            // `user` and the server would otherwise fall back to `agent` and reject the pair. Every other
-            // provider leaves the source for the server to resolve per account.
-            ...(provider ? { metric_provider: provider, ...(cloudwatch ? { metric_provider_source: 'user' } : {}) } : {}),
-            // The ES metrics path reads its index out of `metric_name` — the slot the
-            // request contract gives it, per resolveESMetricsIndex. Not a mistake here.
-            ...(provider === ES_PROVIDER && panel.provider_index ? { request: { metric_name: panel.provider_index } } : {}),
+            ...fields,
           },
           controller.signal
         );

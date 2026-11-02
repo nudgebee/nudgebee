@@ -5,6 +5,7 @@ import {
   holdLabel,
   isCompleteStep,
   lineBreaches,
+  pastBreaches,
   linePreferenceKey,
   panelBreach,
   panelBreaches,
@@ -615,5 +616,76 @@ describe('a chart’s holds, worst cases', () => {
     expect(linePreferenceKey(chart([hold5m], 'stat'))).toBe('');
     // The colour and the hold do not change which lines cross.
     expect(linePreferenceKey(chart([{ ...hold5m, color: 'amber', for: 600 }]))).toBe(linePreferenceKey(chart([hold5m])));
+  });
+});
+
+describe('the breaches a chart’s range holds that are over', () => {
+  const MIN = 60 * 1000;
+  const axis = Array.from({ length: 12 }, (_, i) => i * MIN);
+  const accounts = [{ value: 'a-1', label: 'prod' }];
+  const chart = (options: unknown) => panelWith(options, 'timeseries');
+  const red = { thresholds: [{ value: 80, color: 'red' }] };
+  const line = (label: string, values: (number | null)[], extra: Partial<PanelSeries> = {}): PanelSeries => ({ label, values, ...extra });
+
+  it('counts each separate crossing, with the worst value and when the latest ended', () => {
+    const out = pastBreaches(chart(red), [line('api', [10, 90, 95, 10, 10, 85, 10, 10, 10, 10, 10, 10])], axis, accounts);
+    expect(out).toEqual([expect.objectContaining({ line: 'api', count: 2, worst: 95, lastAt: 5 * MIN })]);
+  });
+
+  it('leaves a breach still going to the badge', () => {
+    const out = pastBreaches(chart(red), [line('api', [10, 10, 10, 10, 10, 10, 10, 10, 10, 90, 90, 90])], axis, accounts);
+    expect(out).toEqual([]);
+  });
+
+  it('counts the earlier one when a line is breaching again now', () => {
+    const out = pastBreaches(chart(red), [line('api', [90, 10, 10, 10, 10, 10, 10, 10, 10, 10, 90, 90])], axis, accounts);
+    expect(out[0].count).toBe(1);
+    expect(out[0].lastAt).toBe(0);
+  });
+
+  it('keeps the breach of a line that ended early', () => {
+    const ended = [10, 10, 90, 90, null, null, null, null, null, null, null, null];
+    expect(pastBreaches(chart(red), [line('pod', ended)], axis, accounts)[0].count).toBe(1);
+  });
+
+  it('counts a run only if it lasted the hold', () => {
+    const held = { thresholds: [{ value: 80, color: 'red', for: 180 }] };
+    const values = [10, 90, 90, 10, 90, 90, 90, 90, 10, 10, 10, 10];
+    expect(pastBreaches(chart(held), [line('api', values)], axis, accounts)[0]).toMatchObject({ count: 1, lastAt: 7 * MIN });
+  });
+
+  it('reports only the most severe step a line reached', () => {
+    const both = {
+      thresholds: [
+        { value: 70, color: 'amber' },
+        { value: 90, color: 'red' },
+      ],
+    };
+    const out = pastBreaches(chart(both), [line('api', [10, 75, 95, 75, 10, 10, 10, 10, 10, 10, 10, 10])], axis, accounts);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ count: 1, step: expect.objectContaining({ color: 'red' }) });
+  });
+
+  it('reads a below-the-line step, worst meaning lowest', () => {
+    const low = { thresholds: [{ value: 20, color: 'red', op: 'lt' }] };
+    const out = pastBreaches(chart(low), [line('headroom', [50, 15, 5, 50, 50, 50, 50, 50, 50, 50, 50, 50])], axis, accounts);
+    expect(out[0]).toMatchObject({ count: 1, worst: 5 });
+  });
+
+  it('splits a run across a real gap', () => {
+    const out = pastBreaches(chart(red), [line('api', [90, 90, null, null, null, null, 90, 10, 10, 10, 10, 10])], axis, accounts);
+    expect(out[0].count).toBe(2);
+  });
+
+  it('never judges the consolidated total, and keeps an account step to that account', () => {
+    const scoped = { thresholds: [{ value: 80, color: 'red', applies_to: 'account', account_id: 'a-1' }] };
+    const spike = [10, 90, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10];
+    expect(pastBreaches(chart(red), [line('All accounts', spike, { consolidated: true })], axis, accounts)).toEqual([]);
+    expect(pastBreaches(chart(scoped), [line('x', spike, { accountLabel: 'other' })], axis, accounts)).toEqual([]);
+    expect(pastBreaches(chart(scoped), [line('x', spike, { accountLabel: 'prod' })], axis, accounts)).toHaveLength(1);
+  });
+
+  it('says nothing for a panel that is not a chart', () => {
+    expect(pastBreaches(panelWith(red), [line('api', [90])], axis, accounts)).toEqual([]);
   });
 });

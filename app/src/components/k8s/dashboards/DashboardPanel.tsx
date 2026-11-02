@@ -38,6 +38,8 @@ import {
   holdLabel,
   isLinePanel,
   lineBreaches,
+  pastBreaches,
+  type PastBreach,
   OP_PHRASE,
   OP_SYMBOL,
   opOf,
@@ -217,6 +219,18 @@ function breachSentence(b: Breach, unit?: string): string {
   }
   const phrase = `${OP_PHRASE[opOf(b.step)]} the ${b.step.value} threshold.`;
   return b.account ? `${b.account} is at ${formatValue(b.value, unit)}, ${phrase}` : `${formatValue(b.value, unit)} is ${phrase}`;
+}
+
+/** How many earlier breaches a hover spells out; the rest are counted. */
+const PAST_BREACH_LINES = 5;
+
+/** One line's finished breaches, as a sentence. */
+function pastBreachSentence(b: PastBreach, unit?: string): string {
+  const times = b.count === 1 ? 'once' : `${b.count} times`;
+  return `${b.line} went ${OP_PHRASE[opOf(b.step)]} the ${b.step.value} threshold ${times}, last at ${clockTime(b.lastAt)}. Worst ${formatValue(
+    b.worst,
+    unit
+  )}.`;
 }
 
 const NUMBER_CELL_SX = { textAlign: 'right', fontSize: ds.text.caption, fontWeight: 'var(--ds-font-weight-regular)', color: 'var(--ds-gray-700)' };
@@ -530,6 +544,12 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
         : panelBreaches(panel, stat, shownAccounts),
     [panel, data, stat, shownAccounts, startTime, endTime]
   );
+  /** Breaches this chart's range holds that are over; the badge above only speaks for now. */
+  const earlier = React.useMemo(
+    () => pastBreaches(panel, data?.series || [], data?.timestamps, shownAccounts, { start: startTime, end: endTime }),
+    [panel, data, shownAccounts, startTime, endTime]
+  );
+  const earlierCount = earlier.reduce((sum, b) => sum + b.count, 0);
   /** A chart's thresholds have more to say than a stat's: where the holds were met, and what could not be judged. */
   const lineVerdict = 'spans' in breaches ? breaches : undefined;
   /**
@@ -1081,6 +1101,31 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
               <Chip size='2xs' tone={tone.chip}>
                 {breachLabel(breaches.frame)}
                 {breaches.all.length > 1 ? ` +${breaches.all.length - 1}` : ''}
+              </Chip>
+            </Box>
+          </Tooltip>
+        )}
+        {/* Quiet on purpose: this is history, so it never takes the frame's colour. */}
+        {earlierCount > 0 && (
+          <Tooltip
+            title={
+              <Box sx={{ display: 'grid', gap: ds.space[0] }}>
+                {earlier.slice(0, PAST_BREACH_LINES).map((b) => (
+                  <span key={b.line}>{pastBreachSentence(b, panel.unit)}</span>
+                ))}
+                {earlier.length > PAST_BREACH_LINES && <span>+{earlier.length - PAST_BREACH_LINES} more lines.</span>}
+                <span>Over, in this time range. A spike between two chart samples is not seen; a shorter range samples more often.</span>
+                {data?.capped && (
+                  <span>
+                    Judged on the {data.capped.shown} lines shown, of {data.capped.total}.
+                  </span>
+                )}
+              </Box>
+            }
+          >
+            <Box component='span' data-testid={`panel-threshold-past-${panel.id}`} sx={{ display: 'inline-flex', cursor: 'help' }}>
+              <Chip size='2xs' tone='subtle'>
+                {earlierCount} earlier
               </Chip>
             </Box>
           </Tooltip>

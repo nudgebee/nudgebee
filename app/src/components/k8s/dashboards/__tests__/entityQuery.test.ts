@@ -531,3 +531,48 @@ describe('brand placeholders', () => {
     }
   });
 });
+
+describe('renderEntityQuery with a dropdown', () => {
+  const query = (operator: string, value: unknown) => ({ table: 'events_v2', where: { _and: [{ _binary: { status: { [operator]: value } } }] } });
+  const run = (operator: string, value: unknown, picked: { values: string[]; all: boolean; allValue?: string }) => {
+    const variables = { n: picked };
+    return renderEntityQuery(query(operator, value), (v, f) => renderTemplate(v, variables, f), variables);
+  };
+  const filter = (rendered: any) => rendered.where?._and?.[0]?._binary?.status;
+
+  it('drops the filter on All, whatever the operator, and an emptied where with it', () => {
+    for (const operator of ['_eq', '_in', '_regex', '_neq']) {
+      expect(run(operator, '$n', { values: ['a', 'b'], all: true }).where).toBeUndefined();
+    }
+  });
+
+  it('keeps the other filters when one is dropped', () => {
+    const stored = { table: 'events_v2', where: { _and: [{ _binary: { status: { _eq: '$n' } } }, { _binary: { title: { _eq: 'x' } } }] } };
+    const variables = { n: { values: [], all: true } };
+    const rendered: any = renderEntityQuery(stored, (v, f) => renderTemplate(v, variables, f), variables);
+    expect(rendered.where._and).toEqual([{ _binary: { title: { _eq: 'x' } } }]);
+  });
+
+  it('turns several picks on `is` into `is one of`, and `is not` into `is none of`', () => {
+    expect(filter(run('_eq', '$n', { values: ['a', 'b'], all: false }))).toEqual({ _in: ['a', 'b'] });
+    expect(filter(run('_neq', '$n', { values: ['a', 'b'], all: false }))).toEqual({ _not_in: ['a', 'b'] });
+    expect(filter(run('_eq', '$n', { values: ['a'], all: false }))).toEqual({ _eq: 'a' });
+  });
+
+  it('sends a real list to `is one of`, stored as a list or a token', () => {
+    expect(filter(run('_in', ['$n'], { values: ['a', 'b'], all: false }))).toEqual({ _in: ['a', 'b'] });
+    expect(filter(run('_in', '$n', { values: ['a', 'b'], all: false }))).toEqual({ _in: ['a', 'b'] });
+  });
+
+  it('escapes a regex filter once, as the engine reads the pattern directly', () => {
+    expect(filter(run('_regex', '$n', { values: ['prod.east', 'b'], all: false }))).toEqual({ _regex: 'prod\\.east|b' });
+  });
+
+  it('sends a custom All value as written', () => {
+    expect(filter(run('_regex', '$n', { values: [], all: true, allValue: 'a.+' }))).toEqual({ _regex: 'a.+' });
+  });
+
+  it('fills a token inside a longer value without regex text', () => {
+    expect(filter(run('_ilike', '%$n%', { values: ['a.b'], all: false }))).toEqual({ _ilike: '%a.b%' });
+  });
+});

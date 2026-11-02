@@ -359,3 +359,49 @@ func TestBindingMatches(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateVariables(t *testing.T) {
+	good := Variable{Name: "scale_set", Query: "gha_max_runners", LabelKey: "name"}
+	assert.NoError(t, validateVariables(nil))
+	assert.NoError(t, validateVariables([]Variable{good}))
+	assert.Error(t, validateVariables([]Variable{good, good}), "duplicate name")
+	assert.Error(t, validateVariables([]Variable{{Name: "a-b", Query: "q", LabelKey: "l"}}), "cannot be referenced")
+	assert.Error(t, validateVariables([]Variable{{Name: "1a", Query: "q", LabelKey: "l"}}), "cannot be referenced")
+	assert.Error(t, validateVariables([]Variable{{Name: "a", LabelKey: "l"}}), "no query")
+	assert.Error(t, validateVariables([]Variable{{Name: "a", Query: "q"}}), "no label key")
+	assert.NoError(t, validateVariables([]Variable{{Name: "a", Type: "custom", Values: []string{"x"}, Multi: true}}))
+	assert.Error(t, validateVariables([]Variable{{Name: "a", Type: "custom"}}), "no values")
+	assert.Error(t, validateVariables([]Variable{{Name: "a", Type: "custom", Values: []string{" "}}}), "blank values")
+	assert.Error(t, validateVariables([]Variable{{Name: "a", Type: "other", Query: "q", LabelKey: "l"}}), "unknown type")
+}
+
+// A field the struct does not carry is dropped on save, so this pins the round trip.
+func TestDefinitionKeepsVariables(t *testing.T) {
+	raw := `{"panels":[],"variables":[{"name":"scale_set","label":"Scale set","query":"gha_max_runners","label_key":"name"},{"name":"env","type":"custom","values":["dev","prod"],"multi":true}]}`
+	var def Definition
+	require.NoError(t, json.Unmarshal([]byte(raw), &def))
+	out, err := json.Marshal(def)
+	require.NoError(t, err)
+	assert.JSONEq(t, raw, string(out))
+}
+
+func TestVariableAllValueRoundTrips(t *testing.T) {
+	stored, err := json.Marshal(Definition{Variables: []Variable{{Name: "ns", Type: VariableTypeCustom, Values: []string{"a"}, AllValue: ".+"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var read Definition
+	if err := json.Unmarshal(stored, &read); err != nil {
+		t.Fatal(err)
+	}
+	if read.Variables[0].AllValue != ".+" {
+		t.Fatalf("all_value did not survive a round trip: %s", stored)
+	}
+}
+
+func TestValidateNudgebeeVariable(t *testing.T) {
+	good := Variable{Name: "status", Type: VariableTypeNudgebee, Table: "events_v2", Column: "status"}
+	assert.NoError(t, validateVariables([]Variable{good}))
+	assert.Error(t, validateVariables([]Variable{{Name: "status", Type: VariableTypeNudgebee, Table: "events_v2"}}), "no column")
+	assert.Error(t, validateVariables([]Variable{{Name: "status", Type: VariableTypeNudgebee, Column: "status"}}), "no table")
+}
