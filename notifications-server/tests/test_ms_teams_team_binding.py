@@ -89,7 +89,12 @@ def _team_row(group, workspace, status="enabled", aad=AAD, bound_at=None):
     row = Integration(
         id=uuid.uuid4(), tenant_id=workspace, type=tb.TEAM_TYPE, source="user", name=group, status=status, labels={}
     )
-    values = [IntegrationConfigValue(id=uuid.uuid4(), integration_id=row.id, name="aad_tenant_id", value=aad)]
+    values = [
+        IntegrationConfigValue(id=uuid.uuid4(), integration_id=row.id, name="aad_tenant_id", value=aad),
+        IntegrationConfigValue(
+            id=uuid.uuid4(), integration_id=row.id, name="team_thread_id", value=f"19:{group}@thread.tacv2"
+        ),
+    ]
     if bound_at:
         values.append(IntegrationConfigValue(id=uuid.uuid4(), integration_id=row.id, name=tb.BOUND_AT, value=bound_at))
     return [row, *values]
@@ -264,7 +269,7 @@ def test_every_connect_is_announced_but_only_a_takeover_is_audited_elsewhere(eng
     assert _bind(engine, W2, _team(T2)) == tb.CONNECTED
     activity = tb.get_sender.return_value.send.call_args.args[2]
     assert activity.text == "This team is now connected to Ops West, connected by Dana Lee."
-    assert all(c.kwargs["tenant_id"] in (W2, str(W2)) for c in tb.create_audit_request.call_args_list)
+    assert all(c.kwargs["tenant_id"] == str(W2) for c in tb.create_audit_request.call_args_list)
 
 
 def test_a_refused_connect_is_not_announced(engine, locks):
@@ -442,6 +447,33 @@ def test_team_data_decides_a_team_conversation_whatever_its_type_says(engine):
         assert tb.workspaces_for(session, activity("channel")) == set()
         assert tb.workspaces_for(session, activity(None)) == set()
         assert tb.workspaces_for(session, activity("groupChat")) == {str(W1), str(W2)}
+
+
+def test_a_card_click_in_a_channel_belongs_to_its_teams_owner_by_thread_id(engine):
+    _add(engine, *_team_row(T1, W1), *_team_row("group-3", W2, status="released"))
+
+    def click(thread_id):
+        return SimpleNamespace(
+            conversation=SimpleNamespace(conversation_type="channel"),
+            channel_data={"tenant": {"id": AAD}, "team": {"id": thread_id}},
+        )
+
+    with Session(engine) as session:
+        assert tb.workspaces_for(session, click(f"19:{T1}@thread.tacv2")) == {str(W1)}
+        assert tb.workspaces_for(session, click("19:group-3@thread.tacv2")) == set(), "released is unbound"
+        assert tb.workspaces_for(session, click("19:unknown@thread.tacv2")) == set()
+
+
+def test_a_thread_id_bound_in_two_workspaces_resolves_to_neither(engine):
+    twin = _team_row("group-9", W2)
+    twin[2].value = f"19:{T1}@thread.tacv2"
+    _add(engine, *_team_row(T1, W1), *twin)
+    click = SimpleNamespace(
+        conversation=SimpleNamespace(conversation_type="channel"),
+        channel_data={"tenant": {"id": AAD}, "team": {"id": f"19:{T1}@thread.tacv2"}},
+    )
+    with Session(engine) as session:
+        assert tb.workspaces_for(session, click) == set()
 
 
 # ------------------------------- @mention links -------------------------------

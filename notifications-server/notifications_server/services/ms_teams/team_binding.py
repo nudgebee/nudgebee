@@ -66,6 +66,28 @@ def team_owner(session, aad_group_id) -> Optional[str]:
     return str(row[0]) if row else None
 
 
+def team_owner_by_thread(session, thread_id) -> Optional[str]:
+    """The workspace a team is bound to, found by the team's thread id: card
+    clicks in a channel carry the team's id but not its aadGroupId. None when
+    the id matches no bound team, or more than one workspace."""
+    if not thread_id:
+        return None
+    rows = (
+        session.query(Integration.tenant_id)
+        .join(IntegrationConfigValue, IntegrationConfigValue.integration_id == Integration.id)
+        .filter(
+            Integration.type == TEAM_TYPE,
+            Integration.status == ENABLED,
+            IntegrationConfigValue.name == "team_thread_id",
+            IntegrationConfigValue.value == thread_id,
+        )
+        .distinct()
+        .limit(2)
+        .all()
+    )
+    return str(rows[0][0]) if len(rows) == 1 else None
+
+
 def eligible(session, aad_tenant_id) -> Set[str]:
     """The workspaces with a team bound in this Microsoft tenant."""
     if not aad_tenant_id:
@@ -90,7 +112,11 @@ def workspaces_for(session, activity) -> Set[str]:
     a personal or group chat, every workspace eligible for the conversation's
     Microsoft tenant; anywhere else, none."""
     if in_team(activity):
-        owner = team_owner(session, team_of(activity).get("aadGroupId"))
+        team = team_of(activity)
+        if team.get("aadGroupId"):
+            owner = team_owner(session, team["aadGroupId"])
+        else:
+            owner = team_owner_by_thread(session, team.get("id"))
         return {owner} if owner else set()
     if in_chat(activity):
         tenant = channel_data_of(activity).get("tenant")
@@ -353,7 +379,7 @@ def bind_team(
     try:
         create_audit_request(
             user_id=user_id,
-            tenant_id=workspace,
+            tenant_id=str(workspace),
             account_id=None,
             event_time=utc_now(),
             event_category=EventCategory.INTEGRATIONS.value,
