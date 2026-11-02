@@ -140,7 +140,7 @@ jobs:
           # login above, no docker daemon pull. GRYPE_DB_AUTO_UPDATE=false
           # reuses the DB fetched in the step above.
           GRYPE_DB_AUTO_UPDATE=false grype "registry:$IMAGE_REF" \
-            -q -o cyclonedx-json=sbom.cdx.json
+            -o cyclonedx-json=sbom.cdx.json
           GRYPE_DB_AUTO_UPDATE=false grype sbom:sbom.cdx.json \
             -o table -o json=result.json
           # The SBOM drops the tag from the target name; put the full ref back
@@ -276,11 +276,20 @@ jobs:
           set -euo pipefail
           echo "Scanning $IMAGE_REF (report-only — upstream-owned)"
 
+          # A PR that bumps a mirror tag points here at an image that
+          # infra-mirrors-image.yaml only publishes after merge. Skip it on the
+          # PR rather than fail; the scheduled run scans it once it exists.
+          if [ "${{ github.event_name }}" = "pull_request" ] \
+              && ! docker buildx imagetools inspect "$IMAGE_REF" >/dev/null 2>&1; then
+            echo "::notice title=Not published yet::$IMAGE_REF is published on merge; skipped on this PR."
+            exit 0
+          fi
+
           # Counts are reported by the `summary` job from the uploaded JSON.
           # Matched through an SBOM, like the first-party scan above (grype
           # drops Go-module matches when it scans an image directly).
           GRYPE_DB_AUTO_UPDATE=false grype "registry:$IMAGE_REF" \
-            -q -o cyclonedx-json=sbom.cdx.json
+            -o cyclonedx-json=sbom.cdx.json
           GRYPE_DB_AUTO_UPDATE=false grype sbom:sbom.cdx.json \
             -o table -o json=result.json
           python3 -c 'import json,os; d=json.load(open("result.json")); d["source"]["target"]["userInput"]=os.environ["IMAGE_REF"]; json.dump(d,open("result.json","w"))'
