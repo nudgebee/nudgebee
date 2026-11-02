@@ -3,7 +3,9 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -20,6 +22,131 @@ const (
 	AlertHistoryNormalView = "normal level: last 3 days, 15-minute step"
 	AlertHistoryNowView    = "now: last 2 hours, 1-minute step"
 )
+
+// alertLimitMetric matches a metric that states a hard limit, as the denominator
+// of a share of it. Of the enabled rules that divide, it names 32 of 96 on one
+// install and 48 of 167 on another.
+var alertLimitMetric = regexp.MustCompile(`(?i)(max|limit|capacity|size_bytes|allocatable|cores_available)`)
+
+// AlertSeriesLimit is the end of the scale of a series that is a share of a
+// stated limit: 1, or 100 for a percentage, and 0 for a series falling toward
+// nothing (op < or <=, as in free space over capacity). scale is the series'
+// full share, 1 or 100. ok is false for any other series; a ratio of two rates
+// is not a share of a limit.
+func AlertSeriesLimit(series, op string) (limit, scale float64, ok bool) {
+	node, err := promQLParser.ParseExpr(series)
+	if err != nil {
+		return 0, 0, false
+	}
+	scale = 1
+	node = unwrapParens(node)
+	if b, isBinary := node.(*parser.BinaryExpr); isBinary && b.Op == parser.MUL {
+		inner, hundred := percentOperand(b)
+		if !hundred {
+			return 0, 0, false
+		}
+		node, scale = unwrapParens(inner), 100
+	}
+	div, isBinary := node.(*parser.BinaryExpr)
+	if !isBinary || div.Op != parser.DIV {
+		return 0, 0, false
+	}
+	if b, isMul := unwrapParens(div.LHS).(*parser.BinaryExpr); isMul && b.Op == parser.MUL {
+		if _, hundred := percentOperand(b); hundred {
+			scale = 100
+		}
+	}
+	named := false
+	parser.Inspect(div.RHS, func(n parser.Node, _ []parser.Node) error {
+		if v, isVector := n.(*parser.VectorSelector); isVector && alertLimitMetric.MatchString(v.Name) {
+			named = true
+		}
+		return nil
+	})
+	if !named {
+		return 0, 0, false
+	}
+	if strings.HasPrefix(op, "<") {
+		return 0, scale, true
+	}
+	return scale, scale, true
+}
+
+// percentOperand returns the side of a multiplication that is not the number 100.
+func percentOperand(b *parser.BinaryExpr) (parser.Expr, bool) {
+	if n, isNum := unwrapParens(b.LHS).(*parser.NumberLiteral); isNum && n.Val == 100 {
+		return b.RHS, true
+	}
+	if n, isNum := unwrapParens(b.RHS).(*parser.NumberLiteral); isNum && n.Val == 100 {
+		return b.LHS, true
+	}
+	return nil, false
+}
+
+// AlertProjection is where an alert's metric stands against one level, read from
+// the "now" view of its saved history.
+type AlertProjection struct {
+	Current     float64
+	At          time.Time
+	Past        bool      // past the level at the last reading
+	PastSince   time.Time // when this stretch past it began
+	Earliest    time.Time // projected: the window of the crossing
+	Latest      time.Time // zero when the slowest rate never reaches it
+	Hours       float64   // projected: hours from At to the crossing
+	Rising      bool      // moving toward the level in a steady climb
+	RatePerHour float64
+	Since       time.Time // when the climb began, if it began recently
+	Reason      string    // why no time is given
+}
+
+// ProjectAlertHistory reads the "now" view in raw, the JSON saved as the alert's
+// metric history, against level, using the readings up to asOf (all of them when
+// asOf is zero). ok is false when the view has none.
+func ProjectAlertHistory(raw []byte, level float64, direction string, asOf time.Time) (AlertProjection, bool) {
+	series, _, err := parseMetricSeriesFile(raw, "")
+	if err != nil {
+		return AlertProjection{}, false
+	}
+	idx := slices.IndexFunc(series, func(s msSeries) bool { return strings.HasPrefix(s.name, AlertHistoryNowView) })
+	if idx < 0 {
+		return AlertProjection{}, false
+	}
+	view := series[idx]
+	if !asOf.IsZero() {
+		view.points = slices.DeleteFunc(slices.Clone(view.points), func(p msPoint) bool { return p.at.After(asOf) })
+	}
+	if len(view.points) == 0 {
+		return AlertProjection{}, false
+	}
+	a := analyzeMetricSeries(view, []msThreshold{{Value: level, Direction: direction, Label: "level"}})
+	if len(a.Thresholds) != 1 {
+		return AlertProjection{}, false
+	}
+	th := a.Thresholds[0]
+	p := AlertProjection{Current: a.Baseline.Last, Past: th.CurrentlyPast || a.Baseline.Last == level, PastSince: th.ongoingSince}
+	p.At, _ = time.Parse(time.RFC3339, a.End)
+	if p.Past && p.PastSince.IsZero() {
+		p.PastSince = p.At
+	}
+	trend := a.Trend
+	if a.TrendSinceClimb != nil {
+		trend = a.TrendSinceClimb
+		p.Since, _ = time.Parse(time.RFC3339, a.ClimbingSince)
+	}
+	if trend != nil {
+		p.RatePerHour = math.Abs(trend.RatePerHour)
+		toward := (direction == "above") == (trend.RatePerHour > 0)
+		p.Rising = trend.Steady && toward && trend.Direction != "flat"
+	}
+	if th.TimeToReach != nil {
+		p.Hours = th.TimeToReach.HoursEstimate
+		p.Earliest, _ = time.Parse(time.RFC3339, th.TimeToReach.Earliest)
+		p.Latest, _ = time.Parse(time.RFC3339, th.TimeToReach.Latest)
+		return p, true
+	}
+	p.Reason = msPlainReason(th.NotForecastReason, a.Trend)
+	return p, true
+}
 
 // AlertLevelQuery splits an alert rule of the form `<series> <op> <number>`
 // (also inside `... and <condition>` or `... unless <condition>`, where the

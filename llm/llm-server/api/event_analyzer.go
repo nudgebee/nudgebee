@@ -3307,6 +3307,7 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 	// text here and drives Step 3.
 	var investigationText string
 	var changePlan *codeChangePlan
+	var criticalLine string
 	existingInvestigation, _ := eventAnalysisRepo.GetEventAnalysis(ctx, request.EventId, eventFingerprint, eventAggregationKey, request.AccountId, events.AnalysisTypeInvestigation)
 	if existingInvestigation != nil && existingInvestigation.Status == string(events.AnalysisStatusCompleted) && !request.Regenerate &&
 		!eventAnalysisRepo.IsAnalysisStale(existingInvestigation.UpdatedAt) {
@@ -3376,9 +3377,11 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 					eventAnalsysisPrompt = eventAnalsysisPrompt + "\n\n" + structuredEvidenceNote(file, eventData.Evidences)
 				}
 			}
-			if note := saveAlertMetricHistory(ctx, eventAnalysisRepo, request.AccountId, parentConversationId, eventData, parsedLabels, window, hasWindow); note != "" {
+			note, critical := saveAlertMetricHistory(ctx, eventAnalysisRepo, request.AccountId, parentConversationId, eventData, parsedLabels, window, hasWindow)
+			if note != "" {
 				eventAnalsysisPrompt = eventAnalsysisPrompt + "\n\n" + note
 			}
+			criticalLine = critical
 			// Persist any oversized prompt inputs the guardrail condensed to a
 			// workspace-file pointer. Best-effort: on failure the pointer simply
 			// resolves to a missing file (an empty grep), never a hard error.
@@ -3464,7 +3467,7 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 			// measured on real investigations.
 			check := recordConfirmingCheck(ctx, dbManager, investigationResponse, investigationMessageId, request.EventId, request.AccountId, workloadNamespace, workloadName, eventData.Title)
 			cleaned := stripConfirmingCheckBlock(stripChangePlanBlock(investigationResponse))
-			cleaned = withOutlookLine(cleaned, eventOutlookLine(ctx, eventAnalysisRepo, request.AccountId, eventData, time.Now()))
+			cleaned = withOutlookLine(cleaned, joinOutlookLines(criticalLine, eventOutlookLine(ctx, eventAnalysisRepo, request.AccountId, eventData, time.Now())))
 			response.Summary = cleaned
 			investigationText = cleaned
 			err = eventAnalysisRepo.UpsertEventAnalysis(ctx, request.EventId, marshalInvestigationAnalysis(changePlan, check), cleaned, string(events.AnalysisStatusCompleted), eventData.Fingerprint, request.AccountId, eventData.AggregationKey, events.AnalysisTypeInvestigation)

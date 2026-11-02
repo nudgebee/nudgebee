@@ -44,7 +44,8 @@ func alertHistoryFileName(eventId string) string {
 // saveAlertMetricHistory saves the series an alert's rule compares against a
 // level, for the days up to the incident, and returns the prompt note naming
 // the file — or "" when the rule has no level (a state or presence test, or no
-// rule), the series cannot be told apart from others, or the query fails.
+// rule), the series cannot be told apart from others, or the query fails — and
+// the report's "Becomes critical" line, read from the same series.
 //
 // The investigation answers "will it become critical, and when" from this
 // series. Left to the agent, it analysed the 10-minute evidence window or
@@ -52,10 +53,10 @@ func alertHistoryFileName(eventId string) string {
 // fetch a day was ignored. Rules that test a level are where a forecast means
 // anything, and their own expression names the series, so this needs no
 // knowledge of the alert type.
-func saveAlertMetricHistory(ctx *security.RequestContext, repo *events.EventAnalysisRepository, accountId, sessionId string, event events.Event, labels map[string]any, window investigationWindow, hasWindow bool) string {
+func saveAlertMetricHistory(ctx *security.RequestContext, repo *events.EventAnalysisRepository, accountId, sessionId string, event events.Event, labels map[string]any, window investigationWindow, hasWindow bool) (string, string) {
 	expr, _, err := repo.GetEventRuleDefinition(ctx, accountId, event.AggregationKey)
 	if err != nil || expr == "" {
-		return ""
+		return "", ""
 	}
 	end := time.Now()
 	if hasWindow && window.End != nil {
@@ -65,7 +66,7 @@ func saveAlertMetricHistory(ctx *security.RequestContext, repo *events.EventAnal
 	if !isProm {
 		var ok bool
 		if series, op, level, ok = tools.CloudWatchAlarmCommand(expr, end.Add(-time.Hour), end, time.Minute); !ok {
-			return ""
+			return "", ""
 		}
 	}
 	// The views are fetched together and bounded by alertHistoryTimeout, so a
@@ -115,25 +116,35 @@ collect:
 	}
 	if len(views) == 0 {
 		ctx.GetLogger().Info("analyzer: alert metric history skipped, no series or datapoints for this alert", "event_id", event.Id)
-		return ""
+		return "", ""
 	}
 	raw, err := common.MarshalJson(views)
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	body := string(raw)
+	var critical string
+	if isProm {
+		// An alert that has ended is read as it stood when it fired: its end says
+		// nothing about what was coming.
+		var asOf time.Time
+		if hasWindow && window.End != nil && event.StartsAt != nil {
+			asOf = *event.StartsAt
+		}
+		critical = alertCriticalLine(ctx, repo, accountId, event.AggregationKey, series, op, level, []byte(body), asOf)
+	}
 	file := saveOverflowToWorkspace(ctx, accountId, sessionId, alertHistoryFileName(event.Id), body)
 	if file == "" {
 		// Say so, rather than nothing: without it the investigation reads the
 		// alert's few minutes of evidence as the metric's history.
 		return fmt.Sprintf("## Alert Metric History\nThe history of the metric this alert compares (`%s`) was fetched but could not be saved to the workspace, so there is no history file. "+
 			"The event evidence covers only the minutes around the alert; query the metric over a longer window before saying how it moved or when it reaches the next level.",
-			core.TruncateHead(series, 300))
+			core.TruncateHead(series, 300)), critical
 	}
 	ctx.GetLogger().Info("analyzer: alert metric history saved", "event_id", event.Id, "file", file)
 	return fmt.Sprintf("## Alert Metric History\nThe metric this alert compares (`%s`; it fires when %s %s), up to %s, is saved as `%s` in %d views, one series each: %s. "+
 		"Use it with analyze_metric_series to say how the metric moved before the alert: the normal-level view for its usual level and slow climbs, the now view for how it is moving at the alert.",
-		core.TruncateHead(series, 300), op, strconv.FormatFloat(level, 'g', -1, 64), common.FormatPresentationTime(&end), file, len(views), alertHistoryViewNames(views))
+		core.TruncateHead(series, 300), op, strconv.FormatFloat(level, 'g', -1, 64), common.FormatPresentationTime(&end), file, len(views), alertHistoryViewNames(views)), critical
 }
 
 // executeAlarmCli runs a read-only cloud CLI command for the account; tests

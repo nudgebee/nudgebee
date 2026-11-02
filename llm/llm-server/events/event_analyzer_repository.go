@@ -855,6 +855,36 @@ const eventRuleDefinitionQuery = `select expr, annotations::jsonb from event_rul
 	order by (er.expr <> '') desc, length(er.expr) desc, er.updated_at desc nulls last
 	limit 1`
 
+// EventRuleExpr is one enabled rule's alert name and expression.
+type EventRuleExpr struct {
+	Alert string
+	Expr  string
+}
+
+const eventRuleExprsQuery = `select alert, expr from event_rules where account_id = $1 and enabled and expr <> ''`
+
+// ListEventRuleExprs lists the account's enabled rules that have an expression.
+func (r *EventAnalysisRepository) ListEventRuleExprs(ctx *security.RequestContext, accountId string) ([]EventRuleExpr, error) {
+	rows, err := r.dbManager.Db.Query(eventRuleExprsQuery, accountId)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			ctx.GetLogger().Error("analyzer: unable to close rows in listEventRuleExprs", "error", err)
+		}
+	}()
+	var out []EventRuleExpr
+	for rows.Next() {
+		var rule EventRuleExpr
+		if err := rows.Scan(&rule.Alert, &rule.Expr); err != nil {
+			return nil, err
+		}
+		out = append(out, rule)
+	}
+	return out, rows.Err()
+}
+
 // GetEventRuleDefinition fetches the rule definition and annotations for a given aggregation key.
 func (r *EventAnalysisRepository) GetEventRuleDefinition(ctx *security.RequestContext, accountId string, aggregationKey string) (string, map[string]any, error) {
 	rows, err := r.dbManager.Db.Query(eventRuleDefinitionQuery, accountId, aggregationKey)

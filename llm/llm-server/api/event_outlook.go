@@ -14,6 +14,7 @@ import (
 	"nudgebee/llm/events"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
+	"nudgebee/llm/tools"
 )
 
 // The "Will it happen again" line of an alert investigation is computed here and
@@ -351,8 +352,126 @@ func firingWords(h firingHistory) string {
 	}
 }
 
+// criticalLevel is the next level an alert's metric can reach.
+type criticalLevel struct {
+	value float64
+	name  string // the rule that fires there, or "" for the metric's own limit
+}
+
+// nextCriticalLevel finds the level past the alert's own: the nearest one on
+// another rule over the same series and direction, which is what the account
+// itself calls worse, or else the end of the series' scale. A rule's severity
+// says nothing here: the two pool rules on the demo shop are both critical.
+func nextCriticalLevel(rules []events.EventRuleExpr, alert, series, op string, level float64) (criticalLevel, bool) {
+	above := !strings.HasPrefix(op, "<")
+	further := func(v float64) bool { return (above && v > level) || (!above && v < level) }
+	var best criticalLevel
+	found := false
+	for _, r := range rules {
+		s, o, l, ok := tools.AlertLevelQuery(r.Expr)
+		if !ok || r.Alert == alert || s != series || strings.HasPrefix(o, "<") == above || !further(l) {
+			continue
+		}
+		if !found || (above && l < best.value) || (!above && l > best.value) {
+			best, found = criticalLevel{value: l, name: r.Alert}, true
+		}
+	}
+	if found {
+		return best, true
+	}
+	if limit, _, ok := tools.AlertSeriesLimit(series, op); ok && further(limit) {
+		return criticalLevel{value: limit}, true
+	}
+	return criticalLevel{}, false
+}
+
+// alertCriticalLine reads the saved history against the next level. It is read
+// when the investigation starts: the metric can cross the level before the
+// report is written, and what was known at the alert is the point of the line.
+func alertCriticalLine(ctx *security.RequestContext, repo *events.EventAnalysisRepository, accountId, alert, series, op string, level float64, history []byte, asOf time.Time) string {
+	rules, err := repo.ListEventRuleExprs(ctx, accountId)
+	if err != nil {
+		ctx.GetLogger().Warn("analyzer: rules not read for the critical level", "error", err)
+	}
+	next, hasLevel := nextCriticalLevel(rules, alert, series, op, level)
+	_, scale, share := tools.AlertSeriesLimit(series, op)
+	if !hasLevel && share {
+		return "" // already at the end of its scale, and the alert says so
+	}
+	direction := "above"
+	if strings.HasPrefix(op, "<") {
+		direction = "below"
+	}
+	target := next.value
+	if !hasLevel {
+		target = level
+	}
+	p, ok := tools.ProjectAlertHistory(history, target, direction, asOf)
+	if !ok {
+		return ""
+	}
+	return criticalWords(p, next, hasLevel, share && scale == 1)
+}
+
+// criticalWords gives the crossing as clock times only: the report is read
+// long after it is written, so "in 24 minutes" would stop being true. fraction
+// prints a share of 1 as a percentage. Without a level or a climb there is
+// nothing to say.
+func criticalWords(p tools.AlertProjection, next criticalLevel, hasLevel, fraction bool) string {
+	num := func(v float64) string {
+		if fraction {
+			return fmtPct(v*100) + "%"
+		}
+		return fmtPct(v)
+	}
+	now := fmt.Sprintf("Now %s at %s", num(p.Current), firingWhen(p.At))
+	if !hasLevel {
+		if !p.Rising {
+			return ""
+		}
+		return fmt.Sprintf("- **Becomes critical:** No critical level is set for this metric. %s, %s.", now, climbWords(p, fraction))
+	}
+	where := fmt.Sprintf("the limit is %s", num(next.value))
+	if next.name != "" {
+		where = fmt.Sprintf("`%s` fires at %s", next.name, num(next.value))
+	}
+	switch {
+	case p.Past:
+		return fmt.Sprintf("- **Became critical:** Yes, at %s, where %s. %s.", firingWhen(p.PastSince), where, now)
+	case !p.Earliest.IsZero():
+		when := "Around " + firingWhen(p.Earliest)
+		if !p.Latest.IsZero() && p.Latest.Sub(p.Earliest) >= time.Minute {
+			when = fmt.Sprintf("Between %s and %s", firingWhen(p.Earliest), firingWhen(p.Latest))
+		}
+		return fmt.Sprintf("- **Becomes critical:** %s, about %s after this reading. %s; %s; %s.",
+			when, firingSpan(time.Duration(p.Hours*float64(time.Hour))), now, where, climbWords(p, fraction))
+	default:
+		return fmt.Sprintf("- **Becomes critical:** No time can be given: %s. %s; %s.", p.Reason, now, where)
+	}
+}
+
+func climbWords(p tools.AlertProjection, fraction bool) string {
+	unit, rate := "", p.RatePerHour
+	if fraction {
+		unit, rate = " points", rate*100
+	}
+	words := fmt.Sprintf("about %s%s an hour", fmtPct(rate), unit)
+	if rate >= 60 {
+		words = fmt.Sprintf("about %s%s a minute", fmtPct(rate/60), unit)
+	}
+	if !p.Since.IsZero() {
+		return fmt.Sprintf("moving %s since %s", words, firingWhen(p.Since))
+	}
+	return "moving " + words
+}
+
+// joinOutlookLines puts the lines that are set under one another.
+func joinOutlookLines(lines ...string) string {
+	return strings.Join(slices.DeleteFunc(lines, func(l string) bool { return l == "" }), "\n")
+}
+
 // outlookLineRe matches an outlook line the agent or an earlier run wrote.
-var outlookLineRe = regexp.MustCompile(`(?m)^[ \t]*[-*][ \t]+\*\*(Getting worse|Will it happen again):\*\*.*\n?`)
+var outlookLineRe = regexp.MustCompile(`(?m)^[ \t]*[-*][ \t]+\*\*(Getting worse|Will it happen again|Becomes critical|Became critical):\*\*.*\n?`)
 
 // outlookAsOfRe reads the time an outlook line was computed for.
 var outlookAsOfRe = regexp.MustCompile(`\*\*Will it happen again:\*\*.*\(as of (\w+ \d+ \d\d:\d\d) UTC\)`)

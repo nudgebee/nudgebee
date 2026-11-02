@@ -83,8 +83,8 @@ const (
 	metricSeriesOnsetMinR2     = 0.8
 	metricSeriesOnsetNoiseMul  = 3.0
 	metricSeriesOnsetMaxPoints = 3000
-	// A climb also goes one way: at least metricSeriesOnsetSameWayShare of its
-	// readings move with it (a random walk drifts as often one way as the
+	// A climb also goes one way: at least metricSeriesOnsetSameWayShare of the
+	// readings that move go with it (a random walk drifts as often one way as the
 	// other), and its last metricSeriesOnsetRecentShare still moves at no less
 	// than half its rate (a climb that has levelled off is a level, not a climb).
 	metricSeriesOnsetSameWayShare = 0.75
@@ -1433,13 +1433,19 @@ func msRecentClimb(pts []msPoint, rng float64) (int, *seriesTrend) {
 	if change < metricSeriesOnsetNoiseMul*msStdDev(head) || change < metricSeriesStepMinRangeShare*rng {
 		return -1, nil
 	}
-	sameWay := 0
+	// A reading that holds goes neither way: a pool filling one connection every
+	// two minutes, read each minute, holds between its steps.
+	sameWay, moved := 0, 0
 	for i := 1; i < len(seg); i++ {
-		if (seg[i].v-seg[i-1].v)*tr.slope > 0 {
+		d := (seg[i].v - seg[i-1].v) * tr.slope
+		if d > 0 {
 			sameWay++
 		}
+		if d != 0 {
+			moved++
+		}
 	}
-	if float64(sameWay) < metricSeriesOnsetSameWayShare*float64(len(seg)-1) {
+	if moved < metricSeriesMinClimbSteps || float64(sameWay) < metricSeriesOnsetSameWayShare*float64(moved) {
 		return -1, nil
 	}
 	recent := seg[len(seg)-1-max(2, int(metricSeriesOnsetRecentShare*float64(len(seg)))):]

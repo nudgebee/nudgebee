@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"nudgebee/llm/events"
+	"nudgebee/llm/tools"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -241,4 +242,60 @@ func TestOutlookLineCurrent(t *testing.T) {
 	assert.False(t, outlookLineCurrent(line("Dec 31 23:50"), &jan1), "a line from the old year predates a Jan 1 firing")
 	assert.Nil(t, mergeFirings(nil))
 	assert.Zero(t, medianDuration(nil))
+}
+
+func TestNextCriticalLevel(t *testing.T) {
+	series := `a_inuse / db_sql_connection_max_open`
+	rules := []events.EventRuleExpr{
+		{Alert: "Filling", Expr: series + ` > 0.3`},
+		{Alert: "Half", Expr: series + ` > 0.5`},
+		{Alert: "Full", Expr: series + ` >= 1`},
+		{Alert: "Other", Expr: `b / c > 0.4`},
+		{Alert: "Empty", Expr: series + ` < 0.1`},
+	}
+	got, ok := nextCriticalLevel(rules, "Filling", series, ">", 0.3)
+	require.True(t, ok)
+	assert.Equal(t, criticalLevel{value: 0.5, name: "Half"}, got, "the nearest level past the alert's own")
+
+	got, ok = nextCriticalLevel(rules[:1], "Filling", series, ">", 0.3)
+	require.True(t, ok)
+	assert.Equal(t, criticalLevel{value: 1}, got, "no other rule: the end of the scale")
+
+	_, ok = nextCriticalLevel(rules, "Full", series, ">=", 1)
+	assert.False(t, ok, "nothing lies past the end of the scale")
+
+	_, ok = nextCriticalLevel(nil, "x", `rate(a[1m]) / rate(b[1m])`, ">", 0.5)
+	assert.False(t, ok)
+}
+
+func TestCriticalWords(t *testing.T) {
+	at := time.Date(2026, 11, 2, 10, 19, 0, 0, time.UTC)
+	since := time.Date(2026, 11, 2, 10, 5, 0, 0, time.UTC)
+	full := criticalLevel{value: 1, name: "PoolExhausted"}
+	rising := tools.AlertProjection{Current: 0.4, At: at, Rising: true, RatePerHour: 1.5, Since: since,
+		Earliest: at.Add(23 * time.Minute), Latest: at.Add(26 * time.Minute), Hours: 0.4}
+
+	assert.Equal(t, "- **Becomes critical:** Between Nov 2 10:42 UTC and Nov 2 10:45 UTC, about 24 min after this reading. "+
+		"Now 40% at Nov 2 10:19 UTC; `PoolExhausted` fires at 100%; moving about 2.5 points a minute since Nov 2 10:05 UTC.",
+		criticalWords(rising, full, true, true))
+
+	assert.Contains(t, criticalWords(rising, criticalLevel{value: 1}, true, true), "the limit is 100%")
+
+	past := tools.AlertProjection{Current: 1, At: at, Past: true, PastSince: since}
+	assert.Equal(t, "- **Became critical:** Yes, at Nov 2 10:05 UTC, where `PoolExhausted` fires at 100%. Now 100% at Nov 2 10:19 UTC.",
+		criticalWords(past, full, true, true))
+
+	flat := tools.AlertProjection{Current: 40, At: at, Reason: "no steady trend"}
+	assert.Equal(t, "- **Becomes critical:** No time can be given: no steady trend. Now 40 at Nov 2 10:19 UTC; the limit is 100.",
+		criticalWords(flat, criticalLevel{value: 100}, true, false))
+
+	assert.Empty(t, criticalWords(flat, criticalLevel{}, false, false))
+	assert.Contains(t, criticalWords(tools.AlertProjection{Current: 40, At: at, Rising: true, RatePerHour: 6}, criticalLevel{}, false, false),
+		"No critical level is set for this metric. Now 40 at Nov 2 10:19 UTC, moving about 6 an hour.")
+}
+
+func TestWithOutlookLineReplacesCriticalLine(t *testing.T) {
+	report := "### 🔍 Quick Investigation\n- **Hurting now:** No.\n- **Becomes critical:** old.\n- **Alert:** Real.\n"
+	got := withOutlookLine(report, joinOutlookLines("- **Becomes critical:** new.", "", "- **Will it happen again:** Likely."))
+	assert.Equal(t, "### 🔍 Quick Investigation\n- **Hurting now:** No.\n- **Becomes critical:** new.\n- **Will it happen again:** Likely.\n- **Alert:** Real.\n", got)
 }

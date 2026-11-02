@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -283,4 +284,73 @@ func TestLabelAgrees_OtherLabelsExactly(t *testing.T) {
 	assert.False(t, labelAgrees("container", "checkout-x2lkp", "checkout"))
 	assert.False(t, labelAgrees("namespace", "prod-eu", "prod"))
 	assert.True(t, labelAgrees("pod_name", "checkout-7c9d8f5b4-x2lkp", "checkout"))
+}
+
+func TestAlertSeriesLimit(t *testing.T) {
+	cases := []struct {
+		series, op string
+		limit      float64
+		ok         bool
+	}{
+		{`hikaricp_connections_active / hikaricp_connections_max`, ">", 1, true},
+		{`max by (svc) (a_inuse) / max by (svc) (db_sql_connection_max_open > 0)`, ">", 1, true},
+		{`100 * (mem_used / container_spec_memory_limit_bytes)`, ">", 100, true},
+		{`(mem_used * 100) / container_spec_memory_limit_bytes`, ">", 100, true},
+		{`kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes`, "<", 0, true},
+		{`rate(req_seconds_sum[1m]) / rate(req_seconds_count[1m])`, ">", 0, false},
+		{`2 * (a / b_limit)`, ">", 0, false},
+		{`node_load1`, ">", 0, false},
+		{`not promql (`, ">", 0, false},
+	}
+	for _, c := range cases {
+		limit, _, ok := AlertSeriesLimit(c.series, c.op)
+		assert.Equal(t, c.ok, ok, c.series)
+		assert.Equal(t, c.limit, limit, c.series)
+	}
+
+	_, scale, ok := AlertSeriesLimit(`100 * (free_bytes / volume_size_bytes)`, "<")
+	assert.True(t, ok)
+	assert.Equal(t, 100.0, scale, "a percentage falling toward 0 keeps its scale")
+}
+
+func TestProjectAlertHistory(t *testing.T) {
+	series := func(vals []float64) []byte {
+		ts := make([]int64, len(vals))
+		for i := range vals {
+			ts[i] = 1_792_000_000 + int64(i)*60
+		}
+		raw, _ := json.Marshal(map[string]any{
+			AlertHistoryNowView: []any{map[string]any{"metric": map[string]string{}, "timestamps": ts, "values": vals}},
+		})
+		return raw
+	}
+	climb := make([]float64, 105, 120)
+	for i := 0; i < 15; i++ {
+		climb = append(climb, 0.05*float64(i/2+1))
+	}
+
+	p, ok := ProjectAlertHistory(series(climb), 1, "above", time.Time{})
+	assert.True(t, ok)
+	assert.False(t, p.Past)
+	assert.True(t, p.Rising)
+	assert.False(t, p.Earliest.IsZero())
+	assert.InDelta(t, 0.4, p.Hours, 0.05)
+
+	p, ok = ProjectAlertHistory(series(climb), 0.3, "above", time.Time{})
+	assert.True(t, ok)
+	assert.True(t, p.Past)
+	assert.False(t, p.PastSince.IsZero())
+
+	// An alert that has ended is read as it stood when it fired, not at its end.
+	ended := append(slices.Clone(climb), 0, 0, 0, 0, 0)
+	p, ok = ProjectAlertHistory(series(ended), 1, "above", time.Unix(1_792_000_000+119*60, 0))
+	assert.True(t, ok)
+	assert.False(t, p.Earliest.IsZero())
+	assert.InDelta(t, 0.4, p.Current, 1e-9)
+
+	_, ok = ProjectAlertHistory(series(climb), 1, "above", time.Unix(1, 0))
+	assert.False(t, ok)
+
+	_, ok = ProjectAlertHistory([]byte(`{"other view":[{"metric":{},"timestamps":[1,2],"values":[1,2]}]}`), 1, "above", time.Time{})
+	assert.False(t, ok)
 }
