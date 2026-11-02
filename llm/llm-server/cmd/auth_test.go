@@ -63,6 +63,7 @@ func TestAuthHandlerMiddleware(t *testing.T) {
 		config.Config.LlmServerToken = "secret"
 		r := build()
 		assert.Equal(t, http.StatusUnauthorized, do(r, "GET", "/api/admin/prompts/config", "wrong"))
+		assert.Equal(t, http.StatusUnauthorized, do(r, "GET", "/api/admin/prompts/config", "secrex"))
 	})
 
 	t.Run("token unset: requests fail closed", func(t *testing.T) {
@@ -110,7 +111,9 @@ func TestDebugEndpointsRequireServiceToken(t *testing.T) {
 		config.Config.LlmServerToken = "secret"
 		assert.Equal(t, http.StatusUnauthorized, get(nil), "no credentials")
 		assert.Equal(t, http.StatusUnauthorized, get(map[string]string{"X-ACTION-TOKEN": "wrong"}), "wrong header token")
+		assert.Equal(t, http.StatusUnauthorized, get(map[string]string{"X-ACTION-TOKEN": "secrex"}), "same-length wrong header token")
 		assert.Equal(t, http.StatusUnauthorized, get(map[string]string{"Authorization": "Bearer wrong"}), "wrong bearer token")
+		assert.Equal(t, http.StatusUnauthorized, get(map[string]string{"Authorization": "Bearer secrex"}), "same-length wrong bearer token")
 		assert.Equal(t, http.StatusOK, get(map[string]string{"X-ACTION-TOKEN": "secret"}), "token header")
 		assert.Equal(t, http.StatusOK, get(map[string]string{"Authorization": "Bearer secret"}), "bearer token")
 	})
