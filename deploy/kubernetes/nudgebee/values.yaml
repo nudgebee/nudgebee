@@ -178,7 +178,7 @@ postgresql:
     image:
       registry: 'ghcr.io/nudgebee'
       repository: postgres-exporter
-      tag: 'v0.20.1-nb2'
+      tag: 'v0.20.1-nb3'
     # ServiceMonitor and PrometheusRule are Prometheus Operator CRDs
     # (monitoring.coreos.com/v1). A cluster without the operator installed has
     # no such kinds, and the install fails with `no matches for kind

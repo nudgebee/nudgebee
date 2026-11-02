@@ -130,12 +130,22 @@ jobs:
           set -euo pipefail
           echo "Scanning $IMAGE_REF"
 
-          # One scan, two outputs: full table (all severities) for the log,
-          # JSON for counting. `registry:` pulls straight from ghcr using the
+          # Catalog the image into an SBOM, then match the SBOM: full table (all
+          # severities) for the log, JSON for counting. Scanning the image
+          # directly, grype 0.121 catalogs the Go modules in our patched Go
+          # rebuilds (postgres-exporter, kubectl) but matches none of them -
+          # 0 findings where the SBOM pass reports 1 CRITICAL / 10 HIGH, which a
+          # customer's scan caught and ours didn't. The SBOM pass is a superset
+          # of the direct scan. `registry:` pulls straight from ghcr using the
           # login above, no docker daemon pull. GRYPE_DB_AUTO_UPDATE=false
           # reuses the DB fetched in the step above.
           GRYPE_DB_AUTO_UPDATE=false grype "registry:$IMAGE_REF" \
+            -q -o cyclonedx-json=sbom.cdx.json
+          GRYPE_DB_AUTO_UPDATE=false grype sbom:sbom.cdx.json \
             -o table -o json=result.json
+          # The SBOM drops the tag from the target name; put the full ref back
+          # for the summary table.
+          python3 -c 'import json,os; d=json.load(open("result.json")); d["source"]["target"]["userInput"]=os.environ["IMAGE_REF"]; json.dump(d,open("result.json","w"))'
 
           # Count fixable C/H/M for the gate. The per-image counts are reported
           # once, as a single table, by the `summary` job below.
@@ -195,7 +205,7 @@ jobs:
           - ghcr.io/nudgebee/postgres:16.15-alpine-nb1
           - ghcr.io/nudgebee/redis:7.2.17-alpine
           - ghcr.io/nudgebee/rabbitmq:4.2.9-management-alpine
-          - ghcr.io/nudgebee/postgres-exporter:v0.20.1-nb2
+          - ghcr.io/nudgebee/postgres-exporter:v0.20.1-nb3
           - ghcr.io/nudgebee/nginx:stable-alpine3.24-slim-nb1
           - ghcr.io/nudgebee/kubewatch:2.14.1-nb.3
           # --- genuinely third-party, pulled from our ghcr clones ---
@@ -216,7 +226,7 @@ jobs:
           # never measured.
           - ghcr.io/nudgebee/curl:8.23.0
           - ghcr.io/nudgebee/busybox:1.37.0
-          - ghcr.io/nudgebee/kubectl:1.32.13-nb1
+          - ghcr.io/nudgebee/kubectl:1.32.13-nb2
           # --- first-party agents / sidecars built in sibling repos ---
           # Measured here so the daily scan covers the whole deployed surface;
           # fixes land in the k8s-agent / node-agent / forager repos and these
@@ -267,8 +277,13 @@ jobs:
           echo "Scanning $IMAGE_REF (report-only — upstream-owned)"
 
           # Counts are reported by the `summary` job from the uploaded JSON.
+          # Matched through an SBOM, like the first-party scan above (grype
+          # drops Go-module matches when it scans an image directly).
           GRYPE_DB_AUTO_UPDATE=false grype "registry:$IMAGE_REF" \
+            -q -o cyclonedx-json=sbom.cdx.json
+          GRYPE_DB_AUTO_UPDATE=false grype sbom:sbom.cdx.json \
             -o table -o json=result.json
+          python3 -c 'import json,os; d=json.load(open("result.json")); d["source"]["target"]["userInput"]=os.environ["IMAGE_REF"]; json.dump(d,open("result.json","w"))'
 
       - name: Sanitize artifact name
         id: an
