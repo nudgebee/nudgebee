@@ -174,14 +174,14 @@ def _release(session, workspace, rows: List[Integration], now: datetime) -> None
         _write_config_values(session, row.id, {RELEASED_AT: now.isoformat()})
     group_ids = {row.name for row in rows}
     for marker in _markers(session, workspace).all():
-        rows = (
+        config_rows = (
             session.query(IntegrationConfigValue)
             .filter(
                 IntegrationConfigValue.integration_id == marker.id, IntegrationConfigValue.name == "default_team_id"
             )
             .all()
         )
-        if _decrypt_config(rows).get("default_team_id") in group_ids:
+        if _decrypt_config(config_rows).get("default_team_id") in group_ids:
             session.query(IntegrationConfigValue).filter(
                 IntegrationConfigValue.integration_id == marker.id, IntegrationConfigValue.name.in_(DEFAULT_KEYS)
             ).delete(synchronize_session=False)
