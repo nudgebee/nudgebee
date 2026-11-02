@@ -394,8 +394,6 @@ def load_installation(session, tenant_id, platform: str) -> Optional[MessagingPl
     return installs[0] if installs else None
 
 
-
-
 def load_installation_by_team(
     session, team_id, platform: str, contains: bool = False, app_id: Optional[str] = None
 ) -> Optional[MessagingPlatform]:

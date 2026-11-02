@@ -295,7 +295,7 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		}
 
 		if err := core.CheckMsTeamsGenericDeleteOrStatus(request.IntegrationName); err != nil {
-			RespondError(c, err)
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
 		}
 
@@ -417,7 +417,7 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		}
 
 		if err = core.CheckMsTeamsGenericDeleteOrStatus(request.IntegrationName); err != nil {
-			RespondError(c, err)
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
 		}
 

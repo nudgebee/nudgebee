@@ -291,6 +291,7 @@ def _message_events(cached):
     events._is_followup_selection = mock.Mock(return_value=False)
     events.common_service.get_teams_user_info = mock.AsyncMock(return_value="dana@example.com")
     events.cache.get_event_entry.return_value = cached
+    events._thread_sender_async = mock.AsyncMock(return_value="user-1")
     events._process_teams_message = mock.AsyncMock()
     events._request_account_confirmation_and_cache_event = mock.AsyncMock()
     with mock.patch.object(ca, "is_card_action", return_value=False):
