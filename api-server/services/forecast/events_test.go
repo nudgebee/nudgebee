@@ -250,3 +250,13 @@ func TestQuantity_WritesCoresAsMillicores(t *testing.T) {
 	assert.Equal(t, "350m", quantity(0.35, UnitCores))
 	assert.Equal(t, "350m", quantity(0.35, ""), "cores when the unit is unset")
 }
+
+func TestSync_RiseHoldingKeepsTheWarningsOpen(t *testing.T) {
+	s := fakeStore(t)
+	res := Result{Status: StatusNotProjected, RiseHolding: true, Condition: ConditionThrottling, Namespace: "shop", Workload: "order-service", Kind: "deployment"}
+	require.NoError(t, Sync(target, res, nil))
+	require.Len(t, s.closes, 1, "only the breach alert may close")
+	assert.Equal(t, fingerprint(target, res, LevelBreached), s.closes[0].fp)
+	assert.True(t, s.closes[0].stable)
+	assert.Empty(t, s.upserted, "a held warning is not re-raised")
+}

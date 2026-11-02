@@ -53,6 +53,12 @@ type FitInput struct {
 // in every bucket.
 const limitChangeTolerance = 0.05
 
+// riseHoldFraction is the share of MinRisePct an open warning needs to stay open. A
+// climb near MinRisePct crosses it from one run to the next as the window slides, and
+// without this band each crossing closes the alert and starts the re-fire cooldown,
+// leaving a projected breach with no alert.
+const riseHoldFraction = 0.5
+
 // limitChangeMinHours is how many consecutive buckets a per-pod limit must hold before
 // it counts as the workload's limit. A rollout skews one hour well past the tolerance:
 // cAdvisor reports the old pod's container for minutes after kube-state-metrics drops
@@ -164,6 +170,7 @@ func Fit(in FitInput) Result {
 	if slopePerHour <= 0 || rise < in.Params.MinRisePct {
 		res.Status = StatusNotProjected
 		res.Reason = "no sustained rise towards the threshold"
+		res.RiseHolding = slopePerHour > 0 && rise >= in.Params.MinRisePct*riseHoldFraction
 		return res
 	}
 

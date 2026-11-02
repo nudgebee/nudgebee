@@ -180,8 +180,11 @@ type DailyRow struct {
 // Result is the answer of one forecast. It is the response body of forecast_generate
 // and the value stored in slo_config.last_forecast.
 type Result struct {
-	Status       Status    `json:"status"`
-	Reason       string    `json:"reason,omitempty"`
+	Status Status `json:"status"`
+	Reason string `json:"reason,omitempty"`
+	// RiseHolding marks a not-projected climb within the hold band of MinRisePct: too
+	// small to raise an alert, not small enough to close an open one.
+	RiseHolding  bool      `json:"-"`
 	Condition    Condition `json:"condition"`
 	ThresholdPct float64   `json:"threshold_pct"`
 

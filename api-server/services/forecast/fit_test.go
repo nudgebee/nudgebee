@@ -370,3 +370,33 @@ func TestSuggestLimit_PartialDayOfCyclingUsageIsNotAClimb(t *testing.T) {
 	got := suggestLimit(usage, time.Time{}, 0.4, 24, 0.05)
 	assert.Equal(t, 0.5, got, "flat usage leaves only the 1.25x floor (0.5 cores)")
 }
+
+func TestFit_RiseHoldBand(t *testing.T) {
+	cases := []struct {
+		name    string
+		perDay  float64
+		status  Status
+		holding bool
+	}{
+		{"over the bar projects", 2, StatusProjected, false},
+		{"just under the bar holds", 1.5, StatusNotProjected, true},
+		{"under the band does not hold", 0.5, StatusNotProjected, false},
+		{"flat does not hold", 0, StatusNotProjected, false},
+		{"falling does not hold", -2, StatusNotProjected, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res := Fit(input(series(72, 1, func(h float64) float64 { return 12 + c.perDay*h/24 }), constant(72, 0.5)))
+			require.Equal(t, c.status, res.Status, res.Reason)
+			assert.Equal(t, c.holding, res.RiseHolding)
+		})
+	}
+}
+
+func TestFit_BeyondTheHorizonDoesNotHold(t *testing.T) {
+	in := input(series(72, 1, func(h float64) float64 { return 5 + 2*h/24 }), constant(72, 0.5))
+	in.Params.MaxETAHours = 48
+	res := Fit(in)
+	require.Equal(t, StatusNotProjected, res.Status)
+	assert.False(t, res.RiseHolding, "only a dip under the rise bar is held")
+}

@@ -132,6 +132,13 @@ func Sync(t Target, res Result, series Series) error {
 			return err
 		}
 		return raise(t, res, series)
+	case StatusNotProjected:
+		if res.RiseHolding {
+			// A climb that dipped under the bar to raise an alert has not stopped: the
+			// open warning stays, and only a breach alert can close.
+			return closeFiring(t, fingerprint(t, res, LevelBreached), CloseClean, true)
+		}
+		return closeAll(t, res, CloseClean, true)
 	case StatusInsufficientHistory:
 		// Too little recent data (a limit change, a workload idle or scaled to zero)
 		// says nothing about health, so the close starts no re-fire cooldown.
