@@ -25,15 +25,15 @@ func convertFilterValueToStrings(value any) ([]string, error) {
 	case []string:
 		return values, nil
 	case []any:
-		strings := make([]string, len(values))
+		result := make([]string, len(values))
 		for i, value := range values {
 			stringValue, ok := value.(string)
 			if !ok {
 				return nil, fmt.Errorf("value at index %d must be a string, got %T", i, value)
 			}
-			strings[i] = stringValue
+			result[i] = stringValue
 		}
-		return strings, nil
+		return result, nil
 	default:
 		return nil, fmt.Errorf("expected string, []string, or []any, got %T", value)
 	}
