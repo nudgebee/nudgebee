@@ -13,6 +13,9 @@
 -- value still upgrades instead of failing its one-shot migration Job.
 -- Lock window: a few hundred rows; the UPDATEs and the constraint swap are instant.
 
+ALTER TABLE public.llm_agents
+	DROP CONSTRAINT IF EXISTS llm_agents_check_executortype;
+
 UPDATE public.llm_agents
 	SET executor_type = 'orchestrating'
 	WHERE executor_type = 'rewoo';
@@ -20,9 +23,6 @@ UPDATE public.llm_agents
 UPDATE public.llm_agents
 	SET executor_type = 'react'
 	WHERE executor_type = 'tools' AND "type" = 'custom';
-
-ALTER TABLE public.llm_agents
-	DROP CONSTRAINT IF EXISTS llm_agents_check_executortype;
 
 ALTER TABLE public.llm_agents
 	ADD CONSTRAINT llm_agents_check_executortype
