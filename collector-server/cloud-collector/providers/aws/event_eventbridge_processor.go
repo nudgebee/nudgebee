@@ -849,8 +849,8 @@ func (p *TemplatedEventBridgeProcessor) renderField(ctx providers.CloudProviderC
 }
 
 // essentialContainers reads each container's Essential flag from the task
-// definition's ContainerDefinitions. Empty when the task definition is not
-// available.
+// definition's ContainerDefinitions. ECS treats an omitted Essential as true.
+// Empty when the task definition is not available.
 func essentialContainers(taskDefContainerDefsArg ...any) map[string]bool {
 	essentialByName := map[string]bool{}
 	if len(taskDefContainerDefsArg) == 0 {
@@ -866,7 +866,10 @@ func essentialContainers(taskDefContainerDefsArg ...any) map[string]bool {
 			continue
 		}
 		name, _ := cm["Name"].(string)
-		essential, _ := cm["Essential"].(bool)
+		essential, isBool := cm["Essential"].(bool)
+		if !isBool {
+			essential = true
+		}
 		if name != "" {
 			essentialByName[name] = essential
 		}

@@ -137,6 +137,9 @@ func TestTaskContainersFailed_UsesTaskDefinition(t *testing.T) {
 		"a container the task definition does not declare is not the task's own work")
 	assert.True(t, taskContainersFailed([]any{container("app", 0), container("agent", 1)}),
 		"without the task definition any crash counts")
+	omitted := []any{map[string]any{"Name": "app"}, map[string]any{"Name": "agent", "Essential": nil}}
+	assert.True(t, taskContainersFailed([]any{container("app", 1), container("agent", 0)}, omitted),
+		"ECS treats an omitted Essential as true")
 }
 
 func TestPickFailingContainer_CrashOutranksKilledSidecar(t *testing.T) {
