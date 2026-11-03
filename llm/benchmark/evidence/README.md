@@ -48,6 +48,11 @@ so this PR has no dependency on #877. Targeted core tests passed:
 go test -p=1 ./agents/core -run 'TestMetricQueryReturnedNoData|TestMetricNoData|TestReAct4Metric' -count=1
 ```
 
+A second dated re-run recorded in
+[`metric_provenance_results_20261103.json`](metric_provenance_results_20261103.json)
+re-used the same rendered prompts (SHA256s match the manifest entry above);
+60/60 responses again met the table's semantic expectations on 2026-11-03.
+
 ## Reproduce
 
 Extract the ten YAML inputs from the exact revisions, using PowerShell at repo root
