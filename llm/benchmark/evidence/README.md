@@ -91,3 +91,19 @@ opencode run --standalone --auto --model opencode/beam-free --format json --file
 The fixture and rendering code are in `metric_provenance_replay.go`. JSONL text
 parts can have the policy's XML final-answer wrapper; extract the JSON array
 inside that wrapper before comparing the six case IDs and semantic expectations.
+
+## Second free-model replay (2026-11-03)
+
+A second set of ten fresh CLI contexts used opencode/glm-5.3-flash-free with
+the same baseline/candidate prompt revisions and six synthetic cases per run.
+All 48 planner answers treated the empty #291 metrics as unavailable and
+preserved the zero, unit conversion, rate, utilization, and partial-data
+controls. Both critic arms returned all six expected ACCEPT/REJECT labels;
+the after critic omitted the requested reason text for each case. The original
+hallucination was not reproduced in either arm, so this adds no measured
+improvement claim.
+
+Exact responses, prompt hashes, sessions, and token counts are recorded in
+metric_provenance_glm_results.json. This is another bounded text replay, not a
+live Nudgebee run or deployed-model benchmark. The free model alias is unpinned,
+and using it for Qwen prompt text does not establish Qwen model parity.
