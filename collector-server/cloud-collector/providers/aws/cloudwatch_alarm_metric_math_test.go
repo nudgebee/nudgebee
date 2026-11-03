@@ -3,6 +3,7 @@ package aws
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"testing"
 
 	"nudgebee/collector/cloud/providers"
@@ -81,6 +82,7 @@ func TestMetricAlarmEvent_ExpressionAlarms(t *testing.T) {
 		assert.Equal(t, "AWS/Lambda", event.Labels["aws_event_metric_namespace"])
 		assert.Equal(t, "Invocations", event.Labels["aws_event_metric_name"])
 		assert.Empty(t, event.Labels["aws_event_threshold"], "a band is not a number")
+		assert.Equal(t, "true", event.Labels["aws_event_metric_expression"])
 	})
 
 	t.Run("expression with no metric is filed under the alarm itself", func(t *testing.T) {
@@ -137,4 +139,51 @@ func TestExpressionAlarm_PollAndPushAgreeOnTheResource(t *testing.T) {
 	assert.Equal(t, pushed.ResourceServiceName, polled.ResourceServiceName)
 	assert.Equal(t, pushed.ResourceLookupIds, polled.ResourceLookupIds)
 	assert.Equal(t, "app/web/abc123", polled.ResourceId)
+	// The metric labels name only the expression's first input; triage must know that.
+	assert.Equal(t, "true", polled.Labels["aws_event_metric_expression"])
+	assert.Equal(t, "true", pushed.Labels["aws_event_metric_expression"])
+}
+
+// Triage keys a metric alarm's signal class on its statistic and threshold, so
+// the poll and push paths must report the same check for the same alarm. A
+// percentile alarm has only an ExtendedStatistic on the poll side.
+func TestPercentileAlarm_PollAndPushAgreeOnTheCheck(t *testing.T) {
+	const arn = "arn:aws:cloudwatch:us-east-1:111122223333:alarm:web-latency-p99"
+	detail := map[string]any{
+		"alarmName": "web-latency-p99",
+		"alarmArn":  arn,
+		"state":     map[string]any{"value": "ALARM", "timestamp": "2026-10-13T10:00:04.000+0000"},
+		"configuration": map[string]any{"threshold": 1.5, "metrics": []any{
+			map[string]any{"id": "m1", "returnData": true, "metricStat": map[string]any{
+				"stat": "p99", "period": 60,
+				"metric": map[string]any{"namespace": "AWS/ApplicationELB", "name": "TargetResponseTime", "dimensions": map[string]any{"LoadBalancer": "app/web/abc123"}},
+			}},
+		}},
+	}
+	raw, err := json.Marshal(detail)
+	require.NoError(t, err)
+	info, ok := extractCloudWatchAlarmInfoFromEB(EventBridgeEvent{
+		DetailType: "CloudWatch Alarm State Change", Source: "aws.cloudwatch",
+		Account: "111122223333", Region: "us-east-1", Resources: []string{arn}, Detail: raw,
+	})
+	require.True(t, ok)
+	pushed := EnrichCloudWatchAlarm(context.Background(), info, false, nil, nil)
+
+	polled := metricAlarmEvent(providers.NewCloudProviderContext(context.Background()), cwtypes.MetricAlarm{
+		AlarmName: aws.String("web-latency-p99"), AlarmArn: aws.String(arn), StateValue: cwtypes.StateValueAlarm,
+		Namespace: aws.String("AWS/ApplicationELB"), MetricName: aws.String("TargetResponseTime"),
+		ExtendedStatistic: aws.String("p99"), Threshold: aws.Float64(1.5),
+		Dimensions: []cwtypes.Dimension{{Name: aws.String("LoadBalancer"), Value: aws.String("app/web/abc123")}},
+	}, nil, providers.Account{AccountNumber: "111122223333"}, "us-east-1", MetricFilterCache{})
+
+	for _, k := range []string{"aws_event_metric_namespace", "aws_event_metric_name", "aws_event_metric_statistic", "aws_event_instance_type", "aws_event_metric_expression"} {
+		assert.Equal(t, pushed.Labels[k], polled.Labels[k], k)
+	}
+	assert.Equal(t, "p99", polled.Labels["aws_event_metric_statistic"])
+	assert.Equal(t, "false", polled.Labels["aws_event_metric_expression"])
+	pushedThreshold, err := strconv.ParseFloat(pushed.Labels["aws_event_threshold"], 64)
+	require.NoError(t, err)
+	polledThreshold, err := strconv.ParseFloat(polled.Labels["aws_event_threshold"], 64)
+	require.NoError(t, err)
+	assert.Equal(t, pushedThreshold, polledThreshold)
 }

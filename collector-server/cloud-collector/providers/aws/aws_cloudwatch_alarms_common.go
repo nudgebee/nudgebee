@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"nudgebee/collector/cloud/providers"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -521,11 +522,13 @@ func metricAlarmEvent(ctx providers.CloudProviderContext, alarm types.MetricAlar
 		MetricNamespace: metricNamespace,
 		Statistic:       statistic,
 		Threshold:       threshold,
-		Region:          region,
-		AccountNumber:   account.AccountNumber,
-		AlarmArn:        aws.ToString(alarm.AlarmArn),
-		StateValue:      string(alarm.StateValue),
-		Dimensions:      dims,
+		// A single-metric alarm names its namespace; any other alarm is on Metrics.
+		MetricExpression: alarm.Namespace == nil,
+		Region:           region,
+		AccountNumber:    account.AccountNumber,
+		AlarmArn:         aws.ToString(alarm.AlarmArn),
+		StateValue:       string(alarm.StateValue),
+		Dimensions:       dims,
 	}, cfg != nil, cfg, mfCache)
 
 	stateReason := aws.ToString(alarm.StateReason)
@@ -562,7 +565,13 @@ func alarmMetric(alarm types.MetricAlarm) (name, namespace, statistic string, di
 		return out
 	}
 	if alarm.Namespace != nil {
-		return aws.ToString(alarm.MetricName), aws.ToString(alarm.Namespace), string(alarm.Statistic), toDims(alarm.Dimensions)
+		// A percentile alarm has no Statistic, only an ExtendedStatistic ("p99"), which is
+		// what the push path reads from the same alarm's metricStat.
+		statistic := string(alarm.Statistic)
+		if statistic == "" {
+			statistic = aws.ToString(alarm.ExtendedStatistic)
+		}
+		return aws.ToString(alarm.MetricName), aws.ToString(alarm.Namespace), statistic, toDims(alarm.Dimensions)
 	}
 	for _, query := range alarm.Metrics {
 		if query.MetricStat == nil || query.MetricStat.Metric == nil {
@@ -681,10 +690,13 @@ type CloudWatchAlarmInfo struct {
 	MetricNamespace string
 	Statistic       string
 	Threshold       string
-	Region          string
-	AccountNumber   string
-	AlarmArn        string
-	StateValue      string
+	// MetricExpression is true when the alarm is on a metric-math expression or
+	// an anomaly band, so MetricName/Statistic name only one input of it.
+	MetricExpression bool
+	Region           string
+	AccountNumber    string
+	AlarmArn         string
+	StateValue       string
 	// StateChangedAt is when the alarm entered StateValue, read from a pushed
 	// event. Zero when the event carries no readable time.
 	StateChangedAt time.Time
@@ -837,6 +849,7 @@ func EnrichCloudWatchAlarm(ctx context.Context, info CloudWatchAlarmInfo, resolv
 	result.Labels["aws_event_metric_namespace"] = info.MetricNamespace
 	result.Labels["aws_event_metric_statistic"] = info.Statistic
 	result.Labels["aws_event_threshold"] = info.Threshold
+	result.Labels["aws_event_metric_expression"] = strconv.FormatBool(info.MetricExpression)
 	result.Labels["aws_event_instance"] = instance
 	result.Labels["aws_event_instance_type"] = instanceType
 	result.Labels["aws_service_name"] = namespace.ServiceName
@@ -1235,6 +1248,7 @@ func extractCloudWatchAlarmInfoFromEB(ebEvent EventBridgeEvent) (CloudWatchAlarm
 	stateChangedAt, _ := parseAlarmStateTime(stateTimestamp)
 
 	var metricName, metricNamespace, statistic, threshold string
+	var isExpression bool
 	var dims []AlarmDimension
 
 	config, _ := detail["configuration"].(map[string]any)
@@ -1243,6 +1257,11 @@ func extractCloudWatchAlarmInfoFromEB(ebEvent EventBridgeEvent) (CloudWatchAlarm
 			threshold = fmt.Sprintf("%v", t)
 		}
 		metrics, _ := config["metrics"].([]any)
+		for _, metricRaw := range metrics {
+			if metric, _ := metricRaw.(map[string]any); metric != nil && metric["expression"] != nil {
+				isExpression = true
+			}
+		}
 		for _, metricRaw := range metrics {
 			metric, _ := metricRaw.(map[string]any)
 			if metric == nil {
@@ -1283,17 +1302,18 @@ func extractCloudWatchAlarmInfoFromEB(ebEvent EventBridgeEvent) (CloudWatchAlarm
 	}
 
 	return CloudWatchAlarmInfo{
-		AlarmName:       alarmName,
-		MetricName:      metricName,
-		MetricNamespace: metricNamespace,
-		Statistic:       statistic,
-		Threshold:       threshold,
-		Region:          ebEvent.Region,
-		AccountNumber:   ebEvent.Account,
-		AlarmArn:        alarmArn,
-		StateValue:      stateValue,
-		StateChangedAt:  stateChangedAt,
-		Dimensions:      dims,
+		AlarmName:        alarmName,
+		MetricName:       metricName,
+		MetricNamespace:  metricNamespace,
+		Statistic:        statistic,
+		Threshold:        threshold,
+		MetricExpression: isExpression,
+		Region:           ebEvent.Region,
+		AccountNumber:    ebEvent.Account,
+		AlarmArn:         alarmArn,
+		StateValue:       stateValue,
+		StateChangedAt:   stateChangedAt,
+		Dimensions:       dims,
 	}, true
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -471,6 +472,10 @@ func buildEventContext(event *models.Event, facts workloadFacts) string {
 		return *p
 	}
 	var b strings.Builder
+	if check, ok := cloudWatchCheckOf(jsonObject(event.Labels)); ok {
+		writeCloudWatchCheckContext(&b, event, check)
+		return b.String()
+	}
 	fmt.Fprintf(&b, "- title: %q\n", event.Title)
 	fmt.Fprintf(&b, "- aggregation_key: %s\n", get(event.AggregationKey))
 	fmt.Fprintf(&b, "- source: %s\n", get(event.Source))
@@ -490,6 +495,37 @@ func buildEventContext(event *models.Event, facts workloadFacts) string {
 	}
 	renderWorkloadFacts(&b, facts)
 	return b.String()
+}
+
+// alarmComparison finds how CloudWatch compared the datapoints with the threshold, in the
+// fixed wording of an alarm's state reason. Longest phrases first, so "greater than or equal
+// to" is not read as "greater than".
+var alarmComparison = regexp.MustCompile(`(greater than or equal to|less than or equal to|greater than|less than)`)
+
+// writeCloudWatchCheckContext renders a CloudWatch metric alarm as the check its class is keyed
+// on (cloudWatchCheck). The title, alarm name and state reason are left out: they name one
+// instance or host and carry its datapoints, and the verdict is served to every resource the
+// check runs on.
+func writeCloudWatchCheckContext(b *strings.Builder, event *models.Event, check cloudWatchCheck) {
+	fmt.Fprintf(b, "- alarm: CloudWatch %s %s (%s)", check.Namespace, check.Metric, check.Statistic)
+	reason, _ := jsonObject(event.Labels)["aws_event_state_reason"].(string)
+	if reason == "" {
+		reason = deref(event.Description)
+	}
+	if m := alarmComparison.FindString(strings.ToLower(reason)); m != "" {
+		fmt.Fprintf(b, " %s", m)
+	} else {
+		fmt.Fprint(b, " compared with")
+	}
+	fmt.Fprintf(b, " threshold %s", check.Threshold)
+	if check.DimensionKind != "" {
+		fmt.Fprintf(b, ", per %s", check.DimensionKind)
+	}
+	fmt.Fprint(b, "\n")
+	fmt.Fprintf(b, "- source: %s\n", deref(event.Source))
+	fmt.Fprintf(b, "- finding_type: %s\n", deref(event.FindingType))
+	fmt.Fprintf(b, "- priority(source): %s\n", deref(event.Priority))
+	fmt.Fprintf(b, "- subject: %s in namespace %s\n", deref(event.SubjectType), deref(event.SubjectNamespace))
 }
 
 // groundingGuidance instructs the classifier to prefer the observed workload facts (rendered by

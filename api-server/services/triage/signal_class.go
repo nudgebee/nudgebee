@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"nudgebee/services/internal/database/models"
@@ -27,17 +29,95 @@ var ErrMintSuperseded = errors.New("signal-class mint superseded")
 // DB-slow-query alert -> one class) while separating conflated generic buckets (e.g. a
 // "prod-alert" webhook carrying both RabbitMQ and slow-query alerts -> distinct scopes).
 // Empirically validated against live data before adoption.
+//
+// A CloudWatch metric alarm is the exception: its aggregation key is the alarm name, which
+// customers commonly build per resource ("<instance-id>-<host>-CPU-Alarm-P1"), so one check on N
+// hosts became N classes with N independent verdicts. Its first segment is the metric check
+// instead (see cloudWatchCheck), taken from labels the collector sets at ingest.
 func ClassKey(event *models.Event) string {
-	return classKeyFromParts(deref(event.AggregationKey), deref(event.FindingType), classSubjectOf(event))
+	return classKeyFromParts(deref(event.AggregationKey), deref(event.FindingType), classSubjectOf(event), jsonObject(event.Labels))
 }
 
 // classKeyFromParts builds the class key from raw string parts, so callers that only have a
 // partial event projection (e.g. eventBasicInfo) can derive the same key as ClassKey.
-func classKeyFromParts(aggregationKey, findingType string, subject classSubject) string {
+func classKeyFromParts(aggregationKey, findingType string, subject classSubject, labels map[string]any) string {
 	aggKey := strings.ToLower(strings.TrimSpace(aggregationKey))
+	if check, ok := cloudWatchCheckOf(labels); ok {
+		aggKey = check.key()
+	}
 	finding := strings.ToLower(strings.TrimSpace(findingType))
 	_, _, scope := subject.identity()
 	return aggKey + "|" + finding + "|" + scope
+}
+
+// cloudWatchCheck is what a CloudWatch metric alarm checks, with the resource it watches left
+// out: the metric, how it is aggregated, the threshold, and the kind of dimension it is scoped to
+// (an instance and an Auto Scaling group alarm on the same metric are different checks).
+type cloudWatchCheck struct {
+	Namespace     string
+	Metric        string
+	Statistic     string
+	Threshold     string
+	DimensionKind string
+}
+
+// cloudWatchCheckOf reads the check from the collector's ingest-time aws_event_* labels. Only
+// ingest-time labels are used: enrichment adds others later, and a key that changes after the
+// first score would split one alarm's events across two classes. Only an alarm the collector
+// reports as single-metric qualifies: on a metric-math expression or an anomaly band the metric
+// labels name just one input, so two different expressions would share a class. An alarm with no
+// statistic or no numeric threshold is not a check this can describe either. Those, and events
+// from a collector too old to report the expression flag, keep the alarm-name key.
+func cloudWatchCheckOf(labels map[string]any) (cloudWatchCheck, bool) {
+	label := func(k string) string {
+		s, _ := labels[k].(string)
+		return strings.ToLower(strings.TrimSpace(s))
+	}
+	if label("aws_event_metric_expression") != "false" {
+		return cloudWatchCheck{}, false
+	}
+	check := cloudWatchCheck{
+		Namespace:     label("aws_event_metric_namespace"),
+		Metric:        label("aws_event_metric_name"),
+		Statistic:     label("aws_event_metric_statistic"),
+		DimensionKind: label("aws_event_instance_type"),
+	}
+	if check.Metric == "" || check.Statistic == "" {
+		return cloudWatchCheck{}, false
+	}
+	rawThreshold := label("aws_event_threshold")
+	if rawThreshold == "" {
+		// A state-change notification carries no threshold field, only the reason AWS
+		// wrote, which names it in a fixed form: "... was greater than the threshold (90.0)."
+		if m := stateReasonThreshold.FindStringSubmatch(label("aws_event_state_reason")); m != nil {
+			rawThreshold = m[1]
+		}
+	}
+	threshold, err := strconv.ParseFloat(rawThreshold, 64)
+	if err != nil {
+		return cloudWatchCheck{}, false
+	}
+	// The poll path writes "90.000000" and the push path "90" for the same alarm.
+	check.Threshold = strconv.FormatFloat(threshold, 'g', -1, 64)
+	return check, true
+}
+
+// stateReasonThreshold reads the threshold from a CloudWatch alarm's state reason. An anomaly
+// band's reason speaks of "thresholds" with no single number and does not match.
+var stateReasonThreshold = regexp.MustCompile(`\bthe threshold \((-?[0-9]+(?:\.[0-9]+)?(?:e[-+]?[0-9]+)?)\)`)
+
+// key is the class key segment. The "cw:" prefix keeps these keys apart from alarm-name keys.
+func (c cloudWatchCheck) key() string {
+	return "cw:" + c.Namespace + "/" + c.Metric + "/" + c.Statistic + "/" + c.Threshold + "/" + c.DimensionKind
+}
+
+// jsonObject returns a JSON column as a map, or nil when it is empty or not an object.
+func jsonObject(j *models.Json) map[string]any {
+	if j == nil {
+		return nil
+	}
+	m, _ := j.Object().(map[string]any)
+	return m
 }
 
 // classSubject is the part of an event that says what a signal class is about.

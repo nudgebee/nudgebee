@@ -1,6 +1,7 @@
 package triage
 
 import (
+	"strings"
 	"testing"
 
 	"nudgebee/services/internal/database/models"
@@ -262,6 +263,127 @@ func TestClassKeyOwnerlessSubject(t *testing.T) {
 				t.Fatalf("eventBasicInfo.classKey = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// A CloudWatch metric alarm is keyed on the check it runs, not on the alarm name, which commonly
+// names the resource. Built only from the collector's ingest-time labels.
+func TestClassKeyCloudWatchCheck(t *testing.T) {
+	alarm := func(name, subject string, labels map[string]any) *models.Event {
+		j := models.NewJsonObject(labels)
+		return &models.Event{AggregationKey: sp(name), FindingType: sp("issue"), Source: sp("AWS_CloudWatch_Alarm"),
+			SubjectType: sp("compute-instance"), SubjectName: sp(subject), SubjectNamespace: sp("AmazonEC2"), Labels: &j}
+	}
+	metric := func(ns, name, stat, threshold, dimKind string) map[string]any {
+		return map[string]any{"aws_event_metric_namespace": ns, "aws_event_metric_name": name,
+			"aws_event_metric_statistic": stat, "aws_event_threshold": threshold, "aws_event_instance_type": dimKind,
+			"aws_event_metric_expression": "false"}
+	}
+	cpu := func(threshold string) map[string]any {
+		return metric("AWS/EC2", "CPUUtilization", "Average", threshold, "InstanceId")
+	}
+	cases := []struct {
+		name string
+		ev   *models.Event
+		want string
+	}{
+		{"one host", alarm("i-0aaa-HOSTA-CPU-Alarm-P1", "i-0aaa", cpu("90.000000")),
+			"cw:aws/ec2/cpuutilization/average/90/instanceid|issue|AmazonEC2"},
+		{"another host, same check: same class (push path writes the threshold as 90)", alarm("i-0bbb-HOSTB-CPU-Alarm-P1", "i-0bbb", cpu("90")),
+			"cw:aws/ec2/cpuutilization/average/90/instanceid|issue|AmazonEC2"},
+		{"another tier has its own threshold: different class", alarm("i-0aaa-HOSTA-CPU-Alarm-P3", "i-0aaa", cpu("75.000000")),
+			"cw:aws/ec2/cpuutilization/average/75/instanceid|issue|AmazonEC2"},
+		{"same metric on an Auto Scaling group: different class", alarm("asg-cpu", "web-asg",
+			metric("AWS/EC2", "CPUUtilization", "Average", "90", "AutoScalingGroupName")),
+			"cw:aws/ec2/cpuutilization/average/90/autoscalinggroupname|issue|AmazonEC2"},
+		{"extended statistic", alarm("alb-p99", "app/web/1", metric("AWS/ApplicationELB", "TargetResponseTime", "p99", "1.5", "LoadBalancer")),
+			"cw:aws/applicationelb/targetresponsetime/p99/1.5/loadbalancer|issue|AmazonEC2"},
+		{"zero threshold is a threshold", alarm("fn-a-errors", "fn-a", metric("AWS/Lambda", "Errors", "Sum", "0", "FunctionName")),
+			"cw:aws/lambda/errors/sum/0/functionname|issue|AmazonEC2"},
+		{"another function's errors alarm: same class", alarm("fn-b-errors", "fn-b", metric("AWS/Lambda", "Errors", "Sum", "0.000000", "FunctionName")),
+			"cw:aws/lambda/errors/sum/0/functionname|issue|AmazonEC2"},
+		{"anomaly band has no threshold: alarm-name key", alarm("Anomaly-A", "i-0aaa", metric("AWS/EC2", "CPUUtilization", "Average", "", "InstanceId")),
+			"anomaly-a|issue|AmazonEC2"},
+		{"metric math has no metric: alarm-name key", alarm("Math-A", "i-0aaa", metric("", "", "", "10", "")),
+			"math-a|issue|AmazonEC2"},
+		{"metric math names only its first input: alarm-name key", alarm("Web-5xx-Rate", "app/web/1",
+			func() map[string]any {
+				l := metric("AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", "Sum", "5", "LoadBalancer")
+				l["aws_event_metric_expression"] = "true"
+				return l
+			}()),
+			"web-5xx-rate|issue|AmazonEC2"},
+		{"collector too old to report the expression flag: alarm-name key", alarm("i-0aaa-HOSTA-CPU-Alarm-P1", "i-0aaa",
+			func() map[string]any {
+				l := cpu("90")
+				delete(l, "aws_event_metric_expression")
+				return l
+			}()),
+			"i-0aaa-hosta-cpu-alarm-p1|issue|AmazonEC2"},
+		{"no statistic: alarm-name key", alarm("Stat-A", "i-0aaa", metric("AWS/EC2", "CPUUtilization", "", "90", "InstanceId")),
+			"stat-a|issue|AmazonEC2"},
+		{"no labels: alarm-name key", alarm("Plain-A", "i-0aaa", nil), "plain-a|issue|AmazonEC2"},
+		{"push path: threshold read from the state reason, same class as the poll path", alarm("i-0ccc-HOSTC-CPU-Alarm-P1", "i-0ccc",
+			func() map[string]any {
+				l := cpu("")
+				l["aws_event_state_reason"] = "Threshold Crossed: 1 datapoint [97.3 (03/11/26 05:00:00)] was greater than or equal to the threshold (90.0)."
+				return l
+			}()),
+			"cw:aws/ec2/cpuutilization/average/90/instanceid|issue|AmazonEC2"},
+		{"push path anomaly band: alarm-name key", alarm("Anomaly-B", "i-0aaa",
+			func() map[string]any {
+				l := cpu("")
+				l["aws_event_state_reason"] = "Thresholds Crossed: 1 datapoint was greater than the upper thresholds [55.2]"
+				return l
+			}()),
+			"anomaly-b|issue|AmazonEC2"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClassKey(tc.ev); got != tc.want {
+				t.Fatalf("ClassKey = %q, want %q", got, tc.want)
+			}
+			basic := &eventBasicInfo{AggregationKey: tc.ev.AggregationKey, FindingType: tc.ev.FindingType,
+				Source: tc.ev.Source, SubjectType: tc.ev.SubjectType, SubjectName: tc.ev.SubjectName,
+				SubjectNamespace: tc.ev.SubjectNamespace, Labels: tc.ev.Labels}
+			if got := basic.classKey(); got != tc.want {
+				t.Fatalf("eventBasicInfo.classKey = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	// Labels other sources carry under the same names do not exist; their keys are unchanged.
+	k8s := &models.Event{AggregationKey: sp("KubePodCrashLooping"), FindingType: sp("issue"), SubjectOwner: sp("api"),
+		Labels: func() *models.Json {
+			j := models.NewJsonObject(map[string]any{"alertname": "KubePodCrashLooping"})
+			return &j
+		}()}
+	if got := ClassKey(k8s); got != "kubepodcrashlooping|issue|api" {
+		t.Fatalf("ClassKey(k8s) = %q", got)
+	}
+}
+
+// The classifier is told the check, not the host: the verdict is served to every resource the
+// check runs on, so the instance id, host name and one host's datapoints must not reach it.
+func TestBuildEventContextCloudWatchCheck(t *testing.T) {
+	j := models.NewJsonObject(map[string]any{"aws_event_metric_namespace": "AWS/EC2", "aws_event_metric_name": "CPUUtilization",
+		"aws_event_metric_statistic": "Average", "aws_event_threshold": "90.000000", "aws_event_instance_type": "InstanceId",
+		"aws_event_metric_expression": "false",
+		"aws_event_state_reason":      "Threshold Crossed: 2 datapoints [97.3, 96.1] were greater than or equal to the threshold (90.0)."})
+	ev := &models.Event{Title: "AmazonEC2::i-0aaa111::Threshold Crossed", AggregationKey: sp("i-0aaa111-HOSTA-CPU-Alarm-P1"),
+		Source: sp("AWS_CloudWatch_Alarm"), FindingType: sp("issue"), Priority: sp("HIGH"),
+		SubjectType: sp("compute-instance"), SubjectName: sp("i-0aaa111"), SubjectNamespace: sp("AmazonEC2"),
+		Description: sp("CloudWatch Alarm 'i-0aaa111-HOSTA-CPU-Alarm-P1' changed from OK to ALARM."),
+		Labels:      &j}
+	got := buildEventContext(ev, workloadFacts{})
+	for _, leak := range []string{"i-0aaa111", "HOSTA", "97.3"} {
+		if strings.Contains(got, leak) {
+			t.Fatalf("context names one resource (%q):\n%s", leak, got)
+		}
+	}
+	want := "- alarm: CloudWatch aws/ec2 cpuutilization (average) greater than or equal to threshold 90, per instanceid\n"
+	if !strings.HasPrefix(got, want) {
+		t.Fatalf("context = %q, want prefix %q", got, want)
 	}
 }
 
