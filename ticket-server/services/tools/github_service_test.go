@@ -365,11 +365,12 @@ func TestUpdateProjectStatusResolvesNamesAndEncodedSelectors(t *testing.T) {
 		itemProject string
 		secondItem  bool
 		wantOption  string
+		wantStatus  string
 		wantErr     string
 	}{
-		{name: "plain case insensitive", status: "in progress", itemProject: "P1", wantOption: "O1"},
-		{name: "encoded selector", status: "github-project:P1:F1:O2", itemProject: "P1", secondItem: true, wantOption: "O2"},
-		{name: "plain punctuation", status: "Ready: QA", itemProject: "P1", wantOption: "O1"},
+		{name: "plain case insensitive", status: "in progress", itemProject: "P1", wantOption: "O1", wantStatus: "In Progress"},
+		{name: "encoded selector", status: "github-project:P1:F1:O2", itemProject: "P1", secondItem: true, wantOption: "O2", wantStatus: "Done"},
+		{name: "plain punctuation", status: "Ready: QA", itemProject: "P1", wantOption: "O1", wantStatus: "Ready: QA"},
 		{name: "ambiguous", status: "ready", itemProject: "P1", secondItem: true, wantErr: "ambiguous"},
 		{name: "unlinked", status: "QA", itemProject: "P1", wantErr: "not linked"},
 		{name: "encoded unlinked project", status: "github-project:P3:F1:O1", itemProject: "P1", wantErr: "not linked"},
@@ -417,7 +418,7 @@ func TestUpdateProjectStatusResolvesNamesAndEncodedSelectors(t *testing.T) {
 			defer srv.Close()
 			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 
-			err := (&GitHubService{}).updateProjectStatus(ctx, client, "owner", "repo", 7, test.status)
+			gotStatus, err := (&GitHubService{}).updateProjectStatus(ctx, client, "owner", "repo", 7, test.status)
 			if test.wantErr != "" {
 				if err == nil || !strings.Contains(strings.ToLower(err.Error()), test.wantErr) {
 					t.Fatalf("error = %v, want %q", err, test.wantErr)
@@ -429,6 +430,9 @@ func TestUpdateProjectStatusResolvesNamesAndEncodedSelectors(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("updateProjectStatus() error = %v", err)
+			}
+			if gotStatus != test.wantStatus {
+				t.Fatalf("resolved status = %q, want %q", gotStatus, test.wantStatus)
 			}
 			for key, want := range map[string]string{"projectId": "P1", "itemId": "I1", "fieldId": "F1", "optionId": test.wantOption} {
 				if mutationVariables[key] != want {

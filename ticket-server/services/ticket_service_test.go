@@ -10,8 +10,8 @@ import (
 func TestTicketStatusPersistence(t *testing.T) {
 	for _, tc := range []struct{ tool, requested, want string }{
 		{"github", "github-project:P1:F1:O1", ""},
-		{"github", "Ready", ""},
-		{"github", "In Progress", ""},
+		{"github", "Ready", "Ready"},
+		{"github", "In Progress", "In Progress"},
 		{"github", "Open", "open"},
 		{"github", "CLOSED", "closed"},
 		{"github", "", ""},

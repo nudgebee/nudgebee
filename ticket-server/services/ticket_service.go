@@ -815,7 +815,14 @@ func UpdateTicket(ctx *gin.Context, ticket models.Ticket, updateFields models.Up
 		return fmt.Errorf("unsupported platform: %s", configuration.Tool)
 	}
 
-	if err := manager.Update(ctx, configuration, ticket.TicketID, updateFields); err != nil {
+	persistedStatus := updateFields.Status
+	if statusManager, ok := manager.(ticketmgr.StatusReturningTicketManager); ok && updateFields.Status != "" {
+		var err error
+		persistedStatus, err = statusManager.UpdateWithStatus(ctx, configuration, ticket.TicketID, updateFields)
+		if err != nil {
+			return err
+		}
+	} else if err := manager.Update(ctx, configuration, ticket.TicketID, updateFields); err != nil {
 		return err
 	}
 	if configuration.Tool == "servicenow" {
@@ -830,7 +837,7 @@ func UpdateTicket(ctx *gin.Context, ticket models.Ticket, updateFields models.Up
 			}
 		}
 	}
-	updateFields.Status = ticketStatusToPersist(configuration.Tool, updateFields.Status)
+	updateFields.Status = ticketStatusToPersist(configuration.Tool, persistedStatus)
 	syncTicketToDB(ticket.TicketID, ticket.IntegrationID, updateFields)
 	return nil
 }
@@ -872,7 +879,10 @@ func ticketStatusToPersist(tool, status string) string {
 	if strings.EqualFold(status, "open") || strings.EqualFold(status, "closed") {
 		return strings.ToLower(status)
 	}
-	return ""
+	if strings.HasPrefix(status, "github-project:") {
+		return ""
+	}
+	return status
 }
 
 // TransitionTicket changes the status of a ticket.
@@ -906,10 +916,17 @@ func TransitionTicket(ctx *gin.Context, ticket models.Ticket, status string) err
 		return fmt.Errorf("unsupported platform: %s", configuration.Tool)
 	}
 
-	if err := manager.Transition(ctx, configuration, ticket.TicketID, status); err != nil {
+	persistedStatus := status
+	if statusManager, ok := manager.(ticketmgr.StatusReturningTransitioner); ok {
+		var err error
+		persistedStatus, err = statusManager.TransitionWithStatus(ctx, configuration, ticket.TicketID, status)
+		if err != nil {
+			return err
+		}
+	} else if err := manager.Transition(ctx, configuration, ticket.TicketID, status); err != nil {
 		return err
 	}
-	if storedStatus := ticketStatusToPersist(configuration.Tool, status); storedStatus != "" {
+	if storedStatus := ticketStatusToPersist(configuration.Tool, persistedStatus); storedStatus != "" {
 		syncTicketToDB(ticket.TicketID, ticket.IntegrationID, models.UpdateFields{Status: storedStatus})
 	}
 	return nil

@@ -54,6 +54,17 @@ type TransitionMetadataProvider interface {
 	GetTransitionMeta(ctx *gin.Context, config models.TicketConfigurations, projectKey string) (interface{}, error)
 }
 
+// StatusReturningTicketManager optionally returns the human-readable status
+// applied by an update. GitHub Project selectors are opaque, so callers can
+// persist the resolved option name instead of the selector.
+type StatusReturningTicketManager interface {
+	UpdateWithStatus(ctx *gin.Context, config models.TicketConfigurations, ticketID string, updateFields models.UpdateFields) (string, error)
+}
+
+type StatusReturningTransitioner interface {
+	TransitionWithStatus(ctx *gin.Context, config models.TicketConfigurations, ticketID string, status string) (string, error)
+}
+
 // IncidentManager extends TicketManager with incident-specific operations.
 // This interface is implemented by incident management tools like PagerDuty and ZenDuty.
 type IncidentManager interface {

@@ -194,10 +194,12 @@ const OPTIONS_SOURCE_FETCHERS: Record<string, FetcherFn> = {
     }
     if (!assigneeField) return [];
     if (Array.isArray(assigneeField.allowedValues) && assigneeField.allowedValues.length > 0) {
-      return assigneeField.allowedValues.map((v: any) => ({
-        label: v.name || v.value || String(v.id),
-        value: v.value || v.id || v.key,
-      }));
+      return assigneeField.allowedValues
+        .filter((v: any) => v && (v.value != null || v.id != null || v.key != null))
+        .map((v: any) => ({
+          label: v.name || v.value || String(v.id ?? v.key),
+          value: v.value ?? v.id ?? v.key,
+        }));
     }
     if (assigneeField.autoCompleteUrl) {
       const res: any = await apiTickets.getTicketFieldValues(integrationId, assigneeField.key, assigneeField.autoCompleteUrl, '');
@@ -218,7 +220,7 @@ const OPTIONS_SOURCE_FETCHERS: Record<string, FetcherFn> = {
     const transitionMeta = meta?.data?.tickets_get_transition_meta;
     const rawOptions = transitionMeta?.data;
     const warning = transitionMeta?.warning;
-    const warningKey = `${integrationId}:${warning}`;
+    const warningKey = integrationId;
     if (warning && !shownTransitionWarnings.has(warningKey)) {
       shownTransitionWarnings.add(warningKey);
       snackbar.warning(warning);

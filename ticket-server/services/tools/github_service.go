@@ -731,20 +731,20 @@ func fetchIssueProjectItems(ctx *gin.Context, client *github.Client, owner, repo
 }
 
 type githubProjectStatusSelection struct {
-	itemID, projectID, fieldID, optionID string
+	itemID, projectID, fieldID, optionID, optionName string
 }
 
-func (s *GitHubService) updateProjectStatus(ctx *gin.Context, githubClient *github.Client, owner, repo string, issueNumber int, status string) error {
+func (s *GitHubService) updateProjectStatus(ctx *gin.Context, githubClient *github.Client, owner, repo string, issueNumber int, status string) (string, error) {
 	status = strings.TrimSpace(status)
 	encodedParts := strings.Split(status, ":")
 	encoded := len(encodedParts) == 4 && encodedParts[0] == "github-project" &&
 		encodedParts[1] != "" && encodedParts[2] != "" && encodedParts[3] != ""
 	if strings.HasPrefix(status, "github-project:") && !encoded {
-		return fmt.Errorf("invalid GitHub Project status selection; choose a current Project status option")
+		return "", fmt.Errorf("invalid GitHub Project status selection; choose a current Project status option")
 	}
 	items, err := fetchIssueProjectItems(ctx, githubClient, owner, repo, issueNumber)
 	if err != nil {
-		return err
+		return "", err
 	}
 	var match *githubProjectStatusSelection
 	for _, item := range items {
@@ -753,7 +753,7 @@ func (s *GitHubService) updateProjectStatus(ctx *gin.Context, githubClient *gith
 		}
 		fields, err := fetchProjectFields(ctx, githubClient, item.Project.ID)
 		if err != nil {
-			return err
+			return "", err
 		}
 		for _, field := range fields {
 			if !strings.EqualFold(field.Name, "Status") ||
@@ -764,18 +764,18 @@ func (s *GitHubService) updateProjectStatus(ctx *gin.Context, githubClient *gith
 				if (encoded && option.ID == encodedParts[3]) ||
 					(!encoded && strings.EqualFold(option.Name, status)) {
 					if match != nil {
-						return fmt.Errorf("GitHub issue %s/%s#%d has an ambiguous Project status selection; refusing transition", owner, repo, issueNumber)
+						return "", fmt.Errorf("GitHub issue %s/%s#%d has an ambiguous Project status selection; refusing transition", owner, repo, issueNumber)
 					}
 					match = &githubProjectStatusSelection{
 						itemID: item.ID, projectID: item.Project.ID, fieldID: field.ID,
-						optionID: option.ID,
+						optionID: option.ID, optionName: option.Name,
 					}
 				}
 			}
 		}
 	}
 	if match == nil {
-		return fmt.Errorf("GitHub issue %s/%s#%d is not linked to Project status %q (it may be missing, stale, or unauthorized)", owner, repo, issueNumber, status)
+		return "", fmt.Errorf("GitHub issue %s/%s#%d is not linked to Project status %q (it may be missing, stale, or unauthorized)", owner, repo, issueNumber, status)
 	}
 
 	var mutation githubProjectStatusMutation
@@ -794,12 +794,12 @@ func (s *GitHubService) updateProjectStatus(ctx *gin.Context, githubClient *gith
 		"fieldId":   match.fieldID,
 		"optionId":  match.optionID,
 	}, &mutation); err != nil {
-		return err
+		return "", err
 	}
 	if len(mutation.Errors) > 0 {
-		return fmt.Errorf("GitHub Project status update failed: %s", mutation.Errors[0].Message)
+		return "", fmt.Errorf("GitHub Project status update failed: %s", mutation.Errors[0].Message)
 	}
-	return nil
+	return match.optionName, nil
 }
 
 // listAllRepoAssignees returns up to 1000 users that can be assigned to issues
@@ -1067,8 +1067,15 @@ func (s *GitHubService) List(ctx *gin.Context, config models.TicketConfiguration
 
 // Update updates fields on a GitHub issue
 func (s *GitHubService) Update(ctx *gin.Context, config models.TicketConfigurations, ticketID string, updateFields models.UpdateFields) error {
+	_, err := s.UpdateWithStatus(ctx, config, ticketID, updateFields)
+	return err
+}
+
+// UpdateWithStatus updates a GitHub issue and returns the status that should
+// be persisted locally. Project selectors are resolved to their option names.
+func (s *GitHubService) UpdateWithStatus(ctx *gin.Context, config models.TicketConfigurations, ticketID string, updateFields models.UpdateFields) (string, error) {
 	if err := utils.ValidateGitHubIssueID(ticketID); err != nil {
-		return fmt.Errorf("invalid ticket ID: %w", err)
+		return "", fmt.Errorf("invalid ticket ID: %w", err)
 	}
 
 	var githubClient *github.Client
@@ -1079,11 +1086,11 @@ func (s *GitHubService) Update(ctx *gin.Context, config models.TicketConfigurati
 	} else {
 		installationID, err := strconv.ParseInt(config.Password, 10, 64)
 		if err != nil {
-			return fmt.Errorf("invalid installation ID: %w", err)
+			return "", fmt.Errorf("invalid installation ID: %w", err)
 		}
 		githubClient, err = clients.CreateGithubClientWithInstallationToken(ctx, installationID)
 		if err != nil {
-			return err
+			return "", err
 		}
 	}
 
@@ -1092,30 +1099,31 @@ func (s *GitHubService) Update(ctx *gin.Context, config models.TicketConfigurati
 		projectKey = config.Projects[0].Key
 	}
 	if projectKey == "" {
-		return fmt.Errorf("project_key is required for GitHub (expected owner/repo format)")
+		return "", fmt.Errorf("project_key is required for GitHub (expected owner/repo format)")
 	}
 	if err := utils.ValidateProjectKey(projectKey); err != nil {
-		return fmt.Errorf("invalid project key: %w", err)
+		return "", fmt.Errorf("invalid project key: %w", err)
 	}
 	parts := strings.Split(projectKey, "/")
 	if len(parts) != 2 {
-		return fmt.Errorf("invalid project key %q: expected format 'owner/repo'", projectKey)
+		return "", fmt.Errorf("invalid project key %q: expected format 'owner/repo'", projectKey)
 	}
 	owner, repo := parts[0], parts[1]
 
 	issueNumber, err := strconv.Atoi(ticketID)
 	if err != nil {
-		return fmt.Errorf("invalid issue number: %w", err)
+		return "", fmt.Errorf("invalid issue number: %w", err)
 	}
 
 	isRESTState := strings.EqualFold(updateFields.Status, "open") || strings.EqualFold(updateFields.Status, "closed")
 	if updateFields.Status != "" && !isRESTState &&
 		(len(updateFields.AssigneeList()) > 0 || updateFields.Description != "" || len(updateFields.Labels) > 0) {
-		return fmt.Errorf("GitHub Project status transitions cannot be combined with REST issue field updates")
+		return "", fmt.Errorf("GitHub Project status transitions cannot be combined with REST issue field updates")
 	}
 
 	issueRequest := &github.IssueRequest{}
 	hasUpdates := false
+	persistedStatus := ""
 
 	if updateFields.Status != "" {
 		// GitHub uses "open" or "closed" states
@@ -1123,9 +1131,12 @@ func (s *GitHubService) Update(ctx *gin.Context, config models.TicketConfigurati
 		if state == "open" || state == "closed" {
 			issueRequest.State = &state
 			hasUpdates = true
+			persistedStatus = state
 		} else {
-			if err := s.updateProjectStatus(ctx, githubClient, owner, repo, issueNumber, updateFields.Status); err != nil {
-				return err
+			var err error
+			persistedStatus, err = s.updateProjectStatus(ctx, githubClient, owner, repo, issueNumber, updateFields.Status)
+			if err != nil {
+				return "", err
 			}
 		}
 	}
@@ -1149,19 +1160,24 @@ func (s *GitHubService) Update(ctx *gin.Context, config models.TicketConfigurati
 	}
 
 	if !hasUpdates {
-		return nil
+		return persistedStatus, nil
 	}
 
 	_, _, err = githubClient.Issues.Edit(ctx, owner, repo, issueNumber, issueRequest)
 	if err != nil {
-		return fmt.Errorf("failed to update GitHub issue: %w", err)
+		return "", fmt.Errorf("failed to update GitHub issue: %w", err)
 	}
 
 	slog.Info("GitHub issue updated", "ticketID", ticketID)
-	return nil
+	return persistedStatus, nil
 }
 
 // Transition changes a GitHub issue state or its linked Project v2 Status.
 func (s *GitHubService) Transition(ctx *gin.Context, config models.TicketConfigurations, ticketID string, status string) error {
-	return s.Update(ctx, config, ticketID, models.UpdateFields{Status: status})
+	_, err := s.TransitionWithStatus(ctx, config, ticketID, status)
+	return err
+}
+
+func (s *GitHubService) TransitionWithStatus(ctx *gin.Context, config models.TicketConfigurations, ticketID string, status string) (string, error) {
+	return s.UpdateWithStatus(ctx, config, ticketID, models.UpdateFields{Status: status})
 }
