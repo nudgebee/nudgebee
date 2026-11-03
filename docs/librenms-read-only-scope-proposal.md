@@ -68,6 +68,8 @@ mapping and lifecycle decision rather than treating an alert as device inventory
 - [ ] Maintainers approve the agent/content-pack scope and network-device schema.
 - [ ] A device discovered through either source follows the existing target-account
       association and resource-match path, retaining tenant/account provenance.
+- [ ] A non-empty account ID is required before resolving integrations or running
+      queries; missing or ambiguous identity fails without importing data.
 - [ ] Repeated reads retain stable identities; overlapping sources do not create
       competing devices, and separate tenants/accounts remain isolated.
 - [ ] Credentials stay in-network and no source performs configuration/alert writes.
