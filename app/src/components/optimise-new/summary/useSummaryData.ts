@@ -4,6 +4,7 @@ import apiHome from '@api1/home';
 import apiCloudAccount from '@api1/cloud-account';
 import { NON_SECURITY_CATEGORIES, DEFAULT_STATUS, UPGRADE_PLANNER_RULES } from '../utils';
 import { getBudgetExpectedMonthlyExpense } from '@lib/budget';
+import { getCurrencySymbol } from '@shared/format/Currency';
 import { transformApiToInsight, mapCategoryAndSubCategory } from './transformRecommendation';
 import type { CurrencyCostSummary, AccountCost } from './AccountClusterPane';
 import type { MainCategory } from './insights';
@@ -19,21 +20,6 @@ const EMPTY_CATEGORY_BREAKDOWN: Record<MainCategory, { dollars: number; count: n
 
 const DEFAULT_SYMBOL = '$';
 const SAVINGS_CURRENCY = 'USD';
-
-// Resolve an ISO currency code (USD/INR/EUR/GBP/…) to its narrow symbol via Intl,
-// so any billing currency a cloud provider reports renders correctly rather than
-// falling back to '$' for everything outside a hardcoded USD/INR map.
-const getCurrencySymbol = (currency: string): string => {
-  try {
-    return (
-      new Intl.NumberFormat('en-US', { style: 'currency', currency, currencyDisplay: 'narrowSymbol' })
-        .formatToParts(0)
-        .find((p) => p.type === 'currency')?.value || DEFAULT_SYMBOL
-    );
-  } catch {
-    return DEFAULT_SYMBOL;
-  }
-};
 
 // accountId / envFilter scope the headline savings total. The findings list is
 // filtered client-side, so without this the card keeps showing the tenant-wide

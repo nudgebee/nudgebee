@@ -69,7 +69,7 @@
     "react": "^18.2.0",
     "react-chartjs-2": "^5.2.0",
     "react-dom": "^18.2.0",
-    "react-gauge-component": "^1.1.30",
+    "react-gauge-component": "^2.0.29",
     "react-hook-form": "^7.89.0",
     "react-icons": "^5.0.1",
     "reactflow": "^11.11.4",

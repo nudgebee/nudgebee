@@ -130,6 +130,8 @@ export interface VariableUse {
 export function variableUses(panels: Panel[], name: string): VariableUse[] {
   if (!NAME_RE.test(name)) return [];
   const exactMatch = new RegExp(`=\\s*"[^"]*\\$\\{?${name}\\b(?![:\\w])`);
+  const plainUse = new RegExp(`\\$\\{?${name}\\b(?![:\\w])`);
+  const regexMatcher = new RegExp(`=~\\s*["'\`][^"'\`]*\\$\\{?${name}\\b(?![:\\w])`);
   return panels.flatMap((panel): VariableUse[] => {
     const targets = panel.targets || [];
     if (targets.length === 0) return [];
@@ -141,6 +143,16 @@ export function variableUses(panels: Panel[], name: string): VariableUse[] {
     if (!referenced) return [{ ...uses, kind: 'unused' }];
     if (targets.some((t) => exactMatch.test(t.expr || ''))) {
       return [{ ...uses, kind: 'partial', reason: `Uses =, so All and several values won’t match. Use =~"$${name}".` }];
+    }
+    // A plain $name is a regex, which only a =~ matcher reads. Every other log query takes it as text.
+    if (panel.datasource === 'logs' && targets.some((t) => plainUse.test(t.expr || '') && !regexMatcher.test(t.expr || ''))) {
+      return [
+        {
+          ...uses,
+          kind: 'partial',
+          reason: `Outside =~"$${name}", All and several values won’t match. Use \${${name}:lucene}, or \${${name}:json} in an Elasticsearch query.`,
+        },
+      ];
     }
     return [{ ...uses, kind: 'works' }];
   });
