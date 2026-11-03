@@ -63,6 +63,16 @@ def test_fetch_catalog_authenticates_to_llm_server(monkeypatch, header):
     response.raise_for_status.assert_called_once()
 
 
+def test_fetch_catalog_rejects_empty_account_id(monkeypatch):
+    post = MagicMock(side_effect=AssertionError("must not call out"))
+    monkeypatch.setattr(httpx, "post", post)
+
+    with pytest.raises(ValueError, match="account_id must be non-empty"):
+        sync._fetch_catalog("")
+
+    post.assert_not_called()
+
+
 def test_noop_when_llm_server_url_unset(monkeypatch):
     monkeypatch.setattr(Config, "llm_server_url", "")
     monkeypatch.setattr(httpx, "post", MagicMock(side_effect=AssertionError("must not call out")))
