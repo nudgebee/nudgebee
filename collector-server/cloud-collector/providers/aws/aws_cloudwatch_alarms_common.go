@@ -517,13 +517,12 @@ func metricAlarmEvent(ctx providers.CloudProviderContext, alarm types.MetricAlar
 	// Use the shared enrichment function for namespace mapping,
 	// dimension matching, label building, and metric filter resolution.
 	enrichment := EnrichCloudWatchAlarm(ctx.GetContext(), CloudWatchAlarmInfo{
-		AlarmName:       alarmName,
-		MetricName:      metricName,
-		MetricNamespace: metricNamespace,
-		Statistic:       statistic,
-		Threshold:       threshold,
-		// A single-metric alarm names its namespace; any other alarm is on Metrics.
-		MetricExpression: alarm.Namespace == nil,
+		AlarmName:        alarmName,
+		MetricName:       metricName,
+		MetricNamespace:  metricNamespace,
+		Statistic:        statistic,
+		Threshold:        threshold,
+		MetricExpression: alarmHasExpression(alarm),
 		Region:           region,
 		AccountNumber:    account.AccountNumber,
 		AlarmArn:         aws.ToString(alarm.AlarmArn),
@@ -581,6 +580,19 @@ func alarmMetric(alarm types.MetricAlarm) (name, namespace, statistic string, di
 		return aws.ToString(metric.MetricName), aws.ToString(metric.Namespace), aws.ToString(query.MetricStat.Stat), toDims(metric.Dimensions)
 	}
 	return "", "", "", []AlarmDimension{}
+}
+
+// alarmHasExpression reports an alarm on a metric-math expression or an anomaly
+// band. An alarm can also name a single metric through Metrics with no
+// expression; the push path reads that as single-metric, so the poll path must
+// too, or the two would label one alarm differently.
+func alarmHasExpression(alarm types.MetricAlarm) bool {
+	for _, query := range alarm.Metrics {
+		if query.Expression != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // buildAlarmRawMap extracts only the operationally relevant fields from a CloudWatch

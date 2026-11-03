@@ -187,3 +187,40 @@ func TestPercentileAlarm_PollAndPushAgreeOnTheCheck(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, pushedThreshold, polledThreshold)
 }
+
+// An alarm can name one metric through Metrics with no expression. Both paths
+// must call it single-metric, or one alarm gets two triage classes.
+func TestMetricsListSingleMetricAlarm_PollAndPushAgree(t *testing.T) {
+	const arn = "arn:aws:cloudwatch:us-east-1:111122223333:alarm:queue-depth"
+	detail := map[string]any{
+		"alarmName": "queue-depth",
+		"alarmArn":  arn,
+		"state":     map[string]any{"value": "ALARM", "timestamp": "2026-10-13T10:00:04.000+0000"},
+		"configuration": map[string]any{"metrics": []any{
+			map[string]any{"id": "m1", "returnData": true, "metricStat": map[string]any{
+				"stat": "Maximum", "period": 60,
+				"metric": map[string]any{"namespace": "AWS/SQS", "name": "ApproximateNumberOfMessagesVisible", "dimensions": map[string]any{"QueueName": "orders"}},
+			}},
+		}},
+	}
+	raw, err := json.Marshal(detail)
+	require.NoError(t, err)
+	info, ok := extractCloudWatchAlarmInfoFromEB(EventBridgeEvent{
+		DetailType: "CloudWatch Alarm State Change", Source: "aws.cloudwatch",
+		Account: "111122223333", Region: "us-east-1", Resources: []string{arn}, Detail: raw,
+	})
+	require.True(t, ok)
+	pushed := EnrichCloudWatchAlarm(context.Background(), info, false, nil, nil)
+
+	query := metricStatQuery("m1", "AWS/SQS", "ApproximateNumberOfMessagesVisible", cwtypes.Dimension{Name: aws.String("QueueName"), Value: aws.String("orders")})
+	query.ReturnData = aws.Bool(true)
+	query.MetricStat.Stat = aws.String("Maximum")
+	polled := metricAlarmEvent(providers.NewCloudProviderContext(context.Background()), cwtypes.MetricAlarm{
+		AlarmName: aws.String("queue-depth"), AlarmArn: aws.String(arn), StateValue: cwtypes.StateValueAlarm,
+		Threshold: aws.Float64(50), Metrics: []cwtypes.MetricDataQuery{query},
+	}, nil, providers.Account{AccountNumber: "111122223333"}, "us-east-1", MetricFilterCache{})
+
+	assert.Equal(t, "false", pushed.Labels["aws_event_metric_expression"])
+	assert.Equal(t, pushed.Labels["aws_event_metric_expression"], polled.Labels["aws_event_metric_expression"])
+	assert.Equal(t, pushed.Labels["aws_event_metric_statistic"], polled.Labels["aws_event_metric_statistic"])
+}
