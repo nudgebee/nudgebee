@@ -36,6 +36,7 @@ import { ANNOTATIONS } from '@lib/annotationKeys';
 import { toAssistantLabel } from '@hooks/useTenantBranding';
 import { formatClockCompact } from '@shared/format/Datetime';
 import { truncateText } from '@utils/common';
+import { useLiveStatusText } from '@components/llm/common/liveStatus';
 import { OptionalHardening, StepSource } from './RemediationPanel';
 import { readData } from '../resolutionStatus';
 import { alertSessionOf } from '../investigationSession';
@@ -1346,6 +1347,8 @@ const RemediationLoopPanel = ({
     (Number.isInteger(lastAsk?.replacedVersion) && Number.isInteger(remediation?.version) && remediation.version > lastAsk.replacedVersion) ||
     Boolean(loop.last_request_at && remediation?.generated_at && timeMs(remediation.generated_at) >= timeMs(loop.last_request_at));
   const preparingView = (preparing || Boolean(lastAsk?.ok && !lastAsk.settled)) && !newerPlanLanded;
+  // A model call of the turn preparing the fix waiting on a retry or a fallback, as the chat says it; '' otherwise.
+  const preparingLive = useLiveStatusText(preparingView ? loop.live_status : null);
   const askingLabel = `Asking ${assistantLabel}…`;
   const askButton = (mode, label, testId, tone = 'primary') => (
     <Button tone={tone} size='xs' onClick={() => askQuietly(mode)} disabled={!canAct || !!askState.sending} data-testid={testId}>
@@ -1598,15 +1601,19 @@ const RemediationLoopPanel = ({
         ? `${assistantLabel} is preparing new fix options`
         : 'Preparing the fix from the investigation',
       spinner: true,
-      lines:
-        replanning && lastAsk?.note
-          ? [
-              <Box component='span' key='note' data-testid='remediation-loop-replan-note-quote'>{`“${truncateText(
-                lastAsk.note.replace(/\s+/g, ' '),
-                120
-              )}”`}</Box>,
-            ]
-          : [],
+      lines: [
+        replanning && lastAsk?.note ? (
+          <Box component='span' key='note' data-testid='remediation-loop-replan-note-quote'>{`“${truncateText(
+            lastAsk.note.replace(/\s+/g, ' '),
+            120
+          )}”`}</Box>
+        ) : null,
+        preparingLive ? (
+          <Box component='span' key='live' data-testid='remediation-loop-live-status'>
+            {preparingLive}
+          </Box>
+        ) : null,
+      ].filter(Boolean),
       detail: (
         <>
           {since ? `started ${formatClockCompact(since)} · ` : ''}

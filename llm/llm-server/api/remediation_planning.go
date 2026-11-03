@@ -538,8 +538,18 @@ func planningStop(db *sqlx.DB, row events.PlanningRequest, logger *slog.Logger) 
 	return "", false
 }
 
+// personAskedAt is when a person asked for row's turn, nil when NudgeBee asked for it. A person's request made after
+// someone stopped the alert's conversation may start there (core automaticTurnIdle); NudgeBee's own may not.
+func personAskedAt(row events.PlanningRequest) *time.Time {
+	if planRequester(row) == "" || row.RequestedAt.IsZero() {
+		return nil
+	}
+	at := row.RequestedAt
+	return &at
+}
+
 // planningConversationIdle reports whether the alert's conversation can take a turn now, or has none yet: no turn
-// is active there, it is not stopped by a person (core AutomaticTurnIdle), and the alert's investigation does not
+// is active there, it is not stopped by a person unless that person asked after (core AutomaticTurnIdle), and the alert's investigation does not
 // hold it. Read before the turn's evidence is built, so a busy conversation costs a read or two per tick. A var so
 // tests can stub it.
 var planningConversationIdle = func(row events.PlanningRequest) bool {
@@ -551,7 +561,7 @@ var planningConversationIdle = func(row events.PlanningRequest) bool {
 	if conversation.ID != uuid.Nil {
 		ctx, cancel := context.WithTimeout(context.Background(), decisionDBTimeout)
 		defer cancel()
-		if idle, err := dao.AutomaticTurnIdle(ctx, conversation.ID.String(), row.AccountId); err != nil || !idle {
+		if idle, err := dao.AutomaticTurnIdle(ctx, conversation.ID.String(), row.AccountId, personAskedAt(row)); err != nil || !idle {
 			return false
 		}
 	}
@@ -734,7 +744,7 @@ var startPlanningMessage = func(row events.PlanningRequest, messageId uuid.UUID,
 	if !mayStart {
 		return conversationId.String(), false, nil
 	}
-	started, err := dao.StartIdleTurn(ctx, conversationId.String(), row.AccountId, messageId.String(), query, agents.RemediationAgentName, planningTurnConfig(row), holdKey)
+	started, err := dao.StartIdleTurn(ctx, conversationId.String(), row.AccountId, messageId.String(), query, agents.RemediationAgentName, planningTurnConfig(row), holdKey, personAskedAt(row))
 	if err != nil || !started {
 		return conversationId.String(), started, err
 	}

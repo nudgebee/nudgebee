@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"nudgebee/llm/common"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 )
@@ -82,19 +84,19 @@ func TestStartIdleTurn_TerminatedIdleOnlyWhenNudgeBeeClosedIt_42142(t *testing.T
 
 	stopped := addConversation(t, db, account, ConversationStatusTerminated)
 	addMessage(t, db, account, stopped, "generation", ConversationStatusTerminated, "")
-	idle, err := dao.AutomaticTurnIdle(ctx, stopped, account)
+	idle, err := dao.AutomaticTurnIdle(ctx, stopped, account, nil)
 	require.NoError(t, err)
 	assert.False(t, idle, "a person's Stop keeps automatic turns off")
-	started, err := dao.StartIdleTurn(ctx, stopped, account, uuid.NewString(), "check", "remediation", toolcore.NBQueryConfig{}, "")
+	started, err := dao.StartIdleTurn(ctx, stopped, account, uuid.NewString(), "check", "remediation", toolcore.NBQueryConfig{}, "", nil)
 	require.NoError(t, err)
 	assert.False(t, started)
 
 	lapsed := addConversation(t, db, account, ConversationStatusTerminated)
 	addMessage(t, db, account, lapsed, "followup", ConversationStatusTerminated, `{"closed_reason":"lapsed"}`)
-	idle, err = dao.AutomaticTurnIdle(ctx, lapsed, account)
+	idle, err = dao.AutomaticTurnIdle(ctx, lapsed, account, nil)
 	require.NoError(t, err)
 	assert.True(t, idle)
-	started, err = dao.StartIdleTurn(ctx, lapsed, account, uuid.NewString(), "check", "remediation", toolcore.NBQueryConfig{}, "")
+	started, err = dao.StartIdleTurn(ctx, lapsed, account, uuid.NewString(), "check", "remediation", toolcore.NBQueryConfig{}, "", nil)
 	require.NoError(t, err)
 	assert.True(t, started, "NudgeBee closed the prompt: its own turns start again")
 
@@ -102,9 +104,48 @@ func TestStartIdleTurn_TerminatedIdleOnlyWhenNudgeBeeClosedIt_42142(t *testing.T
 	again := addConversation(t, db, account, ConversationStatusTerminated)
 	addMessage(t, db, account, again, "followup", ConversationStatusTerminated, `{"closed_reason":"lapsed"}`)
 	addMessage(t, db, account, again, "generation", ConversationStatusTerminated, "")
-	idle, err = dao.AutomaticTurnIdle(ctx, again, account)
+	idle, err = dao.AutomaticTurnIdle(ctx, again, account, nil)
 	require.NoError(t, err)
 	assert.False(t, idle)
+}
+
+// A person stopped the alert's conversation, then asked for a Re-check: the Re-check waited, queued, until it
+// expired, because a stopped conversation was off-limits to every turn but a typed message. A turn a person asked
+// for after the stop starts; one asked before it, or NudgeBee's own, does not.
+func TestStartIdleTurn_PersonAskedAfterStop(t *testing.T) {
+	db, dao := oneConversationDB(t)
+	account := uuid.NewString()
+	ctx := context.Background()
+	stoppedAt := time.Date(2026, 11, 3, 10, 17, 47, 0, time.UTC)
+	before, after := stoppedAt.Add(-8*time.Minute), stoppedAt.Add(4*time.Second)
+
+	conversation := addConversation(t, db, account, ConversationStatusTerminated)
+	stopped := addMessage(t, db, account, conversation, "generation", ConversationStatusTerminated, "")
+	_, err := db.Exec(`UPDATE llm_conversation_messages SET updated_at = $2 WHERE id = $1`, stopped, stoppedAt)
+	require.NoError(t, err)
+	// The model call in flight at the stop sets, then clears, its live status afterwards: the stop time stays.
+	require.NoError(t, dao.SetMessageLiveStatus(stopped, "remediation", &llmruntime.LiveStatus{Text: "Couldn't reach the platform AI model."}))
+	require.NoError(t, dao.SetMessageLiveStatus(stopped, "remediation", nil))
+
+	for _, tc := range []struct {
+		name  string
+		asked *time.Time
+		idle  bool
+	}{
+		{"NudgeBee's own turn", nil, false},
+		{"asked before the stop", &before, false},
+		{"asked after the stop", &after, true},
+	} {
+		idle, err := dao.AutomaticTurnIdle(ctx, conversation, account, tc.asked)
+		require.NoError(t, err)
+		assert.Equal(t, tc.idle, idle, tc.name)
+	}
+	started, err := dao.StartIdleTurn(ctx, conversation, account, uuid.NewString(), "recheck", "remediation", toolcore.NBQueryConfig{}, "", &before)
+	require.NoError(t, err)
+	assert.False(t, started)
+	started, err = dao.StartIdleTurn(ctx, conversation, account, uuid.NewString(), "recheck", "remediation", toolcore.NBQueryConfig{}, "", &after)
+	require.NoError(t, err)
+	assert.True(t, started, "the person's Re-check starts")
 }
 
 // R1: an automatic turn does not start while the hold key (the alert's investigation lock) is held elsewhere.
@@ -121,7 +162,7 @@ func TestStartIdleTurn_RefusesWhileHoldKeyHeld(t *testing.T) {
 	_, err = conn.ExecContext(ctx, `SELECT pg_advisory_lock(hashtextextended($1, 0))`, key)
 	require.NoError(t, err)
 
-	started, err := dao.StartIdleTurn(ctx, conversation, account, uuid.NewString(), "plan", "remediation", toolcore.NBQueryConfig{}, key)
+	started, err := dao.StartIdleTurn(ctx, conversation, account, uuid.NewString(), "plan", "remediation", toolcore.NBQueryConfig{}, key, nil)
 	require.NoError(t, err)
 	assert.False(t, started, "the investigation holds the conversation")
 	var n int
@@ -130,7 +171,7 @@ func TestStartIdleTurn_RefusesWhileHoldKeyHeld(t *testing.T) {
 
 	_, err = conn.ExecContext(ctx, `SELECT pg_advisory_unlock(hashtextextended($1, 0))`, key)
 	require.NoError(t, err)
-	started, err = dao.StartIdleTurn(ctx, conversation, account, uuid.NewString(), "plan", "remediation", toolcore.NBQueryConfig{}, key)
+	started, err = dao.StartIdleTurn(ctx, conversation, account, uuid.NewString(), "plan", "remediation", toolcore.NBQueryConfig{}, key, nil)
 	require.NoError(t, err)
 	assert.True(t, started)
 }
@@ -160,7 +201,7 @@ func TestCloseWaitingConversation_StampsTheReason(t *testing.T) {
 	assert.Equal(t, [2]string{"TERMINATED", "superseded"}, got[turn])
 	assert.Equal(t, [2]string{"TERMINATED", "superseded"}, got[followup])
 	assert.Equal(t, [2]string{"COMPLETED", ""}, got[done], "a finished message is left alone")
-	idle, err := dao.AutomaticTurnIdle(context.Background(), conversation, account)
+	idle, err := dao.AutomaticTurnIdle(context.Background(), conversation, account, nil)
 	require.NoError(t, err)
 	assert.True(t, idle)
 

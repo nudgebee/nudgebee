@@ -135,6 +135,20 @@ describe('A. Where it stands', () => {
     expect(props.onOpenChat).toHaveBeenCalledWith({ sessionId: 'event-fp1', draft: '', eventId: 'ev-1' });
   });
 
+  it('preparing: a model call waiting on a retry is told on the card, as in the chat', () => {
+    const live = { remediation: { text: "Couldn't reach the platform AI model.", retry_at: '2000-01-01T00:00:00Z', attempt: 2, max_attempts: 5 } };
+    renderPanel({ ...v6, loop: { ...ready, plan_status: 'preparing', live_status: live } });
+    expect(screen.getByTestId('remediation-loop-live-status')).toHaveTextContent(
+      "Couldn't reach the platform AI model. Retrying now (attempt 2 of 5)."
+    );
+  });
+
+  it('a live status is not told once nothing is preparing', () => {
+    const live = { remediation: { text: "Couldn't reach the platform AI model." } };
+    renderPanel({ ...v6, loop: { ...ready, live_status: live } });
+    expect(screen.queryByTestId('remediation-loop-live-status')).not.toBeInTheDocument();
+  });
+
   it('plan ready: "Fix options · from the investigation at HH:MM" · "2 options below", with Still firing when it applies', () => {
     renderPanel({ ...v6, loop: { ...ready, relevance: { ...ready.relevance, firings_since_plan: 3 } } });
     expect(headline()).toHaveTextContent(`Fix options · from the investigation at ${clockOnly(v6.generated_at)}`);

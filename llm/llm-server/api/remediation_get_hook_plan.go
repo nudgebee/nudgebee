@@ -51,6 +51,8 @@ type planFacts struct {
 	FiredAfterClear bool
 	// ConversationBusy: the alert's conversation has a turn in progress or waiting.
 	ConversationBusy bool
+	// LiveStatus is the running planning turn's metadata.live_status, while it runs.
+	LiveStatus json.RawMessage
 	// List is the firings from the plan's event on that the tab shows, oldest first (loop.firings), of ListTotal;
 	// Refire the first firing after the newest run's check ended.
 	List      []loopFiring
@@ -140,6 +142,18 @@ var loadPlanFacts = func(ctx *security.RequestContext, in remediationGetInput) (
 	planEvent := firstNonEmpty(in.PlanEventId, in.EventId)
 	if facts.Planning, err = events.LatestPlanning(readCtx, db, in.AccountId, planEvent); err != nil {
 		return facts, fmt.Errorf("loadPlanFacts: %w", err)
+	}
+	if p := facts.Planning; p != nil && p.State == events.PlanningRunning && p.MessageId != "" {
+		// Best effort: without it the tab shows the turn as preparing, as before.
+		var live []byte
+		err := db.GetContext(readCtx, &live, `SELECT COALESCE(metadata->'live_status', 'null'::jsonb) FROM llm_conversation_messages
+			 WHERE id = $1::uuid AND status = 'IN_PROGRESS'`, p.MessageId)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) && ctx != nil {
+			ctx.GetLogger().Warn("remediation_get: live status not read", "error", err, "message_id", p.MessageId)
+		}
+		if err == nil && len(live) > 0 && string(live) != "null" && string(live) != "{}" {
+			facts.LiveStatus = live
+		}
 	}
 	ev, err := readIncidentFacts(readCtx, db, in.AccountId, planEvent)
 	if err != nil {
@@ -298,6 +312,7 @@ func fillPlanLoop(loop *remediationLoopState, in remediationGetInput, facts plan
 	case facts.Planning != nil && facts.Planning.Open() && facts.Planning.State != events.PlanningParked:
 		since := facts.Planning.RequestedAt
 		loop.PlanStatus, loop.PreparingSince = PlanStatusPreparing, &since
+		loop.LiveStatus = facts.LiveStatus
 	case hasPlan:
 		loop.PlanStatus = PlanStatusReady
 		if facts.Planning != nil && facts.Planning.State == events.PlanningNone {

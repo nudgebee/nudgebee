@@ -247,8 +247,8 @@ type IConversationDao interface {
 	ListAgentReferences(accountId, conversationId string, messageIds []string, agentId string, limit int) ([]ConversationReference, error)
 	SaveConversationContextReference(accountId, conversationId, messageId string, unifiedExtraction *LlmUnifiedExtraction) error
 	ClaimNextQueuedMessage(ctx context.Context, conversationID string) (*ConversationMessage, error)
-	StartIdleTurn(ctx context.Context, conversationID, accountID, id, message, agentName string, messageConfig toolcore.NBQueryConfig, holdKey string) (bool, error)
-	AutomaticTurnIdle(ctx context.Context, conversationID, accountID string) (bool, error)
+	StartIdleTurn(ctx context.Context, conversationID, accountID, id, message, agentName string, messageConfig toolcore.NBQueryConfig, holdKey string, personAskedAt *time.Time) (bool, error)
+	AutomaticTurnIdle(ctx context.Context, conversationID, accountID string, personAskedAt *time.Time) (bool, error)
 	CloseWaitingConversation(ctx *security.RequestContext, accountId, conversationId, note, reason string) (bool, error)
 	ClaimQueuedMessageById(ctx *security.RequestContext, accountID, conversationID, messageID, userID string, isAdmin bool) (*ConversationMessage, error)
 	DeleteQueuedMessage(id string, accountID string, userID string, isAdmin bool) error
@@ -1741,6 +1741,11 @@ func (chat *ConversationDao) UpdateConversationMessage(id, response string, stat
 //
 // An empty or nil metadata is treated as a no-op so callers can call
 // unconditionally without an empty-check at the call site.
+// liveStatusUpdatedAt is the updated_at a live-status write leaves: now() on a running message, else unchanged. A
+// model call still in flight when a person stops the turn clears its entry later, and that must not move the stopped
+// message's updated_at, the stop time automaticTurnIdle compares a person's later request with.
+const liveStatusUpdatedAt = `CASE WHEN status = 'IN_PROGRESS' THEN now() ELSE updated_at END`
+
 // SetMessageLiveStatus sets one entry under metadata.live_status, or removes it
 // when status is nil. Entries are keyed per agent so parallel sub-agents writing
 // to the same message never overwrite each other.
@@ -1750,7 +1755,7 @@ func (chat *ConversationDao) SetMessageLiveStatus(messageId, key string, status 
 	}
 	if status == nil {
 		_, err := chat.dbManager.Db.Exec(`UPDATE llm_conversation_messages
-              SET metadata = metadata #- ARRAY['live_status', $2::text], updated_at = now()
+              SET metadata = metadata #- ARRAY['live_status', $2::text], updated_at = `+liveStatusUpdatedAt+`
               WHERE id = $1 AND jsonb_typeof(metadata) = 'object'
                 AND jsonb_typeof(metadata->'live_status') = 'object' AND metadata->'live_status' ? $2`, messageId, key)
 		if err != nil {
@@ -1768,7 +1773,7 @@ func (chat *ConversationDao) SetMessageLiveStatus(messageId, key string, status 
                            THEN metadata->'live_status'
                            ELSE '{}'::jsonb
                       END || jsonb_build_object($2::text, $3::jsonb)),
-                  updated_at = now()
+                  updated_at = `+liveStatusUpdatedAt+`
               WHERE id = $1`, messageId, key, string(b))
 	if err != nil {
 		return fmt.Errorf("history: failed to set live status: %w", err)
@@ -1833,20 +1838,31 @@ func (chat *ConversationDao) ClaimNextQueuedMessage(ctx context.Context, convers
 // automaticTurnIdle is the SQL condition, over conversation row c, under which NudgeBee may start a turn of its own
 // there: nothing is active or queued, and the conversation is COMPLETED or FAILED, or TERMINATED by NudgeBee closing
 // an unanswered prompt (its newest TERMINATED message carries metadata.closed_reason: lapsed, superseded). A
-// conversation a person stopped (no marker) stays off-limits to automatic turns until someone writes in it.
+// conversation a person stopped (no marker) stays off-limits to automatic turns until someone writes in it, or asks
+// for the turn after the stop: $3, the time a person asked for it (NULL for NudgeBee's own turns), is after the
+// stopped message ended. Without that, a person's Re-check asked right after their Stop waited until it expired.
 // Before #40734's fix a TERMINATED alert conversation was never idle, so once the waiting-expiry job ended an
 // unanswered approval, the alert's planning and follow-up turns never started again.
-const automaticTurnIdle = `(c.status IN ('COMPLETED', 'FAILED') OR (c.status = 'TERMINATED' AND COALESCE((SELECT t.metadata->>'closed_reason'
-		FROM llm_conversation_messages t WHERE t.conversation_id = c.id AND t.status = 'TERMINATED' ORDER BY t.created_at DESC LIMIT 1), '') <> ''))
+const automaticTurnIdle = `(c.status IN ('COMPLETED', 'FAILED') OR (c.status = 'TERMINATED' AND (SELECT COALESCE(t.metadata->>'closed_reason', '') <> '' OR t.updated_at < $3::timestamp
+		FROM llm_conversation_messages t WHERE t.conversation_id = c.id AND t.status = 'TERMINATED' ORDER BY t.created_at DESC LIMIT 1) IS TRUE))
 	AND NOT EXISTS (SELECT 1 FROM llm_conversation_messages m
 		WHERE m.conversation_id = c.id AND m.status IN ('IN_PROGRESS', 'QUEUED', 'WAITING', 'WAITING_FOR_CLIENT_TOOL', 'PENDING'))`
 
+// personAsked is the $3 of automaticTurnIdle: the time in UTC (the columns are naive UTC), or NULL.
+func personAsked(at *time.Time) any {
+	if at == nil || at.IsZero() {
+		return nil
+	}
+	return at.UTC()
+}
+
 // AutomaticTurnIdle reports whether NudgeBee may start a turn of its own in the conversation now
-// (automaticTurnIdle); a read only, StartIdleTurn decides under the row lock.
-func (chat *ConversationDao) AutomaticTurnIdle(ctx context.Context, conversationID, accountID string) (bool, error) {
+// (automaticTurnIdle); a read only, StartIdleTurn decides under the row lock. personAskedAt is when a person asked
+// for the turn, nil for NudgeBee's own.
+func (chat *ConversationDao) AutomaticTurnIdle(ctx context.Context, conversationID, accountID string, personAskedAt *time.Time) (bool, error) {
 	var idle bool
 	if err := chat.dbManager.Db.GetContext(ctx, &idle, `SELECT `+automaticTurnIdle+` FROM llm_conversations c WHERE c.id = $1 AND c.account_id = $2`,
-		conversationID, accountID); err != nil {
+		conversationID, accountID, personAsked(personAskedAt)); err != nil {
 		return false, fmt.Errorf("history: idle read: %w", err)
 	}
 	return idle, nil
@@ -1855,9 +1871,10 @@ func (chat *ConversationDao) AutomaticTurnIdle(ctx context.Context, conversation
 // StartIdleTurn saves message as a user-less turn (one NudgeBee starts) and claims the conversation for it, like
 // ClaimNextQueuedMessage, only while idle (automaticTurnIdle). When holdKey is set, it also needs that advisory
 // lock to be free (an alert investigation holds its conversation with it, #40734); it takes it for the
-// transaction, so the holder cannot start between this check and the claim. Reports whether it started; run the
-// turn with ConversationSessionRequestWithQueuedDispatch.
-func (chat *ConversationDao) StartIdleTurn(ctx context.Context, conversationID, accountID, id, message, agentName string, messageConfig toolcore.NBQueryConfig, holdKey string) (bool, error) {
+// transaction, so the holder cannot start between this check and the claim. personAskedAt is when a person asked
+// for the turn (automaticTurnIdle), nil for NudgeBee's own. Reports whether it started; run the turn with
+// ConversationSessionRequestWithQueuedDispatch.
+func (chat *ConversationDao) StartIdleTurn(ctx context.Context, conversationID, accountID, id, message, agentName string, messageConfig toolcore.NBQueryConfig, holdKey string, personAskedAt *time.Time) (bool, error) {
 	configJson, err := common.MarshalJson(messageConfig)
 	if err != nil {
 		return false, fmt.Errorf("history: idle turn config: %w", err)
@@ -1870,7 +1887,7 @@ func (chat *ConversationDao) StartIdleTurn(ctx context.Context, conversationID, 
 	// Every turn start locks the conversation row, so no other turn starts between this check and the claim.
 	var idle bool
 	if err := tx.GetContext(ctx, &idle, `SELECT `+automaticTurnIdle+`
-		FROM llm_conversations c WHERE c.id = $1 AND c.account_id = $2 FOR UPDATE OF c`, conversationID, accountID); err != nil {
+		FROM llm_conversations c WHERE c.id = $1 AND c.account_id = $2 FOR UPDATE OF c`, conversationID, accountID, personAsked(personAskedAt)); err != nil {
 		return false, fmt.Errorf("history: lock idle turn conversation: %w", err)
 	}
 	if !idle {

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"time"
 
 	"nudgebee/llm/common"
@@ -29,9 +30,12 @@ const (
 
 // remediationLoopState is the "loop" object of the remediation read.
 type remediationLoopState struct {
-	PlanStatus       string            `json:"plan_status"`
-	PlanStatusReason string            `json:"plan_status_reason,omitempty"`
-	PreparingSince   *time.Time        `json:"preparing_since,omitempty"`
+	PlanStatus       string     `json:"plan_status"`
+	PlanStatusReason string     `json:"plan_status_reason,omitempty"`
+	PreparingSince   *time.Time `json:"preparing_since,omitempty"`
+	// LiveStatus is the running planning turn's metadata.live_status (llms/runtime/llm_live_status.go): a model
+	// call waiting on a retry or a fallback, as the chat shows it. Set only while preparing.
+	LiveStatus       json.RawMessage   `json:"live_status,omitempty"`
 	Relevance        *planRelevance    `json:"relevance,omitempty"`
 	PendingApprovals []pendingApproval `json:"pending_approvals,omitempty"`
 	// PendingApprovalsUnread: the waiting approvals could not be read this time, so pending_approvals

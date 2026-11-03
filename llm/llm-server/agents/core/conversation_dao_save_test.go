@@ -100,7 +100,7 @@ func TestStartIdleTurn(t *testing.T) {
 	for _, idle := range []bool{false, true} {
 		dao, mock := setupConversationDAOMock(t)
 		mock.ExpectBegin()
-		mock.ExpectQuery(regexp.QuoteMeta("FOR UPDATE OF c")).WithArgs("c1", "a1").WillReturnRows(sqlmock.NewRows([]string{"idle"}).AddRow(idle))
+		mock.ExpectQuery(regexp.QuoteMeta("FOR UPDATE OF c")).WithArgs("c1", "a1", nil).WillReturnRows(sqlmock.NewRows([]string{"idle"}).AddRow(idle))
 		if idle {
 			mock.ExpectExec(regexp.QuoteMeta("INSERT INTO llm_conversation_messages")).
 				WithArgs("m1", "a1", "c1", MessageRoleHuman, "check", MessageTypeGeneration, sqlmock.AnyArg(), "remediation", uuid.Nil, `{"read_only_run":true,"strict_read_only":true,"capabilities":{}}`).
@@ -110,7 +110,7 @@ func TestStartIdleTurn(t *testing.T) {
 		} else {
 			mock.ExpectRollback()
 		}
-		started, err := dao.StartIdleTurn(context.Background(), "c1", "a1", "m1", "check", "remediation", toolcore.NBQueryConfig{ReadOnlyRun: true, StrictReadOnly: true}, "")
+		started, err := dao.StartIdleTurn(context.Background(), "c1", "a1", "m1", "check", "remediation", toolcore.NBQueryConfig{ReadOnlyRun: true, StrictReadOnly: true}, "", nil)
 		require.NoError(t, err)
 		assert.Equal(t, idle, started)
 		assert.NoError(t, mock.ExpectationsWereMet())

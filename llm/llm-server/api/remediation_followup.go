@@ -256,7 +256,7 @@ var startFollowupMessage = func(run followupRun, messageId uuid.UUID) (string, b
 		return conversation.ID.String(), false, nil
 	}
 	started, err := dao.StartIdleTurn(ctx, conversation.ID.String(), run.AccountId, messageId.String(), followupQuery(run),
-		agents.RemediationAgentName, followupConfig, holdKey)
+		agents.RemediationAgentName, followupConfig, holdKey, nil)
 	return conversation.ID.String(), started, err
 }
 

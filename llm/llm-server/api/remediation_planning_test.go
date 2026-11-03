@@ -40,6 +40,36 @@ func readyPlan() *RemediationPlan {
 	return &RemediationPlan{RootCause: "512Mi limit", Actions: []RemediationAction{{Action: "Raise limit"}}}
 }
 
+// A planning turn whose model call is waiting on a retry: the tab says so, as the chat does (the Re-check looked
+// stuck for minutes while only the chat showed "Couldn't reach the platform AI model"). Only while preparing.
+func TestFillPlanLoop_LiveStatusWhilePreparing(t *testing.T) {
+	in := remediationGetInput{AccountId: "a", EventId: "e1", Plan: readyPlan()}
+	firing := &planEventFacts{Status: "FIRING", NbStatus: "OPEN", PlanAt: at("2026-10-22 10:00"), Now: *at("2026-10-22 11:00")}
+	live := json.RawMessage(`{"remediation":{"text":"Couldn't reach the platform AI model.","attempt":2,"max_attempts":5}}`)
+
+	loop := &remediationLoopState{}
+	fillPlanLoop(loop, in, planFacts{Event: firing, LiveStatus: live,
+		Planning: &events.PlanningRequest{State: events.PlanningRunning, MessageId: "m1", RequestedAt: time.Now()}})
+	assert.Equal(t, PlanStatusPreparing, loop.PlanStatus)
+	assert.JSONEq(t, string(live), string(loop.LiveStatus))
+
+	loop = &remediationLoopState{}
+	fillPlanLoop(loop, in, planFacts{Event: firing, LiveStatus: live})
+	assert.Equal(t, PlanStatusReady, loop.PlanStatus)
+	assert.Nil(t, loop.LiveStatus)
+}
+
+// A person's request may start in a conversation someone stopped before it was asked; NudgeBee's own may not.
+func TestPersonAskedAt(t *testing.T) {
+	asked := time.Date(2026, 11, 3, 10, 17, 51, 0, time.UTC)
+	got := personAskedAt(events.PlanningRequest{RequestedBy: uuid.NewString(), RequestedAt: asked})
+	require.NotNil(t, got)
+	assert.Equal(t, asked, *got)
+	assert.Nil(t, personAskedAt(events.PlanningRequest{RequestedAt: asked}), "an automatic request")
+	assert.Nil(t, personAskedAt(events.PlanningRequest{Kind: planTurnAuto, RequestedBy: uuid.NewString(), RequestedAt: asked}), "an auto request")
+	assert.Nil(t, personAskedAt(events.PlanningRequest{RequestedBy: security.GetSystemUserId(), RequestedAt: asked}), "NudgeBee's own")
+}
+
 func TestFillPlanLoop_Status(t *testing.T) {
 	in := remediationGetInput{AccountId: "a", EventId: "e1", Plan: readyPlan()}
 	firing := &planEventFacts{Status: "FIRING", NbStatus: "OPEN", PlanAt: at("2026-10-22 10:00"), Now: *at("2026-10-22 11:00")}
