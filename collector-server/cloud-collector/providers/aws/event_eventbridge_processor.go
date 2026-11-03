@@ -657,22 +657,7 @@ func (p *TemplatedEventBridgeProcessor) renderTemplateValue(ctx providers.CloudP
 					return map[string]any{}
 				}
 
-				essentialByName := map[string]bool{}
-				if len(taskDefContainerDefsArg) > 0 {
-					if cds, ok := taskDefContainerDefsArg[0].([]any); ok {
-						for _, c := range cds {
-							cm, ok := c.(map[string]any)
-							if !ok {
-								continue
-							}
-							name, _ := cm["Name"].(string)
-							essential, _ := cm["Essential"].(bool)
-							if name != "" {
-								essentialByName[name] = essential
-							}
-						}
-					}
-				}
+				essentialByName := essentialContainers(taskDefContainerDefsArg...)
 
 				var failing []map[string]any
 				var reasonMatch map[string]any
@@ -695,6 +680,15 @@ func (p *TemplatedEventBridgeProcessor) renderTemplateValue(ctx providers.CloudP
 					}
 					if hasFailureSignal {
 						failing = append(failing, cm)
+					}
+				}
+
+				// A container that crashed outranks one that was killed: with several
+				// Essential containers, the sidecar ECS killed afterwards can come
+				// first in the array.
+				for _, cm := range failing {
+					if containerCrashed(cm) && canFailTask(cm, essentialByName) {
+						return cm
 					}
 				}
 
@@ -726,6 +720,9 @@ func (p *TemplatedEventBridgeProcessor) renderTemplateValue(ctx providers.CloudP
 				}
 				return map[string]any{}
 			},
+			// taskFailed reports whether a stopped task failed, for the rule that
+			// raises one. See taskContainersFailed.
+			"taskFailed": taskContainersFailed,
 			// streamPrefixForContainer returns one container's real awslogs-stream-prefix
 			// from the task definition's ContainerDefinitions (TaskDefContainerDefs,
 			// already fetched by prepareTemplateData — no new AWS call here), matched
@@ -849,6 +846,78 @@ func (p *TemplatedEventBridgeProcessor) renderField(ctx providers.CloudProviderC
 		return p.renderTemplateValue(ctx, fieldName, fieldTpl.Template, data)
 	}
 	return fieldTpl.Value, nil // Return static value if no template
+}
+
+// essentialContainers reads each container's Essential flag from the task
+// definition's ContainerDefinitions. Empty when the task definition is not
+// available.
+func essentialContainers(taskDefContainerDefsArg ...any) map[string]bool {
+	essentialByName := map[string]bool{}
+	if len(taskDefContainerDefsArg) == 0 {
+		return essentialByName
+	}
+	cds, ok := taskDefContainerDefsArg[0].([]any)
+	if !ok {
+		return essentialByName
+	}
+	for _, c := range cds {
+		cm, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := cm["Name"].(string)
+		essential, _ := cm["Essential"].(bool)
+		if name != "" {
+			essentialByName[name] = essential
+		}
+	}
+	return essentialByName
+}
+
+// containerCrashed reports a non-zero exit the container chose itself. 137 and
+// 143 are SIGKILL and SIGTERM: what a sidecar shows when ECS tears down a task
+// whose app already finished, so they say nothing about the container.
+func containerCrashed(container map[string]any) bool {
+	code, isNum := anyToFloat64(container["exitCode"])
+	return isNum && code != 0 && code != 137 && code != 143
+}
+
+// canFailTask reports whether this container's exit can fail the task: it is
+// marked Essential, or the task definition is not available to say otherwise.
+// Containers missing from an available task definition were injected by a
+// platform (GuardDuty's agent, for one), and are not the task's own work.
+func canFailTask(container map[string]any, essentialByName map[string]bool) bool {
+	if len(essentialByName) == 0 {
+		return true
+	}
+	name, _ := container["name"].(string)
+	return essentialByName[name]
+}
+
+// taskContainersFailed reports whether a stopped task failed: no container
+// exited 0 (nothing finished), or a container that can fail the task crashed.
+// A clean exit elsewhere does not clear a crash, because sidecars and injected
+// agents exit 0 once the task is torn down.
+func taskContainersFailed(containers any, taskDefContainerDefsArg ...any) bool {
+	list, ok := containers.([]any)
+	if !ok {
+		return true
+	}
+	essentialByName := essentialContainers(taskDefContainerDefsArg...)
+	hasZero := false
+	for _, c := range list {
+		cm, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		if code, isNum := anyToFloat64(cm["exitCode"]); isNum && code == 0 {
+			hasZero = true
+		}
+		if containerCrashed(cm) && canFailTask(cm, essentialByName) {
+			return true
+		}
+	}
+	return !hasZero
 }
 
 // Helper to convert various numeric types to float64 for comparison
