@@ -21,7 +21,7 @@ import { ds } from '@utils/colors';
 import { downloadJsonFile, filenameSlug } from '@utils/fileDownload';
 import CustomTable from '@shared/tables/CustomTable';
 import Datetime from '@shared/format/Datetime';
-import Currency from '@shared/format/Currency';
+import Currency, { getCurrencySymbol } from '@shared/format/Currency';
 import Memory from '@shared/format/Memory';
 import NumberFormat from '@shared/format/Number';
 import { formatDurationInTrace } from '@utils/common';
@@ -236,13 +236,20 @@ function pastBreachSentence(b: PastBreach, unit?: string): string {
 const NUMBER_CELL_SX = { textAlign: 'right', fontSize: ds.text.caption, fontWeight: 'var(--ds-font-weight-regular)', color: 'var(--ds-gray-700)' };
 const NUMBER_CELL_SUFFIX_SX = { color: 'var(--ds-gray-700)', fontSize: ds.text.caption };
 
-function renderTableCell(kind: ColumnKind, value: string): React.ReactNode {
+function renderTableCell(kind: ColumnKind, value: string, currency?: string): React.ReactNode {
   if (!value) return value;
   switch (kind) {
     case 'time':
       return <Datetime value={value} sx={{ fontSize: ds.text.caption }} />;
     case 'currency':
-      return <Currency value={Number(value)} sx={{ fontSize: ds.text.caption }} withTooltip={false} />;
+      return (
+        <Currency
+          value={Number(value)}
+          prefix={currency ? getCurrencySymbol(currency) : undefined}
+          sx={{ fontSize: ds.text.caption }}
+          withTooltip={false}
+        />
+      );
     case 'memory':
       // Stored in MB, shown in GB — the same conversion the Nodes listing does.
       return <Memory value={Number(value)} sourceUnit='mb' targetUnit='gb' sx={{ fontSize: ds.text.caption }} />;
@@ -606,6 +613,8 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
         const shown = columns
           .map((label, index) => ({ label, index, column: settings.get(names[index]) }))
           .filter((c) => c.column?.visibility !== 'hidden');
+        // Spend is billed per account, so its currency is the row's, read even when the column is hidden.
+        const currencyIndex = names.indexOf('currency_type');
         const added = addedColumns(panelColumns);
         const headers = [...shown.map((c) => ({ name: c.column?.title || c.label })), ...added.map((c) => ({ name: c.title || '' }))];
         // Timestamps go through the same Datetime component the traces and events listings use — relative text
@@ -615,7 +624,7 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
             const cell = row[index];
             // The registry decides how a value reads; a column may override it for
             // the cases the registry cannot know, like a Postgres panel's own columns.
-            const content = renderTableCell(column?.format || kinds[index] || 'text', cell);
+            const content = renderTableCell(column?.format || kinds[index] || 'text', cell, row[currencyIndex]);
             const href = column?.link ? renderRowUrl(column.link.url, names, row) : null;
             // Linked or not, `value` stays the raw cell so sort and CSV export read
             // the data rather than the markup.
@@ -816,7 +825,7 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
           // the viewport's. The pie fills its square cell (DoughnutChart size='fill')
           // so it grows with the panel instead of a fixed box in wasted space.
           return (
-            <Box sx={{ height: '100%', containerType: 'inline-size', overflow: 'hidden' }}>
+            <Box sx={{ height: '100%', containerType: 'size', overflow: 'hidden' }}>
               <Box
                 sx={{
                   height: '100%',
@@ -827,7 +836,7 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
                   gap: ds.space[2],
                   p: ds.space[2],
                   overflow: 'hidden',
-                  '@container (min-width: 320px)': { flexDirection: 'row', justifyContent: 'center' },
+                  '@container (min-width: 260px)': { flexDirection: 'row', justifyContent: 'center' },
                 }}
               >
                 <Box
@@ -838,9 +847,10 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
                     // Cap the pie at a fixed square so it never balloons on a wide/tall
                     // panel; it still shrinks on a small one. Stacked: width-bound.
                     width: 'min(100%, 200px)',
-                    // Row: height-bound instead, so the pie stays constant regardless
-                    // of how wide the panel gets and the legend takes the rest.
-                    '@container (min-width: 320px)': { width: 'auto', height: 'min(100%, 200px)' },
+                    // Row: a fixed square bound by the panel's height too, and under half its
+                    // width so a narrow one keeps room for the legend's names. Left as `auto`,
+                    // the width would be the canvas's default 300px and squeeze the legend out.
+                    '@container (min-width: 260px)': { width: `min(45cqw, calc(100cqh - ${ds.space[4]}), 200px)` },
                   }}
                 >
                   <Chart.Doughnut
@@ -863,7 +873,7 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
                     display: 'flex',
                     flexDirection: 'column',
                     gap: ds.space[1],
-                    '@container (min-width: 320px)': { width: 'auto', maxHeight: '100%', pl: ds.space[2] },
+                    '@container (min-width: 260px)': { width: 'auto', maxHeight: '100%', pl: ds.space[2] },
                   }}
                 >
                   {slices.map((sl, i) => (

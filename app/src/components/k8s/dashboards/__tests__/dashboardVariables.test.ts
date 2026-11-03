@@ -87,6 +87,26 @@ describe('variableUses', () => {
     expect(variableUses([panel('a', 'metrics', 'up{ns="$nn"}')], 'n')[0].kind).toBe('unused');
   });
 
+  it('warns about a plain variable a logs query reads as text', () => {
+    const logs = (expr: string) => variableUses([panel('a', 'logs', expr)], 'n')[0];
+    expect(logs('kube_namespace:$n').kind).toBe('partial');
+    expect(logs('kube_namespace:$n').reason).toContain('${n:lucene}');
+    expect(logs('{"query":{"term":{"ns":"$n"}}}').kind).toBe('partial');
+  });
+
+  it('leaves a logs query that reads the variable properly alone', () => {
+    const logs = (expr: string) => variableUses([panel('a', 'logs', expr)], 'n')[0].kind;
+    expect(logs('{namespace=~"$n"}')).toBe('works');
+    expect(logs('{namespace=~"a|${n}"}')).toBe('works');
+    expect(logs("{namespace=~'$n'}")).toBe('works');
+    expect(logs('kube_namespace:${n:lucene}')).toBe('works');
+    expect(logs('{"query":{"terms":{"ns":${n:json}}}}')).toBe('works');
+  });
+
+  it('does not warn about the same plain variable on a metrics panel', () => {
+    expect(variableUses([panel('a', 'metrics', 'rate(up[$n])')], 'n')[0].kind).toBe('works');
+  });
+
   it('finds a variable in a builder query', () => {
     expect(variableUses([panel('a', 'nudgebee', '', { where: { _and: [{ _binary: { s: { _eq: '$n' } } }] } })], 'n')[0].kind).toBe('works');
   });

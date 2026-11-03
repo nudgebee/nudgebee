@@ -432,6 +432,7 @@ export function usePanelData({
         .then((settled) => {
           if (cancelled) return;
           const failures: string[] = [];
+          const reasons: string[] = [];
           const rows: string[][] = [];
 
           settled.forEach((outcome, i) => {
@@ -439,6 +440,7 @@ export function usePanelData({
             const gqlErrors = outcome.status === 'fulfilled' ? (outcome.value as any)?.data?.errors : null;
             if (outcome.status === 'rejected' || gqlErrors?.length) {
               failures.push(account.label);
+              reasons.push(outcome.status === 'rejected' ? String(outcome.reason?.message || '') : gatewayMessage(gqlErrors));
               return;
             }
             for (const line of (outcome.value as any)?.data?.data?.logs_list?.logs || []) {
@@ -448,7 +450,7 @@ export function usePanelData({
           });
 
           if (failures.length === resolved.length) {
-            setError(failure(`Could not load logs for ${failures.join(', ')}.`));
+            setError(failure(`Could not load logs for ${failures.join(', ')}.`, reasons.find(Boolean)));
             setData(null);
             return;
           }
