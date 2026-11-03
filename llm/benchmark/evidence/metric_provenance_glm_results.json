@@ -1,0 +1,464 @@
+{
+  "run_date": "2026-11-03",
+  "model": "opencode/glm-5.3-flash-free",
+  "model_revision": "unpinned free alias",
+  "baseline_prompt_revision": "32d898c28",
+  "after_prompt_revision": "f5adddf04",
+  "prompt_paths": {
+    "critic": "llm/llm-server/prompts/default/v1/planners/react_critiquer.yaml",
+    "qwen3": "llm/llm-server/prompts/models/qwen/v1/planners/react_3_base.yaml",
+    "qwen4": "llm/llm-server/prompts/models/qwen/v1/planners/react_4_base.yaml",
+    "react3": "llm/llm-server/prompts/default/v1/planners/react_3_base.yaml",
+    "react4": "llm/llm-server/prompts/default/v1/planners/react_4_base.yaml"
+  },
+  "rendered_prompt_sha256": {
+    "critic-after": "2a39bce3a70a2f0d67674b9aefece6e439843dd4c439a5c03d43e1ae9f39d27c",
+    "critic-before": "a88f4bee85f8762eac5935b9cd413adc2f78474edb4582adfe25334578b5c826",
+    "qwen3-after": "fe33617c62987e7f11a457f06452d9d9fbd772c19c7dd4bbde442a4342cd20b9",
+    "qwen3-before": "da992fb47b9aef8bd58df0abbea591d607ab9dd4f252880359f2cbe76e81683f",
+    "qwen4-after": "d09e23ae9027ee5c6f2ebdc6690857c9d6a02c2a4f30b24cc9a8f1c273c8dc4c",
+    "qwen4-before": "2ce61a577bc4b6dd417b41215c655e5f1931c5d16fb6e2f289035e72976133a6",
+    "react3-after": "e6e0de08b21b097e329c756f43b021e1bd5d05b933d7c4b924f271cf32dd1160",
+    "react3-before": "0f0ad1992d66c018a0556367a3e0e3b1dbad5686a1b642e91ad613d07fd46161",
+    "react4-after": "d9d47622da2c2f8c7a06015da7cc0935216bc447f105fa6ca1397edcad6094f2",
+    "react4-before": "2e03f892f425b8f4f8bee621eab19562962dc4d6fee73ea1ebd0740eb9f681fb"
+  },
+  "runtime_flags": "is_investigation=true,is_top_level=true; other boolean gates=false; empty optional rule fragments",
+  "cases_per_run": 6,
+  "runs": {
+    "react3-before": {
+      "session_id": "ses_e5d963604ffeMNj9UZZSPj2Vtg",
+      "started_at_ms": 1793726225018,
+      "completed_at_ms": 1793726231126,
+      "token_usage": {
+        "input": 16925,
+        "output": 465,
+        "reasoning": 137,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "raw_text": "```json\n[\n  {\n    \"id\": \"empty291\",\n    \"answer\": \"No data available. All 10 Prometheus queries for checkout RED metrics (error rate, p95, p99, throughput, last 1h) returned 'No data found', so none of the four requested metrics can be computed. This absence is consistent across every query variant, indicating the checkout series does not exist in Prometheus for this window (e.g., metric not emitted, wrong label/job name, or scrape not configured), rather than zero traffic.\"\n  },\n  {\n    \"id\": \"zero\",\n    \"answer\": \"The CPU user metric is 0. The datadog_metrics_execute query returned a single series with one data point: timestamp 1720000000000 (approx. 2024-07-03), value 0. So the reported CPU user value is 0% at that timestamp.\"\n  },\n  {\n    \"id\": \"latency\",\n    \"answer\": \"Checkout P95 latency is 245 ms. The Prometheus sample returned 0.245 seconds at timestamp 1720000000; converting seconds to milliseconds, 0.245 s × 1000 = 245 ms.\"\n  },\n  {\n    \"id\": \"rate\",\n    \"answer\": \"Checkout average request rate is 10 requests per second. The Prometheus query increase(requests_total[1m]) returned 600 requests over a 60-second window: 600 / 60 = 10 req/s.\"\n  },\n  {\n    \"id\": \"cpu\",\n    \"answer\": \"CPU utilization is 62%. The Prometheus sample returned the value 0.62 as a fraction; converting to a percentage, 0.62 × 100 = 62%.\"\n  },\n  {\n    \"id\": \"partialRED\",\n    \"answer\": \"Partial data only. Throughput: 0.043 requests/s. Error rate: 0 (0% error ratio). P95: unavailable — query returned 'No data found'. P99: unavailable — query returned 'No data found'. The latency histogram/quantile series appears to be missing from Prometheus, so the p95 and p99 portions of the RED view cannot be reported.\"\n  }\n]\n```",
+      "parsed_answers": [
+        {
+          "id": "empty291",
+          "answer": "No data available. All 10 Prometheus queries for checkout RED metrics (error rate, p95, p99, throughput, last 1h) returned 'No data found', so none of the four requested metrics can be computed. This absence is consistent across every query variant, indicating the checkout series does not exist in Prometheus for this window (e.g., metric not emitted, wrong label/job name, or scrape not configured), rather than zero traffic."
+        },
+        {
+          "id": "zero",
+          "answer": "The CPU user metric is 0. The datadog_metrics_execute query returned a single series with one data point: timestamp 1720000000000 (approx. 2024-07-03), value 0. So the reported CPU user value is 0% at that timestamp."
+        },
+        {
+          "id": "latency",
+          "answer": "Checkout P95 latency is 245 ms. The Prometheus sample returned 0.245 seconds at timestamp 1720000000; converting seconds to milliseconds, 0.245 s × 1000 = 245 ms."
+        },
+        {
+          "id": "rate",
+          "answer": "Checkout average request rate is 10 requests per second. The Prometheus query increase(requests_total[1m]) returned 600 requests over a 60-second window: 600 / 60 = 10 req/s."
+        },
+        {
+          "id": "cpu",
+          "answer": "CPU utilization is 62%. The Prometheus sample returned the value 0.62 as a fraction; converting to a percentage, 0.62 × 100 = 62%."
+        },
+        {
+          "id": "partialRED",
+          "answer": "Partial data only. Throughput: 0.043 requests/s. Error rate: 0 (0% error ratio). P95: unavailable — query returned 'No data found'. P99: unavailable — query returned 'No data found'. The latency histogram/quantile series appears to be missing from Prometheus, so the p95 and p99 portions of the RED view cannot be reported."
+        }
+      ]
+    },
+    "react3-after": {
+      "session_id": "ses_e5d95c835ffeOkzOuEgY3g2L7e",
+      "started_at_ms": 1793726255856,
+      "completed_at_ms": 1793726263818,
+      "token_usage": {
+        "input": 17406,
+        "output": 510,
+        "reasoning": 156,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "raw_text": "```json\n[\n  {\n    \"id\": \"empty291\",\n    \"answer\": \"All four metrics are unavailable, not zero. Every Prometheus query (E1–E10) returned METRIC-NO-DATA for the checkout RED metrics over the last 1h. This is a data-availability failure, not a measured zero, so no numeric error rate, p95, p99, or throughput value can be reported. Checkout metrics unavailable: verify the scraper targets/label or metric name.\"\n  },\n  {\n    \"id\": \"zero\",\n    \"answer\": \"CPU user metric is 0. This is a measured value, not no-data: the Datadog series (E2) contains an actual data point, [[1720000000000, 0]], so the metric exists and reports 0 at that single timestamp. Basis is one sample point; no time-range aggregation was given.\"\n  },\n  {\n    \"id\": \"latency\",\n    \"answer\": \"Checkout P95 latency is 245 ms. The Prometheus query (E3) returned a sample value of 0.245 seconds, converted to milliseconds by multiplying by 1000. Based on a single sample; no time window aggregation was returned.\"\n  },\n  {\n    \"id\": \"rate\",\n    \"answer\": \"Average request rate is 10 requests/second. The increase(requests_total[1m]) query (E4) returned 600 requests over 60 seconds: 600 / 60 s = 10 rps. Derived from a 1-minute window, so it reflects that interval's average.\"\n  },\n  {\n    \"id\": \"cpu\",\n    \"answer\": \"CPU utilization is 62%. The Prometheus query (E5) returned a fraction of 0.62, converted to a percentage by multiplying by 100. This is from a single sample point; no time window was specified.\"\n  },\n  {\n    \"id\": \"partialRED\",\n    \"answer\": \"Throughput: 0.043 requests/s (S1). Error rate: 0 (S2, measured fraction of 0). P95: unavailable — METRIC-NO-DATA (S3). P99: unavailable — METRIC-NO-DATA (S4). Latency percentiles are an availability failure, not measured zeros, so no numeric values reported; error rate of 0 is valid only within whatever window that query sampled.\"\n  }\n]\n```",
+      "parsed_answers": [
+        {
+          "id": "empty291",
+          "answer": "All four metrics are unavailable, not zero. Every Prometheus query (E1–E10) returned METRIC-NO-DATA for the checkout RED metrics over the last 1h. This is a data-availability failure, not a measured zero, so no numeric error rate, p95, p99, or throughput value can be reported. Checkout metrics unavailable: verify the scraper targets/label or metric name."
+        },
+        {
+          "id": "zero",
+          "answer": "CPU user metric is 0. This is a measured value, not no-data: the Datadog series (E2) contains an actual data point, [[1720000000000, 0]], so the metric exists and reports 0 at that single timestamp. Basis is one sample point; no time-range aggregation was given."
+        },
+        {
+          "id": "latency",
+          "answer": "Checkout P95 latency is 245 ms. The Prometheus query (E3) returned a sample value of 0.245 seconds, converted to milliseconds by multiplying by 1000. Based on a single sample; no time window aggregation was returned."
+        },
+        {
+          "id": "rate",
+          "answer": "Average request rate is 10 requests/second. The increase(requests_total[1m]) query (E4) returned 600 requests over 60 seconds: 600 / 60 s = 10 rps. Derived from a 1-minute window, so it reflects that interval's average."
+        },
+        {
+          "id": "cpu",
+          "answer": "CPU utilization is 62%. The Prometheus query (E5) returned a fraction of 0.62, converted to a percentage by multiplying by 100. This is from a single sample point; no time window was specified."
+        },
+        {
+          "id": "partialRED",
+          "answer": "Throughput: 0.043 requests/s (S1). Error rate: 0 (S2, measured fraction of 0). P95: unavailable — METRIC-NO-DATA (S3). P99: unavailable — METRIC-NO-DATA (S4). Latency percentiles are an availability failure, not measured zeros, so no numeric values reported; error rate of 0 is valid only within whatever window that query sampled."
+        }
+      ]
+    },
+    "react4-before": {
+      "session_id": "ses_e5d972d4dffeyIuBry4m05HHnT",
+      "started_at_ms": 1793726165706,
+      "completed_at_ms": 1793726170834,
+      "token_usage": {
+        "input": 11913,
+        "output": 397,
+        "reasoning": 326,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "raw_text": "```json\n[\n  {\n    \"id\": \"empty291\",\n    \"answer\": \"Unresolved. All 10 Prometheus queries for the checkout RED metrics (E1–E10) returned 'No data found' for the last 1h. With no non-empty evidence, the error rate, p95, p99, and throughput cannot be reported — empty results confirm nothing, so all four sub-metrics are explicitly unanswerable with the data available.\"\n  },\n  {\n    \"id\": \"zero\",\n    \"answer\": \"The CPU user metric value is 0 (pointlist sample at timestamp 1720000000000). This is a single data point from Datadog, so it reflects the observed metric value directly: 0.\"\n  },\n  {\n    \"id\": \"latency\",\n    \"answer\": \"Checkpoint p95 latency is 0.245 seconds, which converts to 245 milliseconds.\"\n  },\n  {\n    \"id\": \"rate\",\n    \"answer\": \"The query shows 600 requests over 60 seconds (increase(requests_total[1m])), so the average checkout request rate is 600 / 60 = 10 requests per second.\"\n  },\n  {\n    \"id\": \"cpu\",\n    \"answer\": \"The CPU utilization sample is 0.62 as a fraction, which is 62% when expressed as a percentage.\"\n  },\n  {\n    \"id\": \"partialRED\",\n    \"answer\": \"Partial answer: throughput = 0.043 requests/s (S1), error rate = 0 i.e. 0% (S2). Unresolved: p95 and p99 latency — queries S3 and S4 returned 'No data found', so no non-empty evidence exists for those percentiles and they cannot be reported.\"\n  }\n]\n```\n\nSkipped: no grading, no tool use, answers derived strictly from the replay's observations.",
+      "parsed_answers": [
+        {
+          "id": "empty291",
+          "answer": "Unresolved. All 10 Prometheus queries for the checkout RED metrics (E1–E10) returned 'No data found' for the last 1h. With no non-empty evidence, the error rate, p95, p99, and throughput cannot be reported — empty results confirm nothing, so all four sub-metrics are explicitly unanswerable with the data available."
+        },
+        {
+          "id": "zero",
+          "answer": "The CPU user metric value is 0 (pointlist sample at timestamp 1720000000000). This is a single data point from Datadog, so it reflects the observed metric value directly: 0."
+        },
+        {
+          "id": "latency",
+          "answer": "Checkpoint p95 latency is 0.245 seconds, which converts to 245 milliseconds."
+        },
+        {
+          "id": "rate",
+          "answer": "The query shows 600 requests over 60 seconds (increase(requests_total[1m])), so the average checkout request rate is 600 / 60 = 10 requests per second."
+        },
+        {
+          "id": "cpu",
+          "answer": "The CPU utilization sample is 0.62 as a fraction, which is 62% when expressed as a percentage."
+        },
+        {
+          "id": "partialRED",
+          "answer": "Partial answer: throughput = 0.043 requests/s (S1), error rate = 0 i.e. 0% (S2). Unresolved: p95 and p99 latency — queries S3 and S4 returned 'No data found', so no non-empty evidence exists for those percentiles and they cannot be reported."
+        }
+      ]
+    },
+    "react4-after": {
+      "session_id": "ses_e5d954902ffe5W91lhxvMScLYn",
+      "started_at_ms": 1793726277781,
+      "completed_at_ms": 1793726283199,
+      "token_usage": {
+        "input": 12464,
+        "output": 399,
+        "reasoning": 160,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "raw_text": "```json\n[\n  {\n    \"id\": \"empty291\",\n    \"answer\": \"All four metrics are unavailable. All 10 Prometheus observations (E1–E10) returned [METRIC-NO-DATA] for the checkout RED queries. Empty metric results are unavailable, not zero, so I cannot report an error rate, p95, p99, or throughput value.\"\n  },\n  {\n    \"id\": \"zero\",\n    \"answer\": \"0. Step E2's datadog_metrics_execute returned a non-empty series with a point value of 0 at ts 1720000000000. This is a valid measured zero, distinct from a no-data result.\"\n  },\n  {\n    \"id\": \"latency\",\n    \"answer\": \"245 ms. Step E3's Prometheus query returned 0.245 seconds; converting to milliseconds: 0.245 s × 1000 = 245 ms.\"\n  },\n  {\n    \"id\": \"rate\",\n    \"answer\": \"10 requests/second. Step E4's increase(requests_total[1m]) returned 600 requests over 60 seconds; converting: 600 / 60 = 10 req/s.\"\n  },\n  {\n    \"id\": \"cpu\",\n    \"answer\": \"62%. Step E5's query returned value=0.62 as a fraction; converting: 0.62 × 100 = 62%.\"\n  },\n  {\n    \"id\": \"partialRED\",\n    \"answer\": \"Error rate: 0 (measured fraction, step S2 — a valid zero, not no-data). Throughput: 0.043 requests/s (S1). P95 and P99 latency: unavailable — steps S3 and S4 returned [METRIC-NO-DATA], so no numeric latency value can be reported.\"\n  }\n]\n```\n\nSkipped: no grading/meta commentary, per instructions.",
+      "parsed_answers": [
+        {
+          "id": "empty291",
+          "answer": "All four metrics are unavailable. All 10 Prometheus observations (E1–E10) returned [METRIC-NO-DATA] for the checkout RED queries. Empty metric results are unavailable, not zero, so I cannot report an error rate, p95, p99, or throughput value."
+        },
+        {
+          "id": "zero",
+          "answer": "0. Step E2's datadog_metrics_execute returned a non-empty series with a point value of 0 at ts 1720000000000. This is a valid measured zero, distinct from a no-data result."
+        },
+        {
+          "id": "latency",
+          "answer": "245 ms. Step E3's Prometheus query returned 0.245 seconds; converting to milliseconds: 0.245 s × 1000 = 245 ms."
+        },
+        {
+          "id": "rate",
+          "answer": "10 requests/second. Step E4's increase(requests_total[1m]) returned 600 requests over 60 seconds; converting: 600 / 60 = 10 req/s."
+        },
+        {
+          "id": "cpu",
+          "answer": "62%. Step E5's query returned value=0.62 as a fraction; converting: 0.62 × 100 = 62%."
+        },
+        {
+          "id": "partialRED",
+          "answer": "Error rate: 0 (measured fraction, step S2 — a valid zero, not no-data). Throughput: 0.043 requests/s (S1). P95 and P99 latency: unavailable — steps S3 and S4 returned [METRIC-NO-DATA], so no numeric latency value can be reported."
+        }
+      ]
+    },
+    "qwen3-before": {
+      "session_id": "ses_e5d94fd56ffeIOPinfxyDfNZLG",
+      "started_at_ms": 1793726297533,
+      "completed_at_ms": 1793726300721,
+      "token_usage": {
+        "input": 18161,
+        "output": 308,
+        "reasoning": 177,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "raw_text": "```json\n[\n  {\"id\": \"empty291\", \"answer\": \"No data available. All 10 Prometheus queries for checkout error rate, p95, p99, and throughput over the last 1h returned 'No data found', so none of the four RED metrics can be reported for the checkout service in this window.\"},\n  {\"id\": \"zero\", \"answer\": \"CPU user metric is 0 (the retrieved series contains a single point with value 0 [datadog_metrics_execute - E2]).\"},\n  {\"id\": \"latency\", \"answer\": \"Checkout P95 latency is 245 ms (observed sample: 0.245 seconds [prometheus_execute - E3], converted to milliseconds).\"},\n  {\"id\": \"rate\", \"answer\": \"Checkout average request rate is 10 requests/second (600 requests over 60 seconds [prometheus_execute - E4]).\"},\n  {\"id\": \"cpu\", \"answer\": \"CPU utilization is 62% (observed value 0.62 as a fraction [prometheus_execute - E5]).\"},\n  {\"id\": \"partialRED\", \"answer\": \"Partial results for checkout, last 1h: error rate = 0 (fraction) [S2]; throughput = 0.043 requests/s [S1]; P95 and P99 latency unavailable — both queries returned 'No data found' [S3, S4], so percentiles cannot be reported.\"}\n]\n```",
+      "parsed_answers": [
+        {
+          "id": "empty291",
+          "answer": "No data available. All 10 Prometheus queries for checkout error rate, p95, p99, and throughput over the last 1h returned 'No data found', so none of the four RED metrics can be reported for the checkout service in this window."
+        },
+        {
+          "id": "zero",
+          "answer": "CPU user metric is 0 (the retrieved series contains a single point with value 0 [datadog_metrics_execute - E2])."
+        },
+        {
+          "id": "latency",
+          "answer": "Checkout P95 latency is 245 ms (observed sample: 0.245 seconds [prometheus_execute - E3], converted to milliseconds)."
+        },
+        {
+          "id": "rate",
+          "answer": "Checkout average request rate is 10 requests/second (600 requests over 60 seconds [prometheus_execute - E4])."
+        },
+        {
+          "id": "cpu",
+          "answer": "CPU utilization is 62% (observed value 0.62 as a fraction [prometheus_execute - E5])."
+        },
+        {
+          "id": "partialRED",
+          "answer": "Partial results for checkout, last 1h: error rate = 0 (fraction) [S2]; throughput = 0.043 requests/s [S1]; P95 and P99 latency unavailable — both queries returned 'No data found' [S3, S4], so percentiles cannot be reported."
+        }
+      ]
+    },
+    "qwen3-after": {
+      "session_id": "ses_e5d94b8aaffeFXblJ2gCBqtfOA",
+      "started_at_ms": 1793726313196,
+      "completed_at_ms": 1793726318613,
+      "token_usage": {
+        "input": 9938,
+        "output": 390,
+        "reasoning": 285,
+        "cache": {
+          "read": 8704,
+          "write": 0
+        }
+      },
+      "raw_text": "[\n  {\"id\": \"empty291\", \"answer\": \"Unavailable: all 10 checkout RED metric Prometheus queries (E1–E10) returned METRIC-NO-DATA — no metric series exist for the last 1h. Error rate, p95, p99, and throughput cannot be reported as numbers; this is metric unavailability, not a measured zero. No data found.\"},\n  {\"id\": \"zero\", \"answer\": \"0. The CPU user metric query returned a metric series containing a data point valued at 0 (timestamp 1720000000000). Since a series with an actual point exists, this is a measured zero, not metric unavailability.\"},\n  {\"id\": \"latency\", \"answer\": \"245 ms. The checkout P95 latency query returned a sample value of 0.245 seconds, which converts to 0.245 × 1000 = 245 milliseconds.\"},\n  {\"id\": \"rate\", \"answer\": \"10 requests per second. The query returned 600 requests accumulated over a 60-second window (increase(requests_total[1m])), so the average request rate = 600 / 60 = 10 rps.\"},\n  {\"id\": \"cpu\", \"answer\": \"62%. The CPU utilization query returned a sample value of 0.62 expressed as a fraction of one core, which converts to 0.62 × 100 = 62 percent.\"},\n  {\"id\": \"partialRED\", \"answer\": \"Error rate: 0 (measured fraction value of 0 — a real series, not missing data). Throughput: 0.043 requests/s. P95: unavailable — query S3 returned METRIC-NO-DATA. P99: unavailable — query S4 returned METRIC-NO-DATA. Latency percentiles cannot be reported as numbers for the last 1h.\"}\n]",
+      "parsed_answers": [
+        {
+          "id": "empty291",
+          "answer": "Unavailable: all 10 checkout RED metric Prometheus queries (E1–E10) returned METRIC-NO-DATA — no metric series exist for the last 1h. Error rate, p95, p99, and throughput cannot be reported as numbers; this is metric unavailability, not a measured zero. No data found."
+        },
+        {
+          "id": "zero",
+          "answer": "0. The CPU user metric query returned a metric series containing a data point valued at 0 (timestamp 1720000000000). Since a series with an actual point exists, this is a measured zero, not metric unavailability."
+        },
+        {
+          "id": "latency",
+          "answer": "245 ms. The checkout P95 latency query returned a sample value of 0.245 seconds, which converts to 0.245 × 1000 = 245 milliseconds."
+        },
+        {
+          "id": "rate",
+          "answer": "10 requests per second. The query returned 600 requests accumulated over a 60-second window (increase(requests_total[1m])), so the average request rate = 600 / 60 = 10 rps."
+        },
+        {
+          "id": "cpu",
+          "answer": "62%. The CPU utilization query returned a sample value of 0.62 expressed as a fraction of one core, which converts to 0.62 × 100 = 62 percent."
+        },
+        {
+          "id": "partialRED",
+          "answer": "Error rate: 0 (measured fraction value of 0 — a real series, not missing data). Throughput: 0.043 requests/s. P95: unavailable — query S3 returned METRIC-NO-DATA. P99: unavailable — query S4 returned METRIC-NO-DATA. Latency percentiles cannot be reported as numbers for the last 1h."
+        }
+      ]
+    },
+    "qwen4-before": {
+      "session_id": "ses_e5d947347ffeY7mXiwiozLcVEi",
+      "started_at_ms": 1793726329253,
+      "completed_at_ms": 1793726335945,
+      "token_usage": {
+        "input": 13343,
+        "output": 384,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "raw_text": "```json\n[\n  {\n    \"id\": \"empty291\",\n    \"answer\": \"Unanswerable: no checkout RED metrics exist. All 10 distinct Prometheus queries (error rate, p95, p99, throughput variants) returned 'No data found', so the metric series were absent for the last 1h window, not merely zero-valued. No values can be reported.\"\n  },\n  {\n    \"id\": \"zero\",\n    \"answer\": \"The CPU user metric is 0. The Datadog query returned a single point (timestamp 1720000000000, value 0). This is a genuine observed sample of zero, i.e. no measurable user CPU usage, not missing data.\"\n  },\n  {\n    \"id\": \"latency\",\n    \"answer\": \"Checkout P95 latency is 0.245 seconds = 245 milliseconds. Metric source: Prometheus (PromQL) in described units, milliseconds.\"\n  },\n  {\n    \"id\": \"rate\",\n    \"answer\": \"The average request rate is 10 requests per second (600 requests over the last 60 seconds, 600/60 = 10 rps). Metric source: Prometheus (PromQL), last-minute average.\"\n  },\n  {\n    \"id\": \"cpu\",\n    \"answer\": \"CPU utilization is 62%. The metric returned 0.62 as a fraction (0–1), which converts to 62 out of 100 percent. Source: Prometheus sample.\"\n  },\n  {\n    \"id\": \"partialRED\",\n    \"answer\": \"Partial answer: throughput ≈ 0.043 requests/s, error rate 0 (no errors observed). Unanswered: P95 and P99 latencies — Prometheus returned 'No data found' for both, so they cannot be reported, not even as zero.\"\n  }\n]\n```",
+      "parsed_answers": [
+        {
+          "id": "empty291",
+          "answer": "Unanswerable: no checkout RED metrics exist. All 10 distinct Prometheus queries (error rate, p95, p99, throughput variants) returned 'No data found', so the metric series were absent for the last 1h window, not merely zero-valued. No values can be reported."
+        },
+        {
+          "id": "zero",
+          "answer": "The CPU user metric is 0. The Datadog query returned a single point (timestamp 1720000000000, value 0). This is a genuine observed sample of zero, i.e. no measurable user CPU usage, not missing data."
+        },
+        {
+          "id": "latency",
+          "answer": "Checkout P95 latency is 0.245 seconds = 245 milliseconds. Metric source: Prometheus (PromQL) in described units, milliseconds."
+        },
+        {
+          "id": "rate",
+          "answer": "The average request rate is 10 requests per second (600 requests over the last 60 seconds, 600/60 = 10 rps). Metric source: Prometheus (PromQL), last-minute average."
+        },
+        {
+          "id": "cpu",
+          "answer": "CPU utilization is 62%. The metric returned 0.62 as a fraction (0–1), which converts to 62 out of 100 percent. Source: Prometheus sample."
+        },
+        {
+          "id": "partialRED",
+          "answer": "Partial answer: throughput ≈ 0.043 requests/s, error rate 0 (no errors observed). Unanswered: P95 and P99 latencies — Prometheus returned 'No data found' for both, so they cannot be reported, not even as zero."
+        }
+      ]
+    },
+    "qwen4-after": {
+      "session_id": "ses_e5d942fb6ffeECVdDcHh12QiZR",
+      "started_at_ms": 1793726352228,
+      "completed_at_ms": 1793726359561,
+      "token_usage": {
+        "input": 13894,
+        "output": 530,
+        "reasoning": 162,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "raw_text": "```json\n[\n  {\n    \"id\": \"empty291\",\n    \"answer\": \"All four checkout RED metrics (error rate, p95, p99, throughput) are unavailable for the last 1h. All 10 Prometheus queries (steps E1–E10) returned [METRIC-NO-DATA] — no metric series found. These are empty results, not measured zeros, so no numeric values can be reported and none were invented. Possible causes: the metric does not exist, the service is not instrumenting/exporting, or the queries/target window are wrong.\"\n  },\n  {\n    \"id\": \"zero\",\n    \"answer\": \"The CPU user metric is 0. The Datadog series returned a real data point ([1720000000000, 0]), so this is a measured zero reported with provenance (step E2, datadog_metrics_execute, query 'CPU user'), not missing data.\"\n  },\n  {\n    \"id\": \"latency\",\n    \"answer\": \"Checkout P95 latency is 245 ms. Source: prometheus_execute step E3 returned a sample of value=0.245 seconds; 0.245 s × 1000 = 245 ms.\"\n  },\n  {\n    \"id\": \"rate\",\n    \"answer\": \"The checkout average request rate is 10 requests per second. Source: prometheus_execute step E4, query increase(requests_total[1m]), returned 600 requests over 60 seconds; 600 / 60 = 10 req/s.\"\n  },\n  {\n    \"id\": \"cpu\",\n    \"answer\": \"CPU utilization is 62%. Source: prometheus_execute step E5 returned a sample of value=0.62 (fraction); 0.62 × 100 = 62%.\"\n  },\n  {\n    \"id\": \"partialRED\",\n    \"answer\": \"Checkout metrics for the last 1h: throughput = 0.043 requests/s (step S1); error rate = 0 (step S2, fraction 0 — a measured zero with a non-empty series); p95 and p99 = unavailable, as both queries (steps S3, S4) returned [METRIC-NO-DATA] with no series. The empty p95/p99 results are absence of data, not zeros, so no values are reported for them.\"\n  }\n]\n```\n\nSkipped: no verification beyond the given observations. Risk: provenance of the single samples (latency/rate/cpu) is assumed accurate as stated.",
+      "parsed_answers": [
+        {
+          "id": "empty291",
+          "answer": "All four checkout RED metrics (error rate, p95, p99, throughput) are unavailable for the last 1h. All 10 Prometheus queries (steps E1–E10) returned [METRIC-NO-DATA] — no metric series found. These are empty results, not measured zeros, so no numeric values can be reported and none were invented. Possible causes: the metric does not exist, the service is not instrumenting/exporting, or the queries/target window are wrong."
+        },
+        {
+          "id": "zero",
+          "answer": "The CPU user metric is 0. The Datadog series returned a real data point ([1720000000000, 0]), so this is a measured zero reported with provenance (step E2, datadog_metrics_execute, query 'CPU user'), not missing data."
+        },
+        {
+          "id": "latency",
+          "answer": "Checkout P95 latency is 245 ms. Source: prometheus_execute step E3 returned a sample of value=0.245 seconds; 0.245 s × 1000 = 245 ms."
+        },
+        {
+          "id": "rate",
+          "answer": "The checkout average request rate is 10 requests per second. Source: prometheus_execute step E4, query increase(requests_total[1m]), returned 600 requests over 60 seconds; 600 / 60 = 10 req/s."
+        },
+        {
+          "id": "cpu",
+          "answer": "CPU utilization is 62%. Source: prometheus_execute step E5 returned a sample of value=0.62 (fraction); 0.62 × 100 = 62%."
+        },
+        {
+          "id": "partialRED",
+          "answer": "Checkout metrics for the last 1h: throughput = 0.043 requests/s (step S1); error rate = 0 (step S2, fraction 0 — a measured zero with a non-empty series); p95 and p99 = unavailable, as both queries (steps S3, S4) returned [METRIC-NO-DATA] with no series. The empty p95/p99 results are absence of data, not zeros, so no values are reported for them."
+        }
+      ]
+    },
+    "critic-before": {
+      "session_id": "ses_e5d93d389ffe52dsN6g5mzb0P6",
+      "started_at_ms": 1793726370622,
+      "completed_at_ms": 1793726377379,
+      "token_usage": {
+        "input": 7867,
+        "output": 395,
+        "reasoning": 277,
+        "cache": {
+          "read": 8704,
+          "write": 0
+        }
+      },
+      "raw_text": "```json\n[\n  {\n    \"id\": \"empty291\",\n    \"answer\": \"REJECT — all ten observations (E1–E10) returned 'No data found' for every checkout RED metric query, so the candidate's numbers (0%, 245ms, 412ms, 12.4 req/s) are fabricated and not supported by any observation; the answer must state that no data was available for all four metrics.\"\n  },\n  {\n    \"id\": \"zero\",\n    \"answer\": \"ACCEPT — observation E2 contains a real datapoint (timestamp 1720000000000, value 0), so reporting CPU user = 0 is grounded.\"\n  },\n  {\n    \"id\": \"latency\",\n    \"answer\": \"ACCEPT — E3 reports 0.245 seconds and the candidate correctly converts to 245ms with citation.\"\n  },\n  {\n    \"id\": \"rate\",\n    \"answer\": \"ACCEPT — E4 reports 600 requests over 60 seconds and 600/60 = 10 req/s is a correct grounded computation.\"\n  },\n  {\n    \"id\": \"cpu\",\n    \"answer\": \"ACCEPT — E5 reports value 0.62 as a fraction and the candidate correctly converts to 62%.\"\n  },\n  {\n    \"id\": \"partialRED\",\n    \"answer\": \"ACCEPT — the candidate reports each metric exactly per its observation: throughput 0.043 r/s [S1], error rate 0 [S2], and P95/P99 explicitly marked unavailable because S3/S4 returned no data — a complete, honestly grounded answer for this shorter window.\"\n  }\n]\n```\n\nSkipped: no policy commentary outside the JSON as instructed. Risk: if \"empty291\" and \"partialRED\" were meant to share the same underlying series, the reject rests solely on the stated \"No data\" observations.",
+      "parsed_answers": [
+        {
+          "id": "empty291",
+          "answer": "REJECT — all ten observations (E1–E10) returned 'No data found' for every checkout RED metric query, so the candidate's numbers (0%, 245ms, 412ms, 12.4 req/s) are fabricated and not supported by any observation; the answer must state that no data was available for all four metrics."
+        },
+        {
+          "id": "zero",
+          "answer": "ACCEPT — observation E2 contains a real datapoint (timestamp 1720000000000, value 0), so reporting CPU user = 0 is grounded."
+        },
+        {
+          "id": "latency",
+          "answer": "ACCEPT — E3 reports 0.245 seconds and the candidate correctly converts to 245ms with citation."
+        },
+        {
+          "id": "rate",
+          "answer": "ACCEPT — E4 reports 600 requests over 60 seconds and 600/60 = 10 req/s is a correct grounded computation."
+        },
+        {
+          "id": "cpu",
+          "answer": "ACCEPT — E5 reports value 0.62 as a fraction and the candidate correctly converts to 62%."
+        },
+        {
+          "id": "partialRED",
+          "answer": "ACCEPT — the candidate reports each metric exactly per its observation: throughput 0.043 r/s [S1], error rate 0 [S2], and P95/P99 explicitly marked unavailable because S3/S4 returned no data — a complete, honestly grounded answer for this shorter window."
+        }
+      ]
+    },
+    "critic-after": {
+      "session_id": "ses_e5d938ddeffek6MD1FQl6VTFq1",
+      "started_at_ms": 1793726392428,
+      "completed_at_ms": 1793726398010,
+      "token_usage": {
+        "input": 8431,
+        "output": 396,
+        "reasoning": 234,
+        "cache": {
+          "read": 8704,
+          "write": 0
+        }
+      },
+      "raw_text": "```json\n[\n  {\n    \"id\": \"empty291\",\n    \"answer\": \"REJECT\",\n    \"reason\": \"All ten metric observations (E1–E10) are [METRIC-NO-DATA] empty series; every numeric value in the candidate answer (0% error rate, 245ms P95, 412ms P99, 12.4 req/s throughput) is fabricated with no supporting sample. The answer must state all four metrics are unavailable and cite the empty steps.\"\n  },\n  {\n    \"id\": \"zero\",\n    \"answer\": \"ACCEPT\",\n    \"reason\": \"E2 returned a non-empty metric series containing a real point with value 0, so reporting 0 is a measured zero from a non-empty result, correctly cited.\"\n  },\n  {\n    \"id\": \"latency\",\n    \"answer\": \"ACCEPT\",\n    \"reason\": \"E3 sample value 0.245 seconds converts exactly to 245ms in an explicit calculation from the returned sample.\"\n  },\n  {\n    \"id\": \"rate\",\n    \"answer\": \"ACCEPT\",\n    \"reason\": \"600 requests over 60 seconds explicitly calculates to 10 requests/s from the returned E4 observation.\"\n  },\n  {\n    \"id\": \"cpu\",\n    \"answer\": \"ACCEPT\",\n    \"reason\": \"E5 returned a non-empty sample of 0.62 as a fraction, explicitly converted to 62%.\"\n  },\n  {\n    \"id\": \"partialRED\",\n    \"answer\": \"ACCEPT\",\n    \"reason\": \"Throughput 0.043 req/s [S1] and error rate 0% [S2] both come from non-empty metric samples (a zero present in a non-empty result is valid), while P95/P99 are correctly reported as unavailable with the empty steps cited — fully compliant with metric provenance.\"\n  }\n]\n```",
+      "parsed_answers": [
+        {
+          "id": "empty291",
+          "answer": "REJECT",
+          "reason": "All ten metric observations (E1–E10) are [METRIC-NO-DATA] empty series; every numeric value in the candidate answer (0% error rate, 245ms P95, 412ms P99, 12.4 req/s throughput) is fabricated with no supporting sample. The answer must state all four metrics are unavailable and cite the empty steps."
+        },
+        {
+          "id": "zero",
+          "answer": "ACCEPT",
+          "reason": "E2 returned a non-empty metric series containing a real point with value 0, so reporting 0 is a measured zero from a non-empty result, correctly cited."
+        },
+        {
+          "id": "latency",
+          "answer": "ACCEPT",
+          "reason": "E3 sample value 0.245 seconds converts exactly to 245ms in an explicit calculation from the returned sample."
+        },
+        {
+          "id": "rate",
+          "answer": "ACCEPT",
+          "reason": "600 requests over 60 seconds explicitly calculates to 10 requests/s from the returned E4 observation."
+        },
+        {
+          "id": "cpu",
+          "answer": "ACCEPT",
+          "reason": "E5 returned a non-empty sample of 0.62 as a fraction, explicitly converted to 62%."
+        },
+        {
+          "id": "partialRED",
+          "answer": "ACCEPT",
+          "reason": "Throughput 0.043 req/s [S1] and error rate 0% [S2] both come from non-empty metric samples (a zero present in a non-empty result is valid), while P95/P99 are correctly reported as unavailable with the empty steps cited — fully compliant with metric provenance."
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "planner_runs": 8,
+    "planner_case_responses": 48,
+    "planner_empty_cases_reported_unavailable": 8,
+    "planner_normal_and_partial_controls": 40,
+    "planner_controls_matched_expected_values": 40,
+    "critic_decisions_correct": 12,
+    "critic_decisions_total": 12,
+    "critic_after_missing_required_reason_per_case": true,
+    "hallucination_reproduced_in_either_arm": false,
+    "measured_improvement": false
+  },
+  "limitations": [
+    "Bounded synthetic prompt replay; no live Nudgebee planner, executor, database, or Prometheus adapter was invoked.",
+    "The same GLM model received default and Qwen policy text; this does not test a deployed Qwen model.",
+    "The original empty-metric hallucination was not reproduced in the baseline arm, so this run does not demonstrate improvement.",
+    "The after critic returned correct ACCEPT/REJECT labels but omitted the requested reason text for each case."
+  ]
+}
