@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
@@ -193,6 +194,26 @@ func attributionUserId(sc *security.SecurityContext, requestUserId string) strin
 		return security.GetSystemUserId()
 	}
 	return requestUserId
+}
+
+// asSystemUserForVisitingSuperAdmin returns a tenant-admin context for the system
+// user when attributionUserId credits the request to the system user, and ctx
+// unchanged otherwise. The analysis then runs as the platform's own automatic
+// analyses do: api-server would refuse the operator's own id in a tenant they
+// are not a member of, failing every metrics, logs and traces lookup with 403.
+func asSystemUserForVisitingSuperAdmin(ctx *security.RequestContext) (*security.RequestContext, error) {
+	sc := ctx.GetSecurityContext()
+	if sc == nil {
+		return nil, errors.New("asSystemUserForVisitingSuperAdmin: security context is nil")
+	}
+	if attributionUserId(sc, sc.GetUserId()) != security.GetSystemUserId() || sc.GetUserId() == security.GetSystemUserId() {
+		return ctx, nil
+	}
+	systemSc := security.NewSecurityContextForTenantAccountAdmin(sc.GetTenantId(), security.GetSystemUserId(), nil)
+	if systemSc == nil {
+		return nil, fmt.Errorf("asSystemUserForVisitingSuperAdmin: unable to build system user context for tenant %s", sc.GetTenantId())
+	}
+	return security.NewRequestContext(ctx.GetContext(), systemSc, ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter()), nil
 }
 
 // serviceErrorStatus is the HTTP status for an error from a service call: the

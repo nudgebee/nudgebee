@@ -394,6 +394,11 @@ func handleAnalysisApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) 
 		}
 		_, request.TriggeredBy = httpAnalysisOrigin(request.Regenerate, "", request.UserId)
 		request.StartedByPerson = true
+		context, err = asSystemUserForVisitingSuperAdmin(context)
+		if err != nil {
+			c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			return
+		}
 		executeEventRCAAnalysis(context, request, c)
 	})
 
@@ -582,6 +587,11 @@ func processEventAnalysis(c *gin.Context, tracer trace.Tracer, meter metric.Mete
 		request.UserId = context.GetSecurityContext().GetUserId()
 	}
 	request.Trigger, request.TriggeredBy = httpAnalysisOrigin(request.Regenerate, request.Source, request.UserId)
+	context, err = asSystemUserForVisitingSuperAdmin(context)
+	if err != nil {
+		c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		return
+	}
 	executeEventInvestigation(context, request, c)
 }
 
