@@ -4,13 +4,14 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	//"time" // Not directly used in this test file
+	"time"
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
 	"nudgebee/runbook/internal/model"
 	"nudgebee/runbook/internal/tasks"
 	// "nudgebee/runbook/internal/tasks/core" // Not directly imported here, but types used.
@@ -585,4 +586,53 @@ func (s *ExecutorTestSuite) TestHookActionsReceiveTrustedWorkflowMetadata() {
 		s.Equal("Trusted Workflow", params[tasks.ParamWorkflowName])
 		s.Equal("Trusted User", params[tasks.ParamUserDisplayName])
 	}
+}
+
+func templateClockWorkflow(ctx workflow.Context) (map[string]string, error) {
+	if err := workflow.Sleep(ctx, 24*time.Hour); err != nil {
+		return nil, err
+	}
+
+	expected := workflow.Now(ctx).UTC()
+	tplCtx := newWorkflowTemplateContext(ctx, nil, nil).Clone()
+	date, err := tplCtx.Render("{{ date_iso }}")
+	if err != nil {
+		return nil, err
+	}
+	datetime, err := tplCtx.Render("{{ datetime }}")
+	if err != nil {
+		return nil, err
+	}
+	timestamp, err := tplCtx.Render("{{ timestamp_iso }}")
+	if err != nil {
+		return nil, err
+	}
+	now, err := tplCtx.Render("{{ now() | strftime(\"%Y-%m-%dT%H:%M:%SZ\") }}")
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]string{
+		"expected_date":      expected.Format("2006-01-02"),
+		"expected_datetime":  expected.Format("02012006_1504"),
+		"expected_timestamp": expected.Format(time.RFC3339),
+		"date":               date,
+		"datetime":           datetime,
+		"timestamp":          timestamp,
+		"now":                now,
+	}, nil
+}
+
+func (s *ExecutorTestSuite) TestWorkflowTemplateClockUsesTemporalTime() {
+	s.env.RegisterWorkflow(templateClockWorkflow)
+	s.env.ExecuteWorkflow(templateClockWorkflow)
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.NoError(s.env.GetWorkflowError())
+	var result map[string]string
+	s.NoError(s.env.GetWorkflowResult(&result))
+	s.Equal(result["expected_date"], result["date"])
+	s.Equal(result["expected_datetime"], result["datetime"])
+	s.Equal(result["expected_timestamp"], result["timestamp"])
+	s.Equal(result["expected_timestamp"], result["now"])
 }
