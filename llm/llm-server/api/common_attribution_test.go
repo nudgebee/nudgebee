@@ -5,9 +5,11 @@ import (
 	"testing"
 
 	"nudgebee/llm/common"
+	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -133,5 +135,41 @@ func TestAsSystemUserForVisitingSuperAdmin(t *testing.T) {
 		got, err := asSystemUserForVisitingSuperAdmin(nil)
 		assert.Error(t, err)
 		assert.Nil(t, got)
+	})
+}
+
+// A visiting super admin's messages are stored as the system user (NULL). A queued
+// one must dispatch with the system user's tenant-admin context, as its foreground
+// turn ran; rebuilding from the empty id returned no roles and failed every such
+// message with "user does not have access".
+func TestQueuedMessageSecurityContext(t *testing.T) {
+	rawDB, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = rawDB.Close() })
+	common.RegisterDatabaseManagerHook(common.Metastore, func() (*common.DatabaseManager, error) {
+		return &common.DatabaseManager{Db: sqlx.NewDb(rawDB, "postgres")}, nil
+	})
+	t.Cleanup(func() { common.RegisterDatabaseManagerHook(common.Metastore, nil) })
+	mock.ExpectQuery("SELECT id::text FROM cloud_accounts WHERE tenant =").WithArgs("t1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("a1"))
+
+	sc, err := queuedMessageSecurityContext("t1", uuid.Nil)
+	require.NoError(t, err)
+	assert.Equal(t, security.GetSystemUserId(), sc.GetUserId())
+	assert.Equal(t, "t1", sc.GetTenantId())
+	assert.True(t, sc.CanRunAI("a1"), "the system user's tenant-admin context must be allowed to run AI")
+	assert.False(t, sc.CanRunAI("other-tenant-account"))
+	assert.False(t, sc.IsSuperAdmin())
+	require.NoError(t, mock.ExpectationsWereMet())
+
+	t.Run("a real user is still looked up as themselves", func(t *testing.T) {
+		old := config.Config.LlmServerSecurityMode
+		t.Cleanup(func() { config.Config.LlmServerSecurityMode = old })
+		config.Config.LlmServerSecurityMode = "local"
+		mock.ExpectQuery("SELECT id::text FROM cloud_accounts WHERE tenant =").WithArgs("t1").
+			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("a1"))
+		sc, err := queuedMessageSecurityContext("t1", uuid.MustParse(attributionRealUserId))
+		require.NoError(t, err)
+		assert.Equal(t, attributionRealUserId, sc.GetUserId())
 	})
 }

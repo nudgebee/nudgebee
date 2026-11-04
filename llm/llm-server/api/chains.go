@@ -491,7 +491,7 @@ func dispatchQueuedMessage(parent *security.RequestContext, conversation core.Co
 				fail(fmt.Errorf("queued execution panic: %v", recovered))
 			}
 		}()
-		sc, err := security.NewSecurityContext(conversation.TenantID.String(), msg.UserID.String())
+		sc, err := queuedMessageSecurityContext(conversation.TenantID.String(), msg.UserID)
 		if err != nil {
 			fail(err)
 			return

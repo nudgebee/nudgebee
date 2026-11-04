@@ -216,6 +216,21 @@ func asSystemUserForVisitingSuperAdmin(ctx *security.RequestContext) (*security.
 	return security.NewRequestContext(ctx.GetContext(), systemSc, ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter()), nil
 }
 
+// queuedMessageSecurityContext rebuilds the context a queued message runs with.
+// A message stored without a user was sent as the system user (attributionUserId),
+// so it runs as the system user's tenant admin, as its foreground turn did; a
+// lookup for the empty id would return no roles and refuse the run.
+func queuedMessageSecurityContext(tenantId string, userId uuid.UUID) (*security.SecurityContext, error) {
+	if userId != uuid.Nil {
+		return security.NewSecurityContext(tenantId, userId.String())
+	}
+	sc := security.NewSecurityContextForTenantAccountAdmin(tenantId, security.GetSystemUserId(), nil)
+	if sc == nil {
+		return nil, fmt.Errorf("queuedMessageSecurityContext: unable to build system user context for tenant %s", tenantId)
+	}
+	return sc, nil
+}
+
 // serviceErrorStatus is the HTTP status for an error from a service call: the
 // code the service set on a common.Error (e.g. 400 from common.ErrorBadRequest),
 // 500 otherwise.
