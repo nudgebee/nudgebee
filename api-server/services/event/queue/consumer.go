@@ -59,7 +59,8 @@ func processEventPostProcessMessage(msgCtx context.Context, data []byte) error {
 		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, errEventNotConvertible) {
 			return nil // Missing or unconvertible event is permanent; nothing to retry
 		}
-		time.Sleep(time.Second) // Slow RabbitMQ redelivery during transient outages
+		// Slow RabbitMQ redelivery during transient outages.
+		time.Sleep(time.Second)
 		return err // Transient lookup failure; let RabbitMQ redeliver
 	}
 
