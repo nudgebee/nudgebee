@@ -573,10 +573,11 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
   useEffect(() => {
     if (!open || triggerType !== 'optimization') return;
     let cancelled = false;
+    const selectedOptimizationAccountId = optimizationClusters[0] || undefined;
     setOptimizationRulePairs([]);
     setIsLoadingOptimizationRules(true);
     recommendationApi
-      .getDistinctOptimizationRules(optimizationClusters[0])
+      .getDistinctOptimizationRules(selectedOptimizationAccountId)
       .then((pairs) => {
         if (!cancelled) setOptimizationRulePairs(pairs || []);
       })

@@ -62,7 +62,7 @@ const node = {
   },
 };
 
-it('reloads rules for a changed account, clears the saved rule, and ignores a stale account response', async () => {
+it('reloads rules for the selected account, clears the saved rule, and ignores a stale response after a cluster change', async () => {
   let resolveK8s!: (rows: any[]) => void;
   let resolveAWS!: (rows: any[]) => void;
   getRules.mockImplementation((accountId) => {

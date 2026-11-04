@@ -21,7 +21,13 @@ beforeEach(() => {
 
 it('scopes optimization rules to the selected account', async () => {
   await recommendationApi.getDistinctOptimizationRules('aws-account');
-  expect(stringify).toHaveBeenCalledWith(expect.objectContaining({ account_id: { _eq: 'aws-account' } }), []);
+  expect(stringify).toHaveBeenCalledWith(
+    {
+      category: { _in: ['RightSizing', 'InfraUpgrade', 'Configuration', 'K8sSpotRecommendation'] },
+      account_id: { _eq: 'aws-account' },
+    },
+    []
+  );
   expect(query).toHaveBeenCalledWith(expect.stringContaining('"account_id":{"_eq":"aws-account"}'), 'GetDistinctOptimizationRules');
 });
 
