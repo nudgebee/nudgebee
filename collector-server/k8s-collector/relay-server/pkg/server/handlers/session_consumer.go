@@ -14,7 +14,8 @@ import (
 
 // consumeSessionQueue consumes one register-session queue until ctx ends,
 // passing each delivery to handle together with the channel it arrived on
-// (replies are published, and deliveries acked, on that channel).
+// (deliveries are acked on that channel; replies go out on a separate one, see
+// sessionReplyChannel).
 //
 // It has to outlive the broker: a closed channel or a consumer the broker
 // cancelled opens a fresh channel and consumes again, and a Consume the broker

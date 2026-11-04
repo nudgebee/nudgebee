@@ -154,6 +154,14 @@ type testSession struct {
 // and runs consumeSessionQueue on it until the test ends.
 func startSession(t *testing.T, proxy *brokerProxy) *testSession {
 	t.Helper()
+	return startSessionWith(t, proxy, nil)
+}
+
+// startSessionWith is startSession with the delivery handler replaced. handle
+// runs before the delivery is acked and recorded; connMgr is the session's own.
+func startSessionWith(t *testing.T, proxy *brokerProxy,
+	handle func(connMgr *mq.ConnectionManager, ch *amqp.Channel, d amqp.Delivery)) *testSession {
+	t.Helper()
 	cfg := &config.Config{}
 	cfg.RabbitMQ.ExchangeName = "relay-test-" + uuid.NewString()
 	cfg.RabbitMQ.MessageTTL = time.Minute
@@ -177,7 +185,10 @@ func startSession(t *testing.T, proxy *brokerProxy) *testSession {
 	go func() {
 		done <- consumeSessionQueue(ctx, connMgr, topo, health.NewTracker(connMgr), topo.EnsureQueue,
 			s.queue, "test-"+s.queue, 10, slog.New(slog.NewTextHandler(io.Discard, nil)),
-			func(_ *amqp.Channel, d amqp.Delivery) {
+			func(ch *amqp.Channel, d amqp.Delivery) {
+				if handle != nil {
+					handle(connMgr, ch, d)
+				}
 				_ = d.Ack(false)
 				s.received <- string(d.Body)
 			})
