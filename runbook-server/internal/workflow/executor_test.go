@@ -537,13 +537,13 @@ func (s *ExecutorTestSuite) TestHookActionsReceiveTrustedWorkflowMetadata() {
 
 	spoofedParams := map[string]any{
 		"marker":                   "hook",
-		tasks.ParamTenantID:         "attacker-tenant",
-		tasks.ParamAccountID:        "attacker-account",
-		tasks.ParamWorkflowID:       "attacker-workflow",
-		tasks.ParamEventID:          "attacker-event",
-		tasks.ParamUserID:           "attacker-user",
-		tasks.ParamWorkflowName:     "attacker-name",
-		tasks.ParamUserDisplayName:  "attacker-display-name",
+		tasks.ParamTenantID:        "attacker-tenant",
+		tasks.ParamAccountID:       "attacker-account",
+		tasks.ParamWorkflowID:      "attacker-workflow",
+		tasks.ParamEventID:         "attacker-event",
+		tasks.ParamUserID:          "attacker-user",
+		tasks.ParamWorkflowName:    "attacker-name",
+		tasks.ParamUserDisplayName: "attacker-display-name",
 	}
 	hook := model.Action{Type: "test.capture-hook", Params: spoofedParams}
 	wf := &model.Workflow{
