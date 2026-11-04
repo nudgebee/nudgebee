@@ -393,26 +393,30 @@ func handleTaskCompletion(ctx workflow.Context, workflowID string, taskID string
 		// Create a temporary context for rendering self-referential outputs.
 		selfRenderContext := globalContext.Clone()
 		selfRenderContext.Self = globalContext.Tasks[taskID]
+		varUpdates := make(map[string]any, len(currentTask.SetVars))
 
 		for outputName, outputTemplate := range currentTask.SetVars {
 			processedVal, err := ProcessValue(outputTemplate, selfRenderContext)
 			if err != nil {
 				logger.Error("Failed to process task output template", "taskID", taskID, "outputName", outputName, "template", outputTemplate, "error", err)
-				// Decide how to handle this error: continue, log, or return.
-				// For now, we'll log and continue to avoid failing the workflow if an output template is malformed.
-			} else {
-				var finalValue any
-				if valMap, ok := processedVal.(map[string]any); ok {
-					if v, hasValue := valMap["value"]; hasValue {
-						finalValue = v
-					} else {
-						finalValue = processedVal
-					}
+				return fmt.Errorf("failed to process task output template %s for task %s: %w", outputName, taskID, err)
+			}
+
+			var finalValue any
+			if valMap, ok := processedVal.(map[string]any); ok {
+				if v, hasValue := valMap["value"]; hasValue {
+					finalValue = v
 				} else {
 					finalValue = processedVal
 				}
-				globalContext.Vars[outputName] = finalValue
+			} else {
+				finalValue = processedVal
 			}
+			varUpdates[outputName] = finalValue
+		}
+
+		for outputName, value := range varUpdates {
+			globalContext.Vars[outputName] = value
 		}
 	}
 
@@ -427,15 +431,13 @@ func handleTaskCompletion(ctx workflow.Context, workflowID string, taskID string
 			renderedKey, err := Render(key, selfRenderContext)
 			if err != nil {
 				logger.Error("Failed to render task state key", "taskID", taskID, "key", key, "error", err)
-				// Fallback to original key if rendering fails, but this might lead to unexpected behavior if dynamic keys are intended.
-				// For now, we log and proceed with the literal key.
-				renderedKey = key
+				return fmt.Errorf("failed to render task state key %s for task %s: %w", key, taskID, err)
 			}
 
 			processedVal, err := ProcessValue(valueTemplate, selfRenderContext)
 			if err != nil {
 				logger.Error("Failed to process task state template", "taskID", taskID, "key", renderedKey, "template", valueTemplate, "error", err)
-				continue
+				return fmt.Errorf("failed to process task state value for key %s in task %s: %w", renderedKey, taskID, err)
 			}
 
 			var dto model.StateUpdateDTO
@@ -458,9 +460,6 @@ func handleTaskCompletion(ctx workflow.Context, workflowID string, taskID string
 			}
 
 			stateUpdates[renderedKey] = dto
-			// Update local context immediately so subsequent tasks can see it
-			// For local context, we just store the value, ignoring TTL
-			globalContext.State[renderedKey] = dto.Value
 		}
 
 		if len(stateUpdates) > 0 { // Execute activity to persist state
@@ -487,6 +486,10 @@ func handleTaskCompletion(ctx workflow.Context, workflowID string, taskID string
 					return fmt.Errorf("failed to persist workflow state for task %s: %w", taskID, err)
 				}
 			}
+		}
+
+		for key, update := range stateUpdates {
+			globalContext.State[key] = update.Value
 		}
 	}
 
