@@ -58,18 +58,27 @@ func TestBroker_OversizedReplyDoesNotRedeliverRequest(t *testing.T) {
 
 	// Over RabbitMQ 4's default 16 MiB max_message_size.
 	big := make([]byte, 17<<20)
-	var replyCh *sessionReplyChannel
-	s := startSessionWith(t, proxy, func(connMgr *mq.ConnectionManager, _ *amqp.Channel, d amqp.Delivery) {
-		if replyCh == nil {
-			replyCh = newSessionReplyChannel(connMgr.GetChannel)
-			t.Cleanup(replyCh.close)
-		}
+	// Its own connection: what matters is that it is not the consume channel.
+	connMgr, err := mq.NewConnectionManager(proxy.url())
+	require.NoError(t, err)
+	replyCh := newSessionReplyChannel(connMgr.GetChannel)
+	t.Cleanup(replyCh.close)
+	s := startSessionWith(t, proxy, func(_ *amqp.Channel, d amqp.Delivery) {
 		if string(d.Body) == "big" {
 			_ = replyCh.publish(replyQueue, amqp.Publishing{Body: big})
 			// Let the broker refuse it before the ack goes out, as it does
 			// when the agent's reply takes the whole budget to arrive.
 			time.Sleep(500 * time.Millisecond)
 		}
+	})
+	// Registered after the session, so it runs before the session's own
+	// cleanup: a redelivery loop fills s.received, and a handler blocked on it
+	// would keep the session from shutting down.
+	t.Cleanup(func() {
+		go func() {
+			for range s.received { //nolint:revive // drain only
+			}
+		}()
 	})
 	s.requireServed(t, "warmup", 10*time.Second)
 
@@ -91,7 +100,7 @@ collect:
 			break collect
 		}
 	}
-	assert.Equal(t, 1, deliveries, "the request with the oversized reply was delivered again")
+	require.Equal(t, 1, deliveries, "the request with the oversized reply was delivered again")
 
 	s.requireServed(t, "after", 10*time.Second)
 }

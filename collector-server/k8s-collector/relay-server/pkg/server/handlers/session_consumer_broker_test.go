@@ -157,10 +157,9 @@ func startSession(t *testing.T, proxy *brokerProxy) *testSession {
 	return startSessionWith(t, proxy, nil)
 }
 
-// startSessionWith is startSession with the delivery handler replaced. handle
-// runs before the delivery is acked and recorded; connMgr is the session's own.
-func startSessionWith(t *testing.T, proxy *brokerProxy,
-	handle func(connMgr *mq.ConnectionManager, ch *amqp.Channel, d amqp.Delivery)) *testSession {
+// startSessionWith is startSession with a delivery handler added. handle runs
+// before the delivery is acked and recorded.
+func startSessionWith(t *testing.T, proxy *brokerProxy, handle func(ch *amqp.Channel, d amqp.Delivery)) *testSession {
 	t.Helper()
 	cfg := &config.Config{}
 	cfg.RabbitMQ.ExchangeName = "relay-test-" + uuid.NewString()
@@ -187,7 +186,7 @@ func startSessionWith(t *testing.T, proxy *brokerProxy,
 			s.queue, "test-"+s.queue, 10, slog.New(slog.NewTextHandler(io.Discard, nil)),
 			func(ch *amqp.Channel, d amqp.Delivery) {
 				if handle != nil {
-					handle(connMgr, ch, d)
+					handle(ch, d)
 				}
 				_ = d.Ack(false)
 				s.received <- string(d.Body)
