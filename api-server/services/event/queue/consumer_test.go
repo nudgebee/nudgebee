@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"testing"
+	"time"
 
 	"nudgebee/services/security"
 
@@ -128,11 +129,12 @@ func TestProcessEventPostProcessMessage_MessagesWithoutPhaseAreHandledAsBefore(t
 func TestProcessEventPostProcessMessage_LoadFailureRetriesExceptPermanentErrors(t *testing.T) {
 	transientErr := errors.New("database unavailable")
 	for _, tc := range []struct {
-		name    string
-		loadErr error
-		wantErr bool
+		name      string
+		loadErr   error
+		wantErr   bool
+		wantDelay bool
 	}{
-		{name: "transient lookup failure", loadErr: transientErr, wantErr: true},
+		{name: "transient lookup failure", loadErr: transientErr, wantErr: true, wantDelay: true},
 		{name: "event no longer exists", loadErr: sql.ErrNoRows},
 		{name: "event cannot be converted", loadErr: fmt.Errorf("%w: bad field", errEventNotConvertible)},
 	} {
@@ -142,12 +144,16 @@ func TestProcessEventPostProcessMessage_LoadFailureRetriesExceptPermanentErrors(
 				return nil, nil, tc.loadErr
 			}
 
+			started := time.Now()
 			err := processEventPostProcessMessage(context.Background(), []byte(`{"event_id":"e-1"}`))
 
 			if tc.wantErr {
 				assert.ErrorIs(t, err, tc.loadErr)
 			} else {
 				assert.NoError(t, err)
+			}
+			if tc.wantDelay {
+				assert.GreaterOrEqual(t, time.Since(started), time.Second)
 			}
 			assert.Equal(t, postProcessSpy{}, *spy, "a failed lookup must not run event processors")
 		})
