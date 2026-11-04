@@ -38,4 +38,10 @@ describe('NubiBrainNav', () => {
     render(<NubiBrainNav surface='dark' />);
     expect(mockReplace).toHaveBeenCalledTimes(1);
   });
+
+  it('drops a knowledge base deep link from the address once it is consumed', () => {
+    mockQuery = { bcortex: 'knowledge-base', kb: 'kb-1', accountId: 'acct-1' };
+    render(<NubiBrainNav surface='dark' />);
+    expect(mockReplace).toHaveBeenCalledWith({ pathname: '/ask-nudgebee', query: { accountId: 'acct-1' } }, undefined, { shallow: true });
+  });
 });

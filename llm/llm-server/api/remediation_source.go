@@ -11,8 +11,11 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
+	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 )
 
@@ -47,6 +50,8 @@ const (
 	// minSourceQuote is the shortest part of a line accepted as a quote of it; a whole line may be shorter.
 	minSourceQuote = 12
 	maxSourceStep  = 300
+	// maxSourceSpan is the most lines one quote may run across: a step wrapped over lines, with its command below it.
+	maxSourceSpan = 6
 )
 
 var (
@@ -93,9 +98,23 @@ var loadedDocuments = func(ctx context.Context, accountId string, turn planTurn)
 			continue
 		}
 		documents[metadata.Handle] = loadedDocument{Title: metadata.Name, Content: metadata.Content,
-			Url: firstNonEmpty(webLink(metadata.Url), webLink(row.ReferenceId))}
+			Url: firstNonEmpty(webLink(metadata.Url), webLink(row.ReferenceId), knowledgeBaseLink(accountId, row.ReferenceId))}
 	}
 	return documents, nil
+}
+
+// knowledgeBaseLink is the app's page for a knowledge base written in the app, which has no page elsewhere: its
+// reference is the knowledge base's own id. "" for any other reference, or when the app's address is not configured.
+func knowledgeBaseLink(accountId, referenceId string) string {
+	base := strings.TrimRight(strings.TrimSpace(config.Config.BaseUrl), "/")
+	if _, err := uuid.Parse(referenceId); err != nil || webLink(base) == "" {
+		return ""
+	}
+	query := url.Values{"bcortex": {"knowledge-base"}, "kb": {referenceId}}
+	if accountId != "" {
+		query.Set("accountId", accountId)
+	}
+	return base + "/home?" + query.Encode()
 }
 
 // webLink returns link when a person's browser can open it as a page, else "".
@@ -160,13 +179,42 @@ func sourceLine(content, step string) string {
 	if quote == "" {
 		return ""
 	}
-	for _, line := range strings.Split(content, "\n") {
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
 		text := sourceText(line)
 		if text == quote || (len(quote) >= minSourceQuote && strings.Contains(text, quote)) {
-			return truncate(strings.TrimLeft(sourceMarkup.Replace(html.UnescapeString(strings.TrimSpace(line))), "#*-> "), maxSourceStep)
+			return truncate(sourceDisplay(line), maxSourceStep)
+		}
+	}
+	if len(quote) < minSourceQuote {
+		return ""
+	}
+	// A document wraps a step over lines and puts its command on a line of its own, and a quote of the step reads
+	// them as one: the fewest lines, blank ones skipped, that hold the quote. The first end that does is the shortest.
+	var kept, texts []string
+	for _, line := range lines {
+		if text := sourceText(line); text != "" {
+			kept = append(kept, line)
+			texts = append(texts, text)
+		}
+	}
+	for end := 1; end < len(kept); end++ {
+		for start := end - 1; start >= 0 && start > end-maxSourceSpan; start-- {
+			if strings.Contains(strings.Join(texts[start:end+1], " "), quote) {
+				shown := make([]string, 0, end+1-start)
+				for _, line := range kept[start : end+1] {
+					shown = append(shown, sourceDisplay(line))
+				}
+				return truncate(strings.Join(shown, " "), maxSourceStep)
+			}
 		}
 	}
 	return ""
+}
+
+// sourceDisplay is a document's line as a step shows it: plain text, without its heading or list marker.
+func sourceDisplay(line string) string {
+	return strings.TrimLeft(sourceMarkup.Replace(html.UnescapeString(strings.TrimSpace(line))), "#*-> ")
 }
 
 // sourceText is a line reduced to its words: a quote differs from its line by entities, markup, spacing and case.

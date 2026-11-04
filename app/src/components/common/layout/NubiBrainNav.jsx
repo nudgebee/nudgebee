@@ -95,6 +95,8 @@ const NubiBrainNav = ({ surface = 'dark', accountId, showBCortex = true }) => {
   // notification channels, and its "view the full review" link has to land
   // on the Digests tab — b-Cortex is a modal, so there is no route to point at.
   const [bcortexInitialTab, setBcortexInitialTab] = useState(null);
+  // ?bcortex=knowledge-base&kb=<id>: one knowledge base, such as the runbook a fix step follows.
+  const [bcortexKbId, setBcortexKbId] = useState(null);
 
   // Mount latches: a dynamically-imported modal only fetches its chunk once it is
   // actually rendered. We latch on first open so the chunk loads on the user's first
@@ -114,6 +116,7 @@ const NubiBrainNav = ({ surface = 'dark', accountId, showBCortex = true }) => {
   const handleCloseBCortex = useCallback(() => {
     setOpenBCortexModal(false);
     setBcortexInitialTab(null);
+    setBcortexKbId(null);
   }, []);
 
   // Only the tabs we actually mint links to. Deliberately not the full tab list
@@ -134,14 +137,16 @@ const NubiBrainNav = ({ surface = 'dark', accountId, showBCortex = true }) => {
     const tab = router.query?.bcortex;
     if (typeof tab !== 'string' || !DEEP_LINKABLE_TABS.includes(tab)) return;
 
+    const kb = router.query?.kb;
     setBcortexInitialTab(tab);
+    setBcortexKbId(tab === 'knowledge-base' && typeof kb === 'string' && kb ? kb : null);
     setBcortexMounted(true);
     setOpenBCortexModal(true);
 
     // Drop the param so a refresh (or a back-navigation) doesn't reopen the
     // modal over whatever the user moved on to. shallow: the page's own data
     // does not depend on it, so there is nothing to re-fetch.
-    const { bcortex: _consumed, ...rest } = router.query;
+    const { bcortex: _consumed, kb: _kbConsumed, ...rest } = router.query;
     router.replace({ pathname: router.pathname, query: rest }, undefined, { shallow: true });
     // router identity changes on every navigation; keying on the param alone
     // keeps this from re-firing (and re-opening) on unrelated route changes.
@@ -169,7 +174,13 @@ const NubiBrainNav = ({ surface = 'dark', accountId, showBCortex = true }) => {
     <>
       {aiToolsMounted && <AIToolsModal open={openAIToolsModal} onClose={() => setOpenAIToolsModal(false)} />}
       {bcortexMounted && (
-        <BCortexModal open={openBCortexModal} onClose={handleCloseBCortex} accountId={resolvedAccountId} initialTab={bcortexInitialTab} />
+        <BCortexModal
+          open={openBCortexModal}
+          onClose={handleCloseBCortex}
+          accountId={resolvedAccountId}
+          initialTab={bcortexInitialTab}
+          initialKbId={bcortexKbId}
+        />
       )}
 
       <Box

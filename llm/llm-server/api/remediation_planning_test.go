@@ -1333,6 +1333,43 @@ func TestSourceLineFindsTheQuotedLine(t *testing.T) {
 	}
 }
 
+// A runbook wraps a step over lines and puts its command on a line of its own; a quote of the step reads them as one.
+func TestSourceLineFindsAQuoteAcrossLines(t *testing.T) {
+	const runbook = "## Remediation\n\n**Step 4. Scale the workload back to its replica count before the\nchange.** Use 0 if the deployment is new:\n\n`kubectl scale deployment/<deployment> -n shop --replicas=<count>`\n\nIt needs a person's approval.\n"
+	cases := []struct{ name, step, want string }{
+		{"a wrapped step", "Step 4. Scale the workload back to its replica count before the change.",
+			"Step 4. Scale the workload back to its replica count before the change. Use 0 if the deployment is new:"},
+		{"the step and its command, over a blank line",
+			"Step 4. Scale the workload back to its replica count before the change. Use 0 if the deployment is new: kubectl scale deployment/<deployment> -n shop --replicas=<count>",
+			"Step 4. Scale the workload back to its replica count before the change. Use 0 if the deployment is new: kubectl scale deployment/<deployment> -n shop --replicas=<count>"},
+		{"the end of one line and the start of the next, only those", "before the change. Use 0 if",
+			"Step 4. Scale the workload back to its replica count before the change. Use 0 if the deployment is new:"},
+		{"one line is still that line", "Use 0 if the deployment is new", "change. Use 0 if the deployment is new:"},
+		{"words the document does not join", "Use 0 if the deployment is new: It needs a person's approval.", ""},
+		{"too short to span lines", "the change.", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, sourceLine(runbook, c.step))
+		})
+	}
+}
+
+// A knowledge base written in the app has no page elsewhere, so a step that follows it links to the app's own page.
+func TestKnowledgeBaseLink(t *testing.T) {
+	kb := uuid.NewString()
+	swap(t, &config.Config.BaseUrl, "https://app.example.com/")
+	assert.Equal(t, "https://app.example.com/home?accountId=acc-1&bcortex=knowledge-base&kb="+kb, knowledgeBaseLink("acc-1", kb))
+	assert.Equal(t, "https://app.example.com/home?bcortex=knowledge-base&kb="+kb, knowledgeBaseLink("", kb))
+	for _, reference := range []string{"kb:hash", "https://wiki.example.com/a", ""} {
+		assert.Empty(t, knowledgeBaseLink("acc-1", reference), "%q is no knowledge base id", reference)
+	}
+	config.Config.BaseUrl = ""
+	assert.Empty(t, knowledgeBaseLink("acc-1", kb), "no link without the app's address")
+	config.Config.BaseUrl = "javascript:alert(1)"
+	assert.Empty(t, knowledgeBaseLink("acc-1", kb))
+}
+
 func TestResolvePlanSources(t *testing.T) {
 	turn := planTurn{ConversationId: "conversation", MessageId: "message"}
 	swap(t, &loadedDocuments, func(_ context.Context, accountId string, got planTurn) (map[string]loadedDocument, error) {
@@ -1413,6 +1450,9 @@ func TestStoredPlanCitesTheDocumentItsTurnLoaded(t *testing.T) {
 	reference("linked", "kb:hash", `{"handle":"knowledge:b","name":"OOM runbook","content":"1. **Raise the limit** first\n","url":"https://wiki.example.com/oom2"}`)
 	reference("unsafe", "javascript:alert(1)", `{"handle":"knowledge:c","name":"OOM runbook","content":"1. **Raise the limit** first\n"}`)
 	reference("skill", "skill-id", `{"name":"OOM runbook","content":"1. **Raise the limit** first\n"}`)
+	manual := uuid.NewString()
+	reference("manual", manual, `{"handle":"knowledge:d","name":"OOM runbook","content":"1. **Raise the limit** first\n"}`)
+	swap(t, &config.Config.BaseUrl, "https://app.example.com")
 
 	written := `{"root_cause":"512Mi limit","summary":"Raise the memory limit","actions":[{"action":"Raise limit","kind":"fix",
 		"execute_command":"kubectl set resources deployment api -n shop --limits=memory=1Gi",
@@ -1435,6 +1475,9 @@ func TestStoredPlanCitesTheDocumentItsTurnLoaded(t *testing.T) {
 	assert.Equal(t, map[string]any{"document": "OOM runbook", "step": "1. Raise the limit first", "url": "https://wiki.example.com/oom2"}, storedSource("linked"),
 		"a link kept on the reference, with a reference id that is no link")
 	assert.Equal(t, map[string]any{"document": "OOM runbook", "step": "1. Raise the limit first"}, storedSource("unsafe"), "no link a browser should not open")
+	assert.Equal(t, map[string]any{"document": "OOM runbook", "step": "1. Raise the limit first",
+		"url": "https://app.example.com/home?accountId=" + f.account + "&bcortex=knowledge-base&kb=" + manual}, storedSource("manual"),
+		"a knowledge base written in the app links to its page in the app")
 	assert.Nil(t, storedSource("skill"), "a row with no handle was not a loaded document")
 	assert.Nil(t, storedSource("another-turn"))
 }

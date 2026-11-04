@@ -566,6 +566,13 @@ func (chat *ConversationDao) SaveAgentReferences(accountId, conversationId, mess
 			SELECT 1 FROM llm_conversation_references
 			WHERE conversation_id = $3 AND message_id = $4 AND reference_id = $6 AND reference_type = $7::varchar
 		)`
+	// A document's search hit and its read share one key, and the hit is often first. The read carries the handle the
+	// model cites the document by and the text it read, so it fills in the row the hit wrote, which has neither: a
+	// fix step's runbook line is checked against that row (api/remediation_source.go).
+	readQuery := `UPDATE llm_conversation_references
+		SET metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb
+		WHERE conversation_id = $1 AND message_id = $2 AND reference_id = $3 AND reference_type = $4
+		  AND COALESCE(metadata->>'handle', '') = ''`
 
 	tx, err := chat.dbManager.Db.Beginx()
 	if err != nil {
@@ -586,6 +593,11 @@ func (chat *ConversationDao) SaveAgentReferences(accountId, conversationId, mess
 		_, err = tx.Exec(query, common.GenerateUUID(), accountId, conversationId, messageId, agentId, ref.ReferenceID, string(ref.Type), string(metaJson))
 		if err != nil {
 			return fmt.Errorf("history: failed to save agent reference: %w", err)
+		}
+		if handle, _ := ref.Metadata["handle"].(string); handle != "" {
+			if _, err = tx.Exec(readQuery, conversationId, messageId, ref.ReferenceID, string(ref.Type), string(metaJson)); err != nil {
+				return fmt.Errorf("history: failed to save agent reference: %w", err)
+			}
 		}
 	}
 	return tx.Commit()

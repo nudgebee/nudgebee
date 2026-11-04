@@ -589,7 +589,7 @@ TestRetrievalPanel.propTypes = {
   error: PropTypes.string,
 };
 
-const KnowledgeBaseTab = ({ accountId }) => {
+const KnowledgeBaseTab = ({ accountId, focusKbId = null }) => {
   // Tenant-wide mode: when no accountId is in scope (b-Cortex opened from
   // the global sidebar where the page has no current account), fetch every
   // KB the caller can read across the tenant. The backend handler routes
@@ -750,6 +750,17 @@ const KnowledgeBaseTab = ({ accountId }) => {
       if (!silent && !isStale()) setLoading(false);
     }
   };
+
+  // A link to one knowledge base (a fix step's runbook) opens its documents once the list has loaded, once per link.
+  const focusedKbRef = useRef(null);
+  useEffect(() => {
+    if (!focusKbId || loading || focusedKbRef.current === focusKbId) return;
+    focusedKbRef.current = focusKbId;
+    const kb = knowledgeBases.find((k) => k.id === focusKbId);
+    if (kb) setDocumentsKB(kb);
+    // A failed list already said so; this is for a list that loaded without it.
+    else if (!error) snackbar.error('This knowledge base is not available here');
+  }, [focusKbId, loading, knowledgeBases, error]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1845,6 +1856,8 @@ KnowledgeBaseTab.propTypes = {
   // Optional: empty / unset means tenant-wide read-only mode (b-Cortex
   // opened from the global sidebar, no current account in scope).
   accountId: PropTypes.string,
+  // Knowledge base whose documents open on load, from a link to it.
+  focusKbId: PropTypes.string,
 };
 
 export default KnowledgeBaseTab;
