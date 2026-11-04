@@ -145,6 +145,28 @@ func (s *ExecutorTestSuite) newFanInExecutor() *WorkflowExecutor {
 	return &WorkflowExecutor{workflowStore: mockStore}
 }
 
+func (s *ExecutorTestSuite) runOutputTemplateFailureWorkflow(wf *model.Workflow) ([]string, int) {
+	s.registerFanInActivities()
+	var ranTasks []string
+	stateWrites := 0
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, params map[string]any) (any, error) {
+		message, _ := params["message"].(string)
+		ranTasks = append(ranTasks, message)
+		return map[string]string{"data": message}, nil
+	}, activity.RegisterOptions{Name: "test.record-task"})
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, workflowID string, stateUpdates map[string]model.StateUpdateDTO, executionID, taskID string) error {
+		if taskID != "system-final-update" {
+			stateWrites++
+		}
+		return nil
+	}, activity.RegisterOptions{Name: UpdateWorkflowStateActivity})
+
+	executor := s.newFanInExecutor()
+	s.env.RegisterWorkflow(executor.ExecuteWorkflowInternal)
+	s.env.ExecuteWorkflow(executor.ExecuteWorkflowInternal, wf, nil)
+	return ranTasks, stateWrites
+}
+
 // TestSwitchFanOutFanInConvergence reproduces the original bug: a switch fans
 // out to three branches that converge into one downstream task. Before the fix,
 // the parent loop never marked branch IDs complete (selected or otherwise), so
@@ -679,4 +701,45 @@ func (s *ExecutorTestSuite) TestSetStatePersistenceFailureFailsWorkflowBeforeNex
 	s.True(s.env.IsWorkflowCompleted())
 	s.ErrorContains(s.env.GetWorkflowError(), "state store unavailable")
 	s.Equal([]string{"save"}, ranTasks, "later tasks must not run after SetState persistence fails")
+}
+
+func (s *ExecutorTestSuite) assertOutputTemplateFailure(wfID string, firstTask model.Task, message string) {
+	wf := &model.Workflow{
+		ID:        wfID,
+		TenantID:  "test-tenant",
+		AccountID: "test-account",
+		Definition: model.WorkflowDefinition{
+			Tasks: []model.Task{
+				firstTask,
+				{ID: "later", Type: "test.record-task", DependsOn: []string{"save"}, Params: map[string]any{"message": "later"}},
+			},
+		},
+	}
+
+	ranTasks, stateWrites := s.runOutputTemplateFailureWorkflow(wf)
+	s.True(s.env.IsWorkflowCompleted())
+	s.ErrorContains(s.env.GetWorkflowError(), message)
+	s.Equal([]string{"save"}, ranTasks, "downstream tasks must not run after output rendering fails")
+	s.Zero(stateWrites, "invalid SetState templates must not be persisted")
+}
+
+func (s *ExecutorTestSuite) TestSetVarsTemplateErrorFailsWorkflow() {
+	s.assertOutputTemplateFailure("set-vars-template-failure-wf", model.Task{
+		ID: "save", Type: "test.record-task", Params: map[string]any{"message": "save"},
+		SetVars: map[string]any{"output": "{{ unterminated"},
+	}, "failed to process task output template")
+}
+
+func (s *ExecutorTestSuite) TestSetStateKeyTemplateErrorFailsWorkflow() {
+	s.assertOutputTemplateFailure("set-state-key-template-failure-wf", model.Task{
+		ID: "save", Type: "test.record-task", Params: map[string]any{"message": "save"},
+		SetState: map[string]any{"{{ unterminated": "value"},
+	}, "failed to render task state key")
+}
+
+func (s *ExecutorTestSuite) TestSetStateValueTemplateErrorFailsWorkflow() {
+	s.assertOutputTemplateFailure("set-state-value-template-failure-wf", model.Task{
+		ID: "save", Type: "test.record-task", Params: map[string]any{"message": "save"},
+		SetState: map[string]any{"key": "{{ unterminated"},
+	}, "failed to process task state value")
 }
