@@ -1,6 +1,7 @@
 package alertrule
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -51,6 +52,10 @@ func expectOpenObserveConfig(mock sqlmock.Sqlmock, ctx *security.RequestContext)
 		WithArgs(ctx.GetSecurityContext().GetTenantId(), "account")
 }
 
+func openObserveTestRequestContext() *security.RequestContext {
+	return security.NewRequestContextForTenantAdmin("tenant-1", slog.Default(), nil, nil)
+}
+
 func TestOpenObserveAlertConfig(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -67,7 +72,7 @@ func TestOpenObserveAlertConfig(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			mock := openObserveConfigDB(t)
-			ctx := security.NewRequestContextForSuperAdmin(slog.Default(), nil, nil)
+			ctx := openObserveTestRequestContext()
 			expected := expectOpenObserveConfig(mock, ctx)
 			if tc.dbError != nil {
 				expected.WillReturnError(tc.dbError)
@@ -89,8 +94,24 @@ func TestOpenObserveAlertConfig(t *testing.T) {
 			}
 		})
 	}
-	if _, err := getOpenObserveAlertConfig(nil, ""); err == nil {
-		t.Error("empty account accepted")
+	for _, tc := range []struct {
+		name      string
+		ctx       *security.RequestContext
+		accountID string
+		wantError string
+	}{
+		{"empty account", nil, "", "account_id is required"},
+		{"blank account", openObserveTestRequestContext(), "  ", "account_id is required"},
+		{"nil request context", nil, "account", "tenant security context is required"},
+		{"nil security context", security.NewRequestContext(context.Background(), nil, slog.Default(), nil, nil), "account", "tenant security context is required"},
+		{"blank tenant", security.NewRequestContextForTenantAdmin("  ", slog.Default(), nil, nil), "account", "tenant_id is required"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := getOpenObserveAlertConfig(tc.ctx, tc.accountID)
+			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Errorf("error = %v, want %q", err, tc.wantError)
+			}
+		})
 	}
 }
 
@@ -106,7 +127,7 @@ func TestOpenObserveAlertSourceCRUD(t *testing.T) {
 					_, _ = w.Write([]byte("{\"id\":\"alert-1\"}"))
 				}))
 				defer server.Close()
-				ctx := security.NewRequestContextForSuperAdmin(slog.Default(), nil, nil)
+				ctx := openObserveTestRequestContext()
 				mock := openObserveConfigDB(t)
 				expectOpenObserveConfig(mock, ctx).WillReturnRows(openObserveConfigRows(server.URL))
 				cfg := openObserveTestConfig()

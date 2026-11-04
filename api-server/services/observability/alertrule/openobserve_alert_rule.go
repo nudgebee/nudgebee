@@ -311,7 +311,7 @@ func openObserveAlertDestinations(value any) ([]string, error) {
 	var destinations []string
 	switch value := value.(type) {
 	case []string:
-		destinations = value
+		destinations = append([]string(nil), value...)
 	case []any:
 		for _, item := range value {
 			name, ok := item.(string)
@@ -324,10 +324,15 @@ func openObserveAlertDestinations(value any) ([]string, error) {
 	if len(destinations) == 0 {
 		return nil, fmt.Errorf("OpenObserve alert destinations are required; configure a destination that forwards alerts to Nudgebee")
 	}
-	for _, name := range destinations {
-		if strings.TrimSpace(name) == "" {
+	for i, name := range destinations {
+		name = strings.TrimSpace(name)
+		if name == "" {
 			return nil, fmt.Errorf("OpenObserve alert destination names cannot be empty")
 		}
+		if strings.IndexFunc(name, unicode.IsControl) >= 0 {
+			return nil, fmt.Errorf("OpenObserve alert destination names cannot contain control characters")
+		}
+		destinations[i] = name
 	}
 	return destinations, nil
 }
