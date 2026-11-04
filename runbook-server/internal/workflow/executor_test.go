@@ -12,6 +12,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	"nudgebee/runbook/internal/model"
+	"nudgebee/runbook/internal/tasks"
 	// "nudgebee/runbook/internal/tasks/core" // Not directly imported here, but types used.
 	// "nudgebee/runbook/internal/tasks/types" // Not directly imported here, but types used.
 )
@@ -522,5 +523,63 @@ func (s *ExecutorTestSuite) TestCalleeWorkflowIDSurvivesSystemUpsert() {
 	for _, attrs := range upserted {
 		val, ok := attrs.GetKeyword(temporal.NewSearchAttributeKeyKeyword(model.SearchAttrWorkflowID))
 		s.False(ok && val == inlineChildSnapshot.ID, "must not overwrite the callee id with the synthetic snapshot id")
+	}
+}
+
+func (s *ExecutorTestSuite) TestHookActionsReceiveTrustedWorkflowMetadata() {
+	s.registerFanInActivities()
+	executor := s.newFanInExecutor()
+	captured := make(chan map[string]any, 2)
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, params map[string]any) (any, error) {
+		captured <- params
+		return nil, nil
+	}, activity.RegisterOptions{Name: "test.capture-hook"})
+
+	spoofedParams := map[string]any{
+		"marker":                   "hook",
+		tasks.ParamTenantID:         "attacker-tenant",
+		tasks.ParamAccountID:        "attacker-account",
+		tasks.ParamWorkflowID:       "attacker-workflow",
+		tasks.ParamEventID:          "attacker-event",
+		tasks.ParamUserID:           "attacker-user",
+		tasks.ParamWorkflowName:     "attacker-name",
+		tasks.ParamUserDisplayName:  "attacker-display-name",
+	}
+	hook := model.Action{Type: "test.capture-hook", Params: spoofedParams}
+	wf := &model.Workflow{
+		ID:            "trusted-workflow-id",
+		TenantID:      "trusted-tenant-id",
+		AccountID:     "trusted-account-id",
+		UpdatedBy:     "trusted-user-id",
+		UpdatedByUser: &model.WorkflowUser{DisplayName: "Trusted User"},
+		Name:          "Trusted Workflow",
+		Definition: model.WorkflowDefinition{
+			Tasks: []model.Task{{
+				ID:     "task",
+				Type:   "core.print",
+				Params: map[string]any{"message": "run"},
+				Hooks:  &model.Hooks{Success: []model.Action{hook}},
+			}},
+			Hooks: &model.Hooks{Success: []model.Action{hook}},
+		},
+	}
+
+	s.env.RegisterWorkflow(executor.ExecuteWorkflowInternal)
+	s.env.ExecuteWorkflow(executor.ExecuteWorkflowInternal, wf, map[string]any{
+		"event": map[string]any{"id": "trusted-event-id"},
+	})
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.NoError(s.env.GetWorkflowError())
+	s.Equal(2, len(captured), "task and workflow hooks should both run")
+	for i := 0; i < 2; i++ {
+		params := <-captured
+		s.Equal("trusted-tenant-id", params[tasks.ParamTenantID])
+		s.Equal("trusted-account-id", params[tasks.ParamAccountID])
+		s.Equal("trusted-workflow-id", params[tasks.ParamWorkflowID])
+		s.Equal("trusted-event-id", params[tasks.ParamEventID])
+		s.Equal("trusted-user-id", params[tasks.ParamUserID])
+		s.Equal("Trusted Workflow", params[tasks.ParamWorkflowName])
+		s.Equal("Trusted User", params[tasks.ParamUserDisplayName])
 	}
 }
