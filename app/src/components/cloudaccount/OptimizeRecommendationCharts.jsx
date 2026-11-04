@@ -95,17 +95,17 @@ const GraphSections = ({ accountId }) => {
     }
 
     const ingressLinechartData = {
-      data: networkData?.filter((i) => i.metric === 'networkTransferBytes')?.map((item) => formatMemory(item.avg_value, 'bytes', 'gb', false)) || [],
+      data: networkData?.filter((i) => i.metric === 'networkReceiveBytes')?.map((item) => formatMemory(item.avg_value, 'bytes', 'gb', false)) || [],
       label:
-        networkData?.filter((i) => i.metric === 'networkTransferBytes')?.map((item) => getDateStringFromDateUnit(item.timestamp, chartUnit)) || [],
+        networkData?.filter((i) => i.metric === 'networkReceiveBytes')?.map((item) => getDateStringFromDateUnit(item.timestamp, chartUnit)) || [],
       chartLabel: ['Ingress (GB)'],
     };
     setIngressLinechartData(ingressLinechartData);
 
     const egressLinechartData = {
-      data: networkData?.filter((i) => i.metric === 'networkReceiveBytes')?.map((item) => formatMemory(item.avg_value, 'bytes', 'gb', false)) || [],
+      data: networkData?.filter((i) => i.metric === 'networkTransferBytes')?.map((item) => formatMemory(item.avg_value, 'bytes', 'gb', false)) || [],
       label:
-        networkData?.filter((i) => i.metric === 'networkReceiveBytes')?.map((item) => getDateStringFromDateUnit(item.timestamp, chartUnit)) || [],
+        networkData?.filter((i) => i.metric === 'networkTransferBytes')?.map((item) => getDateStringFromDateUnit(item.timestamp, chartUnit)) || [],
       chartLabel: ['Egress (GB)'],
     };
     setEgressLinechartData(egressLinechartData);
