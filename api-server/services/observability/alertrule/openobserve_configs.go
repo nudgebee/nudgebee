@@ -16,8 +16,16 @@ type openObserveAlertConfig struct {
 // Like the other alert providers, resolve locally to avoid integrations -> eventrule -> alertrule cycles.
 func getOpenObserveAlertConfig(ctx *security.RequestContext, accountID string) (openObserveAlertConfig, error) {
 	cfg := openObserveAlertConfig{LogStream: "default", TraceStream: "default"}
+	accountID = strings.TrimSpace(accountID)
 	if accountID == "" {
 		return cfg, fmt.Errorf("account_id is required to resolve an OpenObserve integration")
+	}
+	if ctx == nil || ctx.GetSecurityContext() == nil {
+		return cfg, fmt.Errorf("tenant security context is required to resolve an OpenObserve integration")
+	}
+	tenantID := strings.TrimSpace(ctx.GetSecurityContext().GetTenantId())
+	if tenantID == "" {
+		return cfg, fmt.Errorf("tenant_id is required to resolve an OpenObserve integration")
 	}
 	db, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -30,7 +38,7 @@ func getOpenObserveAlertConfig(ctx *security.RequestContext, accountID string) (
  JOIN cloud_accounts ca ON ca.id=ica.cloud_account_id AND ca.tenant=i.tenant_id
  JOIN integration_config_values v ON v.integration_id=i.id
  WHERE i.type='openobserve' AND i.source='user' AND i.status != 'disabled'
- AND i.tenant_id=$1 AND ica.cloud_account_id=$2`, ctx.GetSecurityContext().GetTenantId(), accountID)
+ AND i.tenant_id=$1 AND ica.cloud_account_id=$2`, tenantID, accountID)
 	if err != nil {
 		return cfg, fmt.Errorf("list OpenObserve alert configs: %w", err)
 	}

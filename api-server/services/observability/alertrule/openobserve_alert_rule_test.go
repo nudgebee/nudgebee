@@ -40,6 +40,8 @@ func TestBuildOpenObserveAlertPayload(t *testing.T) {
 		{"missing destinations", func(c *AlertRuleConfig) { delete(c.ProviderConfig, "destinations") }, "destinations are required", "", ""},
 		{"empty destinations", func(c *AlertRuleConfig) { c.ProviderConfig["destinations"] = []string{} }, "destinations are required", "", ""},
 		{"blank destination", func(c *AlertRuleConfig) { c.ProviderConfig["destinations"] = []string{" "} }, "cannot be empty", "", ""},
+		{"control in destination", func(c *AlertRuleConfig) { c.ProviderConfig["destinations"] = []string{"bad\nname"} }, "control characters", "", ""},
+		{"destination whitespace trimmed", func(c *AlertRuleConfig) { c.ProviderConfig["destinations"] = []string{" nudgebee-events "} }, "", "sql", ">="},
 		{"invalid destination type", func(c *AlertRuleConfig) { c.ProviderConfig["destinations"] = []any{3} }, "destination names", "", ""},
 		{"missing query", func(c *AlertRuleConfig) { c.Query = " " }, "query is required", "", ""},
 		{"missing name", func(c *AlertRuleConfig) { c.Name = " " }, "name must be non-empty", "", ""},
