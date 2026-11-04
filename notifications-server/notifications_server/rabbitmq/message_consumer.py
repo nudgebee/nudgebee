@@ -81,12 +81,18 @@ class Consumer:
     async def setup_exchange(self):
         LOG.info(f"Declaring exchange {self.exchange}")
         await self._channel.declare_exchange(self.exchange, ExchangeType.DIRECT, durable=True)
+        await self._channel.declare_exchange(
+            self.dlx_exchange,
+            ExchangeType.DIRECT,
+            durable=True,
+        )
         await self.setup_queue()
 
     async def setup_queue(self):
         LOG.info(f"Declaring queue {self.queue}")
         queue = await self._channel.declare_queue(self.queue, durable=True)
-        await queue.bind(self.exchange)
+        await queue.bind(self.exchange, routing_key=self.queue)
+        await queue.bind(self.dlx_exchange, routing_key=self.queue)
         await self.setup_delayed_queue()
 
     async def setup_delayed_queue(self):

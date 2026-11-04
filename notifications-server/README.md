@@ -239,7 +239,7 @@ The bundled [`branding/default/theme.json`](notifications_server/branding/defaul
 
 ## RabbitMQ Message Format
 
-The consumer reads JSON messages from the `notifications` queue. Failed messages are sent to a delayed queue (`notifications_delayed`) and retried via the `dlx` dead-letter exchange after `RABBITMQ_DEAD_LETTER_DELAY_MS` ms.
+The consumer reads JSON messages from the `notifications` queue. Failed messages are sent to a delayed queue (`notifications_delayed`) and retried via the provisioned `dlx` dead-letter exchange after `RABBITMQ_DEAD_LETTER_DELAY_MS` ms; the `dlx` exchange routes them back to `notifications`.
 
 Message envelope (see `notifications_server/schemas/message.py` for the full Pydantic model):
 
