@@ -262,10 +262,9 @@ kubectl -n nudgebee get secret nudgebee \
   -o jsonpath='{.data.NEXTAUTH_DUMMY_CREDS_PASSWORD}' | base64 -d
 ```
 After configuring and verifying SSO, LDAP, or magic-link authentication, disable
-the bootstrap login. Keep the deployment's existing values and chart arguments:
+the bootstrap login:
 ```bash
-helm upgrade nudgebee ./nudgebee --reuse-values \
-  --set nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED=false
+helm upgrade ... --set nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED=false
 ```
 
 ## Going deeper
