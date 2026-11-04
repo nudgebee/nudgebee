@@ -1323,7 +1323,8 @@ func processTaskLoop(
 					paramMap[k] = v
 				}
 
-				setInternalTaskParams(paramMap, wf, tplCtx.Inputs)
+				eventID := extractEventIDFromInputs(tplCtx.Inputs)
+				setInternalTaskParams(paramMap, wf, eventID)
 				// Intentionally do NOT attach the full template Vars (tplCtx.Vars) to the
 				// activity input. Params are already rendered above via ProcessValue, and
 				// TaskWrapper strips ParamVars before Execute, so no task ever reads it.
@@ -1951,14 +1952,14 @@ func updateFinalWorkflowStatusAndExecuteHooks(ctx workflow.Context, wf *model.Wo
 	}
 }
 
-func setInternalTaskParams(params map[string]any, wf *model.Workflow, inputs map[string]any) {
+func setInternalTaskParams(params map[string]any, wf *model.Workflow, eventID string) {
 	params[tasks.ParamTenantID] = wf.TenantID
 	params[tasks.ParamAccountID] = wf.AccountID
 	params[tasks.ParamWorkflowID] = wf.ID
 	params[tasks.ParamUserID] = wf.UpdatedBy
 	params[tasks.ParamWorkflowName] = wf.Name
 
-	if eventID := extractEventIDFromInputs(inputs); eventID != "" {
+	if eventID != "" {
 		params[tasks.ParamEventID] = eventID
 	} else {
 		delete(params, tasks.ParamEventID)
@@ -1993,6 +1994,7 @@ func executeSimpleActions(ctx workflow.Context, actions []model.Action, tplCtx *
 	if wf == nil {
 		return fmt.Errorf("workflow metadata is required to execute hook actions")
 	}
+	eventID := extractEventIDFromInputs(tplCtx.Inputs)
 
 	selector := workflow.NewSelector(ctx)
 	futures := make([]workflow.Future, 0, len(actions))
@@ -2007,7 +2009,7 @@ func executeSimpleActions(ctx workflow.Context, actions []model.Action, tplCtx *
 		if params == nil {
 			params = make(map[string]any)
 		}
-		setInternalTaskParams(params, wf, tplCtx.Inputs)
+		setInternalTaskParams(params, wf, eventID)
 
 		future := workflow.ExecuteActivity(ctx, action.Type, params)
 		futures = append(futures, future)
