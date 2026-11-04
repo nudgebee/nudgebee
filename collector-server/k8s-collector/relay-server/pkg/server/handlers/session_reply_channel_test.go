@@ -63,6 +63,9 @@ func TestBroker_OversizedReplyDoesNotRedeliverRequest(t *testing.T) {
 	require.NoError(t, err)
 	replyCh := newSessionReplyChannel(connMgr.GetChannel)
 	t.Cleanup(replyCh.close)
+	// Runs after the session's cleanup (LIFO), stopping the drain below.
+	drainDone := make(chan struct{})
+	t.Cleanup(func() { close(drainDone) })
 	s := startSessionWith(t, proxy, func(_ *amqp.Channel, d amqp.Delivery) {
 		if string(d.Body) == "big" {
 			_ = replyCh.publish(replyQueue, amqp.Publishing{Body: big})
@@ -76,7 +79,12 @@ func TestBroker_OversizedReplyDoesNotRedeliverRequest(t *testing.T) {
 	// would keep the session from shutting down.
 	t.Cleanup(func() {
 		go func() {
-			for range s.received { //nolint:revive // drain only
+			for {
+				select {
+				case <-s.received:
+				case <-drainDone:
+					return
+				}
 			}
 		}()
 	})
