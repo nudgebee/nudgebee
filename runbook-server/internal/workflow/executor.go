@@ -481,12 +481,10 @@ func handleTaskCompletion(ctx workflow.Context, workflowID string, taskID string
 
 				executionID := workflow.GetInfo(ctx).WorkflowExecution.RunID
 
-				// We fire and forget the activity future here because we don't want to block strict execution flow
-				// for state persistence if it's not critical for the *immediate* next step (though ideally it should be consistent).
-				// However, to ensure consistency, we SHOULD wait.
+				// Persist state before allowing dependent tasks to run.
 				if err := workflow.ExecuteActivity(ctxWithAO, UpdateWorkflowStateActivity, workflowID, stateUpdates, executionID, taskID).Get(ctxWithAO, nil); err != nil {
 					logger.Error("Failed to persist workflow state", "taskID", taskID, "error", err)
-					// Decide if this is fatal. For now, log error.
+					return fmt.Errorf("failed to persist workflow state for task %s: %w", taskID, err)
 				}
 			}
 		}

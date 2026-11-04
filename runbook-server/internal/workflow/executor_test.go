@@ -636,3 +636,47 @@ func (s *ExecutorTestSuite) TestWorkflowTemplateClockUsesTemporalTime() {
 	s.Equal(result["expected_timestamp"], result["timestamp"])
 	s.Equal(result["expected_timestamp"], result["now"])
 }
+
+func (s *ExecutorTestSuite) TestSetStatePersistenceFailureFailsWorkflowBeforeNextTask() {
+	var ranTasks []string
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, params map[string]any) (any, error) {
+		message, _ := params["message"].(string)
+		ranTasks = append(ranTasks, message)
+		return map[string]string{"data": message}, nil
+	}, activity.RegisterOptions{Name: "core.print"})
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, wf *model.Workflow, status model.WorkflowExecutionStatus, message string) error {
+		return nil
+	}, activity.RegisterOptions{Name: "Internal_UpdateLastExecutionStatusActivity"})
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, workflowID string) (map[string]any, error) {
+		return map[string]any{}, nil
+	}, activity.RegisterOptions{Name: "FetchWorkflowStateActivity"})
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, tenantID, accountID string, restrictToAccount bool) (FetchConfigsResponse, error) {
+		return FetchConfigsResponse{}, nil
+	}, activity.RegisterOptions{Name: "FetchWorkflowConfigsActivity"})
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, workflowID string, stateUpdates map[string]model.StateUpdateDTO, executionID, taskID string) error {
+		return fmt.Errorf("state store unavailable")
+	}, activity.RegisterOptions{Name: "UpdateWorkflowStateActivity"})
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, typeReferenceID string, workflowFailed bool) error {
+		return nil
+	}, activity.RegisterOptions{Name: "Internal_UpdateEventResolutionStatusActivity"})
+
+	executor := &WorkflowExecutor{}
+	wf := &model.Workflow{
+		ID:        "set-state-failure-wf",
+		TenantID:  "test-tenant",
+		AccountID: "test-account",
+		Definition: model.WorkflowDefinition{
+			Tasks: []model.Task{
+				{ID: "save", Type: "core.print", Params: map[string]any{"message": "save"}, SetState: map[string]any{"key": "value"}},
+				{ID: "later", Type: "core.print", DependsOn: []string{"save"}, Params: map[string]any{"message": "later"}},
+			},
+		},
+	}
+
+	s.env.RegisterWorkflow(executor.ExecuteWorkflowInternal)
+	s.env.ExecuteWorkflow(executor.ExecuteWorkflowInternal, wf, nil)
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.ErrorContains(s.env.GetWorkflowError(), "state store unavailable")
+	s.Equal([]string{"save"}, ranTasks, "later tasks must not run after SetState persistence fails")
+}
