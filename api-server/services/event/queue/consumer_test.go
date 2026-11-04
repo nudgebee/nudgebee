@@ -2,7 +2,9 @@ package queue
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"testing"
 
@@ -121,4 +123,42 @@ func TestProcessEventPostProcessMessage_MessagesWithoutPhaseAreHandledAsBefore(t
 			assert.Equal(t, tc.want, *spy)
 		})
 	}
+}
+
+func TestProcessEventPostProcessMessage_LoadFailureRetriesExceptPermanentErrors(t *testing.T) {
+	transientErr := errors.New("database unavailable")
+	for _, tc := range []struct {
+		name    string
+		loadErr error
+		wantErr bool
+	}{
+		{name: "transient lookup failure", loadErr: transientErr, wantErr: true},
+		{name: "event no longer exists", loadErr: sql.ErrNoRows},
+		{name: "event cannot be converted", loadErr: fmt.Errorf("%w: bad field", errEventNotConvertible)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spy := swapPostProcessSeams(t)
+			loadEventMapFn = func(context.Context, string, *slog.Logger) (*security.RequestContext, map[string]any, error) {
+				return nil, nil, tc.loadErr
+			}
+
+			err := processEventPostProcessMessage(context.Background(), []byte(`{"event_id":"e-1"}`))
+
+			if tc.wantErr {
+				assert.ErrorIs(t, err, tc.loadErr)
+			} else {
+				assert.NoError(t, err)
+			}
+			assert.Equal(t, postProcessSpy{}, *spy, "a failed lookup must not run event processors")
+		})
+	}
+}
+
+func TestProcessEventPostProcessMessage_WhitespaceEventIDIsAcked(t *testing.T) {
+	spy := swapPostProcessSeams(t)
+
+	err := processEventPostProcessMessage(context.Background(), []byte(`{"event_id":"   "}`))
+
+	assert.NoError(t, err)
+	assert.Equal(t, postProcessSpy{}, *spy, "an empty ID must not load or process an event")
 }
