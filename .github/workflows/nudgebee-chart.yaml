@@ -28,12 +28,64 @@ jobs:
           set -euo pipefail
           chart=deploy/kubernetes/nudgebee
           args=(--show-only templates/secrets-nudgebee.yaml \
+            --set agent.enabled=false \
             --set admin.email=chart-test@example.com \
             --set-string nudgebee_secret.NUDGEBEE_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef)
 
           default_render=$(helm template nudgebee "$chart" "${args[@]}")
           grep -Fq 'NEXTAUTH_DUMMY_CREDS_ENABLED: "ZmFsc2U="' <<<"$default_render"
 
-          opt_in_render=$(helm template nudgebee "$chart" "${args[@]}" \
+          if helm template nudgebee "$chart" "${args[@]}" --is-upgrade >upgrade.out 2>upgrade.err; then
+            echo 'offline upgrade without the setting or Secret unexpectedly succeeded' >&2
+            exit 1
+          fi
+          grep -Fq 'For offline/no-secret upgrades, set it explicitly' upgrade.err
+
+          opt_in_render=$(helm template nudgebee "$chart" "${args[@]}" --is-upgrade \
             --set nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED=true)
           grep -Fq 'NEXTAUTH_DUMMY_CREDS_ENABLED: "dHJ1ZQ=="' <<<"$opt_in_render"
+
+          opt_out_render=$(helm template nudgebee "$chart" "${args[@]}" --is-upgrade \
+            --set nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED=false)
+          grep -Fq 'NEXTAUTH_DUMMY_CREDS_ENABLED: "ZmFsc2U="' <<<"$opt_out_render"
+
+      - uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
+        with:
+          cluster_name: nudgebee-chart
+
+      - name: Verify online upgrade preserves the Secret setting
+        shell: bash
+        run: |
+          set -euo pipefail
+          chart="$RUNNER_TEMP/nudgebee-secret-chart"
+          mkdir -p "$chart/templates"
+          cat > "$chart/Chart.yaml" <<'EOF'
+          apiVersion: v2
+          name: nudgebee
+          type: application
+          version: 0.2.0
+          appVersion: "V0.2"
+          EOF
+          cp deploy/kubernetes/nudgebee/values.yaml "$chart/values.yaml"
+          cp deploy/kubernetes/nudgebee/templates/_helpers.tpl "$chart/templates/_helpers.tpl"
+          cp deploy/kubernetes/nudgebee/templates/secrets-nudgebee.yaml "$chart/templates/secrets-nudgebee.yaml"
+          cp deploy/kubernetes/nudgebee/templates/NOTES.txt "$chart/templates/NOTES.txt"
+
+          test_key=$(openssl rand -hex 32)
+          helm install nudgebee "$chart" --namespace chart-validation --create-namespace \
+            --set agent.enabled=false \
+            --set admin.email=chart-test@example.com \
+            --set-string "nudgebee_secret.NUDGEBEE_ENCRYPTION_KEY=$test_key"
+          initial=$(kubectl get secret nudgebee -n chart-validation \
+            -o jsonpath='{.data.NEXTAUTH_DUMMY_CREDS_ENABLED}')
+          test "$initial" = 'ZmFsc2U='
+
+          kubectl patch secret nudgebee -n chart-validation --type merge \
+            -p '{"data":{"NEXTAUTH_DUMMY_CREDS_ENABLED":"dHJ1ZQ=="}}'
+          helm upgrade nudgebee "$chart" --namespace chart-validation \
+            --set agent.enabled=false \
+            --set admin.email=chart-test@example.com \
+            --set-string "nudgebee_secret.NUDGEBEE_ENCRYPTION_KEY=$test_key"
+          preserved=$(kubectl get secret nudgebee -n chart-validation \
+            -o jsonpath='{.data.NEXTAUTH_DUMMY_CREDS_ENABLED}')
+          test "$preserved" = 'dHJ1ZQ=='

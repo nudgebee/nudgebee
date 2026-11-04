@@ -195,12 +195,19 @@ helm install nudgebee oci://ghcr.io/nudgebee/charts/nudgebee \
   --wait --timeout 20m
 ```
 
-`admin.email` creates the admin and its organisation during install, so the first
-login has nothing to set up. `agent.enabled` installs the NudgeBee agent alongside
-the server and connects the cluster hosting it — without it, that first cluster
-needs a separate agent install and an auth key copied out of the UI. Both are
-optional; leave them out and the deployment provisions itself when you first sign
-in, exactly as before. Additional clusters always use the normal agent install.
+`admin.email` creates the admin and its organisation during a fresh OSS install;
+it is required unless a licence or existing Secret supplies the admin address. `agent.enabled`
+installs the NudgeBee agent alongside the server and connects the cluster hosting
+it — without it, that first cluster needs a separate agent install and an auth key
+copied out of the UI. Dummy-password sign-in is disabled on fresh installs; use a
+configured OAuth/LDAP/SSO provider, or explicitly enable it only for a private
+bootstrap with `--set nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED=true`.
+Additional clusters always use the normal agent install.
+
+Online Helm upgrades preserve the value in the existing Secret when this setting
+is omitted. If an offline/GitOps upgrade cannot read the Secret, set
+`nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED` explicitly to the intended value;
+the chart fails rather than silently changing the available sign-in method.
 
 Two caveats for `agent.enabled`. The agent shares this Helm release, so
 `helm uninstall` removes it too. And if you render offline (Argo CD, Flux), set
@@ -215,12 +222,12 @@ The post-install hook applies database migrations automatically. Once the pods a
 ```bash
 kubectl -n nudgebee port-forward svc/app 3000:80
 
-# Retrieve the bootstrap admin password
+# Only when you explicitly enabled dummy-password sign-in for a private bootstrap:
 kubectl -n nudgebee get secret nudgebee \
   -o jsonpath='{.data.NEXTAUTH_DUMMY_CREDS_PASSWORD}' | base64 -d
 ```
 
-Open <http://localhost:3000> and sign in as your `admin.email` with that password — the shared password works for that address only (or the licence address on a licensed install). See [deploy/kubernetes/README.md](deploy/kubernetes/README.md) for production-grade configuration (ingress, TLS, external Postgres, ClickHouse, observability sidecars).
+Open <http://localhost:3000> and sign in through your configured provider. If you enabled dummy-password sign-in for bootstrap, use the retrieved password for your `admin.email` (or the licence address on a licensed install), then disable it with `helm upgrade nudgebee oci://ghcr.io/nudgebee/charts/nudgebee -n nudgebee --set nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED=false`. See [deploy/kubernetes/README.md](deploy/kubernetes/README.md) for production-grade configuration (ingress, TLS, external Postgres, ClickHouse, observability sidecars).
 
 ### First Run — what to do after you sign in
 

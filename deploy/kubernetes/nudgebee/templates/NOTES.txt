@@ -17,16 +17,22 @@ To access locally, run:
 kubectl port-forward svc/app -n {{ .Release.Namespace }} {{ $port }}:80
 {{- end }}
 
-{{- if .Values.nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED }}
+{{- $dummyCredsEnabled := include "nudgebee.dummyCredsEnabled" . }}
+{{- $dummyCredsSecretName := .Values.nudgebee_secret.existingSecretName | default (include "nudgebee.secretName" .) }}
+{{- if eq $dummyCredsEnabled "true" }}
 To retrieve the password from the secret, run the following command:
-kubectl get secret nudgebee -n {{ .Release.Namespace }} -o jsonpath='{.data.NEXTAUTH_DUMMY_CREDS_PASSWORD}' | base64 --decode
+kubectl get secret {{ $dummyCredsSecretName }} -n {{ .Release.Namespace }} -o jsonpath='{.data.NEXTAUTH_DUMMY_CREDS_PASSWORD}' | base64 --decode
+{{- else }}
+Dummy-password sign-in is disabled. Use your configured authentication provider.
 {{- end }}
 
 {{- if .Values.admin.email }}
 
-Sign in as {{ .Values.admin.email }} — the admin and its organisation were created
-during install, so there is nothing to set up on first login. The shared password
-works for this address only.
+The admin {{ .Values.admin.email }} and its organisation were created during
+install. Sign in with your configured authentication provider.
+{{- if eq $dummyCredsEnabled "true" }}
+The temporary shared-password provider is also enabled for this address only.
+{{- end }}
 {{- end }}
 
 {{- if .Values.agent.enabled }}
@@ -44,17 +50,17 @@ Offline render (Argo CD, Flux) must set agent.accessKey/accessSecret.
 {{- /* The chart has no local/dev/prod environment marker, so this warns on
        every install/upgrade with dummy creds enabled — imprecise but with no
        false negatives. */}}
-{{- if and .Values.nudgebee_secret (eq (toString (index .Values.nudgebee_secret "NEXTAUTH_DUMMY_CREDS_ENABLED")) "true") }}
+{{- if eq $dummyCredsEnabled "true" }}
 
 ⚠️  WARNING: NEXTAUTH_DUMMY_CREDS_ENABLED is set to "true". The shared
    password permits sign-in as the configured admin and bypasses OAuth / LDAP /
-   SSO. Keep this explicit opt-in limited to a private bootstrap window, then
+   SSO. Keep this provider active only during a private bootstrap window, then
    disable it:
 
      helm upgrade {{ .Release.Name }} ... --set nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED=false
 
-   The chart default is `false`; this warning appears only when the provider is
-   explicitly enabled.
+   Fresh installs default to `false`. Upgrades retain the existing Secret value
+   unless you set this flag explicitly.
 {{- end }}
 
 {{- /* Only fires on clusters that DO run the Prometheus Operator: there the
@@ -133,4 +139,4 @@ Then re-run helm upgrade with --set nudgebee_secret.NUDGEBEE_ENCRYPTION_KEY=<old
 ============================================================================
 {{- end }}
 {{- end }}
-============================================================================s
+============================================================================

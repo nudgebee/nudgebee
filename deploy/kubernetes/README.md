@@ -64,7 +64,7 @@ If you supply the shared `nudgebee` Secret yourself, include non-empty `ACTION_A
 |---------------------------------------------|---------------------------------------------------------------------------|
 | `nudgebee_secret.NUDGEBEE_LICENSE`          | License JWT (commercial / EE). Leave empty for OSS — server short-circuits to `licenseType=free`. |
 | `nudgebee_secret.LICENSE_PUBLIC_KEY`        | RSA public key for verifying the license JWT. Empty for OSS.              |
-| `nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED` | Shared-password sign-in for private bootstrap only; defaults to `false`. |
+| `nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED` | `false` on fresh installs; upgrades preserve the Secret value. Set explicitly to override. Offline upgrades without the Secret must set it explicitly. |
 | `nudgebee_secret.EMAIL_*`                   | SMTP host / port / user / password / from-address for outbound email     |
 | `global.imagePullSecrets`                   | If pulling images from a private registry                                 |
 | `global.storageClass`                       | StorageClass for every PVC in the stack (postgresql, redis, rabbitmq, clickhouse, qdrant). Empty uses the cluster's default StorageClass; `"-"` binds pre-created PVs. When set it wins over per-component settings (bitnami precedence) — to give one store its own class, leave this empty and set e.g. `nudgebee-qdrant-server.persistence.storageClass` per component. Set it before the first install: a bound PVC's storage class can't be changed later. |
@@ -266,17 +266,26 @@ Set `global.imagePullSecrets` and provide credentials via `nudgebee_registry_sec
 `nudgebee_secret.BASE_URL` doesn't match the ingress host. Update + re-run `helm upgrade`.
 
 **Temporary bootstrap login**
-Dummy-credential sign-in is disabled by default. For a private bootstrap, set
-`admin.email` and explicitly enable it during install with
+**Temporary bootstrap login**
+Dummy-credential sign-in is disabled on fresh installs. For a private bootstrap,
+set `admin.email` and explicitly enable it during install with
 `--set nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED=true`. The generated password
-is restricted to that email address and is preserved across upgrades. Retrieve it
-with:
+is restricted to that email address and is preserved across online upgrades.
+Retrieve it with:
 ```bash
 kubectl -n nudgebee get secret nudgebee \
   -o jsonpath='{.data.NEXTAUTH_DUMMY_CREDS_PASSWORD}' | base64 -d
 ```
-After configuring and verifying the permanent sign-in method, disable the
-bootstrap login with a Helm upgrade:
+After verifying the permanent sign-in method, disable the bootstrap login with a
+Helm upgrade:
+```bash
+helm upgrade ... --set nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED=false
+```
+Online upgrades preserve the existing Secret value when this setting is omitted,
+so set it explicitly when disabling the login. Offline upgrades must set it
+explicitly. If you use `nudgebee_secret.existingSecretName` for an externally
+managed Secret, update `NEXTAUTH_DUMMY_CREDS_ENABLED` in that Secret directly;
+Helm does not rewrite it.
 
 ## Going deeper
 
