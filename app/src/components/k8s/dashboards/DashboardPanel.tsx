@@ -123,6 +123,29 @@ function useSeenOnScreen<T extends HTMLElement>() {
   return [ref, seen] as const;
 }
 
+/**
+ * The element's rendered height in whole px, or null until it is measured (and
+ * always without a ResizeObserver, e.g. jsdom). Off when `enabled` is false, so
+ * a panel that does not use it never re-renders on resize.
+ */
+function useMeasuredHeight<T extends HTMLElement>(enabled: boolean) {
+  const ref = React.useRef<T | null>(null);
+  const [height, setHeight] = React.useState<number | null>(null);
+
+  React.useEffect(() => {
+    const node = ref.current;
+    if (!enabled || !node || typeof ResizeObserver === 'undefined') {
+      setHeight(null);
+      return;
+    }
+    const observer = new ResizeObserver(([entry]) => setHeight(Math.round(entry.contentRect.height)));
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [enabled]);
+
+  return [ref, height] as const;
+}
+
 interface Props {
   panel: Panel;
   /** Every account the viewer can see; the panel's scope resolves against it. */
@@ -399,6 +422,9 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
   // Panels fetch on scroll, not on open: a 30-panel dashboard otherwise fires 30
   // concurrent provider requests before the viewer has seen the second row.
   const [panelRef, seen] = useSeenOnScreen<HTMLDivElement>();
+  // The card body's real height: a grid row stretches a short stat to its
+  // tallest neighbour, and the account list should use that room.
+  const [bodyRef, bodyHeight] = useMeasuredHeight<HTMLDivElement>(panel.type === 'stat' || panel.type === 'gauge');
 
   /** Rasterises this panel. */
   const exportPng = async () => {
@@ -713,12 +739,12 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
             </Box>
           );
           // The View modal has the room the grid cell does not, so it lists every account.
-          const placement = expanded ? (stat.rows.length > 1 ? 'under' : null) : breakdownPlacement(panel, stat.rows.length);
+          const placement = expanded ? (stat.rows.length > 1 ? 'under' : null) : breakdownPlacement(panel, stat.rows.length, bodyHeight);
           const listed = placement !== null;
           // A card that cannot list every account still lists the ones over a
           // threshold: they are the rows the list exists for.
           const shownRows = listed ? rows : rows.filter((r) => flagged.has(r.account));
-          const shownPlacement = listed ? placement : stat.rows.length > 1 ? breachedPlacement(panel, shownRows.length) : null;
+          const shownPlacement = listed ? placement : stat.rows.length > 1 ? breachedPlacement(panel, shownRows.length, bodyHeight) : null;
           const breakdownList = shownPlacement && (
             <PanelAccountBreakdown
               rows={shownRows}
@@ -984,7 +1010,7 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
         }
       }
     },
-    [panel, data, stat, breaches, thresholdPlugin, filtering, hasDataLinks, handlePointClick]
+    [panel, data, stat, breaches, thresholdPlugin, filtering, hasDataLinks, handlePointClick, bodyHeight]
   );
   const drawing = React.useMemo(() => renderDrawing(CHART_HEIGHT), [renderDrawing]);
   // Built only while the modal is open, so a closed one costs no second chart.
@@ -1275,7 +1301,7 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
         {/* `data-panel-body` is the hook edit mode uses to make the chart inert
             while the panel is being dragged or resized — a Chart.js canvas
             otherwise swallows the mousemove the gesture needs. */}
-        <Box data-panel-body sx={{ flex: 1, minHeight: 0 }}>
+        <Box data-panel-body ref={bodyRef} sx={{ flex: 1, minHeight: 0 }}>
           {body()}
         </Box>
         {/* Partial failure: some accounts answered, some did not. Saying which

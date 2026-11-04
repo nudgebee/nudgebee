@@ -60,6 +60,25 @@ describe('breakdownPlacement', () => {
   });
 });
 
+describe('breakdownPlacement with a measured body', () => {
+  // A short stat (h=4) stretched by its row to a tall neighbour's height: the
+  // measured room decides, not the stat's own grid height.
+  it('lists the accounts when the stretched body has room for them', () => {
+    expect(breakdownPlacement(panel('stat', 4), 4)).toBeNull();
+    expect(breakdownPlacement(panel('stat', 4), 4, 200)).toBe('under');
+    expect(breakdownPlacement(panel('stat', 4), 4, 80)).toBe('beside');
+  });
+
+  it('keeps the count when even the measured body is too short', () => {
+    expect(breakdownPlacement(panel('stat', 8), 4, 60)).toBeNull();
+  });
+
+  it('falls back to the grid height until measured', () => {
+    expect(breakdownPlacement(panel('stat', 8), 4, null)).toBe(breakdownPlacement(panel('stat', 8), 4));
+    expect(breakdownPlacement(panel('stat', 8), 4, 0)).toBe(breakdownPlacement(panel('stat', 8), 4));
+  });
+});
+
 describe('PanelAccountBreakdown', () => {
   it('lists every account it is given, and says where it sits', () => {
     render(<PanelAccountBreakdown rows={rows(6)} placement='beside' format={format} testId='bd' />);

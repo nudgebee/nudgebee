@@ -6,11 +6,13 @@
  * which cluster is it? — needed a mouse over the right spot to answer, and
  * nothing on the card hinted that one account was carrying the figure.
  *
- * How many rows fit is decided from the panel's grid height rather than
- * measured. The dashboard grid sizes a row to its tallest panel, so a list that
- * grew with the account count would stretch every panel beside it; a budget
- * fixed by `grid_pos.h` keeps the card the size its author set, and is the same
- * answer on every refresh.
+ * How many rows fit is decided from the body's measured height, falling back
+ * to the panel's grid height before it has been measured (and in jsdom). The
+ * dashboard grid sizes a row to its tallest panel and stretches the rest to
+ * match, so a short stat beside a tall one has the tall one's room — budgeting
+ * from its own `grid_pos.h` left that room empty and showed "4 accounts" on one
+ * card while its neighbour listed them. A list is drawn only when it fits the
+ * measured room, so it never grows the row it was measured in.
  *
  * Every account, or none. A list cut to the first few names in account order
  * says nothing the hover does not, and reads as if those were the ones that
@@ -70,14 +72,25 @@ const MAX_GAUGE_ROWS = 3;
 export type BreakdownPlacement = 'under' | 'beside';
 
 /**
+ * The room a panel's body has, in px: `measured` — the body's rendered height,
+ * which already excludes the header however it wrapped — or, before that is
+ * known, the budget its grid height gives.
+ */
+function bodyRoom(panel: Panel, measured?: number | null): { body: number; titleWrap: number } {
+  if (measured && measured > 0) return { body: measured, titleWrap: 0 };
+  return { body: panelMinHeight(panel) - PANEL_CHROME_PX, titleWrap: TITLE_WRAP_PX };
+}
+
+/**
  * Where this panel lists `accounts` rows, or null when it cannot fit every one
  * of them — or when there is only one, which has nothing to break down.
+ * `measured` is the body's rendered height, when known.
  */
-export function breakdownPlacement(panel: Panel, accounts: number): BreakdownPlacement | null {
+export function breakdownPlacement(panel: Panel, accounts: number, measured?: number | null): BreakdownPlacement | null {
   if (accounts < 2) return null;
-  const body = panelMinHeight(panel) - PANEL_CHROME_PX;
+  const { body, titleWrap } = bodyRoom(panel, measured);
   if (panel.type === 'gauge') return accounts <= MAX_GAUGE_ROWS && fitsRows(accounts, body - MIN_DIAL_PX) ? 'under' : null;
-  const statBody = body - TITLE_WRAP_PX;
+  const statBody = body - titleWrap;
   if (fitsRows(accounts, statBody - STAT_FIGURE_PX)) return 'under';
   return fitsRows(accounts, statBody) ? 'beside' : null;
 }
@@ -88,11 +101,11 @@ export function breakdownPlacement(panel: Panel, accounts: number): BreakdownPla
  * account count stays under a stat's figure, so they go beside it; a gauge's go
  * under its dial, within the gauge's usual cap.
  */
-export function breachedPlacement(panel: Panel, accounts: number): BreakdownPlacement | null {
+export function breachedPlacement(panel: Panel, accounts: number, measured?: number | null): BreakdownPlacement | null {
   if (accounts < 1) return null;
-  const body = panelMinHeight(panel) - PANEL_CHROME_PX;
+  const { body, titleWrap } = bodyRoom(panel, measured);
   if (panel.type === 'gauge') return accounts <= MAX_GAUGE_ROWS && fitsRows(accounts, body - MIN_DIAL_PX) ? 'under' : null;
-  return fitsRows(accounts, body - TITLE_WRAP_PX) ? 'beside' : null;
+  return fitsRows(accounts, body - titleWrap) ? 'beside' : null;
 }
 
 function fitsRows(rows: number, room: number): boolean {
