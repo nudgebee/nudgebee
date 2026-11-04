@@ -34,9 +34,15 @@ var k8sSecretSchema = core.SpecificTypeSchema{
 
 func init() { core.RegisterSpecificTypeSchema(k8sSecretSchema) }
 
-// fetchK8sSecretsFromRelay fetches every Secret across the cluster, drops
-// helm release state, and returns metadata-only records (no .data values
-// land in the KG payload).
+// fetchK8sSecretsFromRelay fetches every Secret across the cluster except Helm
+// release state, and returns metadata-only records (no .data values land in
+// the KG payload).
+//
+// Helm release secrets are excluded at the source with a field selector: each
+// carries a full compressed release manifest, so on a cluster with many
+// releases the list ran to tens of MB — over the message broker's limit — only
+// to be thrown away here. Agents that predate field_selector support ignore it
+// and send everything, so the type check in parseK8sSecretsResponse stays.
 func (s *K8sSource) fetchK8sSecretsFromRelay(ctx context.Context, req *core.SourceBuildRequest) ([]K8sSecretFromRelay, error) {
 	if req.CloudAccountID == "" {
 		s.logger.Warn("skipping relay Secret fetch: cloud_account_id is empty")
@@ -58,6 +64,7 @@ func (s *K8sSource) fetchK8sSecretsFromRelay(ctx context.Context, req *core.Sour
 				"version":        "v1",
 				"resource_type":  "secrets",
 				"all_namespaces": true,
+				"field_selector": "type!=" + helmReleaseSecretType,
 			},
 		},
 	}
