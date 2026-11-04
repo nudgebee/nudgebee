@@ -149,11 +149,10 @@ jobs:
           # so weekly rebuilds roll security patches WITHIN alpine 3.22 but never
           # silently jump to a new major (which would risk breaking tooling).
           # Bump this in lockstep with the FROM alpine:X.Y in the base Dockerfile.
-          STABLE="alpine3.23"
+          STABLE="ubi9"
           echo "Merging ${REPO}:${SNAP} (+ :${STABLE} + :latest) from per-arch images"
           docker buildx imagetools create \
             -t "${REPO}:${STABLE}" \
-            -t "${REPO}:latest" \
             -t "${REPO}:${SNAP}" \
             --annotation "index:org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
             --annotation "index:org.opencontainers.image.revision=${{ github.sha }}" \
