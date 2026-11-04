@@ -279,11 +279,7 @@ func RegisterHandler(
 
 		// —— shared state for dispatching replies ——
 		wsWriteCh := make(chan []byte)
-		var respMap struct {
-			sync.Mutex
-			m map[string]chan []byte
-		}
-		respMap.m = make(map[string]chan []byte)
+		replies := newReplyRouter()
 
 		eg, egCtx := errgroup.WithContext(ctx)
 
@@ -409,16 +405,12 @@ func RegisterHandler(
 					continue
 				}
 
-				respMap.Lock()
-				if ch, ok := respMap.m[msg.RequestID]; ok {
-					select {
-					case ch <- raw:
-					case <-egCtx.Done():
-					}
-				} else {
+				switch found, delivered := replies.route(msg.RequestID, raw); {
+				case !found:
 					logger.Warn("no handler for reply", "request_id", msg.RequestID)
+				case !delivered:
+					logger.Warn("dropping duplicate reply", "request_id", msg.RequestID)
 				}
-				respMap.Unlock()
 			}
 		})
 
@@ -503,17 +495,8 @@ func RegisterHandler(
 							// and drops any reply whose request ID has no entry
 							// here, so an agent fast enough to answer before
 							// this goroutine is rescheduled had its reply lost.
-							ch := make(chan []byte, 1)
-							respMap.Lock()
-							respMap.m[d.CorrelationId] = ch
-							respMap.Unlock()
-
-							// Defer cleanup of response map
-							defer func() {
-								respMap.Lock()
-								delete(respMap.m, d.CorrelationId)
-								respMap.Unlock()
-							}()
+							ch, release := replies.register(d.CorrelationId)
+							defer release()
 
 							// forward to WebSocket
 							safeSend(d.Body)
@@ -661,16 +644,9 @@ func RegisterHandler(
 					return nil
 				}
 
-				// Register in respMap to wait for ack
-				ch := make(chan []byte, 1)
-				respMap.Lock()
-				respMap.m[reqID] = ch
-				respMap.Unlock()
-				defer func() {
-					respMap.Lock()
-					delete(respMap.m, reqID)
-					respMap.Unlock()
-				}()
+				// Register to wait for ack
+				ch, release := replies.register(reqID)
+				defer release()
 
 				payload = signPayload(payload, signer, logger)
 				safeSend(payload)
