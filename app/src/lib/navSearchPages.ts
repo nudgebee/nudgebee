@@ -591,13 +591,38 @@ export const gcpDetailsSearchFragments: GcpDetailsSearchFragment[] = [
   { label: 'Cloud Storage Instances', slug: 'gcp/cloud-storage/instances', fragment: 'cloud-storage/instances' },
 ];
 
+// CloudFoundry Cloud Account Details tabs — same route/shape as
+// awsDetailsSearchFragments above, see `cfOptions` in
+// src/pages/cloud-account/details/[CloudAccountDetails].jsx. `label` is the
+// hardcoded row title shown to the user; `slug` is the slash-joined path used
+// for the row's `type` chip, its searchText, and its acronym.
+export interface CloudFoundryDetailsSearchFragment {
+  label: string;
+  slug: string;
+  fragment: string;
+}
+
+export const cloudFoundryDetailsSearchFragments: CloudFoundryDetailsSearchFragment[] = [
+  { label: 'CloudFoundry Summary', slug: 'cloudfoundry/summary', fragment: 'summary' },
+  { label: 'CloudFoundry Events', slug: 'cloudfoundry/troubleshoot/events', fragment: 'events/events' },
+  { label: 'CloudFoundry Triage Rules', slug: 'cloudfoundry/troubleshoot/triage-rules', fragment: 'events/triage-rules' },
+  { label: 'CloudFoundry Alert Tuning', slug: 'cloudfoundry/troubleshoot/alert-tuning', fragment: 'events/threshold-suggestions' },
+  { label: 'CloudFoundry Applications', slug: 'cloudfoundry/cf-apps/instances', fragment: 'cf-apps/instances' },
+  { label: 'CloudFoundry App Events', slug: 'cloudfoundry/cf-apps/events', fragment: 'cf-apps/events' },
+  { label: 'CloudFoundry Organizations', slug: 'cloudfoundry/cf-organizations/instances', fragment: 'cf-organizations/instances' },
+  { label: 'CloudFoundry Organization Events', slug: 'cloudfoundry/cf-organizations/events', fragment: 'cf-organizations/events' },
+  { label: 'CloudFoundry Spaces', slug: 'cloudfoundry/cf-spaces/instances', fragment: 'cf-spaces/instances' },
+  { label: 'CloudFoundry Space Events', slug: 'cloudfoundry/cf-spaces/events', fragment: 'cf-spaces/events' },
+  { label: 'CloudFoundry Routes', slug: 'cloudfoundry/cf-routes/instances', fragment: 'cf-routes/instances' },
+];
+
 // Tabs/sub-tabs that exist in page source today but are NOT represented
 // anywhere above. Every entry here needs its own reason so a reviewer can
 // tell "known exclusion" apart from "someone forgot to register this" — see
 // "Keeping Global Search in sync" in app/CLAUDE.md. Audited 2026-07-28;
 // re-check this list whenever a page's tab structure changes.
 export const navSearchIgnoredFragments: string[] = [
-  // Cloud Account Details (AWS/Azure/GCP) — account-wide Security/Tools tabs
+  // Cloud Account Details (AWS/Azure/GCP/CloudFoundry) — account-wide Security/Tools tabs
   // are `disabled: true` in baseOptions, src/pages/cloud-account/details/
   // [CloudAccountDetails].jsx (~line 176). Confirmed intentional.
   'aws/security',
@@ -606,6 +631,8 @@ export const navSearchIgnoredFragments: string[] = [
   'azure/tools',
   'gcp/security',
   'gcp/tools',
+  'cloudfoundry/security',
+  'cloudfoundry/tools',
 
   // NOTE: /kubernetes#overview is no longer listed here — the page moved to
   // /overview (Account Overview) and IS registered above; src/pages/kubernetes/
@@ -618,19 +645,6 @@ export const navSearchIgnoredFragments: string[] = [
   // NOT confirmed intentional.
   'auto-pilot/task#tasks',
   'auto-pilot/task#details',
-
-  // CloudFoundry Cloud Account Details tabs (cfOptions in
-  // [CloudAccountDetails].jsx) — unlike AWS/Azure/GCP, there is no
-  // `cloudFoundryDetailsSearchFragments` array at all yet. Flagged here as a
-  // block rather than case-by-case since it's a whole provider missing, not
-  // a one-off tab — worth a deliberate decision rather than silent exclusion.
-  'cloudfoundry/cf-apps/instances',
-  'cloudfoundry/cf-apps/events',
-  'cloudfoundry/cf-organizations/instances',
-  'cloudfoundry/cf-organizations/events',
-  'cloudfoundry/cf-spaces/instances',
-  'cloudfoundry/cf-spaces/events',
-  'cloudfoundry/cf-routes/instances',
 
   // /home — src/pages/home/index.jsx. No fragment/tabOptions of its own (just
   // shortcut cards linking into fragments already registered elsewhere); it's
