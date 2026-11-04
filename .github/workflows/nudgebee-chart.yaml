@@ -1,0 +1,39 @@
+name: Nudgebee Helm chart
+
+on:
+  pull_request:
+    paths:
+      - 'deploy/kubernetes/nudgebee/**'
+      - '.github/workflows/nudgebee-chart.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  dummy-credentials-default:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v3.16.2
+
+      - name: Build chart dependencies
+        run: helm dependency build deploy/kubernetes/nudgebee
+
+      - name: Verify dummy credentials require opt-in
+        shell: bash
+        run: |
+          set -euo pipefail
+          chart=deploy/kubernetes/nudgebee
+          args=(--show-only templates/secrets-nudgebee.yaml \
+            --set admin.email=chart-test@example.com \
+            --set-string nudgebee_secret.NUDGEBEE_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef)
+
+          default_render=$(helm template nudgebee "$chart" "${args[@]}")
+          grep -Fq 'NEXTAUTH_DUMMY_CREDS_ENABLED: "ZmFsc2U="' <<<"$default_render"
+
+          opt_in_render=$(helm template nudgebee "$chart" "${args[@]}" \
+            --set nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED=true)
+          grep -Fq 'NEXTAUTH_DUMMY_CREDS_ENABLED: "dHJ1ZQ=="' <<<"$opt_in_render"
