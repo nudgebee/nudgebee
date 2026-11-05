@@ -539,6 +539,7 @@ func (s *ExecutorTestSuite) TestHookActionsReceiveTrustedWorkflowMetadata() {
 		"marker":                   "hook",
 		tasks.ParamTenantID:        "attacker-tenant",
 		tasks.ParamAccountID:       "attacker-account",
+		tasks.ParamDryRun:          false,
 		tasks.ParamWorkflowID:      "attacker-workflow",
 		tasks.ParamEventID:         "attacker-event",
 		tasks.ParamUserID:          "attacker-user",
@@ -553,6 +554,7 @@ func (s *ExecutorTestSuite) TestHookActionsReceiveTrustedWorkflowMetadata() {
 		UpdatedBy:     "trusted-user-id",
 		UpdatedByUser: &model.WorkflowUser{DisplayName: "Trusted User"},
 		Name:          "Trusted Workflow",
+		DryRun:        true,
 		Definition: model.WorkflowDefinition{
 			Tasks: []model.Task{{
 				ID:     "task",
@@ -574,6 +576,7 @@ func (s *ExecutorTestSuite) TestHookActionsReceiveTrustedWorkflowMetadata() {
 	s.Equal(2, len(captured), "task and workflow hooks should both run")
 	for i := 0; i < 2; i++ {
 		params := <-captured
+		s.Equal(true, params[tasks.ParamDryRun], "dry-run flag must be set by the workflow, not hook params")
 		s.Equal("trusted-tenant-id", params[tasks.ParamTenantID])
 		s.Equal("trusted-account-id", params[tasks.ParamAccountID])
 		s.Equal("trusted-workflow-id", params[tasks.ParamWorkflowID])

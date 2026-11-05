@@ -2010,6 +2010,9 @@ func executeSimpleActions(ctx workflow.Context, actions []model.Action, tplCtx *
 			params = make(map[string]any)
 		}
 		setInternalTaskParams(params, wf, eventID)
+		if wf.DryRun {
+			params[tasks.ParamDryRun] = true
+		}
 
 		future := workflow.ExecuteActivity(ctx, action.Type, params)
 		futures = append(futures, future)
