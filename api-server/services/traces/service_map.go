@@ -2,6 +2,7 @@ package traces
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"nudgebee/services/common"
@@ -754,12 +755,21 @@ func FetchTracesAndBuildServiceMap(requestContext *security.RequestContext, para
 }
 
 func FetchTracesWithFocusedStrategy(requestContext *security.RequestContext, params TraceQueryParams, builder *TraceServiceMapBuilder) (*ServiceMap, error) {
+	return fetchTracesWithFocusedStrategy(requestContext, params, builder, executeFocusedQuery)
+}
+
+func fetchTracesWithFocusedStrategy(requestContext *security.RequestContext, params TraceQueryParams, builder *TraceServiceMapBuilder, fetch func(*security.RequestContext, TraceQueryParams, FocusedQueryParams) ([]common.OpenTelemetryTrace, error)) (*ServiceMap, error) {
+	if params.AccountID == "" {
+		return nil, fmt.Errorf("account ID is required")
+	}
+
 	strategyStartTime := time.Now()
 
 	// Generate focused queries using different filtering strategies
 	focusedQueries := generateFocusedQueries(params)
 
 	successfulQueries := 0
+	unconfiguredQueries := 0
 
 	slog.Info("Executing focused trace queries",
 		"total_queries", len(focusedQueries),
@@ -786,7 +796,7 @@ func FetchTracesWithFocusedStrategy(requestContext *security.RequestContext, par
 	for w := 0; w < maxConcurrent; w++ {
 		go func() {
 			for job := range jobs {
-				response, err := executeFocusedQuery(requestContext, params, job.params)
+				response, err := fetch(requestContext, params, job.params)
 				result := queryResult{
 					index:    job.index,
 					strategy: job.params.strategy,
@@ -808,6 +818,9 @@ func FetchTracesWithFocusedStrategy(requestContext *security.RequestContext, par
 	for i := 0; i < len(focusedQueries); i++ {
 		result := <-results
 		if result.err != nil {
+			if errors.Is(result.err, observability.ErrTraceProviderNotConfigured) {
+				unconfiguredQueries++
+			}
 			continue
 		}
 		rows = append(rows, result.rows...)
@@ -817,8 +830,23 @@ func FetchTracesWithFocusedStrategy(requestContext *security.RequestContext, par
 
 	slog.Info("Focused queries completed",
 		"successful_queries", successfulQueries,
+		"unconfigured_queries", unconfiguredQueries,
 		"traces_found", len(rows),
 		"query_duration_ms", queryElapsed.Milliseconds())
+	if successfulQueries == 0 {
+		if err := requestContext.GetContext().Err(); err != nil {
+			return nil, err
+		}
+		// An account with no configured trace provider fails every focused
+		// query with ErrTraceProviderNotConfigured. Preserve the previous
+		// no-traces/empty-map behavior instead of surfacing a query failure
+		// or letting callers count it as an error.
+		if unconfiguredQueries == len(focusedQueries) {
+			serviceMap, err := builder.BuildServiceMapWithTimeWindow(params.StartTime, params.EndTime)
+			return serviceMap, err
+		}
+		return nil, fmt.Errorf("all focused trace queries failed")
+	}
 
 	err := builder.LoadSpansFromRows(requestContext, rows, params)
 	if err != nil {
