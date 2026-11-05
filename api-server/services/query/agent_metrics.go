@@ -18,13 +18,25 @@ var statsNameMap = map[string]string{
 	"max": "Maximum",
 }
 
+func convertFilterValueToString(value any) (string, error) {
+	stringValue, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("expected string, got %T", value)
+	}
+	return stringValue, nil
+}
+
 func convertFilterValueToStrings(value any) ([]string, error) {
 	switch values := value.(type) {
-	case string:
-		return []string{values}, nil
 	case []string:
+		if len(values) == 0 {
+			return nil, fmt.Errorf("must contain at least one string")
+		}
 		return values, nil
 	case []any:
+		if len(values) == 0 {
+			return nil, fmt.Errorf("must contain at least one string")
+		}
 		result := make([]string, len(values))
 		for i, value := range values {
 			stringValue, ok := value.(string)
@@ -35,16 +47,25 @@ func convertFilterValueToStrings(value any) ([]string, error) {
 		}
 		return result, nil
 	default:
-		return nil, fmt.Errorf("expected string, []string, or []any, got %T", value)
+		return nil, fmt.Errorf("expected []string or []any, got %T", value)
 	}
+}
+
+func invalidAgentMetricsFilterResponse(startTime time.Time, field string, operator BinaryWhereClauseType, err error) (QueryResponse, error) {
+	return QueryResponse{
+		Errors: []common.Error{
+			common.ErrorBadRequest(fmt.Sprintf("invalid %s %s filter: %v", field, operator, err)),
+		},
+		ExecutionTimeMs: time.Since(startTime).Milliseconds(),
+	}, nil
 }
 
 func processAgentMetrices(query QueryRequest, context *security.RequestContext, startTime time.Time) (QueryResponse, error) {
 	binary := query.Where.Binary
 	if binary != nil && binary["account_id"] != nil && binary["account_id"][Eq] != nil {
-		accountId := binary["account_id"][Eq]
+		accountId, ok := binary["account_id"][Eq].(string)
 		delete(binary, "account_id")
-		if !context.GetSecurityContext().HasAccountAccess(accountId.(string), security.SecurityAccessTypeRead) {
+		if !ok || !context.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
 			return QueryResponse{
 				Errors: []common.Error{
 					common.ErrorUnauthorized("Access Denied"),
@@ -57,31 +78,26 @@ func processAgentMetrices(query QueryRequest, context *security.RequestContext, 
 			var err error
 			resourceIds, err = convertFilterValueToStrings(binary["resource_id"][In])
 			if err != nil {
-				return QueryResponse{
-					Errors: []common.Error{
-						common.ErrorBadRequest(fmt.Sprintf("invalid resource_id _in filter: %v", err)),
-					},
-					ExecutionTimeMs: time.Since(startTime).Milliseconds(),
-				}, nil
+				return invalidAgentMetricsFilterResponse(startTime, "resource_id", In, err)
 			}
 			delete(binary, "resource_id")
 		} else if binary["resource_id"] != nil && binary["resource_id"][Eq] != nil {
 			var err error
-			resourceIds, err = convertFilterValueToStrings(binary["resource_id"][Eq])
+			resourceId, err := convertFilterValueToString(binary["resource_id"][Eq])
 			if err != nil {
-				return QueryResponse{
-					Errors: []common.Error{
-						common.ErrorBadRequest(fmt.Sprintf("invalid resource_id _eq filter: %v", err)),
-					},
-					ExecutionTimeMs: time.Since(startTime).Milliseconds(),
-				}, nil
+				return invalidAgentMetricsFilterResponse(startTime, "resource_id", Eq, err)
 			}
+			resourceIds = append(resourceIds, resourceId)
 			delete(binary, "resource_id")
 		}
 
 		resourceType := ""
 		if binary["resource_type"][Eq] != nil {
-			resourceType = binary["resource_type"][Eq].(string)
+			var err error
+			resourceType, err = convertFilterValueToString(binary["resource_type"][Eq])
+			if err != nil {
+				return invalidAgentMetricsFilterResponse(startTime, "resource_type", Eq, err)
+			}
 			delete(binary, "resource_type")
 		}
 
@@ -123,36 +139,35 @@ func processAgentMetrices(query QueryRequest, context *security.RequestContext, 
 			var err error
 			metrics, err = convertFilterValueToStrings(binary["metric"][In])
 			if err != nil {
-				return QueryResponse{
-					Errors: []common.Error{
-						common.ErrorBadRequest(fmt.Sprintf("invalid metric _in filter: %v", err)),
-					},
-					ExecutionTimeMs: time.Since(startTime).Milliseconds(),
-				}, nil
+				return invalidAgentMetricsFilterResponse(startTime, "metric", In, err)
 			}
 			delete(binary, "metric")
 		} else if binary["metric"] != nil && binary["metric"][Eq] != nil {
 			var err error
-			metrics, err = convertFilterValueToStrings(binary["metric"][Eq])
+			metric, err := convertFilterValueToString(binary["metric"][Eq])
 			if err != nil {
-				return QueryResponse{
-					Errors: []common.Error{
-						common.ErrorBadRequest(fmt.Sprintf("invalid metric _eq filter: %v", err)),
-					},
-					ExecutionTimeMs: time.Since(startTime).Milliseconds(),
-				}, nil
+				return invalidAgentMetricsFilterResponse(startTime, "metric", Eq, err)
 			}
+			metrics = append(metrics, metric)
 			delete(binary, "metric")
 		}
 
 		regionName := "us-east-1"
 		if binary["region_name"] != nil && binary["region_name"][Eq] != nil {
-			regionName = binary["region_name"][Eq].(string)
+			var err error
+			regionName, err = convertFilterValueToString(binary["region_name"][Eq])
+			if err != nil {
+				return invalidAgentMetricsFilterResponse(startTime, "region_name", Eq, err)
+			}
 		}
 
 		serviceName := ""
 		if binary["service_name"] != nil && binary["service_name"][Eq] != nil {
-			serviceName = binary["service_name"][Eq].(string)
+			var err error
+			serviceName, err = convertFilterValueToString(binary["service_name"][Eq])
+			if err != nil {
+				return invalidAgentMetricsFilterResponse(startTime, "service_name", Eq, err)
+			}
 		}
 
 		if serviceName == "" {
@@ -210,7 +225,7 @@ func processAgentMetrices(query QueryRequest, context *security.RequestContext, 
 		}
 
 		resp, err := cloud.QueryMetrics(context, cloud.QueryMetricsRequest{
-			AccountId: accountId.(string),
+			AccountId: accountId,
 			Query: cloud.MetricsQuery{
 				StartDate:    &startDate,
 				EndDate:      &endDate,
