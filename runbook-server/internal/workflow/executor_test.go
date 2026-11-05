@@ -682,7 +682,7 @@ func (s *ExecutorTestSuite) TestSetStatePersistenceFailureFailsWorkflowBeforeNex
 		return nil
 	}, activity.RegisterOptions{Name: "Internal_UpdateEventResolutionStatusActivity"})
 
-	executor := &WorkflowExecutor{}
+	executor := s.newFanInExecutor()
 	wf := &model.Workflow{
 		ID:        "set-state-failure-wf",
 		TenantID:  "test-tenant",
