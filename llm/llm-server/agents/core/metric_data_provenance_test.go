@@ -76,6 +76,17 @@ func TestMetricEmptyResultIsNotSummarizedAsMutationSuccess(t *testing.T) {
 	assert.NotContains(t, summary, "SUCCESS_NO_OUTPUT")
 }
 
+func TestSuccessfulMetricNoDataTextIsNotSummarizedAsMeasuredData(t *testing.T) {
+	summary, hasFailure := buildToolCallSummary([]NBAgentPlannerToolActionStep{{
+		Action:      NBAgentPlannerToolAction{Tool: "prometheus_execute", DisplayID: "E3"},
+		Observation: "No data found for query: up",
+		Status:      ToolStatusSuccess,
+	}})
+
+	assert.False(t, hasFailure)
+	assert.Contains(t, summary, "NO_METRIC_DATA")
+}
+
 func TestReAct3MetricNoDataSummarySurvivesScratchpadCompression(t *testing.T) {
 	originalMax := config.Config.LlmServerAgentMaxScratchpadChars
 	config.Config.LlmServerAgentMaxScratchpadChars = 4096

@@ -739,7 +739,7 @@ func buildToolCallSummary(steps []NBAgentPlannerToolActionStep) (string, bool) {
 		case step.Status == ToolStatusFailure:
 			status = "FAILED"
 			hasAnyFailure = true
-		case step.Status == ToolStatusEmptyResult && metricNoDataMarker(step) != "":
+		case metricNoDataMarker(step) != "":
 			status = "NO_METRIC_DATA"
 		case step.Status == ToolStatusEmptyResult:
 			status = "SUCCESS_NO_OUTPUT"
