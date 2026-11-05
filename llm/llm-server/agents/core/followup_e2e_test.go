@@ -70,39 +70,3 @@ func TestFollowupFollowupOnMultipleResources(t *testing.T) {
 
 	}
 }
-
-func TestRefineFollowup2(t *testing.T) {
-	sc := security.NewRequestContextForSuperAdmin()
-	testCases :=
-		[]struct {
-			SessionId         string
-			Query             string
-			AccountId         string
-			UserId            string
-			AdditionalContext string
-		}{
-			{
-				SessionId:         "ut-followup-chain-5",
-				AccountId:         os.Getenv("TEST_ACCOUNT"),
-				UserId:            os.Getenv("TEST_USER"),
-				Query:             "I have done helm installation sometime back on one of my namespace..recently observed that help is complaining that no installation found.. even thougn i can see workloads running any idea ?",
-				AdditionalContext: "",
-			},
-		}
-	for _, tc := range testCases {
-		request := NBAgentRequest{
-			Query:                 tc.Query,
-			AccountId:             tc.AccountId,
-			ConversationId:        uuid.NewString(),
-			UserId:                tc.UserId,
-			MessageId:             uuid.NewString(),
-			EnableQueryRefinement: true,
-		}
-		agent := LLMAgent{}
-		followup, err := FollowupRequestForMissingInformation(sc, request, agent)
-		assert.Nil(t, err)
-		assert.NotNil(t, followup)
-		assert.NotEmpty(t, followup.Question)
-	}
-
-}

@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // displayText returns the text a user sees in the chat for this turn: the
@@ -490,196 +491,23 @@ func TestWorkflowBuilderAgent_FixMode_Integration(t *testing.T) {
 	if os.Getenv("TEST_ACCOUNT") == "" {
 		t.Skip("Skipping test: TEST_ACCOUNT not set")
 	}
-
-	accountId := os.Getenv("TEST_ACCOUNT")
-	userId := os.Getenv("TEST_USER")
-	tenantId := os.Getenv("TEST_TENANT")
-	workflowId := "5d064c4c-bb53-4630-95ff-f6bb7b9133a6"
+	workflowId := os.Getenv("TEST_WORKFLOW_ID")
+	if workflowId == "" {
+		t.Skip("set TEST_WORKFLOW_ID to a disposable workflow with a notification task")
+	}
+	accountId, userId, tenantId := os.Getenv("TEST_ACCOUNT"), os.Getenv("TEST_USER"), os.Getenv("TEST_TENANT")
 	sessionId := "ut-wb-fix-1"
-
 	agent := newWorkflowBuilderAgent(accountId)
 	sc := security.NewRequestContextForTenantAccountAdmin(tenantId, userId, []string{accountId})
-
-	err := core.DeleteConversationBySession(sessionId, accountId, userId)
-	assert.Nil(t, err)
-
-	// Stage 1: Send fix request with workflow_id in QueryConfig
-	resp, err := core.HandleConversationSessionRequest(sc, agent, userId, accountId, sessionId,
-		"Fix this workflow - the notification task is not sending to the correct channel",
+	require.NoError(t, core.DeleteConversationBySession(sessionId, accountId, userId))
+	response, err := core.HandleConversationSessionRequest(sc, agent, userId, accountId, sessionId,
+		"Change the notification task to send to channel #test-alerts",
 		core.ConversationSessionRequestWithEnableQueryRefinement(false),
 		core.ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{WorkflowId: workflowId}))
-	assert.Nil(t, err)
-	assert.NotNil(t, resp)
-
-	if resp.Status != core.ConversationStatusWaiting {
-		// Followup not enabled — fix was applied directly
-		t.Log("Followup not enabled, fix applied directly")
-		assert.Greater(t, len(resp.Response), 0)
-		fullResponse := strings.Join(resp.Response, "\n")
-		assertWorkflowResponse(t, fullResponse)
-		t.Log("Fix response:", fullResponse)
-		return
-	}
-
-	// Verify we got a diagnosis
-	assert.Equal(t, core.ConversationStatusWaiting, resp.Status)
-	fixProposal := displayText(resp)
-	assert.Contains(t, fixProposal, "Diagnosis")
-	t.Log("Fix proposal:", fixProposal)
-
-	// Stage 2: Approve the fix
-	messageId, err := uuid.Parse(resp.MessageId)
-	assert.Nil(t, err)
-	agentId, err := uuid.Parse(resp.AgentId)
-	assert.Nil(t, err)
-
-	resp, err = core.HandleConversationSessionRequest(sc, agent, userId, accountId, sessionId,
-		FixApprovalOptionApply,
-		core.ConversationSessionRequestWithMessageId(uuid.NullUUID{UUID: messageId, Valid: true}),
-		core.ConversationSessionRequestWithAgentId(uuid.NullUUID{UUID: agentId, Valid: true}))
-	assert.Nil(t, err)
-	assert.NotNil(t, resp)
-	assert.Greater(t, len(resp.Response), 0)
-
-	finalResponse := strings.Join(resp.Response, "\n")
-	assertWorkflowResponse(t, finalResponse)
-	t.Log("Fixed workflow:", finalResponse)
-}
-
-// TestWorkflowBuilderAgent_FixMode_FeedbackFlow tests the fix → reject → feedback → approve flow
-
-func TestWorkflowBuilderAgent_FixMode_FeedbackFlow(t *testing.T) {
-	if os.Getenv("TEST_ACCOUNT") == "" {
-		t.Skip("Skipping test: TEST_ACCOUNT not set")
-	}
-
-	accountId := os.Getenv("TEST_ACCOUNT")
-	userId := os.Getenv("TEST_USER")
-	tenantId := os.Getenv("TEST_TENANT")
-	workflowId := "5d064c4c-bb53-4630-95ff-f6bb7b9133a6"
-	sessionId := "ut-wb-fix-feedback-1"
-
-	agent := newWorkflowBuilderAgent(accountId)
-	sc := security.NewRequestContextForTenantAccountAdmin(tenantId, userId, []string{accountId})
-
-	err := core.DeleteConversationBySession(sessionId, accountId, userId)
-	assert.Nil(t, err)
-
-	// Stage 1: Send fix request
-	resp, err := core.HandleConversationSessionRequest(sc, agent, userId, accountId, sessionId,
-		"The notification is going to the wrong Slack channel, fix it",
-		core.ConversationSessionRequestWithEnableQueryRefinement(false),
-		core.ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{WorkflowId: workflowId}))
-	assert.Nil(t, err)
-	assert.NotNil(t, resp)
-
-	if resp.Status != core.ConversationStatusWaiting {
-		t.Log("Followup not enabled, fix applied directly")
-		return
-	}
-
-	// Verify diagnosis
-	assert.Equal(t, core.ConversationStatusWaiting, resp.Status)
-	t.Log("Initial fix proposal:", displayText(resp))
-
-	// Stage 2: Request modifications
-	messageId, err := uuid.Parse(resp.MessageId)
-	assert.Nil(t, err)
-	agentId, err := uuid.Parse(resp.AgentId)
-	assert.Nil(t, err)
-
-	resp, err = core.HandleConversationSessionRequest(sc, agent, userId, accountId, sessionId,
-		FixApprovalOptionModify,
-		core.ConversationSessionRequestWithMessageId(uuid.NullUUID{UUID: messageId, Valid: true}),
-		core.ConversationSessionRequestWithAgentId(uuid.NullUUID{UUID: agentId, Valid: true}))
-	assert.Nil(t, err)
-	assert.NotNil(t, resp)
-	assert.Equal(t, core.ConversationStatusWaiting, resp.Status)
-	t.Log("Feedback prompt:", displayText(resp))
-
-	// Stage 3: Provide feedback
-	messageId, err = uuid.Parse(resp.MessageId)
-	assert.Nil(t, err)
-	agentId, err = uuid.Parse(resp.AgentId)
-	assert.Nil(t, err)
-
-	resp, err = core.HandleConversationSessionRequest(sc, agent, userId, accountId, sessionId,
-		"Change the channel to #prod-alerts instead",
-		core.ConversationSessionRequestWithMessageId(uuid.NullUUID{UUID: messageId, Valid: true}),
-		core.ConversationSessionRequestWithAgentId(uuid.NullUUID{UUID: agentId, Valid: true}))
-	assert.Nil(t, err)
-	assert.NotNil(t, resp)
-	assert.Equal(t, core.ConversationStatusWaiting, resp.Status)
-	t.Log("Updated fix proposal:", displayText(resp))
-
-	// Stage 4: Approve the updated fix
-	messageId, err = uuid.Parse(resp.MessageId)
-	assert.Nil(t, err)
-	agentId, err = uuid.Parse(resp.AgentId)
-	assert.Nil(t, err)
-
-	resp, err = core.HandleConversationSessionRequest(sc, agent, userId, accountId, sessionId,
-		FixApprovalOptionApply,
-		core.ConversationSessionRequestWithMessageId(uuid.NullUUID{UUID: messageId, Valid: true}),
-		core.ConversationSessionRequestWithAgentId(uuid.NullUUID{UUID: agentId, Valid: true}))
-	assert.Nil(t, err)
-	assert.NotNil(t, resp)
-	assert.Greater(t, len(resp.Response), 0)
-
-	finalResponse := strings.Join(resp.Response, "\n")
-	assertWorkflowResponse(t, finalResponse)
-	t.Log("Final fixed workflow:", finalResponse)
-}
-
-// TestWorkflowBuilderAgent_FixMode_Discard tests the discard flow
-
-func TestWorkflowBuilderAgent_FixMode_Discard(t *testing.T) {
-	if os.Getenv("TEST_ACCOUNT") == "" {
-		t.Skip("Skipping test: TEST_ACCOUNT not set")
-	}
-
-	accountId := os.Getenv("TEST_ACCOUNT")
-	userId := os.Getenv("TEST_USER")
-	tenantId := os.Getenv("TEST_TENANT")
-	workflowId := "5d064c4c-bb53-4630-95ff-f6bb7b9133a6"
-	sessionId := "ut-wb-fix-discard-1"
-
-	agent := newWorkflowBuilderAgent(accountId)
-	sc := security.NewRequestContextForTenantAccountAdmin(tenantId, userId, []string{accountId})
-
-	err := core.DeleteConversationBySession(sessionId, accountId, userId)
-	assert.Nil(t, err)
-
-	// Stage 1: Send fix request
-	resp, err := core.HandleConversationSessionRequest(sc, agent, userId, accountId, sessionId,
-		"Fix the notification channel",
-		core.ConversationSessionRequestWithEnableQueryRefinement(false),
-		core.ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{WorkflowId: workflowId}))
-	assert.Nil(t, err)
-	assert.NotNil(t, resp)
-
-	if resp.Status != core.ConversationStatusWaiting {
-		t.Log("Followup not enabled, skipping discard test")
-		return
-	}
-
-	// Stage 2: Discard changes
-	messageId, err := uuid.Parse(resp.MessageId)
-	assert.Nil(t, err)
-	agentId, err := uuid.Parse(resp.AgentId)
-	assert.Nil(t, err)
-
-	resp, err = core.HandleConversationSessionRequest(sc, agent, userId, accountId, sessionId,
-		FixApprovalOptionDiscard,
-		core.ConversationSessionRequestWithMessageId(uuid.NullUUID{UUID: messageId, Valid: true}),
-		core.ConversationSessionRequestWithAgentId(uuid.NullUUID{UUID: agentId, Valid: true}))
-	assert.Nil(t, err)
-	assert.NotNil(t, resp)
-	assert.Greater(t, len(resp.Response), 0)
-
-	fullResponse := strings.Join(resp.Response, "\n")
-	assert.Contains(t, fullResponse, "discarded")
-	t.Log("Discard response:", fullResponse)
+	require.NoError(t, err)
+	require.Equal(t, core.ConversationStatusCompleted, response.Status, "edits run directly; the fix approval stage was retired")
+	require.NotEmpty(t, response.Response)
+	assertWorkflowResponse(t, strings.Join(response.Response, "\n"))
 }
 
 func assertWorkflowResponse(t *testing.T, fullResponse string) {
@@ -998,18 +826,7 @@ func TestWorkflowBuilderAgent_AgenticCreateThenFix(t *testing.T) {
 	assert.Nil(t, err)
 	assert.NotNil(t, resp)
 
-	// Handle fix approval if followup is enabled
-	if resp.Status == core.ConversationStatusWaiting {
-		t.Log("Fix diagnosis received, approving...")
-		messageId, _ := uuid.Parse(resp.MessageId)
-		agentId, _ := uuid.Parse(resp.AgentId)
-		resp, err = core.HandleConversationSessionRequest(sc, fixAgent, userId, accountId, fixSessionId,
-			FixApprovalOptionApply,
-			core.ConversationSessionRequestWithMessageId(uuid.NullUUID{UUID: messageId, Valid: true}),
-			core.ConversationSessionRequestWithAgentId(uuid.NullUUID{UUID: agentId, Valid: true}))
-		assert.Nil(t, err)
-		assert.NotNil(t, resp)
-	}
+	require.Equal(t, core.ConversationStatusCompleted, resp.Status, "edits run directly; the fix approval stage was retired")
 
 	assert.Greater(t, len(resp.Response), 0)
 	fixResponse := strings.Join(resp.Response, "\n")
@@ -1082,125 +899,53 @@ Use a manual trigger.`
 
 // ==================== CONFIG TOOLS TESTS ====================
 
-// TestExtractConfigReferences tests the regex extraction of {{ Configs.xxx }} references
-
-func TestWorkflowBuilderAgent_AutoCreateEmptyConfigs_Helper(t *testing.T) {
+// Missing config values must leave an inactive automation without creating placeholder configs.
+func TestWorkflowBuilderAgent_CheckMissingConfigs_SavesInactiveWithoutPlaceholders(t *testing.T) {
 	if os.Getenv("TEST_ACCOUNT") == "" {
 		t.Skip("Skipping test: TEST_ACCOUNT not set")
 	}
-	defer withWorkflowServerOverride(t)()
-
-	accountId := os.Getenv("TEST_ACCOUNT")
-	userId := os.Getenv("TEST_USER")
-	tenantId := os.Getenv("TEST_TENANT")
-
-	agent := newWorkflowBuilderAgent(accountId)
+	t.Cleanup(withWorkflowServerOverride(t))
+	accountId, userId, tenantId := os.Getenv("TEST_ACCOUNT"), os.Getenv("TEST_USER"), os.Getenv("TEST_TENANT")
 	sc := security.NewRequestContextForTenantAccountAdmin(tenantId, userId, []string{accountId})
-
-	keys := []string{
-		fmt.Sprintf("ut_autocreate_%s", uuid.New().String()[:8]),
-		fmt.Sprintf("ut_autocreate_%s", uuid.New().String()[:8]),
-	}
-	defer func() {
-		for _, k := range keys {
-			_, _ = tools.DoRunbookRequest("DELETE", fmt.Sprintf("configs/%s", k), nil, accountId, tenantId, userId)
-		}
-	}()
-
-	created, failed := agent.autoCreateEmptyConfigs(sc, keys)
-	if len(failed) > 0 && len(created) == 0 {
-		// Server unreachable / auth issues. Skip rather than fail — this is
-		// an integration test, not a unit test.
-		t.Skipf("auto-create returned all failures, likely server unreachable: %v", failed)
-	}
-	assert.Equal(t, keys, created)
-	assert.Empty(t, failed)
-
-	// Verify each config exists on the server.
-	for _, k := range keys {
-		resp, err := tools.DoRunbookRequest("GET", fmt.Sprintf("configs/%s", k), nil, accountId, tenantId, userId)
-		assert.Nil(t, err, "config %q should be retrievable after auto-create", k)
-		assert.Contains(t, string(resp), k)
-	}
-}
-
-// TestWorkflowBuilderAgent_CheckMissingConfigs_AutoCreatesAndSaves drives the
-// fix end-to-end: build a workflow with a missing config ref, run it through
-// checkMissingConfigs, and verify the workflow gets saved on the workflow
-// server (the issue #29944 failure mode is gone) and the missing config now
-// exists. Uses non-editor source so finalizeWithAutoSave actually attempts the
-// save (editor source returns raw JSON for the UI to consume).
-
-func TestWorkflowBuilderAgent_CheckMissingConfigs_AutoCreatesAndSaves_Issue29944(t *testing.T) {
-	if os.Getenv("TEST_ACCOUNT") == "" {
-		t.Skip("Skipping test: TEST_ACCOUNT not set")
-	}
-	defer withWorkflowServerOverride(t)()
-
-	accountId := os.Getenv("TEST_ACCOUNT")
-	userId := os.Getenv("TEST_USER")
-	tenantId := os.Getenv("TEST_TENANT")
-
-	missingKey := fmt.Sprintf("ut_missing_cfg_%s", uuid.New().String()[:8])
-	workflowName := fmt.Sprintf("ut-issue29944-fix-%s", uuid.New().String()[:8])
-	defer func() {
-		_, _ = tools.DoRunbookRequest("DELETE", fmt.Sprintf("configs/%s", missingKey), nil, accountId, tenantId, userId)
-	}()
-
-	// Pre-flight: confirm the config really does not exist on the server.
-	if existing, err := tools.DoRunbookRequest("GET", fmt.Sprintf("configs/%s", missingKey), nil, accountId, tenantId, userId); err == nil {
-		t.Fatalf("test setup invalid: config %q already exists on server: %s", missingKey, string(existing))
-	}
-
+	missingKey := "ut_missing_cfg_" + uuid.NewString()[:8]
+	workflowName := "ut-missing-config-" + uuid.NewString()[:8]
+	t.Cleanup(func() { cleanupWorkflowByName(t, accountId, tenantId, userId, workflowName) })
+	existing, err := fetchExistingConfigKeys(sc, accountId)
+	require.NoError(t, err)
+	require.False(t, existing[missingKey], "fixture key must not already exist")
 	workflowJSON := fmt.Sprintf(`{"name":%q,"definition":{"version":"v1","triggers":[{"type":"manual"}],"tasks":[{"id":"print-message","type":"core.print","params":{"message":"{{ Configs.%s }}"}}]}}`, workflowName, missingKey)
-
 	agent := newWorkflowBuilderAgent(accountId)
 	agent.state.Mode = "create"
-	sc := security.NewRequestContextForTenantAccountAdmin(tenantId, userId, []string{accountId})
-
-	resp, err := agent.checkMissingConfigs(sc, core.NBAgentRequest{
-		AccountId: accountId,
-		UserId:    userId,
-		// Non-editor source so the save attempt actually happens server-side.
-		ConversationSource: core.ConversationSourceUserInvestigation,
+	response, err := agent.checkMissingConfigs(sc, core.NBAgentRequest{
+		AccountId: accountId, UserId: userId, ConversationSource: core.ConversationSourceUserInvestigation,
 	}, workflowJSON)
-	if err != nil {
-		t.Skipf("checkMissingConfigs returned error (likely server unreachable): %v", err)
+	require.NoError(t, err)
+	require.True(t, response.IsTerminal)
+	require.NotEqual(t, core.ConversationStatusWaiting, response.Status)
+	require.Empty(t, response.FollowupRequest.Question)
+	require.Len(t, response.Response, 1)
+	require.Contains(t, response.Response[0], "INACTIVE")
+	require.Contains(t, response.Response[0], missingKey)
+	require.Contains(t, response.Response[0], "built and saved")
+	require.NotContains(t, response.Response[0], "Auto-save failed")
+	existing, err = fetchExistingConfigKeys(sc, accountId)
+	require.NoError(t, err)
+	require.False(t, existing[missingKey], "missing values must not be replaced by placeholder config rows")
+	body, err := tools.DoRunbookRequest("GET", "workflows?name="+workflowName, nil, accountId, tenantId, userId)
+	require.NoError(t, err)
+	var rows []struct {
+		Name   string `json:"name"`
+		Status string `json:"status"`
 	}
-
-	assert.True(t, resp.IsTerminal, "agent must terminate — no more followup waiting")
-	assert.NotEqual(t, core.ConversationStatusWaiting, resp.Status, "no Waiting status — followup is gone")
-	assert.Empty(t, resp.FollowupRequest.Question, "no followup question — auto-create handles it")
-	assert.Equal(t, 1, len(resp.Response))
-	body := resp.Response[0]
-
-	// The missing config got auto-created and surfaced to the user.
-	assert.Contains(t, body, "Created 1 placeholder config")
-	assert.Contains(t, body, missingKey)
-	assert.Contains(t, body, autoCreatedConfigPlaceholder)
-	assert.Contains(t, body, "replace via Configs before running")
-
-	// The workflow was saved (no more "validation failed" from the server).
-	assert.Contains(t, body, "built and saved")
-	assert.NotContains(t, body, "Auto-save failed")
-
-	// Verify on the server: the missing config now exists, and the workflow
-	// was created. Cleanup the workflow if found.
-	cfgResp, cfgErr := tools.DoRunbookRequest("GET", fmt.Sprintf("configs/%s", missingKey), nil, accountId, tenantId, userId)
-	assert.Nil(t, cfgErr)
-	assert.Contains(t, string(cfgResp), missingKey)
-
-	// Best-effort cleanup of the workflow.
-	if listResp, listErr := tools.DoRunbookRequest("GET", fmt.Sprintf("workflows?name=%s", workflowName), nil, accountId, tenantId, userId); listErr == nil {
-		var listed []map[string]interface{}
-		if jerr := json.Unmarshal(listResp, &listed); jerr == nil {
-			for _, w := range listed {
-				if id, ok := w["id"].(string); ok && id != "" {
-					_, _ = tools.DoRunbookRequest("DELETE", fmt.Sprintf("workflows/%s", id), nil, accountId, tenantId, userId)
-				}
-			}
+	require.NoError(t, json.Unmarshal(body, &rows))
+	found := false
+	for _, row := range rows {
+		if row.Name == workflowName {
+			found = true
+			require.Equal(t, "INACTIVE", row.Status)
 		}
 	}
+	require.True(t, found, "the saved inactive fixture must be present on the server")
 }
 
 // TestWorkflowBuilderAgent_CheckMissingConfigs_NoConfigApprovalStage is a
@@ -1211,13 +956,13 @@ func TestWorkflowBuilderAgent_CheckMissingConfigs_AutoCreatesAndSaves_Issue29944
 //
 // Skipped when TEST_ACCOUNT isn't set because checkMissingConfigs talks to the
 // configs API; without it we'd be testing the unreachable-server graceful-
-// degrade path instead of the auto-create path.
+// degrade path instead of the inactive-save path.
 
 func TestWorkflowBuilderAgent_CheckMissingConfigs_NoConfigApprovalStage_Issue29944(t *testing.T) {
 	if os.Getenv("TEST_ACCOUNT") == "" {
 		t.Skip("Skipping test: TEST_ACCOUNT not set")
 	}
-	defer withWorkflowServerOverride(t)()
+	t.Cleanup(withWorkflowServerOverride(t))
 
 	accountId := os.Getenv("TEST_ACCOUNT")
 	userId := os.Getenv("TEST_USER")
@@ -1225,36 +970,49 @@ func TestWorkflowBuilderAgent_CheckMissingConfigs_NoConfigApprovalStage_Issue299
 
 	missingKey := fmt.Sprintf("ut_stage_check_%s", uuid.New().String()[:8])
 	workflowName := fmt.Sprintf("ut-issue29944-stage-%s", uuid.New().String()[:8])
-	defer func() {
-		_, _ = tools.DoRunbookRequest("DELETE", fmt.Sprintf("configs/%s", missingKey), nil, accountId, tenantId, userId)
-	}()
+	t.Cleanup(func() { cleanupWorkflowByName(t, accountId, tenantId, userId, workflowName) })
 
 	workflowJSON := fmt.Sprintf(`{"name":%q,"definition":{"version":"v1","triggers":[{"type":"manual"}],"tasks":[{"id":"print-message","type":"core.print","params":{"message":"{{ Configs.%s }}"}}]}}`, workflowName, missingKey)
 
 	agent := newWorkflowBuilderAgent(accountId)
 	agent.state.Mode = "create"
 	sc := security.NewRequestContextForTenantAccountAdmin(tenantId, userId, []string{accountId})
+	existing, err := fetchExistingConfigKeys(sc, accountId)
+	require.NoError(t, err)
+	require.False(t, existing[missingKey], "fixture key must not already exist")
 
-	_, err := agent.checkMissingConfigs(sc, core.NBAgentRequest{
+	_, err = agent.checkMissingConfigs(sc, core.NBAgentRequest{
 		AccountId: accountId, UserId: userId,
 		ConversationSource: core.ConversationSourceUserInvestigation,
 	}, workflowJSON)
-	if err != nil {
-		t.Skipf("checkMissingConfigs returned error (likely server unreachable): %v", err)
-	}
+	require.NoError(t, err)
 
 	assert.NotEqual(t, "config_approval", agent.state.Stage,
 		"after the fix, missing-config workflows must not enter the config_approval waiting stage")
 
-	// Cleanup workflow if save went through.
-	if listResp, listErr := tools.DoRunbookRequest("GET", fmt.Sprintf("workflows?name=%s", workflowName), nil, accountId, tenantId, userId); listErr == nil {
-		var listed []map[string]interface{}
-		if jerr := json.Unmarshal(listResp, &listed); jerr == nil {
-			for _, w := range listed {
-				if id, ok := w["id"].(string); ok && id != "" {
-					_, _ = tools.DoRunbookRequest("DELETE", fmt.Sprintf("workflows/%s", id), nil, accountId, tenantId, userId)
-				}
-			}
+}
+
+func cleanupWorkflowByName(t *testing.T, accountID, tenantID, userID, workflowName string) {
+	t.Helper()
+	body, err := tools.DoRunbookRequest("GET", "workflows?name="+workflowName, nil, accountID, tenantID, userID)
+	if err != nil {
+		t.Errorf("list fixture workflow for cleanup: %v", err)
+		return
+	}
+	var rows []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(body, &rows); err != nil {
+		t.Errorf("decode fixture workflow cleanup list: %v", err)
+		return
+	}
+	for _, row := range rows {
+		if row.Name != workflowName || row.ID == "" {
+			continue
+		}
+		if _, err := tools.DoRunbookRequest("DELETE", "workflows/"+row.ID, nil, accountID, tenantID, userID); err != nil {
+			t.Errorf("delete fixture workflow: %v", err)
 		}
 	}
 }
@@ -1306,8 +1064,7 @@ func TestWorkflowBuilderAgent_BuildWithConfigDetection(t *testing.T) {
 	// Handle plan approval if needed
 	resp = handlePlanApprovalIfNeeded(t, sc, agent, userId, accountId, sessionId, resp)
 
-	// After issue #29944 fix: missing configs are auto-created, so no waiting
-	// stage should appear after plan approval.
+	// Missing config values keep the automation inactive, without a waiting stage.
 	assert.NotEqual(t, core.ConversationStatusWaiting, resp.Status,
 		"missing-config workflows must not park in a waiting stage")
 

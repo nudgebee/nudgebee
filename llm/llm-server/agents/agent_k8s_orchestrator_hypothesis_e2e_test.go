@@ -114,10 +114,12 @@ func TestK8sAgent_Fixture_HypothesisDrivenRCA(t *testing.T) {
 			"rather than concluding the payment-processor itself is the root cause.")
 
 	agent := f.Agent(t, newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT")))
-	runTestMinimal(t, agent, tc)
+	response := runTestMinimal(t, agent, tc)
 
 	// ---- PROCESS tier: the model actually worked a hypothesis tree ----
-	convID, msgID := scenarioLastMsgID(t, tc.SessionId, tc.UserId)
+	convID, msgID := response.ConversationId, response.MessageId
+	require.NotEmpty(t, convID)
+	require.NotEmpty(t, msgID)
 	notebook := pollNotebookForMessage(t, convID, msgID)
 	t.Logf("[hypothesis-rca] model notebook (%d chars):\n%s", len(notebook), notebook)
 
