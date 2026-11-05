@@ -122,7 +122,12 @@ func TestMetricProvenancePlannerExecution(t *testing.T) {
 					for _, step := range executor.steps {
 						rawSize += len(step.Observation)
 					}
-					require.Less(t, len(planner.(*NBReActPlanner3).buildScratchpad(executor.steps)), rawSize, "the runtime must actually compress the scratchpad")
+					scratchpad := planner.(*NBReActPlanner3).buildScratchpad(executor.steps)
+					require.Less(t, len(scratchpad), rawSize, "the runtime must actually compress the scratchpad")
+					if tc.wantNoData {
+						require.LessOrEqual(t, len(scratchpad), config.Config.LlmServerAgentMaxScratchpadChars,
+							"metric availability evidence must fit inside the scratchpad hard cap")
+					}
 				} else {
 					require.True(t, planner.(*NBReActPlanner4).compressionActive(executor.steps))
 					require.True(t, strings.Contains(finalPrompt, "output truncated"), "old observations must actually be compressed")
