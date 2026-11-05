@@ -408,6 +408,13 @@ func TestUpdateProjectStatusResolvesNamesAndEncodedSelectors(t *testing.T) {
 					}
 					_, _ = fmt.Fprintf(w, `{"data":{"node":{"fields":{"nodes":[{"id":"F1","name":"Status","options":[{"id":"O1","name":"%s"},{"id":"O2","name":"Done"}]}],"pageInfo":{"hasNextPage":false}}}}}`, name)
 				case strings.Contains(request.Query, "updateProjectV2ItemFieldValue"):
+					if !strings.Contains(request.Query, "projectId: $projectId") ||
+						!strings.Contains(request.Query, "itemId: $itemId") ||
+						!strings.Contains(request.Query, "fieldId: $fieldId") ||
+						!strings.Contains(request.Query, "singleSelectOptionId: $optionId") ||
+						strings.Contains(request.Query, "text:") {
+						t.Errorf("mutation request has unexpected Project status input: %s", request.Query)
+					}
 					mutationVariables = request.Variables
 					_, _ = w.Write([]byte(`{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"I1"}}}}`))
 				default:
