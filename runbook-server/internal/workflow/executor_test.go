@@ -167,6 +167,27 @@ func (s *ExecutorTestSuite) runOutputTemplateFailureWorkflow(wf *model.Workflow)
 	return ranTasks, stateWrites
 }
 
+func (s *ExecutorTestSuite) runStatePersistenceFailureWorkflow(wf *model.Workflow) []string {
+	s.registerFanInActivities()
+	var ranTasks []string
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, params map[string]any) (any, error) {
+		message, _ := params["message"].(string)
+		ranTasks = append(ranTasks, message)
+		return map[string]string{"data": message}, nil
+	}, activity.RegisterOptions{Name: "test.record-task"})
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, workflowID string, stateUpdates map[string]model.StateUpdateDTO, executionID, taskID string) error {
+		return fmt.Errorf("state store unavailable")
+	}, activity.RegisterOptions{Name: UpdateWorkflowStateActivity})
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, typeReferenceID string, workflowFailed bool) error {
+		return nil
+	}, activity.RegisterOptions{Name: "Internal_UpdateEventResolutionStatusActivity"})
+
+	executor := s.newFanInExecutor()
+	s.env.RegisterWorkflow(executor.ExecuteWorkflowInternal)
+	s.env.ExecuteWorkflow(executor.ExecuteWorkflowInternal, wf, nil)
+	return ranTasks
+}
+
 // TestSwitchFanOutFanInConvergence reproduces the original bug: a switch fans
 // out to three branches that converge into one downstream task. Before the fix,
 // the parent loop never marked branch IDs complete (selected or otherwise), so
@@ -660,43 +681,19 @@ func (s *ExecutorTestSuite) TestWorkflowTemplateClockUsesTemporalTime() {
 }
 
 func (s *ExecutorTestSuite) TestSetStatePersistenceFailureFailsWorkflowBeforeNextTask() {
-	var ranTasks []string
-	s.env.RegisterActivityWithOptions(func(ctx context.Context, params map[string]any) (any, error) {
-		message, _ := params["message"].(string)
-		ranTasks = append(ranTasks, message)
-		return map[string]string{"data": message}, nil
-	}, activity.RegisterOptions{Name: "core.print"})
-	s.env.RegisterActivityWithOptions(func(ctx context.Context, wf *model.Workflow, status model.WorkflowExecutionStatus, message string) error {
-		return nil
-	}, activity.RegisterOptions{Name: "Internal_UpdateLastExecutionStatusActivity"})
-	s.env.RegisterActivityWithOptions(func(ctx context.Context, workflowID string) (map[string]any, error) {
-		return map[string]any{}, nil
-	}, activity.RegisterOptions{Name: "FetchWorkflowStateActivity"})
-	s.env.RegisterActivityWithOptions(func(ctx context.Context, tenantID, accountID string, restrictToAccount bool) (FetchConfigsResponse, error) {
-		return FetchConfigsResponse{}, nil
-	}, activity.RegisterOptions{Name: "FetchWorkflowConfigsActivity"})
-	s.env.RegisterActivityWithOptions(func(ctx context.Context, workflowID string, stateUpdates map[string]model.StateUpdateDTO, executionID, taskID string) error {
-		return fmt.Errorf("state store unavailable")
-	}, activity.RegisterOptions{Name: "UpdateWorkflowStateActivity"})
-	s.env.RegisterActivityWithOptions(func(ctx context.Context, typeReferenceID string, workflowFailed bool) error {
-		return nil
-	}, activity.RegisterOptions{Name: "Internal_UpdateEventResolutionStatusActivity"})
-
-	executor := s.newFanInExecutor()
 	wf := &model.Workflow{
 		ID:        "set-state-failure-wf",
 		TenantID:  "test-tenant",
 		AccountID: "test-account",
 		Definition: model.WorkflowDefinition{
 			Tasks: []model.Task{
-				{ID: "save", Type: "core.print", Params: map[string]any{"message": "save"}, SetState: map[string]any{"key": "value"}},
-				{ID: "later", Type: "core.print", DependsOn: []string{"save"}, Params: map[string]any{"message": "later"}},
+				{ID: "save", Type: "test.record-task", Params: map[string]any{"message": "save"}, SetState: map[string]any{"key": "value"}},
+				{ID: "later", Type: "test.record-task", DependsOn: []string{"save"}, Params: map[string]any{"message": "later"}},
 			},
 		},
 	}
 
-	s.env.RegisterWorkflow(executor.ExecuteWorkflowInternal)
-	s.env.ExecuteWorkflow(executor.ExecuteWorkflowInternal, wf, nil)
+	ranTasks := s.runStatePersistenceFailureWorkflow(wf)
 
 	s.True(s.env.IsWorkflowCompleted())
 	s.ErrorContains(s.env.GetWorkflowError(), "state store unavailable")
@@ -742,4 +739,63 @@ func (s *ExecutorTestSuite) TestSetStateValueTemplateErrorFailsWorkflow() {
 		ID: "save", Type: "test.record-task", Params: map[string]any{"message": "save"},
 		SetState: map[string]any{"key": "{{ unterminated"},
 	}, "failed to process task state value")
+}
+
+func (s *ExecutorTestSuite) TestSetStatePersistenceFailureHonorsContinuePolicy() {
+	wf := &model.Workflow{
+		ID:        "set-state-continue-wf",
+		TenantID:  "test-tenant",
+		AccountID: "test-account",
+		Definition: model.WorkflowDefinition{
+			Tasks: []model.Task{
+				{
+					ID: "save", Type: "test.record-task", Params: map[string]any{"message": "save"},
+					SetVars:       map[string]any{"partial": "should-not-commit"},
+					SetState:      map[string]any{"key": "value"},
+					FailurePolicy: &model.FailurePolicy{Action: "continue"},
+				},
+				{
+					ID: "later", Type: "test.record-task", DependsOn: []string{"save"},
+					Params: map[string]any{"message": "{{ Tasks['save'].status }}|{{ Vars.partial | default('missing') }}"},
+				},
+			},
+		},
+	}
+
+	ranTasks := s.runStatePersistenceFailureWorkflow(wf)
+	s.True(s.env.IsWorkflowCompleted())
+	s.NoError(s.env.GetWorkflowError(), "continue policy must allow the dependent task to run")
+	s.Equal([]string{"save", string(model.TaskStatusFailed) + "|missing"}, ranTasks)
+}
+
+func (s *ExecutorTestSuite) TestSetStatePersistenceFailureRunsOnFailureHook() {
+	var hookCalls int
+	var hookTaskStatus string
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, params map[string]any) error {
+		hookCalls++
+		hookTaskStatus, _ = params["task_status"].(string)
+		return nil
+	}, activity.RegisterOptions{Name: "test.failure-hook"})
+
+	wf := &model.Workflow{
+		ID:        "set-state-on-failure-wf",
+		TenantID:  "test-tenant",
+		AccountID: "test-account",
+		Definition: model.WorkflowDefinition{
+			Tasks: []model.Task{{
+				ID: "save", Type: "test.record-task", Params: map[string]any{"message": "save"},
+				SetState: map[string]any{"key": "value"},
+				Hooks: &model.Hooks{Failure: []model.Action{{
+					Type:   "test.failure-hook",
+					Params: map[string]any{"task_status": "{{ Tasks['save'].status }}"},
+				}}},
+			}},
+		},
+	}
+
+	s.runStatePersistenceFailureWorkflow(wf)
+	s.True(s.env.IsWorkflowCompleted())
+	s.ErrorContains(s.env.GetWorkflowError(), "state store unavailable")
+	s.Equal(1, hookCalls)
+	s.Equal(string(model.TaskStatusFailed), hookTaskStatus, "failure hooks must see the task's failed status")
 }

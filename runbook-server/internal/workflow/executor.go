@@ -325,6 +325,33 @@ func createActivityCtxForAction(ctx workflow.Context) workflow.Context {
 	return ctxWithOptions
 }
 
+func handleTaskFailure(ctx workflow.Context, taskID string, taskErr error, currentTask model.Task, globalContext *TemplateContext, wf *model.Workflow) error {
+	// Libraries put the failing request in the message — a URL carrying an
+	// api_key, say — so credential values are scrubbed before it goes anywhere.
+	errText := ScrubSecretValues(taskErr.Error(), SecretValues(globalContext.Secrets))
+	globalContext.Tasks[taskID] = map[string]any{
+		"status": model.TaskStatusFailed,
+		"error":  errText,
+	}
+	logger := workflow.GetLogger(ctx)
+	logger.Error("Task failed", "taskID", taskID, "error", errText)
+
+	if currentTask.Hooks != nil && len(currentTask.Hooks.Failure) > 0 {
+		onFailureCtx := createActivityCtxForAction(ctx)
+		if hookErr := executeSimpleActions(onFailureCtx, currentTask.Hooks.Failure, globalContext, wf); hookErr != nil {
+			logger.Error("OnFailure hook failed", "taskID", taskID, "error", hookErr)
+			return hookErr
+		}
+	}
+
+	if currentTask.FailurePolicy != nil && currentTask.FailurePolicy.Action == "continue" {
+		logger.Warn("Task failed but continue_on_error is set", "taskID", taskID, "error", errText)
+		return nil
+	}
+
+	return taskErr
+}
+
 func handleTaskCompletion(ctx workflow.Context, workflowID string, taskID string, future workflow.Future, globalContext *TemplateContext, taskMap map[string]model.Task, isDryRun bool, wf *model.Workflow) error {
 	logger := workflow.GetLogger(ctx)
 	var result any
@@ -354,32 +381,7 @@ func handleTaskCompletion(ctx workflow.Context, workflowID string, taskID string
 	}
 
 	if err != nil {
-		// Libraries put the failing request in the message — a URL carrying an
-		// api_key, say — so credential values are scrubbed before it goes anywhere.
-		errText := ScrubSecretValues(err.Error(), SecretValues(globalContext.Secrets))
-		logger.Error("Activity failed", "taskID", taskID, "error", errText, "params", globalContext.Tasks[taskID])
-		// find task to run on_failure
-		if currentTask.Hooks != nil && len(currentTask.Hooks.Failure) > 0 {
-			onFailureCtx := createActivityCtxForAction(ctx)
-			hookErr := executeSimpleActions(onFailureCtx, currentTask.Hooks.Failure, globalContext, wf)
-			if hookErr != nil {
-				logger.Error("OnFailure hook failed", "taskID", taskID, "error", hookErr)
-				return hookErr
-			}
-		}
-
-		// Check failure policy action
-		if currentTask.FailurePolicy != nil && currentTask.FailurePolicy.Action == "continue" {
-			logger.Warn("Task failed but continue_on_error is set", "taskID", taskID, "error", errText)
-			// Update context with FAILED status but continue workflow
-			globalContext.Tasks[taskID] = map[string]any{
-				"status": model.TaskStatusFailed,
-				"error":  errText,
-			}
-			return nil
-		}
-
-		return err
+		return handleTaskFailure(ctx, taskID, err, currentTask, globalContext, wf)
 	}
 
 	logger.Info("Task completed", "taskID", taskID, "result", logsafe.Shape(result))
@@ -388,18 +390,18 @@ func handleTaskCompletion(ctx workflow.Context, workflowID string, taskID string
 		"output": result,
 	}
 
-	// Process task.SetVars and merge into globalContext.Vars
+	// Stage task.SetVars until state rendering and persistence also succeed.
+	varUpdates := make(map[string]any, len(currentTask.SetVars))
 	if len(currentTask.SetVars) > 0 {
 		// Create a temporary context for rendering self-referential outputs.
 		selfRenderContext := globalContext.Clone()
 		selfRenderContext.Self = globalContext.Tasks[taskID]
-		varUpdates := make(map[string]any, len(currentTask.SetVars))
 
 		for outputName, outputTemplate := range currentTask.SetVars {
 			processedVal, err := ProcessValue(outputTemplate, selfRenderContext)
 			if err != nil {
 				logger.Error("Failed to process task output template", "taskID", taskID, "outputName", outputName, "template", outputTemplate, "error", err)
-				return fmt.Errorf("failed to process task output template %s for task %s: %w", outputName, taskID, err)
+				return handleTaskFailure(ctx, taskID, fmt.Errorf("failed to process task output template %s for task %s: %w", outputName, taskID, err), currentTask, globalContext, wf)
 			}
 
 			var finalValue any
@@ -414,30 +416,29 @@ func handleTaskCompletion(ctx workflow.Context, workflowID string, taskID string
 			}
 			varUpdates[outputName] = finalValue
 		}
-
-		for outputName, value := range varUpdates {
-			globalContext.Vars[outputName] = value
-		}
 	}
 
 	// Process task.SetState and update persistent state
+	stateUpdates := make(map[string]model.StateUpdateDTO, len(currentTask.SetState))
 	if len(currentTask.SetState) > 0 {
 		selfRenderContext := globalContext.Clone()
 		selfRenderContext.Self = globalContext.Tasks[taskID]
-		stateUpdates := make(map[string]model.StateUpdateDTO)
+		for outputName, value := range varUpdates {
+			selfRenderContext.Vars[outputName] = value
+		}
 
 		for key, valueTemplate := range currentTask.SetState {
 			// Render the key to support dynamic keys (e.g. "github_run_{{ job_id }}")
 			renderedKey, err := Render(key, selfRenderContext)
 			if err != nil {
 				logger.Error("Failed to render task state key", "taskID", taskID, "key", key, "error", err)
-				return fmt.Errorf("failed to render task state key %s for task %s: %w", key, taskID, err)
+				return handleTaskFailure(ctx, taskID, fmt.Errorf("failed to render task state key %s for task %s: %w", key, taskID, err), currentTask, globalContext, wf)
 			}
 
 			processedVal, err := ProcessValue(valueTemplate, selfRenderContext)
 			if err != nil {
 				logger.Error("Failed to process task state template", "taskID", taskID, "key", renderedKey, "template", valueTemplate, "error", err)
-				return fmt.Errorf("failed to process task state value for key %s in task %s: %w", renderedKey, taskID, err)
+				return handleTaskFailure(ctx, taskID, fmt.Errorf("failed to process task state value for key %s in task %s: %w", renderedKey, taskID, err), currentTask, globalContext, wf)
 			}
 
 			var dto model.StateUpdateDTO
@@ -483,14 +484,17 @@ func handleTaskCompletion(ctx workflow.Context, workflowID string, taskID string
 				// Persist state before allowing dependent tasks to run.
 				if err := workflow.ExecuteActivity(ctxWithAO, UpdateWorkflowStateActivity, workflowID, stateUpdates, executionID, taskID).Get(ctxWithAO, nil); err != nil {
 					logger.Error("Failed to persist workflow state", "taskID", taskID, "error", err)
-					return fmt.Errorf("failed to persist workflow state for task %s: %w", taskID, err)
+					return handleTaskFailure(ctx, taskID, fmt.Errorf("failed to persist workflow state for task %s: %w", taskID, err), currentTask, globalContext, wf)
 				}
 			}
 		}
+	}
 
-		for key, update := range stateUpdates {
-			globalContext.State[key] = update.Value
-		}
+	for outputName, value := range varUpdates {
+		globalContext.Vars[outputName] = value
+	}
+	for key, update := range stateUpdates {
+		globalContext.State[key] = update.Value
 	}
 
 	// find task to run on_success
