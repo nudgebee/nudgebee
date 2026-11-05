@@ -830,15 +830,22 @@ func fetchTracesWithFocusedStrategy(requestContext *security.RequestContext, par
 
 	slog.Info("Focused queries completed",
 		"successful_queries", successfulQueries,
+		"unconfigured_queries", unconfiguredQueries,
 		"traces_found", len(rows),
 		"query_duration_ms", queryElapsed.Milliseconds())
 	if successfulQueries == 0 {
 		if err := requestContext.GetContext().Err(); err != nil {
 			return nil, err
 		}
-		if unconfiguredQueries != len(focusedQueries) {
-			return nil, fmt.Errorf("all focused trace queries failed")
+		// An account with no configured trace provider fails every focused
+		// query with ErrTraceProviderNotConfigured. Preserve the previous
+		// no-traces/empty-map behavior instead of surfacing a query failure
+		// or letting callers count it as an error.
+		if unconfiguredQueries == len(focusedQueries) {
+			serviceMap, err := builder.BuildServiceMapWithTimeWindow(params.StartTime, params.EndTime)
+			return serviceMap, err
 		}
+		return nil, fmt.Errorf("all focused trace queries failed")
 	}
 
 	err := builder.LoadSpansFromRows(requestContext, rows, params)

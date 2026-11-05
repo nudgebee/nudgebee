@@ -99,3 +99,29 @@ func TestFetchTraceServiceMapWithoutProvider(t *testing.T) {
 		t.Fatalf("got map=%v error=%v, want empty map for an unconfigured account", result, err)
 	}
 }
+
+func TestFetchTraceServiceMapConfiguredProviderAllFailed(t *testing.T) {
+	patch := gomonkey.ApplyFunc(observability.GetTraces, func(*security.RequestContext, observability.TracesV3Request) (observability.TracesResult, error) {
+		return observability.TracesResult{}, errors.New("sensitive provider response")
+	})
+	defer patch.Reset()
+	ctx := security.NewRequestContextForTenantAdmin("tenant", slog.Default(), nil, nil)
+	result, err := FetchTracesAndBuildServiceMap(ctx, TraceQueryParams{AccountID: "account", WorkloadName: "checkout"})
+	if err == nil || err.Error() != "all focused trace queries failed" || result != nil || strings.Contains(err.Error(), "sensitive provider response") {
+		t.Fatalf("got map=%v error=%v, want sanitized query failure", result, err)
+	}
+}
+
+func TestFetchTraceServiceMapCanceled(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	patch := gomonkey.ApplyFunc(observability.GetTraces, func(*security.RequestContext, observability.TracesV3Request) (observability.TracesResult, error) {
+		return observability.TracesResult{}, context.Canceled
+	})
+	defer patch.Reset()
+	ctx := security.NewRequestContext(parent, security.NewSecurityContextForTenantAdmin("tenant"), slog.Default(), nil, nil)
+	result, err := FetchTracesAndBuildServiceMap(ctx, TraceQueryParams{AccountID: "account", WorkloadName: "checkout"})
+	if result != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("got map=%v error=%v, want cancellation", result, err)
+	}
+}
