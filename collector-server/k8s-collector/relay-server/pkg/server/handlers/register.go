@@ -280,6 +280,8 @@ func RegisterHandler(
 		// —— shared state for dispatching replies ——
 		wsWriteCh := make(chan []byte)
 		replies := newReplyRouter()
+		// Replies go out on their own channel; see sessionReplyChannel.
+		replyCh := newSessionReplyChannel(connMgr.GetChannel)
 
 		eg, egCtx := errgroup.WithContext(ctx)
 
@@ -429,7 +431,7 @@ func RegisterHandler(
 			consumerTag := fmt.Sprintf("reg-%s-%d-%d", accountID, time.Now().UnixNano(), qi)
 			eg.Go(func() error {
 				return consumeSessionQueue(egCtx, connMgr, topo, healthTracker, ensureQueue, queue, consumerTag, cfg.RabbitMQ.PrefetchCount, logger,
-					func(sessCh *amqp.Channel, d amqp.Delivery) {
+					func(_ *amqp.Channel, d amqp.Delivery) {
 						// dispatch each delivery in its own goroutine
 						eg.Go(func() error {
 							start := time.Now()
@@ -545,15 +547,18 @@ func RegisterHandler(
 									return nil
 								}
 
-								err := sessCh.Publish(
-									"", d.ReplyTo, false, false,
-									amqp.Publishing{
-										ContentType:   "application/json",
-										Body:          reply,
-										CorrelationId: d.CorrelationId,
-										Timestamp:     time.Now(),
-									},
-								)
+								replySize := len(reply)
+								reply, fitted := fitReplyToBroker(reply, requestID, cfg.RabbitMQ.MaxMessageBytes)
+								if fitted {
+									deliveryLogger.Warn("agent reply over the broker's message limit, replying 413 instead",
+										"bytes", replySize, "limit", cfg.RabbitMQ.MaxMessageBytes)
+								}
+								err := replyCh.publish(d.ReplyTo, amqp.Publishing{
+									ContentType:   "application/json",
+									Body:          reply,
+									CorrelationId: d.CorrelationId,
+									Timestamp:     time.Now(),
+								})
 								if err != nil {
 									deliveryLogger.Error("publish failed in register", "err", err)
 									d.Nack(false, false) // nolint
@@ -589,15 +594,12 @@ func RegisterHandler(
 								// Send an error reply matching AgentResponse format so the
 								// RPC caller fails fast instead of waiting for the full timeout.
 								errReply := []byte(`{"status_code":502,"action":"error","data":"agent connection lost"}`)
-								if err := sessCh.Publish(
-									"", d.ReplyTo, false, false,
-									amqp.Publishing{
-										ContentType:   "application/json",
-										Body:          errReply,
-										CorrelationId: d.CorrelationId,
-										Timestamp:     time.Now(),
-									},
-								); err != nil {
+								if err := replyCh.publish(d.ReplyTo, amqp.Publishing{
+									ContentType:   "application/json",
+									Body:          errReply,
+									CorrelationId: d.CorrelationId,
+									Timestamp:     time.Now(),
+								}); err != nil {
 									deliveryLogger.Warn("failed to publish error reply", "err", err)
 									d.Nack(false, false) // nolint
 								} else {
@@ -671,7 +673,10 @@ func RegisterHandler(
 		// errors.Is, not !=: several goroutines in this group wrap their cause
 		// (the consumer's "get channel: %w" among them), so a plain comparison
 		// reported every clean shutdown as a session failure.
-		if err := eg.Wait(); err != nil && !errors.Is(err, context.Canceled) {
+		waitErr := eg.Wait()
+		// Every delivery goroutine is in eg, so nothing publishes any more.
+		replyCh.close()
+		if err := waitErr; err != nil && !errors.Is(err, context.Canceled) {
 			logger.Error("register session ended with error", "err", err, "account", accountID)
 		} else {
 			logger.Info("register session ended cleanly", "account", accountID)

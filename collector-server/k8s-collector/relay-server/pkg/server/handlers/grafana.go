@@ -128,6 +128,10 @@ func NewGrafanaHandler(
 			c.JSON(http.StatusInternalServerError, utils.BuildError(500, "invalid agent response"))
 			return
 		}
+		if writeRelayErrorReply(c, ar) {
+			logger.Warn("relay error reply", "request_id", ar.RequestID, "status", ar.StatusCode, "reason", ar.Data)
+			return
+		}
 		var hrResp models.HTTPResponse
 		if err := json.Unmarshal([]byte(ar.Data), &hrResp); err != nil {
 			logger.Error("failed to unmarshal HTTPResponse", "err", err)
