@@ -102,11 +102,12 @@ const GraphSections = ({ accountId }) => {
     for (const item of networkData) {
       if (!item) continue;
 
+      const valueInGb = item.avg_value == null ? null : Number(item.avg_value) / (1024 * 1024 * 1024);
       if (item.metric === 'networkReceiveBytes') {
-        ingressData.push(item.avg_value / (1024 * 1024 * 1024));
+        ingressData.push(valueInGb);
         ingressLabels.push(getDateStringFromDateUnit(item.timestamp, chartUnit));
       } else if (item.metric === 'networkTransferBytes') {
-        egressData.push(item.avg_value / (1024 * 1024 * 1024));
+        egressData.push(valueInGb);
         egressLabels.push(getDateStringFromDateUnit(item.timestamp, chartUnit));
       }
     }

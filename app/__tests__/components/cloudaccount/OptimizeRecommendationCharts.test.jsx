@@ -51,6 +51,8 @@ describe('OptimizeRecommendationCharts network series', () => {
           { metric: 'networkReceiveBytes', avg_value: 0, timestamp: 1 },
           { metric: 'networkTransferBytes', avg_value: 2 * 1024 ** 3, timestamp: 2 },
           { metric: 'networkReceiveBytes', avg_value: 3 * 1024 ** 3, timestamp: 3 },
+          { metric: 'networkReceiveBytes', avg_value: null, timestamp: 4 },
+          { metric: 'networkTransferBytes', avg_value: undefined, timestamp: 5 },
         ],
       },
     });
@@ -60,7 +62,7 @@ describe('OptimizeRecommendationCharts network series', () => {
     render(<OptimizeRecommendationCharts accountId='account-1' />);
 
     await waitFor(() => {
-      expect(mockBarChart.mock.calls.some(([props]) => props.chartLabel?.[0] === 'Ingress (GB)' && props.data.length === 2)).toBe(true);
+      expect(mockBarChart.mock.calls.some(([props]) => props.chartLabel?.[0] === 'Ingress (GB)' && props.data.length === 3)).toBe(true);
     });
 
     const propsFor = (label) =>
@@ -71,10 +73,10 @@ describe('OptimizeRecommendationCharts network series', () => {
     const ingress = propsFor('Ingress (GB)');
     const egress = propsFor('Egress (GB)');
 
-    expect(ingress.data).toEqual([0, 3]);
-    expect(ingress.labels).toEqual(['t1', 't3']);
-    expect(egress.data).toEqual([2]);
-    expect(egress.labels).toEqual(['t2']);
-    expect([...ingress.data, ...egress.data].every(Number.isFinite)).toBe(true);
+    expect(ingress.data).toEqual([0, 3, null]);
+    expect(ingress.labels).toEqual(['t1', 't3', 't4']);
+    expect(egress.data).toEqual([2, null]);
+    expect(egress.labels).toEqual(['t2', 't5']);
+    expect([...ingress.data, ...egress.data].every((value) => value === null || Number.isFinite(value))).toBe(true);
   });
 });
