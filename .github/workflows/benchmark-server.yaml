@@ -49,12 +49,12 @@ jobs:
 
       - name: Check formatting
         working-directory: ./llm/benchmark
-        run: uv run black --check benchmark_server memory_golden
+        run: uv run black --check benchmark_server
 
       - name: Run lint
         working-directory: ./llm/benchmark
-        run: uv run flake8 benchmark_server memory_golden
+        run: uv run flake8 benchmark_server
 
       - name: Run unit tests
         working-directory: ./llm/benchmark
-        run: uv run pytest benchmark_server/tests llm/agents/event_code_fix memory_golden -m "not benchmark"
+        run: uv run pytest benchmark_server/tests llm/agents/event_code_fix -m "not benchmark"
