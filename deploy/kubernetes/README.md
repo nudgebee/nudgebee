@@ -263,10 +263,17 @@ Set `global.imagePullSecrets` and provide credentials via `nudgebee_registry_sec
 `nudgebee_secret.BASE_URL` doesn't match the ingress host. Update + re-run `helm upgrade`.
 
 **Bootstrap admin password**
-On a fresh install, the chart provisions a dummy-credentials admin so you can log in once. Retrieve with:
+The chart enables a bootstrap login pinned to the required `admin.email`; other
+email addresses cannot use it. The password is generated per installation and
+preserved across upgrades. Retrieve it with:
 ```bash
 kubectl -n nudgebee get secret nudgebee \
   -o jsonpath='{.data.NEXTAUTH_DUMMY_CREDS_PASSWORD}' | base64 -d
+```
+After configuring and verifying SSO, LDAP, or magic-link authentication, disable
+the bootstrap login:
+```bash
+helm upgrade ... --set nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED=false
 ```
 
 ## Going deeper
