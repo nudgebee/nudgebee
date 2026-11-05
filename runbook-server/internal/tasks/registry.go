@@ -80,6 +80,7 @@ func NewInitializedTaskRegistry() *TaskRegistry {
 	tr := NewTaskRegistry()
 
 	tr.RegisterTask(&core.ApprovalTask{})
+	tr.RegisterTask(&core.BlastRadiusPreflightTask{})
 	tr.RegisterTask(&core.GroupTask{})
 	tr.RegisterTask(&core.ForEachTask{})
 	tr.RegisterTask(&core.PrintTask{})
