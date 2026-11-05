@@ -40,6 +40,7 @@ RUN export DEBIAN_FRONTEND=noninteractive \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-RUN clickhouse-server --version \
-    && clickhouse-server --version | grep -q ' 24\.12\.4\.' \
+RUN version="$(clickhouse-server --version)" \
+    && echo "${version}" \
+    && echo "${version}" | grep -q ' 24\.12\.4\.' \
     || { echo "ClickHouse version changed during the OS upgrade" >&2; exit 1; }
