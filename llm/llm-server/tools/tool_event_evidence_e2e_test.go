@@ -15,6 +15,23 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
+const testAccountId = "6c008cf8-4d79-4999-8447-573a697d0652"
+
+func testUserId() string {
+	uid := os.Getenv("TEST_USER")
+	if uid == "" {
+		uid = uuid.NewString()
+	}
+	return uid
+}
+
+func newToolContext(tool core.NBTool, eventId string) core.NbToolContext {
+	sc := security.NewRequestContextForSuperAdmin()
+	return core.NewNbToolContext(sc, tool, testAccountId, testUserId(),
+		uuid.NewString(), uuid.NewString(), uuid.NewString(),
+		eventId, []llms.MessageContent{}, "", core.NBQueryConfig{}, "")
+}
+
 func TestGetEventEvidence_AllEvidence(t *testing.T) {
 	requireEventFixtureDB(t)
 	tool := GetEventEvidenceTool{}
