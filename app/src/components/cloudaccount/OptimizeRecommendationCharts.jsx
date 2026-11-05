@@ -94,18 +94,18 @@ const GraphSections = ({ accountId }) => {
       return;
     }
 
+    const ingressData = networkData?.filter((i) => i.metric === 'networkReceiveBytes') || [];
     const ingressLinechartData = {
-      data: networkData?.filter((i) => i.metric === 'networkReceiveBytes')?.map((item) => formatMemory(item.avg_value, 'bytes', 'gb', false)) || [],
-      label:
-        networkData?.filter((i) => i.metric === 'networkReceiveBytes')?.map((item) => getDateStringFromDateUnit(item.timestamp, chartUnit)) || [],
+      data: ingressData.map((item) => formatMemory(item.avg_value, 'bytes', 'gb', false)),
+      label: ingressData.map((item) => getDateStringFromDateUnit(item.timestamp, chartUnit)),
       chartLabel: ['Ingress (GB)'],
     };
     setIngressLinechartData(ingressLinechartData);
 
+    const egressData = networkData?.filter((i) => i.metric === 'networkTransferBytes') || [];
     const egressLinechartData = {
-      data: networkData?.filter((i) => i.metric === 'networkTransferBytes')?.map((item) => formatMemory(item.avg_value, 'bytes', 'gb', false)) || [],
-      label:
-        networkData?.filter((i) => i.metric === 'networkTransferBytes')?.map((item) => getDateStringFromDateUnit(item.timestamp, chartUnit)) || [],
+      data: egressData.map((item) => formatMemory(item.avg_value, 'bytes', 'gb', false)),
+      label: egressData.map((item) => getDateStringFromDateUnit(item.timestamp, chartUnit)),
       chartLabel: ['Egress (GB)'],
     };
     setEgressLinechartData(egressLinechartData);
