@@ -159,8 +159,26 @@ func TestNormaliseGeneratedMetricsQueryValidatesDatadogQueries(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, valid, got.Query)
 
+	for _, query := range []string{
+		"abs(avg:system.cpu.user{*})",
+		"per_second(sum:system.net.bytes_rcvd{*})",
+		"top(avg:system.cpu.user{*} by {host}, 10, 'mean', 'desc')",
+		"(avg:system.cpu.user{*} + avg:system.cpu.system{*})",
+		"100 * avg:system.cpu.user{*}",
+	} {
+		got, err := normaliseGeneratedMetricsQuery("datadog", query)
+		require.NoError(t, err, "valid Datadog query was rejected: %s", query)
+		assert.Equal(t, query, got.Query)
+	}
+
 	for _, raw := range []string{
 		"Here is the query: " + valid,
+		"Explanation " + valid,
+		"- " + valid,
+		"* " + valid,
+		"+ " + valid,
+		"**" + valid + "**",
+		"1) " + valid,
 		"Here are some queries:\n\n### CPU\n```text\n" + valid + "\n```\n\n### Memory\n```text\navg:kubernetes.memory.usage{*}\n```",
 		`{"query":"Here is the query: ` + valid + `"}`,
 	} {

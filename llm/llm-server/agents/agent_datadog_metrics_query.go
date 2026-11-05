@@ -600,6 +600,10 @@ func (d DatadogMetricsQueryAgent) UpdateExecutorLlmResponse(actions []core.NBAge
 // Handles complex queries with multiple metrics like: avg:cpu / avg:memory
 var datadogMetricQueryRE = regexp.MustCompile(`(avg|sum|min|max|count|top|percentile|last|stddev|p50|p75|p90|p95|p99):([a-zA-Z0-9_\.]+)`)
 
+// Datadog expressions can start with a function, grouping parenthesis, or scalar
+// before their first metric. Limit that prefix to query syntax so prose is rejected.
+var datadogQueryPrefixRE = regexp.MustCompile(`^(?:[a-zA-Z_][a-zA-Z0-9_]*\(|-?[0-9]+(?:\.[0-9]+)?|[()+*/,\s])*$`)
+
 func extractAllMetricNames(query string) []string {
 	query = strings.TrimSpace(query)
 

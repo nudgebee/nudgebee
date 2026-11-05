@@ -412,7 +412,29 @@ func normaliseGeneratedMetricsQuery(provider, raw string) (metricsQueryResult, e
 func isSingleDatadogMetricsQuery(query string) bool {
 	query = strings.TrimSpace(query)
 	match := datadogMetricQueryRE.FindStringIndex(query)
-	return match != nil && match[0] == 0 && !strings.ContainsAny(query, "\r\n`") && validateDatadogQuery(query) == ""
+	if match == nil || !isDatadogQueryPrefix(query[:match[0]]) || strings.ContainsAny(query, "\r\n`") {
+		return false
+	}
+	return validateDatadogQuery(query) == ""
+}
+
+func isDatadogQueryPrefix(prefix string) bool {
+	prefix = strings.TrimSpace(prefix)
+	if !datadogQueryPrefixRE.MatchString(prefix) {
+		return false
+	}
+	// Markdown bullets begin with an operator, while valid prefixes start with a function, group, or scalar.
+	if prefix == "" {
+		return true
+	}
+	first := prefix[0]
+	if first == '(' || first == '_' || first >= 'a' && first <= 'z' || first >= 'A' && first <= 'Z' {
+		return true
+	}
+	if prefix[0] == '-' && len(prefix) > 1 {
+		prefix = prefix[1:]
+	}
+	return prefix[0] >= '0' && prefix[0] <= '9' && strings.ContainsAny(prefix, "+-*/")
 }
 
 // firstPromqlQuery reads promql_query's value, which is a string for the single-query
