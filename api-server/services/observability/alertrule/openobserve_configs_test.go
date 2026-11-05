@@ -52,8 +52,12 @@ func expectOpenObserveConfig(mock sqlmock.Sqlmock, ctx *security.RequestContext)
 		WithArgs(ctx.GetSecurityContext().GetTenantId(), "account")
 }
 
-func openObserveTestRequestContext() *security.RequestContext {
-	return security.NewRequestContextForTenantAdmin("tenant-1", slog.Default(), nil, nil)
+func openObserveTestRequestContext(t *testing.T, mock sqlmock.Sqlmock, tenantID string) *security.RequestContext {
+	t.Helper()
+	mock.ExpectQuery(`SELECT id FROM cloud_accounts WHERE tenant = \$1`).
+		WithArgs(tenantID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	return security.NewRequestContextForTenantAdmin(tenantID, slog.Default(), nil, nil)
 }
 
 func TestOpenObserveAlertConfig(t *testing.T) {
@@ -72,7 +76,7 @@ func TestOpenObserveAlertConfig(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			mock := openObserveConfigDB(t)
-			ctx := openObserveTestRequestContext()
+			ctx := openObserveTestRequestContext(t, mock, "tenant-1")
 			expected := expectOpenObserveConfig(mock, ctx)
 			if tc.dbError != nil {
 				expected.WillReturnError(tc.dbError)
@@ -97,17 +101,22 @@ func TestOpenObserveAlertConfig(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		ctx       *security.RequestContext
+		tenantID  string
 		accountID string
 		wantError string
 	}{
-		{"empty account", nil, "", "account_id is required"},
-		{"blank account", openObserveTestRequestContext(), "  ", "account_id is required"},
-		{"nil request context", nil, "account", "tenant security context is required"},
-		{"nil security context", security.NewRequestContext(context.Background(), nil, slog.Default(), nil, nil), "account", "tenant security context is required"},
-		{"blank tenant", security.NewRequestContextForTenantAdmin("  ", slog.Default(), nil, nil), "account", "tenant_id is required"},
+		{"empty account", nil, "", "", "account_id is required"},
+		{"blank account", nil, "tenant-1", "  ", "account_id is required"},
+		{"nil request context", nil, "", "account", "tenant security context is required"},
+		{"nil security context", security.NewRequestContext(context.Background(), nil, slog.Default(), nil, nil), "", "account", "tenant security context is required"},
+		{"blank tenant", nil, "  ", "account", "tenant_id is required"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := getOpenObserveAlertConfig(tc.ctx, tc.accountID)
+			ctx := tc.ctx
+			if tc.tenantID != "" {
+				ctx = openObserveTestRequestContext(t, openObserveConfigDB(t), tc.tenantID)
+			}
+			_, err := getOpenObserveAlertConfig(ctx, tc.accountID)
 			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
 				t.Errorf("error = %v, want %q", err, tc.wantError)
 			}
@@ -127,8 +136,8 @@ func TestOpenObserveAlertSourceCRUD(t *testing.T) {
 					_, _ = w.Write([]byte("{\"id\":\"alert-1\"}"))
 				}))
 				defer server.Close()
-				ctx := openObserveTestRequestContext()
 				mock := openObserveConfigDB(t)
+				ctx := openObserveTestRequestContext(t, mock, "tenant-1")
 				expectOpenObserveConfig(mock, ctx).WillReturnRows(openObserveConfigRows(server.URL))
 				cfg := openObserveTestConfig()
 				cfg.AccountId = "account"
