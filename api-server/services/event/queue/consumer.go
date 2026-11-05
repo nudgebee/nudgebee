@@ -2,11 +2,13 @@ package queue
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"nudgebee/services/common"
 	"nudgebee/services/config"
@@ -44,6 +46,7 @@ func processEventPostProcessMessage(msgCtx context.Context, data []byte) error {
 		return nil // Don't requeue malformed messages
 	}
 
+	message.EventID = strings.TrimSpace(message.EventID)
 	if message.EventID == "" {
 		slog.Error("event_queue: message missing event_id")
 		return nil
@@ -53,7 +56,12 @@ func processEventPostProcessMessage(msgCtx context.Context, data []byte) error {
 
 	ctx, eventMap, err := loadEventMapFn(msgCtx, message.EventID, logger)
 	if err != nil {
-		return nil // Already logged; don't requeue (malformed / missing event)
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, errEventNotConvertible) {
+			return nil // Missing or unconvertible event is permanent; nothing to retry
+		}
+		// Slow RabbitMQ redelivery during transient outages.
+		time.Sleep(time.Second)
+		return err // Transient lookup failure; let RabbitMQ redeliver
 	}
 
 	if message.Phase == EventPostProcessPhaseReturned {
