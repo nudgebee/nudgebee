@@ -209,14 +209,15 @@ func (c *TemplateContext) RenderMap(m map[string]any) (map[string]any, error) {
 
 func (c *TemplateContext) Clone() *TemplateContext {
 	clone := &TemplateContext{
-		Inputs:     make(map[string]any),
-		Tasks:      make(map[string]map[string]any),
-		Secrets:    make(map[string]any),
-		Configs:    make(map[string]any),
-		Vars:       make(map[string]any), // Initialize Vars in clone
-		State:      make(map[string]any), // Initialize State in clone
-		Self:       make(map[string]any), // Initialize Self in clone
-		timeSource: c.timeSource,
+		Inputs:         make(map[string]any),
+		Tasks:          make(map[string]map[string]any),
+		Secrets:        make(map[string]any),
+		Configs:        make(map[string]any),
+		Vars:           make(map[string]any), // Initialize Vars in clone
+		State:          make(map[string]any), // Initialize State in clone
+		Self:           make(map[string]any), // Initialize Self in clone
+		templateEngine: c.templateEngine,
+		timeSource:     c.timeSource,
 	}
 	for k, v := range c.Inputs {
 		clone.Inputs[k] = v
