@@ -18,8 +18,9 @@ import FilterDropdown from '@ui/FilterDropdown';
 import { Button } from '@ui/Button';
 import { toast as snackbar } from '@ui/Toast';
 import Loader from '@shared/Loader';
-import { DeleteIconRed, RefreshIcon } from '@assets';
+import { RefreshIcon } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
+import DeleteOutlinedIcon from '@mui/icons-material/DeleteOutlined';
 import apiKnowledgeGraph from '@api1/knowledge-graph';
 import ManualDependenciesTable from './ManualDependenciesTable';
 import ResolveAmbiguityPanel from './ResolveAmbiguityPanel';
@@ -323,19 +324,14 @@ const ManualDependenciesSection = ({ open, schema, refreshKey, onNodesChanged })
             </Button>
           )}
           {rows.length > 0 && (
-            <Button
-              tone='danger'
-              size='md'
-              onClick={handleDeleteAllClick}
-              icon={<SafeIcon src={DeleteIconRed} alt='delete' width={14} height={14} />}
-            >
+            <Button tone='danger' size='md' onClick={handleDeleteAllClick} icon={<DeleteOutlinedIcon sx={{ fontSize: ds.text.bodyLg }} />}>
               Delete all
             </Button>
           )}
         </ListingLayout.Toolbar>
         <ListingLayout.Body>
           {loading ? (
-            <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+            <Box sx={{ display: 'flex', justifyContent: 'center', py: ds.space[6] }}>
               <Loader />
             </Box>
           ) : (

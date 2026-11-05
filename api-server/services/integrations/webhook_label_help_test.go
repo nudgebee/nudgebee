@@ -130,6 +130,21 @@ var webhookLabelHelpProducers = map[string]func(t *testing.T) map[string]string{
 	IntegrationCubeAPMWebhook: func(t *testing.T) map[string]string {
 		return processedLabels(t, CubeAPMWebhook{}, webhookLabelHelpAlertmanagerBody)
 	},
+	IntegrationSigNozWebhook: func(t *testing.T) map[string]string {
+		stubSigNozRuleRegistration(t)
+		return processedLabels(t, SigNozWebhook{}, `{
+			"status": "firing", "externalURL": "https://signoz.example.com",
+			"alerts": [{
+				"status": "firing",
+				"labels": {"alertname": "HighMemory", "severity": "critical", "ruleId": "r-1",
+					"ruleSource": "https://signoz.example.com/alerts/overview?ruleId=r-1",
+					"k8s.namespace.name": "shop", "k8s.deployment.name": "checkout", "k8s.pod.name": "checkout-1"},
+				"annotations": {"summary": "memory high", "runbook_url": "https://runbooks.example.com/memory"},
+				"startsAt": "2026-10-15T09:50:30Z", "endsAt": "0001-01-01T00:00:00Z",
+				"generatorURL": "https://signoz.example.com/alerts/overview?ruleId=r-1", "fingerprint": "fp-1"
+			}]
+		}`)
+	},
 	IntegrationSplunkWebhook: func(t *testing.T) map[string]string {
 		return processedLabels(t, SplunkWebhook{}, `{
 			"search_name": "Checkout errors", "app": "search", "owner": "admin", "sid": "scheduler__admin__1",

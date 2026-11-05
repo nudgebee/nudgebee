@@ -35,16 +35,15 @@ type firingIdentity struct {
 // webhookFiringIdentity records how every webhook parser tells one firing of an
 // alert from the next. It exists because a parser whose EventId is stable per
 // alert silently swallows every firing after the first close: GCP monitoring did,
-// then Alertmanager and Grafana did. A declaration cannot prove a claim,
+// then Alertmanager, Grafana and CubeAPM did. A declaration cannot prove a claim,
 // but it makes each parser's answer visible in one place, and a new parser cannot
 // ship without one (TestEveryWebhookParserDeclaresFiringIdentity).
 var webhookFiringIdentity = map[string]firingIdentity{
 	IntegrationPrometheusAlertManagerWebhook: {firingKeyMode, "startsAt"},
 	IntegrationGrafanaWebhook:                {firingKeyMode, "startsAt"},
-	// Alertmanager-compatible body: same stable fingerprint, same per-firing startsAt.
-	IntegrationCubeAPMWebhook:       {firingKeyMode, "startsAt"},
-	IntegrationSigNozWebhook:        {firingKeyMode, "startsAt"},
-	IntegrationElasticsearchWebhook: {firingKeyMode, "alert.uuid ({{alert.uuid}}, Kibana 8.8+); a body without it has no per-firing key"},
+	IntegrationCubeAPMWebhook:                {firingKeyMode, "startsAt"},
+	IntegrationElasticsearchWebhook:          {firingKeyMode, "alert.uuid ({{alert.uuid}}, Kibana 8.8+); a body without it has no per-firing key"},
+	IntegrationSigNozWebhook:                 {firingKeyMode, "startsAt"},
 
 	IntegrationZendutyWebhook:       {perFiringEventId, "incident unique_id"},
 	IntegrationPagerdutyWebhook:     {perFiringEventId, "incident id"},
@@ -119,7 +118,6 @@ var firingKeyParsers = map[string]firingKeySequence{
 		sc := security.NewRequestContextForSuperAdmin(nil, nil, nil)
 		return singleEvent(PrometheusAlertManagerWebhook{}.ProcessEventWebook(sc, nil, "acct-1", alertmanagerStyleBody(status, startsAt, fingerprint)))
 	},
-	// CubeAPM sends the Alertmanager body, so the same delivery fixture applies.
 	IntegrationCubeAPMWebhook: func(status, startsAt, fingerprint string) (core.EventIncomingWebhook, error) {
 		sc := security.NewRequestContextForSuperAdmin(nil, nil, nil)
 		return singleEvent(CubeAPMWebhook{}.ProcessEventWebook(sc, nil, "acct-1", alertmanagerStyleBody(status, startsAt, fingerprint)))

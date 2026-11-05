@@ -12,7 +12,6 @@ import (
 	"nudgebee/services/integrations"
 	"nudgebee/services/query"
 	"nudgebee/services/security"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -211,40 +210,6 @@ func cubeAPMFilterValues(val any) []string {
 	}
 }
 
-// cubeAPMLikeRegex renders a SQL LIKE pattern (`%`, `_`, `\%`, `\_`) as a LogsQL
-// regex. LogsQL's `:~` matches anywhere in the value, so the pattern is anchored to
-// keep LIKE's whole-value meaning. It is case-insensitive, as on Tempo, because the
-// Traces tab's resource search sends `_like` and relies on that; (?s) lets `%` span
-// the newlines of a multi-line db.statement, as SQL LIKE does.
-func cubeAPMLikeRegex(pattern string) string {
-	return "(?is)^(?:" + cubeAPMLikePattern(pattern) + ")$"
-}
-
-// cubeAPMLikePattern turns a SQL LIKE pattern into a regex body: `%` is any run, `_`
-// any one character, `\%` and `\_` are literals. Same translation as main's
-// tempoLikePattern, which prod does not have yet; once the Tempo source is on prod
-// this should call that instead.
-func cubeAPMLikePattern(p string) string {
-	var b strings.Builder
-	runes := []rune(p)
-	for i := 0; i < len(runes); i++ {
-		switch r := runes[i]; {
-		// Only `\%`, `\_` and `\\` are escapes (sqllike.go); any other backslash is a
-		// literal, so a Windows path like `C:\assets` keeps its separator.
-		case r == '\\' && i+1 < len(runes) && (runes[i+1] == '%' || runes[i+1] == '_' || runes[i+1] == '\\'):
-			b.WriteString(regexp.QuoteMeta(string(runes[i+1])))
-			i++
-		case r == '%':
-			b.WriteString(".*")
-		case r == '_':
-			b.WriteString(".")
-		default:
-			b.WriteString(regexp.QuoteMeta(string(r)))
-		}
-	}
-	return b.String()
-}
-
 // filterValueString renders one operand. A JSON number decodes to float64, and %v
 // prints a float64 of 1e6 or more in exponent form: duration_ns 300000000 became
 // `3e+08`, which TraceQL rejects as a type mismatch. 'f' with precision -1 keeps the
@@ -257,6 +222,15 @@ func filterValueString(v any) string {
 		return strconv.FormatFloat(float64(n), 'f', -1, 32)
 	}
 	return fmt.Sprintf("%v", v)
+}
+
+// cubeAPMLikeRegex renders a SQL LIKE pattern (`%`, `_`, `\%`, `\_`) as a LogsQL
+// regex. LogsQL's `:~` matches anywhere in the value, so the pattern is anchored to
+// keep LIKE's whole-value meaning. It is case-insensitive, as on Tempo, because the
+// Traces tab's resource search sends `_like` and relies on that; (?s) lets `%` span
+// the newlines of a multi-line db.statement, as SQL LIKE does.
+func cubeAPMLikeRegex(pattern string) string {
+	return "(?is)^(?:" + tempoLikePattern(pattern) + ")$"
 }
 
 // cubeAPMTraceWhere rewrites a canonical where-clause into one over LogsQL field
