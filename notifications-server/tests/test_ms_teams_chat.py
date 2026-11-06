@@ -268,15 +268,18 @@ def test_the_alert_goes_with_the_first_question_only():
     events.async_query_llm_server = mock.AsyncMock()
     with mock.patch.object(thinking, "begin", mock.AsyncMock(return_value=False)):
         asyncio.run(events._process_teams_message(SimpleNamespace(), _entry(alert_context="Pod crash"), "why?", "aad"))
-        first = events.async_query_llm_server.call_args.args[0]["query"]
+        first = events.async_query_llm_server.call_args.args[0]
         events.cache.update_event_entry.assert_called_with(THREAD, alert_context_sent=True)
         asyncio.run(
             events._process_teams_message(
                 SimpleNamespace(), _entry(alert_context="Pod crash", alert_context_sent=True), "and now?", "aad"
             )
         )
-    assert first.startswith("why?") and "--- context ---" in first and "Pod crash" in first
-    assert events.async_query_llm_server.call_args.args[0]["query"] == "and now?"
+    assert first["query"] == "why?"
+    assert first["channel_context"] == "Pod crash"
+    second = events.async_query_llm_server.call_args.args[0]
+    assert second["query"] == "and now?"
+    assert "channel_context" not in second
 
 
 # ------------------------------- answer cards -------------------------------

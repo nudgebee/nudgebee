@@ -2288,19 +2288,16 @@ class Events:
             alert_context = None
             if cached_entry.get("alert_context") and not cached_entry.get("alert_context_sent"):
                 alert_context = cached_entry["alert_context"]
-            query = (
-                f"{message_text}\n\n{THREAD_CONTEXT_MARKER}\nassistant:\n{alert_context}\n"
-                if alert_context
-                else message_text
-            )
             payload = {
-                "query": query,
+                "query": message_text,
                 "account_id": cached_entry["account_id"],
                 "user_id": cached_entry["user_id"],
                 "session_id": cached_entry["session_id"],
                 "source": "InstantNotification",
                 "async": True,
             }
+            if alert_context:
+                payload["channel_context"] = alert_context
             headers = {
                 "x-tenant-id": cached_entry["tenant_id"],
                 "x-user-id": cached_entry["user_id"],
