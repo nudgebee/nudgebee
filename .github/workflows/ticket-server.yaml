@@ -42,3 +42,17 @@ jobs:
           version: v2.11.3
           working-directory: ./ticket-server
           args: --timeout 20m
+
+      # -race needs cgo + a C compiler. The self-hosted runner image is minimal
+      # and may ship without gcc, so install it before the race-enabled run.
+      - name: Install C toolchain (for -race)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc libc6-dev
+
+      # Unit suite. Tests that need live services or credentials skip themselves
+      # when the relevant env vars are unset, so this runs on a bare runner.
+      - name: Run unit tests
+        working-directory: ./ticket-server
+        # setup-go leaves CGO_ENABLED unset; -race requires cgo, so enable it.
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race ./...

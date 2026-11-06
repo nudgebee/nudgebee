@@ -56,3 +56,27 @@ jobs:
           version: v2.11.3
           working-directory: collector-server/cloud-collector
           args: --timeout 20m
+
+      # -race needs cgo + a C compiler. The self-hosted runner image is minimal
+      # and may ship without gcc, so install it before the race-enabled run.
+      - name: Install C toolchain (for -race)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc libc6-dev
+
+      # Unit suite. Tests that need live services or credentials skip themselves
+      # when the relevant env vars are unset, so this runs on a bare runner.
+      - name: Run unit tests
+        working-directory: ./collector-server/cloud-collector
+        # setup-go leaves CGO_ENABLED unset; -race requires cgo, so enable it.
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race ./...
+
+      # Compile the tagged end-to-end tests without running them; they require
+      # live provider credentials and services unavailable in CI. `go vet`
+      # type-checks the tagged files, so build breakage still fails the PR.
+      - name: Build e2e-tagged tests (compile-only)
+        # Run even if the unit-test step failed, so compile breakage is always
+        # reported instead of being masked by an unrelated test failure.
+        if: ${{ !cancelled() }}
+        working-directory: ./collector-server/cloud-collector
+        run: go vet -tags e2e ./...
