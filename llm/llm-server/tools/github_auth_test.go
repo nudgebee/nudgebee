@@ -38,6 +38,9 @@ func TestBuildGithubAuth_EmptyToken(t *testing.T) {
 }
 
 func TestBuildGithubAuth_AppInvalidInstallationID(t *testing.T) {
+	// A set GITHUB_TOKEN short-circuits resolveGithubToken's App path (local-dev
+	// escape hatch), so clear it to exercise installation_id validation.
+	t.Setenv("GITHUB_TOKEN", "")
 	cfg := core.ToolConfig{
 		Name: "github-app",
 		Values: []core.ToolConfigValue{
