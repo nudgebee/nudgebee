@@ -190,6 +190,11 @@ func TestCLIEnvironmentVariables(t *testing.T) {
 
 // TestCLIArguments tests various CLI argument combinations
 func TestCLIArguments(t *testing.T) {
+	// The CLI falls back to these env vars when --token is absent, and the
+	// subprocess inherits them, so clear them for the "Missing token" case.
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GITLAB_TOKEN", "")
+
 	// Build the binary first
 	buildCmd := exec.Command("go", "build", "-o", binaryName, "main.go")
 	err := buildCmd.Run()
