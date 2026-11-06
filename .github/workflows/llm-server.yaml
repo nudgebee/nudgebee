@@ -62,13 +62,11 @@ jobs:
       - name: Install C toolchain (for -race)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc libc6-dev
 
-      # Unit suite. Tests that need a live Postgres metastore / Clickhouse
-      # warehouse / external credentials skip themselves cleanly via the
-      # internal/testenv helpers (testenv.RequireMetastore / RequireWarehouse /
-      # RequireEnv), so this runs hermetically on a bare runner. Making those
-      # skips real test coverage (throwaway containers) is tracked in #31114.
+      # Unit suite. Tests that need live services or credentials skip themselves
+      # when the relevant env vars (TEST_ACCOUNT, TEST_USER, ...) are unset, so
+      # this runs on a bare runner.
       - name: Run unit tests
-        working-directory: ./api-server/services
+        working-directory: ./llm/llm-server
         # setup-go leaves CGO_ENABLED unset; -race requires cgo, so enable it.
         env:
           CGO_ENABLED: "1"
@@ -81,119 +79,14 @@ jobs:
         working-directory: ./llm/llm-server
         run: go vet -tags e2e ./...
 
-      # Compile-only gate for the integration-tagged tests
-      # (//go:build relay_integration | recommendation_integration). They need
-      # live infra CI does not have, so we do NOT run them -- but `go vet`
-      # type-checks every file, including the tagged ones, without executing any
-      # binary, so build breakage in them still surfaces on the PR.
+      # Compile-only gate for the remaining tagged tests
+      # (//go:build cross_check | integration). They need live infra CI does
+      # not have, so we do NOT run them -- but `go vet` type-checks every file,
+      # including the tagged ones, without executing any binary, so build
+      # breakage in them still surfaces on the PR.
       - name: Build integration-tagged tests (compile-only)
         # Run even if the unit-test step failed, so compile breakage is always
         # reported instead of being masked by an unrelated test failure.
         if: ${{ !cancelled() }}
-        working-directory: ./api-server/services
-        run: go vet -tags "relay_integration recommendation_integration" ./...
-
-  # The PR-lifecycle sweeps are plain SQL against recommendation_resolution /
-  # event_resolution, and their tests are written against throwaway tables. They
-  # were DB-gated with a skip, so on a runner with no database they skipped —
-  # which meant nothing checked them at all, and one of them sat asserting the
-  # wrong contract until it was first executed. Give them a database so they run.
-  #
-  # ubuntu-latest, not the self-hosted runner: service containers need Docker on
-  # the runner host, and this mirrors the postgres:15 service that
-  # migrations-validate.yaml already runs successfully.
-  pr-lifecycle-db-tests:
-    name: PR lifecycle sweeps (real Postgres)
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: ghcr.io/nudgebee/postgres:16.10-alpine-nb2
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: appdb
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - name: Setup Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
-        with:
-          go-version: "1.26.x"
-          cache-dependency-path: ./api-server/services/go.sum
-
-      # These tests create and drop their own throwaway tables, so an empty
-      # database is all they need — no migrations, no fixtures.
-      #
-      # observability carries the workload-name resolution predicate, which is a
-      # difference in SQL semantics rather than in Go: the wrong form resolves no
-      # workload and the evidence card silently drops its per-container split and
-      # its request/limit lines, with no error. It can only be asserted against a
-      # real planner, so it runs here.
-      #
-      # recommendation carries the departed-image archive, a destructive UPDATE
-      # driven by a three-way UNION over jsonb, a text extraction and a guarded
-      # timestamp cast. Go cannot check any of that, and the failure mode is
-      # retiring findings that still apply.
-      #
-      # event carries the enrichment merge, a hand-written statement over jsonb
-      # and NOT NULL columns. Each defect it has had was invisible to Go tests and
-      # only surfaced against a real Postgres: a uuid column compared with text, a
-      # NULL array silently emptying the evidence column, and a NOT NULL violation
-      # for any event that arrived without a cluster.
-      #
-      # recommendation carries the finops score recompute walk. Which Open rows
-      # it still visits once their recency boost has decayed, and whether its
-      # unchanged-row guard lets an unmoved score through, are both decided in
-      # SQL over jsonb; the failure modes are a daily rewrite of the whole Open
-      # set and a stale score that is never corrected, neither visible to Go.
-      #
-      # query carries the notification-rule account scope, a predicate over a
-      # child table that decides which rules an account-scoped reader sees. The
-      # wrong form shows a rule to someone who cannot see all of its accounts,
-      # and only a real planner runs it.
-      #
-      # account carries what removing an account does to notification rules that
-      # cover it: an UPDATE ... FROM that moves each rule's mirror account before
-      # foreign-key cascades run. A mirror left NULL reads as every account to
-      # older code. Only its NotificationRule test: account's other _DB test needs
-      # a migrated database.
-      #
-      # insight carries the two statements the 10-minute insight refresh writes
-      # with: an upsert that must skip an insight that did not change, and a
-      # close that must reach exactly the accounts a run stopped reporting. Both
-      # are decided by SQL comparisons over jsonb and a uuid array, and the
-      # failure modes are a rewrite of every row on every run and insights that
-      # never close; Go sees neither.
-      #
-      # user carries the AI Gateway key policy rows (#38966): the row lock that
-      # makes a concurrent edit of one key wait instead of merging both lists into
-      # a wider key, and the match by key and owner that keeps a restriction after
-      # the owner switches tenant. Both are Postgres behaviour; sqlmock shows neither.
-      #
-      # dashboard carries the save conflict check (#40228): the row lock that makes
-      # a save starting while another is committing wait and then see its revision.
-      # Without it the second save passes the version check and silently overwrites
-      # the first; sqlmock cannot show the wait.
-      - name: Run PR-lifecycle DB tests
-        working-directory: ./api-server/services
-        env:
-          APP_DATABASE_URL: postgres://postgres:postgres@localhost:5432/appdb?sslmode=disable
-          # Turns an unreachable database into a failure in THIS job only, so the
-          # suite cannot quietly stop running here.
-          REQUIRE_DB_TESTS: "true"
-        # triage/eventrule: which suppression rows a mute owns is decided in SQL over
-        # jsonb tags and nullable match columns (alert-rule mute, epic #38553). All
-        # but CascadePipeline, the one triage _DB test that needs a migrated database.
-        # integrations/core: the ms_teams rename migration must not collide with
-        # integrations' unique key, which would abort the post-upgrade hook.
-        run: |
-          go test ./account/adapter/ ./observability/ ./event/ ./recommendation/ ./query/ ./reports/ ./insight/ ./user/ ./dashboard/ -run '_DB$' -v
-          go test ./triage/ ./eventrule/ -run '_DB$' -skip 'CascadePipeline' -v
-          go test ./account/ -run 'NotificationRule.*_DB$' -v
-          go test ./integrations/core/ -run 'MsTeams.*_DB$' -v
+        working-directory: ./llm/llm-server
+        run: go vet -tags "cross_check integration" ./...
