@@ -25,6 +25,7 @@ func TestProxySerializersDoNotForwardRelayAuthHeader(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, tc.path, strings.NewReader(""))
 			req.Header.Set("X-SECRET-KEY", "relay-secret")
+			req.Header["x-secret-key"] = []string{"noncanonical-relay-secret"}
 			req.Header.Set("Authorization", "Bearer upstream-token")
 			req.Header.Set("Content-Type", "application/json")
 
@@ -32,6 +33,9 @@ func TestProxySerializersDoNotForwardRelayAuthHeader(t *testing.T) {
 			require.NoError(t, err)
 			forwarded := http.Header(got.Header)
 			require.Empty(t, forwarded.Get("X-SECRET-KEY"))
+			for key := range forwarded {
+				require.False(t, strings.EqualFold(key, "X-SECRET-KEY"))
+			}
 			require.Equal(t, "Bearer upstream-token", forwarded.Get("Authorization"))
 			require.Equal(t, "application/json", forwarded.Get("Content-Type"))
 			require.Equal(t, "relay-secret", req.Header.Get("X-SECRET-KEY"))

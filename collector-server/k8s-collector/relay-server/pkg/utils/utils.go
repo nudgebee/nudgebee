@@ -28,7 +28,11 @@ var fallbackClient = &http.Client{Timeout: 30 * time.Second}
 
 func headersForAgent(headers http.Header) http.Header {
 	forwarded := headers.Clone()
-	forwarded.Del("X-SECRET-KEY")
+	for key := range forwarded {
+		if strings.EqualFold(key, "X-SECRET-KEY") {
+			delete(forwarded, key)
+		}
+	}
 	return forwarded
 }
 
