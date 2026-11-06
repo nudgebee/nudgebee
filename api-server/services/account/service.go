@@ -2595,6 +2595,9 @@ func CleanUpAgentTask(ctx *security.RequestContext) error {
 }
 
 func canWriteAccountAttrs(sc *security.SecurityContext, accountId string) bool {
+	if accountId == "" {
+		return false
+	}
 	// HasAccountAccess also accepts namespace roles; this action is account-admin/tenant-admin only.
 	return sc.HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) &&
 		(sc.IsSuperAdmin() || sc.IsTenantAdmin() || sc.HasScopedRole(security.AUTH_ACCOUNT_ADMIN_ROLE, accountId))

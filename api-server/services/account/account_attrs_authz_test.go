@@ -58,6 +58,7 @@ func TestCanWriteAccountAttrsRequiresAccountScopeAndWriterRole(t *testing.T) {
 		{name: "scoped account admin", security: &scopedAdmin, accountId: "a", want: true},
 		{name: "account admin cannot cross accounts", security: &scopedAdmin, accountId: "b", want: false},
 		{name: "tenant admin", security: &tenantAdmin, accountId: "b", want: true},
+		{name: "empty account id", security: security.NewSecurityContextForSuperAdmin(), accountId: "", want: false},
 		{name: "server super admin", security: security.NewSecurityContextForSuperAdmin(), accountId: "b", want: true},
 	}
 	for _, tc := range tests {
