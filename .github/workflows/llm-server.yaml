@@ -74,6 +74,13 @@ jobs:
           CGO_ENABLED: "1"
         run: go test -race ./...
 
+      # Compile the tagged end-to-end tests without running them; they require
+      # live provider credentials and services unavailable in CI.
+      - name: Build e2e-tagged tests (compile-only)
+        if: ${{ !cancelled() }}
+        working-directory: ./llm/llm-server
+        run: go vet -tags e2e ./...
+
       # Compile-only gate for the integration-tagged tests
       # (//go:build relay_integration | recommendation_integration). They need
       # live infra CI does not have, so we do NOT run them -- but `go vet`
