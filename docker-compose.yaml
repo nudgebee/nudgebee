@@ -34,6 +34,7 @@ x-app-common: &app-common
   RELAY_WORKSPACE_JWT_SECRET: ${RELAY_WORKSPACE_JWT_SECRET:-dev-jwt-secret-change-me}
   LLM_SERVER_JWT_SECRET: ${RELAY_WORKSPACE_JWT_SECRET:-dev-jwt-secret-change-me}
   ACTION_API_SERVER_TOKEN: ${ACTION_API_SERVER_TOKEN:-dev-action-token-change-me}
+  CLOUD_COLLECTOR_SERVER_TOKEN: ${CLOUD_COLLECTOR_SERVER_TOKEN:-dev-cloud-collector-token-change-me}
   # Inter-service URLs whose code defaults point at localhost/unknown ports.
   # SERVICE_API_SERVER_URL is intentionally left at its code default of
   # http://services-server:8000 and satisfied by a network alias on
