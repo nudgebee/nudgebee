@@ -49,7 +49,10 @@ jobs:
             --set nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED=false)
           grep -Fq 'NEXTAUTH_DUMMY_CREDS_ENABLED: "ZmFsc2U="' <<<"$opt_out_render"
 
-          external_render=$(helm template nudgebee "$chart" "${args[@]}" --is-upgrade \
+          external_render=$(helm template nudgebee "$chart" --is-upgrade \
+            --set agent.enabled=false \
+            --set admin.email=chart-test@example.com \
+            --set-string nudgebee_secret.NUDGEBEE_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
             --set nudgebee_secret.existingSecretName=external-secret)
           grep -Fq 'Dummy-credential sign-in is controlled by the externally managed Secret external-secret.' <<<"$external_render"
           ! grep -Fq 'Cannot determine NEXTAUTH_DUMMY_CREDS_ENABLED' <<<"$external_render"
