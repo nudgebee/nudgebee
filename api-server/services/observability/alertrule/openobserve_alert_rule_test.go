@@ -24,40 +24,47 @@ func openObserveTestConfig() AlertRuleConfig {
 func TestBuildOpenObserveAlertPayload(t *testing.T) {
 	connection := openObserveAlertConfig{LogStream: "logs", TraceStream: "traces"}
 	tests := []struct {
-		name      string
-		mutate    func(*AlertRuleConfig)
-		wantError string
-		queryType string
-		operator  string
+		name       string
+		mutate     func(*AlertRuleConfig)
+		wantError  string
+		queryType  string
+		operator   string
+		wantStream string
 	}{
-		{"SQL defaults", func(*AlertRuleConfig) {}, "", "sql", ">="},
-		{"PromQL defaults", func(c *AlertRuleConfig) { c.AlertType = "metric"; c.Query = "up" }, "", "promql", ">="},
-		{"above operator", func(c *AlertRuleConfig) { c.ProviderConfig["operator"] = "above" }, "", "sql", ">"},
-		{"below operator", func(c *AlertRuleConfig) { c.ProviderConfig["operator"] = "below" }, "", "sql", "<"},
-		{"equal operator", func(c *AlertRuleConfig) { c.ProviderConfig["operator"] = "==" }, "", "sql", "="},
-		{"explicit SQL", func(c *AlertRuleConfig) { c.AlertType = "metric"; c.ProviderConfig["query_type"] = "sql" }, "", "sql", ">="},
-		{"JSON destination list", func(c *AlertRuleConfig) { c.ProviderConfig["destinations"] = []any{"nudgebee-events"} }, "", "sql", ">="},
-		{"missing destinations", func(c *AlertRuleConfig) { delete(c.ProviderConfig, "destinations") }, "destinations are required", "", ""},
-		{"empty destinations", func(c *AlertRuleConfig) { c.ProviderConfig["destinations"] = []string{} }, "destinations are required", "", ""},
-		{"blank destination", func(c *AlertRuleConfig) { c.ProviderConfig["destinations"] = []string{" "} }, "cannot be empty", "", ""},
-		{"control in destination", func(c *AlertRuleConfig) { c.ProviderConfig["destinations"] = []string{"bad\nname"} }, "control characters", "", ""},
-		{"destination whitespace trimmed", func(c *AlertRuleConfig) { c.ProviderConfig["destinations"] = []string{" nudgebee-events "} }, "", "sql", ">="},
-		{"invalid destination type", func(c *AlertRuleConfig) { c.ProviderConfig["destinations"] = []any{3} }, "destination names", "", ""},
-		{"missing query", func(c *AlertRuleConfig) { c.Query = " " }, "query is required", "", ""},
-		{"missing name", func(c *AlertRuleConfig) { c.Name = " " }, "name must be non-empty", "", ""},
-		{"control in name", func(c *AlertRuleConfig) { c.Name = "bad\nname" }, "control characters", "", ""},
-		{"space in name", func(c *AlertRuleConfig) { c.Name = "High CPU" }, "use hyphens or underscores", "", ""},
-		{"reserved character in name", func(c *AlertRuleConfig) { c.Name = "High:CPU" }, "use hyphens or underscores", "", ""},
-		{"invalid query type", func(c *AlertRuleConfig) { c.ProviderConfig["query_type"] = "javascript" }, "query type", "", ""},
-		{"invalid stream", func(c *AlertRuleConfig) { c.ProviderConfig["stream_name"] = "logs; delete" }, "stream name", "", ""},
-		{"invalid stream type", func(c *AlertRuleConfig) { c.ProviderConfig["stream_type"] = "other" }, "stream type", "", ""},
-		{"invalid operator", func(c *AlertRuleConfig) { c.ProviderConfig["operator"] = "contains" }, "operator", "", ""},
-		{"invalid threshold", func(c *AlertRuleConfig) { c.ProviderConfig["threshold"] = "bad" }, "threshold", "", ""},
-		{"infinite threshold", func(c *AlertRuleConfig) { c.ProviderConfig["threshold"] = math.Inf(1) }, "finite", "", ""},
-		{"invalid period", func(c *AlertRuleConfig) { c.ProviderConfig["period"] = 0 }, "must be positive", "", ""},
-		{"invalid frequency", func(c *AlertRuleConfig) { c.ProviderConfig["frequency"] = -1 }, "must be positive", "", ""},
-		{"invalid trigger threshold", func(c *AlertRuleConfig) { c.ProviderConfig["trigger_threshold"] = 0 }, "must be positive", "", ""},
-		{"invalid silence", func(c *AlertRuleConfig) { c.ProviderConfig["silence"] = -1 }, "cannot be negative", "", ""},
+		{"SQL defaults", func(*AlertRuleConfig) {}, "", "sql", ">=", "logs"},
+		{"PromQL explicit metric stream", func(c *AlertRuleConfig) {
+			c.AlertType = "metric"
+			c.Query = "up"
+			c.ProviderConfig["stream_name"] = "up"
+		}, "", "promql", ">=", "up"},
+		{"PromQL without stream name", func(c *AlertRuleConfig) { c.AlertType = "metric"; c.Query = "up" }, "provider_config.stream_name", "", "", ""},
+		{"above operator", func(c *AlertRuleConfig) { c.ProviderConfig["operator"] = "above" }, "", "sql", ">", "logs"},
+		{"below operator", func(c *AlertRuleConfig) { c.ProviderConfig["operator"] = "below" }, "", "sql", "<", "logs"},
+		{"equal operator", func(c *AlertRuleConfig) { c.ProviderConfig["operator"] = "==" }, "", "sql", "=", "logs"},
+		{"explicit SQL", func(c *AlertRuleConfig) { c.AlertType = "metric"; c.ProviderConfig["query_type"] = "sql" }, "", "sql", ">=", "logs"},
+		{"JSON destination list", func(c *AlertRuleConfig) { c.ProviderConfig["destinations"] = []any{"nudgebee-events"} }, "", "sql", ">=", "logs"},
+		{"missing destinations", func(c *AlertRuleConfig) { delete(c.ProviderConfig, "destinations") }, "destinations are required", "", "", ""},
+		{"empty destinations", func(c *AlertRuleConfig) { c.ProviderConfig["destinations"] = []string{} }, "destinations are required", "", "", ""},
+		{"blank destination", func(c *AlertRuleConfig) { c.ProviderConfig["destinations"] = []string{" "} }, "cannot be empty", "", "", ""},
+		{"control in destination", func(c *AlertRuleConfig) { c.ProviderConfig["destinations"] = []string{"bad\nname"} }, "control characters", "", "", ""},
+		{"destination whitespace trimmed", func(c *AlertRuleConfig) { c.ProviderConfig["destinations"] = []string{" nudgebee-events "} }, "", "sql", ">=", "logs"},
+		{"invalid destination type", func(c *AlertRuleConfig) { c.ProviderConfig["destinations"] = []any{3} }, "destination names", "", "", ""},
+		{"missing query", func(c *AlertRuleConfig) { c.Query = " " }, "query is required", "", "", ""},
+		{"missing name", func(c *AlertRuleConfig) { c.Name = " " }, "name must be non-empty", "", "", ""},
+		{"control in name", func(c *AlertRuleConfig) { c.Name = "bad\nname" }, "control characters", "", "", ""},
+		{"space in name", func(c *AlertRuleConfig) { c.Name = "High CPU" }, "use hyphens or underscores", "", "", ""},
+		{"reserved character in name", func(c *AlertRuleConfig) { c.Name = "High:CPU" }, "use hyphens or underscores", "", "", ""},
+		{"slash in name", func(c *AlertRuleConfig) { c.Name = "High/CPU" }, "use hyphens or underscores", "", "", ""},
+		{"invalid query type", func(c *AlertRuleConfig) { c.ProviderConfig["query_type"] = "javascript" }, "query type", "", "", ""},
+		{"invalid stream", func(c *AlertRuleConfig) { c.ProviderConfig["stream_name"] = "logs; delete" }, "stream name", "", "", ""},
+		{"invalid stream type", func(c *AlertRuleConfig) { c.ProviderConfig["stream_type"] = "other" }, "stream type", "", "", ""},
+		{"invalid operator", func(c *AlertRuleConfig) { c.ProviderConfig["operator"] = "contains" }, "operator", "", "", ""},
+		{"invalid threshold", func(c *AlertRuleConfig) { c.ProviderConfig["threshold"] = "bad" }, "threshold", "", "", ""},
+		{"infinite threshold", func(c *AlertRuleConfig) { c.ProviderConfig["threshold"] = math.Inf(1) }, "finite", "", "", ""},
+		{"invalid period", func(c *AlertRuleConfig) { c.ProviderConfig["period"] = 0 }, "must be positive", "", "", ""},
+		{"invalid frequency", func(c *AlertRuleConfig) { c.ProviderConfig["frequency"] = -1 }, "must be positive", "", "", ""},
+		{"invalid trigger threshold", func(c *AlertRuleConfig) { c.ProviderConfig["trigger_threshold"] = 0 }, "must be positive", "", "", ""},
+		{"invalid silence", func(c *AlertRuleConfig) { c.ProviderConfig["silence"] = -1 }, "cannot be negative", "", "", ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -78,6 +85,9 @@ func TestBuildOpenObserveAlertPayload(t *testing.T) {
 			}
 			if !reflect.DeepEqual(payload["destinations"], []string{"nudgebee-events"}) {
 				t.Errorf("destinations = %v", payload["destinations"])
+			}
+			if payload["stream_name"] != tc.wantStream {
+				t.Errorf("stream name = %v, want %q", payload["stream_name"], tc.wantStream)
 			}
 			query := payload["query_condition"].(map[string]any)
 			if query["type"] != tc.queryType {
@@ -102,6 +112,55 @@ func TestBuildOpenObserveAlertPayload(t *testing.T) {
 				t.Errorf("SQL = %v", query["sql"])
 			}
 		})
+	}
+}
+
+func TestBuildOpenObserveAlertPayloadDuration(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		duration   string
+		wantPeriod int
+		wantError  string
+	}{
+		{"sub-minute rounds up", "30s", 1, ""},
+		{"partial minute rounds up", "61s", 2, ""},
+		{"invalid unit is rejected", "1d", 0, "invalid OpenObserve alert duration"},
+		{"malformed duration is rejected", "soon", 0, "invalid OpenObserve alert duration"},
+		{"zero duration is rejected", "0s", 0, "must be positive"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := openObserveTestConfig()
+			config.Duration = tc.duration
+			payload, err := buildOpenObserveAlertPayload(config, openObserveAlertConfig{LogStream: "logs"})
+			if tc.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+					t.Fatalf("error = %v, want %q", err, tc.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			trigger := payload["trigger_condition"].(map[string]any)
+			if trigger["period"] != tc.wantPeriod {
+				t.Errorf("period = %v, want %d", trigger["period"], tc.wantPeriod)
+			}
+		})
+	}
+}
+
+func TestBuildOpenObserveAlertPayloadUsesContextAttributes(t *testing.T) {
+	config := openObserveTestConfig()
+	config.Labels = map[string]string{"service": "checkout", "team": "payments"}
+	payload, err := buildOpenObserveAlertPayload(config, openObserveAlertConfig{LogStream: "logs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(payload["context_attributes"], config.Labels) {
+		t.Errorf("context_attributes = %v, want %v", payload["context_attributes"], config.Labels)
+	}
+	if _, ok := payload["tags"]; ok {
+		t.Error("unsupported tags field rendered")
 	}
 }
 
@@ -198,6 +257,9 @@ func TestOpenObserveAlertThresholdSemantics(t *testing.T) {
 			cfg.ProviderConfig["query_type"] = tc.queryType
 			cfg.ProviderConfig["threshold"] = tc.threshold
 			cfg.ProviderConfig["operator"] = tc.operator
+			if tc.queryType == "promql" {
+				cfg.ProviderConfig["stream_name"] = "up"
+			}
 			if tc.override != nil {
 				cfg.ProviderConfig["trigger_threshold"] = tc.override
 			}

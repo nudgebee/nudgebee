@@ -146,8 +146,8 @@ func buildOpenObserveAlertPayload(config AlertRuleConfig, oo openObserveAlertCon
 	if name == "" || strings.IndexFunc(name, unicode.IsControl) >= 0 {
 		return nil, fmt.Errorf("OpenObserve alert name must be non-empty and contain no control characters")
 	}
-	if strings.ContainsAny(name, ":#?&%\"'") || strings.IndexFunc(name, unicode.IsSpace) >= 0 {
-		return nil, fmt.Errorf("OpenObserve alert names cannot contain whitespace, :, #, ?, &, %%, or quotes; use hyphens or underscores instead")
+	if strings.ContainsAny(name, ":#?&%\"'/") || strings.IndexFunc(name, unicode.IsSpace) >= 0 {
+		return nil, fmt.Errorf("OpenObserve alert names cannot contain whitespace, :, /, #, ?, &, %%, or quotes; use hyphens or underscores instead")
 	}
 	destinations, err := openObserveAlertDestinations(config.ProviderConfig["destinations"])
 	if err != nil {
@@ -182,7 +182,9 @@ func buildOpenObserveAlertPayload(config AlertRuleConfig, oo openObserveAlertCon
 		case "traces":
 			streamName = oo.TraceStream
 		case "metrics":
-			streamName = "default"
+			// OpenObserve stores every metric in its own stream named after the metric,
+			// so there is no default metric stream to fall back to.
+			return nil, fmt.Errorf("OpenObserve metric alerts require provider_config.stream_name; set it to the metric the query evaluates (OpenObserve stores each metric in its own stream, for example \"up\")")
 		default:
 			return nil, fmt.Errorf("unsupported OpenObserve stream type %q", streamType)
 		}
@@ -246,8 +248,18 @@ func buildOpenObserveAlertPayload(config AlertRuleConfig, oo openObserveAlertCon
 	}
 
 	period := 15
-	if duration, err := time.ParseDuration(config.Duration); err == nil && duration.Minutes() > 0 {
-		period = int(duration.Minutes())
+	if config.Duration != "" {
+		duration, err := time.ParseDuration(config.Duration)
+		if err != nil {
+			return nil, fmt.Errorf("invalid OpenObserve alert duration %q: %w", config.Duration, err)
+		}
+		if duration <= 0 {
+			return nil, fmt.Errorf("OpenObserve alert duration must be positive")
+		}
+		period = int(duration / time.Minute)
+		if duration%time.Minute != 0 {
+			period++
+		}
 	}
 	if value, ok := config.ProviderConfig["period"]; ok {
 		parsed, err := toInt(value)
@@ -302,7 +314,9 @@ func buildOpenObserveAlertPayload(config AlertRuleConfig, oo openObserveAlertCon
 		},
 		"enabled":     config.Enabled,
 		"description": description,
-		"tags":        labelsToDatadogTags(config.Labels),
+	}
+	if len(config.Labels) > 0 {
+		payload["context_attributes"] = config.Labels
 	}
 	return payload, nil
 }
