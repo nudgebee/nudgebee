@@ -14,6 +14,7 @@ func init() {
 		"get_event_rules", "get_event_triage_explanation", "get_triage_rule_events", "get_triage_rules",
 		"list_events", "list_threshold_suggestions", "logs_execute_v2", "metrics_label_values",
 		"metrics_labels_list", "metrics_list", "metrics_series_match", "nudgebee_agent_health_get",
+		"openobserve_logs_execute", "openobserve_metrics_execute", "openobserve_traces_execute",
 		"prometheus_execute", "propose_recommendation_apply", "recommendation_execute",
 		"recommendation_resolution_execute", "search_metrics", "security_execute",
 		"service_dependency_graph_execute", "signoz_log_execute", "spend_allocation", "spend_forecast",
