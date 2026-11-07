@@ -172,4 +172,6 @@ def test_latency_tuning_constants_are_unchanged():
     assert spec.default_threshold == 0.5
     assert spec.dbscan_eps == 0.6
     assert spec.dbscan_min_samples == 5
-    assert spec.step == "2m"
+    # The step is the one exception: 10m since #43354, where the 2m query OOM-killed
+    # Prometheus. See METRIC_SPECS for the measurement.
+    assert spec.step == "10m"

@@ -590,8 +590,15 @@ func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[
 		// method over an hour, shaped for the latency table; an evidence chart needs a
 		// single p99 line at the chart's own resolution. Both this and cpu_throttling
 		// read the node-agent's eBPF metrics, so they answer only where that agent runs.
+		//
+		// The rate window follows the request (rateW), not a fixed 5m. A charted window
+		// with no explicit step still gets 5m. The anomaly detector asks for 7 days at a
+		// 10m step, and with 5m windows its query read every sample of the busiest
+		// histogram we store 2.5 times. Measured on a live cluster (#43354), one workload's query
+		// touched 81M samples and held 8M in memory at once, and the hourly burst of
+		// these queries OOM-killed Prometheus.
 		case KeyWorkloadHTTPLatencyP99:
-			queries[metricKey] = fmt.Sprintf(`histogram_quantile(0.99, sum by (le) (rate(container_http_requests_duration_seconds_total_bucket{__CLUSTER__ %s}[5m])))`, httpWorkloadScope)
+			queries[metricKey] = fmt.Sprintf(`histogram_quantile(0.99, sum by (le) (rate(container_http_requests_duration_seconds_total_bucket{__CLUSTER__ %s}[`+rateW+`])))`, httpWorkloadScope)
 		// Request rate and mean latency for the whole workload, probes excluded.
 		//
 		// Siblings of workload_http_latency_p99 above: one series, no path or method
