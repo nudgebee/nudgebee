@@ -29,13 +29,34 @@ type scenario struct {
 	Candidate    string        `json:"candidate_answer,omitempty"`
 }
 
+// prometheusNoDataFixture reproduces the full no-data guidance the real
+// prometheus_execute tool emits (tools/tool_prometheus.go prometheusNoDataMessage),
+// discovery pointers included — a shortened stand-in can't catch regressions
+// where the no-data marker preempts that guidance.
+func prometheusNoDataFixture(query string) string {
+	return fmt.Sprintf("No data found for query: %s. The metric may not exist, labels may be incorrect, or there is no data in the selected time range."+
+		" If this is for a named workload, call metrics_series_match (workload + namespace) to get the families that actually have series for it, then rebuild the query."+
+		" For any other named resource (a node, an instance, a device), do NOT guess another label name — call metrics_label_values with the label you are filtering on to see the values it actually takes, then filter on a real value."+
+		" Otherwise use metrics_list/search_metrics for keyword discovery.", query)
+}
+
 func cases() []scenario {
 	empty := scenario{ID: "empty291", Question: "checkout error rate / p95 / p99 / throughput, last 1h", Candidate: "Error Rate 0%; P95 245ms; P99 412ms; Throughput 12.4 req/s."}
 	for i := 1; i <= 10; i++ {
 		empty.Observations = append(empty.Observations, observation{fmt.Sprintf("E%d", i), "prometheus_execute", fmt.Sprintf("checkout RED metric query %d", i), "No data found for query: checkout RED metric"})
 	}
+	wrongLabelQuery := `histogram_quantile(0.95, sum by (pod_name, le) (rate(http_request_duration_seconds_bucket{pod="checkout"}[5m])))`
+	reQuery := strings.Replace(wrongLabelQuery, `pod="checkout"`, `pod_name="checkout"`, 1)
+	wrongLabel := scenario{ID: "wronglabel", Question: "checkout P95 latency in milliseconds, last 1h"}
+	wrongLabel.Observations = []observation{
+		{"E1", "prometheus_execute", wrongLabelQuery, prometheusNoDataFixture(wrongLabelQuery)},
+		{"E2", "metrics_series_match", "workload checkout, namespace default", "metric families with series for workload checkout: http_request_duration_seconds (labels: pod_name, le)"},
+		{"E3", "prometheus_execute", reQuery, "P95 sample: value=0.245 seconds"},
+	}
+	wrongLabel.Candidate = "P95 is 245 ms [E3]."
 	return []scenario{
 		empty,
+		wrongLabel,
 		{"zero", "What is the CPU user metric?", []observation{{"E2", "datadog_metrics_execute", "CPU user", `{"series":[{"pointlist":[[1720000000000,0]]}]}`}}, "The CPU user value is 0 [E2]."},
 		{"latency", "What is checkout P95 latency in milliseconds?", []observation{{"E3", "prometheus_execute", "checkout P95 latency seconds", "sample: timestamp=1720000000, value=0.245 seconds"}}, "P95 is 245ms [E3]."},
 		{"rate", "What is checkout average request rate in requests per second?", []observation{{"E4", "prometheus_execute", "increase(requests_total[1m])", "600 requests over 60 seconds"}}, "Average rate is 10 requests/s [E4]."},
@@ -107,7 +128,7 @@ func main() {
 					for j := range fixtures[i].Observations {
 						o := &fixtures[i].Observations[j]
 						if strings.HasPrefix(o.Result, "No data found for query:") {
-							o.Result = "[METRIC-NO-DATA] " + o.Tool + " (step " + o.Step + ") returned no metric series. This is unavailable, not a measured zero, and supports no numeric metric value.\n" + o.Result
+							o.Result = "[METRIC-NO-DATA] " + o.Tool + " (step " + o.Step + ") returned no metric series. This read is not a measured zero and supports no numeric metric value; report the metric as unavailable only once discovery confirms the series does not exist.\n" + o.Result
 						}
 					}
 				}

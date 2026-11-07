@@ -24,9 +24,14 @@ func TestMetricQueryReturnedNoData(t *testing.T) {
 		{"Elasticsearch zero series", "es_metrics_query", `{"results":[{"total_series":0,"payload":[]}]}`, true, ToolStatusSuccess},
 		{"Elasticsearch missing total series with empty payload", "es_metrics_query", `{"results":[{"payload":[]}]}`, true, ToolStatusSuccess},
 		{"Elasticsearch missing total series with data", "es_metrics_query", `{"results":[{"payload":[{}]}]}`, false, ToolStatusSuccess},
+		{"Elasticsearch zero matched documents without note stays no-data", "es_metrics_query", `{"results":[{"payload":[],"total_series":0,"docs_matched":0}]}`, true, ToolStatusSuccess},
+		{"Elasticsearch documents matched but no series is not no-data", "es_metrics_query", `{"results":[{"query":"{\"match_all\":{}}","payload":[],"total_series":0,"docs_matched":7,"note":"The query matched 7 document(s) but no metric series could be extracted from them. This is NOT an absence of data."}]}`, false, ToolStatusSuccess},
+		{"Elasticsearch note without match count is not no-data", "es_metrics_query", `{"results":[{"query":"{\"term\":{\"missing.field\":\"x\"}}","payload":[],"docs_matched":0,"note":"The query references fields that do not exist: missing.field."}]}`, false, ToolStatusSuccess},
 		{"Splunk zero series", "splunk_metrics_query", `{"results":[{"total_series":0,"payload":[]}]}`, true, ToolStatusSuccess},
 		{"Splunk missing total series with empty payload", "splunk_metrics_query", `{"results":[{"payload":[]}]}`, true, ToolStatusSuccess},
 		{"Splunk missing total series with data", "splunk_metrics_query", `{"results":[{"payload":[{}]}]}`, false, ToolStatusSuccess},
+		{"Splunk zero matched documents without note stays no-data", "splunk_metrics_query", `{"results":[{"payload":[],"total_series":0,"docs_matched":0}]}`, true, ToolStatusSuccess},
+		{"Splunk mstats rows without numeric value column is not no-data", "splunk_metrics_query", `{"results":[{"query":"| mstats avg(k8s.pod.cpu.usage) AS nb_value","payload":[],"total_series":0,"docs_matched":12,"note":"mstats returned rows but none carried a numeric value column"}]}`, false, ToolStatusSuccess},
 		{"unknown tool is not treated as a metric read", "unregistered_metrics_tool", `[]`, false, ToolStatusSuccess},
 		{"zero-valued metric is data", "datadog_metrics_execute", `{"series":[{"pointlist":[[1720000000000,0]]}]}`, false, ToolStatusSuccess},
 		{"kubectl empty mutation success", "kubectl_execute", plannerToolNoData, false, ToolStatusEmptyResult},
@@ -43,12 +48,47 @@ func TestMetricQueryReturnedNoData(t *testing.T) {
 			marker := metricNoDataMarker(step)
 			if tt.wantNoData {
 				assert.Contains(t, marker, metricNoDataTag)
-				assert.Contains(t, marker, "unavailable, not a measured zero")
+				assert.Contains(t, marker, "not a measured zero")
+				assert.Contains(t, marker, "only once discovery confirms the series does not exist")
 			} else {
 				assert.Empty(t, marker)
 			}
 		})
 	}
+}
+
+// B1 regression: ES/Splunk report "documents matched but no series could be extracted"
+// with an explicit "This is NOT an absence of data" note — that guidance must reach the
+// model uncontradicted, without the [METRIC-NO-DATA] marker declaring unavailability.
+func TestMetricDocsMatchedNoSeriesIsNotMarkedNoData(t *testing.T) {
+	observation := `{"results":[{"query":"{\"match_all\":{}}","payload":[],"total_series":0,"docs_matched":7,"note":"The query matched 7 document(s) but no metric series could be extracted from them. This is NOT an absence of data."}]}`
+	step := NBAgentPlannerToolActionStep{
+		Action:      NBAgentPlannerToolAction{Tool: "es_metrics_query", DisplayID: "E1"},
+		Observation: observation,
+		Status:      ToolStatusSuccess,
+	}
+
+	assert.Empty(t, metricNoDataMarker(step))
+	rendered := (&NBReActPlanner3{}).resolveObservation(step)
+	assert.NotContains(t, rendered, metricNoDataTag)
+	assert.Contains(t, rendered, "NOT an absence of data")
+	summary, hasFailure := buildToolCallSummary([]NBAgentPlannerToolActionStep{step})
+	assert.False(t, hasFailure)
+	assert.NotContains(t, summary, "NO_METRIC_DATA")
+}
+
+// B2 regression: the per-turn availability block must gate "unavailable" on discovery
+// instead of authorizing unavailable after a single empty read.
+func TestMetricNoDataSummaryRequiresDiscoveryBeforeUnavailable(t *testing.T) {
+	steps := []NBAgentPlannerToolActionStep{{
+		Action:      NBAgentPlannerToolAction{Tool: "prometheus_execute", DisplayID: "E1"},
+		Observation: "No data found for query: up",
+		Status:      ToolStatusSuccess,
+	}}
+
+	summary := metricNoDataSummary(steps)
+	assert.Contains(t, summary, "report a metric as unavailable only once discovery confirms the series does not exist")
+	assert.NotContains(t, summary, "report the metric as unavailable and cite these empty results")
 }
 
 func TestMetricNoDataMarkerKeepsMutationEmptyOutputSemantics(t *testing.T) {

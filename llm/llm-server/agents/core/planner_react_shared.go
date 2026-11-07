@@ -91,6 +91,22 @@ func metricQueryReturnedNoData(toolName, response string) bool {
 			if json.Unmarshal(rawResult, &result) != nil {
 				return false
 			}
+			// docs_matched > 0 and/or a note mean the backend matched documents but
+			// could not extract series ("This is NOT an absence of data") or the query
+			// itself needs fixing — that guidance must reach the model uncontradicted,
+			// so such a result is not an absence of data.
+			if rawDocsMatched, ok := result["docs_matched"]; ok {
+				var docsMatched int
+				if json.Unmarshal(rawDocsMatched, &docsMatched) != nil || docsMatched > 0 {
+					return false
+				}
+			}
+			if rawNote, ok := result["note"]; ok {
+				var note string
+				if json.Unmarshal(rawNote, &note) != nil || strings.TrimSpace(note) != "" {
+					return false
+				}
+			}
 			if rawTotalSeries, ok := result["total_series"]; ok {
 				var totalSeries *int
 				if json.Unmarshal(rawTotalSeries, &totalSeries) != nil || totalSeries == nil || *totalSeries != 0 {
@@ -126,7 +142,7 @@ func metricNoDataMarker(step NBAgentPlannerToolActionStep) string {
 	if ref != "" {
 		ref = " (step " + ref + ")"
 	}
-	return fmt.Sprintf("%s %s%s returned no metric series. This is unavailable, not a measured zero, and supports no numeric metric value.", metricNoDataTag, step.Action.Tool, ref)
+	return fmt.Sprintf("%s %s%s returned no metric series. This read is not a measured zero and supports no numeric metric value; report the metric as unavailable only once discovery confirms the series does not exist.", metricNoDataTag, step.Action.Tool, ref)
 }
 
 func withMetricNoDataMarker(step NBAgentPlannerToolActionStep, response string) string {
@@ -152,7 +168,7 @@ func metricNoDataSummary(steps []NBAgentPlannerToolActionStep) string {
 	return "<metric_data_availability>\n" + b.String() +
 		"Do not turn an empty metric result into zero or infer a value from another metric. " +
 		"Any measured metric number must be supported by a non-empty metric result or an explicit calculation from its returned samples; cite the supporting step. " +
-		"If the relevant reads returned no data, report the metric as unavailable and cite these empty results.\n</metric_data_availability>"
+		"Never state a number from an empty read; report a metric as unavailable only once discovery confirms the series does not exist, and cite those empty results.\n</metric_data_availability>"
 }
 
 type NBAgentReActPlannerCritiqueSupport interface {
