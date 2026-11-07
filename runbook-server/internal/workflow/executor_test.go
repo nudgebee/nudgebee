@@ -3,14 +3,22 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
+	commonpb "go.temporal.io/api/common/v1"
+	enumspb "go.temporal.io/api/enums/v1"
+	failurepb "go.temporal.io/api/failure/v1"
+	historypb "go.temporal.io/api/history/v1"
+	taskqueuepb "go.temporal.io/api/taskqueue/v1"
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 	"nudgebee/runbook/internal/model"
 	"nudgebee/runbook/internal/tasks"
@@ -816,4 +824,216 @@ func (s *ExecutorTestSuite) TestSetStatePersistenceFailureLegacyVersionContinues
 	s.True(s.env.IsWorkflowCompleted())
 	s.NoError(s.env.GetWorkflowError())
 	s.Equal([]string{"save", "later"}, ranTasks, "legacy histories must preserve the old downstream command sequence")
+}
+
+const replayTaskQueue = "replay-task-queue"
+
+// legacyReplayHistory builds histories the way Temporal numbers them: a workflow
+// task's commands start at WorkflowTaskStarted+2, and an activity's ID is the ID
+// of its ActivityTaskScheduled event.
+type legacyReplayHistory struct {
+	events         []*historypb.HistoryEvent
+	wftCompletedID int64
+}
+
+func (h *legacyReplayHistory) next() int64 { return int64(len(h.events) + 1) }
+
+func (h *legacyReplayHistory) started(input *commonpb.Payloads) {
+	h.events = append(h.events, &historypb.HistoryEvent{
+		EventId:   h.next(),
+		EventType: enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_STARTED,
+		Attributes: &historypb.HistoryEvent_WorkflowExecutionStartedEventAttributes{
+			WorkflowExecutionStartedEventAttributes: &historypb.WorkflowExecutionStartedEventAttributes{
+				WorkflowType: &commonpb.WorkflowType{Name: "ExecuteWorkflowInternal"},
+				TaskQueue:    &taskqueuepb.TaskQueue{Name: replayTaskQueue},
+				Input:        input,
+			},
+		},
+	})
+}
+
+func (h *legacyReplayHistory) workflowTask() {
+	scheduled := h.next()
+	h.events = append(h.events, &historypb.HistoryEvent{
+		EventId:   scheduled,
+		EventType: enumspb.EVENT_TYPE_WORKFLOW_TASK_SCHEDULED,
+		Attributes: &historypb.HistoryEvent_WorkflowTaskScheduledEventAttributes{
+			WorkflowTaskScheduledEventAttributes: &historypb.WorkflowTaskScheduledEventAttributes{
+				TaskQueue: &taskqueuepb.TaskQueue{Name: replayTaskQueue},
+			},
+		},
+	})
+	started := h.next()
+	h.events = append(h.events, &historypb.HistoryEvent{
+		EventId:   started,
+		EventType: enumspb.EVENT_TYPE_WORKFLOW_TASK_STARTED,
+		Attributes: &historypb.HistoryEvent_WorkflowTaskStartedEventAttributes{
+			WorkflowTaskStartedEventAttributes: &historypb.WorkflowTaskStartedEventAttributes{ScheduledEventId: scheduled},
+		},
+	})
+	h.wftCompletedID = h.next()
+	h.events = append(h.events, &historypb.HistoryEvent{
+		EventId:   h.wftCompletedID,
+		EventType: enumspb.EVENT_TYPE_WORKFLOW_TASK_COMPLETED,
+		Attributes: &historypb.HistoryEvent_WorkflowTaskCompletedEventAttributes{
+			WorkflowTaskCompletedEventAttributes: &historypb.WorkflowTaskCompletedEventAttributes{
+				ScheduledEventId: scheduled,
+				StartedEventId:   started,
+			},
+		},
+	})
+}
+
+func (h *legacyReplayHistory) upsertSearchAttributes() {
+	h.events = append(h.events, &historypb.HistoryEvent{
+		EventId:   h.next(),
+		EventType: enumspb.EVENT_TYPE_UPSERT_WORKFLOW_SEARCH_ATTRIBUTES,
+		Attributes: &historypb.HistoryEvent_UpsertWorkflowSearchAttributesEventAttributes{
+			UpsertWorkflowSearchAttributesEventAttributes: &historypb.UpsertWorkflowSearchAttributesEventAttributes{
+				WorkflowTaskCompletedEventId: h.wftCompletedID,
+				SearchAttributes:             &commonpb.SearchAttributes{IndexedFields: map[string]*commonpb.Payload{}},
+			},
+		},
+	})
+}
+
+func (h *legacyReplayHistory) activity(name string) {
+	h.activityEvent(name, "")
+}
+
+func (h *legacyReplayHistory) namedActivity(name, activityID string) {
+	// Task activities are scheduled with ActivityID = task.ID, unlike the
+	// executor's own activities, whose IDs are the scheduling event's position.
+	h.activityEventWithID(name, "", activityID)
+}
+
+func (h *legacyReplayHistory) failedActivity(name, message string) {
+	h.activityEvent(name, message)
+}
+
+func (h *legacyReplayHistory) activityEvent(name, failureMessage string) {
+	h.activityEventWithID(name, failureMessage, "")
+}
+
+func (h *legacyReplayHistory) activityEventWithID(name, failureMessage, activityID string) {
+	scheduled := h.next()
+	if activityID == "" {
+		activityID = strconv.FormatInt(scheduled, 10)
+	}
+	h.events = append(h.events, &historypb.HistoryEvent{
+		EventId:   scheduled,
+		EventType: enumspb.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED,
+		Attributes: &historypb.HistoryEvent_ActivityTaskScheduledEventAttributes{
+			ActivityTaskScheduledEventAttributes: &historypb.ActivityTaskScheduledEventAttributes{
+				ActivityId:                   activityID,
+				ActivityType:                 &commonpb.ActivityType{Name: name},
+				TaskQueue:                    &taskqueuepb.TaskQueue{Name: replayTaskQueue},
+				WorkflowTaskCompletedEventId: h.wftCompletedID,
+			},
+		},
+	})
+	started := h.next()
+	attempt := int32(1)
+	retryState := enumspb.RETRY_STATE_UNSPECIFIED
+	if failureMessage != "" {
+		// Temporal records only the terminal attempt after an activity exhausts retries.
+		attempt = 3
+		retryState = enumspb.RETRY_STATE_MAXIMUM_ATTEMPTS_REACHED
+	}
+	h.events = append(h.events, &historypb.HistoryEvent{
+		EventId:   started,
+		EventType: enumspb.EVENT_TYPE_ACTIVITY_TASK_STARTED,
+		Attributes: &historypb.HistoryEvent_ActivityTaskStartedEventAttributes{
+			ActivityTaskStartedEventAttributes: &historypb.ActivityTaskStartedEventAttributes{ScheduledEventId: scheduled, Attempt: attempt},
+		},
+	})
+	closed := h.next()
+	if failureMessage != "" {
+		h.events = append(h.events, &historypb.HistoryEvent{
+			EventId:   closed,
+			EventType: enumspb.EVENT_TYPE_ACTIVITY_TASK_FAILED,
+			Attributes: &historypb.HistoryEvent_ActivityTaskFailedEventAttributes{
+				ActivityTaskFailedEventAttributes: &historypb.ActivityTaskFailedEventAttributes{
+					ScheduledEventId: scheduled,
+					StartedEventId:   started,
+					RetryState:       retryState,
+					Failure:          &failurepb.Failure{Message: failureMessage},
+				},
+			},
+		})
+		return
+	}
+	h.events = append(h.events, &historypb.HistoryEvent{
+		EventId:   closed,
+		EventType: enumspb.EVENT_TYPE_ACTIVITY_TASK_COMPLETED,
+		Attributes: &historypb.HistoryEvent_ActivityTaskCompletedEventAttributes{
+			ActivityTaskCompletedEventAttributes: &historypb.ActivityTaskCompletedEventAttributes{
+				ScheduledEventId: scheduled,
+				StartedEventId:   started,
+			},
+		},
+	})
+}
+
+func (h *legacyReplayHistory) completed() {
+	h.events = append(h.events, &historypb.HistoryEvent{
+		EventId:   h.next(),
+		EventType: enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED,
+		Attributes: &historypb.HistoryEvent_WorkflowExecutionCompletedEventAttributes{
+			WorkflowExecutionCompletedEventAttributes: &historypb.WorkflowExecutionCompletedEventAttributes{
+				WorkflowTaskCompletedEventId: h.wftCompletedID,
+			},
+		},
+	})
+}
+
+// TestReplayLegacySetStatePersistenceFailureHistory replays a history recorded
+// before fail-task-on-state-errors existed: the save task completed, its state
+// write failed, and the old code logged the error and still ran `later`. Replay
+// must take the DefaultVersion branch and reproduce that command sequence.
+func (s *ExecutorTestSuite) TestReplayLegacySetStatePersistenceFailureHistory() {
+	wf := &model.Workflow{
+		ID:        "legacy-set-state-persistence-failure-wf",
+		TenantID:  "test-tenant",
+		AccountID: "test-account",
+		Definition: model.WorkflowDefinition{
+			Tasks: []model.Task{
+				{ID: "save", Type: "test.record-task", Params: map[string]any{"message": "save"}, SetState: map[string]any{"key": "value"}},
+				{ID: "later", Type: "test.record-task", DependsOn: []string{"save"}, Params: map[string]any{"message": "later"}},
+			},
+		},
+	}
+	input, err := converter.GetDefaultDataConverter().ToPayloads(wf, map[string]any{})
+	s.Require().NoError(err)
+
+	h := &legacyReplayHistory{}
+	h.started(input)
+	h.workflowTask()
+	h.upsertSearchAttributes()
+	h.activity(Internal_UpdateLastExecutionStatusActivity) // running status
+	h.workflowTask()
+	h.activity(FetchWorkflowStateActivity)
+	h.workflowTask()
+	h.activity(FetchWorkflowConfigsActivity)
+	h.workflowTask()
+	h.namedActivity("test.record-task", "save") // save
+	h.workflowTask()
+	h.failedActivity(UpdateWorkflowStateActivity, "state store unavailable")
+	h.workflowTask()
+	h.namedActivity("test.record-task", "later") // later, the old code continued
+	h.workflowTask()
+	h.activity(UpdateWorkflowStateActivity) // system-final-update
+	h.workflowTask()
+	h.activity(Internal_UpdateLastExecutionStatusActivity) // completed status
+	h.workflowTask()
+	h.activity(Internal_UpdateEventResolutionStatusActivity)
+	h.workflowTask()
+	h.completed()
+
+	replayer := worker.NewWorkflowReplayer()
+	replayer.RegisterWorkflow(s.newFanInExecutor().ExecuteWorkflowInternal)
+	s.NoError(
+		replayer.ReplayWorkflowHistory(nil, &historypb.History{Events: h.events}),
+		"a history recorded before fail-task-on-state-errors must replay on the DefaultVersion branch",
+	)
 }
