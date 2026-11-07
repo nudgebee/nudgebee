@@ -237,6 +237,22 @@ func lookupIntegrationConfigs(ctx *security.RequestContext, accountId, provider,
 	return nil, false
 }
 
+func integrationSavedByID(ctx *security.RequestContext, accountId, provider, source, integrationID string) bool {
+	if integrationID == "" {
+		return false
+	}
+	dtos, err := core.ListIntegrationConfigs(ctx, accountId, provider)
+	if err != nil {
+		return false
+	}
+	for _, dto := range dtos {
+		if dto.Id == integrationID && dto.Source == source {
+			return true
+		}
+	}
+	return false
+}
+
 // loadDefaultLogFilters resolves the account's log integration for this
 // logProvider/logProviderSource, reads its `default_filters` config, and builds
 // the clause for this account.

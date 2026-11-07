@@ -1447,6 +1447,7 @@ type Query {
 
 input GetLabelMappingRequest {
   account_id: String!
+  integration_id: String
   provider: String
   provider_source: String
   provider_type: String

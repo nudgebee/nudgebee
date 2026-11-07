@@ -2053,11 +2053,21 @@ func ConnectionNotesForIntegration(ctx *security.RequestContext, integrationType
 		return nil
 	}
 
-	rows, err := ListIntegrationConfigs(ctx, accountID, integrationType)
+	rows, err := ListActiveIntegrationConfigs(ctx, accountID, integrationType)
 	if err != nil || len(rows) == 0 {
 		return nil
 	}
-	values, err := DecryptConfigValues(rows[0].Configs)
+	var values []IntegrationConfigValue
+	for _, row := range rows {
+		if row.Source == source {
+			values = row.Configs
+			break
+		}
+	}
+	if values == nil {
+		return nil
+	}
+	values, err = DecryptConfigValues(values)
 	if err != nil {
 		// Advisory: failing to read a note must not surface as a fault.
 		ctx.GetLogger().Warn("integrations: could not decrypt config for connection notes",

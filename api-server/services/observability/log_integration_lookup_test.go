@@ -97,6 +97,25 @@ func TestLookupLogIntegrationConfigs_FoundWithNilResolverDto(t *testing.T) {
 	assert.True(t, found, "a nil resolver DTO must not be read as 'no integration'")
 }
 
+func TestIntegrationSavedByIDFindsDisabledIntegrationBeingEdited(t *testing.T) {
+	patch := gomonkey.ApplyFunc(core.ListIntegrationConfigs,
+		func(_ *security.RequestContext, accountID, provider string) ([]core.IntegrationDto, error) {
+			if accountID != "acc-1" || provider != "pinot" {
+				t.Fatalf("lookup scoped to account=%q provider=%q", accountID, provider)
+			}
+			return []core.IntegrationDto{
+				{Id: "disabled", Source: "user", Type: "pinot"},
+				{Id: "replacement", Source: "user", Type: "pinot"},
+			}, nil
+		})
+	defer patch.Reset()
+
+	ctx := newLogLabelCtx()
+	assert.True(t, integrationSavedByID(ctx, "acc-1", "pinot", "user", "disabled"))
+	assert.False(t, integrationSavedByID(ctx, "acc-1", "pinot", "user", "missing"))
+	assert.False(t, integrationSavedByID(ctx, "acc-1", "pinot", "agent", "disabled"))
+}
+
 // TestLookupLogIntegrationConfigs_NoIntegration keeps the negative honest: with nothing
 // listed, found must be false rather than defaulting to the first row of an empty slice.
 func TestLookupLogIntegrationConfigs_NoIntegration(t *testing.T) {

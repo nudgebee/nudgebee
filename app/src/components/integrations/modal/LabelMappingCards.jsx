@@ -148,6 +148,7 @@ export default function LabelMappingCards({
   renderAccountGroupIcon,
   provider,
   providerSource,
+  integrationId,
   connectionVerified,
   fieldOptions,
   indexRules,
@@ -341,6 +342,7 @@ export default function LabelMappingCards({
 
                 <EffectiveLabelMappingPanel
                   accountId={card.accountId}
+                  integrationId={integrationId}
                   provider={provider}
                   providerSource={providerSource}
                   draftMappings={draftMappings}
@@ -376,6 +378,7 @@ LabelMappingCards.propTypes = {
   renderAccountGroupIcon: PropTypes.func,
   provider: PropTypes.string,
   providerSource: PropTypes.string,
+  integrationId: PropTypes.string,
   // Field suggestions are probed only once Test Connection has passed.
   connectionVerified: PropTypes.bool,
   // Field suggestions keyed by (account, index), from useLogFieldOptions.
