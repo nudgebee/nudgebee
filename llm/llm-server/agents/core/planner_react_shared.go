@@ -147,7 +147,7 @@ func metricNoDataMarker(step NBAgentPlannerToolActionStep) string {
 	if ref != "" {
 		ref = " (step " + ref + ")"
 	}
-	return fmt.Sprintf("%s %s%s returned no metric series. This read is not a measured zero and supports no numeric metric value; report the metric as unavailable only once discovery confirms the series does not exist.", metricNoDataTag, step.Action.Tool, ref)
+	return fmt.Sprintf("%s %s%s returned no metric series; this observation supports no numeric value. Follow any discovery guidance returned by the tool.", metricNoDataTag, step.Action.Tool, ref)
 }
 
 func withMetricNoDataMarker(step NBAgentPlannerToolActionStep, response string) string {
@@ -159,21 +159,63 @@ func withMetricNoDataMarker(step NBAgentPlannerToolActionStep, response string) 
 }
 
 func metricNoDataSummary(steps []NBAgentPlannerToolActionStep) string {
-	var b strings.Builder
-	for _, step := range steps {
-		if marker := metricNoDataMarker(step); marker != "" {
-			b.WriteString("- ")
-			b.WriteString(marker)
-			b.WriteByte('\n')
+	const (
+		maxEntries          = 3
+		maxQueryBytes       = 256
+		maxObservationBytes = 896
+	)
+	seen := make(map[string]struct{})
+	entries := make([]string, 0, maxEntries)
+	uniqueCount := 0
+	for i := len(steps) - 1; i >= 0; i-- {
+		step := steps[i]
+		marker := metricNoDataMarker(step)
+		if marker == "" {
+			continue
+		}
+		query := strings.TrimSpace(step.Action.ToolInput)
+		if query == "" {
+			query = step.Action.ToolID
+		}
+		if query == "" {
+			query = step.Action.DisplayID
+		}
+		keyQuery := query
+		var parsedInput any
+		if json.Unmarshal([]byte(query), &parsedInput) == nil {
+			if normalized, err := json.Marshal(parsedInput); err == nil {
+				keyQuery = string(normalized)
+			}
+		}
+		key := step.Action.Tool + "\x00" + keyQuery
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		uniqueCount++
+		if len(entries) < maxEntries {
+			entries = append(entries, fmt.Sprintf("- %s\n  Query: %s\n  Result: %s\n",
+				marker,
+				SmartTruncateToolOutput(query, maxQueryBytes),
+				SmartTruncateToolOutput(strings.TrimSpace(step.Observation), maxObservationBytes),
+			))
 		}
 	}
-	if b.Len() == 0 {
+	if uniqueCount == 0 {
 		return ""
 	}
-	return "<metric_data_availability>\n" + b.String() +
-		"Do not turn an empty metric result into zero or infer a value from another metric. " +
-		"Any measured metric number must be supported by a non-empty metric result or an explicit calculation from its returned samples; cite the supporting step. " +
-		"Never state a number from an empty read; report a metric as unavailable only once discovery confirms the series does not exist, and cite those empty results.\n</metric_data_availability>"
+	for left, right := 0, len(entries)-1; left < right; left, right = left+1, right-1 {
+		entries[left], entries[right] = entries[right], entries[left]
+	}
+	omitted := uniqueCount - len(entries)
+	var b strings.Builder
+	if omitted > 0 {
+		fmt.Fprintf(&b, "- %d earlier distinct empty metric reads omitted.\n", omitted)
+	}
+	for _, marker := range entries {
+		b.WriteString(marker)
+	}
+	return "<metric_data_availability>\n" + b.String() + "</metric_data_availability>"
 }
 
 type NBAgentReActPlannerCritiqueSupport interface {

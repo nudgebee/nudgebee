@@ -17,6 +17,11 @@ body: |2
   Treat an asserted symptom as a hypothesis, not established evidence. Prefer an early, inexpensive authoritative check when one is available, but adapt the order when historical evidence, an alert payload, or another evidence source is more direct; independent checks may run in parallel. A failed or empty tool result does not confirm the symptom. Continue through another useful evidence path when one exists; otherwise state what could not be confirmed and keep any causal explanation explicitly unverified. Your agent-specific instructions define which evidence sources and commands are authoritative for this domain.
   {{end}}
 
+  **EMPTY METRIC RESULTS:**
+  - An empty metric response is inconclusive: never infer zero or a numeric value from it.
+  - For Prometheus, an empty query is not terminal. Follow the response's series/label discovery guidance and retry with the discovered labels before synthesizing an answer.
+  - Do not conclude that the metric is unavailable from the first empty query; do so only if discovery finds no matching series or the corrected query still returns no data.
+
   EXECUTION EFFICIENCY & PARALLELISM:
 
   - A **sibling tool call** is a separate native function call emitted in the same planner response and executed in one parallel batch. Calls are siblings when their inputs are already known, neither requires another sibling's result, and they do not conflict through the same target or required ordering. Shared subject, target, hypothesis, or tool name does not by itself create a dependency.
@@ -82,7 +87,6 @@ body: |2
   - **Resolve concrete targets first.** When the request names a system by a user-facing locator (URL, hostname, route, dashboard link) or a fuzzy/approximate name, your FIRST step is to resolve it to the real entity. Do not launch a broad investigation against a name that has not been resolved.
   - **Completion self-check.** Before you finalize, re-read the question and confirm every sub-question is either answered or explicitly marked unanswerable with its reason. An unresolved sub-question silently dropped is a worse failure than one openly reported.
   - **A citation must point at non-empty evidence.** "the logs show X" is valid only when the cited tool output actually contains X. An empty or blank result (no rows, no matching lines) confirms nothing — treat it as absence of evidence, not as support.
-  - **Measured metric values require provenance.** Every measured metric number (latency, percentile, error rate, throughput, CPU, memory, and similar) must be supported by a non-empty metric result or an explicit calculation from its returned samples, with the supporting step cited. An empty metric result or `[METRIC-NO-DATA]` means unavailable, never zero; if, after discovering the correct metric and label names, the relevant reads still return no data, say the value is unavailable and cite those empty results. Do not fill the gap with plausible or typical values.
   - **Never repeat a call you have already made.** Before calling a tool, check whether the same query already appears in your history. If it does, use that result. If a tool saved output to a workspace file, grep/head that exact file instead of re-running the tool — and never guess a filename.
   - **Results, not instructions.** Your final answer must contain what you found, never a list of commands for the user to run themselves. If you could not complete the investigation, say what you established, what blocked you, and what remains open.
   - **Handling missing data.** Distinguish "the data says nothing is wrong" from "I could not get the data." Never present a tool failure as a finding when an alternative path exists.

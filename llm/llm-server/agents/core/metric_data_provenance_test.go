@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -20,6 +21,7 @@ func TestMetricQueryReturnedNoData(t *testing.T) {
 		status      ToolStatus
 	}{
 		{"Prometheus no-data message", "prometheus_execute", "No data found for query: up", true, ToolStatusSuccess},
+		{"Prometheus full discovery guidance", "prometheus_execute", metricDiscoveryNoDataResponse("up"), true, ToolStatusSuccess},
 		{"Datadog empty series", "datadog_metrics_execute", `{"series":[]}`, true, ToolStatusSuccess},
 		{"Elasticsearch zero series", "es_metrics_query", `{"results":[{"total_series":0,"payload":[]}]}`, true, ToolStatusSuccess},
 		{"Elasticsearch missing total series with empty payload", "es_metrics_query", `{"results":[{"payload":[]}]}`, true, ToolStatusSuccess},
@@ -48,8 +50,11 @@ func TestMetricQueryReturnedNoData(t *testing.T) {
 			marker := metricNoDataMarker(step)
 			if tt.wantNoData {
 				assert.Contains(t, marker, metricNoDataTag)
-				assert.Contains(t, marker, "not a measured zero")
-				assert.Contains(t, marker, "only once discovery confirms the series does not exist")
+				assert.Contains(t, marker, "returned no metric series")
+				assert.Contains(t, marker, "supports no numeric value")
+				assert.Contains(t, marker, "Follow any discovery guidance returned by the tool")
+				assert.NotContains(t, marker, "unavailable")
+				assert.NotContains(t, marker, "zero")
 			} else {
 				assert.Empty(t, marker)
 			}
@@ -77,18 +82,45 @@ func TestMetricDocsMatchedNoSeriesIsNotMarkedNoData(t *testing.T) {
 	assert.NotContains(t, summary, "NO_METRIC_DATA")
 }
 
-// B2 regression: the per-turn availability block must gate "unavailable" on discovery
-// instead of authorizing unavailable after a single empty read.
-func TestMetricNoDataSummaryRequiresDiscoveryBeforeUnavailable(t *testing.T) {
-	steps := []NBAgentPlannerToolActionStep{{
-		Action:      NBAgentPlannerToolAction{Tool: "prometheus_execute", DisplayID: "E1"},
-		Observation: "No data found for query: up",
-		Status:      ToolStatusSuccess,
-	}}
+// Empty-read evidence stays factual and bounded; final-answer review owns the unavailable decision.
+func TestMetricNoDataSummaryIsCappedAndDeduplicatedEvidence(t *testing.T) {
+	steps := make([]NBAgentPlannerToolActionStep, 0, 11)
+	for i := 0; i < 10; i++ {
+		steps = append(steps, NBAgentPlannerToolActionStep{
+			Action:      NBAgentPlannerToolAction{Tool: "prometheus_execute", DisplayID: fmt.Sprintf("E%d", i), ToolInput: fmt.Sprintf(`{"query":"query-%d","timeout":10}`, i)},
+			Observation: fmt.Sprintf("No data found for query: query-%d", i),
+			Status:      ToolStatusSuccess,
+		})
+	}
+	duplicate := steps[5]
+	duplicate.Action.DisplayID = "E10"
+	duplicate.Action.ToolInput = `{ "timeout": 10, "query": "query-5" }`
+	steps = append(steps, duplicate)
 
 	summary := metricNoDataSummary(steps)
-	assert.Contains(t, summary, "report a metric as unavailable only once discovery confirms the series does not exist")
-	assert.NotContains(t, summary, "report the metric as unavailable and cite these empty results")
+	assert.Contains(t, summary, "7 earlier distinct empty metric reads omitted")
+	assert.NotContains(t, summary, "(step E0)")
+	assert.NotContains(t, summary, "(step E5)")
+	assert.Contains(t, summary, "(step E10)")
+	assert.Contains(t, summary, "query-5")
+	assert.Contains(t, summary, "No data found for query: query-5")
+	assert.NotContains(t, summary, "unavailable")
+	assert.NotContains(t, summary, "zero")
+}
+
+func TestMetricNoDataSummaryPreservesPrometheusDiscoveryGuidance(t *testing.T) {
+	query := metricDiscoveryWrongLabelQuery
+	result := metricDiscoveryNoDataResponse(query)
+	summary := metricNoDataSummary([]NBAgentPlannerToolActionStep{{
+		Action:      NBAgentPlannerToolAction{Tool: "prometheus_execute", DisplayID: "E1", ToolInput: query},
+		Observation: result,
+		Status:      ToolStatusSuccess,
+	}})
+
+	assert.Contains(t, summary, query)
+	assert.Contains(t, summary, "metrics_series_match")
+	assert.Contains(t, summary, "metrics_label_values")
+	assert.Contains(t, summary, "keyword discovery")
 }
 
 func TestMetricNoDataMarkerKeepsMutationEmptyOutputSemantics(t *testing.T) {
@@ -268,5 +300,12 @@ func TestSummarizeConversationIncludesMetricNoDataEvidence(t *testing.T) {
 	}
 	assert.Contains(t, prompt.String(), "<metric_data_availability>")
 	assert.Contains(t, prompt.String(), "step E1")
-	assert.Contains(t, prompt.String(), "empty metric result means unavailable, never zero")
+	assert.Contains(t, prompt.String(), "only conclude unavailable once metric or label discovery has confirmed the series does not exist")
+}
+
+func metricDiscoveryNoDataResponse(query string) string {
+	return fmt.Sprintf("No data found for query: %s. The metric may not exist, labels may be incorrect, or there is no data in the selected time range."+
+		" If this is for a named workload, call metrics_series_match (workload + namespace) to get the families that actually have series for it, then rebuild the query."+
+		" For any other named resource (a node, an instance, a device), do NOT guess another label name — call metrics_label_values with the label you are filtering on to see the values it actually takes, then filter on a real value."+
+		" Otherwise use metrics_list/search_metrics for keyword discovery.", query)
 }
