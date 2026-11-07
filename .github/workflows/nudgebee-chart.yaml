@@ -22,6 +22,10 @@ jobs:
       - name: Build chart dependencies
         run: helm dependency build deploy/kubernetes/nudgebee
 
+      - uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
+        with:
+          cluster_name: nudgebee-chart
+
       - name: Verify dummy credentials require opt-in
         shell: bash
         run: |
@@ -30,7 +34,7 @@ jobs:
           args=(--show-only templates/secrets-nudgebee.yaml \
             --set agent.enabled=false \
             --set admin.email=chart-test@example.com \
-            --set-string nudgebee_secret.NUDGEBEE_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef)
+            --set-string nudgebee_secret.NUDGEBEE_ENCRYPTION_KEY=acceptance-check-only)
 
           default_render=$(helm template nudgebee "$chart" "${args[@]}")
           grep -Fq 'NEXTAUTH_DUMMY_CREDS_ENABLED: "ZmFsc2U="' <<<"$default_render"
@@ -49,17 +53,13 @@ jobs:
             --set nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED=false)
           grep -Fq 'NEXTAUTH_DUMMY_CREDS_ENABLED: "ZmFsc2U="' <<<"$opt_out_render"
 
-          external_render=$(helm template nudgebee "$chart" --is-upgrade \
+          external_render=$(helm install nudgebee "$chart" --dry-run=client --namespace nudgebee \
             --set agent.enabled=false \
             --set admin.email=chart-test@example.com \
-            --set-string nudgebee_secret.NUDGEBEE_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+            --set-string nudgebee_secret.NUDGEBEE_ENCRYPTION_KEY=acceptance-check-only \
             --set nudgebee_secret.existingSecretName=external-secret)
           grep -Fq 'Dummy-credential sign-in is controlled by the externally managed Secret external-secret.' <<<"$external_render"
           ! grep -Fq 'Cannot determine NEXTAUTH_DUMMY_CREDS_ENABLED' <<<"$external_render"
-
-      - uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
-        with:
-          cluster_name: nudgebee-chart
 
       - name: Verify online upgrade preserves the Secret setting
         shell: bash
