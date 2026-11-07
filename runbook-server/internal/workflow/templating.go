@@ -53,6 +53,7 @@ type TemplateContext struct {
 	State          map[string]any // Unified context for all persistent workflow state
 	Self           map[string]any // Context for the current task's own data
 	templateEngine string
+	timeSource     func() time.Time
 }
 
 func NewTemplateContextWithEngine(inputs []model.Input, runtimeInputs map[string]any, engine string) *TemplateContext {
@@ -96,6 +97,7 @@ func NewTemplateContextWithEngine(inputs []model.Input, runtimeInputs map[string
 		Vars:           inputMap, // Initialize Vars with inputs
 		State:          make(map[string]any),
 		templateEngine: engine,
+		timeSource:     time.Now,
 	}
 }
 
@@ -136,7 +138,12 @@ func (c *TemplateContext) renderGonja(tpl string) (str string, err error) {
 
 	// Built-in dynamic values evaluated once per render, so a subject like
 	// `Error Log Summary_{{ datetime }}` resolves to a stable string at task time.
-	nowUTC := time.Now().UTC()
+	var nowUTC time.Time
+	if c.timeSource == nil {
+		nowUTC = time.Now().UTC()
+	} else {
+		nowUTC = c.timeSource().UTC()
+	}
 
 	// Create the context map
 	data := map[string]interface{}{
@@ -148,7 +155,7 @@ func (c *TemplateContext) renderGonja(tpl string) (str string, err error) {
 		"Vars":          c.Vars,
 		"State":         c.State,
 		"Self":          c.Self,
-		"now":           func() time.Time { return time.Now().UTC() },
+		"now":           func() time.Time { return nowUTC },
 		"date":          nowUTC.Format("02012006"),
 		"date_iso":      nowUTC.Format("2006-01-02"),
 		"date_us":       nowUTC.Format("01/02/2006"),
@@ -202,13 +209,15 @@ func (c *TemplateContext) RenderMap(m map[string]any) (map[string]any, error) {
 
 func (c *TemplateContext) Clone() *TemplateContext {
 	clone := &TemplateContext{
-		Inputs:  make(map[string]any),
-		Tasks:   make(map[string]map[string]any),
-		Secrets: make(map[string]any),
-		Configs: make(map[string]any),
-		Vars:    make(map[string]any), // Initialize Vars in clone
-		State:   make(map[string]any), // Initialize State in clone
-		Self:    make(map[string]any), // Initialize Self in clone
+		Inputs:         make(map[string]any),
+		Tasks:          make(map[string]map[string]any),
+		Secrets:        make(map[string]any),
+		Configs:        make(map[string]any),
+		Vars:           make(map[string]any), // Initialize Vars in clone
+		State:          make(map[string]any), // Initialize State in clone
+		Self:           make(map[string]any), // Initialize Self in clone
+		templateEngine: c.templateEngine,
+		timeSource:     c.timeSource,
 	}
 	for k, v := range c.Inputs {
 		clone.Inputs[k] = v

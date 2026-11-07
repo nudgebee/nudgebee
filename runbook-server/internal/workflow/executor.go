@@ -128,6 +128,12 @@ func extractEventIDFromInputs(inputs map[string]any) string {
 	return ""
 }
 
+func newWorkflowTemplateContext(ctx workflow.Context, inputs []model.Input, runtimeInputs map[string]any) *TemplateContext {
+	tplCtx := NewTemplateContext(inputs, runtimeInputs)
+	tplCtx.timeSource = func() time.Time { return workflow.Now(ctx) }
+	return tplCtx
+}
+
 const (
 	Internal_UpdateLastExecutionStatusActivity   = "Internal_UpdateLastExecutionStatusActivity"
 	FetchWorkflowDefinitionActivity              = "FetchWorkflowDefinitionActivity"
@@ -619,7 +625,7 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 
 	// Evaluate and upsert Execution Tags
 	if len(wf.Definition.SetExecutionTags) > 0 {
-		initialTplCtx := NewTemplateContext(wf.Definition.Inputs, inputs)
+		initialTplCtx := newWorkflowTemplateContext(ctx, wf.Definition.Inputs, inputs)
 		for _, input := range wf.Definition.Inputs {
 			initialTplCtx.Inputs[input.ID] = input.Default
 		}
@@ -735,7 +741,7 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 	}
 
 	// Initialize Template Context
-	templateContext := NewTemplateContext(wf.Definition.Inputs, inputs)
+	templateContext := newWorkflowTemplateContext(ctx, wf.Definition.Inputs, inputs)
 	if workflowState != nil {
 		templateContext.State = workflowState
 	}
@@ -1931,7 +1937,7 @@ func updateFinalWorkflowStatusAndExecuteHooks(ctx workflow.Context, wf *model.Wo
 		logger.Error("Workflow failed", "error", ScrubSecretValues(workflowError.Error(), secretValues))
 		if wf != nil && wf.Definition.Hooks != nil && len(wf.Definition.Hooks.Failure) > 0 {
 			onFailureCtx := createActivityCtxForAction(ctx)
-			if err := executeSimpleActions(onFailureCtx, wf.Definition.Hooks.Failure, NewTemplateContext(wf.Definition.Inputs, inputs), wf); err != nil {
+			if err := executeSimpleActions(onFailureCtx, wf.Definition.Hooks.Failure, newWorkflowTemplateContext(ctx, wf.Definition.Inputs, inputs), wf); err != nil {
 				logger.Error("On.Failure hook failed", "error", err)
 			}
 		}
@@ -1939,14 +1945,14 @@ func updateFinalWorkflowStatusAndExecuteHooks(ctx workflow.Context, wf *model.Wo
 		logger.Info("Workflow completed successfully")
 		if wf != nil && wf.Definition.Hooks != nil && len(wf.Definition.Hooks.Success) > 0 {
 			onSuccessCtx := createActivityCtxForAction(ctx)
-			if err := executeSimpleActions(onSuccessCtx, wf.Definition.Hooks.Success, NewTemplateContext(wf.Definition.Inputs, inputs), wf); err != nil {
+			if err := executeSimpleActions(onSuccessCtx, wf.Definition.Hooks.Success, newWorkflowTemplateContext(ctx, wf.Definition.Inputs, inputs), wf); err != nil {
 				logger.Error("On.Success hook failed", "error", err)
 			}
 		}
 	}
 	if wf != nil && wf.Definition.Hooks != nil && len(wf.Definition.Hooks.Always) > 0 {
 		onFinalCtx := createActivityCtxForAction(ctx)
-		if err := executeSimpleActions(onFinalCtx, wf.Definition.Hooks.Always, NewTemplateContext(wf.Definition.Inputs, inputs), wf); err != nil {
+		if err := executeSimpleActions(onFinalCtx, wf.Definition.Hooks.Always, newWorkflowTemplateContext(ctx, wf.Definition.Inputs, inputs), wf); err != nil {
 			logger.Error("On.Always hook failed", "error", err)
 		}
 	}
