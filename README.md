@@ -205,9 +205,11 @@ bootstrap with `--set nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED=true`.
 Additional clusters always use the normal agent install.
 
 Online Helm upgrades preserve the value in the existing Secret when this setting
-is omitted. If an offline/GitOps upgrade cannot read the Secret, set
-`nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED` explicitly to the intended value;
-the chart fails rather than silently changing the available sign-in method.
+is omitted. Offline/GitOps renderers such as Argo CD do not pass Helm's
+`--is-upgrade` flag, so they render the secure fresh-install default (`false`)
+unless `nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED` is set explicitly. If an
+Argo CD application relies on the bootstrap login, set that value to `true`
+before syncing; otherwise it will be disabled on the next sync.
 
 Two caveats for `agent.enabled`. The agent shares this Helm release, so
 `helm uninstall` removes it too. And if you render offline (Argo CD, Flux), set

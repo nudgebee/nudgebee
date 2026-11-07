@@ -67,7 +67,7 @@ nudgebee_secret:
   CLOUD_COLLECTOR_AWS_EVENTBRIDGE_SQS: ''
   # Leave null for safe lifecycle behavior: false on a fresh install, and the
   # existing Secret value on upgrades. Set true/false explicitly to override.
-  # Offline upgrades must set this explicitly because lookup cannot read the Secret.
+  # Offline renderers (Argo CD, Flux) use false unless this is explicit.
   NEXTAUTH_DUMMY_CREDS_ENABLED: null
   TEMPORAL_DB_PASSWORD: 'password'
   TEMPORAL_GRPC_ENDPOINT: 'temporal-frontend:7233'

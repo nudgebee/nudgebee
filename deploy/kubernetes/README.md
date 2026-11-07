@@ -64,7 +64,7 @@ If you supply the shared `nudgebee` Secret yourself, include non-empty `ACTION_A
 |---------------------------------------------|---------------------------------------------------------------------------|
 | `nudgebee_secret.NUDGEBEE_LICENSE`          | License JWT (commercial / EE). Leave empty for OSS — server short-circuits to `licenseType=free`. |
 | `nudgebee_secret.LICENSE_PUBLIC_KEY`        | RSA public key for verifying the license JWT. Empty for OSS.              |
-| `nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED` | `false` on fresh installs; upgrades preserve the Secret value. Set explicitly to override. Offline upgrades without the Secret must set it explicitly. |
+| `nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED` | `false` on fresh installs; online Helm upgrades preserve the Secret value. Set explicitly to override. Argo CD and Flux use `false` unless the value is explicit. |
 | `nudgebee_secret.EMAIL_*`                   | SMTP host / port / user / password / from-address for outbound email     |
 | `global.imagePullSecrets`                   | If pulling images from a private registry                                 |
 | `global.storageClass`                       | StorageClass for every PVC in the stack (postgresql, redis, rabbitmq, clickhouse, qdrant). Empty uses the cluster's default StorageClass; `"-"` binds pre-created PVs. When set it wins over per-component settings (bitnami precedence) — to give one store its own class, leave this empty and set e.g. `nudgebee-qdrant-server.persistence.storageClass` per component. Set it before the first install: a bound PVC's storage class can't be changed later. |
@@ -228,6 +228,7 @@ Before flipping production traffic onto the install:
 - [ ] **HPA / KEDA** (optional) — bundled charts don't add autoscalers by default.
 - [ ] **Image registry mirrored**, if you don't want to fetch from `ghcr.io/nudgebee` at deploy time.
 - [ ] **For GitOps (Argo CD / Flux):** explicitly set `NEXTAUTH_SECRET`, `ACTION_API_SERVER_TOKEN`, and `CLOUD_COLLECTOR_SERVER_TOKEN`, or reference an external shared Secret containing them — offline rendering can't use the chart's lookup-or-generate fallback.
+- [ ] **For GitOps (Argo CD / Flux):** explicitly set `NEXTAUTH_DUMMY_CREDS_ENABLED` if you rely on the temporary bootstrap login. Offline rendering uses the secure default `false`.
 
 ## Upgrade flow
 
@@ -281,11 +282,13 @@ Helm upgrade:
 ```bash
 helm upgrade ... --set nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED=false
 ```
-Online upgrades preserve the existing Secret value when this setting is omitted,
-so set it explicitly when disabling the login. Offline upgrades must set it
-explicitly. If you use `nudgebee_secret.existingSecretName` for an externally
-managed Secret, update `NEXTAUTH_DUMMY_CREDS_ENABLED` in that Secret directly;
-Helm does not rewrite it.
+Online upgrades preserve the existing Secret value when this setting is omitted.
+Offline Helm upgrades must set it explicitly; Argo CD and Flux use `false` unless
+the value is configured. If you use `nudgebee_secret.existingSecretName` for an
+externally managed Secret, update `NEXTAUTH_DUMMY_CREDS_ENABLED` in that Secret
+directly; Helm does not rewrite it. If the key is absent, the application treats
+dummy-credential sign-in as disabled, and the chart notes report that the external
+Secret controls the setting.
 
 ## Going deeper
 

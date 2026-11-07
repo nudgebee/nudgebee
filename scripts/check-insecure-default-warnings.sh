@@ -55,16 +55,17 @@ else
 		helm install nudgebee-notes-check "$CHART_DIR" --dry-run=client --namespace nudgebee \
 			--set nudgebee_secret.NUDGEBEE_ENCRYPTION_KEY=acceptance-check-only "$@" 2>&1
 	}
-	if render | grep -q 'WARNING: NEXTAUTH_DUMMY_CREDS_ENABLED'; then
-		pass "default values render the dummy-creds WARNING block"
-	else
-		fail "default values should render the dummy-creds WARNING block"
-	fi
-	if render --set nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED=false |
+	if render --set admin.email=chart-test@example.com |
 		grep -q 'WARNING: NEXTAUTH_DUMMY_CREDS_ENABLED'; then
-		fail "NEXTAUTH_DUMMY_CREDS_ENABLED=false should not render the WARNING block"
+		fail "default values should not render the dummy-creds WARNING block"
 	else
-		pass "NEXTAUTH_DUMMY_CREDS_ENABLED=false renders no WARNING block"
+		pass "default values render no dummy-creds WARNING block"
+	fi
+	if render --set admin.email=chart-test@example.com --set nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED=true |
+		grep -q 'WARNING: NEXTAUTH_DUMMY_CREDS_ENABLED'; then
+		pass "NEXTAUTH_DUMMY_CREDS_ENABLED=true renders the WARNING block"
+	else
+		fail "NEXTAUTH_DUMMY_CREDS_ENABLED=true should render the WARNING block"
 	fi
 fi
 

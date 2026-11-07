@@ -17,20 +17,26 @@ To access locally, run:
 kubectl port-forward svc/app -n {{ .Release.Namespace }} {{ $port }}:80
 {{- end }}
 
-{{- $dummyCredsEnabled := include "nudgebee.dummyCredsEnabled" . }}
 {{- $dummyCredsSecretName := .Values.nudgebee_secret.existingSecretName | default (include "nudgebee.secretName" .) }}
+{{- $externalSecretName := .Values.nudgebee_secret.existingSecretName }}
+{{- $dummyCredsEnabled := "" }}
+{{- if $externalSecretName }}
+Dummy-credential sign-in is controlled by the externally managed Secret {{ $externalSecretName }}.
+{{- else }}
+{{- $dummyCredsEnabled = include "nudgebee.dummyCredsEnabled" . }}
 {{- if eq $dummyCredsEnabled "true" }}
 To retrieve the password from the secret, run the following command:
 kubectl get secret {{ $dummyCredsSecretName }} -n {{ .Release.Namespace }} -o jsonpath='{.data.NEXTAUTH_DUMMY_CREDS_PASSWORD}' | base64 --decode
 {{- else }}
 Dummy-password sign-in is disabled. Use your configured authentication provider.
 {{- end }}
+{{- end }}
 
 {{- if .Values.admin.email }}
 
 The admin {{ .Values.admin.email }} and its organisation were created during
 install. Sign in with your configured authentication provider.
-{{- if eq $dummyCredsEnabled "true" }}
+{{- if and (not $externalSecretName) (eq $dummyCredsEnabled "true") }}
 The temporary shared-password provider is also enabled for this address only.
 {{- end }}
 {{- end }}
@@ -47,10 +53,8 @@ installed agent, set agent.enabled=false to avoid a duplicate account.
 Offline render (Argo CD, Flux) must set agent.accessKey/accessSecret.
 {{- end }}
 
-{{- /* The chart has no local/dev/prod environment marker, so this warns on
-       every install/upgrade with dummy creds enabled — imprecise but with no
-       false negatives. */}}
-{{- if eq $dummyCredsEnabled "true" }}
+{{- /* External Secrets are not readable configuration owned by this chart. */}}
+{{- if and (not $externalSecretName) (eq $dummyCredsEnabled "true") }}
 
 ⚠️  WARNING: NEXTAUTH_DUMMY_CREDS_ENABLED is set to "true". The shared
    password permits sign-in as the configured admin and bypasses OAuth / LDAP /
