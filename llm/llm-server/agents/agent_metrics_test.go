@@ -165,6 +165,9 @@ func TestNormaliseGeneratedMetricsQueryValidatesDatadogQueries(t *testing.T) {
 		"top(avg:system.cpu.user{*} by {host}, 10, 'mean', 'desc')",
 		"(avg:system.cpu.user{*} + avg:system.cpu.system{*})",
 		"100 * avg:system.cpu.user{*}",
+		"100 - avg:system.cpu.idle{*}",
+		"1 - avg:system.mem.pct_usable{*}",
+		"(100 - avg:system.cpu.idle{*})",
 	} {
 		got, err := normaliseGeneratedMetricsQuery("datadog", query)
 		require.NoError(t, err, "valid Datadog query was rejected: %s", query)
