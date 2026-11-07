@@ -194,7 +194,12 @@ func GetTraceLabelMapping(ctx *security.RequestContext, request GetLabelMappingR
 	// Derived from the integration listing rather than the resolver's DTO, for the
 	// reason GetLogLabelMapping records: the resolver returns a nil DTO whenever the
 	// caller pins both provider and source — which the integration form always does.
-	_, integrationSaved := lookupTraceIntegrationConfigs(ctx, request.AccountId, provider, integrationSource)
+	var integrationSaved bool
+	if request.IntegrationId != "" {
+		integrationSaved = integrationSavedByID(ctx, request.AccountId, provider, integrationSource, request.IntegrationId)
+	} else {
+		_, integrationSaved = lookupTraceIntegrationConfigs(ctx, request.AccountId, provider, integrationSource)
+	}
 
 	ref := providerRef{Provider: provider, Source: integrationSource}
 	resolved := resolveTraceLabelMapping(ctx, request.AccountId, ref, source, draft)

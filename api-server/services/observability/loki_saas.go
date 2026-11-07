@@ -65,7 +65,7 @@ func (c *LokiConfig) RulerBaseURL() string {
 // Agent-sourced rows are filtered out: they carry no URL, and LokiSource (relay) is the
 // source that serves them.
 func GetLokiConfig(ctx *security.RequestContext, accountId string) (*LokiConfig, error) {
-	dtos, err := core.ListIntegrationConfigs(ctx, accountId, "loki")
+	dtos, err := core.ListActiveIntegrationConfigs(ctx, accountId, "loki")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get loki integration: %w", err)
 	}

@@ -51,7 +51,7 @@ type HiveConfig struct {
 
 // GetHiveConfig reads and decrypts the Hive integration configuration.
 func GetHiveConfig(ctx *security.RequestContext, accountId string) (*HiveConfig, error) {
-	dtos, err := core.ListIntegrationConfigs(ctx, accountId, "hive")
+	dtos, err := core.ListActiveIntegrationConfigs(ctx, accountId, "hive")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get hive integration: %w", err)
 	}

@@ -236,13 +236,17 @@ func GetDefaultTraceIntegrationType(context *security.RequestContext, accountId 
 		context.GetLogger().Error("integrations: failed to get database manager", "error", err)
 		return "", err
 	}
+	tenantId := context.GetSecurityContext().GetTenantId()
 	rows, err := dbms.Db.Queryx(`SELECT i.type
 			FROM integrations i
 			JOIN integrations_cloud_accounts ica
 			ON i.id = ica.integration_id
 			WHERE ica.cloud_account_id = $1
+			AND i.tenant_id = $2
+			AND ica.tenant_id = i.tenant_id
+			AND i.status != 'disabled'
 			AND ica.default_traces_provider = true
-			LIMIT 1;`, accountId)
+			LIMIT 1;`, accountId, tenantId)
 	if err != nil {
 		context.GetLogger().Error("integrations: failed to get integration by config values", "error", err)
 		return "", err

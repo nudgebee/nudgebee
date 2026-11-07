@@ -195,7 +195,7 @@ func validateSplunkO11yConnection(cfg SplunkO11yConnConfig) error {
 
 // GetSplunkO11yConfigs retrieves realm and access_token from the database for the given account.
 func GetSplunkO11yConfigs(sc *security.RequestContext, accountId string) (SplunkO11yConnConfig, error) {
-	splunkIntegrations, listErr := core.ListIntegrationConfigs(sc, accountId, IntegrationSplunkO11y)
+	splunkIntegrations, listErr := core.ListActiveIntegrationConfigs(sc, accountId, IntegrationSplunkO11y)
 	if listErr != nil {
 		return SplunkO11yConnConfig{}, fmt.Errorf("failed to list Splunk O11y integration configs: %w", listErr)
 	}

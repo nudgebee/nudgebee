@@ -202,7 +202,7 @@ func validateESConfig(cfg *ElasticsearchConfig) error {
 var ErrNoElasticsearchIntegration = errors.New("no elasticsearch integrations found")
 
 func GetElasticsearchConfig(ctx *security.RequestContext, accountId string) (*ElasticsearchConfig, error) {
-	integrationDto, err := core.ListIntegrationConfigs(ctx, accountId, "ES")
+	integrationDto, err := core.ListActiveIntegrationConfigs(ctx, accountId, "ES")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get elasticsearch integration: %w", err)
 	}

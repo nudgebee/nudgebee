@@ -159,7 +159,7 @@ func GetSolarWindsConfigs(sc *security.RequestContext, accountId string) (string
 	apiToken := ""
 	dataCenter := SolarWindsDataCenterNA01
 
-	swIntegrations, err := core.ListIntegrationConfigs(sc, accountId, IntegrationSolarWinds)
+	swIntegrations, err := core.ListActiveIntegrationConfigs(sc, accountId, IntegrationSolarWinds)
 	if err != nil {
 		return apiToken, dataCenter, fmt.Errorf("failed to list SolarWinds integration configs: %w", err)
 	}
