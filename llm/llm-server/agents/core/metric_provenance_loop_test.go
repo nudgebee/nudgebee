@@ -219,3 +219,149 @@ func metricLoopTranscript(messages []llms.MessageContent) string {
 	}
 	return text.String()
 }
+
+// B2 replay: the first query filters on a wrong label. The marker on the empty read must
+// not preempt the tool's discovery guidance, and the successful re-query must survive to
+// the final answer instead of the agent reporting the metric unavailable after one miss.
+func TestMetricDiscoveryBeforeUnavailablePlannerExecution(t *testing.T) {
+	const noData = "No data found for query: " + metricDiscoveryWrongLabelQuery + ". The metric may not exist, labels may be incorrect, or there is no data in the selected time range." +
+		" If this is for a named workload, call metrics_series_match (workload + namespace) to get the families that actually have series for it, then rebuild the query." +
+		" For any other named resource (a node, an instance, a device), do NOT guess another label name — call metrics_label_values with the label you are filtering on to see the values it actually takes, then filter on a real value." +
+		" Otherwise use metrics_list/search_metrics for keyword discovery."
+	const answer = "P95 is 245 ms [E3]."
+
+	for _, engine := range []string{"react3", "react4"} {
+		t.Run(engine, func(t *testing.T) {
+			previous := config.Config
+			t.Cleanup(func() { config.Config = previous })
+			previousDAO := GetConversationDao()
+			conversationDaoMutex.Lock()
+			SetConversationDao(&metricLoopDAO{claimCaptureDAO{IConversationDao: previousDAO}})
+			conversationDaoMutex.Unlock()
+			t.Cleanup(func() {
+				conversationDaoMutex.Lock()
+				defer conversationDaoMutex.Unlock()
+				SetConversationDao(previousDAO)
+			})
+			config.Config.LlmServerAgentMaxScratchpadChars = 200000
+			config.Config.LlmServerScratchpadSummarizationEnabled = false
+			config.Config.ClaimCritiqueFeedbackEnabled = false
+			config.Config.CritiqueContinuationEnabled = false
+			config.Config.LlmTraceEnabled = false
+
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				if r.URL.Path == "/metric" {
+					// The re-query is the only input carrying a pod_name= filter.
+					if strings.Contains(r.URL.Query().Get("q"), "pod_name=") {
+						_, _ = io.WriteString(w, "P95 sample: value=0.245 seconds")
+						return
+					}
+					_, _ = io.WriteString(w, noData)
+					return
+				}
+				_, _ = io.WriteString(w, "metric families with series for workload checkout: http_request_duration_seconds (labels: pod_name, le)")
+			}))
+			defer server.Close()
+			metric := &metricLoopHTTPTool{MockContextCapturingTool: MockContextCapturingTool{NameVal: "prometheus_execute"}, endpoint: server.URL + "/metric"}
+			discovery := &metricLoopHTTPTool{MockContextCapturingTool: MockContextCapturingTool{NameVal: "metrics_series_match"}, endpoint: server.URL + "/discover"}
+			agent := &MockAgent{SupportedTools: []toolcore.NBTool{metric, discovery}}
+			model := &metricDiscoveryLoopModel{engine: engine, answer: answer}
+			withFakeLLMModel(t, model)
+			ctx := llmOverrideContext()
+			request := NBAgentRequest{Query: "Report the checkout P95 latency.", EnableCritique: true}
+			var planner NBAgentPlanner
+			var err error
+			if engine == "react3" {
+				prompt, resolvedTools, promptErr := reActCreatePrompt3(ctx, "Report the checkout P95 latency from the supplied fixture metrics.", agent.SupportedTools, "", nil, request, agent)
+				err = promptErr
+				planner = &NBReActPlanner3{ctx: ctx, request: request, nbAgent: agent, llm: model, prompt: prompt, tools: resolvedTools, enableCritique: true, maxRefinementAttempts: 2, llmSummarizationDisabled: true, compressionTracker: NewCompressionTracker()}
+			} else {
+				planner, err = NewReActAgent4(ctx, request, agent, "Report the checkout P95 latency from the supplied fixture metrics.", nil, "")
+			}
+			require.NoError(t, err)
+			executionRequest := request
+			executionRequest.AccountId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+			executionRequest.UserId = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+			executionRequest.ConversationId = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+			executionRequest.MessageId = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+			executor := &plannerExecutor{ctx: ctx, agent: agent, agentRequest: executionRequest, toolCallCache: turnToolCallCache{cache: make(map[string]NBAgentPlannerToolActionStep)}}
+			tools := getNameToTool(agent.SupportedTools)
+			finished := false
+			for i := 0; i < 6; i++ {
+				actions, finish, planErr := planner.Plan(ctx.GetContext(), executor.steps, request.Query)
+				require.NoError(t, planErr)
+				if finish != nil {
+					require.Equal(t, answer, finish.Data)
+					finished = true
+					break
+				}
+				require.Len(t, actions, 1)
+				step, toolFinish, actionErr := executor.doAction(tools, actions[0], "")
+				require.NoError(t, actionErr)
+				require.Nil(t, toolFinish)
+				executor.steps = append(executor.steps, step)
+			}
+			require.True(t, finished)
+			require.Len(t, executor.steps, 3, "wrong label, discovery, re-query")
+			require.EqualValues(t, 3, calls.Load(), "each tool must reach the local HTTP fixture")
+			require.Equal(t, "E1", executor.steps[0].Action.DisplayID)
+			require.Equal(t, noData, executor.steps[0].Observation)
+			require.Equal(t, ToolStatusSuccess, executor.steps[0].Status)
+			require.Equal(t, "P95 sample: value=0.245 seconds", executor.steps[2].Observation)
+			require.GreaterOrEqual(t, len(model.sent), 5, "three action turns, final generation and critique")
+
+			marker := "[METRIC-NO-DATA] prometheus_execute (step E1) returned no metric series."
+			for _, prompt := range model.sent {
+				if !strings.Contains(prompt, "No data found for query:") {
+					continue // prompts from before the empty read carry no marker
+				}
+				require.True(t, strings.Contains(prompt, marker), "the empty read must stay cited")
+				require.False(t, strings.Contains(prompt, "This is unavailable, not a measured zero"), "the marker must not declare unavailability up front")
+				require.True(t, strings.Contains(prompt, "only once discovery confirms the series does not exist"), "unavailable must stay gated on discovery")
+				require.True(t, strings.Contains(prompt, "call metrics_series_match"), "the tool's discovery guidance must survive next to the marker")
+			}
+			require.Contains(t, model.sent[3], "value=0.245", "the successful re-query must reach final-answer generation")
+		})
+	}
+}
+
+const metricDiscoveryWrongLabelQuery = `histogram_quantile(0.95, sum by (pod_name, le) (rate(http_request_duration_seconds_bucket{pod="checkout"}[5m])))`
+const metricDiscoveryReQuery = `histogram_quantile(0.95, sum by (pod_name, le) (rate(http_request_duration_seconds_bucket{pod_name="checkout"}[5m])))`
+
+type metricDiscoveryLoopModel struct {
+	fakeLLMModel
+	engine, answer string
+	sent           []string
+}
+
+func (model *metricDiscoveryLoopModel) GenerateContent(_ context.Context, messages []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+	model.sent = append(model.sent, metricLoopTranscript(messages))
+	i := len(model.sent) - 1
+	if i >= 4 {
+		return newFakeContentResponse("<decision>accept</decision><feedback></feedback>", "stop"), nil
+	}
+	if i == 3 {
+		return newFakeContentResponse("<final_answer><content>"+model.answer+"</content></final_answer>", "stop"), nil
+	}
+	var tool string
+	var args []byte
+	switch i {
+	case 0:
+		tool = "prometheus_execute"
+		args, _ = json.Marshal(map[string]string{"query": metricDiscoveryWrongLabelQuery})
+	case 1:
+		tool = "metrics_series_match"
+		args, _ = json.Marshal(map[string]string{"workload": "checkout", "namespace": "default"})
+	case 2:
+		tool = "prometheus_execute"
+		args, _ = json.Marshal(map[string]string{"query": metricDiscoveryReQuery})
+	}
+	if model.engine == "react3" {
+		return newFakeContentResponse("<thought_action><thought>Inspect fixture evidence.</thought><action><tool_name>"+tool+"</tool_name><tool_input>"+string(args)+"</tool_input></action></thought_action>", "stop"), nil
+	}
+	response := newFakeContentResponse("Inspect fixture evidence.", "tool_calls")
+	response.Choices[0].ToolCalls = []llms.ToolCall{{ID: fmt.Sprintf("fixture-call-%d", i), Type: "function", FunctionCall: &llms.FunctionCall{Name: tool, Arguments: string(args)}}}
+	return response, nil
+}
