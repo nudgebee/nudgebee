@@ -314,8 +314,9 @@ type githubProject struct {
 }
 
 type githubProjectItem struct {
-	ID      string        `json:"id"`
-	Project githubProject `json:"project"`
+	ID         string        `json:"id"`
+	IsArchived bool          `json:"isArchived"`
+	Project    githubProject `json:"project"`
 }
 
 type githubProjectsPageResponse struct {
@@ -495,8 +496,8 @@ const githubProjectFieldsQuery = `query($id: ID!, $cursor: String) {
 const githubIssueProjectItemsQuery = `query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
 	repository(owner: $owner, name: $repo) {
 		issue(number: $number) {
-			projectItems(first: 100, after: $cursor) {
-				nodes { id project { id title number } }
+			projectItems(first: 100, after: $cursor, includeArchived: false) {
+				nodes { id isArchived project { id title number } }
 				pageInfo { hasNextPage endCursor }
 			}
 		}
@@ -718,7 +719,11 @@ func fetchIssueProjectItems(ctx *gin.Context, client *github.Client, owner, repo
 		if err := githubGraphQLErrors(response.Errors); err != nil {
 			return nil, err
 		}
-		items = append(items, response.Data.Repository.Issue.ProjectItems.Nodes...)
+		for _, item := range response.Data.Repository.Issue.ProjectItems.Nodes {
+			if !item.IsArchived {
+				items = append(items, item)
+			}
+		}
 		next, more, err := pageCursor(response.Data.Repository.Issue.ProjectItems.PageInfo, "issue project items", page)
 		if err != nil {
 			return nil, err

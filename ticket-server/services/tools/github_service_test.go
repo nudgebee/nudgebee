@@ -390,6 +390,9 @@ func TestUpdateProjectStatusResolvesNamesAndEncodedSelectors(t *testing.T) {
 				w.Header().Set("Content-Type", "application/json")
 				switch {
 				case strings.Contains(request.Query, "projectItems"):
+					if !strings.Contains(request.Query, "includeArchived: false") {
+						t.Errorf("projectItems query missing includeArchived: false: %s", request.Query)
+					}
 					items := `{"id":"I1","project":{"id":"P1","title":"Board","number":1}}`
 					if test.secondItem {
 						items += `,{"id":"I2","project":{"id":"P2","title":"Other","number":2}}`
@@ -445,6 +448,138 @@ func TestUpdateProjectStatusResolvesNamesAndEncodedSelectors(t *testing.T) {
 				if mutationVariables[key] != want {
 					t.Errorf("mutation %s = %v, want %s", key, mutationVariables[key], want)
 				}
+			}
+		})
+	}
+}
+
+func TestUpdateProjectStatusIgnoresArchivedItems(t *testing.T) {
+	tests := []struct {
+		name          string
+		status        string
+		mockItemsJSON string
+		wantMutation  bool
+		wantProjectID string
+		wantItemID    string
+		wantFieldID   string
+		wantOptionID  string
+		wantStatus    string
+		wantErr       string
+	}{
+		{
+			name:   "archived plus active match ignores archived item and updates active item",
+			status: "In Progress",
+			// P1 is an old sprint board where item I1 is archived. P2 is active sprint board with item I2.
+			// Both boards have "In Progress" (O1). Without filtering, this would trigger an ambiguous error.
+			// With filtering, I1 is ignored, avoiding false ambiguity and updating I2.
+			mockItemsJSON: `{"id":"I1","isArchived":true,"project":{"id":"P1","title":"Sprint 41","number":1}},{"id":"I2","isArchived":false,"project":{"id":"P2","title":"Sprint 42","number":2}}`,
+			wantMutation:  true,
+			wantProjectID: "P2",
+			wantItemID:    "I2",
+			wantFieldID:   "F1",
+			wantOptionID:  "O1",
+			wantStatus:    "In Progress",
+		},
+		{
+			name:   "archived-only match returns not linked error and does not mutate",
+			status: "In Progress",
+			// Only P1 has the item and it is archived.
+			mockItemsJSON: `{"id":"I1","isArchived":true,"project":{"id":"P1","title":"Sprint 41","number":1}}`,
+			wantMutation:  false,
+			wantErr:       "not linked",
+		},
+		{
+			name:          "archived-only match with encoded selector returns not linked error and does not mutate",
+			status:        "github-project:P1:F1:O1",
+			mockItemsJSON: `{"id":"I1","isArchived":true,"project":{"id":"P1","title":"Sprint 41","number":1}}`,
+			wantMutation:  false,
+			wantErr:       "not linked",
+		},
+		{
+			name:   "server-side includeArchived false omits archived items",
+			status: "In Progress",
+			// Server responds to includeArchived: false by omitting archived items altogether (returning only I2).
+			mockItemsJSON: `{"id":"I2","isArchived":false,"project":{"id":"P2","title":"Sprint 42","number":2}}`,
+			wantMutation:  true,
+			wantProjectID: "P2",
+			wantItemID:    "I2",
+			wantFieldID:   "F1",
+			wantOptionID:  "O1",
+			wantStatus:    "In Progress",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var mutationVariables map[string]interface{}
+			var queryChecked bool
+
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request struct {
+					Query     string                 `json:"query"`
+					Variables map[string]interface{} `json:"variables"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Fatalf("decode GraphQL request: %v", err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case strings.Contains(request.Query, "projectItems"):
+					queryChecked = true
+					if !strings.Contains(request.Query, "includeArchived: false") {
+						t.Errorf("projectItems query missing includeArchived: false: %s", request.Query)
+					}
+					_, _ = fmt.Fprintf(w, `{"data":{"repository":{"issue":{"projectItems":{"nodes":[%s],"pageInfo":{"hasNextPage":false}}}}}}`, tc.mockItemsJSON)
+				case strings.Contains(request.Query, "fields(first"):
+					// Both P1 and P2 have a Status field with "In Progress" (O1) and "Done" (O2)
+					_, _ = w.Write([]byte(`{"data":{"node":{"fields":{"nodes":[{"id":"F1","name":"Status","options":[{"id":"O1","name":"In Progress"},{"id":"O2","name":"Done"}]}],"pageInfo":{"hasNextPage":false}}}}}`))
+				case strings.Contains(request.Query, "updateProjectV2ItemFieldValue"):
+					mutationVariables = request.Variables
+					_, _ = w.Write([]byte(`{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"I2"}}}}`))
+				default:
+					t.Fatalf("unexpected GraphQL query: %s", request.Query)
+				}
+			})
+
+			client, srv := newTestGithubClient(t, handler)
+			defer srv.Close()
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+
+			gotStatus, err := (&GitHubService{}).updateProjectStatus(ctx, client, "owner", "repo", 7, tc.status)
+			if !queryChecked {
+				t.Fatal("expected projectItems query to be executed")
+			}
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(strings.ToLower(err.Error()), tc.wantErr) {
+					t.Fatalf("error = %v, want %q", err, tc.wantErr)
+				}
+				if mutationVariables != nil {
+					t.Fatal("mutation must NOT be called when matching fails or only archived item matches")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("updateProjectStatus() error = %v", err)
+			}
+			if gotStatus != tc.wantStatus {
+				t.Fatalf("resolved status = %q, want %q", gotStatus, tc.wantStatus)
+			}
+			if tc.wantMutation {
+				if mutationVariables == nil {
+					t.Fatal("expected mutation to be called, but it was not")
+				}
+				for key, want := range map[string]string{
+					"projectId": tc.wantProjectID,
+					"itemId":    tc.wantItemID,
+					"fieldId":   tc.wantFieldID,
+					"optionId":  tc.wantOptionID,
+				} {
+					if mutationVariables[key] != want {
+						t.Errorf("mutation %s = %v, want %s", key, mutationVariables[key], want)
+					}
+				}
+			} else if mutationVariables != nil {
+				t.Fatal("mutation must NOT be called")
 			}
 		})
 	}
