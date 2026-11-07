@@ -3664,6 +3664,7 @@ class LLMTriggerHandler(BaseTriggerHandler):
     def _build_llm_headers(self, tenant_id: str, user_id: str) -> Dict[str, str]:
         """Build LLM request headers"""
         return {
+            Configs.LLM_SERVER_TOKEN_HEADER: Configs.LLM_SERVER_TOKEN,
             "x-tenant-id": tenant_id,
             "x-user-id": user_id,
             "Content-Type": "application/json",
