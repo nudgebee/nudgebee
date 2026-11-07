@@ -78,7 +78,7 @@ jest.mock('@lib/auth', () => ({
   hasFeatureAccess: jest.fn(() => Promise.resolve(false)),
   // Nav gating: default to "not a grants-only user" so no product icon is
   // disabled, preserving the all-icons-enabled baseline (which is also what a
-  // deployment with custom roles disabled always sees). Tests exercising
+  // deployment with the CUSTOM_ROLES feature off always sees). Tests exercising
   // the disabled state override this and hasPermission.
   isGrantsOnlyUser: jest.fn(() => false),
   hasPermission: jest.fn(() => false),

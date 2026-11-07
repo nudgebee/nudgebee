@@ -22,8 +22,9 @@ func TestPrivilegedTenantAttributes(t *testing.T) {
 }
 
 func TestPrivilegedFeatureFlags(t *testing.T) {
-	// RBAC_K8S gates K8s RBAC enforcement, so a grant holder must not reach it.
-	for _, id := range []string{FEATURE_RBACK_K8S_ACCESS, "rbac_k8s", " rbac_k8s "} {
+	// RBAC_K8S gates K8s RBAC enforcement; CUSTOM_ROLES is the switch for the
+	// grant mechanism doing the checking, so a grant holder must not reach it.
+	for _, id := range []string{FEATURE_RBACK_K8S_ACCESS, "CUSTOM_ROLES", "custom_roles", " rbac_k8s "} {
 		if !isPrivilegedFeatureFlag(id) {
 			t.Errorf("%q must require a tenant admin", id)
 		}

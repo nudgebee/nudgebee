@@ -89,8 +89,8 @@ export interface NudgebeeSession extends Session {
   idpLogoutPath?: string;
   // Dynamic-RBAC custom-role grants ("<module>:<class>"). Read by hasPermission().
   permissions?: string[];
-  // Whether custom roles are available (false only in a build without them, or
-  // when the lookup failed). False means the whole dynamic-RBAC layer is off and every UI gate must behave exactly as it
+  // Whether the tenant has the CUSTOM_ROLES feature enabled. False means the
+  // whole dynamic-RBAC layer is off and every UI gate must behave exactly as it
   // did before the feature existed. Read by isCustomRolesEnabled().
   customRolesEnabled?: boolean;
   // Account-bound grants per account ({account id: ["<module>:<class>"]}), for
@@ -1353,7 +1353,7 @@ function getSessionUpdateSeconds() {
 
 // How stale a session's baked-in dynamic-RBAC grant set may get before the jwt
 // callback re-resolves it from the database. Bounds two things: how long a
-// revoked grant keeps being honored by the
+// revoked grant (or a CUSTOM_ROLES switch flipped off) keeps being honored by the
 // gateway, and how long a newly granted permission takes to appear without a
 // re-login. Small enough to be operationally sane, large enough that the
 // /api/auth/session poll doesn't turn into a per-minute RPC per tab.
@@ -1505,9 +1505,8 @@ export const authOptions: NextAuthOptions = {
           // tenant and bake them into the token so the gateway gate can check
           // them without a per-request DB hit. token.tenant is set by the
           // jwtUpdateTokenFor* helpers above. `customRolesEnabled` carries the
-          // whether custom roles are available (not in OSS builds, or when the
-          // lookup failed) so the UI can tell "unavailable" (keep the built-in-role
-          // behavior untouched) from "no grants held".
+          // tenant's CUSTOM_ROLES feature state so the UI can tell "feature off"
+          // (keep the built-in-role behavior untouched) from "no grants held".
           const resolved = await resolveUserCustomPermissions(userId, (token.tenant as any)?.id);
           token.permissions = resolved.permissions;
           token.customRolesEnabled = resolved.enabled;
@@ -1521,9 +1520,10 @@ export const authOptions: NextAuthOptions = {
           token.customRolesEnabled = reresolved.enabled;
           token.permissionsResolvedAt = Date.now();
         } else if (!user && token.id && (token.tenant as any)?.id) {
-          // Bounded refresh on an existing session. Grants live in the database,
-          // but the gateway reads them off the JWT — without this they would be
-          // frozen at login, so a revoked grant would keep working for as long
+          // Bounded refresh on an existing session. Grants and the CUSTOM_ROLES
+          // switch itself live in the database, but the gateway reads them off the
+          // JWT — without this they would be frozen at login, so a revoked grant
+          // (or the whole feature being turned off) would keep working for as long
           // as the user stayed signed in, and a newly granted one would need a
           // re-login. Rate-limited to PERMISSIONS_REFRESH_MS because this callback
           // also runs on every /api/auth/session poll.

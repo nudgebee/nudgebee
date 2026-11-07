@@ -250,7 +250,7 @@ const AllUsers = () => {
   }, [currentPage, selectedStatus, sortObject, perPage, selectedName]);
 
   // Gated on canReadCustomRoles: customroles_list 403s for a plain users:Read
-  // holder and 400s when custom roles are disabled. The Role column is an
+  // holder and 400s tenant-wide when CUSTOM_ROLES is off. The Role column is an
   // enrichment, so a failure here must leave the built-in role rendering rather
   // than break the page.
   // Re-run after any user write, not just on mount: the Role column is derived

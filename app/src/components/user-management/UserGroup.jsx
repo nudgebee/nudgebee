@@ -82,7 +82,7 @@ function UserGroup({ groupNames = [], onUserUpdate }) {
   }, []);
 
   // Gated on canReadCustomRoles: customroles_list 403s for a plain
-  // usergroups:Read holder and 400s when custom roles are disabled, and
+  // usergroups:Read holder and 400s tenant-wide when CUSTOM_ROLES is off, and
   // this column is an enrichment — it must not turn either into an error for a
   // page that otherwise works. Failure leaves the built-in roles rendering.
   // Re-run after any group write, not just on mount: the custom-role column is

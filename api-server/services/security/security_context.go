@@ -811,13 +811,15 @@ func NewSecurityContext(tenantId string, userId string) (*SecurityContext, error
 		scopedEntityIds[role] = lo.Uniq(ids)
 	}
 
-	// Dynamic-RBAC custom-role grants, direct and via groups. They only add
-	// access: with none assigned both maps stay empty and authorization is
-	// identical to the built-in roles resolved above. A database that has not run
-	// the custom-role migrations resolves no grants (see resolveCustomGrants).
+	// Dynamic-RBAC custom-role grants — resolved only when the tenant has the
+	// CUSTOM_ROLES feature enabled. With the feature off both maps stay empty,
+	// which makes every custom-grant gate in the product inert and leaves
+	// authorization identical to the built-in roles resolved above; the
+	// custom_role_* tables are not even touched, so a database that has not run
+	// the custom-role migrations still builds a context. See CustomRolesEnabled.
 	customPermissions := map[string]bool{}
 	scopedCustomPermissions := map[string]map[string]bool{}
-	if tenantId != "" {
+	if CustomRolesEnabled(tenantId) {
 		customPermissions, scopedCustomPermissions, err = resolveCustomGrants(dbms, tenantId, userId)
 		if err != nil {
 			return nil, err

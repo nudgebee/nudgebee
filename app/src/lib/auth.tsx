@@ -215,13 +215,11 @@ export function isTenantWideRole(): boolean {
 // ---------------------------------------------------------------------------
 // Dynamic RBAC (custom roles) — the front-end half of the on/off switch.
 //
-// isCustomRolesEnabled() is the session's `customRolesEnabled`, from the
-// backend's customroles_list_user_permissions and resolved once at session build
-// (see resolveUserCustomPermissions): true for every tenant in a build that
-// includes custom roles, false in OSS or when the lookup failed. Every UI gate
-// this feature introduced hangs off it, so when it is false the app renders
-// exactly as it did before dynamic RBAC existed — no disabled nav icons, no
-// gated tabs, no Roles tab.
+// isCustomRolesEnabled() mirrors the backend security.CustomRolesEnabled():
+// it is the tenant's CUSTOM_ROLES feature state, resolved once at session build
+// (see resolveUserCustomPermissions). Every UI gate this feature introduced hangs
+// off it, so with the feature off the app renders exactly as it did before
+// dynamic RBAC existed — no disabled nav icons, no gated tabs, no Roles tab.
 //
 // It is deliberately NOT inferred from `permissions.length`: "feature on, user
 // holds no grants" and "feature off" are different states, and only the first
@@ -440,7 +438,7 @@ export function canCreateTicket(accountId?: string): boolean {
 // the customroles write actions are non-grantable (@lib/permissionCatalog).
 //
 // Use it to decide whether to CALL listCustomRoles() at all — the action 403s
-// for everyone else, and 400s when custom roles are disabled.
+// for everyone else, and 400s tenant-wide when the CUSTOM_ROLES feature is off.
 export function canReadCustomRoles(): boolean {
   if (!isCustomRolesEnabled()) {
     return false;

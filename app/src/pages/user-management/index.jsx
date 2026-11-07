@@ -214,7 +214,7 @@ export default function UserManagement() {
     const perms = session?.permissions ?? [];
     // userManagementFilters(session) already applies each entry's own
     // shouldShow(session) — an entry is simply absent when it fails (OSS build,
-    // or e.g. custom roles disabled on the deployment), not present-but-disabled. Roles
+    // or e.g. CUSTOM_ROLES off for this tenant), not present-but-disabled. Roles
     // gets pulled out and folded into Access & Users' tabOptions (right after
     // Groups) instead of staying a top-level tab; any OTHER registered filter
     // (none today — Billing's registration exists but isn't imported) is

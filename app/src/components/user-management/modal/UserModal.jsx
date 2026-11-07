@@ -93,7 +93,7 @@ function UserModal({ open, handleClose, handleSnackBarData, mode, userData = nul
       });
       // Custom roles are tenant_admin-only; a non-admin caller gets an empty
       // list and the picker stays hidden. Skipped outright while the tenant's
-      // custom roles are disabled — the service refuses the call then, and the
+      // CUSTOM_ROLES feature is off — the service refuses the call then, and the
       // modal must look exactly as it did before dynamic RBAC.
       if (isCustomRolesEnabled()) {
         listCustomRoles()

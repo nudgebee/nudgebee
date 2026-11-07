@@ -214,6 +214,12 @@ const featureRecommendedContent = (baseTitle, assistantName) => ({
     whenToTurnOn: 'Responders act on investigation answers directly and you want the weakly-supported ones to say so before someone does.',
     why: 'A separate grading pass, so a model that wrote a thin answer cannot also mark it confident. It costs one extra AI call per investigation, which is why it is per-tenant rather than always on.',
   },
+  CUSTOM_ROLES: {
+    description: 'Tenant-defined roles carrying module-level Read, Write and Execute grants, additive to the built-in roles.',
+    whenToTurnOn:
+      'You need a role the built-ins do not express: auditor, workflow operator, cost analyst. Turning it back off is safe, definitions just stop applying.',
+    why: 'Built-in roles are coarse. Because this switches on the grant mechanism that performs permission checks, it is admin-only and has a deployment-wide kill switch.',
+  },
   WORKER_BEES: {
     description:
       'AI teammates with one job each: when their trigger fires they look into the problem, decide, and act, ask you first, or leave it alone, as far as each one is allowed.',
@@ -240,6 +246,7 @@ const FEATURE_TABLE_HEADERS = [
 const FEATURE_NAVIGATION = {
   LLM_ANALYSER: { route: '/optimise#llm-analyser' },
   AI_COST_REPORT: { route: '/optimise#llm-analyser' },
+  CUSTOM_ROLES: { route: '/user-management#access-users/roles' },
   WORKER_BEES: { route: '/bees' },
   CHANNEL_AWARENESS: { route: '/user-management#integrations' },
   OPTIMIZE: { route: '/optimise' },
