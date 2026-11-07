@@ -555,9 +555,17 @@ func (o *NBReActPlanner3) buildScratchpad(intermediateSteps []NBAgentPlannerTool
 		scratchpad = fmt.Sprintf("<scratchpad>\n%s</scratchpad>", history.String())
 	}
 
-	// Aggregate budget: cap total scratchpad size at the window-derived hard ceiling
-	// (falls back to the legacy char budget when the window is unknown).
-	if hardCapChars > 0 && len(scratchpad) > hardCapChars {
+	metricEvidence := metricNoDataSummary(intermediateSteps)
+	// Reserve room for the evidence appended below so the final scratchpad still
+	// respects the window-derived hard ceiling (or legacy char budget).
+	scratchpadLimit := hardCapChars
+	if hardCapChars > 0 && metricEvidence != "" {
+		scratchpadLimit -= len(metricEvidence) + 2 // newlines around the evidence
+		if scratchpadLimit < 0 {
+			scratchpadLimit = 0
+		}
+	}
+	if hardCapChars > 0 && len(scratchpad) > scratchpadLimit {
 		// Hard cap exceeded is unambiguously a window-pressure event, even if the
 		// upstream compressionActive check (based on totalObsBytes alone) came back
 		// false — the rendered scratchpad string carries tags/headers/thoughts/
@@ -569,9 +577,20 @@ func (o *NBReActPlanner3) buildScratchpad(intermediateSteps []NBAgentPlannerTool
 		// visibility card lands as "cause not classified" — production-observed
 		// 2026-07-01 06:06 UTC on convo 650ba57d.
 		o.compressionTracker.SetCompressionContext(true)
-		scratchpad = o.compressScratchpad(scratchpad, hardCapChars, intermediateSteps)
+		scratchpad = o.compressScratchpad(scratchpad, scratchpadLimit, intermediateSteps)
+	}
+	if metricEvidence != "" {
+		scratchpad = appendMetricEvidenceToScratchpad(scratchpad, metricEvidence)
 	}
 	return scratchpad
+}
+
+func appendMetricEvidenceToScratchpad(scratchpad, metricEvidence string) string {
+	closingTag := "</scratchpad>"
+	if closingIndex := strings.LastIndex(scratchpad, closingTag); closingIndex >= 0 {
+		return scratchpad[:closingIndex] + "\n" + metricEvidence + "\n" + scratchpad[closingIndex:]
+	}
+	return scratchpad + "\n" + metricEvidence + "\n" + closingTag
 }
 
 // compressScratchpad reduces a scratchpad that exceeds the budget by splitting it
@@ -768,9 +787,11 @@ func (o *NBReActPlanner3) resolveObservation(step NBAgentPlannerToolActionStep) 
 			"In your analysis, explicitly state: 'Unable to verify [what you checked]: tool call failed.'\n" +
 			obs
 	}
-	// Mirrors the [TOOL-FAILED] marker above for the empty-but-successful write case
-	// (see #29875) — without it the model misreads empty stdout as failure and retries.
-	if step.Status == ToolStatusEmptyResult {
+	// Empty metric reads are missing evidence; only other empty-success calls get the
+	// mutation marker that prevents a successful write from being retried (#29875).
+	if metricNoDataMarker(step) != "" {
+		obs = withMetricNoDataMarker(step, obs)
+	} else if step.Status == ToolStatusEmptyResult {
 		obs = "[SUCCESS-NO-OUTPUT] This action completed successfully (exit code 0, empty output). " +
 			"For write/mutation commands this IS success, not a failure or missing data. " +
 			"Do NOT retry this exact command and do NOT report it as failed.\n" +
@@ -789,9 +810,9 @@ func (o *NBReActPlanner3) getToolResponse(step *NBAgentPlannerToolActionStep, is
 		if len(toolResponse) > getMaxObservationChars() {
 			toolResponse = TruncateMiddle(toolResponse, 2048, getMaxObservationChars()-2048)
 		}
-		return toolResponse
+		return withMetricNoDataMarker(*step, toolResponse)
 	}
-	return SummarizeObservation(o.ctx, step, o.request, toolResponse)
+	return withMetricNoDataMarker(*step, SummarizeObservation(o.ctx, step, o.request, toolResponse))
 }
 
 // prewarmSummaries fires LLM summarizations in parallel for all non-recent steps

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -51,6 +52,165 @@ func generateToolId(tool string, input string) string {
 // timestamp makes every repeat unique and silently disables dedup.
 func resolveToolInputMacros(input string) string {
 	return common.SubstituteDateMacros(input)
+}
+
+const metricNoDataTag = "[METRIC-NO-DATA]"
+
+// shortcut: only known metrics query names and response shapes are recognized; extend when a new metrics tool's output contract is reviewed.
+func metricQueryReturnedNoData(toolName, response string) bool {
+	response = strings.TrimSpace(response)
+	switch toolName {
+	case "prometheus_execute":
+		return response == "" || response == plannerToolNoData || strings.HasPrefix(strings.ToLower(response), "no data found for query:")
+	case "datadog_metrics_execute":
+		if response == "" || response == plannerToolNoData {
+			return true
+		}
+		var payload struct {
+			Series []json.RawMessage `json:"series"`
+		}
+		return json.Unmarshal([]byte(response), &payload) == nil && payload.Series != nil && len(payload.Series) == 0
+	case "es_metrics_query", "splunk_metrics_query":
+		if response == "" || response == plannerToolNoData {
+			return true
+		}
+		var envelope map[string]json.RawMessage
+		if json.Unmarshal([]byte(response), &envelope) != nil {
+			return false
+		}
+		rawResults, ok := envelope["results"]
+		if !ok {
+			return false
+		}
+		var results []json.RawMessage
+		if json.Unmarshal(rawResults, &results) != nil || results == nil {
+			return false
+		}
+		for _, rawResult := range results {
+			var result map[string]json.RawMessage
+			if json.Unmarshal(rawResult, &result) != nil {
+				return false
+			}
+			// docs_matched > 0 and/or a note mean the backend matched documents but
+			// could not extract series ("This is NOT an absence of data") or the query
+			// itself needs fixing — that guidance must reach the model uncontradicted,
+			// so such a result is not an absence of data.
+			if rawDocsMatched, ok := result["docs_matched"]; ok {
+				var docsMatched int
+				if json.Unmarshal(rawDocsMatched, &docsMatched) != nil || docsMatched > 0 {
+					return false
+				}
+			}
+			if rawNote, ok := result["note"]; ok {
+				var note string
+				if json.Unmarshal(rawNote, &note) != nil || strings.TrimSpace(note) != "" {
+					return false
+				}
+			}
+			if rawTotalSeries, ok := result["total_series"]; ok {
+				var totalSeries *int
+				if json.Unmarshal(rawTotalSeries, &totalSeries) != nil || totalSeries == nil || *totalSeries != 0 {
+					return false
+				}
+			}
+			rawPayload, ok := result["payload"]
+			if !ok {
+				return false
+			}
+			var series []json.RawMessage
+			if json.Unmarshal(rawPayload, &series) != nil || series == nil || len(series) != 0 {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func metricNoDataMarker(step NBAgentPlannerToolActionStep) string {
+	if step.Status == ToolStatusFailure || step.Status == ToolStatusWaiting || step.Status == ToolStatusWaitingForClient {
+		return ""
+	}
+	if !metricQueryReturnedNoData(step.Action.Tool, step.Observation) {
+		return ""
+	}
+	ref := step.Action.DisplayID
+	if ref == "" {
+		ref = step.Action.ToolID
+	}
+	if ref != "" {
+		ref = " (step " + ref + ")"
+	}
+	return fmt.Sprintf("%s %s%s returned no metric series; this observation supports no numeric value. Follow any discovery guidance returned by the tool.", metricNoDataTag, step.Action.Tool, ref)
+}
+
+func withMetricNoDataMarker(step NBAgentPlannerToolActionStep, response string) string {
+	marker := metricNoDataMarker(step)
+	if marker == "" || strings.Contains(response, metricNoDataTag) {
+		return response
+	}
+	return marker + "\n" + response
+}
+
+func metricNoDataSummary(steps []NBAgentPlannerToolActionStep) string {
+	const (
+		maxEntries          = 3
+		maxQueryBytes       = 256
+		maxObservationBytes = 896
+	)
+	seen := make(map[string]struct{})
+	entries := make([]string, 0, maxEntries)
+	uniqueCount := 0
+	for i := len(steps) - 1; i >= 0; i-- {
+		step := steps[i]
+		marker := metricNoDataMarker(step)
+		if marker == "" {
+			continue
+		}
+		query := strings.TrimSpace(step.Action.ToolInput)
+		if query == "" {
+			query = step.Action.ToolID
+		}
+		if query == "" {
+			query = step.Action.DisplayID
+		}
+		keyQuery := query
+		var parsedInput any
+		if json.Unmarshal([]byte(query), &parsedInput) == nil {
+			if normalized, err := json.Marshal(parsedInput); err == nil {
+				keyQuery = string(normalized)
+			}
+		}
+		key := step.Action.Tool + "\x00" + keyQuery
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		uniqueCount++
+		if len(entries) < maxEntries {
+			entries = append(entries, fmt.Sprintf("- %s\n  Query: %s\n  Result: %s\n",
+				marker,
+				SmartTruncateToolOutput(query, maxQueryBytes),
+				SmartTruncateToolOutput(strings.TrimSpace(step.Observation), maxObservationBytes),
+			))
+		}
+	}
+	if uniqueCount == 0 {
+		return ""
+	}
+	for left, right := 0, len(entries)-1; left < right; left, right = left+1, right-1 {
+		entries[left], entries[right] = entries[right], entries[left]
+	}
+	omitted := uniqueCount - len(entries)
+	var b strings.Builder
+	if omitted > 0 {
+		fmt.Fprintf(&b, "- %d earlier distinct empty metric reads omitted.\n", omitted)
+	}
+	for _, marker := range entries {
+		b.WriteString(marker)
+	}
+	return "<metric_data_availability>\n" + b.String() + "</metric_data_availability>"
 }
 
 type NBAgentReActPlannerCritiqueSupport interface {
