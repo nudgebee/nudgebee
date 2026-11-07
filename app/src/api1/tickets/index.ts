@@ -164,6 +164,15 @@ query GetJiraMeta($integration_id: String!, $project_key: String!) {
 }
 `;
 
+const GET_TRANSITION_META = `
+query GetTicketTransitionMeta($integration_id: String!, $project_key: String!) {
+  tickets_get_transition_meta(integration_id: $integration_id, project_key: $project_key) {
+    data
+    warning
+  }
+}
+`;
+
 const GET_FIELD_VALUES = `
 query GetFieldValues($integration_id: String!, $auto_complete_url: String!, $key: String!, $search: String!) {
   tickets_get_field_values(integration_id: $integration_id, key: $key, url: $auto_complete_url, search_term: $search) {
@@ -530,6 +539,18 @@ const apiIntegrations = {
       return data;
     } catch (err) {
       console.log('failed to fetch ticket metadata- ', err);
+      return err;
+    }
+  },
+  getTicketTransitionMeta: async function (configuration_id: string, project_key: string) {
+    try {
+      const response = await queryGraphQL(GET_TRANSITION_META, 'GetTicketTransitionMeta', {
+        integration_id: configuration_id,
+        project_key: project_key,
+      });
+      return response?.data || [];
+    } catch (err) {
+      console.log('failed to fetch ticket transition metadata- ', err);
       return err;
     }
   },

@@ -210,6 +210,21 @@ func GetIssueCreationTemplate(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, templates)
 }
 
+func GetTransitionMetadata(ctx *gin.Context) {
+	var request models.IssueTemplateMetaRequest
+	if err := ctx.ShouldBindJSON(&request); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	metadata, err := services.FetchTransitionMetadata(ctx, request)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Unable to fetch ticket transition metadata for integration %s, project %s: %v", request.Input.IntegrationId, request.Input.ProjectKey, err)})
+		return
+	}
+	ctx.JSON(http.StatusOK, metadata)
+}
+
 func QueryIssueFieldDetails(ctx *gin.Context) {
 	var fieldValuesRequest models.FieldValuesRequest
 	if err := ctx.ShouldBindJSON(&fieldValuesRequest); err != nil {

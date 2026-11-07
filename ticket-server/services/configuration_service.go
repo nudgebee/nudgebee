@@ -1172,6 +1172,26 @@ func FetchActiveIssueTemplates(ctx *gin.Context, request models.IssueTemplateMet
 	return fetchCreateMetaCached(ctx, config, request.Input.ProjectKey)
 }
 
+func FetchTransitionMetadata(ctx *gin.Context, request models.IssueTemplateMetaRequest) (interface{}, error) {
+	tenantID := request.SessionVariables.UserTenantID
+	if tenantID == "" {
+		return nil, fmt.Errorf("tenant id missing from request")
+	}
+	config, err := fetchToolConfigurationForTenant(request.Input.IntegrationId, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	manager, ok := ticketmgr.GetTicketManager(config.Tool)
+	if !ok {
+		return nil, fmt.Errorf("ticket transitions not supported for tool %s (integration %s)", config.Tool, config.ID)
+	}
+	provider, ok := manager.(ticketmgr.TransitionMetadataProvider)
+	if !ok {
+		return map[string]interface{}{"data": []interface{}{}}, nil
+	}
+	return provider.GetTransitionMeta(ctx, config, request.Input.ProjectKey)
+}
+
 // fetchCreateMetaCached returns the create-meta for (integration, project), serving
 // from Redis/in-memory cache on a hit and falling through to a live per-tool fetch on
 // a miss (then best-effort caching the result). The cache degrades gracefully: a miss

@@ -2,6 +2,7 @@ import { renderHook, act } from '@testing-library/react';
 import { useOptionsSource } from '../useOptionsSource';
 import apiWorkflow from '@api1/workflow';
 import apiCloudAccount from '@api1/cloud-account';
+import apiTickets from '@api1/tickets';
 import { toast as snackbar } from '@ui/Toast';
 
 jest.mock('@api1/workflow', () => ({
@@ -22,12 +23,34 @@ jest.mock('@ui/Toast', () => ({
   __esModule: true,
   toast: {
     error: jest.fn(),
+    warning: jest.fn(),
   },
+}));
+
+jest.mock('@api1/tickets', () => ({
+  __esModule: true,
+  default: { getTicketTransitionMeta: jest.fn() },
 }));
 
 const mockListMCPTools = apiWorkflow.listMCPTools as jest.Mock;
 const mockGetCloudResource = apiCloudAccount.getCloudResource as jest.Mock;
 const mockToastError = snackbar.error as jest.Mock;
+const mockGetTransitionMeta = apiTickets.getTicketTransitionMeta as jest.Mock;
+
+const mockTicketTransition = {
+  name: 'tickets.transition',
+  input_schema: {
+    integration_id: { type: 'string' },
+    project_key: { type: 'string' },
+    status: {
+      type: 'string',
+      options_source: {
+        type: 'ticket_statuses',
+        dependency_mapping: { integration_id: 'integration_id', project_key: 'project_key' },
+      },
+    },
+  },
+};
 
 const mockMcpTaskDef = {
   name: 'llm.mcp_call',
@@ -83,6 +106,48 @@ describe('useOptionsSource', () => {
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('keeps exact GitHub Project selectors and warns once per integration across repositories', async () => {
+    mockGetTransitionMeta.mockResolvedValue({
+      data: {
+        tickets_get_transition_meta: {
+          data: [{ id: 'github-project:P1:F1:O1', value: 'github-project:P1:F1:O1', name: 'Board: Ready' }],
+          warning: 'Project permissions missing',
+        },
+      },
+    });
+    const { result, rerender } = renderHook(
+      ({ project }) =>
+        useOptionsSource(mockTicketTransition, {
+          integration_id: 'warning-integration',
+          project_key: project,
+        }),
+      { initialProps: { project: 'owner/first' } }
+    );
+    await act(async () => {
+      jest.advanceTimersByTime(500);
+      await Promise.resolve();
+    });
+    expect(result.current.status.options).toEqual([{ label: 'Board: Ready', value: 'github-project:P1:F1:O1' }]);
+    rerender({ project: 'owner/second' });
+    await act(async () => {
+      jest.advanceTimersByTime(500);
+      await Promise.resolve();
+    });
+    expect(mockGetTransitionMeta).toHaveBeenCalledTimes(2);
+    expect(snackbar.warning).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns an empty status list for providers without transition choices', async () => {
+    mockGetTransitionMeta.mockResolvedValue({ data: { tickets_get_transition_meta: { data: [] } } });
+    const { result } = renderHook(() => useOptionsSource(mockTicketTransition, { integration_id: 'jira-integration', project_key: 'PROJ' }));
+    await act(async () => {
+      jest.advanceTimersByTime(500);
+      await Promise.resolve();
+    });
+    expect(result.current.status.options).toEqual([]);
+    expect(result.current.status.error).toBeUndefined();
   });
 
   it('growing url -> 0 calls before timer, exactly 1 after 500 ms', async () => {

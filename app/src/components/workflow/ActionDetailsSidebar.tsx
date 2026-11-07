@@ -2989,7 +2989,9 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
 
       // Generic options_source rendering (e.g., onboarded_users for email recipients)
       const sourceData = optionsSourceData[fieldName];
-      if (sourceData) {
+      const emptyTicketStatuses =
+        fieldSchema.options_source?.type === 'ticket_statuses' && !sourceData?.loading && !sourceData?.error && sourceData?.options.length === 0;
+      if (sourceData && !emptyTicketStatuses) {
         const normalizedValue = fieldValue ? [fieldValue] : [];
         const currentValue = Array.isArray(fieldValue) ? fieldValue : normalizedValue;
         const isArray = fieldSchema.type === 'array';
