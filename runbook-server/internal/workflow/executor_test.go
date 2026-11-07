@@ -397,11 +397,7 @@ func (s *ExecutorTestSuite) runSwitchWorkflow(wf *model.Workflow) ([]string, err
 
 	s.registerSystemActivities()
 
-	mockStore := new(MockWorkflowStore)
-	mockStore.On("GetState", mock.Anything, mock.Anything).Return([]model.WorkflowStateItem{}, nil).Maybe()
-	mockStore.On("SetLastExecutionStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
-
-	executor := &WorkflowExecutor{workflowStore: mockStore}
+	executor := s.newFanInExecutor()
 	s.env.RegisterWorkflow(executor.ExecuteWorkflowInternal)
 	s.env.ExecuteWorkflow(executor.ExecuteWorkflowInternal, wf, nil)
 
@@ -798,4 +794,26 @@ func (s *ExecutorTestSuite) TestSetStatePersistenceFailureRunsOnFailureHook() {
 	s.ErrorContains(s.env.GetWorkflowError(), "state store unavailable")
 	s.Equal(1, hookCalls)
 	s.Equal(string(model.TaskStatusFailed), hookTaskStatus, "failure hooks must see the task's failed status")
+}
+
+func (s *ExecutorTestSuite) TestSetStatePersistenceFailureLegacyVersionContinues() {
+	s.env.OnGetVersion("fail-task-on-state-errors", workflow.DefaultVersion, 1).
+		Return(workflow.DefaultVersion)
+
+	wf := &model.Workflow{
+		ID:        "set-state-legacy-version-wf",
+		TenantID:  "test-tenant",
+		AccountID: "test-account",
+		Definition: model.WorkflowDefinition{
+			Tasks: []model.Task{
+				{ID: "save", Type: "test.record-task", Params: map[string]any{"message": "save"}, SetState: map[string]any{"key": "value"}},
+				{ID: "later", Type: "test.record-task", DependsOn: []string{"save"}, Params: map[string]any{"message": "later"}},
+			},
+		},
+	}
+
+	ranTasks := s.runStatePersistenceFailureWorkflow(wf)
+	s.True(s.env.IsWorkflowCompleted())
+	s.NoError(s.env.GetWorkflowError())
+	s.Equal([]string{"save", "later"}, ranTasks, "legacy histories must preserve the old downstream command sequence")
 }
