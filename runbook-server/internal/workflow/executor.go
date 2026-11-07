@@ -402,6 +402,9 @@ func handleTaskCompletion(ctx workflow.Context, workflowID string, taskID string
 			processedVal, err := ProcessValue(outputTemplate, selfRenderContext)
 			if err != nil {
 				logger.Error("Failed to process task output template", "taskID", taskID, "outputName", outputName, "template", outputTemplate, "error", err)
+				if workflow.GetVersion(ctx, "fail-task-on-state-errors", workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+					continue
+				}
 				return handleTaskFailure(ctx, taskID, fmt.Errorf("failed to process task output template %s for task %s: %w", outputName, taskID, err), currentTask, globalContext, wf)
 			}
 
@@ -433,12 +436,19 @@ func handleTaskCompletion(ctx workflow.Context, workflowID string, taskID string
 			renderedKey, err := Render(key, selfRenderContext)
 			if err != nil {
 				logger.Error("Failed to render task state key", "taskID", taskID, "key", key, "error", err)
-				return handleTaskFailure(ctx, taskID, fmt.Errorf("failed to render task state key %s for task %s: %w", key, taskID, err), currentTask, globalContext, wf)
+				if workflow.GetVersion(ctx, "fail-task-on-state-errors", workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+					renderedKey = key
+				} else {
+					return handleTaskFailure(ctx, taskID, fmt.Errorf("failed to render task state key %s for task %s: %w", key, taskID, err), currentTask, globalContext, wf)
+				}
 			}
 
 			processedVal, err := ProcessValue(valueTemplate, selfRenderContext)
 			if err != nil {
 				logger.Error("Failed to process task state template", "taskID", taskID, "key", renderedKey, "template", valueTemplate, "error", err)
+				if workflow.GetVersion(ctx, "fail-task-on-state-errors", workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+					continue
+				}
 				return handleTaskFailure(ctx, taskID, fmt.Errorf("failed to process task state value for key %s in task %s: %w", renderedKey, taskID, err), currentTask, globalContext, wf)
 			}
 
@@ -485,7 +495,9 @@ func handleTaskCompletion(ctx workflow.Context, workflowID string, taskID string
 				// Persist state before allowing dependent tasks to run.
 				if err := workflow.ExecuteActivity(ctxWithAO, UpdateWorkflowStateActivity, workflowID, stateUpdates, executionID, taskID).Get(ctxWithAO, nil); err != nil {
 					logger.Error("Failed to persist workflow state", "taskID", taskID, "error", err)
-					return handleTaskFailure(ctx, taskID, fmt.Errorf("failed to persist workflow state for task %s: %w", taskID, err), currentTask, globalContext, wf)
+					if workflow.GetVersion(ctx, "fail-task-on-state-errors", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+						return handleTaskFailure(ctx, taskID, fmt.Errorf("failed to persist workflow state for task %s: %w", taskID, err), currentTask, globalContext, wf)
+					}
 				}
 			}
 		}
