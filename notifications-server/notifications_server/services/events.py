@@ -2296,6 +2296,8 @@ class Events:
                 "agent_id": cached_entry.get("agent_id"),
                 "message_id": cached_entry.get("message_id"),
             }
+            if cached_entry.get("alert_context"):
+                payload["channel_context"] = cached_entry["alert_context"]
 
             headers = {
                 "x-tenant-id": cached_entry["tenant_id"],
@@ -2328,23 +2330,17 @@ class Events:
     ):
         thinking = False
         try:
-            # The alert a thread hangs off goes with the first question in it.
-            alert_context = None
-            if cached_entry.get("alert_context") and not cached_entry.get("alert_context_sent"):
-                alert_context = cached_entry["alert_context"]
-            query = (
-                f"{message_text}\n\n{THREAD_CONTEXT_MARKER}\nassistant:\n{alert_context}\n"
-                if alert_context
-                else message_text
-            )
+            alert_context = cached_entry.get("alert_context")
             payload = {
-                "query": query,
+                "query": message_text,
                 "account_id": cached_entry["account_id"],
                 "user_id": cached_entry["user_id"],
                 "session_id": cached_entry["session_id"],
                 "source": "InstantNotification",
                 "async": True,
             }
+            if alert_context:
+                payload["channel_context"] = alert_context
             headers = {
                 "x-tenant-id": cached_entry["tenant_id"],
                 "x-user-id": cached_entry["user_id"],
@@ -2358,8 +2354,6 @@ class Events:
             await self.async_query_llm_server(payload, headers)
             if thinking:
                 teams_thinking.start_poller(thread_ts)
-            if alert_context:
-                self.cache.update_event_entry(thread_ts, alert_context_sent=True)
 
         except aiohttp.ClientError as e:
             LOG.error(f"Failed to process Teams message: {e}")

@@ -285,20 +285,88 @@ def test_no_alert_outside_an_alert_thread_or_the_users_workspace(conversation, s
         assert events._teams_alert_of_thread(conversation, "aad", tenants) is None
 
 
-def test_the_alert_goes_with_the_first_question_only():
+def test_the_alert_channel_context_is_sent_on_every_turn():
     events = _events()
     events.async_query_llm_server = mock.AsyncMock()
     with mock.patch.object(thinking, "begin", mock.AsyncMock(return_value=False)):
         asyncio.run(events._process_teams_message(SimpleNamespace(), _entry(alert_context="Pod crash"), "why?", "aad"))
-        first = events.async_query_llm_server.call_args.args[0]["query"]
-        events.cache.update_event_entry.assert_called_with(THREAD, alert_context_sent=True)
+        first = events.async_query_llm_server.call_args.args[0]
         asyncio.run(
-            events._process_teams_message(
-                SimpleNamespace(), _entry(alert_context="Pod crash", alert_context_sent=True), "and now?", "aad"
-            )
+            events._process_teams_message(SimpleNamespace(), _entry(alert_context="Pod crash"), "and now?", "aad")
         )
-    assert first.startswith("why?") and "--- context ---" in first and "Pod crash" in first
-    assert events.async_query_llm_server.call_args.args[0]["query"] == "and now?"
+        second = events.async_query_llm_server.call_args.args[0]
+        asyncio.run(events._process_teams_message(SimpleNamespace(), _entry(), "ordinary message", "aad"))
+        third = events.async_query_llm_server.call_args.args[0]
+    assert first["query"] == "why?"
+    assert first["channel_context"] == "Pod crash"
+    assert second["query"] == "and now?"
+    assert second["channel_context"] == "Pod crash"
+    assert third["query"] == "ordinary message"
+    assert "channel_context" not in third
+
+
+def test_teams_alert_channel_context_survives_subsequent_turns(redis):
+    cache = cache_module.Cache()
+    events = _events()
+    events.cache = cache
+    events.async_query_llm_server = mock.AsyncMock()
+
+    # Pre-populate cached alert entry as created during thread initialization
+    cache.cache_event_entry(THREAD, _entry(alert_context="Pod crash looping"))
+
+    # Turn 1: user asks an initial question in the alert thread
+    turn1_activity = SimpleNamespace(
+        conversation=SimpleNamespace(id=THREAD),
+        from_property=SimpleNamespace(aad_object_id="user-1", role="user"),
+        text="What went wrong?",
+        id="1701",
+        channel_data={"tenant": {"id": "aad-tenant"}},
+        value=None,
+    )
+    events.common_service.get_teams_user_info = mock.AsyncMock(return_value="dana@example.com")
+    with mock.patch.object(thinking, "begin", mock.AsyncMock(return_value=False)):
+        asyncio.run(events.handle_message_event(turn1_activity))
+
+    turn1 = events.async_query_llm_server.call_args.args[0]
+    assert turn1["query"] == "What went wrong?"
+    assert turn1["channel_context"] == "Pod crash looping"
+
+    # Context persistence: verify alert_context survives in cache and is not gated or cleared
+    stored_entry = cache.get_event_entry(THREAD)
+    assert stored_entry["alert_context"] == "Pod crash looping"
+    assert "alert_context_sent" not in stored_entry
+
+    # Turn 2: user asks a subsequent question in the same thread
+    turn2_activity = SimpleNamespace(
+        conversation=SimpleNamespace(id=THREAD),
+        from_property=SimpleNamespace(aad_object_id="user-1", role="user"),
+        text="Why is it crashing?",
+        id="1702",
+        channel_data={"tenant": {"id": "aad-tenant"}},
+        value=None,
+    )
+    with mock.patch.object(thinking, "begin", mock.AsyncMock(return_value=False)):
+        asyncio.run(events.handle_message_event(turn2_activity))
+
+    turn2 = events.async_query_llm_server.call_args.args[0]
+    assert turn2["query"] == "Why is it crashing?"
+    assert turn2["channel_context"] == "Pod crash looping"
+
+    # Turn 3: user clicks a follow-up option button in the same thread
+    followup_activity = SimpleNamespace(
+        conversation=SimpleNamespace(id=THREAD),
+        from_property=SimpleNamespace(aad_object_id="user-1", role="user"),
+        text=None,
+        id="1703",
+        channel_data={"tenant": {"id": "aad-tenant"}},
+        value={"action_type": "select_followup_option", "followup_option": "Check pod events"},
+    )
+    with mock.patch.object(thinking, "begin", mock.AsyncMock(return_value=False)):
+        asyncio.run(events.handle_message_event(followup_activity))
+
+    turn3 = events.async_query_llm_server.call_args.args[0]
+    assert turn3["query"] == "Check pod events"
+    assert turn3["channel_context"] == "Pod crash looping"
 
 
 # ------------------------------- answer cards -------------------------------
