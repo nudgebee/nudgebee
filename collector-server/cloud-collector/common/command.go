@@ -212,19 +212,16 @@ func validatePlainValue(value, flag, dir string, roots []string) bool {
 }
 
 func isValueSeparator(r rune) bool {
-	return unicode.IsSpace(r) || strings.ContainsRune(",=:;|\"'`[]{}()<>", r)
+	return unicode.IsSpace(r) || strings.ContainsRune(",=:;|\"'`[]{}()<>\\", r)
 }
 
 // protectedPath reports whether path exists on the collector outside the
 // command's working directory dir and is a protected root or below one, or,
 // with ancestors, a directory above one. Relative paths are resolved against
-// dir and only matter when they leave it (".."). Symlinks are resolved, so
+// dir, and symlinks are resolved, so a link inside dir that points out of it,
 // /var/run/secrets/... and /proc/self/root/proc/1/environ are caught.
 func protectedPath(path, dir string, roots []string, ancestors bool) bool {
 	if !strings.HasPrefix(path, "/") {
-		if !hasParentSegment(path) {
-			return false
-		}
 		path = filepath.Join(dir, path)
 	}
 	path = filepath.Clean(path)
@@ -244,15 +241,6 @@ func protectedPath(path, dir string, roots []string, ancestors bool) bool {
 			if pathWithin(candidate, root) || (ancestors && pathWithin(root, candidate)) {
 				return true
 			}
-		}
-	}
-	return false
-}
-
-func hasParentSegment(path string) bool {
-	for _, segment := range strings.Split(path, "/") {
-		if segment == ".." {
-			return true
 		}
 	}
 	return false

@@ -273,7 +273,9 @@ func TestValidateUntrustedArgs(t *testing.T) {
 		{"a nested key=value path", "aws ssm send-command --parameters a=b=" + secret},
 		{"a path attached to a short flag", "az deployment group create -g rg -f" + secret},
 		{"a path attached to an unknown short flag", "az storage blob upload-batch -d c -s" + secretDir},
+		{"a symlink in the working directory pointing out of it", "aws glacier upload-archive --account-id - --vault-name v --body link"},
 	}...)
+	require.NoError(t, os.Symlink(secret, filepath.Join(workDir, "link")))
 	for _, path := range []string{"/proc/self/environ", "/proc/1/environ", "/proc/self/root/proc/self/environ", "/var/run/secrets/kubernetes.io/serviceaccount/token"} {
 		if _, err := os.Stat(path); err == nil {
 			refused = append(refused, struct{ name, command string }{"an aws body of " + path, "aws glacier upload-archive --account-id - --vault-name v --body " + path})
