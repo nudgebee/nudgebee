@@ -49,6 +49,10 @@ func WSHandler(
 		// Interactive shell is always k8s agent
 		agentType := "k8s"
 
+		if !requireTenantOwnsAccount(c, store, logger, acct, agentType) {
+			return
+		}
+
 		status, err := store.IsAgentConnected(ctx, acct, agentType)
 		if err != nil {
 			logger.Error("failed to check agent connection", "account_id", acct, "err", err)

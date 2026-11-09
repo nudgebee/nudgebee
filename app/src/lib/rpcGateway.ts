@@ -11,11 +11,14 @@ import {
 } from 'graphql';
 import { authenticateApiToken, isApiToken } from '@lib/apiToken';
 import { readSessionToken } from '@lib/sessionCookie';
+import { restrictSuperAdmin } from '@lib/superAdminAccess';
 import { isSessionRevoked } from '@lib/sessionRevocation';
 import { loadActionInputSchema, loadRpcRoutes, type RpcRoute, type SchemaFieldInfo } from '@lib/rpcRoutes';
 import { elevateRoles } from '@lib/authHooks';
 import { pickDefaultRole } from '@lib/rolePriority';
+import { stripSuperAdminRoles } from '@lib/superAdminRoles';
 import { isTokenScopeBlockedAction } from '@lib/permissionCatalog';
+import { TAB_TENANT_HEADER } from '@lib/tabTenant';
 
 // Shared primitives for the RPC-bypass path. Used by both /api/rpc
 // (JSON-RPC envelope) and /api/graphql (GraphQL envelope when the bypass is
@@ -132,7 +135,9 @@ export async function authenticateRequest(req: NextApiRequest): Promise<AuthCont
   // NextAuth cookie: running as the cookie's user while forwarding the PAT's
   // session upstream would split identity across the two hops.
   if (apiTokenJwt) {
-    jwt = apiTokenJwt;
+    // The cookie path is restricted in readSessionToken; an API key's session is
+    // built from its tenant's role rows, so restrict it here too.
+    jwt = restrictSuperAdmin(apiTokenJwt);
   }
   // Browser flow: jwt comes from the NextAuth cookie and is sufficient on
   // its own — no Bearer token is forwarded. `token` stays empty; downstream
@@ -155,6 +160,20 @@ export async function authenticateRequest(req: NextApiRequest): Promise<AuthCont
   return { token: token ?? '', jwt };
 }
 
+// The session's tenant when the browser tab that sent `req` pinned a different
+// one — i.e. the tab is still on a tenant that another tab switched away from,
+// and anything it sends would pair this tenant with the old tenant's accounts
+// (see @lib/tabTenant). null when they agree, or when the caller sent
+// no pin: API tokens, nbctl and the server-side bypass never do.
+export function staleTabTenant(req: NextApiRequest, jwt: JWT): { id: string; name: string } | null {
+  const raw = req.headers[TAB_TENANT_HEADER];
+  const tabTenantId = Array.isArray(raw) ? raw[0] : raw;
+  if (!tabTenantId) return null;
+  const tenant = (jwt.tenant as { id?: string; name?: string } | undefined) || {};
+  if (tabTenantId === tenant.id) return null;
+  return { id: tenant.id || '', name: tenant.name || '' };
+}
+
 // SessionVariables is the body block sent to upstream action handlers.
 // Snake_case matches typical JSON-API conventions and Go's default json
 // tag style. The account-ids family (previously RPC RLS inputs) has no
@@ -175,7 +194,10 @@ export type SessionVariables = {
 };
 
 export function buildSessionVariables(jwt: JWT): SessionVariables {
-  const userRoles = (jwt.roles as string[]) || [];
+  // A super-admin role among the tenant roles came from a tenant-scoped row and
+  // grants nothing: super admin comes only from jwt.isSuperAdmin* below.
+  // Stripped here, at request time, so sessions minted before the fix lose it too.
+  const userRoles = stripSuperAdminRoles((jwt.roles as string[]) || []);
   const tenantId = ((jwt.tenant as { id?: string } | undefined)?.id as string) || '';
   const userId = ((jwt.id || jwt.sub) as string) || '';
   // Default role: pick the highest-priority role the user holds (shared with

@@ -179,6 +179,13 @@ func redactValue(v any) any {
 	return redactGeneric(decodeGeneric(data))
 }
 
+// RedactSecrets returns a copy of v with secrets redacted by the same rules as
+// audit records. It is for other packages that store a request payload for
+// diagnosis.
+func RedactSecrets(v any) any {
+	return redactValue(v)
+}
+
 // decodeGeneric decodes JSON bytes into a generic tree with numbers preserved
 // as json.Number (exact re-marshaling).
 func decodeGeneric(data []byte) any {

@@ -126,11 +126,36 @@ export const getSortedFieldKeys = (config, formValues) => {
   });
 };
 
+// Per-field "has a saved value" flags for an integrations_list row's config
+// values. The list API blanks every secret value to '' and sends has_value
+// instead, so a secret can only be judged by the flag. Rows without the flag
+// fall back to the value.
+export const savedConfigFlags = (configValues) =>
+  (Array.isArray(configValues) ? configValues : []).reduce((acc, entry) => {
+    if (entry?.name) {
+      acc[entry.name] = typeof entry.has_value === 'boolean' ? entry.has_value : !!entry.value;
+    }
+    return acc;
+  }, {});
+
+// Whether the integration being edited has a saved value for `key`: decides the
+// saved-secret mask and whether an untouched mask means "keep what is saved".
+// editData carries the flags as integration_config_has_value (savedConfigFlags).
+export const hasSavedConfigValue = (editData, key) => {
+  const flag = editData?.integration_config_has_value?.[key];
+  return typeof flag === 'boolean' ? flag : !!editData?.integration_config_values?.[key];
+};
+
+// True when an encrypted field still shows the saved mask: the user left the
+// saved secret alone, so the server should keep it.
+export const isKeptSecret = (field, editData, key, value) =>
+  !!(field?.is_encrypted && value === ENCRYPTED_MASK && hasSavedConfigValue(editData, key));
+
 // Build the config-values payload for connectivity / index probes: booleans and
-// integers stringified; untyped encrypted secrets sent as the stored ciphertext
-// with is_encrypted=true (omit-to-keep). Shared by Test Connection and the ES
-// index fetch.
-export const buildProbeConfigValues = (config, formValues, editConfigValues) => {
+// integers stringified; an untouched saved secret sent as value '' with
+// is_encrypted=true, which the server resolves to the stored value by field name
+// (core.ResolveKeptSecrets). Shared by Test Connection and the ES index fetch.
+export const buildProbeConfigValues = (config, formValues, editData) => {
   const { account_id: _a, integration_config_name: _n, account_mapping: _m, ...restFormValues } = formValues;
   return Object.entries(restFormValues).map(([key, value]) => {
     const field = config.properties?.[key];
@@ -138,8 +163,8 @@ export const buildProbeConfigValues = (config, formValues, editConfigValues) => 
     let transformedValue = value;
     if (fieldType === 'boolean' || fieldType === 'bool' || fieldType === 'integer') {
       transformedValue = String(value);
-    } else if (field?.is_encrypted && editConfigValues?.[key] && value === ENCRYPTED_MASK) {
-      transformedValue = editConfigValues?.[key];
+    } else if (isKeptSecret(field, editData, key, value)) {
+      transformedValue = '';
     } else if (Array.isArray(value)) {
       transformedValue = joinConfigArray(value);
     }
@@ -151,7 +176,7 @@ export const buildProbeConfigValues = (config, formValues, editConfigValues) => 
       // rejects with "expected type 'bool', got unconvertible type 'string'". The
       // variables-based callers never saw it, because JSON.stringify drops undefined.
       value: transformedValue ?? '',
-      is_encrypted: !!(field?.is_encrypted && editConfigValues?.[key] && value === ENCRYPTED_MASK),
+      is_encrypted: isKeptSecret(field, editData, key, value),
     };
   });
 };

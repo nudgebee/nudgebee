@@ -53,7 +53,7 @@ func TestConversationSync_Test1(t *testing.T) {
 		assert.NotNil(t, msg.WorkerName)
 		assert.NotNil(t, msg.AgentName)
 
-		resp, err = core.HandleConversationMessageRequest(tc.AccountId, resp.ConversationId, resp.MessageId)
+		resp, err = core.HandleConversationMessageRequest(sc, tc.AccountId, resp.ConversationId, resp.MessageId)
 		assert.Nil(t, err)
 		assert.NotNil(t, resp)
 		assert.Equal(t, resp.AgentName, k8sAgent.GetName())

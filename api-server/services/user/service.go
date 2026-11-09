@@ -931,7 +931,7 @@ func SyncUserRoles(context *security.RequestContext, request UserSyncRolesReques
 	}
 
 	// Membership in the tenant is NOT enough to hand out tenant roles. This
-	// handler writes user_roles rows verbatim from request.TargetRoles, so
+	// handler writes user_roles rows from request.TargetRoles, so
 	// anyone who reaches it can mint themselves `tenant_admin` — a
 	// self-escalation. Two callers were able to:
 	//   - a dynamic-RBAC holder of `userroles:Execute` (userroles_sync classifies
@@ -944,6 +944,15 @@ func SyncUserRoles(context *security.RequestContext, request UserSyncRolesReques
 	// bypassGraphQLAsServer's super-admin JWT, which IsSuperAdmin() admits above.
 	if !mayAssignTenantRole(context.GetSecurityContext()) {
 		return UserSyncRolesResponse{}, common.ErrorUnauthorized("Assigning tenant roles requires a tenant admin")
+	}
+
+	// Being a tenant admin is not enough either: the roles table also holds
+	// super_admin, and every self sign-up is a tenant admin. Refuse anything a
+	// tenant admin may not hand out before writing a row.
+	for _, role := range request.TargetRoles {
+		if !syncableRole(role) {
+			return UserSyncRolesResponse{}, common.ErrorBadRequest(fmt.Sprintf("Role %q cannot be assigned through role sync", role))
+		}
 	}
 
 	manager, err := database.GetDatabaseManager(database.Metastore)
@@ -1167,6 +1176,16 @@ func CreateUserAuth(context *security.RequestContext, request UserCreateAuthRequ
 		return UserCreateAuthResponse{}, err
 	}
 
+	// A user_auths row is a way to sign in as its user: an OAuth row resolves a
+	// login by (provider, account_id) alone, so a row written onto someone else's
+	// user signs its author in as them. Only NextAuth's server-side callbacks
+	// write rows for an arbitrary user; anyone else may only add their own.
+	// Ids compare case-insensitively: a session may carry them upper-cased.
+	sc := context.GetSecurityContext()
+	if sc == nil || (!sc.IsServerInternal() && !strings.EqualFold(request.UserId, sc.GetUserId())) {
+		return UserCreateAuthResponse{}, common.ErrorUnauthorized("A login can only be added to your own account")
+	}
+
 	if !context.GetSecurityContext().IsSuperAdmin() {
 		if context.GetSecurityContext().GetUserId() == "" {
 			return UserCreateAuthResponse{}, fmt.Errorf("unauthorized")
@@ -1367,13 +1386,11 @@ func DeleteUserAuth(context *security.RequestContext, request UserDeleteAuthRequ
 		return UserDeleteAuthResponse{}, err
 	}
 
-	if !context.GetSecurityContext().IsSuperAdmin() {
-		if context.GetSecurityContext().GetUserId() == "" {
-			return UserDeleteAuthResponse{}, fmt.Errorf("unauthorized")
-		}
-		if context.GetSecurityContext().GetTenantId() == "" {
-			return UserDeleteAuthResponse{}, fmt.Errorf("unauthorized")
-		}
+	// The row is deleted by id alone, whoever it belongs to, so only NextAuth's
+	// server-side callbacks may call this; a session could lock someone else out
+	// of their account. API keys are revoked through the token actions.
+	if sc := context.GetSecurityContext(); sc == nil || !sc.IsServerInternal() {
+		return UserDeleteAuthResponse{}, common.ErrorUnauthorized("Logins are removed only by the sign-in service")
 	}
 
 	manager, err := database.GetDatabaseManager(database.Metastore)

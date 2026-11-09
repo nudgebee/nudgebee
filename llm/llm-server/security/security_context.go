@@ -297,13 +297,23 @@ func (sc *SecurityContext) CanReadAccountData(accountId string, module string) b
 }
 
 func (sc *SecurityContext) HasAccountAccess(accountId string, access SecurityAccessType) bool {
-	if sc.IsSuperAdmin() {
+	// Synthetic server-side contexts carry no tenant, so there is nothing to
+	// check the account against.
+	if sc.isServerInternal {
 		return true
 	}
-	if sc.IsSuperAdminReadonly() {
-		return access == SecurityAccessTypeRead
+	// Everyone else — super admins included — may only touch accounts of the
+	// tenant they are signed into. A super admin reaches another tenant's
+	// account by switching tenant; letting them write it from here stored the
+	// session's tenant next to a foreign account. Super admins confirm
+	// a miss against the database so an account onboarded minutes ago is not
+	// refused by the cached list (they used to bypass it entirely).
+	if sc.IsSuperAdmin() || sc.IsSuperAdminReadonly() {
+		if !slices.Contains(sc.accountIds, accountId) && (sc.tenantId == "" || !IsAccountInTenant(accountId, sc.tenantId)) {
+			return false
+		}
+		return sc.IsSuperAdmin() || access == SecurityAccessTypeRead
 	}
-
 	if !slices.Contains(sc.accountIds, accountId) {
 		return false
 	}
@@ -331,6 +341,14 @@ func (sc *SecurityContext) HasAccountAccess(accountId string, access SecurityAcc
 	}
 
 	return false
+}
+
+// CanRunAI reports whether the person may run Nubi on the account: read access
+// to it, or a custom-role grant to run AI there (ai_misc Execute or Write).
+func (sc *SecurityContext) CanRunAI(accountId string) bool {
+	return sc.HasAccountAccess(accountId, SecurityAccessTypeRead) ||
+		sc.HasScopedPermission(accountId, "ai_misc", "Execute") ||
+		sc.HasScopedPermission(accountId, "ai_misc", "Write")
 }
 
 // HasScopedRole reports whether the user holds `role` scoped to `entityId`
@@ -632,10 +650,15 @@ func parseSecurityContextResponse(body []byte) (*SecurityContext, error) {
 	return &res.Context, nil
 }
 
+// ErrSecurityContextRejected is wrapped in the error NewSecurityContext returns
+// when services-server answers with a 4xx (for example an unknown or removed
+// user), as opposed to being unreachable or failing with a 5xx.
+var ErrSecurityContextRejected = errors.New("security: security context rejected")
+
 func shouldRetrySecurityContext(statusCode int) (bool, error) {
 	// Don't retry on 4xx client errors
 	if statusCode >= 400 && statusCode < 500 {
-		return false, fmt.Errorf("security: client error %d", statusCode)
+		return false, fmt.Errorf("%w: client error %d", ErrSecurityContextRejected, statusCode)
 	}
 
 	// Retry on 5xx server errors

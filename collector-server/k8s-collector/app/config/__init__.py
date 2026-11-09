@@ -91,6 +91,8 @@ class Settings(BaseSettings):
     # Set false only to rule this gate out while debugging missing ingestion.
     DROP_DISABLED_ACCOUNT_MESSAGES: bool = True
     LLM_SERVER_ENDPOINT: str = "http://llm-server:8000"
+    # Sent as X-ACTION-TOKEN; llm-server refuses requests without it once its LLM_SERVER_TOKEN is set.
+    LLM_SERVER_TOKEN: str = ""
     EKS_VERSIONS_SUPPORT: ClassVar[Dict[str, Dict[str, str]]] = {
         "1.32": {
             "upstream_release": "2024-12-11",

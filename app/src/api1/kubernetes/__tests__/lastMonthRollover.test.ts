@@ -1,7 +1,7 @@
 import { queryGraphQL } from '@lib/HttpService';
 import apiKubernetes from '../index';
 
-jest.mock('@lib/HttpService', () => ({ queryGraphQL: jest.fn(), gqlStringify: jest.fn(), hitRelayServer: jest.fn() }));
+jest.mock('@lib/HttpService', () => ({ queryGraphQL: jest.fn(), gqlStringify: jest.fn() }));
 jest.mock('@api1/mock', () => ({}));
 jest.mock('@api1/observability', () => ({}));
 jest.mock('@context/DataContext', () => ({ getClusterData: jest.fn() }));

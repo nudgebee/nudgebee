@@ -116,6 +116,7 @@ func CanonicalWorkloadKinds() []string {
 func NewNode(nodeType NodeType, uniqueKey string, properties map[string]interface{}, tenantID, cloudAccountID, source string) *DbNode {
 	now := time.Now()
 	properties["source"] = source
+	sanitizeNodeAnnotations(nodeType, properties)
 
 	// Extract labels from properties to populate the dedicated Labels field
 	labels := make(map[string]string)

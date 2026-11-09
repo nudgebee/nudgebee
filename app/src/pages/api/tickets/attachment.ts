@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { authenticateRequest, buildSessionVariables } from '@lib/rpcGateway';
+import { actionAllowedByTokenScopes, authenticateRequest, buildSessionVariables } from '@lib/rpcGateway';
 import { loadRpcRoutes } from '@lib/rpcRoutes';
+import { attachmentResponseHeaders } from '@lib/attachmentHeaders';
 
 // Streams a ticket comment attachment's bytes (ServiceNow/Jira screenshots).
 // Not a Hasura-Action/RPC call like the rest of @lib/rpcGateway's traffic -
@@ -48,6 +49,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   const sessionVariables = buildSessionVariables(auth.jwt);
+  // Scoped API key: same gate forwardAction applies to every other action.
+  const tokenScopes = sessionVariables.token_scopes;
+  if (tokenScopes && !actionAllowedByTokenScopes('ticket_get_attachment', route, tokenScopes)) {
+    res.status(403).json({ error: 'token_scope_denied' });
+    return;
+  }
   const allowedRoles = sessionVariables.allowed_roles || [];
   if (!allowedRoles.includes('super_admin') && !allowedRoles.some((r) => route.allowedRoles.has(r))) {
     res.status(403).json({ error: 'forbidden' });
@@ -91,9 +98,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return;
   }
 
-  const contentType = upstream.headers.get('content-type');
-  if (contentType) {
-    res.setHeader('Content-Type', contentType);
+  for (const [name, value] of Object.entries(
+    attachmentResponseHeaders(upstream.headers.get('content-type'), upstream.headers.get('content-disposition'))
+  )) {
+    res.setHeader(name, value);
   }
   // Attachment bytes for a given ticket/comment don't change - safe to cache
   // in the browser, which also means a re-rendered comment list doesn't

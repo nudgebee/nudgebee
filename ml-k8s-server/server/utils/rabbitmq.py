@@ -46,7 +46,7 @@ def _get_producer(amqp_url: str) -> Producer:
 
 def publish_message(exchange_name: str, routing_key: str, message: Any, exchange_type: str = "direct") -> None:
     amqp_url = _get_connection_string()
-    logger.info(f"Publishing message {message} to queue {routing_key} exchange {exchange_name}")
+    logger.info(f"Publishing message to queue {routing_key} exchange {exchange_name}")
     try:
         with Connection(amqp_url) as conn:
             channel = conn.channel()
@@ -95,8 +95,10 @@ def _describe(body: Any) -> str:
     """Names a queued job for a log line without logging its body, which can carry credentials."""
     try:
         parsed = json.loads(body)
-        return f"{parsed.get('action_name')} for account {parsed.get('account_id') or parsed.get('account')}"
-    except (TypeError, ValueError, AttributeError):
+        action = parsed.get("action_name") or "an unnamed message"
+        account = parsed.get("account_id") or parsed.get("account")
+        return f"{action} for account {account}" if account else f"{action}"
+    except Exception:
         return "an unreadable message"
 
 
@@ -131,7 +133,7 @@ class KombuConsumerThread(threading.Thread):
             ):
                 self.callback(message.body)
         except Exception as e:
-            logger.exception("Unable to process message - ", exc_info=True)
+            logger.exception(f"Unable to process {_describe(message.body)}", exc_info=True)
             # Retry and send to DLX in case of failure
             publish_message(
                 exchange_name=self.exchange_name + "_dlx",

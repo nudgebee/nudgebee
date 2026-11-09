@@ -106,10 +106,12 @@ func (s *AWSSource) createNodeFromResource(resource *sources.CloudResourceRow, r
 		}
 	}
 
-	// Parse and add ALL tags (keep all tags for filtering and organization)
+	// Parse and add ALL tags (keep all tags for filtering and organization),
+	// minus AWS-generated identifier keys (see isAWSUniqueIDTagKey).
 	if len(resource.Tags) > 0 && string(resource.Tags) != "{}" {
 		var tagsMap map[string]interface{}
 		if err := json.Unmarshal(resource.Tags, &tagsMap); err == nil {
+			dropAWSUniqueIDTagKeys(tagsMap)
 			properties["labels"] = tagsMap
 		}
 	}

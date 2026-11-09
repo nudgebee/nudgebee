@@ -1145,24 +1145,15 @@ func GenerateRecommendation(ctx *security.RequestContext, request GenerateRecomm
 			MetricsProvider:       metricsProvider,
 		}
 		if metricsProvider == "datadog" {
-			apiKey, appKey, site, ddErr := integrations.GetDatadogConfigs(accountCtx, accountId)
-			if ddErr != nil {
+			if _, _, _, ddErr := integrations.GetDatadogConfigs(accountCtx, accountId); ddErr != nil {
 				accountCtx.GetLogger().Error("error getting datadog configs for volume rightsizing", "error", ddErr, "account_id", accountId)
-			} else {
-				request.DatadogApiKey = apiKey
-				request.DatadogAppKey = appKey
-				request.DatadogSite = site
-				if _, err := ml.TriggerVolumeRightsizing(accountCtx, request); err != nil {
-					accountCtx.GetLogger().Error("error triggering volume rightsizing", "error", err, "account_id", accountId, "metrics_provider", metricsProvider)
-				}
+			} else if _, err := ml.TriggerVolumeRightsizing(accountCtx, request); err != nil {
+				accountCtx.GetLogger().Error("error triggering volume rightsizing", "error", err, "account_id", accountId, "metrics_provider", metricsProvider)
 			}
 		} else {
 			if metricsProvider == "ES" {
-				esCfg, esErr := observability.ElasticsearchRightsizingConfig(accountCtx, accountId)
-				if esErr != nil {
+				if esErr := observability.CheckElasticsearchRightsizing(accountCtx, accountId); esErr != nil {
 					accountCtx.GetLogger().Error("error getting elasticsearch config for volume rightsizing", "error", esErr, "account_id", accountId)
-				} else {
-					request.Elasticsearch = esCfg
 				}
 			}
 			if _, err := ml.TriggerVolumeRightsizing(accountCtx, request); err != nil {

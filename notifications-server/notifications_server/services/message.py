@@ -1024,12 +1024,8 @@ class MessageService:
                     ),
                 )
 
-        except Exception as exc:
-            parameters_copy = dict(parameters)
-            if "finding" in parameters_copy and parameters_copy["finding"] is not None:
-                parameters_copy["finding"].pop("description", None)
-                parameters_copy["finding"].pop("evidences", None)
-            LOG.exception(f"Can't send message: {exc}, message: {parameters_copy}")
+        except Exception:
+            LOG.exception("Can't send message, tenant_id=%s, type=%s", tenant_id, type_)
             return [failure("system", INTERNAL_ERROR)]
 
     async def _maybe_handle_grouped_message(self, source, parameters, tenant_id, kwargs):

@@ -60,6 +60,10 @@ type AgentStore interface {
 	IsWSEnabled(ctx context.Context, accountID, agentType string) (bool, string, error)
 	IsAgentConnected(ctx context.Context, accountID, agentType string) (bool, error)
 	GetAgentStatus(ctx context.Context, accountID, agentType string) (connected bool, wsEnabled bool, fallbackURL string, prometheusAdditionalLabel string, err error)
+	// AccountTenant returns the tenant that owns accountID ("" when the
+	// account does not exist). It reads the same cached row as GetAgentStatus,
+	// so calling both costs one DB query at most.
+	AccountTenant(ctx context.Context, accountID, agentType string) (string, error)
 	UpdateRelayConnectionStatus(ctx context.Context, accountID, agentType string, relayConnected bool, sessionStart time.Time) (transitioned bool, tenantID string, err error)
 	TouchRelaySession(ctx context.Context, accountID, agentType string) error
 	UpdateAgentVersion(ctx context.Context, accountID, agentType, version, commit, buildTime, protocolVersion string) error
@@ -113,6 +117,10 @@ type wsCacheEntry struct {
 	Fallback         string         `json:"fallback"`
 	Status           string         `json:"status"`
 	ConnectionStatus map[string]any `json:"connection_status"`
+	// TenantID is the tenant owning the account ("" when the account does not
+	// exist). Nil means the entry was cached by a relay version that did not
+	// record the tenant; such entries are treated as a cache miss.
+	TenantID *string `json:"tenant_id,omitempty"`
 }
 
 const (
@@ -213,21 +221,25 @@ func (p *pgStore) getWSEntry(ctx context.Context, accountID, agentType string) (
 	// 1) Try cache
 	if data, ok := p.wsCache.Get(ctx, cacheKey); ok {
 		var wce wsCacheEntry
-		if err := json.Unmarshal(data, &wce); err == nil {
+		if err := json.Unmarshal(data, &wce); err == nil && wce.TenantID != nil {
 			return &wce, nil
 		}
 	}
 
-	// 2) Query both fields in one go
+	// 2) Query the agent row and the account's tenant in one go. Driving from
+	// cloud_accounts keeps the tenant even when the account has no agent row.
 	var row struct {
 		ConnStatus sql.NullString `db:"connection_status"`
 		Status     sql.NullString `db:"status"`
+		Tenant     sql.NullString `db:"tenant"`
 	}
 	err := p.db.GetContext(ctx, &row, `
-        SELECT connection_status, status
-          FROM agent
-         WHERE cloud_account_id = $1
-           AND "type" = $2
+        SELECT a.connection_status, a.status, ca.tenant::text AS tenant
+          FROM cloud_accounts ca
+          LEFT JOIN agent a
+            ON a.cloud_account_id = ca.id
+           AND a."type" = $2
+         WHERE ca.id = $1
     `, accountID, agentType)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
@@ -239,6 +251,7 @@ func (p *pgStore) getWSEntry(ctx context.Context, accountID, agentType string) (
 		Fallback:         "",   // default
 		Status:           "NOT_CONNECTED",
 		ConnectionStatus: map[string]any{},
+		TenantID:         &row.Tenant.String,
 	}
 
 	if row.Status.Valid {
@@ -328,6 +341,15 @@ func (p *pgStore) GetAgentStatus(ctx context.Context, accountID, agentType strin
 	}
 
 	return entry.Status == "CONNECTED", entry.Allowed, entry.Fallback, prometheusAdditionalLabel, nil
+}
+
+// AccountTenant returns the tenant owning accountID, "" when the account does not exist.
+func (p *pgStore) AccountTenant(ctx context.Context, accountID, agentType string) (string, error) {
+	entry, err := p.getWSEntry(ctx, accountID, agentType)
+	if err != nil {
+		return "", err
+	}
+	return *entry.TenantID, nil
 }
 
 // UpdateRelayConnectionStatus updates the relayConnection field in the agent's connection_status JSON.

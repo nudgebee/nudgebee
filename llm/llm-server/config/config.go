@@ -2005,33 +2005,30 @@ func IsLocalWorkerName(name string) bool {
 const insecureJWTSecret = "default-jwt-secret"
 const insecureRelaySecret = "default"
 
-// LogSecurityWarnings emits warnings for insecure config defaults that operators
-// should override before deploying. Intentionally non-blocking: existing
-// deployments that inherited defaults must keep starting while ops act on the
-// warnings. Tighten to a hard fail in a future release once dashboards confirm
-// the warning is no longer fired.
+// CheckSecuritySecrets refuses an unset or publicly known default for the
+// workspace JWT secret and the relay secret: a known default would let a
+// caller mint valid workspace execution JWTs.
+// LLM_SERVER_SECURITY_MODE=local (local dev) only warns.
 //
 // Call from main() at startup — not from init(), to avoid noise in test
 // processes.
-func LogSecurityWarnings() {
-	if Config.LlmServerJwtSecret == insecureJWTSecret {
-		if Config.LlmServerSecurityMode == "local" {
-			slog.Warn("config: llm_server_jwt_secret is set to the insecure default — acceptable for local dev only")
-		} else {
-			slog.Warn("config: SECURITY — llm_server_jwt_secret is set to the publicly known default value; " +
-				"any attacker who knows this default can forge workspace JWTs and execute commands in the workspace pod. " +
-				"Set LLM_SERVER_JWT_SECRET to a strong random value before deploying.")
-		}
+func CheckSecuritySecrets() error {
+	var problems []string
+	if Config.LlmServerJwtSecret == "" || Config.LlmServerJwtSecret == insecureJWTSecret {
+		problems = append(problems, "LLM_SERVER_JWT_SECRET is unset or the public default")
 	}
-
-	if Config.RelayServerSecretKey == insecureRelaySecret {
-		if Config.LlmServerSecurityMode == "local" {
-			slog.Warn("config: relay_server_secret_key is set to the insecure default — acceptable for local dev only")
-		} else {
-			slog.Warn("config: SECURITY — relay_server_secret_key is set to the publicly known default value; " +
-				"set RELAY_SERVER_SECRET_KEY to a strong random value before deploying.")
-		}
+	if Config.RelayServerSecretKey == "" || Config.RelayServerSecretKey == insecureRelaySecret {
+		problems = append(problems, "RELAY_SERVER_SECRET_KEY is unset or the public default")
 	}
+	if len(problems) == 0 {
+		return nil
+	}
+	msg := strings.Join(problems, "; ")
+	if Config.LlmServerSecurityMode == "local" {
+		slog.Warn("config: insecure secrets — acceptable for local dev only", "problems", msg)
+		return nil
+	}
+	return fmt.Errorf("config: %s; set them to strong random values (or LLM_SERVER_SECURITY_MODE=local for local dev)", msg)
 }
 
 // EffectivePIIBackend is shared by runtime routing and settings capabilities.

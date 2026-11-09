@@ -22,7 +22,7 @@ func (d *clickhouseDialect) QuoteLiteral(s any) string {
 }
 
 func (d *clickhouseDialect) FuncDateTruncate(dateUnit string, columnName string) string {
-	return "DATE_TRUNC('" + dateUnit + "', " + columnName + ")"
+	return "DATE_TRUNC('" + safeDateUnit(dateUnit) + "', " + columnName + ")"
 }
 
 func (d *clickhouseDialect) FuncStringToDatetime(value string) string {

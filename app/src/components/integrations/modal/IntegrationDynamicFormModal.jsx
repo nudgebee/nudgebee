@@ -23,6 +23,8 @@ import {
   isFieldRequired as sharedIsFieldRequired,
   getSortedFieldKeys as sharedGetSortedFieldKeys,
   buildProbeConfigValues as sharedBuildProbeConfigValues,
+  hasSavedConfigValue,
+  isKeptSecret,
 } from '@components/integrations/form/schemaForm';
 import { ds } from 'src/utils/colors';
 import CopyButton from '@shared/buttons/CopyButton';
@@ -531,7 +533,8 @@ const IntegrationDynamicFormModal = ({
                     val = editData?.integrations_cloud_accounts?.[0]?.[key] || false;
                   }
                 }
-                if (prop.is_encrypted && editData?.integration_config_values?.[key]) {
+                // The list API blanks secret values, so the mask follows has_value.
+                if (prop.is_encrypted && hasSavedConfigValue(editData, key)) {
                   initialValues[key] = ENCRYPTED_MASK;
                 } else {
                   initialValues[key] = val;
@@ -1223,9 +1226,9 @@ const IntegrationDynamicFormModal = ({
   };
 
   // Probe payload builder lives in @components/integrations/form/schemaForm
-  // (moved verbatim; editData's config values became a parameter). Shared by
+  // (moved verbatim; editData became a parameter). Shared by
   // Test Connection and the ES index fetch.
-  const buildProbeConfigValues = () => sharedBuildProbeConfigValues(config, formValues, editData?.integration_config_values);
+  const buildProbeConfigValues = () => sharedBuildProbeConfigValues(config, formValues, editData);
 
   // One field-list probe shared by both Advanced Settings sections that need it:
   // Default Log Filters (which column to filter on) and Log Label Mapping (which field
@@ -1485,7 +1488,7 @@ const IntegrationDynamicFormModal = ({
         let transformedValue = value;
         if (fieldType === 'boolean' || fieldType === 'bool') {
           transformedValue = String(value);
-        } else if (field?.is_encrypted && editData?.integration_config_values?.[key] && value === ENCRYPTED_MASK) {
+        } else if (isKeptSecret(field, editData, key, value)) {
           // User didn't re-enter the secret. Send empty so the backend preserves the stored value.
           transformedValue = '';
         }
@@ -1560,15 +1563,16 @@ const IntegrationDynamicFormModal = ({
       let transformedValue = value;
       if (fieldType === 'boolean' || fieldType === 'bool' || fieldType === 'integer') {
         transformedValue = String(value);
-      } else if (field?.is_encrypted && editData?.integration_config_values?.[key] && value === ENCRYPTED_MASK) {
-        transformedValue = editData?.integration_config_values?.[key];
+      } else if (isKeptSecret(field, editData, key, value)) {
+        // Untouched saved secret: the server keeps the stored value, looked up by name.
+        transformedValue = '';
       } else if (Array.isArray(value)) {
         transformedValue = joinConfigArray(value);
       }
       return {
         name: key,
         value: transformedValue,
-        is_encrypted: field?.is_encrypted && editData?.integration_config_values?.[key] && value === ENCRYPTED_MASK ? true : false,
+        is_encrypted: isKeptSecret(field, editData, key, value),
       };
     });
 

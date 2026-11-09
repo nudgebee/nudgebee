@@ -1415,6 +1415,19 @@ func (a *azureProvider) ExecuteCliCommand(ctx providers.CloudProviderContext, ac
 		return "", err
 	}
 
+	// Handle backslash line continuations before parsing
+	cleanCommand := strings.ReplaceAll(command, "\\\r\n", " ")
+	cleanCommand = strings.ReplaceAll(cleanCommand, "\\\n", " ")
+	execArgs, err := shlex.Split(cleanCommand)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse Azure CLI command: %w", err)
+	}
+	// The same boundary as the workspace path: no credential export, no
+	// collector-local file transfer.
+	if err := validateAzureWorkspaceBoundary(execArgs); err != nil {
+		return "", err
+	}
+
 	session, err := getAzureSessionFromAccount(ctx, account)
 	if err != nil {
 		return "", fmt.Errorf("failed to get access secret: %w", err)
@@ -1446,42 +1459,13 @@ func (a *azureProvider) ExecuteCliCommand(ctx providers.CloudProviderContext, ac
 		}
 	}
 
-	// Handle backslash line continuations before parsing
-	cleanCommand := strings.ReplaceAll(command, "\\\r\n", " ")
-	cleanCommand = strings.ReplaceAll(cleanCommand, "\\\n", " ")
-
-	// Execute the actual user command
-	var stdout string
-	opts := common.SecureCommandOptions{
-		Command: cleanCommand,
-		Env:     cliEnv,
-	}
-
-	// Determine if the command uses a pipe (pipeline)
-	// We use shlex to properly handle quoted strings so that a pipe character inside a quote
-	// doesn't trigger pipeline execution.
-	usePipeline := false
-	execArgs, err := shlex.Split(cleanCommand)
-	if err == nil {
-		for _, arg := range execArgs {
-			if arg == "|" {
-				usePipeline = true
-				break
-			}
-		}
-	} else {
-		// If parsing fails, we fall back to a naive check
-		if strings.Contains(cleanCommand, "|") {
-			usePipeline = true
-		}
-	}
-
 	commandStart := time.Now()
-	if usePipeline {
-		stdout, stderr, err = common.SecureExecutePipeline(ctx.GetContext(), opts)
-	} else {
-		stdout, stderr, err = common.SecureExecute(ctx.GetContext(), opts)
-	}
+	var stdout string
+	stdout, stderr, err = common.SecureExecute(ctx.GetContext(), common.SecureCommandOptions{
+		Command:   cleanCommand,
+		Env:       cliEnv,
+		Untrusted: true,
+	})
 	ctx.GetLogger().Info("azure cli timing",
 		"setup_ms", setupDuration.Milliseconds(),
 		"command_ms", time.Since(commandStart).Milliseconds())
@@ -1544,12 +1528,12 @@ func validateAzureWorkspaceBoundary(args []string) error {
 		return errors.New("azure authentication and persistent configuration commands are not allowed")
 	}
 	if contains("account", "get-access-token") || contains("acr", "login") || contains("aks", "get-credentials") {
-		return errors.New("azure workspace CLI cannot export credentials or access tokens")
+		return errors.New("azure CLI cannot export credentials or access tokens")
 	}
 	for _, object := range []string{"blob", "file"} {
 		for _, operation := range []string{"download", "download-batch", "upload", "upload-batch", "sync"} {
 			if contains("storage", object, operation) {
-				return errors.New("azure workspace CLI cannot transfer collector-local files")
+				return errors.New("azure CLI cannot transfer collector-local files")
 			}
 		}
 	}
@@ -1601,7 +1585,7 @@ func executeAzureStructured(ctx providers.CloudProviderContext, command string, 
 		maxOutput = 1024 * 1024
 	}
 	truncated := false
-	stdout, stderr, err := common.SecureExecute(ctx.GetContext(), common.SecureCommandOptions{Command: command, Env: env, Timeout: timeout, MaxOutputBytes: maxOutput, OutputTruncated: &truncated})
+	stdout, stderr, err := common.SecureExecute(ctx.GetContext(), common.SecureCommandOptions{Command: command, Env: env, Timeout: timeout, MaxOutputBytes: maxOutput, OutputTruncated: &truncated, Untrusted: true})
 	result := providers.CliExecutionResult{Stdout: stdout, Stderr: stderr, OutputTruncated: truncated}
 	if err == nil {
 		return result, nil

@@ -305,6 +305,26 @@ describe('buildSessionVariables', () => {
     expect(vars.allowed_roles).toEqual(['account_admin', 'k8s_namespace_admin', 'super_admin']);
   });
 
+  // jwt.roles holds the user's roles in one tenant, so a super-admin role
+  // there came from a tenant-scoped row. Only jwt.isSuperAdmin* grants super admin.
+  it('drops super-admin roles that came in with the tenant roles', () => {
+    const vars = buildSessionVariables({ ...baseJwt, roles: ['tenant_admin', 'super_admin', 'SUPER_ADMIN_READONLY'] } as JWT);
+    expect(vars.allowed_roles).toEqual(['tenant_admin']);
+    expect(vars.role).toBe('tenant_admin');
+  });
+
+  it('keeps super_admin for a real super admin whatever the tenant roles say', () => {
+    const vars = buildSessionVariables({ ...baseJwt, roles: ['super_admin'], isSuperAdmin: true } as JWT);
+    expect(vars.allowed_roles).toEqual(['super_admin']);
+  });
+
+  it('leaves the server identity able to run every action', () => {
+    const serverJwt = { isSuperAdmin: true, roles: ['admin'], tenant: { id: '' }, id: '', sub: '' };
+    const vars = buildSessionVariables(serverJwt as unknown as JWT);
+    expect(vars.role).toBe('admin');
+    expect(vars.allowed_roles).toEqual(['admin', 'super_admin']);
+  });
+
   it('falls back to tenant_admin_readonly when roles is empty', () => {
     const vars = buildSessionVariables({ ...baseJwt, roles: [] } as JWT);
     expect(vars.role).toBe('tenant_admin_readonly');

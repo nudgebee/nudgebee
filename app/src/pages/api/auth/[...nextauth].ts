@@ -36,10 +36,12 @@ import {
 import { adapterUserUpdateDataOnUserRoles, groupBelongsToTenant } from '@lib/userPermissionMapper';
 import { pickDefaultTenant } from '@lib/defaultTenant';
 import { findTenantByDomain } from '@lib/tenantLookup';
+import { shouldRejectUnverifiedOAuthEmail } from '@lib/oauthEmailVerification';
 import { dummyCredsAdminEmail } from '@lib/dummyCredsAdmin';
 import { ldapBindName, ldapSearchFilter } from '@lib/ldapUsername';
 import { getLicenseDetails, SERVICES_SERVER_UNREACHABLE_MSG, type LicenseTier } from '@lib/license';
 import { enrichAuthToken, enrichSession, onReturningOAuthSignIn, onUnknownOAuthSignIn, resolveLicensedTenantUser } from '@lib/authHooks';
+import { isSuperAdminAccessEnabled, restrictSuperAdmin } from '@lib/superAdminAccess';
 
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
 import type { NextApiRequest, NextApiResponse } from 'next';
@@ -1183,7 +1185,13 @@ async function jwtUpdateTokenOnUpdateTrigger(token: any, session: any, trigger: 
     })
   );
   if (trigger === 'update' && (session.tenantId || session.tenantName)) {
-    const userEmail = session.user?.email ?? '';
+    // `session` is the payload the browser sent to update(); only the signed
+    // token says who is switching.
+    const userEmail = (token.email as string | undefined) ?? '';
+    if (!userEmail) {
+      console.warn('jwtUpdateTokenOnUpdateTrigger: token has no email, aborting switch');
+      return;
+    }
     let tenantId = session.tenantId;
     if (!tenantId && session.tenantName) {
       const isSuperAdmin = !!(token.isSuperAdmin || token.isSuperAdminReadonly);
@@ -1212,10 +1220,12 @@ async function jwtUpdateTokenOnUpdateTrigger(token: any, session: any, trigger: 
     if (tenantId && tenantId !== currentTenantId) {
       // `updated` counts the tenant_users rows flipped to is_default; the upstream
       // handler refuses (0 rows / error) for a user who is not a member of the
-      // tenant, so this doubles as the membership check for the fallback below.
-      const update = await updateTenantUser(tenantId, session.user.email);
+      // tenant, so this doubles as the membership check below. Role rows alone
+      // are not membership: rows written into a tenant the user never joined
+      // must not switch them into it.
+      const update = await updateTenantUser(tenantId, userEmail);
       const isTenantMember = (update?.data?.data?.users_update_default_tenant?.updated ?? 0) > 0;
-      if (response?.data?.length > 0) {
+      if (isTenantMember && response?.data?.length > 0) {
         token.tenant = { id: tenantId, name: tenantName };
         const roles = [];
         const accountIds = [];
@@ -1342,6 +1352,14 @@ export const authOptions: NextAuthOptions = {
   providers: providers,
   callbacks: {
     async jwt({ token, user, account: oauthAccount, trigger, session }) {
+      // With super admin off, a session minted as super admin is ended
+      // before anything runs for it. Thrown outside the try below so NextAuth
+      // clears the cookie and answers with no session, which sends the browser to
+      // sign-in; returning {} would leave an empty session the client still
+      // treats as signed in. Sign-in never carries the claim: the enricher is off.
+      if (restrictSuperAdmin(token) === null) {
+        throw new Error('super admin is disabled: ending a super-admin session');
+      }
       try {
         // Server-side revocation gate. NextAuth's stateless JWT strategy
         // means a captured cookie survives logout until natural expiry on
@@ -1416,7 +1434,8 @@ export const authOptions: NextAuthOptions = {
             token.permissionsResolvedAt = Date.now();
           }
         }
-        return token;
+        // With super admin off, drop super-admin role strings.
+        return restrictSuperAdmin(token) ?? {};
       } catch (error) {
         console.log('jwt, unable to handle jwt token ', error);
       }
@@ -1539,10 +1558,16 @@ export const authOptions: NextAuthOptions = {
       }
       return baseUrl;
     },
-    async signIn({ user, account, email }) {
+    async signIn({ user, account, email, profile }) {
       console.log('signIn called', user, account, email);
       if (user?.email) {
         user.email = user.email.toLowerCase();
+      }
+      if (shouldRejectUnverifiedOAuthEmail({ user, account, profile })) {
+        console.warn('Refusing OAuth sign-in: IdP reports the email as unverified and the IdP account is not linked yet', {
+          provider: account?.provider,
+        });
+        return false;
       }
       if (
         (account?.provider === 'email' || account?.provider === 'credentials' || account?.provider === 'ldap' || account?.provider === 'teleport') &&
@@ -1647,8 +1672,8 @@ export const authOptions: NextAuthOptions = {
     signIn: async (message) => {
       if (message.user) {
         const nudgeBeeUser = message.user as NudgebeeUser;
-        // Skip login tracking for super admin (no trace)
-        const superAdminRole = nudgeBeeUser.id ? await getUserSuperAdminRole(nudgeBeeUser.id) : null;
+        // Skip login tracking for super admin (no trace), only while super admin is on
+        const superAdminRole = nudgeBeeUser.id && isSuperAdminAccessEnabled() ? await getUserSuperAdminRole(nudgeBeeUser.id) : null;
         if (!superAdminRole && nudgeBeeUser.userAccountId) {
           await updateUserAccountAccessed(nudgeBeeUser.userAccountId, nudgeBeeUser.tenant?.id);
         }

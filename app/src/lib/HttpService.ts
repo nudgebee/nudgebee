@@ -2,10 +2,28 @@ import axios, { type AxiosInstance } from 'axios';
 import { getGqlString } from '@lib/datetime';
 import { reportAccessDeniedForOperation } from '@lib/accessDenied';
 import { reportClientError } from '@lib/clientErrorReporter';
+import { getTabTenantId, isTenantChangedResponse, reportSessionTenant, TAB_TENANT_HEADER, tenantFromChangedResponse } from '@lib/tabTenant';
 import crypto from 'crypto';
 //import { loadProgressBar } from 'axios-progress-bar';
 
 const Axios: AxiosInstance = axios.create();
+
+// Every browser request carries the tenant this tab pinned, so the gateway can
+// refuse one from a tab whose tenant was switched away in another tab (see
+// @lib/tabTenant). A refusal raises the tab's "reload" banner.
+if (typeof window !== 'undefined') {
+  Axios.interceptors.request.use((config) => {
+    const tabTenantId = getTabTenantId();
+    if (tabTenantId) config.headers.set(TAB_TENANT_HEADER, tabTenantId);
+    return config;
+  });
+  Axios.interceptors.response.use(undefined, (error) => {
+    if (isTenantChangedResponse(error?.response?.status, error?.response?.data)) {
+      reportSessionTenant(tenantFromChangedResponse(error.response.data));
+    }
+    return Promise.reject(error);
+  });
+}
 
 export const getClient = () => Axios;
 
@@ -207,7 +225,9 @@ export const queryGraphQL = async (
     // Report genuine breaks (network failures, 4xx, 5xx) to Loki — 4xx like 403/422
     // are strong signals in real sessions (permission gaps, schema mismatches).
     // Skip 401 — that's the expected auth-expiry redirect below, not a failure.
-    if (!isServer() && status !== 401) {
+    // Skip a stale-tab refusal too: the tab's banner handles it, and a stale tab
+    // left polling would otherwise file one report per poll.
+    if (!isServer() && status !== 401 && !isTenantChangedResponse(status, e?.response?.data)) {
       reportClientError({
         kind: 'api-failure',
         message: e?.message ?? 'api call failed',
@@ -492,27 +512,3 @@ export function gqlStringify(obj_from_json: any, enums: string[] = [], pkey = ''
 export function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, '\\$&');
 }
-
-export const hitRelayServer = async (data: any, type = '') => {
-  try {
-    let headerObject = getTraceHeaders();
-    let pathVariable = '/request';
-    if (type && type == 'grafana') {
-      headerObject = {
-        ...headerObject,
-        'X-NB-ACCOUNT-ID': data.accountId,
-        'X-NB-REQUEST-ID': crypto.randomUUID(),
-        'X-SECRET-KEY': '',
-        'X-REQUEST-TYPE': 'grafana',
-      };
-      pathVariable = '/grafana';
-    }
-    const result = await getClient().post(getRelayServerEndpoint() + pathVariable, data, {
-      headers: headerObject,
-    });
-    return result;
-  } catch (error: any) {
-    console.error('error on external api call', error?.response?.status ?? error?.code ?? 'unknown', error?.message);
-    return error?.response;
-  }
-};

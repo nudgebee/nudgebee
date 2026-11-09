@@ -8,6 +8,7 @@ import (
 
 	"nudgebee/services/common"
 	"nudgebee/services/internal/database"
+	"nudgebee/services/query"
 	"nudgebee/services/security"
 )
 
@@ -26,8 +27,8 @@ import (
 //
 // Lives in package core (not the integrations parent package) because it is
 // referenced from CreateIntegrationConfig's save path, and core cannot
-// import its parent. Keep the pattern in sync with the LIKE clauses in
-// query/metadata.go's admin_get_integrations_v2 redaction subquery.
+// import its parent. The integrations list redacts with these prefixes too,
+// through IntegrationSecretFields.
 var llmSecretFieldPrefixes = []string{
 	"llm_provider_api_key",
 	"llm_provider_access_key",
@@ -46,8 +47,7 @@ var llmSecretFieldPrefixes = []string{
 	"llm_fallback_oauth_client_secret",
 }
 
-// LLMSecretFieldPrefixes returns a copy of the secret prefixes, so other
-// packages can check their own lists (e.g. the list-API redaction) stay in sync.
+// LLMSecretFieldPrefixes returns a copy of the secret prefixes.
 func LLMSecretFieldPrefixes() []string {
 	return append([]string(nil), llmSecretFieldPrefixes...)
 }
@@ -311,6 +311,32 @@ func isSecretConfigField(integrationType string, schema IntegrationSchema, name 
 		return true
 	}
 	return integrationType == "llm" && IsLLMSecretFieldName(name)
+}
+
+func init() {
+	query.RegisterIntegrationSecretFields(IntegrationSecretFields)
+}
+
+// IntegrationSecretFields lists, per lowercase integration type, the config
+// fields isSecretConfigField treats as secret: every schema property marked
+// IsEncrypted, plus the LLM key prefixes. The integrations list
+// (query admin_get_integrations_v2) blanks these values with it, so the list and
+// the create / update responses redact by one rule. Source variants of a type
+// (es:user, es:agent) are merged, so a field secret in any variant is redacted.
+func IntegrationSecretFields() query.IntegrationSecretFields {
+	exact := map[string][]string{}
+	for key, integration := range nbSystemTools {
+		integrationType, _, _ := strings.Cut(key, ":")
+		for name, prop := range integration.ConfigSchema().Properties {
+			if prop.IsEncrypted {
+				exact[integrationType] = append(exact[integrationType], name)
+			}
+		}
+	}
+	return query.IntegrationSecretFields{
+		Exact:  exact,
+		Prefix: map[string][]string{"llm": LLMSecretFieldPrefixes()},
+	}
 }
 
 // redactSecretConfigValues returns a copy of values with every secret field's value

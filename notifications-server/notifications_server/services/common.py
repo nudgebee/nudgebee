@@ -829,8 +829,11 @@ class CommonService:
     def _get_messaging_platform(self, tenant_id, team_id, platform):
         # Slack callers may target a specific workspace by team_id; MS Teams/Google
         # Chat resolve by tenant. Unions integrations + legacy messaging_platforms.
+        # team_id is caller-supplied, so it only selects among this tenant's
+        # installs — it must never reach another tenant's workspace.
         if team_id and platform == "slack":
-            return load_installation_by_team(self.session, team_id, platform)
+            installs = load_installations(self.session, tenant_id, platform)
+            return next((i for i in installs if i.team_id == team_id), None)
         return load_installation(self.session, tenant_id, platform)
 
     def _refresh_google_chat_token(self, messaging_platform):

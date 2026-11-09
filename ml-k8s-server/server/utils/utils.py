@@ -251,15 +251,6 @@ class ApiServerMetricsConfigs:
     # Under api-server's own 180s cap (handle_actions_metrics_timeout.go), so a slow
     # query surfaces here as a timeout naming the query rather than as a bare 400.
     timeout = int(os.environ.get("ML_METRICS_HTTP_TIMEOUT", 170))
-    # Datadog and Elasticsearch rightsizing queries go the same way, so their
-    # credentials stay in api-server instead of travelling in the trigger request.
-    # Set to "false" to send them straight to the provider again, which needs the
-    # credentials back in the request and is the rollback for one release.
-    via_api_server = os.environ.get("ML_METRICS_VIA_API_SERVER", "true").strip().lower() not in (
-        "false",
-        "0",
-        "no",
-    )
     # Rightsizing asks api-server for metric KEYS instead of writing each provider's
     # query language here. Default off for its first release: it changes where every
     # number in a recommendation comes from, and the numbers are the product. Turning

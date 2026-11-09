@@ -423,6 +423,10 @@ func UpsertRule(ctx *security.RequestContext, req UpsertRuleRequest) (StatusResp
 	} else if !ok {
 		return StatusResponse{}, common.ErrorBadRequest("owner not found in this tenant")
 	}
+	// The rule row stores this tenant next to the request's account.
+	if req.CloudAccountId != "" && !ctx.GetSecurityContext().IsTenantAccount(req.CloudAccountId) {
+		return StatusResponse{}, common.ErrorBadRequest("cloud account not found in this tenant")
+	}
 	// No priority: reject a rule that overlaps an existing same-scope rule, so the
 	// owner of any resource is unambiguous. req.Id excludes self when editing. The
 	// conflict-check + write run under a per-tenant advisory lock so two concurrent

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"nudgebee/services/cloud"
+	"nudgebee/services/kubectlpolicy"
 	"nudgebee/services/relay"
 	"nudgebee/services/security"
 	"regexp"
@@ -64,7 +65,7 @@ func CreateUpgradePlan(ctx *security.RequestContext, tenantId string, request Up
 		template.TargetVersion = request.TargetVersion
 	}
 
-	account, err := GetAccountDetails(request.AccountID)
+	account, err := GetAccountDetails(ctx, request.AccountID)
 	if err != nil {
 		return UpgradePlan{}, fmt.Errorf("failed to get account details: %w", err)
 	}
@@ -1320,7 +1321,7 @@ func PerformHealthCheck(ctx *security.RequestContext, request HealthCheckRequest
 		targetVersion := request.TargetVersion
 		if currentVersion == "" || targetVersion == "" {
 			// Try to get versions from account details
-			account, err := GetAccountDetails(request.AccountID)
+			account, err := GetAccountDetails(ctx, request.AccountID)
 			if err != nil {
 				return HealthCheck{}, fmt.Errorf("failed to get account details for version info: %w", err)
 			}
@@ -1343,7 +1344,7 @@ func PerformHealthCheck(ctx *security.RequestContext, request HealthCheckRequest
 	case "helm_compatibility":
 		targetVersion := request.TargetVersion
 		if targetVersion == "" {
-			account, err := GetAccountDetails(request.AccountID)
+			account, err := GetAccountDetails(ctx, request.AccountID)
 			if err != nil {
 				return HealthCheck{}, fmt.Errorf("failed to get account details for version info: %w", err)
 			}
@@ -1465,6 +1466,9 @@ func ExecuteCommand(ctx *security.RequestContext, request ExecuteCommandRequest)
 	}
 
 	tenantID := ctx.GetSecurityContext().GetTenantId()
+	if err := VerifyPlanScope(tenantID, request.AccountID, request.PlanID, request.StepID, request.TaskID); err != nil {
+		return nil, err
+	}
 	var response ExecuteCommandResponse
 	var commandOutput string
 	var commandSuccess bool
@@ -1559,6 +1563,10 @@ func validateAndSanitizeKubectlCommand(command string) ([]string, error) {
 	subcommand := parts[1]
 	if !kubectlAllowedCommands[subcommand] {
 		return nil, fmt.Errorf("kubectl subcommand '%s' is not allowed. Permitted commands: get, describe, logs, top, version, cluster-info, scale, patch, rollout, cordon, uncordon, drain", subcommand)
+	}
+
+	if err := kubectlpolicy.CheckSecretAccess(command); err != nil {
+		return nil, err
 	}
 
 	dangerousChars := []string{";", "&", "|", "`", "$", "(", ")", "<", ">", "\n", "\r"}
@@ -1741,6 +1749,10 @@ func PerformPreFlightCheckWithStorage(ctx *security.RequestContext, request PreF
 		"account_id", request.AccountID,
 		"plan_id", request.PlanID)
 
+	if err := VerifyPlanScope(ctx.GetSecurityContext().GetTenantId(), request.AccountID, request.PlanID, "", ""); err != nil {
+		return nil, err
+	}
+
 	// Execute pre-flight health check
 	healthCheck, err := DoPreFlightCheck(ctx, request.AccountID)
 	if err != nil {
@@ -1788,6 +1800,10 @@ func PerformPostFlightCheckWithComparison(ctx *security.RequestContext, request 
 	ctx.GetLogger().Info("Starting post-flight health check with comparison",
 		"account_id", request.AccountID,
 		"plan_id", request.PlanID)
+
+	if err := VerifyPlanScope(ctx.GetSecurityContext().GetTenantId(), request.AccountID, request.PlanID, "", ""); err != nil {
+		return nil, err
+	}
 
 	// Execute post-flight health check
 	postHealthCheck, err := DoPostFlightCheck(ctx, request.AccountID)

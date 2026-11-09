@@ -1,4 +1,13 @@
-import { joinConfigArray, checkConditionMatch, shouldShowField, isFieldRequired, getSortedFieldKeys, buildProbeConfigValues } from '../schemaForm';
+import {
+  joinConfigArray,
+  checkConditionMatch,
+  shouldShowField,
+  isFieldRequired,
+  getSortedFieldKeys,
+  buildProbeConfigValues,
+  hasSavedConfigValue,
+  savedConfigFlags,
+} from '../schemaForm';
 import { ENCRYPTED_MASK } from '@api1/integrations/helpers';
 
 // Loki-shaped schema: auth_type gates username/password — the live-verified
@@ -92,7 +101,12 @@ describe('buildProbeConfigValues', () => {
       tags: { type: 'array' },
     },
   };
-  const stored = { api_key: 'ciphertext-api', app_key: 'ciphertext-app' };
+  // An edited integration as integrations_list hands it over: secret values
+  // blanked, has_value flags carried alongside.
+  const stored = {
+    integration_config_values: { api_key: '', app_key: '' },
+    integration_config_has_value: { api_key: true, app_key: true },
+  };
 
   it('excludes account/name/mapping keys and stringifies booleans', () => {
     const out = buildProbeConfigValues(
@@ -108,12 +122,22 @@ describe('buildProbeConfigValues', () => {
     });
   });
 
-  it('sends the stored ciphertext with is_encrypted=true for untouched masked secrets (omit-to-keep)', () => {
+  it('sends untouched saved secrets as is_encrypted=true with no value (server keeps the stored one)', () => {
     const out = buildProbeConfigValues(ddConfig, { api_key: ENCRYPTED_MASK, app_key: ENCRYPTED_MASK }, stored);
     expect(out).toEqual([
-      { name: 'api_key', value: 'ciphertext-api', is_encrypted: true },
-      { name: 'app_key', value: 'ciphertext-app', is_encrypted: true },
+      { name: 'api_key', value: '', is_encrypted: true },
+      { name: 'app_key', value: '', is_encrypted: true },
     ]);
+  });
+
+  it('never sends a saved value back, even when an older response still carries one', () => {
+    const legacy = { integration_config_values: { api_key: 'ciphertext-api' } };
+    expect(buildProbeConfigValues(ddConfig, { api_key: ENCRYPTED_MASK }, legacy)).toEqual([{ name: 'api_key', value: '', is_encrypted: true }]);
+  });
+
+  it('does not treat a mask as kept when nothing is saved', () => {
+    const none = { integration_config_values: { api_key: '' }, integration_config_has_value: { api_key: false } };
+    expect(buildProbeConfigValues(ddConfig, { api_key: ENCRYPTED_MASK }, none)[0].is_encrypted).toBe(false);
   });
 
   it('sends a retyped secret as plaintext with is_encrypted=false', () => {
@@ -131,5 +155,27 @@ describe('buildProbeConfigValues', () => {
 describe('joinConfigArray', () => {
   it('joins plain values and {value} option objects alike', () => {
     expect(joinConfigArray(['a', { value: 'b' }, 'c'])).toBe('a,b,c');
+  });
+});
+
+describe('saved config values', () => {
+  it('takes has_value from list rows and falls back to the value', () => {
+    expect(
+      savedConfigFlags([
+        { name: 'password', value: '', has_value: true },
+        { name: 'username', value: 'bob' },
+        { name: 'token', value: '', has_value: false },
+        { value: 'nameless' },
+      ])
+    ).toEqual({ password: true, username: true, token: false });
+    expect(savedConfigFlags(undefined)).toEqual({});
+  });
+
+  it('prefers the flag over the (blanked) value', () => {
+    const editData = { integration_config_values: { password: '' }, integration_config_has_value: { password: true } };
+    expect(hasSavedConfigValue(editData, 'password')).toBe(true);
+    expect(hasSavedConfigValue({ integration_config_values: { password: 'x' } }, 'password')).toBe(true);
+    expect(hasSavedConfigValue({ integration_config_values: { password: '' } }, 'password')).toBe(false);
+    expect(hasSavedConfigValue(null, 'password')).toBe(false);
   });
 });

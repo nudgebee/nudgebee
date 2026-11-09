@@ -1,6 +1,7 @@
 import { useSession } from 'next-auth/react';
 import { useCallback, useEffect, useRef } from 'react';
 import { queryGraphQL } from '@lib/HttpService';
+import { pinTabTenant, reportSessionTenant, type TenantRef } from '@lib/tabTenant';
 import Loader from '@shared/Loader';
 
 // AUTHORIZATION MODEL — front-end vs back-end
@@ -164,11 +165,22 @@ export function withAuth(Component: React.ComponentType<any | string>) {
       }
     }, [status]);
 
+    // The session refetches on focus and every 5 minutes; a tenant that moved
+    // since this tab loaded means another tab switched it (see @lib/tabTenant).
+    const sessionTenantId = (data as { tenant?: TenantRef } | null)?.tenant?.id;
+    const sessionTenantName = (data as { tenant?: TenantRef } | null)?.tenant?.name;
+    useEffect(() => {
+      reportSessionTenant({ id: sessionTenantId, name: sessionTenantName });
+    }, [sessionTenantId, sessionTenantName]);
+
     if (status === 'loading') {
       return <Loader />;
     }
 
     userData = data;
+    // Pinned during render, not in an effect: children's effects run before
+    // ours, and their first requests must already carry the pin. Set-once.
+    pinTabTenant(sessionTenantId);
 
     return <Component {...props} />;
   };

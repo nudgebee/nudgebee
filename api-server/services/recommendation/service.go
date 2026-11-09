@@ -956,22 +956,16 @@ func CreateRecommendationJob(ctx *security.RequestContext, query RecommendationJ
 				MetricsProvider:       mp,
 			}
 			if mp == "datadog" {
-				apiKey, appKey, site, ddErr := integrations.GetDatadogConfigs(ctx, query.AccountId)
-				if ddErr != nil {
+				if _, _, _, ddErr := integrations.GetDatadogConfigs(ctx, query.AccountId); ddErr != nil {
 					ctx.GetLogger().Error("volume_analyzer: error getting datadog configs", "error", ddErr, "account_id", query.AccountId)
 					return RecommendationJobCreateResponse{}, ddErr
 				}
-				req.DatadogApiKey = apiKey
-				req.DatadogAppKey = appKey
-				req.DatadogSite = site
 			}
 			if mp == "ES" {
-				esCfg, esErr := observability.ElasticsearchRightsizingConfig(ctx, query.AccountId)
-				if esErr != nil {
+				if esErr := observability.CheckElasticsearchRightsizing(ctx, query.AccountId); esErr != nil {
 					ctx.GetLogger().Error("volume_analyzer: error getting elasticsearch config", "error", esErr, "account_id", query.AccountId)
 					return RecommendationJobCreateResponse{}, esErr
 				}
-				req.Elasticsearch = esCfg
 			}
 			if _, err := ml.TriggerVolumeRightsizing(ctx, req); err != nil {
 				ctx.GetLogger().Error("volume_analyzer: error triggering ml-k8s-server", "error", err, "account_id", query.AccountId, "metrics_provider", mp)
@@ -991,22 +985,16 @@ func CreateRecommendationJob(ctx *security.RequestContext, query RecommendationJ
 				MetricsProvider:       mp,
 			}
 			if mp == "datadog" {
-				apiKey, appKey, site, ddErr := integrations.GetDatadogConfigs(ctx, query.AccountId)
-				if ddErr != nil {
+				if _, _, _, ddErr := integrations.GetDatadogConfigs(ctx, query.AccountId); ddErr != nil {
 					ctx.GetLogger().Error("krr_scan: error getting datadog configs", "error", ddErr, "account_id", query.AccountId)
 					return RecommendationJobCreateResponse{}, ddErr
 				}
-				req.DatadogApiKey = apiKey
-				req.DatadogAppKey = appKey
-				req.DatadogSite = site
 			}
 			if mp == "ES" {
-				esCfg, esErr := observability.ElasticsearchRightsizingConfig(ctx, query.AccountId)
-				if esErr != nil {
+				if esErr := observability.CheckElasticsearchRightsizing(ctx, query.AccountId); esErr != nil {
 					ctx.GetLogger().Error("krr_scan: error getting elasticsearch config", "error", esErr, "account_id", query.AccountId)
 					return RecommendationJobCreateResponse{}, esErr
 				}
-				req.Elasticsearch = esCfg
 			}
 			if _, err := ml.TriggerVerticalRightsizing(ctx, req); err != nil {
 				ctx.GetLogger().Error("krr_scan: error triggering ml-k8s-server", "error", err, "account_id", query.AccountId, "metrics_provider", mp)

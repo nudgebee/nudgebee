@@ -430,7 +430,9 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
             token = message.get("metadata", {}).get("event_payload", {}).get("token")
             status = action_params.get("status")
             if not token or not status:
-                LOG.error(f"Missing token or status in approval action: token={token}, status={status}")
+                LOG.error(
+                    "Missing token or status in approval action: token present=%s, status=%s", bool(token), status
+                )
                 return self.reply_with_error(channel_id, team_id, message_ts, UNABLE_TO_PROCESS_REQUEST)
             params = ApprovalParams(
                 channel_id=channel_id,

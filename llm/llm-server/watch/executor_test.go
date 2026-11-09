@@ -1073,3 +1073,47 @@ func TestRunOnePoll_ExpiredAndSourceFails_ExpiresWithoutRetrying(t *testing.T) {
 	assert.Equal(t, StatusExpired, last.Status)
 	assert.Contains(t, last.Summary, "boom")
 }
+
+func installOwnerAccessChecker(t *testing.T, c OwnerAccessChecker) {
+	t.Helper()
+	prev := getOwnerAccessChecker()
+	SetOwnerAccessChecker(c)
+	t.Cleanup(func() { SetOwnerAccessChecker(prev) })
+}
+
+func TestRunOnePoll_OwnerAccessRevoked_TerminatesFailedWithoutObserving(t *testing.T) {
+	exec, _, mock, notifier, _ := newExecutorWithMocks(t)
+	src := &fakeSource{kind: SourceKind("fake_owner_revoked")}
+	installSource(t, src)
+	installOwnerAccessChecker(t, func(Watch) error { return ErrOwnerAccessRevoked })
+
+	w := validRunningWatch(src.kind, PredicateKindRegex, "completed")
+	mock.ExpectExec(`SET status = \$1`).
+		WithArgs(string(StatusFailed), nil, sqlmock.AnyArg(), sqlmock.AnyArg(), w.ID, w.TenantID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	exec.RunOnePoll(context.Background(), w)
+
+	require.NoError(t, mock.ExpectationsWereMet())
+	assert.Equal(t, 0, src.observeCount(), "a revoked owner's watch must not poll")
+	assert.Equal(t, StatusFailed, notifier.lastCall(t).Status)
+}
+
+func TestRunOnePoll_OwnerAccessCheckFails_RecordsFailure(t *testing.T) {
+	exec, _, mock, notifier, _ := newExecutorWithMocks(t)
+	src := &fakeSource{kind: SourceKind("fake_owner_check_err")}
+	installSource(t, src)
+	installOwnerAccessChecker(t, func(Watch) error { return errors.New("services-server unavailable") })
+	withConfig(t, func() { config.Config.WatchMaxFailures = 3 })
+
+	w := validRunningWatch(src.kind, PredicateKindRegex, "completed")
+	mock.ExpectExec(`(?s)UPDATE llm_watch_tasks.*failure_count = failure_count \+ 1`).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), w.ID, w.TenantID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	exec.RunOnePoll(context.Background(), w)
+
+	require.NoError(t, mock.ExpectationsWereMet())
+	assert.Equal(t, 0, src.observeCount())
+	assert.Equal(t, 0, notifier.callCount(), "a failed check backs off instead of ending the watch")
+}

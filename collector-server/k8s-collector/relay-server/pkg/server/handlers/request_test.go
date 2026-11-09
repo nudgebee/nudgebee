@@ -38,6 +38,11 @@ type fakeStore struct {
 	datasourceOwners      map[string]string // datasource key → owning agent id
 	ownerErr              error
 	upsertAgentID         string
+	tenants               map[string]string // account id → owning tenant
+}
+
+func (f *fakeStore) AccountTenant(ctx context.Context, accountID, agentType string) (string, error) {
+	return f.tenants[accountID], f.err
 }
 
 func (f *fakeStore) IsWSEnabled(ctx context.Context, acct, agentType string) (bool, string, error) {
@@ -379,4 +384,69 @@ func TestRequestHandler_Success(t *testing.T) {
 func jsonMust(v interface{}) []byte {
 	b, _ := json.Marshal(v)
 	return b
+}
+
+// A caller acting for one tenant must not reach another tenant's agent, even
+// with the shared secret: X-TENANT-ID has to own the account.
+func TestRequestHandler_TenantMustOwnAccount(t *testing.T) {
+	ar := models.AgentResponse{StatusCode: 200, RequestID: "rid", Data: string(jsonMust(models.HTTPResponse{StatusCode: 200}))}
+
+	for _, tc := range []struct {
+		name     string
+		tenant   string
+		body     string
+		wantCode int
+	}{
+		{"own account", "tenant-a", `{"body":{"account_id":"11111111-1111-1111-1111-11111111111a"}}`, 200},
+		{"own account, header case differs", "TENANT-A", `{"body":{"account_id":"11111111-1111-1111-1111-11111111111a"}}`, 200},
+		{"other tenant's account (nested)", "tenant-a", `{"body":{"account_id":"22222222-2222-2222-2222-22222222222b"}}`, 403},
+		{"other tenant's account (top level)", "tenant-a", `{"account_id":"22222222-2222-2222-2222-22222222222b"}`, 403},
+		{"unknown account", "tenant-a", `{"account_id":"33333333-3333-3333-3333-33333333333c"}`, 403},
+		{"no tenant header (internal caller)", "", `{"account_id":"22222222-2222-2222-2222-22222222222b"}`, 200},
+		{"malformed account id", "tenant-a", `{"account_id":"not-a-uuid"}`, 400},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeStore{allowed: true, tenants: map[string]string{"11111111-1111-1111-1111-11111111111a": "tenant-a", "22222222-2222-2222-2222-22222222222b": "tenant-b"}}
+			router := setupRouter(store, fakeRPCClient{resp: jsonMust(ar)})
+
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest("POST", "/request", bytes.NewBufferString(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			if tc.tenant != "" {
+				req.Header.Set("X-TENANT-ID", tc.tenant)
+			}
+			router.ServeHTTP(w, req)
+
+			require.Equal(t, tc.wantCode, w.Code, w.Body.String())
+		})
+	}
+}
+
+// Direct-mode MCP is served before any agent check; the tenant check must run
+// before it too.
+func TestRequestHandler_TenantCheckPrecedesDirectMCP(t *testing.T) {
+	store := &fakeStore{allowed: true, tenants: map[string]string{"22222222-2222-2222-2222-22222222222b": "tenant-b"}}
+	router := setupRouter(store, fakeRPCClient{})
+
+	body := `{"body":{"account_id":"22222222-2222-2222-2222-22222222222b","action_name":"mcp_request","action_params":{"connection_mode":"direct","url":"http://127.0.0.1:1/mcp"}}}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/request", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-TENANT-ID", "tenant-a")
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, 403, w.Code, w.Body.String())
+}
+
+func TestRequestHandler_TenantLookupErrorFailsClosed(t *testing.T) {
+	store := &fakeStore{allowed: true, err: fmt.Errorf("db gone")}
+	router := setupRouter(store, fakeRPCClient{})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/request", bytes.NewBufferString(`{"account_id":"11111111-1111-1111-1111-11111111111a"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-TENANT-ID", "tenant-a")
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, 500, w.Code)
 }

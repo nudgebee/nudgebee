@@ -114,6 +114,12 @@ type TableDefinition struct {
 	// clause still bounds the result. Leave false for tables whose NULL-account
 	// rows are sensitive or global-only.
 	TenantWideReadable bool
+	// GlobalCatalog marks a table that holds no tenant data (feature list,
+	// anomaly types, alert-rule knowledge base), so any caller may read it
+	// without a tenant filter. A table with no TenantIdColumnName that is not a
+	// global catalog is readable only by a super admin or the server itself
+	// (see ExecuteQuery). The set is pinned by TestGlobalCatalogTablesArePinned.
+	GlobalCatalog bool
 	// AccountScope, when set, replaces the account-id restriction applied to
 	// account-scoped readers with a table-specific SQL predicate. It must build
 	// SQL only from the quoted ids it is given. The result goes to the SQL
@@ -6869,12 +6875,17 @@ var table_metadata = map[string]TableDefinition{
 				) as resource_group`, spendSelect, recSelect, spendJoin, recJoin)
 			}
 
-			baseQuery = strings.ReplaceAll(baseQuery, "__resources_nostatus__where__", resourceWhereStrNoStatus)
-			baseQuery = strings.ReplaceAll(baseQuery, "__resources__where__", resourceWhereStr)
-			baseQuery = strings.ReplaceAll(baseQuery, "__spends__where__", spendsWhereStr)
-			baseQuery = strings.ReplaceAll(baseQuery, "__recommendations__where__", recommendationWhereStr)
-			baseQuery = strings.ReplaceAll(baseQuery, "__spends_acct__where__", "1 = 1"+spendAcctTenantWhereSQL)
-			baseQuery = strings.ReplaceAll(baseQuery, "__recommendations_acct__where__", "1 = 1"+recAcctTenantWhereSQL)
+			// One pass: replacing the placeholders one after another would also
+			// replace a placeholder name inside a filter value an earlier pass
+			// inserted, splicing a quoted fragment into that value.
+			baseQuery = strings.NewReplacer(
+				"__resources_nostatus__where__", resourceWhereStrNoStatus,
+				"__resources__where__", resourceWhereStr,
+				"__spends__where__", spendsWhereStr,
+				"__recommendations__where__", recommendationWhereStr,
+				"__spends_acct__where__", "1 = 1"+spendAcctTenantWhereSQL,
+				"__recommendations_acct__where__", "1 = 1"+recAcctTenantWhereSQL,
+			).Replace(baseQuery)
 
 			return baseQuery, request, nil
 		},
@@ -7644,6 +7655,20 @@ var table_metadata = map[string]TableDefinition{
 			configNameFilter := extractFilterSQL(&request, "config_value_name", "icv_filter.name")
 			configValueFilter := extractFilterSQL(&request, "config_value_value", "icv_filter.value")
 
+			// Secret config fields are blanked below and must not be matchable by
+			// value either, or the filter becomes a guessing oracle for them.
+			secretField, err := integrationSecretFieldSQL("ii.type", "icv.name")
+			if err != nil {
+				return "", request, err
+			}
+			if configValueFilter != "" {
+				secretFilterField, filterErr := integrationSecretFieldSQL("i.type", "icv_filter.name")
+				if filterErr != nil {
+					return "", request, filterErr
+				}
+				configValueFilter += " AND NOT COALESCE(icv_filter.is_encrypted, false) AND NOT " + secretFilterField
+			}
+
 			existsClause := ""
 			if configNameFilter != "" || configValueFilter != "" {
 				existsClause = " AND EXISTS (SELECT 1 FROM integration_config_values icv_filter WHERE icv_filter.integration_id = i.id" + configNameFilter + configValueFilter + ")"
@@ -7708,48 +7733,21 @@ var table_metadata = map[string]TableDefinition{
 				GROUP BY ica.integration_id
 			) ica_agg ON ica_agg.integration_id = i.id
 			LEFT JOIN (
-				-- Per-row redaction for LLM credentials: the API key /
-				-- access key / secret key / session token (plus every
-				-- per-tier / per-agent override variant matching the same
-				-- prefixes) must never round-trip to clients. UI gets
-				-- value='' and a has_value boolean so it can render
-				-- "✓ Configured — leave blank to keep". Backend-side
-				-- redaction is defense-in-depth: even a caller that
-				-- bypasses the UI cannot retrieve the secret value from
-				-- this endpoint.
-				--
-				-- Pattern source of truth lives in
-				-- integrations/llm.go::llmSecretFieldPrefixes — keep in
-				-- sync if that list changes.
+				-- Secret config values never leave the server. A field is secret
+				-- when integrations/core says so (its schema's IsEncrypted, plus
+				-- the LLM per-agent / per-tier key prefixes), the same rule the
+				-- create and update responses apply. Any row stored encrypted is
+				-- blanked too: rows of retired types or renamed fields carry
+				-- ciphertext no schema names any more. The UI gets value='' and a
+				-- has_value flag, shows a saved mask, and on save sends
+				-- is_encrypted=true so the server keeps the stored value
+				-- (core.ResolveKeptSecrets).
 				SELECT
 					icv.integration_id,
 					json_agg(json_build_object(
 						'id', icv.id,
 						'name', icv.name,
-						'value', CASE
-							-- ii.type stores integrations/llm.go::IntegrationLLM
-							-- ('llm', lowercase). Kept as a literal here to avoid a
-							-- query→integrations import cycle (integrations already
-							-- imports query). If IntegrationLLM ever changes, this
-							-- literal must be updated in lockstep.
-							WHEN ii.type = 'llm' AND (
-								icv.name LIKE 'llm_provider_api_key%' OR
-								icv.name LIKE 'llm_provider_access_key%' OR
-								icv.name LIKE 'llm_provider_secret_key%' OR
-								icv.name LIKE 'llm_provider_session_token%' OR
-								icv.name LIKE 'llm_oauth_client_secret%' OR
-								icv.name LIKE 'llm_tier_api_key%' OR
-								icv.name LIKE 'llm_tier_access_key%' OR
-								icv.name LIKE 'llm_tier_secret_key%' OR
-								icv.name LIKE 'llm_tier_session_token%' OR
-								icv.name LIKE 'llm_tier_oauth_client_secret%' OR
-								icv.name LIKE 'llm_fallback_api_key%' OR
-								icv.name LIKE 'llm_fallback_access_key%' OR
-								icv.name LIKE 'llm_fallback_secret_key%' OR
-								icv.name LIKE 'llm_fallback_oauth_client_secret%'
-							) THEN ''
-							ELSE icv.value
-						END,
+						'value', CASE WHEN COALESCE(icv.is_encrypted, false) OR ` + secretField + ` THEN '' ELSE icv.value END,
 						'type', icv.type,
 						'has_value', icv.value IS NOT NULL AND icv.value <> ''
 					)) as config_values
@@ -8939,9 +8937,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"cloud_resource_details_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "cloud_resource_details_v2",
+		Type:          Derived,
+		Source:        database.Metastore,
+		Name:          "cloud_resource_details_v2",
+		GlobalCatalog: true,
 		Def: `(
 			SELECT
 				id,
@@ -9391,17 +9390,20 @@ var table_metadata = map[string]TableDefinition{
 				}
 			}
 
+			crWhere, spendsWhere := "", ""
 			if crWhereStr != "" {
-				baseQuery = strings.ReplaceAll(baseQuery, "__cr__where__", "WHERE "+crWhereStr)
-			} else {
-				baseQuery = strings.ReplaceAll(baseQuery, "__cr__where__", "")
+				crWhere = "WHERE " + crWhereStr
 			}
 			if spendsWhereStr != "" {
-				baseQuery = strings.ReplaceAll(baseQuery, "__spends__where__", "WHERE "+spendsWhereStr)
-			} else {
-				baseQuery = strings.ReplaceAll(baseQuery, "__spends__where__", "")
+				spendsWhere = "WHERE " + spendsWhereStr
 			}
-			baseQuery = strings.ReplaceAll(baseQuery, "__metrics__where__", metricsWhereStr)
+			// One pass, as in resource_groupings_v2: a sequential replace would
+			// rewrite a placeholder name inside an inserted filter value.
+			baseQuery = strings.NewReplacer(
+				"__cr__where__", crWhere,
+				"__spends__where__", spendsWhere,
+				"__metrics__where__", metricsWhereStr,
+			).Replace(baseQuery)
 			return baseQuery, request, nil
 		},
 		TenantIdColumnName:  "tenant",
@@ -10877,10 +10879,11 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"knowledge_base_v2": {
-		Type:   Normal,
-		Source: database.Metastore,
-		Name:   "knowledge_base_v2",
-		Def:    "knowledge_base",
+		Type:          Normal,
+		Source:        database.Metastore,
+		Name:          "knowledge_base_v2",
+		GlobalCatalog: true,
+		Def:           "knowledge_base",
 		Columns: map[string]ColumnDefinition{
 			"id":          {Type: ColumnDefinitionTypeString, Def: "id"},
 			"rule_name":   {Type: ColumnDefinitionTypeString, Def: "rule_name"},
@@ -10959,9 +10962,10 @@ var table_metadata = map[string]TableDefinition{
 	// feature.category is NOT NULL with an FK to feature_category, so the inner
 	// join cannot drop a row.
 	"feature_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "feature_v2",
+		Type:          Derived,
+		Source:        database.Metastore,
+		Name:          "feature_v2",
+		GlobalCatalog: true,
 		Def: `(
 			SELECT
 				f.value as value,
@@ -11206,9 +11210,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"anomaly_type_v2": {
-		Type:   Derived,
-		Source: getSource("anomaly_type_v2"),
-		Name:   "anomaly_type_v2",
+		Type:          Derived,
+		Source:        getSource("anomaly_type_v2"),
+		Name:          "anomaly_type_v2",
+		GlobalCatalog: true,
 		Def: `(
 			SELECT
 				value,

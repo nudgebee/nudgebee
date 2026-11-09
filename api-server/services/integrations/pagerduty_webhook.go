@@ -511,7 +511,7 @@ func (m PagerDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settin
 	}
 
 	if payloadData["type"] != "incident" {
-		sc.GetLogger().Error("pagerdutywebhook, payload is not an incident", "payload", webhookPayloadString)
+		sc.GetLogger().Error("pagerdutywebhook, unsupported payload type", "payload_type", payloadData["type"], "payload_bytes", len(webhookPayloadString))
 		return []core.EventIncomingWebhook{}, errors.New("pagerdutywebhook: invalid payload, only incident is supported for event.data.type")
 	}
 

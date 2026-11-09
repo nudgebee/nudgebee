@@ -14,6 +14,21 @@ type ConversationFeedbackRequest struct {
 	Useful                bool   `json:"useful" validate:"required" db:"useful,omitempty"`
 }
 
+// ListOwnConversationFeedbackRequest asks for the authenticated caller's own
+// feedback on a set of responses (session_ids) — the user_id scope itself
+// comes from the request's security context, never from this struct, so the
+// client cannot choose it.
+type ListOwnConversationFeedbackRequest struct {
+	CloudAccountId string   `json:"cloud_account_id" validate:"required"`
+	SessionId      []string `json:"session_id" validate:"required"`
+}
+
+type OwnFeedbackRow struct {
+	SessionId       string  `json:"session_id" db:"session_id"`
+	Useful          *bool   `json:"useful" db:"useful"`
+	AdditionalNotes *string `json:"additional_notes" db:"additional_notes"`
+}
+
 type SaveOrDeleteConversationRequest struct {
 	ConversationId string `json:"conversation_id" validate:"required" db:"conversation_id,omitempty"`
 }

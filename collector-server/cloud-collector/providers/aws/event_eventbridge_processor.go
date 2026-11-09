@@ -2044,7 +2044,9 @@ func (p *TemplatedEventBridgeProcessor) updateCloudResource(
 	// This ensures we refresh AWS data while preserving existing DB fields
 	// Note: If adding new parameters after this, remember to increment argIndex appropriately
 	updateSetClauses = append(updateSetClauses, fmt.Sprintf("meta = COALESCE(cloud_resourses.meta, '{}'::jsonb) || $%d::jsonb", argIndex))
-	args = append(args, finalMetaJson)
+	// Already redacted by the wrapped service fetch; repeated so a future direct
+	// fetch cannot write secrets through this merge.
+	args = append(args, providers.RedactMetaJSON(finalMetaJson))
 
 	// Pre-reconcile: if a row exists with the same natural key (account, resourse_id, type, region, service_name)
 	// but a different external_resource_id, update its external_resource_id so the ON CONFLICT below catches it.

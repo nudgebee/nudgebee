@@ -120,40 +120,54 @@ func validateGitLabDetails(gitDetails gitLabDetailFromDeployment) error {
 	return nil
 }
 
-func checkoutCodeRepoGitLab(ctx AccountAdapterContext, request ApplyRecommendationRequest, gitDetails gitLabDetailFromDeployment) (string, error) {
+// gitLabBaseURL is the https:// root of the GitLab instance; a configured
+// http:// scheme is upgraded, as it always has been for clones.
+func gitLabBaseURL(gitDetails gitLabDetailFromDeployment) string {
+	host := strings.TrimPrefix(gitDetails.GitLabURL, "https://")
+	host = strings.TrimPrefix(host, "http://")
+	return "https://" + strings.TrimSuffix(host, "/") + "/"
+}
+
+// gitLabGitEnv is gitHTTPAuthEnv for the deployment's GitLab instance.
+func gitLabGitEnv(gitDetails gitLabDetailFromDeployment) []string {
+	return gitHTTPAuthEnv(gitLabBaseURL(gitDetails), gitDetails.Token)
+}
+
+func checkoutCodeRepoGitLab(ctx AccountAdapterContext, request ApplyRecommendationRequest, gitDetails gitLabDetailFromDeployment) (dir string, err error) {
 	if err := validateGitLabDetails(gitDetails); err != nil {
 		return "", err
 	}
 
-	dir, err := os.MkdirTemp("", "checkout")
+	dir, err = os.MkdirTemp("", "checkout")
 	if err != nil {
 		ctx.GetLogger().Error("Error creating temp dir", "error", err)
 		return "", err
 	}
+	// The caller only owns dir on success; a failed checkout removes it. A
+	// failing return has already set dir to "", so remove the saved path.
+	tmpDir := dir
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(tmpDir)
+		}
+	}()
 
-	// Construct the GitLab clone URL
-	// Format: https://oauth2:<token>@gitlab.com/group/project.git
-	gitLabHost := strings.TrimPrefix(gitDetails.GitLabURL, "https://")
-	gitLabHost = strings.TrimPrefix(gitLabHost, "http://")
-
-	var gitURL string
-	if gitDetails.Token == "" {
-		gitURL = fmt.Sprintf("https://%s/%s.git", gitLabHost, gitDetails.ProjectPath)
-	} else {
-		gitURL = fmt.Sprintf("https://oauth2:%s@%s/%s.git", gitDetails.Token, gitLabHost, gitDetails.ProjectPath)
-	}
+	// The token goes in the environment, not the URL: see gitHTTPAuthEnv.
+	gitURL := fmt.Sprintf("%s%s.git", gitLabBaseURL(gitDetails), gitDetails.ProjectPath)
 
 	cmd := exec.Command("git", "clone", "--depth", "1", "-b", gitDetails.BaseBranch, gitURL, dir)
+	cmd.Env = gitLabGitEnv(gitDetails)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		ctx.GetLogger().Error("Error cloning repo", "error", err, "output", redactGitCredentials(string(output)))
+		ctx.GetLogger().Error("Error cloning repo", "error", err, "output", redactGitOutput(string(output), gitDetails.Token))
 		return "", err
 	}
 
 	if gitDetails.Sha1 != "" {
 		cmdFetch := exec.Command("git", "-C", dir, "fetch", "--depth=1", "origin", gitDetails.Sha1)
+		cmdFetch.Env = gitLabGitEnv(gitDetails)
 		if output, err := cmdFetch.CombinedOutput(); err != nil {
-			return "", fmt.Errorf("fetch specific commit failed: %s, %v", redactGitCredentials(string(output)), err)
+			return "", fmt.Errorf("fetch specific commit failed: %s, %v", redactGitOutput(string(output), gitDetails.Token), err)
 		}
 		cmdCheckout := exec.Command("git", "-C", dir, "checkout", gitDetails.Sha1)
 		if output, err := cmdCheckout.CombinedOutput(); err != nil {
@@ -176,9 +190,10 @@ func commitCodeGitLab(ctx AccountAdapterContext, dir string, request ApplyRecomm
 		}
 		cmd1 := exec.Command("git", "fetch")
 		cmd1.Dir = dir
+		cmd1.Env = gitLabGitEnv(gitDetails)
 		output1, err1 := cmd1.Output()
 		if err1 != nil {
-			ctx.GetLogger().Error("Error fetching remote branch", "error", err1, "output", redactGitCredentials(string(output1)), "branch", branchName)
+			ctx.GetLogger().Error("Error fetching remote branch", "error", err1, "output", redactGitOutput(string(output1), gitDetails.Token), "branch", branchName)
 			return "", err1
 		}
 		cmd2 := exec.Command("git", "checkout", "-b", branchName, "origin/"+branchName)

@@ -25,6 +25,8 @@ interface KubernetesWorkloadRelayLogsProps {
 // run `kubectl logs <kind>/<name> --all-containers` the same way the backend's
 // event-rule log action does for workload kinds (see
 // api-server/services/observability/eventrule_actions_logs.go fetchLogsViaKubectl).
+// The command is built server-side from these fields (api-server api/relay.go
+// buildRelayKubectlLogs); a command string from the browser is refused there.
 const KubernetesWorkloadRelayLogs: React.FC<KubernetesWorkloadRelayLogsProps> = ({ accountId, namespace, workloadName, workloadType }) => {
   const [text, setText] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
@@ -43,13 +45,12 @@ const KubernetesWorkloadRelayLogs: React.FC<KubernetesWorkloadRelayLogsProps> = 
       }
       setErrorMsg('');
       setLoading(true);
-      const command = `kubectl logs ${workloadType.toLowerCase()}/${workloadName} -n ${namespace} --tail=1000 --all-containers=true`;
       const requestBody = {
         no_sinks: true,
         body: {
           account_id: accountId,
           action_name: 'kubectl_command_executor',
-          action_params: { command },
+          action_params: { kind: workloadType.toLowerCase(), name: workloadName, namespace, tail: 1000 },
           origin: 'Nudgebee UI',
         },
       };

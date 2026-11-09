@@ -147,8 +147,13 @@ class NotificationProcessor:
             await self._route_task(task, headers)
             time_taken = datetime.datetime.now() - start_time
             if time_taken.total_seconds() > settings.notifications.slow_task_threshold_seconds:
-                task.pop("parameters", None)
-                LOG.warning("Task took too long to process: %s, payload: %s", time_taken, task)
+                LOG.warning(
+                    "Task took too long to process: %s, kind=%s, type=%s, dispatch_id=%s",
+                    time_taken,
+                    task.get("kind"),
+                    task.get("type") or task.get("template_type"),
+                    task.get("dispatch_id"),
+                )
 
         except json.JSONDecodeError as e:
             LOG.exception("Failed to decode JSON: %s from: %s", e, headers)
@@ -197,4 +202,4 @@ class NotificationProcessor:
         elif "template_type" in task:
             await self.perform_email(task)  # Legacy fallback
         else:
-            LOG.warning("Unknown task found with from: %s, json: %s", headers, json.dumps(task))
+            LOG.warning("Unknown task found with from: %s, keys: %s", headers, sorted(task))

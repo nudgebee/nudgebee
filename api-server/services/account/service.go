@@ -741,6 +741,19 @@ func structToInsertMap(obj any) (map[string]any, error) {
 	return result, nil
 }
 
+// onboardingErrorConfig builds the copy of a create request that is stored with
+// a failed onboarding in cloud_account_onboarding_errors.config. The row exists
+// for diagnosis, and nothing reads credentials back from it, so they are
+// redacted before the copy is encrypted. That covers access_secret, password,
+// agent secrets, and a GCP service-account key passed in data.
+func onboardingErrorConfig(query AccountCreateRequest) (string, error) {
+	jsonQuery, err := common.MarshalJson(audit.RedactSecrets(query))
+	if err != nil {
+		return "", err
+	}
+	return common.Encrypt(string(jsonQuery))
+}
+
 func insertCloudAccountOnboardingError(tenantId string, createdBy string, cloudProvider string, config string, errorMessage any) (any, error) {
 	dbManager, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -848,12 +861,7 @@ func CreateAccount(context *security.RequestContext, query AccountCreateRequest)
 	query.UpdatedBy = context.GetSecurityContext().GetUserId()
 	query.Tenant = context.GetSecurityContext().GetTenantId()
 
-	jsonQuery, err := common.MarshalJson(query)
-	if err != nil {
-		return AccountCreateResponse{}, err
-	}
-
-	encrtptedAccountCreateRequestConfig, err := common.Encrypt(string(jsonQuery))
+	encrtptedAccountCreateRequestConfig, err := onboardingErrorConfig(query)
 	if err != nil {
 		return AccountCreateResponse{}, err
 	}
@@ -2670,6 +2678,9 @@ func UpsertAccountAttrs(context *security.RequestContext, request AccountAttrUps
 	}
 	uniqueAccountIds := make([]string, 0, len(accountIdSet))
 	for id := range accountIdSet {
+		if !context.GetSecurityContext().HasAccountAccess(id, security.SecurityAccessTypeUpdate) {
+			return AccountAttrUpsertResponse{}, common.ErrorUnauthorized("access denied for account")
+		}
 		uniqueAccountIds = append(uniqueAccountIds, id)
 	}
 

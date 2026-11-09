@@ -3,6 +3,7 @@ package user
 import (
 	"database/sql"
 	"errors"
+	"strings"
 
 	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
@@ -30,6 +31,20 @@ func canAdministerUsers(sc *security.SecurityContext) bool {
 // canAdministerUsers must not be able to escalate itself or anyone else.
 func mayAssignTenantRole(sc *security.SecurityContext) bool {
 	return sc.IsTenantAdmin() || sc.IsSuperAdmin()
+}
+
+// syncableRole reports whether role sync (SyncUserRoles) may write role as a
+// tenant-wide user_roles row: the tenant roles, plus the account roles SAML group
+// mappings assign. Anything else in the roles table is refused, super admin above
+// all: super admin is platform-wide and never a tenant-scoped row. Case-insensitive, like the citext role column, so a
+// mapping that worked before in another case keeps syncing.
+func syncableRole(role string) bool {
+	switch strings.ToLower(role) {
+	case security.AUTH_TENANT_ADMIN_ROLE, security.AUTH_TENANT_READ_ADMIN_ROLE,
+		security.AUTH_ACCOUNT_ADMIN_ROLE, security.AUTH_ACCOUNT_READ_ADMIN_ROLE:
+		return true
+	}
+	return false
 }
 
 // tenantUser is a user resolved WITHIN a tenant, with the direct tenant roles

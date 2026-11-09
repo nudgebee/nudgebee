@@ -151,7 +151,7 @@ const MessageItem = ({
   responseMeta,
   // Batched feedback for this response, pre-fetched once for the whole conversation by
   // MessageStream's useMessageAdditionalData, plus the flag saying so — forwarded as-is
-  // to KubernetesLLMRequestResponseV2, which skips its own getFeedbackForSessionId call
+  // to KubernetesLLMRequestResponseV2, which skips its own getOwnFeedbackForSessionId call
   // per card when set.
   feedback,
   feedbackManagedExternally,

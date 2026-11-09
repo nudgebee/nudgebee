@@ -6,10 +6,13 @@ import (
 	"strings"
 	"time"
 
+	"nudgebee/llm/security"
+
 	"github.com/lib/pq"
 )
 
-// Cross-tenant critique reads. No account/tenant filter — gated by requireTenantReadAdmin.
+// Critique reads. A platform super admin reads every tenant; anyone else reads
+// only their own tenant's accounts (see CritiqueScopeFor).
 
 // judgedDecisions: the two decisions runCritique returns. Others come from
 // other critique_type producers and are excluded from every rate here.
@@ -32,7 +35,30 @@ var critiqueThemes = []struct {
 	{"schema_validation", []string{"%schema%", "%validation%"}},
 }
 
-// CritiqueFilter scopes every critique-analytics query. Cross-tenant by design.
+// CritiqueScope says whose critiques a read may see.
+type CritiqueScope struct {
+	// AllTenants reads every tenant's critiques. Only CritiqueScopeFor sets it,
+	// and only for a platform super admin.
+	AllTenants bool
+	// AccountIDs limits the read to these accounts when AllTenants is false.
+	// An empty list matches no rows.
+	AccountIDs []string
+}
+
+// CritiqueScopeFor returns the scope for a caller: every tenant for a platform
+// super admin (full or read-only), otherwise the accounts of the caller's own
+// tenant.
+func CritiqueScopeFor(sc *security.SecurityContext) CritiqueScope {
+	if sc == nil {
+		return CritiqueScope{}
+	}
+	if sc.IsSuperAdmin() || sc.IsSuperAdminReadonly() {
+		return CritiqueScope{AllTenants: true}
+	}
+	return CritiqueScope{AccountIDs: sc.GetAccountIds()}
+}
+
+// CritiqueFilter scopes every critique-analytics query.
 type CritiqueFilter struct {
 	StartDate  time.Time
 	EndDate    time.Time
@@ -40,12 +66,18 @@ type CritiqueFilter struct {
 	Decisions  []string
 	// Theme, when set, overrides Decisions — refine rows matching the theme's patterns.
 	Theme string
+	Scope CritiqueScope
 }
 
 func (f CritiqueFilter) buildWhere() (string, []any) {
 	args := []any{f.StartDate, f.EndDate}
 	clauses := []string{"created_at >= $1", "created_at <= $2", "critique_type IS DISTINCT FROM 'claim_shadow'"}
 	n := 3
+	if !f.Scope.AllTenants {
+		clauses = append(clauses, fmt.Sprintf("account_id = ANY($%d::uuid[])", n))
+		args = append(args, pq.Array(f.Scope.AccountIDs))
+		n++
+	}
 	if len(f.AgentNames) > 0 {
 		clauses = append(clauses, fmt.Sprintf("agent_name = ANY($%d)", n))
 		args = append(args, pq.Array(f.AgentNames))
@@ -405,7 +437,7 @@ type CritiqueSummaryRequest struct {
 
 // HandleCritiqueSummaryApi backs critiques_aggregate_all. Caller must
 // already have passed requireTenantReadAdmin (api/chains.go).
-func HandleCritiqueSummaryApi(request CritiqueSummaryRequest) (CritiqueSummary, error) {
+func HandleCritiqueSummaryApi(request CritiqueSummaryRequest, scope CritiqueScope) (CritiqueSummary, error) {
 	startDate, err := time.Parse(time.RFC3339, request.StartDate)
 	if err != nil {
 		return CritiqueSummary{}, fmt.Errorf("HandleCritiqueSummaryApi: invalid start_date: %w", err)
@@ -418,6 +450,7 @@ func HandleCritiqueSummaryApi(request CritiqueSummaryRequest) (CritiqueSummary, 
 		StartDate:  startDate,
 		EndDate:    endDate,
 		AgentNames: request.Agents,
+		Scope:      scope,
 	})
 }
 
@@ -430,7 +463,7 @@ type CritiqueTrendRequest struct {
 }
 
 // HandleCritiqueTrendApi backs critiques_trend_all.
-func HandleCritiqueTrendApi(request CritiqueTrendRequest) (CritiqueTrend, error) {
+func HandleCritiqueTrendApi(request CritiqueTrendRequest, scope CritiqueScope) (CritiqueTrend, error) {
 	startDate, err := time.Parse(time.RFC3339, request.StartDate)
 	if err != nil {
 		return CritiqueTrend{}, fmt.Errorf("HandleCritiqueTrendApi: invalid start_date: %w", err)
@@ -447,6 +480,7 @@ func HandleCritiqueTrendApi(request CritiqueTrendRequest) (CritiqueTrend, error)
 		StartDate:  startDate,
 		EndDate:    endDate,
 		AgentNames: request.Agents,
+		Scope:      scope,
 	}, granularity)
 }
 
@@ -463,7 +497,7 @@ type CritiqueListRequest struct {
 }
 
 // HandleCritiqueListApi backs critiques_list_all.
-func HandleCritiqueListApi(request CritiqueListRequest) (CritiqueList, error) {
+func HandleCritiqueListApi(request CritiqueListRequest, scope CritiqueScope) (CritiqueList, error) {
 	startDate, err := time.Parse(time.RFC3339, request.StartDate)
 	if err != nil {
 		return CritiqueList{}, fmt.Errorf("HandleCritiqueListApi: invalid start_date: %w", err)
@@ -483,5 +517,6 @@ func HandleCritiqueListApi(request CritiqueListRequest) (CritiqueList, error) {
 		AgentNames: request.Agents,
 		Decisions:  request.Decisions,
 		Theme:      request.Theme,
+		Scope:      scope,
 	}, request.Limit, request.Offset)
 }

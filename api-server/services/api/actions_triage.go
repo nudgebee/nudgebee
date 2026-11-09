@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -160,6 +161,63 @@ func requireTriageAccountAccess(c *gin.Context, ctx *security.RequestContext, ac
 	return allowed
 }
 
+// readableEventAccounts resolves an optional account filter for a tenant-wide
+// events read. A tenant-wide reader gets the filter as given (empty meaning
+// every account). Anyone else gets exactly the accounts named, each checked, or,
+// with none named, the accounts they can read (built-in roles and custom grants
+// alike) instead of the handler's tenant-wide default. It answers 403 and
+// returns false when that leaves nothing.
+func readableEventAccounts(c *gin.Context, ctx *security.RequestContext, ids []string) ([]string, bool) {
+	sc := ctx.GetSecurityContext()
+	if sc == nil {
+		c.JSON(http.StatusForbidden, common.ErrorActionForbidden("access denied for account"))
+		return nil, false
+	}
+	if len(ids) > 0 {
+		for _, id := range ids {
+			if !requireTriageAccountAccess(c, ctx, id, "events", security.SecurityAccessTypeRead) {
+				return nil, false
+			}
+		}
+		return ids, true
+	}
+	if hasTenantWideEventsRead(sc) {
+		return ids, true
+	}
+	seen := map[string]bool{}
+	// Copied: appending to ListAccountIds' slice could write into the context's own.
+	candidates := slices.Concat(sc.ListAccountIds(), sc.ScopedAccountIdsForModule("events"))
+	for _, id := range candidates {
+		if !seen[id] && sc.CanReadAccountData(id, "events") {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		c.JSON(http.StatusForbidden, common.ErrorActionForbidden("access denied for account"))
+		return nil, false
+	}
+	return ids, true
+}
+
+// hasTenantWideEventsRead: a built-in tenant-wide reader, or a tenant-wide
+// custom grant to read events (Write implies Read).
+func hasTenantWideEventsRead(sc *security.SecurityContext) bool {
+	return sc.HasTenantAccess(security.SecurityAccessTypeRead) ||
+		sc.HasPermission("events", "Read") || sc.HasPermission("events", "Write")
+}
+
+// requireEventAccountAccess loads the event an action names and checks the
+// caller may read events on its account. It answers and returns false when not.
+func requireEventAccountAccess(c *gin.Context, ctx *security.RequestContext, eventID string) bool {
+	ev, err := event.GetEvent(ctx, eventID)
+	if err != nil || ev.CloudAccountId == nil || *ev.CloudAccountId == "" {
+		c.JSON(http.StatusNotFound, common.ErrorActionBadRequest("event not found"))
+		return false
+	}
+	return requireTriageAccountAccess(c, ctx, *ev.CloudAccountId, "events", security.SecurityAccessTypeRead)
+}
+
 // handleEventGetDuplicates returns the duplicate chain for an event
 // handleEventGetTriage returns the triage picture for an event: its duplicate
 // chain, historical firing stats and hourly trend. The llm-server
@@ -183,6 +241,9 @@ func handleEventGetTriage(h *ActionRequest, c *gin.Context, ctx *security.Reques
 
 	if ev.CloudAccountId == nil || *ev.CloudAccountId == "" {
 		c.JSON(400, common.ErrorActionBadRequest("event has no account ID"))
+		return
+	}
+	if !requireTriageAccountAccess(c, ctx, *ev.CloudAccountId, "events", security.SecurityAccessTypeRead) {
 		return
 	}
 
@@ -264,6 +325,9 @@ func handleEventGetDuplicates(h *ActionRequest, c *gin.Context, ctx *security.Re
 		c.JSON(400, common.ErrorActionBadRequest("event_id is required"))
 		return
 	}
+	if !requireEventAccountAccess(c, ctx, eventID) {
+		return
+	}
 
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -302,6 +366,9 @@ func handleEventGetTimeline(h *ActionRequest, c *gin.Context, ctx *security.Requ
 	eventID, ok := h.Input["event_id"].(string)
 	if !ok || eventID == "" {
 		c.JSON(400, common.ErrorActionBadRequest("event_id is required"))
+		return
+	}
+	if !requireEventAccountAccess(c, ctx, eventID) {
 		return
 	}
 
@@ -781,6 +848,9 @@ func handleEventGetClassification(h *ActionRequest, c *gin.Context, ctx *securit
 		c.JSON(http.StatusBadRequest, gin.H{"error": "event has no account ID"})
 		return
 	}
+	if !requireTriageAccountAccess(c, ctx, *ev.CloudAccountId, "events", security.SecurityAccessTypeRead) {
+		return
+	}
 
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -977,6 +1047,10 @@ func handleEventGetTriageRules(h *ActionRequest, c *gin.Context, ctx *security.R
 		return
 	}
 
+	cloudAccountIDs, ok := readableEventAccounts(c, ctx, cloudAccountIDs)
+	if !ok {
+		return
+	}
 	tenantID := ctx.GetSecurityContext().GetTenantId()
 
 	rules, err := triage.GetTriageRules(ctx.GetContext(), dbms.Db, req, cloudAccountIDs, tenantID)
@@ -996,6 +1070,9 @@ func handleEventPreviewTriageRule(h *ActionRequest, c *gin.Context, ctx *securit
 	cloudAccountID, ok := h.Input["cloud_account_id"].(string)
 	if !ok || cloudAccountID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "cloud_account_id is required"})
+		return
+	}
+	if !requireTriageAccountAccess(c, ctx, cloudAccountID, "events", security.SecurityAccessTypeRead) {
 		return
 	}
 
@@ -1458,6 +1535,9 @@ func handleEventGetThresholdSuggestion(h *ActionRequest, c *gin.Context, ctx *se
 		c.JSON(http.StatusForbidden, gin.H{"error": "event does not belong to this tenant"})
 		return
 	}
+	if ev.CloudAccountId != nil && !requireTriageAccountAccess(c, ctx, *ev.CloudAccountId, "events", security.SecurityAccessTypeRead) {
+		return
+	}
 
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -1520,8 +1600,9 @@ func handleEventGetThresholdSuggestion(h *ActionRequest, c *gin.Context, ctx *se
 
 // handleEventListThresholdSuggestions lists all cached threshold suggestions for a tenant.
 func handleEventListThresholdSuggestions(h *ActionRequest, c *gin.Context, ctx *security.RequestContext) {
+	sc := ctx.GetSecurityContext()
 	var tenantID string
-	if sc := ctx.GetSecurityContext(); sc != nil {
+	if sc != nil {
 		tenantID = sc.GetTenantId()
 	}
 	if tenantID == "" {
@@ -1541,6 +1622,19 @@ func handleEventListThresholdSuggestions(h *ActionRequest, c *gin.Context, ctx *
 	if len(cloudAccountIDs) == 0 {
 		if id, ok := h.Input["cloud_account_id"].(string); ok && id != "" {
 			cloudAccountIDs = []string{id}
+		}
+	}
+	// No account filter given: ListThresholdSuggestions treats an empty slice as "every
+	// account in the tenant", so a caller who isn't a tenant-wide reader must be narrowed
+	// to exactly the accounts they can read (built-in role grants and custom-role grants
+	// alike) instead of falling through to that tenant-wide default.
+	cloudAccountIDs, ok := readableEventAccounts(c, ctx, cloudAccountIDs)
+	if !ok {
+		return
+	}
+	for _, accID := range cloudAccountIDs {
+		if !requireTriageAccountAccess(c, ctx, accID, "events", security.SecurityAccessTypeRead) {
+			return
 		}
 	}
 	source, _ := h.Input["source"].(string)
@@ -1579,6 +1673,9 @@ func handleEventGetThresholdApplyOptions(h *ActionRequest, c *gin.Context, ctx *
 	cloudAccountID, _ := h.Input["cloud_account_id"].(string)
 	if alertRuleKey == "" || cloudAccountID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "alert_rule_key and cloud_account_id are required"})
+		return
+	}
+	if !requireTriageAccountAccess(c, ctx, cloudAccountID, "events", security.SecurityAccessTypeRead) {
 		return
 	}
 
@@ -1640,6 +1737,9 @@ func handleEventApplyThresholdSuggestion(h *ActionRequest, c *gin.Context, ctx *
 		c.JSON(http.StatusBadRequest, gin.H{"error": "alert_rule_key and cloud_account_id are required"})
 		return
 	}
+	if !requireTriageAccountAccess(c, ctx, req.CloudAccountID, "events", security.SecurityAccessTypeUpdate) {
+		return
+	}
 
 	auditEvent := audit.Audit{
 		UserId:        ctx.GetSecurityContext().GetUserId(),
@@ -1681,6 +1781,9 @@ func handleEventRevertThresholdSuggestion(h *ActionRequest, c *gin.Context, ctx 
 	cloudAccountID, _ := h.Input["cloud_account_id"].(string)
 	if alertRuleKey == "" || cloudAccountID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "alert_rule_key and cloud_account_id are required"})
+		return
+	}
+	if !requireTriageAccountAccess(c, ctx, cloudAccountID, "events", security.SecurityAccessTypeUpdate) {
 		return
 	}
 
@@ -1769,6 +1872,16 @@ func handleEventGetTriageRuleEvents(h *ActionRequest, c *gin.Context, ctx *secur
 		return
 	}
 
+	// With no account the events of every account in the tenant are listed:
+	// that is for tenant-wide readers only.
+	if accountID != nil {
+		if !requireTriageAccountAccess(c, ctx, *accountID, "events", security.SecurityAccessTypeRead) {
+			return
+		}
+	} else if sc := ctx.GetSecurityContext(); sc == nil || !hasTenantWideEventsRead(sc) {
+		c.JSON(http.StatusForbidden, common.ErrorActionForbidden("access denied for account"))
+		return
+	}
 	tenantID := ctx.GetSecurityContext().GetTenantId()
 
 	events, total, err := triage.GetEventsForTriageRule(ctx.GetContext(), dbms.Db, ruleID, tenantID, accountID, limit, offset, startDate, endDate)

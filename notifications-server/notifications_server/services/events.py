@@ -1114,10 +1114,21 @@ class Events:
         return {**headers, settings.llm_server_token_header: settings.llm_server_token}
 
     @staticmethod
+    def _llm_payload_summary(payload):
+        # The payload carries the user's question, channel history and images;
+        # log ids and sizes only, never the content.
+        return (
+            f"session_id={payload.get('session_id')} account_id={payload.get('account_id')} "
+            f"source={payload.get('source')} query_len={len(payload.get('query') or '')} "
+            f"channel_context_len={len(payload.get('channel_context') or [])} "
+            f"images={len(payload.get('images') or [])}"
+        )
+
+    @staticmethod
     def query_llm_server(payload, headers):
         result = None
         try:
-            LOG.info("Sending request to LLM Server: %s", payload)
+            LOG.info("Sending request to LLM Server: %s", Events._llm_payload_summary(payload))
             url = settings.services.llm_server + LLM_CHAT_ENDPOINT
             result = requests.post(url, headers=Events._with_llm_auth(headers), json=payload)
             result.raise_for_status()
@@ -1134,7 +1145,7 @@ class Events:
     @staticmethod
     async def async_query_llm_server(payload, headers):
         try:
-            LOG.info("Sending async request to LLM Server: %s", payload)
+            LOG.info("Sending async request to LLM Server: %s", Events._llm_payload_summary(payload))
             url = settings.services.llm_server + LLM_CHAT_ENDPOINT
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, headers=Events._with_llm_auth(headers), json=payload) as response:

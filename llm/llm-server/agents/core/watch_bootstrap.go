@@ -2,12 +2,14 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/watch"
 
+	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -34,6 +36,7 @@ func BootstrapWatch() error {
 	}
 	watch.SetLLMJudgeClientFactory(buildWatchJudgeClient)
 	watch.SetSecurityContextBuilder(buildWatchSecurityContext)
+	watch.SetOwnerAccessChecker(checkWatchOwnerAccess)
 	watch.SetSummarizerFactory(newLlmSummarizer)
 	if err := watch.RegisterDispatcher(); err != nil {
 		return fmt.Errorf("BootstrapWatch: register dispatcher: %w", err)
@@ -107,16 +110,10 @@ func buildWatchJudgeClient(ctx *security.RequestContext, w watch.Watch) (watch.L
 // originating account — the same tenancy the user had when they
 // registered the watch.
 //
-// KNOWN SCOPE LIMIT (v1): the rehydrated context is static for the
-// lifetime of the watch. If the originating user is off-boarded /
-// demoted, or the account is disabled, the poll continues to drive
-// admin-scoped tool calls under that identity until the watch
-// terminates (capped by `max_duration_sec`, default 24h). A future
-// hook should re-validate originator access on each RunOnePoll and
-// terminate as FAILED on revocation, plus subscribe to account-disable
-// events to enqueue an UPDATE … status='CANCELLED'. Until that lands
-// the cap is the only bound — keep `WatchMaxDurationSec` conservative
-// in any environment where role/account churn matters.
+// Sources are read-only (mutating verbs and SQL writes are refused at
+// create time), and checkWatchOwnerAccess re-checks the originating user
+// on every poll, ending the watch as FAILED once they may no longer run
+// Nubi on the account.
 func buildWatchSecurityContext(w watch.Watch) (*security.SecurityContext, error) {
 	userID := ""
 	if w.UserID != nil {
@@ -133,4 +130,23 @@ func buildWatchSecurityContext(w watch.Watch) (*security.SecurityContext, error)
 		return nil, fmt.Errorf("watch.bootstrap: failed to build security context for tenant %s", w.TenantID.String())
 	}
 	return sc, nil
+}
+
+// checkWatchOwnerAccess is the watch package's per-poll owner check. A watch
+// with no user (set up by a system run) has no owner to re-check.
+func checkWatchOwnerAccess(w watch.Watch) error {
+	if w.UserID == nil || *w.UserID == uuid.Nil {
+		return nil
+	}
+	sc, err := newSecurityContext(w.TenantID.String(), w.UserID.String())
+	if errors.Is(err, security.ErrSecurityContextRejected) {
+		return fmt.Errorf("%w: %w", watch.ErrOwnerAccessRevoked, err)
+	}
+	if err != nil {
+		return fmt.Errorf("watch owner access: %w", err)
+	}
+	if sc == nil || !sc.CanRunAI(w.AccountID.String()) {
+		return watch.ErrOwnerAccessRevoked
+	}
+	return nil
 }

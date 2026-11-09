@@ -989,7 +989,8 @@ func SaveTicketConfiguration(config models.TicketConfigurations, metadata []map[
 				)
 				VALUES (gen_random_uuid(), $1, $2, $3, $4, NOW(), NOW(), $5, $5)
 				ON CONFLICT (integration_id, name)
-				DO UPDATE SET value = EXCLUDED.value, updated_at = NOW(), updated_by = EXCLUDED.updated_by
+				DO UPDATE SET value = EXCLUDED.value, is_encrypted = EXCLUDED.is_encrypted,
+					updated_at = NOW(), updated_by = EXCLUDED.updated_by
 			`, integrationID, name, cv.value, cv.isEncrypted, config.CreatedBy)
 			if err != nil {
 				return response, fmt.Errorf("failed to upsert config value %s: %w", name, err)

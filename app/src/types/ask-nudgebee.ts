@@ -181,8 +181,10 @@ export interface ConversationComparisonRequest {
   extractEventIdsFromTitle?: boolean;
 }
 
-export interface FeedbackForSessionRequest {
-  account_id: string;
+// Request for the caller's own feedback, scoped server-side to the
+// authenticated user — see getOwnFeedbackForSessionId.
+export interface OwnFeedbackForSessionRequest {
+  cloud_account_id: string;
   session_id: string | string[];
 }
 

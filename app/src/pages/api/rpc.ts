@@ -6,9 +6,11 @@ import {
   buildSessionVariables,
   forwardAction,
   NO_TENANT_ROLE_MESSAGE,
+  staleTabTenant,
   tokenScopeDeniedMessage,
   traceIdFromTraceparent,
 } from '@lib/rpcGateway';
+import { TENANT_CHANGED_CODE, TENANT_CHANGED_MESSAGE } from '@lib/tabTenant';
 import { clientGone } from '@lib/graphqlGatewayHandler';
 
 // JSON-RPC 2.0 gateway. Thin protocol shell — auth, route lookup, envelope
@@ -23,6 +25,7 @@ const RPC_INTERNAL_ERROR = -32603;
 const RPC_AUTH_ERROR = -32001;
 const RPC_UPSTREAM_ERROR = -32002;
 const RPC_FORBIDDEN = -32003;
+const RPC_TENANT_CHANGED = -32004;
 
 const SLOW_THRESHOLD_MS = 500;
 
@@ -135,6 +138,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       // guard as defense in depth.
       if (!auth.jwt) {
         res.status(401).json(rpcError(rpcId, RPC_AUTH_ERROR, 'not_authenticated'));
+        return;
+      }
+      // A tab left on a tenant that another tab switched away from: refuse
+      // rather than act for the cookie's tenant on the old tenant's ids.
+      const staleTenant = staleTabTenant(req, auth.jwt);
+      if (staleTenant) {
+        res.status(409).json(rpcError(rpcId, RPC_TENANT_CHANGED, TENANT_CHANGED_MESSAGE, { code: TENANT_CHANGED_CODE, tenant: staleTenant }));
         return;
       }
       const sessionVariables = buildSessionVariables(auth.jwt);

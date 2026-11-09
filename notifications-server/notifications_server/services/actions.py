@@ -134,7 +134,7 @@ class Actions:
         This action is for handling approval/rejection of workflow requests.
         """
         if not params.token or not params.status:
-            LOG.error("Invalid approval params: token=%s, status=%s", params.token, params.status)
+            LOG.error("Invalid approval params: token present=%s, status=%s", bool(params.token), params.status)
             status_message = f"{Emojis.Alert.value} Invalid approval request"
             output_blocks = Transformer.to_slack(MarkdownBlock(status_message))
             bot = self.common_service.get_slack_installation(params.team_id)

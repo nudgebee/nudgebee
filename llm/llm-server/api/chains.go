@@ -476,7 +476,7 @@ func dispatchQueuedMessage(parent *security.RequestContext, conversation core.Co
 			fail(err)
 			return
 		}
-		if sc == nil || (!sc.HasAccountAccess(msg.AccountID.String(), security.SecurityAccessTypeRead) && !grantedRun(sc, msg.AccountID.String(), moduleAiMisc)) {
+		if sc == nil || !sc.CanRunAI(msg.AccountID.String()) {
 			fail(errors.New(errorUserAccessMessage))
 			return
 		}
@@ -2958,8 +2958,9 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		c.JSON(http.StatusOK, buildApiResponse(data, nil))
 	})
 
-	// Internal cross-tenant Critique Analytics routes. No account scoping —
-	// gated by requireTenantReadAdmin. A tenant_admin sees every tenant's data.
+	// Critique Analytics routes, gated by requireTenantReadAdmin. A platform
+	// super admin reads every tenant; a tenant admin reads only their own
+	// tenant's accounts (core.CritiqueScopeFor).
 
 	// Like requireTenantAdmin but also accepts tenant_admin_readonly. Kept
 	// separate — requireTenantAdmin's other call sites gate writes.
@@ -3025,7 +3026,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		data, err := core.HandleCritiqueSummaryApi(request)
+		data, err := core.HandleCritiqueSummaryApi(request, core.CritiqueScopeFor(agentContext.GetSecurityContext()))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
@@ -3085,7 +3086,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		data, err := core.HandleCritiqueTrendApi(request)
+		data, err := core.HandleCritiqueTrendApi(request, core.CritiqueScopeFor(agentContext.GetSecurityContext()))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
@@ -3145,7 +3146,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		data, err := core.HandleCritiqueListApi(request)
+		data, err := core.HandleCritiqueListApi(request, core.CritiqueScopeFor(agentContext.GetSecurityContext()))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
@@ -3436,7 +3437,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		// Resume agent execution
 		handleRequestExecution(c, agentContext, request.Async, agentContext.GetSecurityContext().GetUserId(), "chains_client_tool_result", logger, func(ctx *security.RequestContext) (core.NBAgentResponse, error) {
-			return core.HandleConversationMessageRequest(request.AccountId, request.ConversationId, request.MessageId, request.AgentId)
+			return core.HandleConversationMessageRequest(ctx, request.AccountId, request.ConversationId, request.MessageId, request.AgentId)
 		}, map[string]string{"status": "in_progress"})
 	})
 

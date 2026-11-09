@@ -947,6 +947,54 @@ func TestWorkspaceExecuteAuditUsesResolvedTargetAndOutcome(t *testing.T) {
 	require.Equal(t, audit.EventStatusFailure, failure.EventStatus)
 }
 
+// auditedCommandShapes are the shapes in which commands relayed from the
+// workspace carried a credential into the audit log; keep is a part of the
+// command that must survive the masking.
+var auditedCommandShapes = []struct {
+	name, command, keep string
+}{
+	{"connection string", "psql postgresql://postgres:Qv7rTx2mWp9z@192.0.2.10:5432/app -c 'SELECT id FROM accounts'", "@192.0.2.10:5432/app -c 'SELECT id FROM accounts'"},
+	{"url basic auth", "kubectl 'exec' '-n' 'monitoring' 'deployment/grafana' '--' 'curl' '-s' 'http://admin:Qv7rTx2mWp9z@localhost:3000/api/v1/provisioning/alert-rules'", "@localhost:3000/api/v1/provisioning/alert-rules"},
+	{"password env", "kubectl 'exec' 'db-0' '-n' 'shop' '--' 'env' 'PGPASSWORD=Qv7rTx2mWp9z' 'psql' '-U' 'app_user' '-d' 'app_db' '-c' 'SHOW work_mem;'", "'psql' '-U' 'app_user'"},
+	{"token argument", `kubectl 'exec' 'notifier-0' '--' 'python3' '-c' 'from slack_sdk.web.client import WebClient; c = WebClient(token="Qv7rTx2mWp9z"); print(c.retry_handlers)'`, "print(c.retry_handlers)"},
+}
+
+// The audit keeps the command but not the credential in it.
+func TestWorkspaceExecuteAuditMasksCredentials(t *testing.T) {
+	const secret = "Qv7rTx2mWp9z"
+	ctx := security.NewRequestContextForTenantAccountAdmin("audit-tenant", "audit-user", []string{"workspace"})
+	for _, tc := range auditedCommandShapes {
+		t.Run(tc.name, func(t *testing.T) {
+			req := WorkspaceExecuteRequest{AccountId: "workspace", Tool: "kubectl", Command: tc.command}
+			a := workspaceExecuteAudit(ctx, req, "kubectl", "workspace", true).Audits[0]
+			stored, err := json.Marshal(a)
+			require.NoError(t, err)
+			require.NotContains(t, string(stored), secret)
+			command := a.EventAttr["command"].(string)
+			require.Contains(t, command, "[REDACTED:")
+			require.Contains(t, command, tc.keep)
+			require.Equal(t, map[string]any{"command": command}, a.EventState)
+			require.Equal(t, tc.command, req.Command, "the relayed command is not changed")
+		})
+	}
+
+	t.Run("arguments", func(t *testing.T) {
+		req := WorkspaceExecuteRequest{AccountId: "workspace", Tool: "psql", Command: "psql", Arguments: map[string]any{
+			"password": secret,
+			"dsn":      "postgresql://app:" + secret + "@db.example.com/app",
+			"query":    "SELECT 1",
+		}}
+		a := workspaceExecuteAudit(ctx, req, "psql", "workspace", true).Audits[0]
+		stored, err := json.Marshal(a)
+		require.NoError(t, err)
+		require.NotContains(t, string(stored), secret)
+		args := a.EventAttr["arguments"].(map[string]any)
+		require.Equal(t, "SELECT 1", args["query"])
+		require.Contains(t, args["dsn"], "@db.example.com/app")
+		require.Equal(t, secret, req.Arguments["password"], "the relayed arguments are not changed")
+	})
+}
+
 // A database, cache or broker command bound to another account uses that
 // account's integration of the same name and is relayed there; anything else
 // keeps the workspace's own account.

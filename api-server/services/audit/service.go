@@ -68,8 +68,9 @@ func valueOrNil(value any) any {
 }
 
 func CreateAudit(context *security.RequestContext, auditRequest *AuditRequest) error {
-	// Skip audit for super admin operations (defense-in-depth)
-	if context.GetSecurityContext() != nil && context.GetSecurityContext().IsSuperAdmin() {
+	// Skip only the synthetic server identity, whose writes carry no human actor.
+	// Human super admins are audited like everyone else.
+	if context.GetSecurityContext() != nil && context.GetSecurityContext().IsServerInternal() {
 		return nil
 	}
 

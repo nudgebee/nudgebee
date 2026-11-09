@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 
-import { ALLOWED_RELAY_ENDPOINTS } from '@lib/relayEndpoints';
+import { ALLOWED_RELAY_ENDPOINTS, relayForwardBody, resolveRelayAccountId } from '@lib/relayEndpoints';
 
 const SRC_ROOT = path.resolve(__dirname, '../..');
 
@@ -26,12 +26,10 @@ const RELAY_PATH_LITERAL = /(?:getRelayServerEndpoint\s*\(\s*\)\s*\+\s*['"`]|\$\
  */
 describe('relay proxy endpoint allowlist', () => {
   /**
-   * Paths the app targets today. `hitRelayServer` (@lib/HttpService) selects
-   * `/request` or `/grafana` through a variable and XtermTerminal appends `/ws`, so
-   * a purely static scan cannot see all three. Add a path here when a new relay
-   * caller lands.
+   * Paths the app targets today: XtermTerminal appends `/ws`. Add a path here when
+   * a new relay caller lands.
    */
-  const PATHS_IN_USE = ['request', 'grafana', 'ws'];
+  const PATHS_IN_USE = ['ws'];
 
   it.each(PATHS_IN_USE)('allows %s, which the app actively targets', (segment) => {
     expect(ALLOWED_RELAY_ENDPOINTS.has(segment)).toBe(true);
@@ -40,7 +38,8 @@ describe('relay proxy endpoint allowlist', () => {
   it('rejects segments the app does not target, including traversal attempts', () => {
     // The allowlist exists to stop the dynamic segment reaching arbitrary upstream
     // paths (#28584); widening it must not weaken that.
-    for (const segment of ['', '..', '../request', 'register', 'status', 'admin', 'ws/../register']) {
+    // `request` and `grafana` forwarded any agent action for any role (finding 11).
+    for (const segment of ['', '..', '../request', 'request', 'grafana', 'register', 'status', 'admin', 'ws/../register']) {
       expect(ALLOWED_RELAY_ENDPOINTS.has(segment)).toBe(false);
     }
   });
@@ -86,5 +85,72 @@ describe('relay proxy endpoint allowlist', () => {
       RELAY_PATH_LITERAL.lastIndex = 0;
       expect(RELAY_PATH_LITERAL.exec(sample)?.[1]).toBeTruthy();
     }
+  });
+});
+
+describe('resolveRelayAccountId', () => {
+  it('rejects a body whose nested and top-level account ids differ', () => {
+    // Own account nested, another tenant's at the top level: the proxy used to check
+    // the nested one while relay /ws exec'd into the top-level one.
+    const body = { account_id: 'other', action: 'exec', body: { account_id: 'mine' } };
+    for (const segment of ['ws', 'request', 'grafana']) {
+      expect(resolveRelayAccountId(segment, body)).toEqual({ ok: false, error: expect.any(String) });
+    }
+  });
+
+  it('authorises the top-level account id for ws, the only field relay /ws reads', () => {
+    expect(resolveRelayAccountId('ws', { account_id: 'a1', action: 'start' })).toEqual({ ok: true, accountId: 'a1' });
+    // Nested-only is not what /ws acts on, so nothing is authorised (hasAccountAccess denies).
+    expect(resolveRelayAccountId('ws', { body: { account_id: 'a1' } })).toEqual({ ok: true, accountId: undefined });
+  });
+
+  it('authorises nested-then-top-level for request, matching relay /request', () => {
+    expect(resolveRelayAccountId('request', { body: { account_id: 'a1' } })).toEqual({ ok: true, accountId: 'a1' });
+    expect(resolveRelayAccountId('request', { account_id: 'a1' })).toEqual({ ok: true, accountId: 'a1' });
+    expect(resolveRelayAccountId('request', { account_id: 'a1', body: { account_id: 'a1' } })).toEqual({ ok: true, accountId: 'a1' });
+    // Relay treats an empty nested id as absent and falls back to the top level.
+    expect(resolveRelayAccountId('request', { account_id: 'a1', body: { account_id: '' } })).toEqual({ ok: true, accountId: 'a1' });
+  });
+
+  it('treats a null account id as absent', () => {
+    expect(resolveRelayAccountId('request', { account_id: 'a1', body: { account_id: null } })).toEqual({ ok: true, accountId: 'a1' });
+  });
+
+  it('rejects a non-string account id', () => {
+    expect(resolveRelayAccountId('request', { body: { account_id: { $ne: '' } } }).ok).toBe(false);
+    expect(resolveRelayAccountId('ws', { account_id: 123 }).ok).toBe(false);
+  });
+});
+
+describe('relayForwardBody', () => {
+  it('forwards only InteractiveShellRequest fields for ws, so a case-variant account key never reaches the relay', () => {
+    // Go's encoding/json would bind ACCOUNT_ID (last case-insensitive match) while the
+    // proxy authorised account_id.
+    const body = {
+      account_id: 'mine',
+      ACCOUNT_ID: 'other',
+      Account_Id: 'other',
+      action: 'exec',
+      session_id: 's',
+      command: 'ls',
+      track_history: true,
+    };
+    const forwarded = relayForwardBody('ws', body);
+    expect(forwarded).toEqual({ account_id: 'mine', action: 'exec', session_id: 's', command: 'ls' });
+    expect(
+      JSON.stringify(forwarded)
+        .toLowerCase()
+        .match(/account_id/g)
+    ).toHaveLength(1);
+  });
+
+  it('keeps every shell field the terminal sends', () => {
+    const body = { account_id: 'a', action: 'start', session_id: 's', command: 'c', name: 'pod', namespace: 'ns', request_id: 'r', container: 'app' };
+    expect(relayForwardBody('ws', body)).toEqual(body);
+  });
+
+  it('leaves other endpoints untouched', () => {
+    const body = { body: { account_id: 'a', action_name: 'x' }, ACCOUNT_ID: 'b' };
+    expect(relayForwardBody('request', body)).toBe(body);
   });
 });

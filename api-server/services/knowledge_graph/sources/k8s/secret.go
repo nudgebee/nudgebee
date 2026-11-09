@@ -141,6 +141,9 @@ func (s *K8sSource) parseK8sSecretsResponse(response map[string]interface{}) ([]
 			}
 			sec.Data = stripped
 		}
+		// Same for annotations: last-applied-configuration holds the whole
+		// Secret, data included. NewNode sanitises again on the way to the DB.
+		sec.Metadata.Annotations = core.SanitizeAnnotations(core.NodeTypeK8sSecret, sec.Metadata.Annotations)
 
 		secrets = append(secrets, sec)
 	}

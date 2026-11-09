@@ -20,6 +20,7 @@ import (
 	"nudgebee/services/bootstrap"
 	"nudgebee/services/common"
 	"nudgebee/services/config"
+	"nudgebee/services/integrations/core"
 	"nudgebee/services/internal/database"
 
 	"github.com/Cyprinus12138/otelgin"
@@ -49,6 +50,8 @@ var logger = slog.New(
 		slogformatter.NewFormatterHandler(errorFormatter)(
 			slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 				Level: slog.LevelInfo,
+				// Webhooks authenticate with ?token=; keep it out of the access log.
+				ReplaceAttr: common.RedactRequestLogAttr,
 			}),
 		),
 	),
@@ -213,6 +216,7 @@ func main() {
 	r.Use(sloggin.NewWithConfig(logger, slogginConfig))
 	r.Use(traceResponseHeaderMiddleware())
 	r.Use(authHandlerMiddleware())
+	r.Use(api.AccountTenantFloor())
 
 	var tracer = otel.Tracer(config.SERVICE_NAME)
 	var meter = otel.Meter(config.SERVICE_NAME)
@@ -231,6 +235,22 @@ func main() {
 	firstRunCtx, stopFirstRun := context.WithCancel(context.Background())
 	bootstrap.RunFirstRun(firstRunCtx, logger)
 
+	// Encrypt secret config values still stored in plaintext, or flagged wrong.
+	// Background-jobs pods only. Idempotent, so it simply runs on every boot; a
+	// failure (e.g. the schema is not migrated yet) is retried on the next.
+	backfillCtx, stopBackfill := context.WithCancel(context.Background())
+	if config.RunsBackgroundJobs() {
+		go func() {
+			if _, err := core.BackfillSecretEncryption(backfillCtx, logger); err != nil && backfillCtx.Err() != nil {
+				// Shutdown before it finished (the driver's error varies); the next
+				// boot picks it up.
+				slog.Warn("secret backfill stopped by shutdown", "error", err)
+			} else if err != nil {
+				slog.Error("secret backfill failed", "error", err)
+			}
+		}()
+	}
+
 	api.ConfigureRoutes(r, &tracer, &meter, logger)
 
 	port := os.Getenv("PORT")
@@ -246,6 +266,7 @@ func main() {
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	if err := serve(srv, c, shutdownTimeout, func() {
 		stopFirstRun()
+		stopBackfill()
 		cleanup()
 	}); err != nil {
 		slog.Error("Server listen failed:", "error", err)

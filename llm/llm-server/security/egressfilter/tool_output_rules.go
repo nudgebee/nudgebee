@@ -321,7 +321,8 @@ var (
 // urlPassword matches the password part of scheme://user:password@host.
 var urlPassword = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://[^\s/:@"'<>]+:)([^\s@"'\\<>/]+)(@)`)
 
-var privateKeyBlock = regexp.MustCompile(`-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z]+ )?PRIVATE KEY-----`)
+// privateKeyBlock stays inside one quoted string and accepts YAML-folded markers.
+var privateKeyBlock = regexp.MustCompile(`-----BEGIN(?:\s|\\+n)+(?:[A-Z]+(?:\s|\\+n)+)?PRIVATE(?:\s|\\+n)+KEY-----[^"']*?-----END(?:\s|\\+n)+(?:[A-Z]+(?:\s|\\+n)+)?PRIVATE(?:\s|\\+n)+KEY-----`)
 
 // toolOutputTokenPatterns match credentials by their own shape, wherever they
 // appear. A first capture group, when present, is kept (a header name).

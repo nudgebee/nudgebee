@@ -19,7 +19,6 @@ import type {
   DeleteSavedConversationRequest,
   ForceExecuteQueuedMessageRequest,
   FollowupRequest,
-  FeedbackForSessionRequest,
   GenerateQueryRequest,
   GetWorkspaceFileRequest,
   InvestigateRequest,
@@ -27,6 +26,7 @@ import type {
   ListAgentsRequest,
   ListFunctionsRequest,
   ListToolsRequest,
+  OwnFeedbackForSessionRequest,
   SaveConversationRequest,
   StopInvestigateRequest,
   ToolDefinition,
@@ -763,46 +763,28 @@ const api = {
 
     return response;
   },
-  async getFeedbackForSessionId(data: FeedbackForSessionRequest) {
-    if (data.account_id === 'demo') return null;
-    // `session_id` throughout this call (and the ai_list_conversation_feedback.session_id
-    // column it filters on) is actually a per-message id, not a conversation/session id —
-    // single callers pass a message id (e.g. KubernetesLLMRequestResponseV2's toolCall.id),
-    // and the batched caller (useMessageAdditionalData) passes an array of message ids.
-    // No `limit` here — a batched call (session_id as an array) needs one row per message, and
-    // a limit applies to the whole result set rather than per session_id. Rows come back
-    // ordered by updated_at desc, so we keep only the first (latest) row per session_id below
-    // to preserve the "one row per message" contract single callers rely on.
-    const GET_FEEBACK_FOR_SESSION_ID = `
-        query LLMFeedback {
-          ai_list_conversation_feedback(where: __WHERE__, order_by: {column: "updated_at", order: desc}) {
+  // The caller's own feedback for a set of responses — scoped server-side to
+  // the authenticated user, so on a shared conversation a teammate's vote on
+  // the same response never shows up as "your" vote (unlike listAiFeedback,
+  // which intentionally returns every user's feedback for the admin Feedback
+  // tab).
+  async getOwnFeedbackForSessionId(data: OwnFeedbackForSessionRequest) {
+    if (data.cloud_account_id === 'demo') return null;
+    const GET_OWN_FEEDBACK_FOR_SESSION_ID = `
+        query ListOwnConversationFeedback($data: ListOwnConversationFeedbackRequest!) {
+          ai_list_own_conversation_feedback(request: $data) {
             rows {
-              useful
-              updated_at
-              module
-              additional_notes
               session_id
+              useful
+              additional_notes
             }
           }
         }
         `;
-    const query: any = {};
-    query.cloud_account_id = { _eq: data.account_id };
-    if (Array.isArray(data.session_id)) {
-      query.session_id = { _in: data.session_id };
-    } else {
-      query.session_id = { _eq: data.session_id };
-    }
-    const response = await queryGraphQL(GET_FEEBACK_FOR_SESSION_ID.replace('__WHERE__', gqlStringify(query)), 'LLMFeedback', {});
-    const feedbackResult = response?.data?.data?.ai_list_conversation_feedback;
-    if (feedbackResult && Array.isArray(feedbackResult.rows)) {
-      const seenSessionIds = new Set();
-      feedbackResult.rows = feedbackResult.rows.filter((row: any) => {
-        if (seenSessionIds.has(row.session_id)) return false;
-        seenSessionIds.add(row.session_id);
-        return true;
-      });
-    }
+    const sessionIds = (Array.isArray(data.session_id) ? data.session_id : [data.session_id]).filter(Boolean);
+    const response = await queryGraphQL(GET_OWN_FEEDBACK_FOR_SESSION_ID, 'ListOwnConversationFeedback', {
+      data: { cloud_account_id: data.cloud_account_id, session_id: sessionIds },
+    });
     return response;
   },
   async saveConversation(data: SaveConversationRequest) {

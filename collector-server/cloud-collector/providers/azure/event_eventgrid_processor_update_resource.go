@@ -261,6 +261,11 @@ func (p *TemplatedEventGridProcessor) executeUpdateCloudResourceAction(ctx provi
 			finalMetaJson = paramMetaJson
 		}
 	}
+	// The meta above may have been read back from the row rather than from the
+	// provider, so redact what is about to be written.
+	if finalMetaJson != "" {
+		finalMetaJson = providers.RedactMetaJSON(finalMetaJson)
+	}
 
 	// Build UPSERT query dynamically based on whether status is provided
 	now := time.Now().UTC().Format(time.RFC3339)
