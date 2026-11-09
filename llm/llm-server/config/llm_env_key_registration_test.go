@@ -42,6 +42,7 @@ func TestLLMEnvKeysAreRegisteredWithViper(t *testing.T) {
 		"llm_server_remediation_followup_max_runs",
 		"llm_server_watch_max_origin_per_tenant",
 		"llm_server_watch_max_origin_duration_sec",
+		"llm_server_agent_sql_scoped_role",
 	} {
 		assert.True(t, known[key],
 			"%s has no viper.SetDefault, so its environment variable will never reach Config", key)

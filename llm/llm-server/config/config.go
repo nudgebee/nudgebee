@@ -473,6 +473,10 @@ type appConfig struct {
 	LlmServerAgentMaxTracesRows      int    `mapstructure:"llm_server_agent_max_tracesrows"`
 	LlmServerAgentMaxScratchpadChars int    `mapstructure:"llm_server_agent_max_scratchpad_chars"`
 	LlmServerMaxGCBytes              int    `mapstructure:"llm_server_max_gc_bytes"`
+	// LlmServerAgentSqlScopedRole runs the metastore SQL tools as role
+	// nb_llm_sql_tools over the account-scoped nb_llm_tools views (V1112). On
+	// with the role missing, they refuse; only off runs them as llm-server's own user.
+	LlmServerAgentSqlScopedRole bool `mapstructure:"llm_server_agent_sql_scoped_role"`
 	// LlmServerAgentAccountPromptMaxBytes caps the account GlobalContext
 	// fragment attached to custom-planner agent LLM calls (log/trace/kubectl
 	// intent generators, resource search). Distinct from
@@ -1386,6 +1390,7 @@ func init() {
 	viper.SetDefault("llm_server_agent_max_sqlrows", 10)
 	viper.SetDefault("llm_server_agent_sql_timeout_sec", 120)
 	viper.SetDefault("llm_server_agent_sql_work_mem_mb", 32)
+	viper.SetDefault("llm_server_agent_sql_scoped_role", true)
 	viper.SetDefault("llm_server_agent_max_tracesrows", 100)
 	viper.SetDefault("llm_server_agent_max_scratchpad_chars", 200000)
 	viper.SetDefault("llm_server_max_skill_content_length", 5000)

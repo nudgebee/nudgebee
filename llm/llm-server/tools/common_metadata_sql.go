@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 
 	"nudgebee/llm/common"
@@ -131,8 +132,8 @@ func stripSingleLineComments(query string) string {
 }
 
 // The metastore SQL tools give the model one table (a view swapped in for the
-// account) and run its query as a database user that can read the whole app
-// database. sqlCheckSingleTable keeps the query on that one table without
+// account). Where the scoped role is unavailable (sqlScopeToAccount), its query
+// runs as a database user that can read the whole app database. sqlCheckSingleTable keeps the query on that one table without
 // parsing SQL: it counts keywords in the text, after blanking out '...'
 // literals. Comments, double quotes and dollar quotes are refused outright,
 // so a '...' literal is the only way to quote text and blanking it is exact.
@@ -314,6 +315,14 @@ func sqlExecuteQuery(ctx *security.RequestContext, query string, accountId strin
 			return nil, 0, fmt.Errorf("sqlExecuteQuery: set work_mem: %w", err)
 		}
 	}
+	scoped, err := sqlScopeToAccount(queryCtx, tx, accountId)
+	if err != nil {
+		return nil, 0, fmt.Errorf("sqlExecuteQuery: switch to %s: %w", sqlToolRole, err)
+	}
+	if !scoped && config.Config.LlmServerAgentSqlScopedRole {
+		ctx.GetLogger().Error("sql: refused tool query, scoped role unavailable", "table", tableName, "role", sqlToolRole, "schema", sqlToolSchema)
+		return nil, 0, errSqlScopedRoleUnavailable
+	}
 
 	// Prepared, not sent as a plain query: Postgres refuses to prepare more
 	// than one statement, so "select ...; commit; delete ..." cannot end the
@@ -367,11 +376,57 @@ func sqlExecuteQuery(ctx *security.RequestContext, query string, accountId strin
 	if err := rows.Err(); err != nil && !cut {
 		return nil, 0, toolQueryError(ctx, tableName, timeout, err)
 	}
-	ctx.GetLogger().Info("sql: executed tool query", "account", accountId, "query", finalQuery, "time", time.Since(t0).String(), "rows", len(data), "bytes", size, "cut", cut)
+	ctx.GetLogger().Info("sql: executed tool query", "account", accountId, "query", finalQuery, "time", time.Since(t0).String(), "rows", len(data), "bytes", size, "cut", cut, "scoped", scoped)
 	if cut {
 		return data, len(data), nil
 	}
 	return data, 0, nil
+}
+
+// sqlToolRole and sqlToolSchema come from migration V1112. The role can read
+// only the views in the schema; each view has the name of the table it reads
+// and returns only the rows of the account in app.account_id.
+const (
+	sqlToolRole   = "nb_llm_sql_tools"
+	sqlToolSchema = "nb_llm_tools"
+)
+
+// sqlScopeQuery switches to sqlToolRole, with search_path = sqlToolSchema and
+// app.account_id = $1, where the role and schema exist and this user may switch
+// to the role. It returns no row, and changes nothing, otherwise. All three
+// settings are LOCAL and end with the transaction.
+const sqlScopeQuery = `SELECT set_config('app.account_id', $1, true), set_config('search_path', '` + sqlToolSchema + `', true),
+	set_config('role', r.rolname, true)
+FROM pg_roles r
+WHERE r.rolname = '` + sqlToolRole + `'
+	AND EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = '` + sqlToolSchema + `')
+	AND CASE WHEN current_setting('server_version_num')::int >= 160000
+		THEN pg_has_role(current_user, r.oid, 'SET') ELSE pg_has_role(current_user, r.oid, 'MEMBER') END`
+
+// errSqlScopedRoleUnavailable refuses a tool query when the scoped role is on
+// but V1112's role, schema or grant is missing: it never falls back to
+// llm-server's own database user.
+var errSqlScopedRoleUnavailable = errors.New("sql: this data is unavailable because the read-only database role " + sqlToolRole +
+	" is not set up; an administrator must apply migration V1112's grants")
+
+// sqlScopeToAccount makes the rest of tx read through the account-scoped
+// views, so the tool's SQL, view text included, can see only accountId's rows
+// and no table outside sqlToolSchema. It reports whether it did; false with
+// the setting on means the role is unavailable, and the caller refuses.
+//
+// Known limit: Postgres checks SET ROLE against the login user, so SQL able to
+// call set_config could switch back. sqlCheckSingleTable does not allow it; a
+// separate login role would close this, at the cost of its own credentials.
+func sqlScopeToAccount(ctx context.Context, tx *sqlx.Tx, accountId string) (bool, error) {
+	if !config.Config.LlmServerAgentSqlScopedRole {
+		return false, nil
+	}
+	var account, searchPath, role string
+	err := tx.QueryRowxContext(ctx, sqlScopeQuery, accountId).Scan(&account, &searchPath, &role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // sqlToolMaxRows is the most rows one tool call returns, even under a LIMIT the
@@ -500,6 +555,11 @@ func sqlBindTable(query, accountId, tableName, tableView string) (string, string
 	if tableName != "anomaly" && tableName != "events" {
 		// These views are not filtered by account themselves.
 		source = fmt.Sprintf("(select * from %s as tv where cloud_account_id = %s)", source, pq.QuoteLiteral(accountId))
+	}
+	if config.Config.LlmServerAgentSqlScopedRole {
+		// OFFSET 0 stops Postgres pushing the model's WHERE below the views'
+		// account filter, where a failing cast could print another account's row.
+		source = "(select * from " + source + " as tool_view offset 0)"
 	}
 	if !hasAlias {
 		source += " as " + tableName
