@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"nudgebee/services/common"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/security"
@@ -353,6 +354,29 @@ var esSkipVerifyClient = func() *http.Client {
 	}
 }()
 
+// esIndexURL builds `<base>/<index>/<endpoint>` with each comma-separated index
+// path-escaped. The index comes from requests (the agent's tool input, page filters),
+// and pasted in raw it could leave its path segment: `/`, `?` or `#` in it reached a
+// different Elasticsearch API. Escaped, they stay inside an index name, which
+// Elasticsearch rejects as invalid; wildcards, `cluster:` prefixes and `<date-math>`
+// names still work because Elasticsearch decodes the path. Dots are escaped only in an
+// element containing `..`: a proxy in front of the cluster that decodes `%2F` and then
+// normalizes the path would otherwise resolve it as a path step, and ordinary names
+// (dated and `.ds-` indices) keep their dots.
+func esIndexURL(base, index, endpoint string) string {
+	parts := strings.Split(index, ",")
+	for i, p := range parts {
+		p = strings.TrimSpace(p) // configured lists are often written "a, b"
+		// PathEscape leaves `+`, which servers may decode as a space (date math `now/d+1d`).
+		e := strings.ReplaceAll(url.PathEscape(p), "+", "%2B")
+		if strings.Contains(p, "..") {
+			e = strings.ReplaceAll(e, ".", "%2E")
+		}
+		parts[i] = e
+	}
+	return base + "/" + strings.Join(parts, ",") + "/" + endpoint
+}
+
 // esRequest executes an HTTP request to OpenSearch with the configured auth method.
 func esRequest(method, rawURL, body string, cfg *ElasticsearchConfig) (*http.Response, error) {
 	return esRequestCtx(context.Background(), method, rawURL, body, cfg)
@@ -463,6 +487,13 @@ func readResponse(resp *http.Response, operation string) ([]byte, error) {
 // caller has real (partial) data. Non-search responses (no `hits` block) are left alone. Responses without a `_clusters` block — every
 // non-cross-cluster request — are skipped without a full decode.
 func esRemoteClusterFailure(body []byte) error {
+	return esRemoteClustersDidNotAnswer(body, esHitsTotal(string(body)) == 0)
+}
+
+// esRemoteClustersDidNotAnswer is esRemoteClusterFailure with the "nothing came back"
+// judgement made by the caller: a search sent with track_total_hits:false has no hit
+// count, so only the caller knows its result was empty.
+func esRemoteClustersDidNotAnswer(body []byte, empty bool) error {
 	if !bytes.Contains(body, []byte(`"_clusters"`)) {
 		return nil
 	}
@@ -484,7 +515,7 @@ func esRemoteClusterFailure(body []byte) error {
 	// Only a search result that reports exactly zero hits is judged. Responses with no
 	// hit count at all (field capabilities, listings) carry their data elsewhere, and a
 	// partial skip there still returned real content from the clusters that answered.
-	if r.Clusters.Skipped+r.Clusters.Failed == 0 || esHitsTotal(string(body)) != 0 {
+	if r.Clusters.Skipped+r.Clusters.Failed == 0 || !empty {
 		return nil
 	}
 
@@ -698,6 +729,19 @@ func parseESPPLLogs(rawJSON string) ([]OutputLog, error) {
 }
 
 func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) ([]OutputLog, error) {
+	logs, _, err := e.QueryLogsDetailed(ctx, fetchLogRequest)
+	return logs, err
+}
+
+// LabelAliasTargets implements labelAliasTargetsSource: the shipper spellings a
+// Nudgebee label is expanded into (esCanonicalK8sFields).
+func (e *ElasticSaasSource) LabelAliasTargets(name string) []string {
+	return esCandidateFields(name)
+}
+
+// QueryLogsDetailed implements [DetailedLogSource]: the dsl and kql paths also report
+// hits.total and the aggregations the body asked for. PPL reports neither.
+func (e *ElasticSaasSource) QueryLogsDetailed(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) ([]OutputLog, LogQueryDetails, error) {
 	// A where clause that failed to render must never reach the cluster as an
 	// unfiltered search. FetchLogs treats a GetQuery error as non-fatal — some
 	// providers (Signoz, Datadog) apply the where clause natively inside
@@ -713,12 +757,12 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 		if qErr == nil {
 			qErr = errors.New("filter rendered to an empty query")
 		}
-		return nil, fmt.Errorf("elasticsearch: refusing to run an unfiltered search: %w", qErr)
+		return nil, LogQueryDetails{}, fmt.Errorf("elasticsearch: refusing to run an unfiltered search: %w", qErr)
 	}
 
 	cfg, err := GetElasticsearchConfig(ctx, fetchLogRequest.AccountId)
 	if err != nil {
-		return nil, err
+		return nil, LogQueryDetails{}, err
 	}
 
 	var queryType string
@@ -739,7 +783,7 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 			index = cfg.LogIndex
 		}
 		if index == "" {
-			return nil, fmt.Errorf("index is required for %s query", queryType)
+			return nil, LogQueryDetails{}, fmt.Errorf("index is required for %s query", queryType)
 		}
 
 		// dsl passes a raw DSL body straight through; kql translates the typed
@@ -754,7 +798,7 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 			body, berr = finalizeESLogQueryBody(fetchLogRequest.Query, fetchLogRequest.StartTime, fetchLogRequest.EndTime, fetchLogRequest.Limit, fetchLogRequest.Offset, fetchLogRequest.SortFields)
 		}
 		if berr != nil {
-			return nil, berr
+			return nil, LogQueryDetails{}, berr
 		}
 
 		// Log the exact index and body sent upstream. Labels/label-values hit the
@@ -762,22 +806,27 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 		// data and this does not, the difference is in the resolved index or in
 		// this body — both need to be replayable by hand against the cluster.
 		renderedJSON, _ := json.Marshal(body)
+		searchURL := esIndexURL(cfg.Url, index, "_search")
 		slog.Info("ES log query", "index", index,
-			"url", fmt.Sprintf("%s/%s/_search", cfg.Url, index),
+			"url", searchURL,
 			"start_ms", fetchLogRequest.StartTime, "end_ms", fetchLogRequest.EndTime,
 			"body", string(renderedJSON))
 
-		resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, index), body, cfg)
+		resp, err := esRequestJSON("POST", searchURL, body, cfg)
 		if err != nil {
-			return nil, fmt.Errorf("failed to execute elasticsearch %s query: %w", queryType, err)
+			return nil, LogQueryDetails{}, fmt.Errorf("failed to execute elasticsearch %s query: %w", queryType, err)
 		}
 		defer func() { _ = resp.Body.Close() }()
 
 		bodyBytes, err := readResponse(resp, "elasticsearch "+queryType+" query")
 		if err != nil {
-			return nil, err
+			return nil, LogQueryDetails{}, err
 		}
-		return parseESSearchLogs(string(bodyBytes))
+		logs, err := parseESSearchLogs(string(bodyBytes))
+		if err != nil {
+			return nil, LogQueryDetails{}, err
+		}
+		return logs, esLogQueryDetails(bodyBytes, esAggsDefinition(body), body["size"], fetchLogRequest.EndTime, fetchLogRequest.IncludeRaw), nil
 
 	case "ppl":
 		pplBody := map[string]any{"query": fetchLogRequest.Query}
@@ -789,17 +838,18 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 
 		resp, err := esRequestJSON("POST", fmt.Sprintf("%s/_plugins/_ppl", cfg.Url), pplBody, cfg) //nolint:bodyclose
 		if err != nil {
-			return nil, fmt.Errorf("failed to execute elasticsearch PPL query: %w", err)
+			return nil, LogQueryDetails{}, fmt.Errorf("failed to execute elasticsearch PPL query: %w", err)
 		}
 
 		bodyBytes, err := readResponse(resp, "elasticsearch PPL query")
 		if err != nil {
-			return nil, err
+			return nil, LogQueryDetails{}, err
 		}
-		return parseESPPLLogs(string(bodyBytes))
+		logs, err := parseESPPLLogs(string(bodyBytes))
+		return logs, LogQueryDetails{}, err
 
 	default:
-		return nil, fmt.Errorf("unsupported query_type: %v", queryType)
+		return nil, LogQueryDetails{}, fmt.Errorf("unsupported query_type: %v", queryType)
 	}
 }
 
@@ -898,7 +948,7 @@ func (e *ElasticSaasSource) QueryLabelValues(ctx *security.RequestContext, fetch
 
 	fieldsToTry := []string{fetchLogRequest.LabelName}
 
-	searchURL := fmt.Sprintf("%s/%s/_search", cfg.Url, index)
+	searchURL := esIndexURL(cfg.Url, index, "_search")
 	var bodyBytes []byte
 	for _, field := range fieldsToTry {
 		aggsQuery := map[string]any{
@@ -998,7 +1048,7 @@ func (e *ElasticSaasSource) QueryIndexFields(ctx *security.RequestContext, fetch
 		return esFetchFieldCaps(cfg, index)
 	}
 
-	resp, err := esRequest("GET", fmt.Sprintf("%s/%s/_mapping", cfg.Url, index), "", cfg) //nolint:bodyclose
+	resp, err := esRequest("GET", esIndexURL(cfg.Url, index, "_mapping"), "", cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("failed to query elasticsearch mapping: %w", err)
 	}
@@ -1037,7 +1087,7 @@ func esIndexIsRemote(index string) bool {
 // they are from a `_mapping` walk. A field mapped with different types across indices
 // takes the first type in sorted order, so repeated calls agree.
 func esFetchFieldCaps(cfg *ElasticsearchConfig, index string) ([]OutputLogLabelFields, error) {
-	resp, err := esRequest("GET", fmt.Sprintf("%s/%s/_field_caps?fields=*", cfg.Url, index), "", cfg) //nolint:bodyclose
+	resp, err := esRequest("GET", esIndexURL(cfg.Url, index, "_field_caps?fields=*"), "", cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("failed to query elasticsearch field capabilities: %w", err)
 	}

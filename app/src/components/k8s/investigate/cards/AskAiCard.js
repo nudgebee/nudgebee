@@ -7,6 +7,7 @@ import { Chip } from '@ui/Chip';
 import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
 import { Button as DsButton } from '@ui/Button';
+import { Banner } from '@ui/Banner';
 import DOMPurify from 'dompurify';
 import KubernetesRightSizingUpdateForm from '@components/recommendations/KubernetesRightSizingUpdateForm';
 import { useEffect, useState, useCallback, useRef } from 'react';
@@ -15,11 +16,14 @@ import { describeAnalysisStage } from '@components/k8s/investigate/analysisStage
 import { ds } from 'src/utils/colors';
 import { ANNOTATIONS } from '@lib/annotationKeys';
 import { getNubiIconUrl } from '@hooks/useTenantBranding';
+import { hasWriteAccess } from '@lib/auth';
 import SimpleDiffViewer from '@shared/viewers/SimpleDiffViewer';
 import EventRaisePrPanel from './EventRaisePrPanel';
 import { FiArrowRight } from 'react-icons/fi';
 import { useConversationSuggestions } from '@hooks/useConversationSuggestions';
 import { safeJSONParse } from '@utils/common';
+import { getGraphqlErrorMessage } from '@lib/errorMessages';
+import { toast } from '@ui/Toast';
 import { reportContainsInvestigation } from '@utils/investigationReport';
 import { formatClockCompact } from '@shared/format/Datetime';
 
@@ -57,6 +61,33 @@ export function expandParagraphBreaks(text) {
 }
 
 const ZERO_UUID = '00000000-0000-0000-0000-000000000000';
+
+// How often a running analysis' status is read. There is no limit on the number of reads: a run
+// takes 4 to 16 minutes, and a limit of 50 (about 4 minutes) left the page saying "Investigating"
+// for a run that had since finished or failed. The reads only slow down once the run is a long one.
+const STATUS_READ_MS = 5000;
+const STATUS_READ_SLOW_MS = 15000;
+const STATUS_READ_SLOW_AFTER_MS = 5 * 60 * 1000;
+// Reads in a row that may get no answer before the page says it cannot read the status.
+const UNANSWERED_READS_BEFORE_NOTICE = 3;
+
+// How an analysis run started, as recorded by llm-server (events.AnalysisTrigger).
+const ANALYSIS_TRIGGER_LABELS = {
+  automatic: 'Automatic',
+  runbook: 'Runbook',
+  on_view: 'On view',
+  rerun: 'Re-run',
+  notification: 'Slack / Teams',
+};
+
+// "Re-run by Pat" — the trigger label plus who started it, when a person did.
+const triggerText = (trigger, name) => {
+  const label = ANALYSIS_TRIGGER_LABELS[trigger];
+  if (!label) {
+    return '';
+  }
+  return name ? `${label} by ${name}` : label;
+};
 
 class AskAiCard {
   constructor() {
@@ -246,6 +277,13 @@ class AskAiCard {
     }
   };
 
+  // The way back from a failed run is to start a new one. Offered on the same terms as the page's
+  // "Refresh investigation" button, which does the same thing.
+  retryActions = () =>
+    (this.isFailed() || this.isError()) && hasWriteAccess(this.event?.cloud_account_id)
+      ? [{ id: 'retry-investigation-btn', label: 'Retry', onClick: () => this.refreshInvestigation() }]
+      : undefined;
+
   getHighLightsData = () => {
     return this.insightData;
   };
@@ -261,6 +299,8 @@ class AskAiCard {
     const AskAICardComponent = ({ noPadding = false }) => {
       const [localAiData, setLocalAiData] = useState(cardInstance.aiData);
       const [hasFetchedInitial, setHasFetchedInitial] = useState(!!cardInstance.aiData);
+      // Set while status reads are getting no answer, so the page stops repeating the last status.
+      const [statusUnreadable, setStatusUnreadable] = useState(false);
       const [, setWaitingConversation] = useState(null);
       const [followUpMessages, setFollowUpMessages] = useState([]);
       const [followUpLoading, setFollowUpLoading] = useState(false);
@@ -419,7 +459,7 @@ class AskAiCard {
           try {
             const resolvedParentAgentId = item.parent_agent_id === ZERO_UUID || !item.parent_agent_id ? item.agent_id : item.parent_agent_id;
 
-            await apiAskNudgebee.aiFollowupResponse({
+            const res = await apiAskNudgebee.aiFollowupResponse({
               account_id: item.account_id,
               query: responseText,
               conversation_id: item.conversation_id,
@@ -427,6 +467,11 @@ class AskAiCard {
               agent_id: item.agent_id,
               parent_agent_id: resolvedParentAgentId,
             });
+            const failure = getGraphqlErrorMessage(res, 'Couldn’t submit your response. Please try again.');
+            if (failure) {
+              toast.error(failure);
+              return;
+            }
 
             // Remove answered item from list
             setWaitingFollowUpItems((prev) => prev.filter((i) => i.id !== item.id));
@@ -460,48 +505,71 @@ class AskAiCard {
           return;
         }
 
-        let attempts = 0;
-        const interval = setInterval(async () => {
+        let cancelled = false;
+        let timer = null;
+        let unansweredReads = 0;
+        const startedAt = Date.now();
+        // Each read is scheduled when the last one returns, so a slow answer never overlaps the next.
+        const scheduleNextRead = () => {
+          if (cancelled) return;
+          timer = setTimeout(readStatus, Date.now() - startedAt < STATUS_READ_SLOW_AFTER_MS ? STATUS_READ_MS : STATUS_READ_SLOW_MS);
+        };
+        // The run carries on at the server whether or not the page can reach it, so an unanswered
+        // read is retried, and after a few the page says the status is unknown instead of
+        // repeating the last one it read.
+        const countUnansweredRead = () => {
+          unansweredReads += 1;
+          if (unansweredReads >= UNANSWERED_READS_BEFORE_NOTICE) {
+            setStatusUnreadable(true);
+          }
+        };
+        const readStatus = async () => {
           try {
             const res = await apiKubernetes.generateAiRecommendation(event.cloud_account_id, event.id, 'pod_log_analysis');
-            if (typeof res === 'string') {
+            if (cancelled) return;
+            if (typeof res === 'string' && res) {
               // Budget/GraphQL rejection mid-run: surface the error and stop the
               // poll instead of looping on a response that has no terminal status.
-              clearInterval(interval);
               cardInstance.showInvestigationError(res);
               return;
             }
-            cardInstance.aiData = res;
-            setLocalAiData(res);
-            if (!hasFetchedInitial) {
-              setHasFetchedInitial(true);
-            }
-            const terminalStatuses = ['completed', 'failed', 'killed'];
-            if (terminalStatuses.includes(res?.status?.toLowerCase())) {
-              cardInstance.isRefreshing = false;
-              cardInstance.showCardInsights();
-              if (cardInstance.onDataUpdate && typeof cardInstance.onDataUpdate === 'function') {
-                cardInstance.onDataUpdate(cardInstance);
-              }
-              clearInterval(interval);
+            if (!res || typeof res !== 'object') {
+              // No answer at all (network drop, gateway restart): the API layer returns ''.
+              countUnansweredRead();
             } else {
+              unansweredReads = 0;
+              setStatusUnreadable(false);
+              cardInstance.aiData = res;
+              setLocalAiData(res);
+              if (!hasFetchedInitial) {
+                setHasFetchedInitial(true);
+              }
+              const terminalStatuses = ['completed', 'failed', 'killed'];
+              if (terminalStatuses.includes(res?.status?.toLowerCase())) {
+                cardInstance.isRefreshing = false;
+                cardInstance.showCardInsights();
+                if (cardInstance.onDataUpdate && typeof cardInstance.onDataUpdate === 'function') {
+                  cardInstance.onDataUpdate(cardInstance);
+                }
+                return;
+              }
               cardInstance.showCardInsights();
-            }
-            // Re-check waiting status on each poll cycle (skip terminal statuses)
-            if (!['FAILED', 'KILLED', 'COMPLETED'].includes(res?.status?.toUpperCase())) {
+              // Re-check waiting status on each poll cycle
               checkWaitingConversation();
             }
           } catch (e) {
+            if (cancelled) return;
             console.error('Error fetching AI recommendation:', e);
+            countUnansweredRead();
           }
+          scheduleNextRead();
+        };
+        scheduleNextRead();
 
-          attempts++;
-          if (attempts >= 50) {
-            clearInterval(interval);
-          }
-        }, 5000);
-
-        return () => clearInterval(interval);
+        return () => {
+          cancelled = true;
+          clearTimeout(timer);
+        };
       }, [hasFetchedInitial]);
 
       // Fetch follow-up questions when analysis completes
@@ -537,11 +605,17 @@ class AskAiCard {
           setFollowUpMessages((prev) => [...prev, { type: 'question', text: questionText }]);
 
           try {
-            await apiAskNudgebee.aiGenerateInvestigate({
+            const res = await apiAskNudgebee.aiGenerateInvestigate({
               account_id: event.cloud_account_id,
               query: questionText,
               session_id: sessionId,
             });
+            const failure = getGraphqlErrorMessage(res, 'Failed to get a response. Please try again.');
+            if (failure) {
+              setFollowUpMessages((prev) => [...prev, { type: 'answer', text: failure }]);
+              setFollowUpLoading(false);
+              return;
+            }
 
             // Reset the fetcher so this submit starts from a clean cursor on
             // the new (account_id, session_id) pair. The fetcher auto-resets
@@ -631,19 +705,25 @@ class AskAiCard {
           versionGeneratedAt === currentGeneratedAt
         );
       });
+      // How this event's current run started, known from the moment it starts. Empty
+      // when the live analysis is reused from another event.
+      const liveTriggerLabel = triggerText(localAiData?.trigger, localAiData?.triggered_by_name);
       const isShowingFallback =
         selectedAnalysisVersion === 'live' && localAiData?.status?.toLowerCase() !== 'completed' && historicalVersions.length > 0;
-      const effectiveVersionId = isShowingFallback ? historicalVersions[0].id : selectedAnalysisVersion;
+      // While a new run is in progress, show this alert's own previous result before a related alert's.
+      const fallbackVersion = historicalVersions.find((version) => version.event_id === event.id) || historicalVersions[0];
+      const effectiveVersionId = isShowingFallback ? fallbackVersion.id : selectedAnalysisVersion;
       const selectedVersion = historicalVersions.find((version) => version.id === effectiveVersionId);
       const displayedAiData = selectedVersion?.data || (selectedVersion ? null : localAiData);
       const isViewingHistory = !!selectedVersion;
 
       let { analysis, summary, investigation, detailed_response, source_updates, task_statuses, code_analysis_enabled } = displayedAiData || {};
 
-      // While a Refresh Investigation run is in flight, ignore the previous run's
-      // retained content (the backend keeps the old summary/investigation text
-      // until the new run lands) so every section renders the same in-progress
-      // loader as a first-time investigation instead of a stale, completed result.
+      // While a Refresh Investigation run is in flight, ignore any previous run's
+      // content still on the live response (a re-run now gets its own empty rows,
+      // but a server on the older in-place behaviour returns the old text) so every
+      // section renders the in-progress loader instead of a stale, completed result.
+      // The previous run itself is shown through the version fallback above.
       const isRegenerating = !isViewingHistory && cardInstance.isRefreshing && localAiData?.status?.toLowerCase() === 'in_progress';
       if (isRegenerating) {
         analysis = '';
@@ -674,10 +754,14 @@ class AskAiCard {
       // The step still running while the shown run is live. It is the wait line, and it also sits
       // above a first summary: the summary lands in about half a minute and the report that
       // replaces it takes minutes more, with nothing on the first screen saying so.
-      const runningStage = isTerminal || isViewingHistory ? '' : describeAnalysisStage(task_statuses);
+      const runningStage = isTerminal || isViewingHistory || statusUnreadable ? '' : describeAnalysisStage(task_statuses);
       // The same for the new run, when an older completed version is shown in its place.
       const liveStage =
         isShowingFallback && localAiData?.status?.toLowerCase() === 'in_progress' ? describeAnalysisStage(localAiData?.task_statuses) : '';
+      // The latest run failed, and the reader is looking at the latest (or at the older version
+      // shown in its place), not at a version picked from the list.
+      const liveFailed = selectedAnalysisVersion === 'live' && localAiData?.status?.toLowerCase() === 'failed';
+      const fallbackNote = isShowingFallback ? ' Showing the most recent completed version.' : '';
 
       const fallbackStatus = (taskStatus, content) => {
         const normalizedStatus = taskStatus?.toUpperCase();
@@ -822,16 +906,20 @@ class AskAiCard {
               </Box>
             )}
 
-            {code_analysis_enabled !== false && source_updates?.gitDiff && displayedAiData?.source_details?.[ANNOTATIONS.WORKLOAD_GIT_REPO] && (
-              /* No gitDiff prop on purpose: the diff is rendered immediately above this button, so
+            {/* Not on an older version: the PR is raised from the live analysis, not the diff shown. */}
+            {code_analysis_enabled !== false &&
+              !isViewingHistory &&
+              source_updates?.gitDiff &&
+              displayedAiData?.source_details?.[ANNOTATIONS.WORKLOAD_GIT_REPO] && (
+                /* No gitDiff prop on purpose: the diff is rendered immediately above this button, so
                  repeating it inside the confirmation would show the same patch twice. The
                  remediation row, which has no diff on screen, does pass it. */
-              <EventRaisePrPanel
-                data={cardInstance.buildResolveData()}
-                repoUrl={displayedAiData?.source_details?.[ANNOTATIONS.WORKLOAD_GIT_REPO]}
-                filePath={source_updates?.file_path || displayedAiData?.file_details?.files?.[0]?.file_path}
-              />
-            )}
+                <EventRaisePrPanel
+                  data={cardInstance.buildResolveData()}
+                  repoUrl={displayedAiData?.source_details?.[ANNOTATIONS.WORKLOAD_GIT_REPO]}
+                  filePath={source_updates?.file_path || displayedAiData?.file_details?.files?.[0]?.file_path}
+                />
+              )}
           </Box>
         );
       };
@@ -975,19 +1063,34 @@ class AskAiCard {
             const effectiveActiveSectionId = activeSectionId && sections.some((s) => s.id === activeSectionId) ? activeSectionId : sections[0]?.id;
             return (
               <>
-                {isShowingFallback && (
+                {liveFailed && (
+                  <Banner
+                    tone='critical'
+                    surface='section'
+                    title='The investigation failed'
+                    message={`${localAiData?.status_reason || 'No reason was recorded.'}${fallbackNote}`}
+                    actions={cardInstance.retryActions()}
+                    actionsPlacement='inline'
+                  />
+                )}
+                {statusUnreadable && (
+                  <Banner
+                    tone='warning'
+                    surface='section'
+                    message={`Can't read the investigation's status right now. Still trying.${fallbackNote}`}
+                  />
+                )}
+                {isShowingFallback && !liveFailed && !statusUnreadable && (
                   <Box
                     sx={{
                       padding: 'var(--ds-space-3)',
                       marginBottom: 'var(--ds-space-3)',
-                      backgroundColor: localAiData?.status?.toLowerCase() === 'failed' ? 'var(--ds-red-100)' : 'var(--ds-blue-100)',
+                      backgroundColor: 'var(--ds-blue-100)',
                       borderRadius: 'var(--ds-radius-md)',
                     }}
                   >
                     <Typography sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-800)' }}>
-                      {localAiData?.status?.toLowerCase() === 'failed'
-                        ? `${localAiData?.status_reason || 'The latest analysis failed.'} Showing the most recent completed version.`
-                        : `A new analysis is in progress${liveStage ? ` (${liveStage})` : ''}. Showing the most recent completed version.`}
+                      {`A new analysis is in progress${liveStage ? ` (${liveStage})` : ''}. Showing the most recent completed version.`}
                     </Typography>
                   </Box>
                 )}
@@ -1013,7 +1116,7 @@ class AskAiCard {
                             size='sm'
                             variant='filter'
                             selected={sec.id === effectiveActiveSectionId}
-                            loading={isInProgress}
+                            loading={isInProgress && !statusUnreadable}
                             onClick={() => setActiveSectionId(sec.id)}
                           >
                             {sec.label}
@@ -1021,6 +1124,11 @@ class AskAiCard {
                         );
                       })}
                     </Box>
+                    {historicalVersions.length === 0 && liveTriggerLabel && (
+                      <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', whiteSpace: 'nowrap' }}>
+                        Started: {liveTriggerLabel}
+                      </Typography>
+                    )}
                     {historicalVersions.length > 0 && (
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
                         <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', whiteSpace: 'nowrap' }}>
@@ -1037,12 +1145,20 @@ class AskAiCard {
                                 value: 'live',
                                 label:
                                   localAiData?.status?.toLowerCase() === 'in_progress'
-                                    ? 'Latest · In progress'
-                                    : `Latest${localAiData?.generated_at ? ` · ${formatClockCompact(localAiData.generated_at)}` : ''}`,
+                                    ? `Latest${liveTriggerLabel ? ` · ${liveTriggerLabel}` : ''} · In progress`
+                                    : `Latest${liveTriggerLabel ? ` · ${liveTriggerLabel}` : ''}${
+                                        localAiData?.generated_at ? ` · ${formatClockCompact(localAiData.generated_at)}` : ''
+                                      }`,
                               },
                               ...historicalVersions.map((version) => ({
                                 value: version.id,
-                                label: `${formatClockCompact(version.generated_at)}${version.event_id !== event.id ? ' · Recurring event' : ''}`,
+                                label: `${formatClockCompact(version.generated_at)}${
+                                  version.event_id !== event.id
+                                    ? ' · Recurring event'
+                                    : triggerText(version.trigger, version.triggered_by_name)
+                                    ? ` · ${triggerText(version.trigger, version.triggered_by_name)}`
+                                    : ''
+                                }`,
                               })),
                             ]}
                           />
@@ -1078,7 +1194,7 @@ class AskAiCard {
                   return (
                     <Box sx={{ marginTop: 'var(--ds-space-4)' }}>
                       {activeSection.status === 'IN_PROGRESS' || activeSection.status === 'PENDING' ? (
-                        <ConversationLoader label={runningStage || 'Analysing the alert'} />
+                        !statusUnreadable && <ConversationLoader label={runningStage || 'Analysing the alert'} />
                       ) : activeSection.content && activeSection.content.trim() !== '' ? (
                         <>
                           {runningStage && (
@@ -1196,7 +1312,21 @@ class AskAiCard {
       );
     };
 
-    return <>{cardInstance.errorMessage ? <Typography>{cardInstance.errorMessage}</Typography> : <AskAICardComponent noPadding={true} />}</>;
+    return (
+      <>
+        {cardInstance.errorMessage ? (
+          <Banner
+            tone='critical'
+            surface='section'
+            message={cardInstance.errorMessage}
+            actions={cardInstance.retryActions()}
+            actionsPlacement='inline'
+          />
+        ) : (
+          <AskAICardComponent noPadding={true} />
+        )}
+      </>
+    );
   };
 
   // buildResolveData resolves the event's workload identity and packs the

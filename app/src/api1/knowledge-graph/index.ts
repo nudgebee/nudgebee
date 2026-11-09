@@ -71,18 +71,150 @@ export interface ManualDependency {
   updated_at: string;
 }
 
-export interface CsvImportRowResult {
-  row_index: number;
-  id?: number;
-  status?: ManualDependencyResolutionStatus;
-  match_count?: number;
-  error?: string;
-  dependency?: ManualDependency;
+// Manually declared nodes. A node in a connected account carries the id the
+// collector writes for the same resource, so the two merge when it is
+// collected (status becomes 'adopted').
+export type ManualNodeStatus = 'active' | 'adopted' | 'possible_duplicate';
+
+export interface ManualNodeKeyField {
+  name: 'name' | 'region' | 'network' | 'namespace';
+  label: string;
+  hint?: string;
+  required: boolean;
+  // When set, the value is picked from the account's existing nodes of this type.
+  pick_node_type?: string;
 }
 
-export interface CsvImportResult {
-  imported: CsvImportRowResult[];
-  rejected: CsvImportRowResult[];
+// The shape a property's value is stored in — the collector's shape: a
+// key/value map (annotations), a list (subnet ids), or a single value (omitted).
+export type ManualNodePropertyShape = 'map' | 'list';
+
+export interface ManualNodeProperty {
+  name: string;
+  shape?: ManualNodePropertyShape;
+}
+
+export interface ManualNodeKind {
+  specific_type: string;
+  node_type: string;
+  key_fields: ManualNodeKeyField[];
+  properties: ManualNodeProperty[];
+}
+
+export type ManualNodePropertyValue = string | number | boolean | string[] | Record<string, string>;
+
+// cloud_provider 'external' with no cloud_account_id = outside any connected account.
+export interface ManualNodeSchemaAccount {
+  cloud_account_id?: string;
+  account_name?: string;
+  account_number?: string;
+  cloud_provider: string;
+  kinds: ManualNodeKind[];
+}
+
+export interface ManualNode {
+  id: number;
+  tenant_id: string;
+  cloud_account_id?: string;
+  cloud_provider?: string;
+  node_type: string;
+  specific_type: string;
+  name: string;
+  region?: string;
+  namespace?: string;
+  network_node_id?: string;
+  description?: string;
+  properties?: Record<string, ManualNodePropertyValue>;
+  labels?: Record<string, string>;
+  kg_node_id: string;
+  unique_key: string;
+  status: ManualNodeStatus;
+  duplicate_node_id?: string;
+  declared_by_user_id?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ManualNodeCreateRequest {
+  cloud_account_id?: string;
+  node_type?: string;
+  specific_type?: string;
+  name: string;
+  region?: string;
+  namespace?: string;
+  network_node_id?: string;
+  description?: string;
+  properties?: Record<string, ManualNodePropertyValue>;
+  labels?: Record<string, string>;
+}
+
+export interface ManualNodeDetailsPatch {
+  description?: string;
+  properties?: Record<string, ManualNodePropertyValue>;
+  labels?: Record<string, string>;
+}
+
+// A declarations document: nodes to declare, then the dependencies between
+// them and the rest of the graph (kg_create_manual_declarations).
+export interface ManualDeclarationEndpoint {
+  node_type: string;
+  name: string;
+  namespace?: string;
+  cluster?: string;
+  arn?: string;
+  account_id?: string;
+  region?: string;
+}
+
+export interface ManualNodeDeclaration extends ManualNodeCreateRequest {
+  // Names the node for the dependencies of the same document; defaults to name.
+  ref?: string;
+  // An account by its id or provider account number, and a network by its
+  // resource id or name, where the form sends ids.
+  cloud_account?: string;
+  network?: string;
+}
+
+export interface ManualDependencyDeclaration {
+  // A string is the ref of a node in the document; an object names a node
+  // already in the graph.
+  source: string | ManualDeclarationEndpoint;
+  dest: string | ManualDeclarationEndpoint;
+  relationship_type?: string;
+  notes?: string;
+}
+
+export interface ManualDeclarationsDocument {
+  nodes?: ManualNodeDeclaration[];
+  dependencies?: ManualDependencyDeclaration[];
+}
+
+export interface ManualNodeDeclarationResult {
+  index: number;
+  ref?: string;
+  id?: number;
+  node_id?: string;
+  error?: string;
+  node?: ManualNode;
+  declaration: ManualNodeDeclaration;
+}
+
+export interface ManualDependencyDeclarationResult {
+  index: number;
+  id?: number;
+  status?: ManualDependencyResolutionStatus;
+  error?: string;
+  dependency?: ManualDependency;
+  declaration: ManualDependencyDeclaration;
+}
+
+export interface ManualDeclarationsResult {
+  nodes: { created: ManualNodeDeclarationResult[]; existing: ManualNodeDeclarationResult[]; rejected: ManualNodeDeclarationResult[] };
+  dependencies: {
+    created: ManualDependencyDeclarationResult[];
+    existing: ManualDependencyDeclarationResult[];
+    rejected: ManualDependencyDeclarationResult[];
+  };
 }
 
 // -- GraphQL queries / mutations -------------------------------------------
@@ -205,13 +337,6 @@ mutation KgDeleteManualDependency {
   }
 }`;
 
-const KG_IMPORT_MANUAL_DEPENDENCIES = `
-mutation KgImportManualDependencies {
-  kg_import_manual_dependencies(request: __WHERE__) {
-    data
-  }
-}`;
-
 const KG_RESOLVE_MANUAL_DEPENDENCY = `
 mutation KgResolveManualDependency {
   kg_resolve_manual_dependency(request: __WHERE__) {
@@ -237,6 +362,65 @@ mutation KgReresolveManualDependencies {
 const KG_DELETE_ALL_MANUAL_DEPENDENCIES = `
 mutation KgDeleteAllManualDependencies {
   kg_delete_all_manual_dependencies(request: __WHERE__) {
+    data
+  }
+}`;
+
+// Manual Nodes
+
+const KG_GET_MANUAL_NODE_SCHEMA = `
+query KgGetManualNodeSchema {
+  kg_get_manual_node_schema(request: __WHERE__) {
+    data
+  }
+}`;
+
+const KG_LIST_MANUAL_NODES = `
+query KgListManualNodes {
+  kg_list_manual_nodes(request: __WHERE__) {
+    data
+    count
+  }
+}`;
+
+const KG_CREATE_MANUAL_NODE = `
+mutation KgCreateManualNode {
+  kg_create_manual_node(request: __WHERE__) {
+    data
+  }
+}`;
+
+const KG_UPDATE_MANUAL_NODE = `
+mutation KgUpdateManualNode {
+  kg_update_manual_node(request: __WHERE__) {
+    data
+  }
+}`;
+
+const KG_DELETE_MANUAL_NODE = `
+mutation KgDeleteManualNode {
+  kg_delete_manual_node(request: __WHERE__) {
+    data
+  }
+}`;
+
+const KG_APPLY_MANUAL_NODE_MERGE = `
+mutation KgApplyManualNodeMerge {
+  kg_apply_manual_node_merge(request: __WHERE__) {
+    data
+  }
+}`;
+
+const KG_CREATE_MANUAL_DECLARATIONS = `
+mutation KgCreateManualDeclarations {
+  kg_create_manual_declarations(request: __WHERE__) {
+    data
+  }
+}`;
+
+const KG_DELETE_ALL_MANUAL_NODES = `
+mutation KgDeleteAllManualNodes {
+  kg_delete_all_manual_nodes(request: __WHERE__) {
     data
   }
 }`;
@@ -344,10 +528,6 @@ const apiKnowledgeGraph = {
     return await queryGraphQL(KG_LIST_MANUAL_DEPENDENCIES.replace('__WHERE__', gqlStringify(request)), 'KgListManualDependencies', {});
   },
 
-  importManualDependencies: async function (data: { csv: string }) {
-    return await queryGraphQL(KG_IMPORT_MANUAL_DEPENDENCIES.replace('__WHERE__', gqlStringify({ csv: data.csv })), 'KgImportManualDependencies', {});
-  },
-
   resolveManualDependency: async function (data: { id: number; sourceNodeId?: string; destinationNodeId?: string }) {
     const request: { id: number; source_node_id?: string; destination_node_id?: string } = { id: data.id };
     if (data.sourceNodeId) {
@@ -390,6 +570,46 @@ const apiKnowledgeGraph = {
 
   deleteAllManualDependencies: async function () {
     return await queryGraphQL(KG_DELETE_ALL_MANUAL_DEPENDENCIES.replace('__WHERE__', gqlStringify({})), 'KgDeleteAllManualDependencies', {});
+  },
+
+  // ---- Manual Nodes -------------------------------------------------------
+
+  getManualNodeSchema: async function () {
+    return await queryGraphQL(KG_GET_MANUAL_NODE_SCHEMA.replace('__WHERE__', gqlStringify({})), 'KgGetManualNodeSchema', {});
+  },
+
+  listManualNodes: async function () {
+    return await queryGraphQL(KG_LIST_MANUAL_NODES.replace('__WHERE__', gqlStringify({})), 'KgListManualNodes', {});
+  },
+
+  createManualNode: async function (data: ManualNodeCreateRequest) {
+    return await queryGraphQL(KG_CREATE_MANUAL_NODE.replace('__WHERE__', gqlStringify(data)), 'KgCreateManualNode', {});
+  },
+
+  updateManualNode: async function (data: { id: number; node: ManualNodeDetailsPatch }) {
+    return await queryGraphQL(KG_UPDATE_MANUAL_NODE.replace('__WHERE__', gqlStringify(data)), 'KgUpdateManualNode', {});
+  },
+
+  deleteManualNode: async function (data: { id: number }) {
+    return await queryGraphQL(KG_DELETE_MANUAL_NODE.replace('__WHERE__', gqlStringify(data)), 'KgDeleteManualNode', {});
+  },
+
+  mergeManualNode: async function (data: { id: number }) {
+    return await queryGraphQL(KG_APPLY_MANUAL_NODE_MERGE.replace('__WHERE__', gqlStringify(data)), 'KgApplyManualNodeMerge', {});
+  },
+
+  // The document travels as its JSON text: a dependency side is a ref string
+  // or an endpoint object, which only the server's JSON parser tells apart.
+  createManualDeclarations: async function (data: { document: ManualDeclarationsDocument }) {
+    return await queryGraphQL(
+      KG_CREATE_MANUAL_DECLARATIONS.replace('__WHERE__', gqlStringify({ document: JSON.stringify(data.document) })),
+      'KgCreateManualDeclarations',
+      {}
+    );
+  },
+
+  deleteAllManualNodes: async function () {
+    return await queryGraphQL(KG_DELETE_ALL_MANUAL_NODES.replace('__WHERE__', gqlStringify({})), 'KgDeleteAllManualNodes', {});
   },
 };
 

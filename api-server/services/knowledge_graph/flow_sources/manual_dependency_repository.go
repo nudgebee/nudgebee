@@ -3,15 +3,14 @@ package flow_sources
 import (
 	"context"
 	"database/sql"
-	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/lib/pq"
 
 	"nudgebee/services/internal/database"
@@ -21,8 +20,8 @@ import (
 // V743 that enforces "one active row per (tenant, relationship_type, source
 // endpoint, dest endpoint)". When a duplicate INSERT trips this index,
 // translateDuplicateError converts the raw pq.Error into
-// ErrManualDependencyDuplicate so the CSV import handler can surface a
-// friendly per-row rejection.
+// ErrManualDependencyDuplicate so an import can surface a friendly per-item
+// rejection.
 const ManualDependencyDedupeIndex = "idx_kg_manual_deps_dedupe"
 
 // pgUniqueViolationCode is the Postgres SQLSTATE for unique_violation
@@ -32,9 +31,9 @@ const pgUniqueViolationCode = "23505"
 
 // ErrManualDependencyDuplicate is returned by Create / Update when the
 // dedupe partial unique index rejects the INSERT or UPDATE. Callers
-// (notably the CSV import handler) propagate this verbatim to the operator
+// (notably the declarations import) propagate this verbatim to the operator
 // so they understand they need to update the existing row or delete it
-// before re-importing the same CSV.
+// before importing the same document again.
 var ErrManualDependencyDuplicate = errors.New("manual dependency already declared")
 
 // ErrTenantIDRequired is the sentinel for the universal "no tenant_id"
@@ -43,6 +42,14 @@ var ErrManualDependencyDuplicate = errors.New("manual dependency already declare
 // callers a typed value they can `errors.Is`-check (the handler layer
 // surfaces this as 400 rather than 500).
 var ErrTenantIDRequired = errors.New("tenant_id is required")
+
+// ErrManualDependencyForbidden: the caller may not write in every account the
+// dependency touches.
+var ErrManualDependencyForbidden = errors.New("you do not have write access to every account this dependency touches")
+
+// ErrManualDependencyNodeNotFound: a node picked to pin an endpoint is not an
+// active node of the tenant.
+var ErrManualDependencyNodeNotFound = errors.New("the picked node is not in this tenant's graph")
 
 // ManualDependency is the public DTO returned by RPC handlers. Field shape
 // mirrors kg_manual_dependencies one-to-one; nullable text columns surface
@@ -106,6 +113,136 @@ type ManualDependencyRepository struct {
 	dbManager *database.DatabaseManager
 	resolver  *ManualEndpointResolver
 	logger    *slog.Logger
+	// authorize, when set, must allow every account a user write touches
+	// (see touchedAccounts). Unset for internal callers such as the build.
+	authorize ManualAccountAuthorizer
+}
+
+// WithAccountAuthorizer returns the repository with user writes checked
+// against authorize: create, update, delete, pin, single re-resolve and every
+// imported dependency.
+func (r *ManualDependencyRepository) WithAccountAuthorizer(authorize ManualAccountAuthorizer) *ManualDependencyRepository {
+	c := *r
+	c.authorize = authorize
+	return &c
+}
+
+// touchedAccounts are the accounts a dependency reaches: those of its endpoint
+// nodes (resolved or picked) and of its endpoints' account qualifiers, which
+// is where an unmatched endpoint will resolve. "" stands for a tenant-wide
+// node (one outside any connected account is keyed to the tenant id).
+//
+// An unmatched endpoint with no account qualifier constrains nothing here; the
+// build may later resolve it to a node anywhere in the tenant.
+func (r *ManualDependencyRepository) touchedAccounts(tenantID string, endpoints []ManualEndpoint, nodeIDs []string) ([]string, error) {
+	seen := map[string]bool{}
+	var out []string
+	add := func(id string) {
+		if id == tenantID {
+			id = ""
+		}
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	ids := parseNodeIDs(nodeIDs)
+	if len(ids) > 0 {
+		// A node whose account no longer exists in the tenant constrains
+		// nothing: no one manages that account, and counting it would lock
+		// even a tenant admin out of the row (HasAccountAccess only knows
+		// existing accounts).
+		var accounts []string
+		if err := r.dbManager.Db.Select(&accounts, `SELECT DISTINCT COALESCE(n.cloud_account_id::text, '') FROM knowledge_graph_node n
+			WHERE n.tenant_id = $1 AND n.id = ANY($2::uuid[])
+			  AND (n.cloud_account_id IS NULL OR n.cloud_account_id::text = $3
+			       OR EXISTS (SELECT 1 FROM cloud_accounts a WHERE a.tenant = $1 AND a.id::text = n.cloud_account_id::text))`,
+			tenantID, pq.Array(ids), tenantID); err != nil {
+			return nil, fmt.Errorf("look up endpoint node accounts: %w", err)
+		}
+		for _, a := range accounts {
+			add(a)
+		}
+	}
+	var qualifiers []string
+	for _, e := range endpoints {
+		if q := strings.TrimSpace(e.AccountID); q != "" {
+			qualifiers = append(qualifiers, q)
+		}
+	}
+	if len(qualifiers) > 0 {
+		var accounts []string
+		if err := r.dbManager.Db.Select(&accounts, `SELECT id::text FROM cloud_accounts
+			WHERE tenant = $1 AND (id::text = ANY($2::text[]) OR account_number = ANY($2::text[]))`, tenantID, pq.Array(qualifiers)); err != nil {
+			return nil, fmt.Errorf("look up qualifier accounts: %w", err)
+		}
+		for _, a := range accounts {
+			add(a)
+		}
+	}
+	return out, nil
+}
+
+// checkWrite refuses the write unless the caller may write in every account
+// the endpoints and nodes touch. A no-op without an authorizer.
+func (r *ManualDependencyRepository) checkWrite(tenantID string, endpoints []ManualEndpoint, nodeIDs ...string) error {
+	if r.authorize == nil {
+		return nil
+	}
+	accounts, err := r.touchedAccounts(tenantID, endpoints, nodeIDs)
+	if err != nil {
+		return err
+	}
+	for _, a := range accounts {
+		if !r.authorize(a) {
+			return ErrManualDependencyForbidden
+		}
+	}
+	return nil
+}
+
+// checkExisting checks a write to a stored row against what it touches now.
+func (r *ManualDependencyRepository) checkExisting(dep *ManualDependency) error {
+	return r.checkWrite(dep.TenantID, []ManualEndpoint{dep.sourceEndpoint(), dep.destEndpoint()},
+		dep.ResolvedSourceNodeID, dep.ResolvedDestNodeID)
+}
+
+// checkProposed checks a write that would store these endpoints, against the
+// nodes they resolve to today. The resolver only reads, so nothing is
+// written for a refused caller.
+func (r *ManualDependencyRepository) checkProposed(ctx context.Context, tenantID string, dep ManualDependency) error {
+	if r.authorize == nil {
+		return nil
+	}
+	resolved := func(e ManualEndpoint) (string, error) {
+		res, err := r.resolver.Resolve(ctx, tenantID, e)
+		if err != nil {
+			return "", err
+		}
+		if res.Status == EndpointStatusResolved {
+			return res.NodeID, nil
+		}
+		return "", nil
+	}
+	src, err := resolved(dep.sourceEndpoint())
+	if err != nil {
+		return fmt.Errorf("resolve source endpoint: %w", err)
+	}
+	dst, err := resolved(dep.destEndpoint())
+	if err != nil {
+		return fmt.Errorf("resolve dest endpoint: %w", err)
+	}
+	return r.checkWrite(tenantID, []ManualEndpoint{dep.sourceEndpoint(), dep.destEndpoint()}, src, dst)
+}
+
+// CheckExistingWrite is the authorization check for a write to stored row id
+// that changes nothing but its resolution (a single re-resolve).
+func (r *ManualDependencyRepository) CheckExistingWrite(ctx context.Context, tenantID string, id int64) error {
+	dep, err := r.Get(ctx, tenantID, id)
+	if err != nil {
+		return err
+	}
+	return r.checkExisting(dep)
 }
 
 // NewManualDependencyRepository constructs a repository bound to the given
@@ -198,8 +335,17 @@ func (r *ManualDependencyRepository) Get(ctx context.Context, tenantID string, i
 // is intentionally absent: the unique dedupe index rejects duplicate
 // (tenant, source, dest, relationship_type) tuples. The raw pq error gets
 // translated to ErrManualDependencyDuplicate via translateDuplicateError so
-// CSV re-imports surface a friendly per-row rejection instead of a SQLSTATE.
+// re-imports surface a friendly per-item rejection instead of a SQLSTATE.
 func (r *ManualDependencyRepository) Create(ctx context.Context, dep ManualDependency) (*ManualDependency, error) {
+	return r.createPinned(ctx, dep, "", "")
+}
+
+// createPinned is Create with either side optionally pinned to a node id the
+// caller already knows (an import binding a dependency to a node of the same
+// document). The pins are checked before the INSERT, so a refused pin leaves
+// no row behind; a pinned side is stored as the operator's pick and is not
+// sent through the resolver.
+func (r *ManualDependencyRepository) createPinned(ctx context.Context, dep ManualDependency, srcPin, dstPin string) (*ManualDependency, error) {
 	if dep.TenantID == "" {
 		return nil, ErrTenantIDRequired
 	}
@@ -211,6 +357,18 @@ func (r *ManualDependencyRepository) Create(ctx context.Context, dep ManualDepen
 	}
 	if err := ValidateEndpoint(EndpointSideDest, dep.destEndpoint()); err != nil {
 		return nil, err
+	}
+	if err := r.checkProposed(ctx, dep.TenantID, dep); err != nil {
+		return nil, err
+	}
+	srcPin, dstPin = strings.TrimSpace(srcPin), strings.TrimSpace(dstPin)
+	if srcPin != "" || dstPin != "" {
+		if err := r.requireTenantNodes(dep.TenantID, srcPin, dstPin); err != nil {
+			return nil, err
+		}
+		if err := r.checkWrite(dep.TenantID, nil, srcPin, dstPin); err != nil {
+			return nil, err
+		}
 	}
 
 	insertQuery := `INSERT INTO kg_manual_dependencies (
@@ -236,7 +394,16 @@ func (r *ManualDependencyRepository) Create(ctx context.Context, dep ManualDepen
 		return nil, translateDuplicateError(err, dep, "insert manual dependency returning id")
 	}
 
-	return r.ResolveAndPersist(ctx, dep.TenantID, dep.ID)
+	switch {
+	case srcPin == "" && dstPin == "":
+		return r.ResolveAndPersist(ctx, dep.TenantID, dep.ID)
+	case srcPin != "" && dstPin != "":
+		if err := r.pinBoth(dep.TenantID, dep.ID, srcPin, dstPin); err != nil {
+			return nil, err
+		}
+		return r.Get(ctx, dep.TenantID, dep.ID)
+	}
+	return r.resolveAndPinPartial(ctx, dep.TenantID, dep.ID, &dep, srcPin, dstPin)
 }
 
 // translateDuplicateError converts a unique-violation on the dedupe index
@@ -300,6 +467,20 @@ func (r *ManualDependencyRepository) Update(ctx context.Context, tenantID string
 	if err := ValidateEndpoint(EndpointSideDest, patch.destEndpoint()); err != nil {
 		return nil, err
 	}
+	// The row as it is and as it would be: an edit may neither reach into an
+	// account the caller does not manage nor take over a row that does.
+	if r.authorize != nil {
+		current, err := r.Get(ctx, tenantID, id)
+		if err != nil {
+			return nil, err
+		}
+		if err := r.checkExisting(current); err != nil {
+			return nil, err
+		}
+		if err := r.checkProposed(ctx, tenantID, patch); err != nil {
+			return nil, err
+		}
+	}
 
 	_, err := r.dbManager.Exec(`UPDATE kg_manual_dependencies SET
 		source_node_type = $1, source_name = $2,
@@ -341,6 +522,15 @@ func (r *ManualDependencyRepository) Update(ctx context.Context, tenantID string
 func (r *ManualDependencyRepository) SoftDelete(ctx context.Context, tenantID string, id int64) error {
 	if tenantID == "" {
 		return ErrTenantIDRequired
+	}
+	if r.authorize != nil {
+		dep, err := r.Get(ctx, tenantID, id)
+		if err != nil {
+			return err
+		}
+		if err := r.checkExisting(dep); err != nil {
+			return err
+		}
 	}
 	tx, err := r.dbManager.BeginTx()
 	if err != nil {
@@ -443,6 +633,48 @@ func (r *ManualDependencyRepository) ResolveAndPersist(ctx context.Context, tena
 	return r.Get(ctx, tenantID, id)
 }
 
+// requireTenantNodes refuses node ids that are not active nodes of the tenant.
+func (r *ManualDependencyRepository) requireTenantNodes(tenantID string, nodeIDs ...string) error {
+	var picked []string
+	for _, id := range nodeIDs {
+		if id != "" {
+			picked = append(picked, id)
+		}
+	}
+	if len(picked) == 0 {
+		return nil
+	}
+	ids := parseNodeIDs(picked)
+	if len(ids) != len(picked) {
+		return ErrManualDependencyNodeNotFound // not a node id at all
+	}
+	distinct := map[string]bool{}
+	for _, id := range ids {
+		distinct[id] = true
+	}
+	var found int
+	if err := r.dbManager.Db.Get(&found, `SELECT count(DISTINCT id) FROM knowledge_graph_node
+		WHERE tenant_id = $1 AND is_active = true AND id = ANY($2::uuid[])`, tenantID, pq.Array(ids)); err != nil {
+		return fmt.Errorf("check picked nodes: %w", err)
+	}
+	if found != len(distinct) {
+		return ErrManualDependencyNodeNotFound
+	}
+	return nil
+}
+
+// parseNodeIDs keeps the ids that are UUIDs, in canonical form, so lookups
+// can use the primary key instead of comparing text.
+func parseNodeIDs(nodeIDs []string) []string {
+	var out []string
+	for _, id := range nodeIDs {
+		if u, err := uuid.Parse(strings.TrimSpace(id)); err == nil {
+			out = append(out, u.String())
+		}
+	}
+	return out
+}
+
 // SetResolvedNodes implements the operator-disambiguate flow: the caller
 // supplies a specific candidate node_id for the ambiguous side(s). The
 // supplied side is treated as authoritative — the resolver is NOT re-run
@@ -465,6 +697,18 @@ func (r *ManualDependencyRepository) SetResolvedNodes(ctx context.Context, tenan
 	srcPick := strings.TrimSpace(sourceNodeID)
 	dstPick := strings.TrimSpace(destNodeID)
 
+	// A pin must name nodes of this tenant's graph: the id comes from the
+	// caller, and the edge would otherwise point at another tenant's node.
+	if err := r.requireTenantNodes(tenantID, srcPick, dstPick); err != nil {
+		return nil, err
+	}
+	if err := r.checkExisting(dep); err != nil {
+		return nil, err
+	}
+	if err := r.checkWrite(tenantID, nil, srcPick, dstPick); err != nil {
+		return nil, err
+	}
+
 	// Neither side picked: nothing to pin — fall back to plain re-resolve.
 	if srcPick == "" && dstPick == "" {
 		return r.ResolveAndPersist(ctx, tenantID, id)
@@ -472,20 +716,8 @@ func (r *ManualDependencyRepository) SetResolvedNodes(ctx context.Context, tenan
 
 	// Both sides picked: pin authoritatively to resolved. No resolver call.
 	if srcPick != "" && dstPick != "" {
-		_, err := r.dbManager.Exec(`UPDATE kg_manual_dependencies SET
-			resolved_source_node_id = $1::uuid,
-			resolved_dest_node_id = $2::uuid,
-			resolution_status = $3,
-			resolution_error = NULL,
-			source_match_count = 1,
-			dest_match_count = 1,
-			source_match_candidates = NULL,
-			dest_match_candidates = NULL,
-			last_resolved_at = NOW()
-			WHERE tenant_id = $4 AND id = $5 AND is_active = true`,
-			srcPick, dstPick, ManualResolutionResolved, tenantID, id)
-		if err != nil {
-			return nil, fmt.Errorf("set resolved nodes: %w", err)
+		if err := r.pinBoth(tenantID, id, srcPick, dstPick); err != nil {
+			return nil, err
 		}
 		return r.Get(ctx, tenantID, id)
 	}
@@ -495,6 +727,27 @@ func (r *ManualDependencyRepository) SetResolvedNodes(ctx context.Context, tenan
 	// never sent through the resolver; the resolver's candidate ranking has
 	// no authority over an explicit operator choice.
 	return r.resolveAndPinPartial(ctx, tenantID, id, dep, srcPick, dstPick)
+}
+
+// pinBoth writes both sides as the operator's picks and marks the row
+// resolved, without a resolver call.
+func (r *ManualDependencyRepository) pinBoth(tenantID string, id int64, srcPick, dstPick string) error {
+	_, err := r.dbManager.Exec(`UPDATE kg_manual_dependencies SET
+		resolved_source_node_id = $1::uuid,
+		resolved_dest_node_id = $2::uuid,
+		resolution_status = $3,
+		resolution_error = NULL,
+		source_match_count = 1,
+		dest_match_count = 1,
+		source_match_candidates = NULL,
+		dest_match_candidates = NULL,
+		last_resolved_at = NOW()
+		WHERE tenant_id = $4 AND id = $5 AND is_active = true`,
+		srcPick, dstPick, ManualResolutionResolved, tenantID, id)
+	if err != nil {
+		return fmt.Errorf("set resolved nodes: %w", err)
+	}
+	return nil
 }
 
 // resolveAndPinPartial handles the case where exactly one side of the row
@@ -526,6 +779,17 @@ func (r *ManualDependencyRepository) resolveAndPinPartial(
 
 	// Feed both results through the same row-update builder the flow source
 	// uses, so the status fold is consistent across paths.
+	// The re-resolved side may land in another account; check it too.
+	other := srcResult
+	if srcPick != "" {
+		other = dstResult
+	}
+	if other.Status == EndpointStatusResolved {
+		if err := r.checkWrite(tenantID, nil, other.NodeID); err != nil {
+			return nil, err
+		}
+	}
+
 	update := buildUpdateFromResults(id, srcResult, dstResult)
 	if err := persistRowUpdates(r.dbManager, []manualDependencyUpdate{update}); err != nil {
 		return nil, fmt.Errorf("persist partial pin: %w", err)
@@ -557,76 +821,6 @@ func (r *ManualDependencyRepository) ReresolveAll(ctx context.Context, tenantID 
 		out = append(out, *updated)
 	}
 	return out, nil
-}
-
-// ImportCSV ingests a CSV body and runs Create per row. Returns per-row
-// outcomes (imported with status / rejected with error). Empty body yields
-// an empty result with no error so a clobber-style "upload empty CSV"
-// doesn't error the whole call.
-type CSVImportRowResult struct {
-	RowIndex   int               `json:"row_index"`
-	ID         int64             `json:"id,omitempty"`
-	Status     string            `json:"status,omitempty"`
-	MatchCount int               `json:"match_count,omitempty"`
-	Error      string            `json:"error,omitempty"`
-	Dependency *ManualDependency `json:"dependency,omitempty"`
-}
-
-type CSVImportResult struct {
-	Imported []CSVImportRowResult `json:"imported"`
-	Rejected []CSVImportRowResult `json:"rejected"`
-}
-
-// ImportCSV parses the body, validates the header row against the expected
-// columns, and runs Create per data row. Missing optional columns are
-// allowed; missing required columns reject the row with a clear error.
-func (r *ManualDependencyRepository) ImportCSV(ctx context.Context, tenantID, declaredByUserID string, body io.Reader) (*CSVImportResult, error) {
-	if tenantID == "" {
-		return nil, ErrTenantIDRequired
-	}
-	reader := csv.NewReader(body)
-	header, err := reader.Read()
-	if err == io.EOF {
-		return &CSVImportResult{}, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read csv header: %w", err)
-	}
-	colIndex, missing := csvHeaderIndex(header)
-	if len(missing) > 0 {
-		return nil, fmt.Errorf("csv missing required columns: %s", strings.Join(missing, ", "))
-	}
-
-	result := &CSVImportResult{}
-	rowIdx := 0
-	for {
-		rec, err := reader.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("read csv row %d: %w", rowIdx, err)
-		}
-		dep := csvRowToDependency(rec, colIndex, tenantID, declaredByUserID)
-
-		created, createErr := r.Create(ctx, dep)
-		if createErr != nil {
-			result.Rejected = append(result.Rejected, CSVImportRowResult{
-				RowIndex: rowIdx,
-				Error:    createErr.Error(),
-			})
-		} else {
-			result.Imported = append(result.Imported, CSVImportRowResult{
-				RowIndex:   rowIdx,
-				ID:         created.ID,
-				Status:     created.ResolutionStatus,
-				MatchCount: maxInt(created.SourceMatchCount, created.DestMatchCount),
-				Dependency: created,
-			})
-		}
-		rowIdx++
-	}
-	return result, nil
 }
 
 // manualDependencyColumns is the SELECT clause shared by List/Get. Order
@@ -699,68 +893,4 @@ func scanManualDependencyRows(rows interface {
 		return nil, fmt.Errorf("iterate manual dependencies: %w", err)
 	}
 	return out, nil
-}
-
-// csvHeaderIndex maps header names to their position in the CSV row. Returns
-// the indexer plus the list of REQUIRED columns that are missing (so the
-// caller can reject the whole import early).
-func csvHeaderIndex(header []string) (map[string]int, []string) {
-	idx := make(map[string]int, len(header))
-	for i, name := range header {
-		idx[strings.TrimSpace(name)] = i
-	}
-	required := []string{"source_node_type", "source_name", "dest_node_type", "dest_name"}
-	missing := make([]string, 0)
-	for _, name := range required {
-		if _, ok := idx[name]; !ok {
-			missing = append(missing, name)
-		}
-	}
-	return idx, missing
-}
-
-// csvRowToDependency reads one CSV record into a ManualDependency. Missing
-// optional columns become empty strings; relationship_type defaults to
-// CALLS when blank or absent.
-func csvRowToDependency(rec []string, idx map[string]int, tenantID, declaredByUserID string) ManualDependency {
-	col := func(name string) string {
-		i, ok := idx[name]
-		if !ok || i >= len(rec) {
-			return ""
-		}
-		return strings.TrimSpace(rec[i])
-	}
-
-	relType := col("relationship_type")
-	if relType == "" {
-		relType = "CALLS"
-	}
-
-	return ManualDependency{
-		TenantID:         tenantID,
-		SourceNodeType:   col("source_node_type"),
-		SourceName:       col("source_name"),
-		SourceNamespace:  col("source_namespace"),
-		SourceCluster:    col("source_cluster"),
-		SourceARN:        col("source_arn"),
-		SourceAccountID:  col("source_account_id"),
-		SourceRegion:     col("source_region"),
-		DestNodeType:     col("dest_node_type"),
-		DestName:         col("dest_name"),
-		DestNamespace:    col("dest_namespace"),
-		DestCluster:      col("dest_cluster"),
-		DestARN:          col("dest_arn"),
-		DestAccountID:    col("dest_account_id"),
-		DestRegion:       col("dest_region"),
-		RelationshipType: relType,
-		Notes:            col("notes"),
-		DeclaredByUserID: declaredByUserID,
-	}
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

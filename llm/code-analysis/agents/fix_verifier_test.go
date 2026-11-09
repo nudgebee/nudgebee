@@ -101,6 +101,47 @@ func TestVerifyUnverifiedWhenNoModuleTouched(t *testing.T) {
 	}
 }
 
+// A Node module whose manifest defines no build script has nothing to verify
+// with. The result is "unverified" with the reason stated, never a failed build:
+// a failure here would say the change broke something it did not touch.
+func TestVerifyUnverifiedWhenNodeModuleDefinesNoBuildScript(t *testing.T) {
+	dir := t.TempDir()
+	modDir := filepath.Join(dir, "e2e")
+	if err := os.MkdirAll(filepath.Join(modDir, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, ".gitignore"), "node_modules/\n")
+	writeFile(t, filepath.Join(modDir, "package.json"), `{"name": "e2e", "scripts": {"test": "playwright test"}}`+"\n")
+	writeFile(t, filepath.Join(modDir, "spec.ts"), "export const a = 1;\n")
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"add", "."},
+		{"-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	writeFile(t, filepath.Join(modDir, "spec.ts"), "export const a = 2;\n")
+
+	v := NewFixVerifier(nil, time.Minute)
+	res := v.Verify(context.Background(), dir, nil)
+	if res.Status != VerificationUnverified {
+		t.Fatalf("want unverified, got %s (evidence: %s)", res.Status, res.Evidence())
+	}
+	if len(res.Steps) != 1 || !res.Steps[0].Skipped {
+		t.Fatalf("want one skipped step, got %+v", res.Steps)
+	}
+	if !strings.Contains(res.Reason, "no build command") {
+		t.Errorf("the reason must say there is no build command, got %q", res.Reason)
+	}
+	if evidence := res.Evidence(); strings.Contains(evidence, "npm run build") || strings.Contains(evidence, "&& )") {
+		t.Errorf("evidence names a command that was never defined: %s", evidence)
+	}
+}
+
 func TestVerifyBuildConfigOverridesDiscovery(t *testing.T) {
 	dir := scaffoldRepo(t, goodMain)
 	writeFile(t, filepath.Join(dir, "backend", "svc", "main.go"), goodMain+"\n// touched\n")

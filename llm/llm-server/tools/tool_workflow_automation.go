@@ -370,6 +370,72 @@ func (t *automationTool) Description() string {
 // approved or not.
 func (t *automationTool) SkipWriteConfirmation(_ string) bool { return t.autoApprove }
 
+// ConfirmationQuestion names the automation on the approval card, with what its
+// author says it does, the values it will run with and the assistant's stated
+// reason. The default card would show this tool's internal name, a claim about
+// cluster resources and the raw arguments.
+func (t *automationTool) ConfirmationQuestion(toolInput string) string {
+	args := confirmationArgs(toolInput)
+	reason, _ := args[t.reasonArg].(string)
+	delete(args, t.reasonArg)
+	return automationRunQuestion(t.name, t.id, t.description, args, reason)
+}
+
+// automationRunQuestion is the approval card for running an automation. It
+// makes no claim about what the run touches beyond the author's own words: a
+// print-only automation and one that restarts pods are both simply "run".
+func automationRunQuestion(name, id, description string, inputs map[string]any, reason string) string {
+	var sb strings.Builder
+	if name = strings.TrimSpace(name); name != "" {
+		fmt.Fprintf(&sb, "Run the automation %q?", name)
+	} else {
+		fmt.Fprintf(&sb, "Run the automation with ID %s?", id)
+	}
+	if description = strings.TrimSpace(description); description != "" {
+		sb.WriteString("\n" + description)
+	}
+	if len(inputs) > 0 {
+		keys := make([]string, 0, len(inputs))
+		for k := range inputs {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		sb.WriteString("\nInputs:")
+		for _, k := range keys {
+			fmt.Fprintf(&sb, "\n- %s: %s", k, automationInputDisplay(inputs[k]))
+		}
+	}
+	if reason = strings.TrimSpace(reason); reason != "" {
+		sb.WriteString("\nReason: " + reason)
+	}
+	return sb.String()
+}
+
+// automationInputDisplay renders one input value for the approval card: text as
+// written, anything else as compact JSON.
+func automationInputDisplay(value any) string {
+	if s, ok := value.(string); ok {
+		return s
+	}
+	b, err := marshalNoHTMLEscape(value, "")
+	if err != nil {
+		return fmt.Sprint(value)
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// automationForConfirmation finds an AI-invocable automation by id, for
+// workflow_trigger's approval card, which is handed only the id. It reads the
+// same cached list the per-automation tools are built from.
+func automationForConfirmation(accountId, id string) (*automationTool, bool) {
+	for _, tool := range listAutomationTools(accountId) {
+		if automation, ok := tool.(*automationTool); ok && automation.id == id {
+			return automation, true
+		}
+	}
+	return nil, false
+}
+
 // InferToolRequestType classifies running an automation as a create so the
 // executor gates it behind the ask-before-run confirmation and the create RBAC
 // check. Absent this, auth_agent defaults an unclassified tool to Read, which
@@ -390,10 +456,8 @@ func (t *automationTool) InferToolRequestType(_ *security.RequestContext, _, _ s
 // `reason` is required so the model cannot invoke an automation without saying
 // what it believes is wrong and why this is the right response. Enforced by
 // schema validation rather than by prompt wording, so it is not an instruction
-// the model can quietly skip. Note the reason is currently recorded and passed
-// along but NOT yet shown in the confirmation prompt — that prompt is generic to
-// every write tool and changing it is #35403. Until that lands, this field's
-// value is that the reasoning exists and is logged, not that the user sees it.
+// the model can quietly skip. The approval card shows it (ConfirmationQuestion),
+// so the user sees whether anything was investigated before saying yes.
 func (t *automationTool) InputSchema() core.ToolSchema {
 	props := map[string]core.ToolSchemaProperty{
 		t.reasonArg: {

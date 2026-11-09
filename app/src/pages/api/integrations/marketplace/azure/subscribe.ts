@@ -6,9 +6,12 @@ import { getAccountExistsHtml, getErrorHtml } from '@lib/marketplaceCallbackHtml
 const servicesEndpoint = process.env.SERVICE_API_SERVER_URL ?? 'http://localhost:8000';
 const servicesServerToken = process.env.ACTION_API_SERVER_TOKEN ?? '';
 const apiVersion = '2018-08-31';
-const clientId = process.env.MS_TEAMS_CLIENT_ID ?? '';
-const clientSecret = process.env.MS_TEAMS_CLIENT_SECRET ?? '';
-const azureTenantId = process.env.AZURE_TENANT_ID ?? 'a3f24626-a242-4cc7-b3fe-4e2e76e805b6';
+// The Entra app registered in Partner Center > Technical configuration; the only
+// identity the fulfillment API accepts. The webhook and services-server's usage
+// billing use the same three variables.
+const clientId = process.env.AZURE_MARKETPLACE_APP_ID ?? '';
+const clientSecret = process.env.AZURE_MARKETPLACE_CLIENT_SECRET ?? '';
+const azureTenantId = process.env.AZURE_MARKETPLACE_TENANT_ID ?? '';
 
 const getHtmlForGuest = (url: string, customerIdentifier: string): string => {
   return `
@@ -92,6 +95,7 @@ async function createCustomerResponse(subJson: any) {
     customer_identifier: subJson.id,
     provider_account_id: subJson.subscription.beneficiary.tenantId,
     product_code: subJson.subscription.offerId,
+    pricing_tier: subJson.subscription.planId,
     marketplace: 'azure',
   };
 
@@ -109,6 +113,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const marketplaceToken = req.query['token'] as string | undefined;
   if (!marketplaceToken) {
     return res.status(400).send('Unable to get marketplace token!');
+  }
+
+  if (!clientId || !clientSecret || !azureTenantId) {
+    console.error('AZURE_MARKETPLACE_APP_ID / AZURE_MARKETPLACE_CLIENT_SECRET / AZURE_MARKETPLACE_TENANT_ID not configured');
+    return res.setHeader('Content-Type', 'text/html').status(503).send(getErrorHtml());
   }
 
   const accessToken = await getAuthToken();

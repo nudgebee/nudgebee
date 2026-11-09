@@ -44,6 +44,7 @@ import SessionsView from './views/SessionsView';
 import ToolsView from './views/ToolsView';
 import GovernanceView from './views/GovernanceView';
 import type { GatewayGranularity } from '@api1/gateway-usage';
+import { canViewGatewayUserAccess } from '@lib/auth';
 
 interface GatewayUsageProps {
   /** The selected account; scopes the request (empty = all accessible accounts). */
@@ -98,6 +99,7 @@ function subTabFromHash(): TabId | null {
   const hash = decodeURIComponent((window.location.hash || '').replace('#', ''));
   const [parent, sub] = hash.split('/');
   if (parent !== PARENT_FRAGMENT) return null;
+  if (sub === 'users' && !canViewGatewayUserAccess()) return DEFAULT_TAB;
   return TAB_IDS.includes(sub as TabId) ? (sub as TabId) : DEFAULT_TAB;
 }
 
@@ -239,7 +241,7 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
   // colour change) — matching every other CustomTabs usage.
   // `value: TabId` ties each tab to TAB_IDS, so a tab can't be shown here without
   // also being deep-linkable.
-  const tabOptions: { value: TabId; text: string; icon: React.ElementType; iconSize: number }[] = [
+  const allTabOptions: { value: TabId; text: string; icon: React.ElementType; iconSize: number }[] = [
     { value: 'connect', text: 'Connect', icon: RocketLaunchOutlinedIcon, iconSize: 16 },
     { value: 'overview', text: 'Overview', icon: DashboardOutlinedIcon, iconSize: 16 },
     { value: 'models', text: 'Models', icon: AutoAwesomeOutlinedIcon, iconSize: 16 },
@@ -249,6 +251,8 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
     { value: 'tools', text: 'Tools', icon: HandymanOutlinedIcon, iconSize: 16 },
     { value: 'governance', text: 'Governance', icon: ShieldOutlinedIcon, iconSize: 16 },
   ];
+  // Non-admins get no per-user breakdown, so the Users tab is hidden for them.
+  const tabOptions = allTabOptions.filter((t) => t.value !== 'users' || canViewGatewayUserAccess());
 
   return (
     <Box id='gateway-usage-root' sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)', pb: 'var(--ds-space-5)' }}>

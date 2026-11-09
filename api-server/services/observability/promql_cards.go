@@ -94,6 +94,11 @@ func WorkloadMetricEvidence(ctx *security.RequestContext, accountID, workload, n
 			// A source that does not report its query still has to say what was asked.
 			query = result.QueryKey
 		}
+	} else {
+		// An empty card still says what was asked. Without it the investigation saw
+		// "no data" with no query, took the key's name for a series name and spent
+		// minutes searching for a metric that does not exist.
+		query = firstQueryAsked(out, keys)
 	}
 	return map[string]any{
 		"type":    "prometheus",
@@ -129,6 +134,23 @@ func firstResultWithSeries(out OutputMetricQuery, keys []string) (QueryResult, b
 		}
 	}
 	return QueryResult{}, false
+}
+
+// firstQueryAsked returns the query of the first of keys, in order, that the provider
+// ran, or "" when it ran none of them.
+func firstQueryAsked(out OutputMetricQuery, keys []string) string {
+	byKey := make(map[string]string, len(out.Results))
+	for _, r := range out.Results {
+		if _, seen := byKey[r.QueryKey]; !seen && r.Query != "" {
+			byKey[r.QueryKey] = r.Query
+		}
+	}
+	for _, key := range keys {
+		if q, ok := byKey[key]; ok {
+			return q
+		}
+	}
+	return ""
 }
 
 // integrationPrometheus is the provider every internal PromQL request names:

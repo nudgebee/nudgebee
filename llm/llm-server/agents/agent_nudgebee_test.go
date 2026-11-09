@@ -141,3 +141,10 @@ func TestGetAgentRoutesCloudOrchestratorsToThemselves(t *testing.T) {
 		})
 	}
 }
+
+func TestNudgebeeAgentPromptStatesWhetherRuntimeInspectionIsPossible(t *testing.T) {
+	prompt := strings.Join(newNudgebeeAgent("account-1").GetSystemPrompt(security.NewRequestContextForSuperAdmin(), core.NBAgentRequest{}).Instructions, "\n")
+	assert.Contains(t, prompt, "say whether runtime inspection is possible")
+	assert.Contains(t, prompt, "commands cannot run on this cluster through Nudgebee")
+	assert.Contains(t, prompt, "exact account and namespace")
+}

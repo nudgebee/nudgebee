@@ -270,6 +270,10 @@ var shellMetacharNormalizer = strings.NewReplacer(
 	"$", " ",
 )
 
+// KubectlBlockedKind is kubectlBlockedKind for callers outside the tool: the credential-bearing kind
+// a kubectl command names, or "".
+func KubectlBlockedKind(command string) string { return kubectlBlockedKind(command) }
+
 // kubectlBlockedKind walks a kubectl command and returns the first blocked
 // resource kind found (or "" if none). Mirrors the tokenizer rules in
 // kubectlResourceKind: positional after a known verb, scan-don't-break on
@@ -594,6 +598,44 @@ func KubectlNamespace(command string) string {
 		}
 	}
 	return ""
+}
+
+// KubectlTargetKind is the normalized resource kind a kubectl command acts on (`deploy/api`,
+// `deployments.apps` -> "deployment"); "" when the command names none.
+func KubectlTargetKind(command string) string {
+	tokens := strings.Fields(strings.TrimPrefix(strings.TrimSpace(command), "kubectl"))
+	var positional []string
+	for i := 0; i < len(tokens); i++ {
+		switch tok := tokens[i]; {
+		case kubectlValueFlags[tok]:
+			i++
+		case !strings.HasPrefix(tok, "-"):
+			positional = append(positional, tok)
+		}
+	}
+	if len(positional) == 0 {
+		return ""
+	}
+	if kubectlPodVerbs[positional[0]] {
+		return "pod"
+	}
+	idx := 1
+	if positional[0] == "rollout" || positional[0] == "set" {
+		idx = 2
+	}
+	if len(positional) <= idx {
+		return ""
+	}
+	kind := strings.SplitN(positional[idx], "/", 2)[0]
+	kind = strings.SplitN(kind, ",", 2)[0]
+	kind = strings.SplitN(kind, ".", 2)[0]
+	return NormalizeK8sType(kind)
+}
+
+// kubectlValueFlags are the common kubectl flags whose value is a separate token.
+var kubectlValueFlags = map[string]bool{
+	"-n": true, "--namespace": true, "-o": true, "--output": true, "-l": true, "--selector": true,
+	"-f": true, "--filename": true, "-c": true, "--container": true, "--context": true,
 }
 
 // kubectlUIReference returns the (modules, label) pair used by kubectlUIRef.

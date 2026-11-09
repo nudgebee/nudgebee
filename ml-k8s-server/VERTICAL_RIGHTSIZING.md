@@ -15,8 +15,9 @@ rightsizing see `server/recommendation/cluster_rightsizing_recommendation.py`. N
 
 ## The pipeline
 
-`POST /rightsizing/vertical` returns `202` and queues the job to RabbitMQ; a single Gunicorn
-worker consumes it (see [README](README.md#architecture-at-a-glance)). From there:
+`POST /rightsizing/vertical` returns `202` and queues the job to RabbitMQ; each pod's one
+consumer, in the `:8081` gunicorn, takes one job at a time (see
+[README](README.md#architecture-at-a-glance)). From there:
 
 ```
 list_scannable_objects()      k8s_workloads + k8s_pods (Postgres)      -> one K8sObjectData per CONTAINER

@@ -41,6 +41,21 @@ describe('MostFailedAutomations', () => {
     expect(onSelectAutomation).toHaveBeenCalledWith('wf-2');
   });
 
+  // Every dry run is ranked as one row under the bare `dry-run-` id. There is no
+  // automation behind it for the table to be filtered to, so it is not a button.
+  it('renders the grouped dry-run row as read-only', () => {
+    const onSelectAutomation = jest.fn();
+    const withDryRuns: FailedAutomationCount[] = [{ workflow_id: 'dry-run-', failure_count: 3 }, ...entries];
+    render(<MostFailedAutomations entries={withDryRuns} approximate={false} totalFailures={1000} onSelectAutomation={onSelectAutomation} />);
+    const row = screen.getByTestId('execution-dashboard-most-failed-dry-run-');
+    expect(row).toHaveTextContent('Dry run');
+    expect(row).not.toHaveAttribute('role', 'button');
+    expect(screen.getAllByText('Dry run')).toHaveLength(1);
+    expect(screen.getAllByRole('button')).toHaveLength(entries.length);
+    fireEvent.click(row);
+    expect(onSelectAutomation).not.toHaveBeenCalled();
+  });
+
   it('is reachable by keyboard', () => {
     const onSelectAutomation = jest.fn();
     render(<MostFailedAutomations entries={entries} approximate={false} totalFailures={1000} onSelectAutomation={onSelectAutomation} />);

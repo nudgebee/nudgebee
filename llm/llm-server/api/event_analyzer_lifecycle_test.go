@@ -337,67 +337,6 @@ func TestAllEventAnalysisTypesCompletedRequiresCurrentReport(t *testing.T) {
 	}
 }
 
-func TestCompleteSkippedEventAnalysisRequiresPersistedStages(t *testing.T) {
-	for _, tc := range []struct {
-		name           string
-		failFirstWrite bool
-		existingReport string
-	}{
-		{name: "all stages persisted"},
-		{name: "stage write fails", failFirstWrite: true},
-		{name: "existing report preserved", existingReport: "Previously generated report"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := security.NewRequestContextForSuperAdmin()
-			repo, mock := newTestRepo(t)
-			const eventID, fp, acct, aggKey = "event-disabled", "fingerprint", "account", "alert"
-			for _, stage := range []events.EventAnalysisType{
-				events.AnalysisTypeSummary,
-				events.AnalysisTypeInvestigation,
-				events.AnalysisTypeLog,
-				events.AnalysisTypeDetailedResponse,
-			} {
-				mock.ExpectQuery("SELECT analysis_id FROM event_analysis_mapping .*").
-					WithArgs(eventID, stage).
-					WillReturnRows(sqlmock.NewRows([]string{"analysis_id"}).AddRow("row-" + string(stage)))
-				summary := ""
-				if stage == events.AnalysisTypeDetailedResponse {
-					summary = tc.existingReport
-				}
-				mock.ExpectQuery("SELECT id, analysis, status.* FROM event_log_analysis WHERE id = .*").
-					WithArgs("row-"+string(stage), acct).
-					WillReturnRows(sqlmock.NewRows([]string{"id", "analysis", "status", "event_id", "summary", "status_reason", "updated_at"}).
-						AddRow("row-"+string(stage), "", string(events.AnalysisStatusInProgress), eventID, summary, "", time.Now()))
-				if stage == events.AnalysisTypeDetailedResponse && tc.existingReport == "" {
-					mock.ExpectBegin()
-					mock.ExpectQuery("SELECT analysis_id FROM event_analysis_mapping .* FOR UPDATE").
-						WithArgs(eventID, stage).
-						WillReturnRows(sqlmock.NewRows([]string{"analysis_id"}).AddRow("row-" + string(stage)))
-					mock.ExpectExec("UPDATE event_log_analysis SET analysis=.*summary=.*status=.*").
-						WithArgs("row-"+string(stage), "", "Analysis skipped because debug analysis is disabled for this account.", string(events.AnalysisStatusCompleted), eventID).
-						WillReturnResult(sqlmock.NewResult(0, 1))
-					mock.ExpectCommit()
-					continue
-				}
-				write := mock.ExpectExec("UPDATE event_log_analysis SET status=.* WHERE id=\\$1").
-					WithArgs("row-"+string(stage), string(events.AnalysisStatusCompleted), "skipped")
-				if tc.failFirstWrite {
-					write.WillReturnError(assert.AnError)
-					break
-				}
-				write.WillReturnResult(sqlmock.NewResult(0, 1))
-			}
-			err := completeSkippedEventAnalysis(ctx, repo, eventID, fp, acct, aggKey, "skipped")
-			if tc.failFirstWrite {
-				require.ErrorIs(t, err, assert.AnError)
-			} else {
-				require.NoError(t, err)
-			}
-			require.NoError(t, mock.ExpectationsWereMet())
-		})
-	}
-}
-
 // TestRecoveryTransientErrorPreservesTokens validates that transient errors do not
 // falsely trigger terminal failure publication, preserving pending tokens in Redis.
 func TestRecoveryTransientErrorPreservesTokens(t *testing.T) {

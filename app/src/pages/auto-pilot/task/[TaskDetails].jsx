@@ -227,7 +227,7 @@ const AutoOptimizeTasks = ({ enableFilters = true, title, actions }) => {
                   icon={<LinkIcon />}
                   onClick={(e) => {
                     e.stopPropagation();
-                    handleButtonClick(item?.auto_pilot?.cloud_account?.id, item);
+                    handleButtonClick(item?.auto_pilot?.cloud_account?.id, item, resourceFilter);
                   }}
                 >
                   link
@@ -251,12 +251,13 @@ const AutoOptimizeTasks = ({ enableFilters = true, title, actions }) => {
     setRecordsPerPage(limit);
   };
 
-  const handleButtonClick = (id, item) => {
-    const url =
-      item?.auto_pilot?.category == 'horizontal_rightsize'
-        ? `/kubernetes/details/${id}#optimize/replica-rightsizing`
-        : `/kubernetes/details/${id}?recommendation_id=${item?.recommendation_id}#optimize`;
-    window.open(url, '_blank', 'noopener,noreferrer');
+  const handleButtonClick = (id, item, resourceFilter) => {
+    const params = new URLSearchParams();
+    if (resourceFilter?.namespace) params.set('namespace', resourceFilter.namespace);
+    if (resourceFilter?.name) params.set('workloadName', resourceFilter.name);
+    const query = params.toString() ? `?${params.toString()}` : '';
+    const hash = item?.auto_pilot?.category == 'horizontal_rightsize' ? '#optimize/replica-rightsizing' : '#optimize';
+    window.open(`/kubernetes/details/${id}${query}${hash}`, '_blank', 'noopener,noreferrer');
   };
 
   const onStatusFilterChange = (e, _p) => {

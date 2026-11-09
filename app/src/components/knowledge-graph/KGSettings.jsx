@@ -3,8 +3,9 @@
 // Phase 2 (NB-30989): tabbed shell mirroring `@components/llm/SettingsModal`.
 // - Tab 1 ("Coverage"): cloud account / flow source filter — the legacy
 //   single-section UI, extracted into KGCoverageTab.
-// - Tab 2 ("Manual Dependencies"): operator-declared CALLS / PUBLISHES_TO /
-//   SUBSCRIBES_TO rows, with CSV import + ambiguity resolve.
+// - Tab 2 ("Manual Declarations"): operator-declared CALLS / PUBLISHES_TO /
+//   SUBSCRIBES_TO dependencies and the nodes they point at when no collector
+//   has discovered them, with one JSON import for both + ambiguity resolve.
 // - TODO Phase 2.5: 'Diff View' (declared vs auto-detected) and 'Activity'
 //   tabs slot in alongside.
 
@@ -15,15 +16,15 @@ import { Modal } from '@ui/Modal';
 import Tabs from '@shared/navigation/Tabs';
 import { DataBaseDark, GraphOutlineIcon } from '@assets';
 import KGCoverageTab from '@components/knowledge-graph/KGCoverageTab';
-import ManualDependenciesTab from '@components/knowledge-graph/ManualDependenciesTab';
+import ManualDeclarationsTab from '@components/knowledge-graph/ManualDeclarationsTab';
 import { ds } from 'src/utils/colors';
 
 const TAB_COVERAGE = 'coverage';
-const TAB_MANUAL_DEPENDENCIES = 'manual-dependencies';
+const TAB_MANUAL_DECLARATIONS = 'manual-declarations';
 
 const TABS_CONFIG = [
   { id: TAB_COVERAGE, icon: DataBaseDark, label: 'Coverage', alt: 'coverage', size: 16 },
-  { id: TAB_MANUAL_DEPENDENCIES, icon: GraphOutlineIcon, label: 'Manual Dependencies', alt: 'manual-dependencies', size: 16 },
+  { id: TAB_MANUAL_DECLARATIONS, icon: GraphOutlineIcon, label: 'Manual Declarations', alt: 'manual-declarations', size: 16 },
   /* TODO Phase 2.5: { id: 'diff-view', icon: ..., label: 'Diff View',  alt: 'diff-view', size: 16 }, */
   /* TODO Phase 2.5: { id: 'activity',  icon: ..., label: 'Activity',   alt: 'activity',  size: 16 }, */
 ];
@@ -49,7 +50,7 @@ const KGSettings = ({ open, onClose, onSaved }) => {
       // `height: <value>`, which forces every tab to render full-height even
       // when the form is short (the Coverage tab was leaving ~40% of the
       // dialog empty). Letting the modal size to content lets short tabs
-      // shrink and longer tabs (Manual Dependencies with many rows) grow,
+      // shrink and longer tabs (Manual Declarations with many rows) grow,
       // with the content-area `overflowY: auto` below kicking in if a tab
       // ever exceeds viewport.
       contentStyles={{
@@ -82,8 +83,8 @@ const KGSettings = ({ open, onClose, onSaved }) => {
       <Box sx={{ px: ds.space[5], pb: ds.space[5] }}>
         {typeSelected === TAB_COVERAGE ? (
           <KGCoverageTab open={open} onSaved={onSaved} onClose={onClose} />
-        ) : typeSelected === TAB_MANUAL_DEPENDENCIES ? (
-          <ManualDependenciesTab open={open} />
+        ) : typeSelected === TAB_MANUAL_DECLARATIONS ? (
+          <ManualDeclarationsTab open={open} />
         ) : null}
       </Box>
     </Modal>

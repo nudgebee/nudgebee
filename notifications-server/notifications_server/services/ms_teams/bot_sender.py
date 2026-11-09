@@ -59,6 +59,16 @@ class TeamsBotError(Exception):
         self.status = status
 
 
+class AppNotInTeamError(TeamsBotError):
+    def __init__(self):
+        super().__init__(APP_NOT_IN_TEAM)
+
+
+class ChannelNotInTeamError(TeamsBotError):
+    def __init__(self):
+        super().__init__(CHANNEL_NOT_IN_TEAM)
+
+
 @dataclass
 class TeamRef:
     """A team with the bot installed, from its ms_teams_team integration."""
@@ -257,7 +267,7 @@ class TeamsBotSender:
                 self.forget_channels(team.thread_id)
             if any(c["id"] == channel_id for c in self.list_channels(team)):
                 return
-        raise TeamsBotError(CHANNEL_NOT_IN_TEAM)
+        raise ChannelNotInTeamError()
 
 
 CHANNEL_CHANGE_EVENTS = {"channelCreated", "channelDeleted", "channelRenamed", "channelRestored"}

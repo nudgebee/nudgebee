@@ -5,6 +5,7 @@ import type {
   TestStep,
   FullConfig,
   FullResult,
+  TestError,
 } from "@playwright/test/reporter";
 import { writeFileSync, mkdirSync } from "fs";
 import path from "path";
@@ -56,9 +57,15 @@ const stripAnsi = (s: string) => s.replace(ANSI, "");
 export default class E2EReportReporter implements Reporter {
   private readonly attempts: ReportAttempt[] = [];
   private rootDir = "";
+  // Errors raised outside any test, e.g. an invalid --grep, so the report can say why nothing ran.
+  private readonly globalErrors: string[] = [];
 
   onBegin(config: FullConfig): void {
     this.rootDir = config.rootDir;
+  }
+
+  onError(error: TestError): void {
+    this.globalErrors.push((error.message || error.value || "").split("\n")[0]);
   }
 
   // Playwright's four statuses collapse to the three the report counts;
@@ -131,6 +138,7 @@ export default class E2EReportReporter implements Reporter {
       start: result.startTime ? result.startTime.getTime() : 0,
       duration: result.duration >= 0 ? result.duration : 0,
       status: result.status,
+      errors: this.globalErrors,
     };
     writeFileSync(E2E_RESULTS_FILE, JSON.stringify({ run, attempts: this.attempts }), "utf8");
   }

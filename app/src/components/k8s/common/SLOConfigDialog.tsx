@@ -29,6 +29,10 @@ interface SLOConfigDialogProps {
   onSuccess?: () => void;
 }
 
+// slo_config_v2 casts numeric columns to TEXT, so rows the user never touched
+// come back as strings and the Go decoder (strict float64) rejects them.
+const toNumber = (value: any) => (value === null || value === undefined || value === '' || !Number.isFinite(Number(value)) ? null : Number(value));
+
 const SectionCard = ({ title, children }: { title: string; children: React.ReactNode }) => (
   <Box
     sx={{
@@ -237,7 +241,7 @@ const SLOConfigDialog: React.FC<SLOConfigDialogProps> = ({ open, onClose, accoun
 
     const data = {
       cloud_account_id: accountId,
-      config: sloConfig,
+      config: sloConfig.map((c: any) => ({ ...c, goal: toNumber(c.goal), threshold: toNumber(c.threshold) })),
       namespace: activeWorkload.namespace,
       workload_id: activeWorkload.cloud_resource_id,
       workload_name: activeWorkload.name,

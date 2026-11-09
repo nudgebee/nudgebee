@@ -1358,6 +1358,11 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	messageStatus := ConversationStatusCompleted
 	messageType := MessageTypeGeneration
 
+	// Saved with the message so a recovered run stays read-only.
+	if IsReadOnlyRun(ctx) {
+		request.QueryConfig.ReadOnlyRun = true
+	}
+
 	if request.MessageId == "" {
 		parentAgentId := uuid.Nil
 		if request.ParentAgentId != "" {
@@ -1388,6 +1393,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 						// Skipping history is a property of the turn that asked for it; a
 						// user's follow-up after an automated re-analysis needs the history.
 						prevConfig.SkipConversationHistory = false
+						prevConfig.ReadOnlyRun = false
 						request.QueryConfig.MergeFrom(prevConfig)
 						break
 					}
@@ -1811,6 +1817,11 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		}
 	}
 
+	if executeErr != nil {
+		// Set only on the returned value, after the context update, so the failure
+		// text never becomes the conversation's last answer.
+		agentResponse.Response = []string{agentResponseContent}
+	}
 	return agentResponse, executeErr
 }
 
@@ -1882,6 +1893,10 @@ func HandleConversationMessageRequest(accountId, conversationId, messageId strin
 	}
 
 	ctx := security.NewRequestContextForTenantAccountAdmin(conversation.TenantID.String(), conversationMessage.UserID.String(), []string{conversation.AccountID.String()})
+	// A recovered alert investigation still has no person to approve changes.
+	if messageRanReadOnly(conversationMessage) {
+		ctx = WithReadOnlyRun(ctx)
+	}
 
 	// Defense-in-depth: don't reprocess a message whose conversation already
 	// reached a terminal state. Mirrors the same guard in

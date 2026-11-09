@@ -32,6 +32,17 @@ type skillData struct {
 }
 
 const ragSkillTopK = 5
+
+// ragSkillFetchSize is how many RAG hits search_skills asks for. The LLM judge
+// picks one result from whatever it is given, so it gets a wider pool; without
+// it, extra hits would only be read and dropped, so the default stays at five.
+func ragSkillFetchSize() int {
+	if config.Config.KBRerankEnabled {
+		return 3 * ragSkillTopK
+	}
+	return ragSkillTopK
+}
+
 const ragSkillTimeout = 10 * time.Second
 
 func init() {
@@ -44,7 +55,7 @@ func init() {
 	// Cache namespace is initialized in tools/core so knowledgebase_service.go can invalidate it.
 }
 
-type LoadSkillsTool struct{}
+type LoadSkillsTool struct{ core.ReadOnlyTool }
 
 var _ core.SchemaValidationInputNormalizer = LoadSkillsTool{}
 
@@ -371,18 +382,20 @@ func (m LoadSkillsTool) fetchSkillsBatch(ctx core.NbToolContext, dbms *common.Da
 		return results, nil
 	}
 
-	// Resolve the requested names in one account-scoped batch query.
+	// Resolve the requested names in one batch query over the KBs this account
+	// may read (its own and the visible organisation ones).
+	scope, scopeArgs := core.KBAccountScope("kb", 1, 3, core.VisibleOrgKnowledgebaseIDs(ctx.Ctx.GetContext(), ctx.AccountId))
 	query := `
 		SELECT kb.id, kb.name, CASE WHEN kb.data_format = 'pdf' THEN '' ELSE LEFT(kb.data, 4097) END, COALESCE(kb.description, ''),
 		       COALESCE(kb.kb_type, 'manual'), kb.kb_source, kb.integration_id, COALESCE(kb.note_category, ''),
 		       COALESCE(kb.data_format, '')
 		FROM llm_knowledgebases kb
-		WHERE kb.account_id = $1
+		WHERE ` + scope + `
 		  AND LOWER(BTRIM(kb.name)) = ANY($2::text[])
 		  AND kb.status = 'active'
 		  AND kb.enabled`
 
-	rows, err := dbms.Db.Query(query, ctx.AccountId, pq.Array(queryLower))
+	rows, err := dbms.Db.Query(query, append([]any{ctx.AccountId, pq.Array(queryLower)}, scopeArgs...)...)
 	if err != nil {
 		ctx.Ctx.GetLogger().Error("tool: load_skills batch query error", "error", err)
 		return results, queryNames
@@ -480,8 +493,8 @@ func cacheSearchKnowledgeCandidates(ctx core.NbToolContext, docs core.RAGSearchR
 			ctx.Ctx.GetLogger().Warn("search_skills: unable to cache candidate", "error", err)
 			continue
 		}
-		results = append(results, fmt.Sprintf("<result system=\"rag\" source=\"%s\" id=\"%s\" title=\"%s\">\n%s\nUse load_skills with skill_name=%s to read this candidate.\n</result>",
-			html.EscapeString(source), id, html.EscapeString(candidate.Title), html.EscapeString(core.KnowledgePurposeGuidance(candidate.Purpose)+"\n"+candidate.Snippet), id))
+		results = append(results, fmt.Sprintf("<result system=\"rag\" source=\"%s\" id=\"%s\" title=\"%s\" purpose=\"%s\">\n%s\nUse load_skills with skill_name=%s to read this candidate.\n</result>",
+			html.EscapeString(source), id, html.EscapeString(candidate.Title), resultPurpose(candidate.Purpose), html.EscapeString(candidate.Snippet), id))
 	}
 	return results
 }
@@ -566,12 +579,12 @@ func enrichIntegrationSkillsFromRAG(ctx core.NbToolContext, input core.NBToolCal
 // ---------------------------------------------------------------------------
 
 // SearchSkillsTool searches across manual and integration knowledge bases by query.
-type SearchSkillsTool struct{}
+type SearchSkillsTool struct{ core.ReadOnlyTool }
 
 func (s SearchSkillsTool) Name() string { return SearchSkillsToolName }
 
 func (s SearchSkillsTool) Description() string {
-	return `Searches knowledge bases and skills by a natural language query. Returns candidate snippets from manual (DB-stored) and external (Confluence, ServiceNow) knowledge bases. Use load_skills with the returned candidate id or exact manual KB name to read a selected result. Candidate ids are valid only in the current turn. Search matches may be weak; select only results relevant to the task. When searching for investigation guidance, finish this search before launching dependent investigation or delegation; do not run those actions in parallel with discovery. If a potentially relevant SOP/procedure is returned, load it and assess its applicability, scope and prerequisites before dependent work. If no applicable procedure is found, continue the investigation normally; do not force a weak match or repeatedly search for a mandatory SOP.`
+	return `Searches knowledge bases and skills by a natural language query. Returns candidate snippets from manual (DB-stored) and external (Confluence, ServiceNow) knowledge bases. If the user gives an article ID, such as a ServiceNow KB number or a Confluence page ID, pass it as id. Use load_skills with the returned candidate id or exact manual KB name to read a selected result. Candidate ids are valid only in the current turn. Search matches may be weak; select only results relevant to the task. When searching for investigation guidance, finish this search before launching dependent investigation or delegation; do not run those actions in parallel with discovery. If a potentially relevant SOP/procedure is returned, load it and assess its applicability, scope and prerequisites before dependent work. If no applicable procedure is found, continue the investigation normally; do not force a weak match or repeatedly search for a mandatory SOP.`
 }
 
 func (s SearchSkillsTool) GetType() core.NBToolType { return core.NBToolTypeTool }
@@ -583,6 +596,10 @@ func (s SearchSkillsTool) InputSchema() core.ToolSchema {
 			"query": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "The search query describing what information you need.",
+			},
+			"id": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "The exact ID of a knowledge-base article when the user names one, e.g. a ServiceNow KB number (KB0010001) or a Confluence page ID. It is looked up exactly before the query is searched.",
 			},
 		},
 		Required: []string{"query"},
@@ -599,6 +616,11 @@ func (s SearchSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallRequ
 	if query == "" && input.Command != "" {
 		query = strings.TrimSpace(input.Command)
 	}
+	id, _ := input.Arguments["id"].(string)
+	id = strings.TrimSpace(id)
+	if query == "" {
+		query = id
+	}
 	if query == "" {
 		common.MetricsToolOperationsTotal(core.ToolImplTypeBuiltin, s.Name(), "error", ctx.AccountId)
 		return core.NBToolResponse{
@@ -607,7 +629,28 @@ func (s SearchSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallRequ
 		}, nil
 	}
 
-	ctx.Ctx.GetLogger().Info("tool: search_skills called", "query", query)
+	ctx.Ctx.GetLogger().Info("tool: search_skills called", "query", query, "id", id)
+
+	// Similarity search and the judge can't match an ID, which is never in the embedded text.
+	var idNotFound string
+	if id != "" {
+		lookupCtx, cancel := context.WithTimeout(ctx.Ctx.GetContext(), ragSkillTimeout)
+		docs, err := core.QueryRAGByDocumentID(lookupCtx, ctx.UserId, ctx.AccountId, id, query, ragKBModule, ragSkillTopK, ctx.ConversationId, ctx.MessageId)
+		cancel()
+		if err != nil {
+			ctx.Ctx.GetLogger().Warn("tool: search_skills id lookup failed", "id", id, "error", err)
+		}
+		docs = core.ResolveManualKnowledge(ctx.Ctx, ctx.AccountId, docs)
+		if results := cacheSearchKnowledgeCandidates(ctx, docs); len(results) > 0 {
+			common.MetricsToolOperationsTotal(core.ToolImplTypeBuiltin, s.Name(), "success", ctx.AccountId)
+			return core.NBToolResponse{
+				Status: core.NBToolResponseStatusSuccess,
+				Data:   strings.Join(results, "\n\n---\n\n"),
+				Type:   core.NBToolResponseTypeText,
+			}, nil
+		}
+		idNotFound = fmt.Sprintf("Could not find an indexed knowledge-base article with the ID %q. Any results below come from searching the query and are not that article.", id)
+	}
 
 	dbms, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
@@ -629,8 +672,8 @@ func (s SearchSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallRequ
 	go func() {
 		var out searchOutput
 		for _, mr := range s.searchManualKBs(ctx, dbms, query) {
-			out.results = append(out.results, fmt.Sprintf("<result system=\"internal\" source=\"manual\" name=\"%s\">\n%s\n</result>",
-				html.EscapeString(mr.name), html.EscapeString(core.KnowledgePurposeGuidance(core.KnowledgePurpose("manual", mr.category))+"\n"+mr.snippet)))
+			out.results = append(out.results, fmt.Sprintf("<result system=\"internal\" source=\"manual\" name=\"%s\" purpose=\"%s\">\n%s\n</result>",
+				html.EscapeString(mr.name), resultPurpose(core.KnowledgePurpose("manual", mr.category)), html.EscapeString(mr.snippet)))
 			out.refs = append(out.refs, core.NBToolResponseReference{
 				Text: mr.name, Type: "skill", Url: mr.id, Description: mr.description,
 			})
@@ -643,7 +686,7 @@ func (s SearchSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallRequ
 		var out searchOutput
 		searchCtx, traceID := core.WithRetrievalTraceID(ctx.Ctx.GetContext())
 		docs := core.QueryRAGCollection(searchCtx, ctx.UserId, ctx.AccountId, "", query, ragKBModule, "",
-			ragSkillTopK, ctx.ConversationId, ctx.MessageId, "", false)
+			ragSkillFetchSize(), ctx.ConversationId, ctx.MessageId, "", false)
 		out.docs = core.JudgeKBResults(ctx.Ctx, ctx.AccountId, ctx.UserId, ctx.ConversationId, ctx.MessageId, query, docs, traceID)
 		ragCh <- out
 	}()
@@ -689,9 +732,12 @@ collect:
 		common.MetricsToolOperationsTotal(core.ToolImplTypeBuiltin, s.Name(), "not_found", ctx.AccountId)
 		return core.NBToolResponse{
 			Status: core.NBToolResponseStatusSuccess,
-			Data:   "No matching skills or knowledge base entries found for the given query.",
+			Data:   strings.TrimSpace(idNotFound + "\nNo matching skills or knowledge base entries found for the given query."),
 			Type:   core.NBToolResponseTypeText,
 		}, nil
+	}
+	if idNotFound != "" {
+		finalResults = append([]string{idNotFound}, finalResults...)
 	}
 
 	ctx.Ctx.GetLogger().Info("tool: search_skills success",
@@ -699,10 +745,36 @@ collect:
 	common.MetricsToolOperationsTotal(core.ToolImplTypeBuiltin, s.Name(), "success", ctx.AccountId)
 	return core.NBToolResponse{
 		Status:     core.NBToolResponseStatusSuccess,
-		Data:       strings.Join(finalResults, "\n\n---\n\n"),
+		Data:       withSearchGuidance(finalResults, "\n\n---\n\n"),
 		Type:       core.NBToolResponseTypeText,
 		References: finalRefs,
 	}, nil
+}
+
+// resultPurpose is the purpose a search hit declares: a procedure only when the
+// knowledge was marked as one, otherwise reference.
+func resultPurpose(purpose core.KnowledgeContentPurpose) core.KnowledgeContentPurpose {
+	if purpose == core.KnowledgePurposeProcedure {
+		return purpose
+	}
+	return core.KnowledgePurposeReference
+}
+
+// withSearchGuidance joins search hits behind the guidance for each purpose they
+// declare, once. Every hit used to carry its own copy, so a response with several
+// hits was mostly one paragraph repeated.
+func withSearchGuidance(results []string, separator string) string {
+	var blocks []string
+	for _, purpose := range []core.KnowledgeContentPurpose{core.KnowledgePurposeProcedure, core.KnowledgePurposeReference} {
+		marker := fmt.Sprintf("purpose=\"%s\"", purpose)
+		for _, result := range results {
+			if strings.Contains(result, marker) {
+				blocks = append(blocks, fmt.Sprintf("<guidance purpose=\"%s\">%s</guidance>", purpose, html.EscapeString(core.KnowledgePurposeGuidance(purpose))))
+				break
+			}
+		}
+	}
+	return strings.Join(append(blocks, strings.Join(results, separator)), separator)
 }
 
 type manualSearchResult struct {
@@ -734,16 +806,18 @@ func (s SearchSkillsTool) searchManualKBs(ctx core.NbToolContext, dbms *common.D
 		args = append(args, "%"+word+"%")
 	}
 
+	scope, scopeArgs := core.KBAccountScope("kb", 1, len(args)+1, core.VisibleOrgKnowledgebaseIDs(ctx.Ctx.GetContext(), ctx.AccountId))
+	args = append(args, scopeArgs...)
 	sqlQuery := fmt.Sprintf(`
 		SELECT kb.id, kb.name, COALESCE(kb.description, ''),
 		       CASE WHEN kb.data_format = 'pdf' THEN '' ELSE LEFT(kb.data, 500) END, COALESCE(kb.note_category, '')
 		FROM llm_knowledgebases kb
-		WHERE kb.account_id = $1
+		WHERE %s
 		  AND kb.status = 'active'
 		  AND kb.enabled
 		  AND COALESCE(kb.kb_type, 'manual') = 'manual'
 		  AND %s
-		LIMIT 5`, strings.Join(conditions, " AND "))
+		LIMIT 5`, scope, strings.Join(conditions, " AND "))
 
 	rows, err := dbms.Db.Query(sqlQuery, args...)
 	if err != nil {

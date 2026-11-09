@@ -1516,10 +1516,12 @@ func (s *Service) buildFlowRelationships(
 	// This runs AFTER all flow sources complete, allowing cross-source matching
 	// ========================================================================
 	if s.externalServiceEnricher != nil {
-		// Extract all external service nodes from all flow sources
+		// Extract all external service nodes from all flow sources. A declared
+		// ExternalService is what the user said it is, not an observed stub to
+		// be matched to (and folded into) a cloud resource.
 		externalServices := make([]*DbNode, 0)
 		for _, node := range allNodes {
-			if node.NodeType == NodeTypeExternalService {
+			if node.NodeType == NodeTypeExternalService && node.Source != ManualNodeSource {
 				externalServices = append(externalServices, node)
 			}
 		}
@@ -1996,6 +1998,11 @@ func (s *Service) markInactiveNodes(
 	successfulFlowSources []string,
 	sweepTenantScoped bool,
 ) (int64, error) {
+	// Declared nodes (source = ManualNodeSource) are never swept here: a
+	// declaration, not a build's view of inventory, keeps them alive, and the
+	// manual flow source retires the ones no declaration owns. Without this a
+	// declared Kubernetes workload (an infra-authoritative type) would be
+	// retired by any build in which it was not re-emitted.
 	query := `
 	UPDATE knowledge_graph_node
 	SET is_active = false,
@@ -2004,6 +2011,7 @@ func (s *Service) markInactiveNodes(
 		AND last_sync_version < $2
 		AND level = 'Tenant'
 		AND is_active = true
+		AND (properties->>'source') IS DISTINCT FROM '` + ManualNodeSource + `'
 	`
 	args := []interface{}{tenantID, syncVersion}
 

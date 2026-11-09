@@ -774,6 +774,7 @@ func TestESFetchLabelValues_IsTimeBounded(t *testing.T) {
 	assert.Contains(t, body, esLabelValuesTimeField, "aggregation must carry a time filter")
 	assert.Contains(t, body, esLabelValuesWindow)
 	assert.Contains(t, body, `"range"`)
+	assert.Regexp(t, `"time":\{"gte":\d{13}\}`, body, "the time field gets a plain epoch-millis bound, valid for date and numeric mappings")
 }
 
 // TestParseESMetricsHitsWithStats_SeparatesMatchedFromExtracted pins the distinction the

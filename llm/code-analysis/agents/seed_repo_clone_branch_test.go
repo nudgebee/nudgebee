@@ -79,3 +79,51 @@ func TestSeedRepoCloneBranch_NoLeakAcrossRequests(t *testing.T) {
 		})
 	}
 }
+
+// TestSeedRepoCloneBranch_CommitFromRequestOnly: a run that writes a code change
+// takes its revision from the request, so the tool is told to ignore a commit
+// the model passes. An analysis is not, and the setting must not survive from a
+// change run into the analysis that reuses the tool after it.
+func TestSeedRepoCloneBranch_CommitFromRequestOnly(t *testing.T) {
+	tool := tools.NewRepoCloneTool("/tmp/ws", nil)
+
+	seedRepoCloneBranch(tool, &session.SessionContext{Mode: ModeFix})
+	if !tool.CommitFromRequestOnly() {
+		t.Fatal("a fix run must take its commit from the request only")
+	}
+
+	seedRepoCloneBranch(tool, &session.SessionContext{Mode: ModeExplore})
+	if tool.CommitFromRequestOnly() {
+		t.Fatal("an explore run must keep honouring a commit the model passes")
+	}
+
+	seedRepoCloneBranch(tool, &session.SessionContext{Mode: ModeFix})
+	seedRepoCloneBranch(tool, nil)
+	if tool.CommitFromRequestOnly() {
+		t.Fatal("the fix-run setting leaked into a request with no session")
+	}
+}
+
+// The repository whose setup script may run is the request's, only for a run
+// that writes code, and a tool must not carry the previous request's over.
+func TestSeedRepoCloneRequestRepo(t *testing.T) {
+	tool := tools.NewRepoCloneTool("/tmp/ws", nil)
+	repo := &planners.RepositoryContext{URL: "https://github.com/acme/widgets"}
+
+	seedRepoCloneBranch(tool, &session.SessionContext{Mode: ModeFix, RepoContext: repo})
+	if got := tool.RequestRepo(); got != "https://github.com/acme/widgets" {
+		t.Fatalf("RequestRepo() = %q in fix mode, want the request's repository", got)
+	}
+
+	// An explore run only reads the repository; its clone must not run setup.
+	seedRepoCloneBranch(tool, &session.SessionContext{Mode: ModeExplore, RepoContext: repo})
+	if got := tool.RequestRepo(); got != "" {
+		t.Fatalf("RequestRepo() = %q in explore mode, want empty", got)
+	}
+
+	seedRepoCloneBranch(tool, &session.SessionContext{Mode: ModeFix, RepoContext: repo})
+	seedRepoCloneBranch(tool, &session.SessionContext{Mode: ModeFix})
+	if got := tool.RequestRepo(); got != "" {
+		t.Fatalf("RequestRepo() = %q after a request with no repository, want empty", got)
+	}
+}

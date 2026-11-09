@@ -53,6 +53,13 @@ beforeEach(() => {
   mockListK8sAccAgentHealth.mockResolvedValue(agentHealth([]));
 });
 
+describe('the context default (no provider ancestor)', () => {
+  it('is not loading', () => {
+    render(<Probe />);
+    expect(screen.getByTestId('probe')).toHaveTextContent('OPEN');
+  });
+});
+
 describe('the rule', () => {
   it('gates a tenant with no accounts', async () => {
     renderGate();
@@ -149,6 +156,69 @@ describe('locked while an account is still connecting, not merely added', () => 
     mockGetAllAccount.mockResolvedValue(accounts([k8s({ status: 'error' })]));
     renderGate();
     await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('OPEN'));
+  });
+});
+
+// #41115: a self-hosted account used to unlock the whole nav the instant it
+// was created, with no forager ever started — the same gap K8s had above,
+// now closed the same way.
+describe('locked while a self-hosted fleet is still connecting, not merely added', () => {
+  const selfHosted = (over: Record<string, unknown> = {}) => account({ cloud_provider: 'SelfHosted', ...over });
+
+  it('stays gated for a self-hosted account whose forager has not checked in yet', async () => {
+    mockGetAllAccount.mockResolvedValue(accounts([selfHosted()]));
+    mockListK8sAccAgentHealth.mockResolvedValue(agentHealth(['a1'], 'PENDING'));
+    renderGate();
+    await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('GATED'));
+  });
+
+  it('opens once that same fleet finishes connecting', async () => {
+    mockGetAllAccount.mockResolvedValue(accounts([selfHosted()]));
+    mockListK8sAccAgentHealth.mockResolvedValue(agentHealth(['a1'], 'CONNECTED'));
+    renderGate();
+    await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('OPEN'));
+  });
+
+  // One batched call covers both kinds (`agentType: null`) — a K8s cluster and
+  // a self-hosted fleet in the same tenant must not be asked about twice.
+  it('asks about a K8s cluster and a self-hosted fleet in the same batched call', async () => {
+    const k8s = account({ id: 'a1', cloud_provider: 'k8s' });
+    mockGetAllAccount.mockResolvedValue(accounts([k8s, selfHosted({ id: 'a2' })]));
+    mockListK8sAccAgentHealth.mockResolvedValue(agentHealth(['a1', 'a2'], 'CONNECTED'));
+    renderGate();
+    await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('OPEN'));
+    expect(mockListK8sAccAgentHealth).toHaveBeenCalledTimes(1);
+    expect(mockListK8sAccAgentHealth).toHaveBeenCalledWith(expect.arrayContaining(['a1', 'a2']));
+  });
+});
+
+// Review finding (Mayank Pande): an established tenant whose only account is
+// a K8s cluster got walled onto /setup the moment its agent dropped — a real
+// outage, not a stalled install — exactly when the rest of the app mattered
+// most. The lock now only holds for that reason while the account is still
+// young enough to plausibly be mid-install.
+describe('an agent outage on an established account is not "still connecting"', () => {
+  const dayAgo = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString();
+
+  it('does not re-gate an established K8s account whose agent later drops', async () => {
+    mockGetAllAccount.mockResolvedValue(accounts([account({ cloud_provider: 'k8s', created_at: dayAgo(30) })]));
+    mockListK8sAccAgentHealth.mockResolvedValue(agentHealth(['a1'], 'PENDING'));
+    renderGate();
+    await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('OPEN'));
+  });
+
+  it('still gates a brand-new K8s account whose agent has not checked in yet', async () => {
+    mockGetAllAccount.mockResolvedValue(accounts([account({ cloud_provider: 'k8s', created_at: dayAgo(0) })]));
+    mockListK8sAccAgentHealth.mockResolvedValue(agentHealth(['a1'], 'PENDING'));
+    renderGate();
+    await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('GATED'));
+  });
+
+  it('still gates an established K8s account whose status itself says still connecting', async () => {
+    mockGetAllAccount.mockResolvedValue(accounts([account({ cloud_provider: 'k8s', status: 'connecting', created_at: dayAgo(30) })]));
+    mockListK8sAccAgentHealth.mockResolvedValue(agentHealth([]));
+    renderGate();
+    await waitFor(() => expect(screen.getByTestId('probe')).toHaveTextContent('GATED'));
   });
 });
 

@@ -791,7 +791,12 @@ func (o *NBReActPlanner3) getToolResponse(step *NBAgentPlannerToolActionStep, is
 		}
 		return toolResponse
 	}
-	return SummarizeObservation(o.ctx, step, o.request, toolResponse)
+	// The summary may leave out the saved-output note; put it back first.
+	summary := SummarizeObservation(o.ctx, step, o.request, toolResponse)
+	if step.Metadata != nil && step.Metadata.SavedOutputNote != "" && !strings.Contains(summary, step.Metadata.SavedOutputNote) {
+		summary = withSavedOutputNote(summary, step.Metadata)
+	}
+	return summary
 }
 
 // prewarmSummaries fires LLM summarizations in parallel for all non-recent steps
@@ -1796,7 +1801,7 @@ func (o *NBReActPlanner3) Plan(
 					// follow it. When no tool action is appropriate (format /
 					// hallucination / no-execution-path), the critique feedback
 					// itself will guide a rewrite.
-					feedbackMsg := fmt.Sprintf("The previous final answer was: %s\nThe critique feedback was: %s\nFollow the critique feedback exactly. If it names a specific tool to call, you MUST issue that tool action now via <thought_action> and produce no <final_answer> this turn. Otherwise, refine the answer to address the feedback. Refer to previous conversation/messages for better context.", rd.Answer, rd.Feedback)
+					feedbackMsg := fmt.Sprintf("The previous final answer was: %s\nThe critique feedback was: %s\nFollow the critique feedback exactly. If it names a specific tool to call, you MUST issue that tool action now via <thought_action> and produce no <final_answer> this turn. Otherwise, refine the answer to address the feedback. Refer to previous conversation/messages for better context. ", rd.Answer, rd.Feedback) + refinedAnswerStandsAlone
 					mcList = append(mcList, llms.MessageContent{
 						Role:  llms.ChatMessageTypeHuman,
 						Parts: []llms.ContentPart{llms.TextContent{Text: feedbackMsg}},
@@ -1824,6 +1829,9 @@ func (o *NBReActPlanner3) Plan(
 						Parts: []llms.ContentPart{llms.TextContent{Text: msg.GetContent()}},
 					})
 				}
+			}
+			if note, ok := finalIterationsNote(ctx); ok {
+				mcList = appendNoteToLastMessage(mcList, note)
 			}
 
 			callOptions := []llms.CallOption{llms.WithTemperature(0.0)}
@@ -2257,7 +2265,7 @@ func (o *NBReActPlanner3) runCritique(input, scratchpad, finalAnswer string, int
 			o.refinementAttempts+1 >= o.maxRefinementAttempts, nil)
 		// Surface the feedback actually returned to the planner, including claim gaps.
 		if !strings.EqualFold(resultDecision, "accept") && resultFeedback != "" {
-			if err := o.saveCritiqueAsToolCall(resultFeedback); err != nil {
+			if err := saveCritiqueCard(o.request, resultFeedback); err != nil {
 				logger.Error("reactagent3: failed to save critique as tool call", "error", err)
 			}
 		}
@@ -2365,36 +2373,6 @@ func (o *NBReActPlanner3) runCritique(input, scratchpad, finalAnswer string, int
 	}
 
 	return decision, feedback
-}
-
-// saveCritiqueAsToolCall writes a synthetic tool-call record so that the
-// critique feedback surfaces in the UI's Tool Details drawer. Errors are
-// swallowed — this is a visibility feature and must never fail the planner.
-func (o *NBReActPlanner3) saveCritiqueAsToolCall(feedback string) error {
-	if o.request.AgentId == "" || o.request.ConversationId == "" {
-		return nil
-	}
-	conversationDAO := GetConversationDao()
-	toolId := uuid.New().String()
-	return conversationDAO.SaveConversationToolCall(
-		o.request.ConversationId,
-		o.request.AccountId,
-		o.request.UserId,
-		o.request.MessageId,
-		o.request.AgentId,
-		toolId,
-		"react_critique",
-		"Answer rejected by critique — refining for better quality",   // title shown on the UI card
-		"Critiquing the final answer to ensure quality and accuracy.", // thought shown in Tool Details drawer
-		"", // no SQL
-		feedback,
-		toolcore.NBToolResponseStatusSuccess,
-		toolcore.NBToolTypeTool,
-		nil,
-		nil,
-		nil,
-		nil, // memoryRefs — synthetic critique-feedback tool call
-	)
 }
 
 // resolveHypothesisModeEnabled mirrors the gating used when building the

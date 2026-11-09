@@ -117,6 +117,12 @@ type NBQueryConfig struct {
 	// conversation's next turn (see handleConversationRequest).
 	SkipConversationHistory bool `json:"skip_conversation_history,omitempty"`
 
+	// ReadOnlyRun records that the turn ran read-only (an alert investigation,
+	// where no person answers approvals; see core.WithReadOnlyRun), so a run
+	// recovered after a restart stays read-only. Like SkipConversationHistory
+	// it is never inherited by the conversation's next turn.
+	ReadOnlyRun bool `json:"read_only_run,omitempty"`
+
 	// Memory overrides the server-wide memory settings for this one request.
 	// Grouped rather than three flat flags because they are one concern, and a
 	// reader should not have to know that a "rerank" flag relates to a "memory"
@@ -143,7 +149,7 @@ func (q NBQueryConfig) IsEmpty() bool {
 		q.CurrentCluster == "" && q.CurrentClusterId == "" && q.K8sOrchestratorMode == "" &&
 		q.LlmProvider == "" && q.LlmModelName == "" && len(q.LlmTierModels) == 0 && q.LlmConfigSource == "" && !q.LlmConfigReset && len(q.ToolConfigs) == 0 && q.DelegatedTarget == nil &&
 		len(q.ClientTools) == 0 && q.Capabilities.IsEmpty() && len(q.ToolConfirmations) == 0 &&
-		len(q.ToolConfigMetadata) == 0 && q.LogProviderOverride == "" && !q.SkipConversationHistory &&
+		len(q.ToolConfigMetadata) == 0 && q.LogProviderOverride == "" && !q.SkipConversationHistory && !q.ReadOnlyRun &&
 		len(q.DiscoveredTools) == 0 && q.Memory.IsEmpty()
 }
 
@@ -345,6 +351,9 @@ func (q *NBQueryConfig) MergeFrom(src NBQueryConfig) {
 	}
 	if !q.SkipConversationHistory {
 		q.SkipConversationHistory = src.SkipConversationHistory
+	}
+	if !q.ReadOnlyRun {
+		q.ReadOnlyRun = src.ReadOnlyRun
 	}
 	if src.ToolConfigs != nil {
 		q.ToolConfigs = lo.Assign(src.ToolConfigs, q.ToolConfigs)

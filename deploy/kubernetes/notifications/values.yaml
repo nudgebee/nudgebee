@@ -122,4 +122,8 @@ affinity: {}
 
 secretName: 'nudgebee'
 
+# Plain (non-secret) environment settings for the notifications container,
+# rendered as `env:` after `envFrom` (same route as the services-server chart).
+env: {}
+
 annotations: {}

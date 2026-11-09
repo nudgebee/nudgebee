@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -32,6 +33,109 @@ func newTestGithubClient(t *testing.T, handler http.Handler) (*github.Client, *h
 	client.BaseURL = baseURL
 	client.UploadURL = baseURL
 	return client, srv
+}
+
+// A pasted/dragged image in GitHub's comment box produces a raw <img> tag
+// pointing at github.com/user-attachments/. extractGithubUserAttachments must
+// pull it into a real attachment (resolvable later via GetAttachment) and
+// replace it in the body with a position marker - not strip it outright -
+// so the frontend can put the image back where it actually was.
+func TestExtractGithubUserAttachments_ImgTag(t *testing.T) {
+	body := "This is another comments with Image\n" +
+		`<img width="1183" height="352" alt="Image" src="https://github.com/user-attachments/assets/165c956c-6d7f-438b-9773-7d9b57304c23" />` + "\n" +
+		"Should be visible in Nudgebee\n"
+
+	gotBody, attachments := extractGithubUserAttachments(body)
+
+	wantBody := "This is another comments with Image\n[[nb-attachment:165c956c-6d7f-438b-9773-7d9b57304c23]]\nShould be visible in Nudgebee\n"
+	if gotBody != wantBody {
+		t.Fatalf("got body %q, want %q", gotBody, wantBody)
+	}
+	if len(attachments) != 1 || attachments[0].ID != "165c956c-6d7f-438b-9773-7d9b57304c23" || attachments[0].Name != "Image" {
+		t.Fatalf("attachments = %+v, want one with id=165c956c-... name=Image", attachments)
+	}
+}
+
+// Same CDN referenced via markdown ![]() syntax (manually written, or pasted
+// from GitHub's "copy image address") must be extracted identically.
+func TestExtractGithubUserAttachments_MarkdownSyntax(t *testing.T) {
+	gotBody, attachments := extractGithubUserAttachments("![hey](https://github.com/user-attachments/assets/165c956c-6d7f-438b-9773-7d9b57304c23)")
+
+	wantBody := "[[nb-attachment:165c956c-6d7f-438b-9773-7d9b57304c23]]"
+	if gotBody != wantBody {
+		t.Fatalf("got body %q, want %q", gotBody, wantBody)
+	}
+	if len(attachments) != 1 || attachments[0].ID != "165c956c-6d7f-438b-9773-7d9b57304c23" || attachments[0].Name != "hey" {
+		t.Fatalf("attachments = %+v, want one with id=165c956c-... name=hey", attachments)
+	}
+}
+
+// A host extractGithubUserAttachments doesn't own must pass through untouched.
+func TestExtractGithubUserAttachments_LeavesOtherHostsAlone(t *testing.T) {
+	body := "![a screenshot](https://raw.githubusercontent.com/nudgebee/nudgebee-enterprise/main/x.png)"
+	gotBody, attachments := extractGithubUserAttachments(body)
+	if gotBody != body || len(attachments) != 0 {
+		t.Fatalf("got body=%q attachments=%+v, want unchanged with no attachments", gotBody, attachments)
+	}
+}
+
+// The JWT-signed private-user-images.githubusercontent.com mirror must also be
+// rewritten, even though it's a different (non-session-gated) mechanism - its
+// signature carries a 5-minute TTL, so by the time Nudgebee reads the comment
+// it's realistically always already expired.
+func TestRewriteUnembeddableGithubImages_SignedMirrorURL(t *testing.T) {
+	signedURL := "https://private-user-images.githubusercontent.com/114298732/665514036-165c956c.png?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3OTExOTE3Mjl9.sig"
+	got := rewriteUnembeddableGithubImages(fmt.Sprintf("![img](%s)", signedURL))
+
+	want := fmt.Sprintf("[\U0001F4CE img (view on GitHub)](%s)", signedURL)
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// A normal markdown image or an <img> from any other host must pass through
+// unchanged - only the specific unembeddable GitHub CDN is rewritten.
+func TestRewriteUnembeddableGithubImages_LeavesOtherImagesAlone(t *testing.T) {
+	body := "![a screenshot](https://raw.githubusercontent.com/nudgebee/nudgebee-enterprise/main/x.png) and " +
+		`<img src="https://example.com/other.png" alt="other" />`
+
+	got := rewriteUnembeddableGithubImages(body)
+	if got != body {
+		t.Fatalf("expected unrelated images to pass through unchanged, got %q", got)
+	}
+}
+
+// A dragged/pasted video produces a <video src="..."> tag (GitHub has no
+// markdown video syntax), pointing at either unembeddable CDN. Unlike images,
+// video is never resolved into a real player - just a link.
+func TestRewriteGithubVideoTags_UserAttachments(t *testing.T) {
+	body := `<video src="https://github.com/user-attachments/assets/165c956c-6d7f-438b-9773-7d9b57304c23" controls="controls" muted="muted"></video>`
+
+	got := rewriteGithubVideoTags(body)
+
+	want := "[\U0001F3AC attached video (view on GitHub)](https://github.com/user-attachments/assets/165c956c-6d7f-438b-9773-7d9b57304c23)"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestRewriteGithubVideoTags_SignedMirrorURL(t *testing.T) {
+	signedURL := "https://private-user-images.githubusercontent.com/114298732/665514036-165c956c.mp4?jwt=eyJhbGciOiJIUzI1NiJ9.sig"
+	got := rewriteGithubVideoTags(fmt.Sprintf(`<video src="%s"></video>`, signedURL))
+
+	want := fmt.Sprintf("[\U0001F3AC attached video (view on GitHub)](%s)", signedURL)
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// A <video> from any other host must pass through unchanged.
+func TestRewriteGithubVideoTags_LeavesOtherHostsAlone(t *testing.T) {
+	body := `<video src="https://example.com/clip.mp4"></video>`
+	got := rewriteGithubVideoTags(body)
+	if got != body {
+		t.Fatalf("expected unrelated video to pass through unchanged, got %q", got)
+	}
 }
 
 // TestCreateGithubIssueWithClient_RejectsInvalidAssignee verifies that we

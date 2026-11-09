@@ -285,7 +285,6 @@ type BodyDetails struct {
 	EventAction    string         `json:"event_action"`
 	EventStorageID string         `json:"event_storage_id"`
 	Payload        PayloadSection `json:"payload"`
-	RoutingKey     string         `json:"routing_key"`
 	Severity       string         `json:"severity"`
 }
 
@@ -299,7 +298,6 @@ type PdCefPayload struct {
 	EventClass      string                 `json:"event_class"`
 	EventID         string                 `json:"event_id"`
 	Message         string                 `json:"message"`
-	RoutingKey      string                 `json:"routing_key"`
 	Severity        string                 `json:"severity"`
 	SourceComponent string                 `json:"source_component"`
 	SourceOrigin    string                 `json:"source_origin"`
@@ -389,6 +387,29 @@ func (m PagerDutyWebhook) Name() string {
 
 func (m PagerDutyWebhook) Category() core.IntegrationCategory {
 	return core.IntegrationCategoryIncidentWebhook
+}
+
+// WebhookLabelHelp describes the labels ProcessEventWebook and applyPagerDutyIncident build. Update it with the parser.
+func (m PagerDutyWebhook) WebhookLabelHelp() core.WebhookLabelHelp {
+	return core.WebhookLabelHelp{
+		Summary: "The PagerDuty service name is always sent. Custom fields and the original alert's labels are read through the PagerDuty API, so the PagerDuty integration must be linked with an API token.",
+		Labels: []core.WebhookLabelSource{
+			{Label: "service_discovery", Source: "event.data.service.summary"},
+			{Label: "<query parameter>", Source: "event.client.url"},
+			{Label: "<custom field>", Source: "incident custom field, by field name"},
+			{Label: "<alert label>", Source: "labels of the original Alertmanager, Grafana or SigNoz alert"},
+			{Label: "annotation_<name>", Source: "annotations of the original Grafana or SigNoz alert"},
+			{Label: "severity", Source: "severity of the original alert"},
+			{Label: "namespace", Source: "namespace=\"...\" in the incident title"},
+			{Label: "pod", Source: "pod=\"...\" in the incident title"},
+		},
+		Notes: []string{
+			"Without the PagerDuty integration, only service_discovery and the URL parameters can be matched.",
+			"The service name is service_discovery, not service.",
+			"Events API custom_details are not copied as labels.",
+			"The incident's status, urgency and priority are not labels.",
+		},
+	}
 }
 
 func (m PagerDutyWebhook) ConfigSchema() core.IntegrationSchema {
@@ -947,6 +968,14 @@ func EnrichWithPagerDutyIncident(sc *security.RequestContext, parsedPayload *cor
 		}
 	}
 
+	applyPagerDutyIncident(sc, parsedPayload, incident)
+}
+
+// applyPagerDutyIncident fills the event's labels, description, severity and raw
+// evidence from a fetched incident.
+func applyPagerDutyIncident(sc *security.RequestContext, parsedPayload *core.EventIncomingWebhook, incident *Incident) {
+	stripPagerDutyIntegrationKey(&incident.Body)
+
 	// Initialize labels map if needed
 	if parsedPayload.Investigation.Labels == nil {
 		parsedPayload.Investigation.Labels = make(map[string]string)
@@ -1074,7 +1103,6 @@ type CommonAlertFields struct {
 	DedupKey        string
 	Severity        string
 	EventID         string
-	RoutingKey      string
 	Client          string
 	SourceComponent string
 	EreAccountID    int
@@ -1129,7 +1157,6 @@ type GrafanaAlertFields struct {
 	EventID        string
 	EventStorageID string
 	SourceOrigin   string
-	RoutingKey     string
 	ServiceGroup   string
 	AlertRuleUID   string
 	OrgID          string
@@ -1159,7 +1186,6 @@ type SigNozAlertFields struct {
 	EventID        string
 	EventStorageID string
 	SourceOrigin   string
-	RoutingKey     string
 	EreAccountID   int
 	PayloadSource  string
 	Severity       string
@@ -1218,7 +1244,6 @@ type ChronosphereAlertFields struct {
 	EventID                string
 	EventStorageID         string
 	SourceOrigin           string
-	RoutingKey             string
 	EreAccountID           int
 	PayloadSource          string
 	PayloadSummary         string
@@ -1255,6 +1280,28 @@ func extractBodyDetails(incident *Incident, parsedPayload *core.EventIncomingWeb
 	for key, value := range labels {
 		if value != "" { // Only add non-empty values
 			parsedPayload.Investigation.Labels[key] = value
+		}
+	}
+}
+
+// stripPagerDutyIntegrationKey removes the service's Events API integration key from
+// the incident body so it reaches neither the event labels nor the stored evidence.
+// PagerDuty echoes it on the event envelope as routing_key (v2 events) or service_key
+// (v1). It is a credential — it lets anyone post events to that service — and a 32-char
+// routing_key next to an alert's exchange/queue labels gets read by investigations as
+// an AMQP routing key. Only the envelope is stripped (body.details, body.cef_details
+// and their __pd_cef_payload) — a routing_key nested in the alert's own details is the
+// alert's data and stays.
+func stripPagerDutyIntegrationKey(body *Body) {
+	for _, envelope := range []interface{}{body.Details, body.CefDetails} {
+		details, ok := envelope.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		cef, _ := details["__pd_cef_payload"].(map[string]interface{})
+		for _, field := range []string{"routing_key", "service_key"} {
+			delete(details, field)
+			delete(cef, field)
 		}
 	}
 }
@@ -1390,7 +1437,6 @@ func extractSigNozAlertFields(incident *Incident, bodyDetails *BodyDetails) *Sig
 
 	// Extract body-level fields
 	signozFields.EventStorageID = bodyDetails.EventStorageID
-	signozFields.RoutingKey = bodyDetails.RoutingKey
 	signozFields.EreAccountID = bodyDetails.EreAccountID
 
 	// Extract payload fields
@@ -1561,7 +1607,6 @@ func extractChronosphereAlertFields(incident *Incident, bodyDetails *BodyDetails
 
 	// Extract body-level fields
 	chronosphereFields.EventStorageID = bodyDetails.EventStorageID
-	chronosphereFields.RoutingKey = bodyDetails.RoutingKey
 	chronosphereFields.EreAccountID = bodyDetails.EreAccountID
 
 	// Extract payload fields
@@ -1734,7 +1779,6 @@ func alertDataToLabels(alertData *AlertData) map[string]string {
 	setIfNotEmpty(labels, "dedup_key", common.DedupKey)
 	setIfNotEmpty(labels, "severity", common.Severity)
 	setIfNotEmpty(labels, "event_id", common.EventID)
-	setIfNotEmpty(labels, "routing_key", common.RoutingKey)
 	setIfNotEmpty(labels, "client", common.Client)
 	setIfNotEmpty(labels, "source_component", common.SourceComponent)
 	setIfNotEmpty(labels, "event_storage_id", common.EventStorageID)
@@ -1906,7 +1950,6 @@ func alertDataToLabels(alertData *AlertData) map[string]string {
 			setIfNotEmpty(labels, "eventID", grafana.EventID)
 			setIfNotEmpty(labels, "eventStorageID", grafana.EventStorageID)
 			setIfNotEmpty(labels, "sourceOrigin", grafana.SourceOrigin)
-			setIfNotEmpty(labels, "routingKey", grafana.RoutingKey)
 			setIfNotEmpty(labels, "serviceGroup", grafana.ServiceGroup)
 			setIfNotEmpty(labels, "alertRuleUID", grafana.AlertRuleUID)
 			setIfNotEmpty(labels, "orgID", grafana.OrgID)
@@ -1943,7 +1986,6 @@ func alertDataToLabels(alertData *AlertData) map[string]string {
 			setIfNotEmpty(labels, "eventID", signoz.EventID)
 			setIfNotEmpty(labels, "eventStorageID", signoz.EventStorageID)
 			setIfNotEmpty(labels, "sourceOrigin", signoz.SourceOrigin)
-			setIfNotEmpty(labels, "routingKey", signoz.RoutingKey)
 			setIfNotEmpty(labels, "payloadSource", signoz.PayloadSource)
 			setIfNotEmpty(labels, "severity", signoz.Severity)
 			setIfNotEmpty(labels, "threshold", signoz.Threshold)
@@ -2042,7 +2084,6 @@ func alertDataToLabels(alertData *AlertData) map[string]string {
 			setIfNotEmpty(labels, "eventID", chronosphere.EventID)
 			setIfNotEmpty(labels, "eventStorageID", chronosphere.EventStorageID)
 			setIfNotEmpty(labels, "sourceOrigin", chronosphere.SourceOrigin)
-			setIfNotEmpty(labels, "routingKey", chronosphere.RoutingKey)
 			setIfNotEmpty(labels, "payloadSource", chronosphere.PayloadSource)
 			setIfNotEmpty(labels, "payloadSummary", chronosphere.PayloadSummary)
 			setIfNotEmpty(labels, "notificationPolicySlug", chronosphere.NotificationPolicySlug)
@@ -2323,7 +2364,6 @@ func extractCommonAlertFields(incident *Incident, bodyDetails *BodyDetails) Comm
 		DedupKey:        getFirstNonEmpty(cef.DedupKey, bodyDetails.DedupKey),
 		Severity:        getFirstNonEmpty(cef.Severity, bodyDetails.Severity),
 		EventID:         cef.EventID,
-		RoutingKey:      getFirstNonEmpty(cef.RoutingKey, bodyDetails.RoutingKey),
 		Client:          getFirstNonEmpty(cef.Client, bodyDetails.Client),
 		SourceComponent: cef.SourceComponent,
 		EreAccountID:    bodyDetails.EreAccountID,
@@ -2707,7 +2747,6 @@ func extractGrafanaAlertFields(incident *Incident, bodyDetails *BodyDetails) *Gr
 	grafanaFields.DedupKey = cef.DedupKey
 	grafanaFields.EventID = cef.EventID
 	grafanaFields.SourceOrigin = cef.SourceOrigin
-	grafanaFields.RoutingKey = cef.RoutingKey
 	grafanaFields.ServiceGroup = cef.ServiceGroup
 
 	// Extract additional fields from body details

@@ -365,3 +365,61 @@ func TestCloudGCPAuditLogGating(t *testing.T) {
 		"gcp_service_name": "Cloud Run",
 	})), "no project -> skip")
 }
+
+func TestAwsAlarmLogWindowStart(t *testing.T) {
+	fired := time.Date(2026, 10, 24, 4, 16, 2, 0, time.UTC)
+	lead := fired.Add(-10 * time.Minute)
+	alarm := map[string]string{"aws_event_arn": "arn:aws:cloudwatch:us-east-1:1:alarm:x", "Period": "60", "EvaluationPeriods": "5"}
+
+	start, breach := awsAlarmLogWindowStart(alarm, &fired, &lead)
+	if want := fired.Add(-10 * time.Minute); !start.Equal(want) || !breach.Equal(fired.Add(-5*time.Minute)) {
+		t.Fatalf("5x1m alarm: start=%v breach=%v", start, breach)
+	}
+
+	alarm["Period"], alarm["EvaluationPeriods"] = "300", "3"
+	start, _ = awsAlarmLogWindowStart(alarm, &fired, &lead)
+	if want := fired.Add(-20 * time.Minute); !start.Equal(want) {
+		t.Fatalf("3x5m alarm: start=%v want %v", start, want)
+	}
+
+	start, breach = awsAlarmLogWindowStart(map[string]string{"aws_event_arn": "arn:aws:cloudwatch:us-east-1:1:alarm:x"}, &fired, &lead)
+	if !start.Equal(fired.Add(-15*time.Minute)) || breach == nil {
+		t.Fatalf("no period labels: start=%v", start)
+	}
+
+	start, breach = awsAlarmLogWindowStart(map[string]string{}, &fired, &lead)
+	if start != &lead || breach != nil {
+		t.Fatalf("non-alarm event must be unchanged")
+	}
+}
+
+func TestSortLogsByDistanceFrom(t *testing.T) {
+	anchor := time.UnixMilli(1000)
+	got := []LogMessage{{Timestamp: 5000}, {Timestamp: 400}, {Timestamp: 1200}, {Timestamp: 3000}}
+	sortLogsByDistanceFrom(got, anchor)
+	want := []int64{1200, 400, 3000, 5000}
+	for i, m := range got {
+		if m.Timestamp != want[i] {
+			t.Fatalf("index %d: got %d want %d", i, m.Timestamp, want[i])
+		}
+	}
+}
+
+func TestAwsAlarmEvaluationWindowBounds(t *testing.T) {
+	cases := []struct {
+		period, periods string
+		want            time.Duration
+	}{
+		{"300", "3", 15 * time.Minute},
+		{"86400", "400", awsAlarmLogMaxWindow},
+		{"9223372036854775807", "9223372036854775807", awsAlarmLogMaxWindow},
+		{"abc", "3", awsAlarmLogDefaultWindow},
+		{"60", "-1", awsAlarmLogDefaultWindow},
+	}
+	for _, c := range cases {
+		got := awsAlarmEvaluationWindow(map[string]string{"Period": c.period, "EvaluationPeriods": c.periods})
+		if got != c.want {
+			t.Errorf("period=%s periods=%s: got %v want %v", c.period, c.periods, got, c.want)
+		}
+	}
+}

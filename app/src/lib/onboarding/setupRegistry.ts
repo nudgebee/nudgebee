@@ -98,7 +98,11 @@ export const TRACES_PROVIDERS: OnboardingProviderDef[] = [
 export const CHAT_PROVIDERS: OnboardingProviderDef[] = [
   { route: 'SLACK', label: 'Slack', types: ['slack'] },
   { route: 'MSTEAMS', label: 'Microsoft Teams', types: ['ms_teams'] },
-  { route: 'GOOGLE_CHAT', label: 'Google Chat', types: ['google_chat', 'google_chat_space'] },
+  // `google_chat` (singular, no `_space`) is not a real backend type — never
+  // list it first. `openIntegration` (SetupCenter.tsx) always opens
+  // `types[0]`, and a route that resolved to it got "integrations: not
+  // found" on every attempt (#41112).
+  { route: 'GOOGLE_CHAT', label: 'Google Chat', types: ['google_chat_space'] },
   { route: 'DISCORD', label: 'Discord', types: ['discord'] },
 ];
 

@@ -11,7 +11,7 @@ import (
 )
 
 func TestBuildAzureMetricKql_MetricNamePath(t *testing.T) {
-	kql, err := buildAzureMetricKql("requests/duration", 1700000000000, 1700003600000, 5, nil, nil)
+	kql, err := buildAzureMetricKql(azureAppInsightsMetricSchema, "requests/duration", 1700000000000, 1700003600000, 5, nil, nil)
 	assert.NoError(t, err)
 	assert.True(t, strings.HasPrefix(kql, "customMetrics"), "should query customMetrics table")
 	assert.Contains(t, kql, "where timestamp between (datetime(")
@@ -22,7 +22,7 @@ func TestBuildAzureMetricKql_MetricNamePath(t *testing.T) {
 
 func TestBuildAzureMetricKql_LabelsAndMatchers(t *testing.T) {
 	kql, err := buildAzureMetricKql(
-		"cpu",
+		azureAppInsightsMetricSchema, "cpu",
 		1700000000000, 1700003600000, 1,
 		map[string]string{"role": "api"},
 		[]LabelMatcher{{Label: "region", Operator: "_eq", Value: "us-east"}, {Label: "env", Operator: "_contains", Value: "prod"}},
@@ -34,13 +34,13 @@ func TestBuildAzureMetricKql_LabelsAndMatchers(t *testing.T) {
 }
 
 func TestBuildAzureMetricKql_UnsupportedOperator(t *testing.T) {
-	_, err := buildAzureMetricKql("cpu", 1, 2, 1, nil, []LabelMatcher{{Label: "x", Operator: "_regex", Value: "y"}})
+	_, err := buildAzureMetricKql(azureAppInsightsMetricSchema, "cpu", 1, 2, 1, nil, []LabelMatcher{{Label: "x", Operator: "_regex", Value: "y"}})
 	assert.Error(t, err)
 }
 
 func TestBuildAzureMetricKql_RawPassthrough(t *testing.T) {
 	raw := "performanceCounters\n| summarize avg(value) by bin(timestamp, 5m)"
-	kql, err := buildAzureMetricKql(raw, 1700000000000, 1700003600000, 5, nil, nil)
+	kql, err := buildAzureMetricKql(azureAppInsightsMetricSchema, raw, 1700000000000, 1700003600000, 5, nil, nil)
 	assert.NoError(t, err)
 	// time-range guard injected after the table, original body preserved
 	assert.Contains(t, kql, "performanceCounters")
@@ -50,7 +50,7 @@ func TestBuildAzureMetricKql_RawPassthrough(t *testing.T) {
 
 func TestBuildAzureMetricKql_RawWithExistingTimeFilterUntouched(t *testing.T) {
 	raw := "customMetrics | where timestamp > ago(1h) | summarize avg(value)"
-	kql, err := buildAzureMetricKql(raw, 1, 2, 5, nil, nil)
+	kql, err := buildAzureMetricKql(azureAppInsightsMetricSchema, raw, 1, 2, 5, nil, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, raw, kql)
 }

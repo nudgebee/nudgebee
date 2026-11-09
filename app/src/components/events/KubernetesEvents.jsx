@@ -4,6 +4,7 @@ import PropTypes from 'prop-types';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import { Box } from '@mui/material';
 import { FiArrowRight } from 'react-icons/fi';
+import { MdOutlineCategory } from 'react-icons/md';
 
 // DS V2 primitives
 import ListingLayout from '@ui/ListingLayout';
@@ -50,8 +51,16 @@ import k8sApi from '@api1/kubernetes';
 import ticketsApi from '@api1/tickets';
 import apiUser from '@api1/user';
 import { getDateString, getLast24Hrs } from '@lib/datetime';
-import { hasWriteAccess, hasPermission, getCurrentTenant, getUserSession } from '@lib/auth';
-import { safeJSONParse, titleCaseForAggregationKey, syncFilterFromQuery, toSeverityLevel, EXCLUDED_TRIAGE_AGGREGATION_KEYS } from 'src/utils/common';
+import { hasWriteAccess, canCreateTicket, getCurrentTenant, getUserSession } from '@lib/auth';
+import {
+  safeJSONParse,
+  titleCaseForAggregationKey,
+  syncFilterFromQuery,
+  toSeverityLevel,
+  EXCLUDED_TRIAGE_AGGREGATION_KEYS,
+  ALERT_STATUS_OPTIONS,
+  deriveGroupAlertStatus,
+} from 'src/utils/common';
 import { applyFiltersOnRouter } from '@lib/router';
 import { action } from 'src/utils/actionStyles';
 import { ds } from 'src/utils/colors';
@@ -60,7 +69,7 @@ import { useEventCloudFilter } from '@hooks/useCloudFilters';
 
 // Assets
 import TicketsIcon from '@assets/sidebar-icon/tickets-icon.svg';
-import { dashboardIcon1 as ClassifyIcon, infoIcon } from '@assets';
+import { infoIcon } from '@assets';
 import { TRIAGE_SCORE_INFO, getTriageStatusTooltip } from '@api1/triage';
 import useKubernetesEventFilters from '@hooks/useKubernetesEventFilters';
 import { readPersistedFilters, writePersistedFilters } from '@hooks/usePersistedFilters';
@@ -260,13 +269,13 @@ const UNIQUE_COLS = [
   'latest_event_id',
   'latest_title',
   'latest_computed_priority',
+  'latest_priority',
   'latest_computed_score',
   'latest_score_factors',
   'latest_score_confidence',
   'latest_nb_status',
   'latest_snoozed_until',
   'distinct_status',
-  'distinct_priority',
   'distinct_subject_name',
   'distinct_subject_namespace',
   'count_subject_name',
@@ -275,7 +284,6 @@ const UNIQUE_COLS = [
   'is_new_issue',
 ];
 const UNIQUE_SORT_MAP = { computed_score: 'latest_computed_score', created_at: 'max_created_at', starts_at: 'max_created_at' };
-const SEVERITY_RANK = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'DEBUG', 'INFO'];
 
 const asJsonArray = (value) => {
   if (Array.isArray(value)) {
@@ -285,10 +293,6 @@ const asJsonArray = (value) => {
   return Array.isArray(parsed) ? parsed : [];
 };
 const firstOfJson = (value) => asJsonArray(value)[0];
-const highestSeverity = (value) => {
-  const arr = asJsonArray(value);
-  return SEVERITY_RANK.find((s) => arr.includes(s)) ?? arr[0];
-};
 
 // One fingerprint-grouped row -> the flat event shape buildRowData expects.
 // Fields that vary within a fingerprint show the latest occurrence, or a
@@ -302,14 +306,14 @@ const mapUniqueRowToEvent = (g) => {
     fingerprint: g.fingerprint,
     title: g.latest_title,
     aggregation_key: firstOfJson(g.distinct_aggregation_key),
-    priority: highestSeverity(g.distinct_priority),
+    priority: g.latest_priority,
     computed_priority: g.latest_computed_priority,
     computed_score: g.latest_computed_score,
     score_factors: g.latest_score_factors,
     score_confidence: g.latest_score_confidence,
     nb_status: g.latest_nb_status,
     snoozed_until: g.latest_snoozed_until,
-    status: statusArr.includes('FIRING') ? 'FIRING' : statusArr.includes('CLOSED') ? 'CLOSED' : statusArr[0],
+    status: deriveGroupAlertStatus(statusArr),
     created_at: g.max_created_at,
     starts_at: g.max_created_at,
     subject_name: multiSubject ? `${g.count_subject_name} workloads` : firstOfJson(g.distinct_subject_name),
@@ -365,10 +369,7 @@ const KubernetesEventsTable = ({
   const persisted = useMemo(() => readPersistedFilters(persistKey), [persistKey]);
 
   const showEllipsis = true;
-  const statusFilter = [
-    { value: 'FIRING', label: 'Open' },
-    { value: 'CLOSED', label: 'Closed' },
-  ];
+  const statusFilter = ALERT_STATUS_OPTIONS.map(({ value, label }) => ({ value, label }));
   const priorityFilter = [
     { value: 'HIGH', label: 'High' },
     { value: 'MEDIUM', label: 'Medium' },
@@ -577,7 +578,14 @@ const KubernetesEventsTable = ({
   const [searchByMessage, setSearchByMessage] = useState(initialMessageSearch);
   const [appliedSearchByMessage, setAppliedSearchByMessage] = useState(initialMessageSearch);
   const [selectedNbStatus, setSelectedNbStatus] = useState([]);
-  const [selectedSortBy, setSelectedSortBy] = useState(() => getValidParam(router.query.sortBy) || persisted?.sortBy || 'created_at');
+  // `sortBy` in the URL is shared with the Triage Inbox, whose values ('Count',
+  // 'Priority', ...) are not event columns — sorting by one fails the query and
+  // leaves the table empty, including the Inbox's own row drill-down. Accept
+  // only this table's own options, as the Inbox does for its key.
+  const [selectedSortBy, setSelectedSortBy] = useState(() => {
+    const validSortBy = sortByOptions.map((o) => o.value);
+    return [getValidParam(router.query.sortBy), persisted?.sortBy].find((v) => validSortBy.includes(v)) || 'created_at';
+  });
   const [selectedIssueType, setSelectedIssueType] = useState(() => getValidParam(router.query.issueType) || persisted?.issueType || 'all');
   // Events view mode: 'all' | 'grouped' | 'unique'. Default 'all'. Seeded from
   // ?eventsView so the briefing "Issues you could see" tile can deep-link
@@ -942,13 +950,12 @@ const KubernetesEventsTable = ({
     return description;
   };
 
-  // Creating a ticket needs write access to the row's account OR the tickets:Write
-  // custom-role grant (tickets_create → tickets:Write). Without either, the Create
-  // Ticket action is disabled.
-  const canCreateTicketFor = (item) => hasWriteAccess(item?.account_id) || hasPermission('tickets', 'Write');
+  // Backend tickets_create authorizes read-only roles too — gate on read access,
+  // not write (@lib/auth#canCreateTicket, #40211).
+  const canCreateTicketFor = (item) => canCreateTicket(item?.account_id);
 
   const getMenuItems = (item, disableTicket) => {
-    const canCreateTicket = canCreateTicketFor(item);
+    const ticketAllowed = canCreateTicketFor(item);
     // Close/Open lives on the Alert Status badge's own dropdown (AlertStatusBadge),
     // not here — matching how Triage Status exposes its transitions on the badge
     // rather than in this overflow menu.
@@ -960,16 +967,15 @@ const KubernetesEventsTable = ({
           // ThreeDotsMenu items can't show a hover tooltip when disabled, so name
           // the required grant inline (the user can tell an admin exactly what to
           // grant) rather than in a tooltip.
-          label: canCreateTicket ? 'Create Ticket' : 'Create Ticket · requires tickets:Write',
+          label: ticketAllowed ? 'Create Ticket' : 'Create Ticket · requires account access',
           id: 'create-ticket',
-          disabled: disableTicket || !canCreateTicket,
+          disabled: disableTicket || !ticketAllowed,
           iconBlack: true,
         },
         {
-          icon: ClassifyIcon,
+          reactIcon: <MdOutlineCategory color={ds.gray[600]} size={18} />,
           label: 'Classify',
           id: 'classify',
-          iconBlack: true,
         },
         {
           icon: WorkflowIcon,
@@ -985,9 +991,9 @@ const KubernetesEventsTable = ({
           // ThreeDotsMenu items can't show a hover tooltip when disabled, so name
           // the required grant inline (the user can tell an admin exactly what to
           // grant) rather than in a tooltip.
-          label: canCreateTicket ? 'Create Ticket' : 'Create Ticket · requires tickets:Write',
+          label: ticketAllowed ? 'Create Ticket' : 'Create Ticket · requires account access',
           id: 'create-ticket',
-          disabled: disableTicket || !canCreateTicket,
+          disabled: disableTicket || !ticketAllowed,
           iconBlack: true,
         },
       ];
@@ -1558,9 +1564,12 @@ const KubernetesEventsTable = ({
         subject_name: query.subject_name,
         subject_type: query.subject_type,
         status: query.status,
-        priority: query.priority,
-        // getK8sEventGroupings maps nb_priority -> computed_priority (the Nubi rank),
-        // so briefing rank tiles (Ranked P1/P2/...) filter correctly in this view.
+        // A row here is an issue, and its severity and rank are those of its
+        // newest event: what the row shows and what the briefing counts. Both
+        // filters match that one value (getK8sEventGroupings sends them as a
+        // having), so each issue is in exactly one severity and one rank, and a
+        // briefing tile opens a list of the size it showed.
+        latest_priority: query.priority,
         nb_priority: query.computed_priority,
         source: query.source,
         nb_status: query.nb_status,

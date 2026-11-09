@@ -102,11 +102,13 @@ def update_integration_kb_load_result(
     document_count: Optional[int] = None,
     error_message: Optional[str] = None,
 ) -> None:
-    """Record a load's outcome on every integration KB row for an integration.
+    """Record a load's outcome on an integration's knowledge base.
 
-    An integration can have one KB row per cloud account in its tenant, all
-    backed by the same vector collection — so the update keys on integration_id
-    rather than a single KB id. On failure error_message holds the reason; on
+    An integration has one knowledge base, its organisation row (account_id
+    NULL, #40605), so the update keys on integration_id. A per-account row is
+    the old shape — only an llm-server still running older code re-creates one,
+    during a rolling deploy — and is left alone so it never turns active. On
+    failure error_message holds the reason; on
     success it holds any shortfall worth reporting — a load that indexed the text
     but dropped the pictures is active, not failed, and must still say so — and is
     cleared when there is nothing to report.
@@ -121,7 +123,7 @@ def update_integration_kb_load_result(
                             "UPDATE llm_knowledgebases SET status = :status, "
                             "document_count = :doc_count, last_loaded_at = NOW(), "
                             "error_message = :error_message, updated_at = NOW() "
-                            "WHERE integration_id = :iid AND kb_type = 'integration'"
+                            "WHERE integration_id = :iid AND kb_type = 'integration' AND account_id IS NULL"
                         ),
                         {
                             "status": status,
@@ -135,7 +137,7 @@ def update_integration_kb_load_result(
                         sql_text(
                             "UPDATE llm_knowledgebases SET status = :status, "
                             "error_message = :error_message, updated_at = NOW() "
-                            "WHERE integration_id = :iid AND kb_type = 'integration'"
+                            "WHERE integration_id = :iid AND kb_type = 'integration' AND account_id IS NULL"
                         ),
                         {"status": status, "error_message": error_message, "iid": integration_id},
                     )
@@ -549,10 +551,30 @@ Document:
 {content}"""
 
 _CAPABILITY_SECTION_TEMPLATE = """
-Capabilities referenced must be copied EXACTLY, verbatim, from this list — never invent a name that isn't here. \
+Capabilities are the platform tools needed to carry out what the document describes. List every capability \
+whose description matches an action the document performs or tells the reader to perform, even when the \
+document never names the capability (a step that runs kubectl commands needs the Kubernetes CLI capability). \
+Each name must be copied EXACTLY, verbatim, from this list — never invent a name that isn't here. \
 If none of these apply, use an empty list:
 {capability_names}
 """
+
+# A capability's description is context for the model, not data: one line, bounded, so a long
+# or multi-line description cannot swell the prompt or break the list format.
+_CAPABILITY_DESCRIPTION_MAX_CHARS = 160
+
+
+def _capability_listing(catalog):
+    """The catalog as the prompt's `- name: description` lines, sorted by name. A capability
+    without a description is listed by name alone."""
+    descriptions = {}
+    for entry in catalog:
+        text = " ".join(str(entry.get("description") or "").split())
+        descriptions[entry["name"]] = text[:_CAPABILITY_DESCRIPTION_MAX_CHARS]
+    return "\n".join(
+        f"- {name}: {descriptions[name]}" if descriptions[name] else f"- {name}" for name in sorted(descriptions)
+    )
+
 
 # Bounds how many documents are classified concurrently per process_documents
 # call — keeps ingestion off the sequential-call path without opening an
@@ -675,12 +697,11 @@ def _classify_source_documents(groups, account_id, collection_name):
 
     from rag.core.utils.db_query import get_capability_catalog
 
-    valid_capabilities = {entry["name"] for entry in get_capability_catalog()}
+    catalog = get_capability_catalog()
+    valid_capabilities = {entry["name"] for entry in catalog}
     capability_section = ""
     if valid_capabilities:
-        capability_section = _CAPABILITY_SECTION_TEMPLATE.format(
-            capability_names="\n".join(f"- {name}" for name in sorted(valid_capabilities))
-        )
+        capability_section = _CAPABILITY_SECTION_TEMPLATE.format(capability_names=_capability_listing(catalog))
 
     # Each call is one independent, I/O-bound LLM round-trip. Bounded
     # concurrency keeps this off any single request path while capping how many
@@ -745,7 +766,7 @@ def _classify_document_group(group, llm, capability_section, valid_capabilities)
         raw = result.text.strip()
         parsed = json.loads(_extract_json_object(raw))
         shape = str(parsed.get("shape", "")).strip().lower()
-        capabilities = parsed.get("capabilities", [])
+        capabilities = parsed.get("capabilities")  # None when the model left the key out
     except Exception:
         stats["duration_seconds"] = time.monotonic() - call_start
         # Log the raw response, not just the traceback: a JSONDecodeError
@@ -778,6 +799,10 @@ def _classify_document_group(group, llm, capability_section, valid_capabilities)
                     f"kb_metadata: dropped {len(dropped)} capability name(s) not in the real catalog: {dropped}"
                 )
         labels["capabilities"] = confirmed
+        # Stamp only a real answer: a catalog to ground against AND a list back from the
+        # model. A response without a capabilities list is not "the model found none".
+        if valid_capabilities and isinstance(capabilities, list):
+            labels["capabilities_extracted"] = True
         for doc in group:
             if doc.metadata is None:
                 doc.metadata = {}
@@ -794,7 +819,11 @@ def _classify_document_group(group, llm, capability_section, valid_capabilities)
 # The labels a classified chunk carries under its vector payload's `metadata`
 # (what RAG's metadata_filter matches at query time), and the kinds that make a
 # chunk count as classified.
-KB_LABEL_KEYS = ("kind", "shape", "capabilities")
+# capabilities_extracted is stamped only when the extraction really ran against a
+# non-empty catalog. Without it, empty `capabilities` could mean "the model found
+# none" or "the catalog was empty/unreachable", and the backfill could not tell them
+# apart (the labels written before the catalog existed stay empty forever).
+KB_LABEL_KEYS = ("kind", "shape", "capabilities", "capabilities_extracted")
 _KB_KINDS = ("sop", "knowledge")
 _LABEL_PAYLOAD_KEYS = [f"metadata.{key}" for key in KB_LABEL_KEYS]
 _LABEL_WRITE_BATCH = 500
@@ -1010,10 +1039,11 @@ def refresh_kb_collection_summary(collection_name):
 
 
 def _forget_kb_collection_summary(collection_name):
-    """Drop a deleted collection's rollup row (best-effort, like every write to it)."""
+    """Drop a recreated collection's rollup row (best-effort, like every write to it). The
+    per-page label rows stay: Postgres owns them, and re-embedding stamps them back."""
     from rag.core.utils.db_query import delete_kb_capabilities
 
-    delete_kb_capabilities(collection_name)
+    delete_kb_capabilities(collection_name, keep_documents=True)
 
 
 def _stamp_provenance(documents, source=None, tenant_id=None):
@@ -1061,11 +1091,11 @@ def _setup_collection(account_id, module, collection_name, source=None, tenant_i
             if metadata:
                 # Always make a static copy to avoid iteration errors.
                 #
-                # NOTE: source and tenant_id are set only at collection
-                # creation time (see vector_store._create_collection). Qdrant
-                # exposes no update_collection(metadata=...) API, so
-                # pre-existing collections cannot be retro-tagged without a
-                # drop-and-recreate. Search still reaches legacy collections
+                # NOTE: source and tenant_id are set at collection creation
+                # time (see vector_store._create_collection). A knowledge
+                # base's scope is changed later through
+                # collection.set_collection_scope (update_collection with
+                # metadata), not here. Search still reaches legacy collections
                 # via the ``account`` metadata path in ``rag.py``.
                 collection_meta = dict(metadata)
                 if "embeddings_generated_at" in collection_meta:
@@ -1130,6 +1160,7 @@ def process_documents(
     warning=None,
     run_id=None,
     source_document_count=None,
+    classify_account_id=None,
 ):
     """
     Process multiple documents asynchronously with batch embedding.
@@ -1201,8 +1232,14 @@ def process_documents(
     # knowledgebase_id, and it is one document however its loader split it
     # (lines, records, PDF chunks); everything else is a list of independent
     # documents.
+    # An organisation knowledge base has no account_id; the caller names the
+    # account whose LLM settings classify it (classify_account_id).
     stored_labels = _classify_kb_source_documents(
-        documents, module, account_id, collection_name, whole_call_is_one_document=bool(knowledgebase_id)
+        documents,
+        module,
+        classify_account_id or account_id,
+        collection_name,
+        whole_call_is_one_document=bool(knowledgebase_id),
     )
     # Chunk ids hash page_content only, so the labels stamped above cannot
     # change them.

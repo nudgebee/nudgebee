@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
@@ -490,4 +492,98 @@ func TestAutomationToolAcceptsTheReasonArgAsKnown(t *testing.T) {
 		"service_name":   "payment",
 	}})
 	require.NoError(t, err)
+}
+
+// The approval card is what the user says yes to. The default one called a
+// print-only automation "trying to create cluster resources" and showed the
+// tool's internal name and raw arguments; it must name the automation and say
+// what it does instead.
+func TestAutomationToolConfirmationNamesTheAutomation(t *testing.T) {
+	tools := buildAutomationTools("acct", []automationCandidate{
+		automationCandidateFixture("wf-1", "QA sanity print check", "Prints one line. Use it to check that automations run."),
+	})
+	require.Len(t, tools, 1)
+	prompter, ok := tools[0].(core.ToolConfirmationPrompt)
+	require.True(t, ok, "without the prompt hook the executor falls back to the generic card")
+
+	got := prompter.ConfirmationQuestion(`{"reason":"the user asked for this"}`)
+	assert.Equal(t, "Run the automation \"QA sanity print check\"?\n"+
+		"Prints one line. Use it to check that automations run.\n"+
+		"Reason: the user asked for this", got)
+	for _, leaked := range []string{"cluster resources", "Tool(", "Command - ", "automation_qa_sanity", `{"`} {
+		assert.NotContains(t, got, leaked)
+	}
+
+	// Arguments that are not valid JSON still get a card that names the automation.
+	assert.Equal(t, "Run the automation \"QA sanity print check\"?\n"+
+		"Prints one line. Use it to check that automations run.", prompter.ConfirmationQuestion("not json"))
+}
+
+// The values the automation will run with are part of what is being approved,
+// so they are listed — readably, in a stable order — rather than dropped.
+func TestAutomationToolConfirmationListsInputs(t *testing.T) {
+	tools := buildAutomationTools("acct", []automationCandidate{
+		automationCandidateFixture("wf-1", "Restart Service", "Restarts one service.",
+			// The automation declares its own "reason", so the assistant's
+			// reasoning moves to the fallback name and both must show.
+			automationInput{ID: "reason", Type: "string"},
+			automationInput{ID: "namespace", Type: "string"},
+			automationInput{ID: "replicas", Type: "int"},
+			automationInput{ID: "labels", Type: "json"}),
+	})
+	require.Len(t, tools, 1)
+
+	got := tools[0].(core.ToolConfirmationPrompt).ConfirmationQuestion(
+		`{"ai_reason":"pods are crashlooping","reason":"audit: INC-12","namespace":"demo","replicas":2,"labels":{"app":"pay"}}`)
+	assert.Equal(t, "Run the automation \"Restart Service\"?\n"+
+		"Restarts one service.\n"+
+		"Inputs:\n"+
+		"- labels: {\"app\":\"pay\"}\n"+
+		"- namespace: demo\n"+
+		"- reason: audit: INC-12\n"+
+		"- replicas: 2\n"+
+		"Reason: pods are crashlooping", got)
+}
+
+// workflow_trigger is handed only an id, which tells the approver nothing. The
+// card resolves it to the automation's name and description.
+func TestWorkflowTriggerConfirmationResolvesTheAutomationName(t *testing.T) {
+	automationToolCacheInstance.set("acct-confirm", buildAutomationTools("acct-confirm", []automationCandidate{
+		automationCandidateFixture("fd6b3a25-6bce-44b9-911d-dac919dafb03", "QA sanity print check", "Prints one line."),
+	}), time.Minute)
+	t.Cleanup(func() { automationToolCacheInstance.delete("acct-confirm") })
+
+	var tool core.NBTool = WorkflowTriggerTool{accountId: "acct-confirm"}
+	prompter, ok := tool.(core.ToolConfirmationPrompt)
+	require.True(t, ok, "without the prompt hook the executor falls back to the generic card")
+
+	got := prompter.ConfirmationQuestion(`{"id":"fd6b3a25-6bce-44b9-911d-dac919dafb03"}`)
+	assert.Equal(t, "Run the automation \"QA sanity print check\"?\nPrints one line.", got)
+	assert.NotContains(t, got, "fd6b3a25", "a resolved automation is named, not shown as an id")
+
+	got = prompter.ConfirmationQuestion(`{"id":"fd6b3a25-6bce-44b9-911d-dac919dafb03","inputs":{"namespace":"demo"}}`)
+	assert.Equal(t, "Run the automation \"QA sanity print check\"?\nPrints one line.\nInputs:\n- namespace: demo", got)
+
+	// An id outside the account's AI-invocable list still gets plain words.
+	got = prompter.ConfirmationQuestion(`{"id":"wf-unknown"}`)
+	assert.Equal(t, "Run the automation with ID wf-unknown?", got)
+
+	// No id: nothing to name, so the executor keeps its default card.
+	assert.Empty(t, prompter.ConfirmationQuestion(`{}`))
+	assert.Empty(t, prompter.ConfirmationQuestion("not json"))
+}
+
+// The name lookup is best-effort: when the automation list cannot be loaded the
+// card still appears, and still makes no claim about cluster resources.
+func TestWorkflowTriggerConfirmationSurvivesAFailedLookup(t *testing.T) {
+	originalResolve := resolveTenantForAccount
+	resolveTenantForAccount = func(string) (string, error) { return "", errors.New("metastore unavailable") }
+	t.Cleanup(func() { resolveTenantForAccount = originalResolve })
+	automationToolCacheInstance.delete("acct-down")
+	t.Cleanup(func() { automationToolCacheInstance.delete("acct-down") })
+
+	assert.Equal(t, "Run the automation with ID wf-1?",
+		WorkflowTriggerTool{accountId: "acct-down"}.ConfirmationQuestion(`{"id":"wf-1"}`))
+	// A tool built without an account (not through the factory) does no lookup.
+	assert.Equal(t, "Run the automation with ID wf-1?", WorkflowTriggerTool{}.ConfirmationQuestion(`{"id":" wf-1 "}`))
 }

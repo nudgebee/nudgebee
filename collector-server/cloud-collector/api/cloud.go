@@ -1098,6 +1098,43 @@ func handleCloudProviderApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.
 		c.JSON(200, buildApiResponse(resp))
 	})
 
+	groupV2.POST("/apply_recommendation_status", func(c *gin.Context) {
+		request := applyRecommendationRequest{}
+		err := c.ShouldBindJSON(&request)
+		if err != nil {
+			c.JSON(400, buildApiResponse(nil, err))
+			return
+		}
+		err = common.ValidateStruct(request)
+		if err != nil {
+			slog.Error("error validating apply_recommendation_status", "error", err)
+			c.JSON(400, buildApiResponse(nil, err))
+			return
+		}
+
+		ctx, cancel, err := buildContextFromGin(c, logger, tracer, meter, request.AccountId)
+		if err != nil {
+			c.JSON(400, buildApiResponse(nil, err))
+			return
+		}
+		if cancel != nil {
+			defer cancel()
+		}
+		resp, err := account.GetApplyStatus(ctx, request.AccountId, providers.Recommendation{
+			RuleName:            request.RuleName,
+			ResourceServiceName: request.ServiceName,
+			ResourceId:          request.ResourceId,
+			ResourceRegion:      request.ResourceRegion,
+			Data:                request.Data,
+		})
+		if err != nil {
+			ctx.GetLogger().Error("error getting recommendation apply status", "error", err)
+			c.JSON(500, buildApiResponse(nil, err))
+			return
+		}
+		c.JSON(200, buildApiResponse(resp))
+	})
+
 	groupV2.POST("/apply_command", func(c *gin.Context) {
 		request := applyCommandRequest{}
 		err := c.ShouldBindJSON(&request)

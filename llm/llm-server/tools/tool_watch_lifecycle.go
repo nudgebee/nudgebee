@@ -94,6 +94,9 @@ func (WatchStatusTool) Call(nbCtx core.NbToolContext, input core.NBToolCallReque
 		}
 		return errorResponse(fmt.Sprintf("failed to look up watch: %v", err)), nil
 	}
+	if !canAccessWatchAccount(nbCtx, w, security.SecurityAccessTypeRead) {
+		return errorResponse(fmt.Sprintf("watch %s not found", id)), nil
+	}
 	return jsonResponse(watchSummary(w))
 }
 
@@ -149,17 +152,34 @@ func (WatchCancelTool) Call(nbCtx core.NbToolContext, input core.NBToolCallReque
 	// Read before cancelling — delivery below needs the row's conversation /
 	// notify-session / parent-message coords, which the cancel UPDATE doesn't return.
 	existing, gerr := mgr.Get(nbCtx.Ctx.GetContext(), tenantID, id)
+	if gerr != nil {
+		if errors.Is(gerr, watch.ErrWatchNotFound) {
+			return errorResponse(fmt.Sprintf("watch %s not found", id)), nil
+		}
+		return errorResponse(fmt.Sprintf("failed to look up watch: %v", gerr)), nil
+	}
+	if !canAccessWatchAccount(nbCtx, existing, security.SecurityAccessTypeUpdate) {
+		// Same rule as the UI's cancel (api/watches.go): write access to the
+		// watch's account. Reported as not found, so nothing leaks about it.
+		return errorResponse(fmt.Sprintf("watch %s not found", id)), nil
+	}
+	if existing.Status.IsTerminal() {
+		// Already over: nothing to cancel, and its outcome stays as it is.
+		return jsonResponse(map[string]any{
+			"watch_id":  id.String(),
+			"cancelled": false,
+			"status":    string(existing.Status),
+			"message":   fmt.Sprintf("Watch %s already ended (%s); nothing to cancel.", id.String(), existing.Status),
+		})
+	}
 	if err := mgr.Cancel(nbCtx.Ctx.GetContext(), tenantID, id); err != nil {
 		if errors.Is(err, watch.ErrWatchNotFound) {
 			return errorResponse(fmt.Sprintf("watch %s not found", id)), nil
 		}
 		return errorResponse(fmt.Sprintf("failed to cancel watch: %v", err)), nil
 	}
-	// Resolve the registration indicator — still-live only, so re-cancelling a
-	// terminal watch can't post over the real outcome.
-	if gerr == nil && existing != nil && !existing.Status.IsTerminal() {
-		mgr.DeliverCancelled(nbCtx.Ctx, *existing)
-	}
+	// Resolve the registration indicator; the watch was live when read.
+	mgr.DeliverCancelled(nbCtx.Ctx, *existing)
 	return jsonResponse(map[string]any{
 		"watch_id":  id.String(),
 		"cancelled": true,
@@ -225,6 +245,30 @@ func (WatchListTool) Call(nbCtx core.NbToolContext, _ core.NBToolCallRequest) (c
 // ---------------------------------------------------------------------------
 // shared helpers
 // ---------------------------------------------------------------------------
+
+// watchModule is the custom-role module watches belong to (api/authz.go's
+// moduleAiMisc), so a custom-role user keeps the access the UI gives them.
+const watchModule = "ai_misc"
+
+// canAccessWatchAccount reports whether the caller may see (read) or cancel
+// (update) a watch: the tenant scopes the lookup, the watch's account decides,
+// by the same rules as the UI's watch endpoints (api/watches.go).
+func canAccessWatchAccount(nbCtx core.NbToolContext, w *watch.Watch, access security.SecurityAccessType) bool {
+	if w == nil || nbCtx.Ctx == nil {
+		return false
+	}
+	sc := nbCtx.Ctx.GetSecurityContext()
+	if sc == nil {
+		return false
+	}
+	account := w.AccountID.String()
+	if access == security.SecurityAccessTypeRead {
+		return sc.CanReadAccountData(account, watchModule)
+	}
+	return sc.HasAccountAccess(account, access) ||
+		sc.HasScopedPermission(account, watchModule, "Execute") ||
+		sc.HasScopedPermission(account, watchModule, "Write")
+}
 
 // watchSummary projects a Watch into the shape the agent shows to the
 // user. We deliberately omit source_config / predicate_expr — they're

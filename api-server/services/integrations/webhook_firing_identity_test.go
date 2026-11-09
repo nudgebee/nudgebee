@@ -35,15 +35,15 @@ type firingIdentity struct {
 // webhookFiringIdentity records how every webhook parser tells one firing of an
 // alert from the next. It exists because a parser whose EventId is stable per
 // alert silently swallows every firing after the first close: GCP monitoring did,
-// then Alertmanager and Grafana did. A declaration cannot prove a claim,
+// then Alertmanager, Grafana and CubeAPM did. A declaration cannot prove a claim,
 // but it makes each parser's answer visible in one place, and a new parser cannot
 // ship without one (TestEveryWebhookParserDeclaresFiringIdentity).
 var webhookFiringIdentity = map[string]firingIdentity{
 	IntegrationPrometheusAlertManagerWebhook: {firingKeyMode, "startsAt"},
 	IntegrationGrafanaWebhook:                {firingKeyMode, "startsAt"},
-	// Alertmanager-compatible body: same stable fingerprint, same per-firing startsAt.
-	IntegrationCubeAPMWebhook: {firingKeyMode, "startsAt"},
-	IntegrationSigNozWebhook:  {firingKeyMode, "startsAt"},
+	IntegrationCubeAPMWebhook:                {firingKeyMode, "startsAt"},
+	IntegrationElasticsearchWebhook:          {firingKeyMode, "alert.uuid ({{alert.uuid}}, Kibana 8.8+); a body without it has no per-firing key"},
+	IntegrationSigNozWebhook:                 {firingKeyMode, "startsAt"},
 
 	IntegrationZendutyWebhook:       {perFiringEventId, "incident unique_id"},
 	IntegrationPagerdutyWebhook:     {perFiringEventId, "incident id"},
@@ -56,10 +56,9 @@ var webhookFiringIdentity = map[string]firingIdentity{
 	IntegrationGenericWebhook:       {perFiringEventId, "random id per delivery"},
 	IntegrationEventWebhook:         {perFiringEventId, "sender's id, required to name one firing (contract)"},
 
-	IntegrationElasticsearchWebhook: {noFiringIdentity, "rule id + alert id are per alert; the documented template carries no per-firing field ({{alert.uuid}} would be one)"},
-	IntegrationOpenObserveWebhook:   {noFiringIdentity, "fingerprint is derived from alert identity and OpenObserve sends no resolve"},
-	IntegrationServicenowWebhook:    {noFiringIdentity, "message key / fingerprint are per alert and the start is the delivery time"},
-	IntegrationSolarWindsWebhook:    {noFiringIdentity, "triggerId is documented as per alert instance, unverified: no payload fixtures"},
+	IntegrationOpenObserveWebhook: {noFiringIdentity, "fingerprint is derived from alert identity and OpenObserve sends no resolve"},
+	IntegrationServicenowWebhook:  {noFiringIdentity, "message key / fingerprint are per alert and the start is the delivery time"},
+	IntegrationSolarWindsWebhook:  {noFiringIdentity, "triggerId is documented as per alert instance, unverified: no payload fixtures"},
 }
 
 func TestEveryWebhookParserDeclaresFiringIdentity(t *testing.T) {
@@ -119,7 +118,6 @@ var firingKeyParsers = map[string]firingKeySequence{
 		sc := security.NewRequestContextForSuperAdmin(nil, nil, nil)
 		return singleEvent(PrometheusAlertManagerWebhook{}.ProcessEventWebook(sc, nil, "acct-1", alertmanagerStyleBody(status, startsAt, fingerprint)))
 	},
-	// CubeAPM sends the Alertmanager body, so the same delivery fixture applies.
 	IntegrationCubeAPMWebhook: func(status, startsAt, fingerprint string) (core.EventIncomingWebhook, error) {
 		sc := security.NewRequestContextForSuperAdmin(nil, nil, nil)
 		return singleEvent(CubeAPMWebhook{}.ProcessEventWebook(sc, nil, "acct-1", alertmanagerStyleBody(status, startsAt, fingerprint)))
@@ -144,10 +142,47 @@ var firingKeyParsers = map[string]firingKeySequence{
 	},
 }
 
+// firingIdSequence parses one delivery of a single alert for a parser whose firing
+// key is an id the payload carries, not the time the firing began.
+type firingIdSequence func(status, firingId string) (core.EventIncomingWebhook, error)
+
+var firingIdParsers = map[string]firingIdSequence{
+	IntegrationElasticsearchWebhook: func(status, firingId string) (core.EventIncomingWebhook, error) {
+		payload := canonicalKibanaPayload()
+		payload["status"] = status
+		payload["alert"] = map[string]any{"id": "kubewatch", "uuid": firingId, "action_group": "query matched"}
+		event, err := mapElasticsearchAlertToEvent("acct-1", payload)
+		if err != nil {
+			return core.EventIncomingWebhook{}, err
+		}
+		return *event, nil
+	},
+}
+
+// assertFiringsSeparated holds for every firing-key parser, whatever its key is
+// made of: first and repeat are two notifications of one firing, resolved ends
+// it, and second is the same alert firing again.
+func assertFiringsSeparated(t *testing.T, first, repeat, resolved, second core.EventIncomingWebhook) {
+	t.Helper()
+	require.NotEmpty(t, first.FiringKey)
+	assert.Equal(t, first.FiringKey, repeat.FiringKey, "a repeat notification is the same firing")
+	assert.Equal(t, first.FiringKey, resolved.FiringKey, "the resolve belongs to the firing it ends")
+	assert.NotEqual(t, first.FiringKey, second.FiringKey, "firing again after a resolve is a new firing")
+
+	// The alert's identity does not change between firings: resolve, replay
+	// and the stored delivery log all key on it.
+	for _, e := range []core.EventIncomingWebhook{repeat, resolved, second} {
+		assert.Equal(t, first.EventId, e.EventId)
+		assert.Equal(t, first.Investigation.Fingerprint, e.Investigation.Fingerprint)
+	}
+}
+
 func TestFiringKeyParsersSeparateFirings(t *testing.T) {
 	for name, declared := range webhookFiringIdentity {
 		if declared.mode == firingKeyMode {
-			assert.Contains(t, firingKeyParsers, name, "%s declares a firing key but has no fire→resolve→fire test", name)
+			_, byStart := firingKeyParsers[name]
+			_, byId := firingIdParsers[name]
+			assert.True(t, byStart || byId, "%s declares a firing key but has no fire→resolve→fire test", name)
 		}
 	}
 
@@ -163,17 +198,7 @@ func TestFiringKeyParsersSeparateFirings(t *testing.T) {
 			resolved := mustParse("resolved", "2026-06-01T10:00:00.250Z", "3f2c9a1b7d4e6a80")
 			second := mustParse("firing", "2026-06-01T10:23:30.250Z", "3f2c9a1b7d4e6a80")
 
-			require.NotEmpty(t, first.FiringKey)
-			assert.Equal(t, first.FiringKey, repeat.FiringKey, "a repeat notification is the same firing")
-			assert.Equal(t, first.FiringKey, resolved.FiringKey, "the resolve belongs to the firing it ends")
-			assert.NotEqual(t, first.FiringKey, second.FiringKey, "firing again after a resolve is a new firing")
-
-			// The alert's identity does not change between firings: resolve, replay
-			// and the stored delivery log all key on it.
-			for _, e := range []core.EventIncomingWebhook{repeat, resolved, second} {
-				assert.Equal(t, first.EventId, e.EventId)
-				assert.Equal(t, first.Investigation.Fingerprint, e.Investigation.Fingerprint)
-			}
+			assertFiringsSeparated(t, first, repeat, resolved, second)
 
 			shifted := mustParse("firing", "2026-06-01T15:30:00.250+05:30", "3f2c9a1b7d4e6a80")
 			assert.Equal(t, first.FiringKey, shifted.FiringKey, "the key is the instant, whatever offset the payload uses")
@@ -182,6 +207,30 @@ func TestFiringKeyParsersSeparateFirings(t *testing.T) {
 			if noFingerprint, err := parse("firing", "2026-06-01T10:00:00.250Z", ""); err == nil {
 				assert.Empty(t, noFingerprint.FiringKey, "without a fingerprint there is no alert to key a firing of")
 			}
+		})
+	}
+}
+
+func TestFiringIdParsersSeparateFirings(t *testing.T) {
+	for name, parse := range firingIdParsers {
+		t.Run(name, func(t *testing.T) {
+			mustParse := func(status, firingId string) core.EventIncomingWebhook {
+				e, err := parse(status, firingId)
+				require.NoError(t, err)
+				return e
+			}
+			first := mustParse("firing", "4b3c68a5-4d6c-4866-a877-207b4fa717d9")
+			repeat := mustParse("firing", "4b3c68a5-4d6c-4866-a877-207b4fa717d9")
+			resolved := mustParse("resolved", "4b3c68a5-4d6c-4866-a877-207b4fa717d9")
+			second := mustParse("firing", "7d891c62-eb5f-4d22-801a-0a32bb31e728")
+
+			assertFiringsSeparated(t, first, repeat, resolved, second)
+
+			// A sender that has no such id (an older template, or a Kibana that renders
+			// the variable empty) stays on the alert's one row, as before.
+			withoutId := mustParse("firing", "")
+			assert.Empty(t, withoutId.FiringKey)
+			assert.Equal(t, first.EventId, withoutId.EventId)
 		})
 	}
 }

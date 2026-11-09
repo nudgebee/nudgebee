@@ -12,7 +12,6 @@ import (
 	"nudgebee/services/integrations"
 	"nudgebee/services/query"
 	"nudgebee/services/security"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -89,6 +88,17 @@ var cubeAPMTraceLabelMapping = map[string]string{
 	"span_id":                   "span_id",
 	"parent_id":                 "parent_id",
 	"parent_span_id":            "parent_id",
+	"duration_ns":               "duration",
+}
+
+// cubeAPMTraceUnsupportedFields are canonical filter fields a CubeAPM span cannot
+// express: a span names its callee (peer.service, server.address, …) but carries no
+// callee namespace. Dropped rather than matched, for the reason OpenObserve, Splunk
+// and Tempo drop the same field — rendered as a LogsQL field it matches no span, which
+// blanked the SLO page's trace tabs. Dropping is confined to this named set, so any
+// other unknown field still reaches CubeAPM verbatim.
+var cubeAPMTraceUnsupportedFields = map[string]bool{
+	"destination_workload_namespace": true,
 }
 
 // cubeAPMTraceFieldAliases lists every LogsQL field a label may be backed by, for
@@ -192,12 +202,26 @@ func cubeAPMFilterValues(val any) []string {
 	case []any:
 		out := make([]string, 0, len(v))
 		for _, item := range v {
-			out = append(out, fmt.Sprintf("%v", item))
+			out = append(out, filterValueString(item))
 		}
 		return out
 	default:
-		return []string{fmt.Sprintf("%v", val)}
+		return []string{filterValueString(val)}
 	}
+}
+
+// filterValueString renders one operand. A JSON number decodes to float64, and %v
+// prints a float64 of 1e6 or more in exponent form: duration_ns 300000000 became
+// `3e+08`, which TraceQL rejects as a type mismatch. 'f' with precision -1 keeps the
+// shortest exact decimal.
+func filterValueString(v any) string {
+	switch n := v.(type) {
+	case float64:
+		return strconv.FormatFloat(n, 'f', -1, 64)
+	case float32:
+		return strconv.FormatFloat(float64(n), 'f', -1, 32)
+	}
+	return fmt.Sprintf("%v", v)
 }
 
 // cubeAPMLikeRegex renders a SQL LIKE pattern (`%`, `_`, `\%`, `\_`) as a LogsQL
@@ -206,32 +230,7 @@ func cubeAPMFilterValues(val any) []string {
 // Traces tab's resource search sends `_like` and relies on that; (?s) lets `%` span
 // the newlines of a multi-line db.statement, as SQL LIKE does.
 func cubeAPMLikeRegex(pattern string) string {
-	return "(?is)^(?:" + cubeAPMLikePattern(pattern) + ")$"
-}
-
-// cubeAPMLikePattern turns a SQL LIKE pattern into a regex body: `%` is any run, `_`
-// any one character, `\%` and `\_` are literals. Same translation as main's
-// tempoLikePattern, which prod does not have yet; once the Tempo source is on prod
-// this should call that instead.
-func cubeAPMLikePattern(p string) string {
-	var b strings.Builder
-	runes := []rune(p)
-	for i := 0; i < len(runes); i++ {
-		switch r := runes[i]; {
-		// Only `\%`, `\_` and `\\` are escapes (sqllike.go); any other backslash is a
-		// literal, so a Windows path like `C:\assets` keeps its separator.
-		case r == '\\' && i+1 < len(runes) && (runes[i+1] == '%' || runes[i+1] == '_' || runes[i+1] == '\\'):
-			b.WriteString(regexp.QuoteMeta(string(runes[i+1])))
-			i++
-		case r == '%':
-			b.WriteString(".*")
-		case r == '_':
-			b.WriteString(".")
-		default:
-			b.WriteString(regexp.QuoteMeta(string(r)))
-		}
-	}
-	return b.String()
+	return "(?is)^(?:" + tempoLikePattern(pattern) + ")$"
 }
 
 // cubeAPMTraceWhere rewrites a canonical where-clause into one over LogsQL field
@@ -249,6 +248,9 @@ func cubeAPMTraceWhere(where query.QueryWhereClause) (query.QueryWhereClause, er
 
 	labels := make([]string, 0, len(where.Binary))
 	for label := range where.Binary {
+		if cubeAPMTraceUnsupportedFields[label] {
+			continue
+		}
 		labels = append(labels, label)
 	}
 	sort.Strings(labels)
@@ -275,7 +277,7 @@ func cubeAPMTraceWhere(where query.QueryWhereClause) (query.QueryWhereClause, er
 				matchOp, negate = query.Eq, true
 			case query.Like, query.ILike:
 				matchOp, like = query.Regex, true
-			case query.Contains, query.Regex:
+			case query.Contains, query.Regex, query.Gt, query.Gte, query.Lt, query.Lte:
 				matchOp = op
 			default:
 				return query.QueryWhereClause{}, fmt.Errorf("unsupported operator %q for CubeAPM traces (field %q)", op, label)
@@ -448,9 +450,39 @@ func buildCubeAPMTraceGroupQuery(req TracesV3Request, env string) (string, error
 		"quantile(0.95, duration) p95, " +
 		"quantile(0.99, duration) p99, " +
 		"max(duration) max_duration, " +
-		"sum(duration) total_duration" +
-		" | sort by (count desc)" +
+		"avg(duration) avg_duration" +
+		cubeAPMTraceGroupSort(req.QueryRequest.OrderBy) +
 		cubeAPMTracePage(req.QueryRequest.Offset, req.QueryRequest.Limit), nil
+}
+
+// cubeAPMTraceGroupSortFields maps the API's grouped sort columns onto this source's
+// stats aliases. "duration_ns" is the grouped response's average -- the API name every
+// trace source uses for that column -- so it sorts on avg_duration rather than on a raw
+// span duration, which would order the rows by something the column does not show.
+var cubeAPMTraceGroupSortFields = map[string]string{
+	"count":       "count",
+	"error_count": "error_count",
+	"p95_latency": "p95",
+	"p99_latency": "p99",
+	"max_latency": "max_duration",
+	"duration_ns": "avg_duration",
+}
+
+// cubeAPMTraceGroupSort renders the grouped view's sort pipe. The grouped view sorts on
+// stats output columns, not on span fields, so this is a separate mapping from
+// cubeAPMTraceSort. A column this source does not aggregate leaves the order untouched:
+// the busiest group first, which is what the view showed before any column was sortable.
+func cubeAPMTraceGroupSort(orderBy []query.QueryOrderBy) string {
+	field, dir := "count", "desc"
+	if len(orderBy) > 0 {
+		if mapped, ok := cubeAPMTraceGroupSortFields[orderBy[0].Column]; ok {
+			field = mapped
+			if strings.HasPrefix(strings.ToLower(string(orderBy[0].Order)), "asc") {
+				dir = "asc"
+			}
+		}
+	}
+	return fmt.Sprintf(" | sort by (%s %s)", field, dir)
 }
 
 // isCubeAPMMissingTraceEndpoint reports whether a request failed because this
@@ -599,7 +631,10 @@ func cubeAPMTraceRowToSpan(row map[string]any) common.OpenTelemetryTrace {
 	return out
 }
 
-// cubeAPMTraceGroupRowToValues projects one grouped-view stats row.
+// cubeAPMTraceGroupRowToValues projects one grouped-view stats row. DurationNS carries
+// the group's mean span duration, matching every other trace source's grouped response
+// and the "Avg Duration" column that renders it -- not the summed duration, which reads
+// as minutes on a group of fast spans and can exceed the row's own max.
 func cubeAPMTraceGroupRowToValues(row map[string]any) TraceGroupingValues {
 	return TraceGroupingValues{
 		Count:             cubeAPMCount(row["count"]),
@@ -610,7 +645,7 @@ func cubeAPMTraceGroupRowToValues(row map[string]any) TraceGroupingValues {
 		WorkloadName:      cubeAPMString(row["service"]),
 		WorkloadNamespace: cubeAPMString(row["_resource.k8s.namespace.name"]),
 		SpanName:          cubeAPMString(row["span_name"]),
-		DurationNS:        cubeAPMInt(row["total_duration"]),
+		DurationNS:        cubeAPMInt(row["avg_duration"]),
 	}
 }
 

@@ -797,7 +797,7 @@ func TestWorkflowBuilderAgent_AgenticCreateThenFix(t *testing.T) {
 			assert.Nil(t, err)
 			workflowId, _ = created["id"].(string)
 		} else {
-			t.Skip("Auto-save failed and response is not JSON — cannot proceed to fix phase")
+			t.Skip("Save failed and response is not JSON — cannot proceed to fix phase")
 		}
 	} else {
 		t.Log("Phase 1 complete: workflow auto-saved with id:", workflowId)
@@ -1128,10 +1128,10 @@ func TestWorkflowBuilderAgent_FinalizeWithAutoSave_SummaryResponse(t *testing.T)
 			assert.Contains(t, fullResponse, accountId)
 			assert.Contains(t, fullResponse, "built and saved")
 			t.Log("Summary response with editor link verified")
-		} else if strings.Contains(fullResponse, "Auto-save failed") {
-			assert.Contains(t, fullResponse, "not yet saved",
+		} else if strings.Contains(fullResponse, "could not be saved") {
+			assert.NotContains(t, fullResponse, "built and saved",
 				"non-saved summary must avoid the 'built and saved' headline")
-			t.Log("Auto-save failed (expected in some test envs), summary still generated")
+			t.Log("Save failed (expected in some test envs), summary still generated")
 		}
 	} else {
 		// JSON fallback: buildWorkflowSummary might have failed, or this went through
@@ -1756,7 +1756,7 @@ func TestWorkflowBuilder_E2E_FailedScheduling_QARepro(t *testing.T) {
 	// generic auto-save failure.
 	assert.NotContains(t, finalResponse, "invalid input syntax for type uuid",
 		"runbook server rejected non-UUID account_id — resolver did not swap name→UUID")
-	assert.NotContains(t, finalResponse, "Auto-save failed",
+	assert.NotContains(t, finalResponse, "could not be saved",
 		"workflow save failed despite the fixes")
 	assert.Contains(t, finalResponse, "[Open in Editor]",
 		"saved workflow summary must include the Open-in-Editor link")
@@ -1827,7 +1827,7 @@ func TestWorkflowBuilder_E2E_OOMKilled_QARepro(t *testing.T) {
 	t.Logf("final response:\n%s", finalResponse)
 
 	assert.NotContains(t, finalResponse, "invalid input syntax for type uuid")
-	assert.NotContains(t, finalResponse, "Auto-save failed")
+	assert.NotContains(t, finalResponse, "could not be saved")
 	assert.Contains(t, finalResponse, "[Open in Editor]")
 }
 

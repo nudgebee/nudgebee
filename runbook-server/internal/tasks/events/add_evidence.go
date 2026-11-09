@@ -63,6 +63,66 @@ func buildAuthoredEvidence(params map[string]any) service.AuthoredEvidence {
 	}
 }
 
+// validateAuthoredEvidence is a cheap structural check run before any side
+// effect. api-server's BuildAuthoredEvidence stays the authority on the card.
+func validateAuthoredEvidence(evidence service.AuthoredEvidence) error {
+	switch evidence.Severity {
+	case "", "Info", "High", "Critical":
+	default:
+		return errors.New("severity must be one of: Info, High, Critical")
+	}
+
+	switch evidence.Type {
+	case EvidenceTypeMarkdown:
+		if evidence.Content == "" {
+			return errors.New("content is required for markdown evidence")
+		}
+	case EvidenceTypeJson:
+		var parsed any
+		if err := json.Unmarshal([]byte(evidence.JsonData), &parsed); err != nil {
+			return fmt.Errorf("json_data is not valid JSON: %w", err)
+		}
+		switch value := parsed.(type) {
+		case map[string]any:
+			if len(value) == 0 {
+				return errors.New("json_data must not be empty")
+			}
+		case []any:
+			if len(value) == 0 {
+				return errors.New("json_data must not be empty")
+			}
+		default:
+			return errors.New("json_data must be a JSON object or array")
+		}
+	case EvidenceTypeTable:
+		hasHeader := false
+		for _, header := range evidence.Headers {
+			if strings.TrimSpace(header) != "" {
+				hasHeader = true
+				break
+			}
+		}
+		if !hasHeader {
+			return errors.New("headers are required for table evidence")
+		}
+		var rows []any
+		if err := json.Unmarshal([]byte(evidence.Rows), &rows); err != nil {
+			return errors.New("rows must be a JSON array of arrays")
+		}
+		if len(rows) == 0 {
+			return errors.New("rows must not be empty")
+		}
+		for i, row := range rows {
+			if _, ok := row.([]any); !ok {
+				return fmt.Errorf("row %d must be an array of cells", i+1)
+			}
+		}
+	default:
+		return fmt.Errorf("type must be one of: %s, %s, %s", EvidenceTypeMarkdown, EvidenceTypeJson, EvidenceTypeTable)
+	}
+	return nil
+}
+
 func stringParam(value any) string {
 	text, _ := value.(string)
 	return strings.TrimSpace(text)
@@ -182,97 +242,103 @@ func (t *EventsAddEvidenceTask) Execute(taskCtx types.TaskContext, params map[st
 // rejects a type it cannot display — replacing a single free-text box whose
 // undocumented shape decided, silently, whether a card ever appeared.
 func (t *EventsAddEvidenceTask) InputSchema() *types.Schema {
-	return &types.Schema{
-		Properties: map[string]types.Property{
-			"event_id": {
-				Type:        types.PropertyTypeString,
-				Description: "Id of the event to attach evidence to. For an event-triggered workflow this is {{ Inputs.event.id }}.",
-				Required:    true,
-				Order:       1,
+	properties := authoredEvidenceProperties()
+	properties["event_id"] = types.Property{
+		Type:        types.PropertyTypeString,
+		Description: "Id of the event to attach evidence to. For an event-triggered workflow this is {{ Inputs.event.id }}.",
+		Required:    true,
+		Order:       1,
+	}
+	// Superseded by the fields above, which let api-server build the card.
+	// Hidden rather than removed: automations authored before them still
+	// send it, and their evidence objects are forwarded unchanged.
+	//
+	// depends_on is what lets an author move such a step onto the new
+	// fields: the builder drops a dependent field when its controlling
+	// field changes, so picking a type clears the array that would
+	// otherwise keep winning, invisibly, over everything they fill in.
+	properties["evidences"] = types.Property{
+		Type:        types.PropertyTypeArray,
+		Description: "Deprecated. Pre-built evidence objects, forwarded as-is.",
+		Required:    false,
+		Hidden:      true,
+		DependsOn:   []string{"type"},
+		Order:       10,
+	}
+	return &types.Schema{Properties: properties}
+}
+
+// authoredEvidenceProperties are the fields of one authored evidence card: the
+// type an author picks plus the fields that type takes. Shared with
+// events.store's evidences list so both forms stay the same.
+func authoredEvidenceProperties() map[string]types.Property {
+	return map[string]types.Property{
+		"type": {
+			Type:        types.PropertyTypeString,
+			Title:       "Evidence Type",
+			Description: "How the evidence is displayed on the event.",
+			// Neither required nor defaulted, and both for the same reason:
+			// Schema.Validate runs on every save, the builder stamps defaults
+			// onto a step as soon as it is opened, and an automation written
+			// before this form existed carries `evidences` instead. Either
+			// would turn opening such a step into a save it cannot pass.
+			Required: false,
+			Options:  []string{EvidenceTypeMarkdown, EvidenceTypeJson, EvidenceTypeTable},
+			Order:    2,
+		},
+		"title": {
+			Type:        types.PropertyTypeString,
+			Description: "Heading shown on the card.",
+			Order:       3,
+		},
+		"summary": {
+			Type:        types.PropertyTypeString,
+			Description: "One-line highlight shown above the card, and included in the event's insights. Leave blank for none.",
+			Order:       4,
+		},
+		"severity": {
+			Type:        types.PropertyTypeString,
+			Description: "Severity of the highlight. Only applies when a summary is set.",
+			Options:     []string{"Info", "High", "Critical"},
+			Order:       5,
+			VisibleWhen: &types.VisibleWhen{Field: "type", Value: []string{EvidenceTypeMarkdown, EvidenceTypeJson, EvidenceTypeTable}},
+		},
+		"content": {
+			Type:         types.PropertyTypeString,
+			SubType:      "textarea",
+			Description:  "Markdown body of the card. Values from earlier steps can be used, e.g. {{ Tasks.my_step.output.summary }}.",
+			Order:        9,
+			VisibleWhen:  &types.VisibleWhen{Field: "type", Value: []string{EvidenceTypeMarkdown}},
+			RequiredWhen: &types.RequiredWhen{Field: "type", Value: []string{EvidenceTypeMarkdown}},
+		},
+		"json_data": {
+			Type:         types.PropertyTypeString,
+			Title:        "JSON",
+			SubType:      "json",
+			Description:  "A JSON object or array, shown as a key/value table.",
+			Order:        6,
+			VisibleWhen:  &types.VisibleWhen{Field: "type", Value: []string{EvidenceTypeJson}},
+			RequiredWhen: &types.RequiredWhen{Field: "type", Value: []string{EvidenceTypeJson}},
+			Examples: []types.PropertyExample{
+				{Label: `{"replicas": 3, "image": "api:1.4.2"}`, Value: `{"replicas": 3, "image": "api:1.4.2"}`, Note: "Each key becomes a row."},
 			},
-			"type": {
-				Type:        types.PropertyTypeString,
-				Title:       "Evidence Type",
-				Description: "How the evidence is displayed on the event.",
-				// Neither required nor defaulted, and both for the same reason:
-				// Schema.Validate runs on every save, the builder stamps defaults
-				// onto a step as soon as it is opened, and an automation written
-				// before this form existed carries `evidences` instead. Either
-				// would turn opening such a step into a save it cannot pass.
-				Required: false,
-				Options:  []string{EvidenceTypeMarkdown, EvidenceTypeJson, EvidenceTypeTable},
-				Order:    2,
-			},
-			"title": {
-				Type:        types.PropertyTypeString,
-				Description: "Heading shown on the card.",
-				Order:       3,
-			},
-			"summary": {
-				Type:        types.PropertyTypeString,
-				Description: "One-line highlight shown above the card, and included in the event's insights. Leave blank for none.",
-				Order:       4,
-			},
-			"severity": {
-				Type:        types.PropertyTypeString,
-				Description: "Severity of the highlight. Only applies when a summary is set.",
-				Options:     []string{"Info", "High", "Critical"},
-				Order:       5,
-				VisibleWhen: &types.VisibleWhen{Field: "type", Value: []string{EvidenceTypeMarkdown, EvidenceTypeJson, EvidenceTypeTable}},
-			},
-			"content": {
-				Type:         types.PropertyTypeString,
-				SubType:      "textarea",
-				Description:  "Markdown body of the card. Values from earlier steps can be used, e.g. {{ Tasks.my_step.output.summary }}.",
-				Order:        9,
-				VisibleWhen:  &types.VisibleWhen{Field: "type", Value: []string{EvidenceTypeMarkdown}},
-				RequiredWhen: &types.RequiredWhen{Field: "type", Value: []string{EvidenceTypeMarkdown}},
-			},
-			"json_data": {
-				Type:         types.PropertyTypeString,
-				Title:        "JSON",
-				SubType:      "json",
-				Description:  "A JSON object or array, shown as a key/value table.",
-				Order:        6,
-				VisibleWhen:  &types.VisibleWhen{Field: "type", Value: []string{EvidenceTypeJson}},
-				RequiredWhen: &types.RequiredWhen{Field: "type", Value: []string{EvidenceTypeJson}},
-				Examples: []types.PropertyExample{
-					{Label: `{"replicas": 3, "image": "api:1.4.2"}`, Value: `{"replicas": 3, "image": "api:1.4.2"}`, Note: "Each key becomes a row."},
-				},
-			},
-			"headers": {
-				Type:         types.PropertyTypeArray,
-				Description:  "Column names, in order.",
-				Order:        7,
-				VisibleWhen:  &types.VisibleWhen{Field: "type", Value: []string{EvidenceTypeTable}},
-				RequiredWhen: &types.RequiredWhen{Field: "type", Value: []string{EvidenceTypeTable}},
-			},
-			"rows": {
-				Type:         types.PropertyTypeString,
-				SubType:      "json",
-				Description:  "Rows as a JSON array of arrays — one inner array per row, cells in the same order as the columns.",
-				Order:        8,
-				VisibleWhen:  &types.VisibleWhen{Field: "type", Value: []string{EvidenceTypeTable}},
-				RequiredWhen: &types.RequiredWhen{Field: "type", Value: []string{EvidenceTypeTable}},
-				Examples: []types.PropertyExample{
-					{Label: `[["api-7f9", "CrashLoopBackOff"]]`, Value: `[["api-7f9", "CrashLoopBackOff"]]`, Note: "One inner array per row."},
-				},
-			},
-			// Superseded by the fields above, which let api-server build the card.
-			// Hidden rather than removed: automations authored before them still
-			// send it, and their evidence objects are forwarded unchanged.
-			//
-			// depends_on is what lets an author move such a step onto the new
-			// fields: the builder drops a dependent field when its controlling
-			// field changes, so picking a type clears the array that would
-			// otherwise keep winning, invisibly, over everything they fill in.
-			"evidences": {
-				Type:        types.PropertyTypeArray,
-				Description: "Deprecated. Pre-built evidence objects, forwarded as-is.",
-				Required:    false,
-				Hidden:      true,
-				DependsOn:   []string{"type"},
-				Order:       10,
+		},
+		"headers": {
+			Type:         types.PropertyTypeArray,
+			Description:  "Column names, in order.",
+			Order:        7,
+			VisibleWhen:  &types.VisibleWhen{Field: "type", Value: []string{EvidenceTypeTable}},
+			RequiredWhen: &types.RequiredWhen{Field: "type", Value: []string{EvidenceTypeTable}},
+		},
+		"rows": {
+			Type:         types.PropertyTypeString,
+			SubType:      "json",
+			Description:  "Rows as a JSON array of arrays — one inner array per row, cells in the same order as the columns.",
+			Order:        8,
+			VisibleWhen:  &types.VisibleWhen{Field: "type", Value: []string{EvidenceTypeTable}},
+			RequiredWhen: &types.RequiredWhen{Field: "type", Value: []string{EvidenceTypeTable}},
+			Examples: []types.PropertyExample{
+				{Label: `[["api-7f9", "CrashLoopBackOff"]]`, Value: `[["api-7f9", "CrashLoopBackOff"]]`, Note: "One inner array per row."},
 			},
 		},
 	}

@@ -1,0 +1,1288 @@
+{
+ "over_caps": {
+  "discord": {
+   "content": "🚨 23 SLO alerts across 12 account(s)",
+   "embeds": [
+    {
+     "color": 15158332,
+     "description": "• **availability** (`svc-0`) — FIRING, budget remaining 37\n• **availability** (`svc-1`) — FIRING, budget remaining 37\n• **availability** (`svc-2`) — FIRING, budget remaining 37\n• **availability** (`svc-3`) — FIRING, budget remaining 37\n• **availability** (`svc-4`) — FIRING, budget remaining 37\n• **availability** (`svc-5`) — FIRING, budget remaining 37\n• **availability** (`svc-6`) — FIRING, budget remaining 37\n• **availability** (`svc-7`) — FIRING, budget remaining 37\n…and 4 more in this account.",
+     "title": "Account: prod-eu",
+     "url": "https://app.example.com/kubernetes/details/acc-1"
+    },
+    {
+     "color": 15158332,
+     "description": "• **availability** (`svc-20`) — FIRING, budget remaining 37",
+     "title": "Account: cluster-0",
+     "url": "https://app.example.com/kubernetes/details/acc-0"
+    },
+    {
+     "color": 15158332,
+     "description": "• **availability** (`svc-21`) — FIRING, budget remaining 37",
+     "title": "Account: cluster-1",
+     "url": "https://app.example.com/kubernetes/details/acc-1"
+    },
+    {
+     "color": 15158332,
+     "description": "• **availability** (`svc-22`) — FIRING, budget remaining 37",
+     "title": "Account: cluster-2",
+     "url": "https://app.example.com/kubernetes/details/acc-2"
+    },
+    {
+     "color": 15158332,
+     "description": "• **availability** (`svc-23`) — FIRING, budget remaining 37",
+     "title": "Account: cluster-3",
+     "url": "https://app.example.com/kubernetes/details/acc-3"
+    },
+    {
+     "color": 15158332,
+     "description": "• **availability** (`svc-24`) — FIRING, budget remaining 37",
+     "title": "Account: cluster-4",
+     "url": "https://app.example.com/kubernetes/details/acc-4"
+    },
+    {
+     "color": 15158332,
+     "description": "• **availability** (`svc-25`) — FIRING, budget remaining 37",
+     "title": "Account: cluster-5",
+     "url": "https://app.example.com/kubernetes/details/acc-5"
+    },
+    {
+     "color": 15158332,
+     "description": "• **availability** (`svc-26`) — FIRING, budget remaining 37",
+     "title": "Account: cluster-6",
+     "url": "https://app.example.com/kubernetes/details/acc-6"
+    },
+    {
+     "color": 15158332,
+     "description": "• **availability** (`svc-27`) — FIRING, budget remaining 37",
+     "title": "Account: cluster-7",
+     "url": "https://app.example.com/kubernetes/details/acc-7"
+    },
+    {
+     "color": 15158332,
+     "description": "• **availability** (`svc-28`) — FIRING, budget remaining 37",
+     "title": "Account: cluster-8",
+     "url": "https://app.example.com/kubernetes/details/acc-8"
+    }
+   ]
+  },
+  "google_chat": {
+   "text": "🚨 23 SLO Breach Alerts across 12 accounts\n\n*Account:* <https://app.example.com/kubernetes/details/acc-1|prod-eu>\n• Namespace: payments / Workload: svc-0\n• SLO: availability\n• Target: 0.99 / Current: 0.42\n• Burn Rate: 14× over 1 hour / Budget Left: 37\n• Firing Since: 14 Jul 2026 06:00 AM\n\n• Namespace: payments / Workload: svc-1\n• SLO: availability\n• Target: 0.99 / Current: 0.42\n• Burn Rate: 14× over 1 hour / Budget Left: 37\n• Firing Since: 14 Jul 2026 06:00 AM\n\n• Namespace: payments / Workload: svc-2\n• SLO: availability\n• Target: 0.99 / Current: 0.42\n• Burn Rate: 14× over 1 hour / Budget Left: 37\n• Firing Since: 14 Jul 2026 06:00 AM\n\n• Namespace: payments / Workload: svc-3\n• SLO: availability\n• Target: 0.99 / Current: 0.42\n• Burn Rate: 14× over 1 hour / Budget Left: 37\n• Firing Since: 14 Jul 2026 06:00 AM\n\n• Namespace: payments / Workload: svc-4\n• SLO: availability\n• Target: 0.99 / Current: 0.42\n• Burn Rate: 14× over 1 hour / Budget Left: 37\n• Firing Since: 14 Jul 2026 06:00 AM\n\n• Namespace: payments / Workload: svc-5\n• SLO: availability\n• Target: 0.99 / Current: 0.42\n• Burn Rate: 14× over 1 hour / Budget Left: 37\n• Firing Since: 14 Jul 2026 06:00 AM\n\n• Namespace: payments / Workload: svc-6\n• SLO: availability\n• Target: 0.99 / Current: 0.42\n• Burn Rate: 14× over 1 hour / Budget Left: 37\n• Firing Since: 14 Jul 2026 06:00 AM\n\n• Namespace: payments / Workload: svc-7\n• SLO: availability\n• Target: 0.99 / Current: 0.42\n• Burn Rate: 14× over 1 hour / Budget Left: 37\n• Firing Since: 14 Jul 2026 06:00 AM\n\n• Namespace: payments / Workload: svc-8\n• SLO: availability\n• Target: 0.99 / Current: 0.42\n• Burn Rate: 14× over 1 hour / Budget Left: 37\n• Firing Since: 14 Jul 2026 06:00 AM\n\n• Namespace: payments / Workload: svc-9\n• SLO: availability\n• Target: 0.99 / Current: 0.42\n• Burn Rate: 14× over 1 hour / Budget Left: 37\n• Firing Since: 14 Jul 2026 06:00 AM\n\n• Namespace: payments / Workload: svc-10\n• SLO: availability\n• Target: 0.99 / Current: 0.42\n• Burn Rate: 14× over 1 hour / Budget Left: 37\n• Firing Since: 14 Jul 2026 06:00 AM\n\n• Namespace: payments / Workload: svc-11\n• SLO: availability\n• Target: 0.99 / Current: 0.42\n• Burn Rate: 14× over 1 hour / Budget Left: 37\n• Firing Since: 14 Jul 2026 06:00 AM\n\n*Account:* <https://app.example.com/kubernetes/details/acc-0|cluster-0>\n• Namespace: payments / Workload: svc-20\n• SLO: availability\n• Target: 0.99 / Current: 0.42\n• Burn Rate: 14× over 1 hour / Budget Left: 37\n• Firing Since: 14 Jul 2026 06:00 AM\n\n*Account:* <https://app.example.com/kubernetes/details/acc-1|cluster-1>\n• Namespace: payments / Workload: svc-21\n• SLO: availability\n• Target: 0.99 / Current: 0.42\n• Burn Rate: 14× over 1 hour / Budget Left: 37\n• Firing Since: 14 Jul 2026 06:00 AM\n\n*Account:* <https://app.example.com/kubernetes/details/acc-2|cluster-2>\n• Namespace: payments / Workload: svc-22\n• SLO: availability\n• Target: 0.99 / Current: 0.42\n• Burn Rate: 14× over 1 hour / Budget Left: 37\n• Firing Since: 14 Jul 2026 06:00 AM\n\n*Account:* <https://app.example.com/kubernetes/details/acc-3|cluster-3>\n• Namespace: payments / Workload: svc-23\n• SLO: availability\n• Target: 0.99 / Current: 0.42\n• Burn Rate: 14× over 1 hour / Budget Left: 37\n• Firing Since: 14 Jul 2026 06:00 AM\n\n*Account:* <https://app.example.com/kubernetes/details/acc-4|cluster-4>\n• Namespace: payments / Workload: svc-24\n• SLO: availability\n• Target: 0.99 / Current: 0.42\n• Burn Rate: 14× over 1 hour / Budget Left: 37\n• Firing Since: 14 Jul 2026 06:00 AM\n\n*Account:* <https://app.example.com/kubernetes/details/acc-5|cluster-5>\n• Namespace: payments / Workload: svc-25\n• SLO: availability\n• Target: 0.99 / Current: 0.42\n• Burn Rate: 14× over 1 hour / Budget Left: 37\n• Firing Since: 14 Jul 2026 06:00 AM\n\n*Account:* <https://app.example.com/kubernetes/details/acc-6|cluster-6>\n• Namespace: payments / Workload: svc-26\n• SLO: availability\n• Target: 0.99 / Current: 0.42\n• Burn Rate: 14× over 1 hour / Budget Left: 37\n• Firing Since: 14 Jul 2026 06:00 AM\n\n*Account:* <https://app.example.com/kubernetes/details/acc-7|cluster-7>\n• Namespace: payments / Workload: svc-27\n• SLO: availability\n• Target: 0.99 / Current: 0.42\n• Burn Rate: 14× over 1 hour / Budget Left: 37\n• Firing Since: 14 Jul 2026 06:00 AM\n\n*Account:* <https://app.example.com/kubernetes/details/acc-8|cluster-8>\n• Namespace: payments / Workload: svc-28\n• SLO: availability\n• Target: 0.99 / Current: 0.42\n• Burn Rate: 14× over 1 hour / Budget Left: 37\n• Firing Since: 14 Jul 2026 06:00 AM\n\n*Account:* <https://app.example.com/kubernetes/details/acc-9|cluster-9>\n• Namespace: payments / Workload: svc-29\n• SLO: availability\n• Target: 0.99 / Current: 0.42\n• Burn Rate: 14× over 1 hour / Budget Left: 37\n• Firing Since: 14 Jul 2026 06:00 AM\n\n*Account:* <https://app.example.com/kubernetes/details/acc-10|cluster-10>\n• Namespace: payments / Workload: svc-30\n• SLO: availability\n• Target: 0.99 / Current: 0.42\n• Burn Rate: 14× over 1 hour / Budget Left: 37\n• Firing Since: 14 Jul 2026 06:00 AM\n\n‼️ Review impacted workloads to restore SLO compliance."
+  },
+  "ms_teams": {
+   "$schema": "https://adaptivecards.io/schemas/adaptive-card.json",
+   "body": [
+    {
+     "size": "Large",
+     "text": "🚨 **23 SLO Breach Alerts across 12 accounts**",
+     "type": "TextBlock",
+     "weight": "Bolder",
+     "wrap": true
+    },
+    {
+     "separator": true,
+     "text": "---",
+     "type": "TextBlock"
+    },
+    {
+     "text": "**Account:** [prod-eu](https://app.example.com/kubernetes/details/acc-1)",
+     "type": "TextBlock",
+     "weight": "Bolder",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-0`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.42`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `14× over 1 hour` / Budget Left: `37`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-1`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.42`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `14× over 1 hour` / Budget Left: `37`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-2`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.42`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `14× over 1 hour` / Budget Left: `37`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-3`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.42`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `14× over 1 hour` / Budget Left: `37`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-4`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.42`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `14× over 1 hour` / Budget Left: `37`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-5`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.42`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `14× over 1 hour` / Budget Left: `37`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-6`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.42`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `14× over 1 hour` / Budget Left: `37`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-7`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.42`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `14× over 1 hour` / Budget Left: `37`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-8`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.42`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `14× over 1 hour` / Budget Left: `37`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-9`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.42`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `14× over 1 hour` / Budget Left: `37`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-10`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.42`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `14× over 1 hour` / Budget Left: `37`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-11`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.42`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `14× over 1 hour` / Budget Left: `37`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "separator": true,
+     "text": "",
+     "type": "TextBlock"
+    },
+    {
+     "text": "**Account:** [cluster-0](https://app.example.com/kubernetes/details/acc-0)",
+     "type": "TextBlock",
+     "weight": "Bolder",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-20`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.42`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `14× over 1 hour` / Budget Left: `37`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "separator": true,
+     "text": "",
+     "type": "TextBlock"
+    },
+    {
+     "text": "**Account:** [cluster-1](https://app.example.com/kubernetes/details/acc-1)",
+     "type": "TextBlock",
+     "weight": "Bolder",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-21`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.42`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `14× over 1 hour` / Budget Left: `37`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "separator": true,
+     "text": "",
+     "type": "TextBlock"
+    },
+    {
+     "text": "**Account:** [cluster-2](https://app.example.com/kubernetes/details/acc-2)",
+     "type": "TextBlock",
+     "weight": "Bolder",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-22`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.42`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `14× over 1 hour` / Budget Left: `37`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "separator": true,
+     "text": "",
+     "type": "TextBlock"
+    },
+    {
+     "text": "**Account:** [cluster-3](https://app.example.com/kubernetes/details/acc-3)",
+     "type": "TextBlock",
+     "weight": "Bolder",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-23`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.42`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `14× over 1 hour` / Budget Left: `37`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "separator": true,
+     "text": "",
+     "type": "TextBlock"
+    },
+    {
+     "text": "**Account:** [cluster-4](https://app.example.com/kubernetes/details/acc-4)",
+     "type": "TextBlock",
+     "weight": "Bolder",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-24`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.42`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `14× over 1 hour` / Budget Left: `37`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "separator": true,
+     "text": "",
+     "type": "TextBlock"
+    },
+    {
+     "text": "**Account:** [cluster-5](https://app.example.com/kubernetes/details/acc-5)",
+     "type": "TextBlock",
+     "weight": "Bolder",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-25`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.42`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `14× over 1 hour` / Budget Left: `37`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "separator": true,
+     "text": "",
+     "type": "TextBlock"
+    },
+    {
+     "text": "**Account:** [cluster-6](https://app.example.com/kubernetes/details/acc-6)",
+     "type": "TextBlock",
+     "weight": "Bolder",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-26`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.42`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `14× over 1 hour` / Budget Left: `37`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "separator": true,
+     "text": "",
+     "type": "TextBlock"
+    },
+    {
+     "text": "**Account:** [cluster-7](https://app.example.com/kubernetes/details/acc-7)",
+     "type": "TextBlock",
+     "weight": "Bolder",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-27`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.42`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `14× over 1 hour` / Budget Left: `37`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "separator": true,
+     "text": "",
+     "type": "TextBlock"
+    },
+    {
+     "text": "**Account:** [cluster-8](https://app.example.com/kubernetes/details/acc-8)",
+     "type": "TextBlock",
+     "weight": "Bolder",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-28`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.42`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `14× over 1 hour` / Budget Left: `37`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "separator": true,
+     "text": "",
+     "type": "TextBlock"
+    },
+    {
+     "text": "**Account:** [cluster-9](https://app.example.com/kubernetes/details/acc-9)",
+     "type": "TextBlock",
+     "weight": "Bolder",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-29`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.42`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `14× over 1 hour` / Budget Left: `37`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "separator": true,
+     "text": "",
+     "type": "TextBlock"
+    },
+    {
+     "text": "**Account:** [cluster-10](https://app.example.com/kubernetes/details/acc-10)",
+     "type": "TextBlock",
+     "weight": "Bolder",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-30`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.42`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `14× over 1 hour` / Budget Left: `37`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "separator": true,
+     "text": "",
+     "type": "TextBlock"
+    },
+    {
+     "text": "‼️ Review impacted workloads to restore SLO compliance.",
+     "type": "TextBlock",
+     "wrap": true
+    }
+   ],
+   "msteams": {
+    "width": "Full"
+   },
+   "type": "AdaptiveCard",
+   "version": "1.0"
+  },
+  "slack": {
+   "attachments": [
+    {
+     "actions": [
+      {
+       "style": "primary",
+       "text": "Details",
+       "type": "button",
+       "url": "https://app.example.com/kubernetes/details/acc-1?accountId=acc-1&utm=slack#monitoring/slo"
+      }
+     ],
+     "callback_id": "nb_link_actions",
+     "color": "#C93A36",
+     "fallback": "availability",
+     "mrkdwn_in": [
+      "text"
+     ],
+     "text": "*availability* `BREACHING`\nAt *0.42* against a *0.99* target\nBurning budget *14× too fast* over 1 hour — *37* of budget left\n*312* bad vs *48,200* good events · threshold *500*\npayments/svc-0 · Acct: prod-eu · firing since <!date^1784008800^{date_short_pretty} {time}|14 Jul 2026 06:00 AM UTC>"
+    },
+    {
+     "actions": [
+      {
+       "style": "primary",
+       "text": "Details",
+       "type": "button",
+       "url": "https://app.example.com/kubernetes/details/acc-1?accountId=acc-1&utm=slack#monitoring/slo"
+      }
+     ],
+     "callback_id": "nb_link_actions",
+     "color": "#C93A36",
+     "fallback": "availability",
+     "mrkdwn_in": [
+      "text"
+     ],
+     "text": "*availability* `BREACHING`\nAt *0.42* against a *0.99* target\nBurning budget *14× too fast* over 1 hour — *37* of budget left\n*312* bad vs *48,200* good events · threshold *500*\npayments/svc-1 · Acct: prod-eu · firing since <!date^1784008800^{date_short_pretty} {time}|14 Jul 2026 06:00 AM UTC>"
+    },
+    {
+     "actions": [
+      {
+       "style": "primary",
+       "text": "Details",
+       "type": "button",
+       "url": "https://app.example.com/kubernetes/details/acc-1?accountId=acc-1&utm=slack#monitoring/slo"
+      }
+     ],
+     "callback_id": "nb_link_actions",
+     "color": "#C93A36",
+     "fallback": "availability",
+     "mrkdwn_in": [
+      "text"
+     ],
+     "text": "*availability* `BREACHING`\nAt *0.42* against a *0.99* target\nBurning budget *14× too fast* over 1 hour — *37* of budget left\n*312* bad vs *48,200* good events · threshold *500*\npayments/svc-2 · Acct: prod-eu · firing since <!date^1784008800^{date_short_pretty} {time}|14 Jul 2026 06:00 AM UTC>"
+    },
+    {
+     "actions": [
+      {
+       "style": "primary",
+       "text": "Details",
+       "type": "button",
+       "url": "https://app.example.com/kubernetes/details/acc-1?accountId=acc-1&utm=slack#monitoring/slo"
+      }
+     ],
+     "callback_id": "nb_link_actions",
+     "color": "#C93A36",
+     "fallback": "availability",
+     "mrkdwn_in": [
+      "text"
+     ],
+     "text": "*availability* `BREACHING`\nAt *0.42* against a *0.99* target\nBurning budget *14× too fast* over 1 hour — *37* of budget left\n*312* bad vs *48,200* good events · threshold *500*\npayments/svc-3 · Acct: prod-eu · firing since <!date^1784008800^{date_short_pretty} {time}|14 Jul 2026 06:00 AM UTC>"
+    },
+    {
+     "actions": [
+      {
+       "style": "primary",
+       "text": "Details",
+       "type": "button",
+       "url": "https://app.example.com/kubernetes/details/acc-1?accountId=acc-1&utm=slack#monitoring/slo"
+      }
+     ],
+     "callback_id": "nb_link_actions",
+     "color": "#C93A36",
+     "fallback": "availability",
+     "mrkdwn_in": [
+      "text"
+     ],
+     "text": "*availability* `BREACHING`\nAt *0.42* against a *0.99* target\nBurning budget *14× too fast* over 1 hour — *37* of budget left\n*312* bad vs *48,200* good events · threshold *500*\npayments/svc-4 · Acct: prod-eu · firing since <!date^1784008800^{date_short_pretty} {time}|14 Jul 2026 06:00 AM UTC>"
+    },
+    {
+     "color": "#94A3B8",
+     "fallback": "SLO summary",
+     "mrkdwn_in": [
+      "text"
+     ],
+     "text": "_+18 more SLOs breaching_"
+    }
+   ],
+   "blocks": [
+    {
+     "text": {
+      "text": "23 SLOs are burning error budget",
+      "type": "plain_text"
+     },
+     "type": "header"
+    },
+    {
+     "type": "divider"
+    }
+   ],
+   "text": "23 SLOs are burning error budget",
+   "unfurl_links": false
+  }
+ },
+ "resolved_status": {
+  "discord": {
+   "content": "🚨 3 SLO alerts across 1 account(s)",
+   "embeds": [
+    {
+     "color": 15158332,
+     "description": "• **availability** (`svc-0`) — FIRING, budget remaining 37\n• **availability** (`svc-1`) — RESOLVED, budget remaining —\n• **availability** (`svc-2`) — closed, budget remaining —",
+     "title": "Account: prod-eu",
+     "url": "https://app.example.com/kubernetes/details/acc-1"
+    }
+   ]
+  },
+  "google_chat": {
+   "text": "🚨 3 SLO Breach Alerts across 1 accounts\n\n*Account:* <https://app.example.com/kubernetes/details/acc-1|prod-eu>\n• Namespace: payments / Workload: svc-0\n• SLO: availability\n• Target: 0.99 / Current: 0.42\n• Burn Rate: 14× over 1 hour / Budget Left: 37\n• Firing Since: 14 Jul 2026 06:00 AM\n\n• Namespace: payments / Workload: svc-1\n• SLO: availability\n• Target: 0.99 / Current: 0.00\n• Burn Rate: N/A / Budget Left: N/A\n• Firing Since: 14 Jul 2026 06:00 AM\n\n• Namespace: payments / Workload: svc-2\n• SLO: availability\n• Target: 0.99 / Current: 0.00\n• Burn Rate: N/A / Budget Left: N/A\n• Firing Since: 14 Jul 2026 06:00 AM\n\n‼️ Review impacted workloads to restore SLO compliance."
+  },
+  "ms_teams": {
+   "$schema": "https://adaptivecards.io/schemas/adaptive-card.json",
+   "body": [
+    {
+     "size": "Large",
+     "text": "🚨 **3 SLO Breach Alerts across 1 accounts**",
+     "type": "TextBlock",
+     "weight": "Bolder",
+     "wrap": true
+    },
+    {
+     "separator": true,
+     "text": "---",
+     "type": "TextBlock"
+    },
+    {
+     "text": "**Account:** [prod-eu](https://app.example.com/kubernetes/details/acc-1)",
+     "type": "TextBlock",
+     "weight": "Bolder",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-0`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.42`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `14× over 1 hour` / Budget Left: `37`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-1`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.00`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `N/A` / Budget Left: `N/A`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-2`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.00`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `N/A` / Budget Left: `N/A`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "separator": true,
+     "text": "",
+     "type": "TextBlock"
+    },
+    {
+     "text": "‼️ Review impacted workloads to restore SLO compliance.",
+     "type": "TextBlock",
+     "wrap": true
+    }
+   ],
+   "msteams": {
+    "width": "Full"
+   },
+   "type": "AdaptiveCard",
+   "version": "1.0"
+  },
+  "slack": {
+   "attachments": [
+    {
+     "actions": [
+      {
+       "style": "primary",
+       "text": "Details",
+       "type": "button",
+       "url": "https://app.example.com/kubernetes/details/acc-1?accountId=acc-1&utm=slack#monitoring/slo"
+      }
+     ],
+     "callback_id": "nb_link_actions",
+     "color": "#C93A36",
+     "fallback": "availability",
+     "mrkdwn_in": [
+      "text"
+     ],
+     "text": "*availability* `BREACHING`\nAt *0.42* against a *0.99* target\nBurning budget *14× too fast* over 1 hour — *37* of budget left\n*312* bad vs *48,200* good events · threshold *500*\npayments/svc-0 · Acct: prod-eu · firing since <!date^1784008800^{date_short_pretty} {time}|14 Jul 2026 06:00 AM UTC>"
+    },
+    {
+     "actions": [
+      {
+       "style": "primary",
+       "text": "Details",
+       "type": "button",
+       "url": "https://app.example.com/kubernetes/details/acc-1?accountId=acc-1&utm=slack#monitoring/slo"
+      }
+     ],
+     "callback_id": "nb_link_actions",
+     "color": "#C93A36",
+     "fallback": "availability",
+     "mrkdwn_in": [
+      "text"
+     ],
+     "text": "*availability* `BREACHING`\nAt *0.00* against a *0.99* target\n*0* bad vs *48,200* good events · threshold *500*\npayments/svc-1 · Acct: prod-eu · firing since <!date^1784008800^{date_short_pretty} {time}|14 Jul 2026 06:00 AM UTC>"
+    },
+    {
+     "actions": [
+      {
+       "style": "primary",
+       "text": "Details",
+       "type": "button",
+       "url": "https://app.example.com/kubernetes/details/acc-1?accountId=acc-1&utm=slack#monitoring/slo"
+      }
+     ],
+     "callback_id": "nb_link_actions",
+     "color": "#C93A36",
+     "fallback": "availability",
+     "mrkdwn_in": [
+      "text"
+     ],
+     "text": "*availability* `BREACHING`\nAt *0.00* against a *0.99* target\n*0* bad vs *48,200* good events · threshold *500*\npayments/svc-2 · Acct: prod-eu · firing since <!date^1784008800^{date_short_pretty} {time}|14 Jul 2026 06:00 AM UTC>"
+    }
+   ],
+   "blocks": [
+    {
+     "text": {
+      "text": "3 SLOs are burning error budget",
+      "type": "plain_text"
+     },
+     "type": "header"
+    },
+    {
+     "type": "divider"
+    }
+   ],
+   "text": "3 SLOs are burning error budget",
+   "unfurl_links": false
+  }
+ },
+ "under_caps": {
+  "discord": {
+   "content": "🚨 2 SLO alerts across 2 account(s)",
+   "embeds": [
+    {
+     "color": 15158332,
+     "description": "• **availability** (`svc-0`) — FIRING, budget remaining 37",
+     "title": "Account: prod-eu",
+     "url": "https://app.example.com/kubernetes/details/acc-1"
+    },
+    {
+     "color": 15158332,
+     "description": "• **availability** (`svc-1`) — FIRING, budget remaining 37",
+     "title": "Account: prod-us",
+     "url": "https://app.example.com/kubernetes/details/acc-2"
+    }
+   ]
+  },
+  "google_chat": {
+   "text": "🚨 2 SLO Breach Alerts across 2 accounts\n\n*Account:* <https://app.example.com/kubernetes/details/acc-1|prod-eu>\n• Namespace: payments / Workload: svc-0\n• SLO: availability\n• Target: 0.99 / Current: 0.42\n• Burn Rate: 14× over 1 hour / Budget Left: 37\n• Firing Since: 14 Jul 2026 06:00 AM\n\n*Account:* <https://app.example.com/kubernetes/details/acc-2|prod-us>\n• Namespace: payments / Workload: svc-1\n• SLO: availability\n• Target: 0.99 / Current: 0.42\n• Burn Rate: 14× over 1 hour / Budget Left: 37\n• Firing Since: 14 Jul 2026 06:00 AM\n\n‼️ Review impacted workloads to restore SLO compliance."
+  },
+  "ms_teams": {
+   "$schema": "https://adaptivecards.io/schemas/adaptive-card.json",
+   "body": [
+    {
+     "size": "Large",
+     "text": "🚨 **2 SLO Breach Alerts across 2 accounts**",
+     "type": "TextBlock",
+     "weight": "Bolder",
+     "wrap": true
+    },
+    {
+     "separator": true,
+     "text": "---",
+     "type": "TextBlock"
+    },
+    {
+     "text": "**Account:** [prod-eu](https://app.example.com/kubernetes/details/acc-1)",
+     "type": "TextBlock",
+     "weight": "Bolder",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-0`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.42`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `14× over 1 hour` / Budget Left: `37`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "separator": true,
+     "text": "",
+     "type": "TextBlock"
+    },
+    {
+     "text": "**Account:** [prod-us](https://app.example.com/kubernetes/details/acc-2)",
+     "type": "TextBlock",
+     "weight": "Bolder",
+     "wrap": true
+    },
+    {
+     "text": "• Namespace: `payments` / Workload: `svc-1`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• SLO: `availability`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Target: `0.99` / Current: `0.42`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Burn Rate: `14× over 1 hour` / Budget Left: `37`",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "text": "• Firing Since: 14 Jul 2026 06:00 AM",
+     "type": "TextBlock",
+     "wrap": true
+    },
+    {
+     "separator": true,
+     "text": "",
+     "type": "TextBlock"
+    },
+    {
+     "text": "‼️ Review impacted workloads to restore SLO compliance.",
+     "type": "TextBlock",
+     "wrap": true
+    }
+   ],
+   "msteams": {
+    "width": "Full"
+   },
+   "type": "AdaptiveCard",
+   "version": "1.0"
+  },
+  "slack": {
+   "attachments": [
+    {
+     "actions": [
+      {
+       "style": "primary",
+       "text": "Details",
+       "type": "button",
+       "url": "https://app.example.com/kubernetes/details/acc-1?accountId=acc-1&utm=slack#monitoring/slo"
+      }
+     ],
+     "callback_id": "nb_link_actions",
+     "color": "#C93A36",
+     "fallback": "availability",
+     "mrkdwn_in": [
+      "text"
+     ],
+     "text": "*availability* `BREACHING`\nAt *0.42* against a *0.99* target\nBurning budget *14× too fast* over 1 hour — *37* of budget left\n*312* bad vs *48,200* good events · threshold *500*\npayments/svc-0 · Acct: prod-eu · firing since <!date^1784008800^{date_short_pretty} {time}|14 Jul 2026 06:00 AM UTC>"
+    },
+    {
+     "actions": [
+      {
+       "style": "primary",
+       "text": "Details",
+       "type": "button",
+       "url": "https://app.example.com/kubernetes/details/acc-2?accountId=acc-2&utm=slack#monitoring/slo"
+      }
+     ],
+     "callback_id": "nb_link_actions",
+     "color": "#C93A36",
+     "fallback": "availability",
+     "mrkdwn_in": [
+      "text"
+     ],
+     "text": "*availability* `BREACHING`\nAt *0.42* against a *0.99* target\nBurning budget *14× too fast* over 1 hour — *37* of budget left\n*312* bad vs *48,200* good events · threshold *500*\npayments/svc-1 · Acct: prod-us · firing since <!date^1784008800^{date_short_pretty} {time}|14 Jul 2026 06:00 AM UTC>"
+    }
+   ],
+   "blocks": [
+    {
+     "text": {
+      "text": "2 SLOs are burning error budget",
+      "type": "plain_text"
+     },
+     "type": "header"
+    },
+    {
+     "type": "divider"
+    }
+   ],
+   "text": "2 SLOs are burning error budget",
+   "unfurl_links": false
+  }
+ }
+}

@@ -2,6 +2,8 @@ package observability
 
 import (
 	"os"
+	"reflect"
+	"slices"
 	"testing"
 
 	"nudgebee/services/internal/testenv"
@@ -372,6 +374,7 @@ func TestMapGroupingRowToTraceGroupingValues_MapsEveryGroupedDimension(t *testin
 		"resource":                       "/",
 		"span_name":                      "POST",
 		"http_status_code":               "200",
+		"destination_workload_zones":     "us-east-1a, us-east-1b",
 		"count":                          "27",
 		"error_count":                    "1",
 		"avg_duration_ns":                "430459500",
@@ -387,6 +390,8 @@ func TestMapGroupingRowToTraceGroupingValues_MapsEveryGroupedDimension(t *testin
 	assert.Equal(t, "nudgebee", trace.WorkloadNamespace)
 	assert.Equal(t, "sqs.us-east-1.amazonaws.com", trace.DestinationWorkloadName)
 	assert.Equal(t, "external", trace.DestinationWorkloadNamespace)
+	require.NotNil(t, trace.DestinationWorkloadZone)
+	assert.Equal(t, "us-east-1a, us-east-1b", *trace.DestinationWorkloadZone)
 	assert.Equal(t, "/", trace.Resource)
 	assert.Equal(t, "POST", trace.SpanName)
 	assert.Equal(t, "200", trace.HTTPStatusCode)
@@ -396,6 +401,46 @@ func TestMapGroupingRowToTraceGroupingValues_MapsEveryGroupedDimension(t *testin
 	assert.Equal(t, int64(20044553849), trace.P99Latency)
 	assert.Equal(t, int64(19000000000), trace.P95Latency)
 	assert.Equal(t, int64(21000000000), trace.MaxLatency)
+}
+
+// TestGroupedTracesSelectListFillsEveryField is the structural guard for this mapper's
+// recurring bug: a TraceGroupingValues field that the grouped query never selects, or selects
+// and the mapper never reads, comes back empty in every panel (duration_ns, then workload_name,
+// then the destination zone). It maps a row holding exactly the columns QueryGroupedTraces
+// selects and fails for any field left at its zero value, so the next field added without its
+// column or its mapping fails here, not in the UI.
+func TestGroupedTracesSelectListFillsEveryField(t *testing.T) {
+	row := map[string]interface{}{}
+	for _, name := range slices.Concat(traceGroupingAggregates, traceGroupingDimensions) {
+		row[name] = "7" // a quoted number: valid for the numeric aggregates and for the strings
+	}
+
+	trace, err := MapGroupingRowToTraceGroupingValues(row)
+	require.NoError(t, err)
+
+	value := reflect.ValueOf(trace)
+	for i := 0; i < value.NumField(); i++ {
+		assert.Falsef(t, value.Field(i).IsZero(), "TraceGroupingValues.%s is empty: select its column in traceGroupingAggregates or traceGroupingDimensions and read it in MapGroupingRowToTraceGroupingValues", value.Type().Field(i).Name)
+	}
+}
+
+// The destination zone is reported per group as the joined list of zones, and must not become
+// a grouping dimension: a destination that runs in several zones would then split into one row
+// per zone in the Trace Group tab, which has no zone column to tell the rows apart.
+func TestGroupedTracesReportDestinationZoneWithoutGroupingOnIt(t *testing.T) {
+	assert.NotContains(t, traceGroupingDimensions, "destination_workload_zone")
+	assert.Contains(t, traceGroupingAggregates, "destination_workload_zones")
+
+	def, ok := ClickhouseTraceGroupingTableDefinition["destination_workload_zones"]
+	require.True(t, ok)
+	assert.True(t, def.IsAggregated)
+	assert.Contains(t, def.Def, "groupUniqArrayIf(destination_workload_zone, destination_workload_zone != '')")
+
+	t.Run("a group with no zone reports null, not an empty string", func(t *testing.T) {
+		trace, err := MapGroupingRowToTraceGroupingValues(map[string]interface{}{"destination_workload_zones": ""})
+		require.NoError(t, err)
+		assert.Nil(t, trace.DestinationWorkloadZone)
+	})
 }
 
 // TestRedirectDurationNsSortToAvg is the regression guard for sorting the grouped-traces
@@ -440,6 +485,15 @@ func TestOtelClickhouseTraceSource_QueryGroupedTraces_SelectsAvgDurationNs(t *te
 	rawDef, ok := ClickhouseTraceGroupingTableDefinition["duration_ns"]
 	require.True(t, ok)
 	assert.False(t, rawDef.IsAggregated)
+}
+
+// TestGetBaseGroupingTraceQuery_FallbackDerivesDestinationZone pins that the non-materialized
+// grouping query (taken here because no agent is on record) reads the destination zone through
+// query.DestinationZoneExpr, i.e. from the misspelled key node-agent actually emits (#40498).
+func TestGetBaseGroupingTraceQuery_FallbackDerivesDestinationZone(t *testing.T) {
+	q := (&OtelClickhouseTraceSource{}).GetBaseGroupingTraceQuery(security.NewRequestContextForSuperAdmin(nil, nil, nil), "no-such-account")
+
+	assert.Contains(t, q, query.DestinationZoneExpr+" AS destination_workload_zone")
 }
 
 // TestQueryTracesRaw_Live exercises the raw-table capability against a live relay +

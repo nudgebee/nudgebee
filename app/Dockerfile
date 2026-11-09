@@ -47,6 +47,15 @@ RUN --mount=type=cache,target=/app/.next/cache \
 
 # Production image, copy all the files and run next
 FROM base AS runner
+ARG IMAGE_VERSION=0.0.0
+ARG IMAGE_RELEASE=1
+LABEL name="nudgebee-app" \
+      maintainer="nudgebee" \
+      vendor="nudgebee" \
+      version="${IMAGE_VERSION}" \
+      release="${IMAGE_RELEASE}" \
+      summary="Nudgebee web application" \
+      description="Nudgebee web user interface for the Nudgebee platform."
 WORKDIR /app
 
 ENV NODE_ENV production

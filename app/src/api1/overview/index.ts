@@ -126,7 +126,12 @@ const apiOverview = {
       );
 
     const response = await queryGraphQL(query, 'CloudAccountsOverview', {});
-    const data = response?.data?.data;
+    // Fail loudly: a GraphQL error or empty envelope would otherwise fold into
+    // the zeroed defaults below and render as "$0 spend, 0 resources".
+    if (!response?.data?.data || response?.data?.errors?.length) {
+      throw new Error(response?.data?.errors?.[0]?.message || 'Failed to load cloud account summaries');
+    }
+    const data = response.data.data;
     const summaries: Record<string, CloudAccountOverviewSummary> = {};
     accountIds.forEach((id) => {
       summaries[id] = emptyCloudSummary(id);
@@ -182,7 +187,10 @@ const apiOverview = {
     );
 
     const response = await queryGraphQL(query, 'VmAccountsOverview', {});
-    const data = response?.data?.data;
+    if (!response?.data?.data || response?.data?.errors?.length) {
+      throw new Error(response?.data?.errors?.[0]?.message || 'Failed to load VM account summaries');
+    }
+    const data = response.data.data;
     const summaries: Record<string, VmAccountOverviewSummary> = {};
     accountIds.forEach((id) => {
       summaries[id] = { accountId: id, vmCount: 0, severities: {}, vulnerabilityCount: 0 };

@@ -204,3 +204,51 @@ func TestSendNotification_RejectsUnknownEventType(t *testing.T) {
 		assert.Error(t, err, eventType)
 	}
 }
+
+func TestSendEmail_SuccessFalseResponseIsAnError(t *testing.T) {
+	// Regression test for #41711: a 200 response with success=false (e.g. the
+	// SMTP send failed) must surface as an error, not be reported as a
+	// successful "send email" automation step.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": false,
+			"error":   "Failed to send email to any recipient",
+		})
+	}))
+	defer server.Close()
+	withTestNotificationServerUrl(t, server.URL)
+
+	ctx := newTestRequestContext(t)
+	resp, err := SendEmail(ctx, SendEmailRequest{
+		Recipients: []string{"user@example.com"},
+		Subject:    "hello",
+		Body:       "body",
+	})
+
+	assert.Error(t, err)
+	assert.False(t, resp.Success)
+}
+
+func TestSendEmail_SuccessTrueResponseIsNotAnError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"sent_to": []string{"user@example.com"},
+		})
+	}))
+	defer server.Close()
+	withTestNotificationServerUrl(t, server.URL)
+
+	ctx := newTestRequestContext(t)
+	resp, err := SendEmail(ctx, SendEmailRequest{
+		Recipients: []string{"user@example.com"},
+		Subject:    "hello",
+		Body:       "body",
+	})
+
+	assert.NoError(t, err)
+	assert.True(t, resp.Success)
+	assert.Equal(t, []string{"user@example.com"}, resp.SentTo)
+}

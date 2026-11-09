@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -383,6 +384,17 @@ func react4BasePromptName(agent NBAgent) string {
 
 func (o *NBReActPlanner4) GetTools() []toolcore.NBTool { return o.tools }
 
+// toolResultCanChange reports whether the planner's tool named name declares
+// that its result can change between identical calls (toolcore.ResultCanChange).
+func (o *NBReActPlanner4) toolResultCanChange(name string) bool {
+	for _, t := range o.tools {
+		if t != nil && strings.EqualFold(t.Name(), name) {
+			return toolcore.ResultCanChange(t)
+		}
+	}
+	return false
+}
+
 // agentName is a nil-safe accessor for logging. nbAgent is always set in
 // production, but parseCompletion and the critique paths are exercised directly
 // by unit tests that build a bare planner — the same reason the ctx accesses are
@@ -486,6 +498,9 @@ func (o *NBReActPlanner4) Plan(
 	}
 	messages := o.buildMessages(plannerInput, intermediateSteps)
 	messages = AppendImagesToLastHumanMessage(messages, o.request.Images)
+	if note, ok := finalIterationsNote(ctx); ok {
+		messages = appendNoteToLastMessage(messages, note)
+	}
 	clarificationContinuationRetried := false
 	textToolCallRetried := false
 
@@ -619,6 +634,9 @@ func (o *NBReActPlanner4) Plan(
 			StepIndex: len(intermediateSteps),
 		})
 		o.ctx.GetLogger().Info("react4: critique requested refinement", "attempt", len(o.refinementData))
+		if err := saveCritiqueCard(o.request, feedback); err != nil {
+			o.ctx.GetLogger().Error("react4: failed to save critique card", "error", err)
+		}
 		messages = append(messages, o.refinementMessages(finish.Data, feedback)...)
 	}
 }
@@ -716,23 +734,43 @@ func (o *NBReActPlanner4) refinementMessages(answer, feedback string) []llms.Mes
 	}
 }
 
-// containsActionGrammar reports whether text carries react_3's XML tool-call
-// protocol. Used only when the turn produced NO native tool call, to tell a
-// text-protocol attempt apart from a genuine prose answer that merely mentions
-// these tags (hence the opening-tag match rather than a substring search).
+// containsActionGrammar reports a react_3 XML or <function=name> call written as text, not prose naming the tags.
 func containsActionGrammar(text string) bool {
 	for _, tag := range []string{"thought_action", "action", "tool_name", "tool_input", "actions"} {
 		if strings.Contains(text, "<"+tag+">") || strings.Contains(text, "</"+tag+">") {
 			return true
 		}
 	}
-	return false
+	return strings.Contains(text, "<function=") && slices.ContainsFunc(functionCallRe.FindAllString(text, -1), isFunctionCall)
+}
+
+// qwen3_coder calls Nemotron leaks as text (#38236); inline code matches first, so a quoted call is prose, not a call.
+var (
+	functionCallRe  = regexp.MustCompile("(?s)`[^`\n]*`|<function=[^>\\s]+>.*?(</function>|<parameter=)")
+	functionBlockRe = regexp.MustCompile("(?s)`[^`\n]*`|<function=[^>\\s]+>.*?</function>")
+)
+
+func isFunctionCall(match string) bool { return match[0] != '`' }
+
+// stripFunctionCalls removes closed <function=> blocks outside inline code and the stray </tool_call> vLLM leaves behind.
+func stripFunctionCalls(text string) string {
+	text = functionBlockRe.ReplaceAllStringFunc(text, func(m string) string {
+		if isFunctionCall(m) {
+			return ""
+		}
+		return m
+	})
+	return strings.ReplaceAll(text, "</tool_call>", "")
 }
 
 // geminiTextToolCallMarker is the prefix Gemini writes when it serializes a
 // function call into text instead of emitting a native call, e.g.
 // "call:default_api:qa_browser_click{element:link Troubleshoot,...}".
 const geminiTextToolCallMarker = "call:default_api:"
+
+// hermesToolCallMarker opens a Hermes-template call (Qwen, most open-weight models); vLLM
+// leaves a fenced or malformed body as text #39704.
+const hermesToolCallMarker = "<tool_call>"
 
 // errReact4TextToolCall marks a turn whose text carries a tool call that was
 // never dispatched. Plan re-prompts once on it before surfacing the wrapped
@@ -752,11 +790,13 @@ const textToolCallLogBytes = 300
 // "<update_notebook>...</update_notebook>", Gemini's
 // "call:default_api:<tool>{...}" — so instead of one matcher per shape this
 // treats any registered tool name used as a tag or followed directly by call
-// syntax ("name{", "name(") as a call. The Gemini marker matches on its own,
-// since the leaked name may not be a registered tool. A bare mention of a tool
-// name in prose ("I used update_notebook to...") is not a call.
+// syntax ("name{", "name(") as a call. The Gemini/Hermes markers & JSON call
+// objects match on their own, since the leaked name may not be a registered
+// tool. A bare mention of a tool name in prose ("I used update_notebook to...")
+// is not a call.
 func containsTextToolCall(text string, tools []toolcore.NBTool) bool {
-	if containsActionGrammar(text) || strings.Contains(text, geminiTextToolCallMarker) {
+	if containsActionGrammar(text) || strings.Contains(text, geminiTextToolCallMarker) ||
+		strings.Contains(text, hermesToolCallMarker) || containsJSONToolCall(text) {
 		return true
 	}
 	for _, tool := range tools {
@@ -791,6 +831,105 @@ func containsCallSyntax(text, name string) bool {
 		}
 		offset = start + 1
 	}
+}
+
+// Keys of a JSON-serialized tool call across model families: {<name key>: "<tool>", <arg key>: {...}}.
+var (
+	jsonToolNameKeys = []string{"name", "tool", "tool_name", "action", "function"}
+	jsonToolArgKeys  = []string{"arguments", "args", "parameters", "input", "tool_input", "action_input"}
+)
+
+// containsJSONToolCall: a JSON object at any depth with a string name key & object args, any
+// key order, any registered-or-not tool (#39704). Non-object args (quoted data) & JSON Schema
+// args (a tool definition shown in an answer) don't count.
+func containsJSONToolCall(text string) bool {
+	return len(jsonToolCallSpans(text)) > 0
+}
+
+// jsonToolCallSpans returns the [start, end) of each top-level JSON value in text holding a call.
+func jsonToolCallSpans(text string) [][2]int {
+	var spans [][2]int
+	// ponytail: retries Decode at each '{' after a failed parse, so a long
+	// malformed answer costs O(n*braces); only runs on no-tool-call turns.
+	for i := strings.IndexByte(text, '{'); i >= 0; {
+		dec := json.NewDecoder(strings.NewReader(text[i:]))
+		var v any
+		next := i + 1
+		if dec.Decode(&v) == nil {
+			next = i + int(dec.InputOffset())
+			if isJSONToolCall(v) {
+				spans = append(spans, [2]int{i, next})
+			}
+		}
+		j := strings.IndexByte(text[next:], '{')
+		if j < 0 {
+			return spans
+		}
+		i = next + j
+	}
+	return spans
+}
+
+// What a removed call leaves behind: a Hermes block, an empty fence, a "metrics = json.dumps()" line.
+var (
+	hermesBlockRe   = regexp.MustCompile(`(?s)<tool_call>.*?(</tool_call>|$)`)
+	emptyFenceRe    = regexp.MustCompile("(?m)^[ \t]*```[A-Za-z]*\\s*```[ \t]*$")
+	callResidueLine = regexp.MustCompile(`(?m)^[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*(json\.(dumps|loads)\(['"]?['"]?\)?)?[ \t]*$`)
+)
+
+// stripTextToolCalls removes Hermes, <function=> & JSON calls from text, keeping the prose around them.
+func stripTextToolCalls(text string) string {
+	text = hermesBlockRe.ReplaceAllString(text, "")
+	text = stripFunctionCalls(text)
+	var b strings.Builder
+	last := 0
+	for _, span := range jsonToolCallSpans(text) {
+		b.WriteString(text[last:span[0]])
+		last = span[1]
+	}
+	b.WriteString(text[last:])
+	text = emptyFenceRe.ReplaceAllString(b.String(), "")
+	text = callResidueLine.ReplaceAllString(text, "")
+	return strings.TrimSpace(text)
+}
+
+func isJSONToolCall(v any) bool {
+	switch v := v.(type) {
+	case map[string]any:
+		if hasJSONKey(v, jsonToolNameKeys, func(x any) bool { s, ok := x.(string); return ok && s != "" }) &&
+			hasJSONKey(v, jsonToolArgKeys, func(x any) bool { m, ok := x.(map[string]any); return ok && !isJSONSchemaObject(m) }) {
+			return true
+		}
+		for _, child := range v {
+			if isJSONToolCall(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range v {
+			if isJSONToolCall(child) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isJSONSchemaObject reports whether m is an object schema, as in OpenAI or
+// Gemini function definitions (Gemini spells the type "OBJECT").
+func isJSONSchemaObject(m map[string]any) bool {
+	typ, _ := m["type"].(string)
+	_, hasProps := m["properties"].(map[string]any)
+	return strings.EqualFold(typ, "object") && hasProps
+}
+
+func hasJSONKey(m map[string]any, keys []string, ok func(any) bool) bool {
+	for _, k := range keys {
+		if v, found := m[k]; found && ok(v) {
+			return true
+		}
+	}
+	return false
 }
 
 func isIdentByte(c byte) bool {
@@ -1027,6 +1166,7 @@ current <question>. Attribution is per sibling function call.`
 }
 
 func stripLegacyActionGrammar(text string) string {
+	text = stripFunctionCalls(text)
 	for _, tag := range []string{"thought_action", "actions", "action"} {
 		text = stripXMLBlocks(text, tag)
 		text = strings.ReplaceAll(text, "</"+tag+">", "")
@@ -1081,8 +1221,14 @@ func react4RefinementMessage(feedback string) string {
 	return "Your previous answer was reviewed and needs improvement before it can be returned to the user. " +
 		"Feedback:\n" + feedback + "\n\n" +
 		"Revise your answer to address this feedback. If you need more evidence, call the appropriate tool(s); " +
-		"otherwise reply with the improved final answer as plain text."
+		"otherwise reply with the improved final answer as plain text. " + refinedAnswerStandsAlone
 }
+
+// refinedAnswerStandsAlone keeps the review out of the revised answer: the user
+// never saw the rejected answer, so "my prior answer said X, corrected to Y"
+// reads as a contradiction of something they were never shown (#39803).
+const refinedAnswerStandsAlone = "The user never saw the previous answer or this review: write the revised answer as a fresh, " +
+	"self-contained final answer, and do not mention a previous answer, the review, or that anything was corrected."
 
 // parseCompletion translates a single provider choice into actions or a finish.
 // Zero tool calls with non-empty text is the terminal (final answer); zero tool
@@ -1238,10 +1384,17 @@ func (o *NBReActPlanner4) parseCompletion(choice *llms.ContentChoice) ([]NBAgent
 			// ("...missing a thought_signature..., position 2"). Batches are rare —
 			// one in an entire comparison run — so nearly all the dedup benefit
 			// comes from the single-call path anyway.
-			if len(choice.ToolCalls) == 1 {
-				id = generateToolId(name, args)
-			} else {
+			//
+			// A tool whose result can change (every MCP tool) gets a step-unique
+			// id even in a single-call turn: re-reading a page after a click is a
+			// new call, not a repeat of the earlier read, and must run (#39635).
+			switch {
+			case len(choice.ToolCalls) > 1:
 				id = fmt.Sprintf("%s-E%d-%d", generateToolId(name, args), o.stepCount, i)
+			case o.toolResultCanChange(name):
+				id = fmt.Sprintf("%s-E%d", generateToolId(name, args), o.stepCount)
+			default:
+				id = generateToolId(name, args)
 			}
 		}
 		var signature []byte
@@ -1542,6 +1695,11 @@ func (o *NBReActPlanner4) renderTurn(steps []NBAgentPlannerToolActionStep, group
 		if replayInput == "" {
 			replayInput = step.Action.ToolInput
 		}
+		// One non-JSON replayed call 400s the whole request (vLLM "Extra data") -> every later turn
+		// fails #39704. doAction never ran such a call, and its observation says so.
+		if nativeArgumentsError(replayInput) != nil {
+			replayInput = "{}"
+		}
 		assistantParts = append(assistantParts, llms.ToolCall{
 			ID:   step.Action.ToolID,
 			Type: "function",
@@ -1611,10 +1769,13 @@ func (o *NBReActPlanner4) renderObservation(step *NBAgentPlannerToolActionStep, 
 	if step.Action.Tool == "es_metrics_query" && step.Action.NativeToolInput != "" && step.Action.NativeToolInput != step.Action.ToolInput {
 		obs = "Execution note: the metrics tool used these arguments instead of the model's function call: " + TruncateMiddle(step.Action.ToolInput, 2048, 512) + "\nResult: " + obs
 	}
+	if note := truncationNote(step.Metadata); note != "" {
+		obs += "\n[" + note + "]"
+	}
 	if ev := strings.TrimSpace(step.SubAgentEvidence); ev != "" {
 		obs = obs + "\n\n" + ev
 	}
-	return obs
+	return withSavedOutputNote(obs, step.Metadata)
 }
 
 // Replayed results for successful update_notebook calls (see renderObservation).
@@ -1859,10 +2020,10 @@ func (o *NBReActPlanner4) flattenTranscript(steps []NBAgentPlannerToolActionStep
 
 // runCritique asks the critiquer whether the final answer is acceptable,
 // returning (decision, feedback); an empty decision means accept. It mirrors
-// NBReActPlanner3.runCritique but omits the react_3-specific DB persistence
-// (saveCritique / saveCritiqueAsToolCall), which the seam map flagged as
-// optional (errors there are swallowed and never affect the decision). Wiring
-// analytics persistence for react_4 is a follow-up.
+// NBReActPlanner3.runCritique but omits ReAct3's react_answer analytics row
+// (saveCritique); the claim_shadow row written by runClaimCritiqueShadow is the
+// record. The "Critique Feedback" card is written by Plan when it acts on a
+// refine.
 func (o *NBReActPlanner4) runCritique(input, scratchpad, finalAnswer string, intermediateSteps []NBAgentPlannerToolActionStep, conv *critiqueConversation) (resultDecision, resultFeedback string) {
 	defer func() {
 		resultDecision, resultFeedback = runClaimCritiqueShadow(o.ctx, o.request, "react4", o.nbAgent.GetName(), resultDecision, resultFeedback, input, finalAnswer, o.Notebook, intermediateSteps,

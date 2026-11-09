@@ -140,6 +140,10 @@ class CommonService:
             messaging_platform = installations[0] if installations else None
             if not messaging_platform:
                 LOG.info("Unable to list channels for %s, no installation in tenant: %s ", platform, tenant)
+                if platform in ("slack", "ms_teams"):
+                    # The hint lets a picker say the app isn't connected, rather than
+                    # that a connected app sees no channels.
+                    return {"data": [], "hint": "not_connected"}
                 return {"data": []}
 
             if platform == "slack":
@@ -1629,13 +1633,14 @@ class CommonService:
             "errors": errors,
         }
 
-    def post_slack_ephemeral_response(self, channel_id, team_id, user_id, message):
+    def post_slack_ephemeral_response(self, channel_id, team_id, user_id, message, thread_ts=None):
         bot = self.get_slack_installation(team_id)
         output_blocks = Transformer.to_slack(MarkdownBlock(text=message))
         self.slack_app.client.post_ephemeral(
             text="message",
             channel_id=channel_id,
             user=user_id,
+            thread_ts=thread_ts,
             token=bot.token,
             response_type="in_channel",
             replace_original=True,
@@ -2273,7 +2278,19 @@ class CommonService:
         from notifications_server.services.bot_messages import SIGNUP_URL
 
         branding_name = settings.urls.branding_name
+        # The app's name in Teams, which the store requires the welcome to use.
+        assistant_name = settings.urls.assistant_name
         branding_logo = settings.urls.branding_logo_url
+        # A brand with no logo gets no image: an Image with an empty url is not a valid element.
+        logo_columns = []
+        if branding_logo:
+            logo_columns.append(
+                {
+                    "type": "Column",
+                    "width": "auto",
+                    "items": [{"type": "Image", "url": branding_logo, "size": "Small", "style": "Person"}],
+                }
+            )
 
         card = {
             "type": "AdaptiveCard",
@@ -2283,18 +2300,7 @@ class CommonService:
                 {
                     "type": "ColumnSet",
                     "columns": [
-                        {
-                            "type": "Column",
-                            "width": "auto",
-                            "items": [
-                                {
-                                    "type": "Image",
-                                    "url": branding_logo,
-                                    "size": "Small",
-                                    "style": "Person",
-                                }
-                            ],
-                        },
+                        *logo_columns,
                         {
                             "type": "Column",
                             "width": "stretch",
@@ -2302,7 +2308,7 @@ class CommonService:
                             "items": [
                                 {
                                     "type": "TextBlock",
-                                    "text": f"Welcome to {branding_name}!",
+                                    "text": f"Welcome to {assistant_name}!",
                                     "weight": "Bolder",
                                     "size": "Large",
                                 }
@@ -2312,7 +2318,10 @@ class CommonService:
                 },
                 {
                     "type": "TextBlock",
-                    "text": f"Hi there! I'm your {branding_name} assistant. Here's what I can help you with:",
+                    "text": (
+                        f"Hi there! I'm {assistant_name}, your {branding_name} assistant. "
+                        "Here's what I can help you with:"
+                    ),
                     "wrap": True,
                 },
                 {
@@ -2330,7 +2339,7 @@ class CommonService:
             card["body"].append(
                 {
                     "type": "TextBlock",
-                    "text": f"Mention **@{branding_name}** in a channel or a thread to ask a question.",
+                    "text": f"Mention **@{assistant_name}** in a channel or a thread to ask a question.",
                     "wrap": True,
                 }
             )
@@ -2777,8 +2786,7 @@ class CommonService:
                     "card": {
                         "header": {
                             "title": f"Connect this space to {branding_name}",
-                            "imageUrl": branding_logo,
-                            "imageType": "CIRCLE",
+                            **({"imageUrl": branding_logo, "imageType": "CIRCLE"} if branding_logo else {}),
                         },
                         "sections": [
                             {
@@ -2827,8 +2835,7 @@ class CommonService:
                     "card": {
                         "header": {
                             "title": f"Welcome to {branding_name}!",
-                            "imageUrl": branding_logo,
-                            "imageType": "CIRCLE",
+                            **({"imageUrl": branding_logo, "imageType": "CIRCLE"} if branding_logo else {}),
                         },
                         "sections": [
                             {

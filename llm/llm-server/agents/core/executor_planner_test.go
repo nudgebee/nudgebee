@@ -1358,6 +1358,16 @@ func TestFormatToolMetadataFooter(t *testing.T) {
 		{"formatter renders arbitrary exit code faithfully", &toolcore.NBToolResponseMetadata{ExitStatus: 2, ExecutionDurationMs: 8}, "\n[exitStatus: 2 | executionDuration: 8ms]"},
 		{"negative duration clamps to 0", &toolcore.NBToolResponseMetadata{ExitStatus: 0, ExecutionDurationMs: -1}, "\n[exitStatus: 0 | executionDuration: 0ms]"},
 		{"multi-second renders as ms", &toolcore.NBToolResponseMetadata{ExitStatus: 0, ExecutionDurationMs: 3200}, "\n[exitStatus: 0 | executionDuration: 3200ms]"},
+		{
+			"truncated response notes the original length",
+			&toolcore.NBToolResponseMetadata{ExitStatus: 0, ExecutionDurationMs: 50, Truncated: true, OriginalLen: 65445},
+			"\n[exitStatus: 0 | executionDuration: 50ms | truncated: output cut from 65445 bytes, narrow the query for full detail]",
+		},
+		{
+			"untruncated response omits the truncation note even with OriginalLen set",
+			&toolcore.NBToolResponseMetadata{ExitStatus: 0, ExecutionDurationMs: 50, Truncated: false, OriginalLen: 65445},
+			"\n[exitStatus: 0 | executionDuration: 50ms]",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1374,6 +1384,11 @@ func TestRenderObservationWithMetadata(t *testing.T) {
 		md := &toolcore.NBToolResponseMetadata{ExitStatus: 1, ExecutionDurationMs: 42}
 		got := renderObservationWithMetadata("raw output", md)
 		assert.Equal(t, "raw output\n[exitStatus: 1 | executionDuration: 42ms]", got)
+	})
+	t.Run("truncated metadata tells the planner it is missing data", func(t *testing.T) {
+		md := &toolcore.NBToolResponseMetadata{ExitStatus: 0, ExecutionDurationMs: 42, Truncated: true, OriginalLen: 200000}
+		got := renderObservationWithMetadata("partial output", md)
+		assert.Equal(t, "partial output\n[exitStatus: 0 | executionDuration: 42ms | truncated: output cut from 200000 bytes, narrow the query for full detail]", got)
 	})
 }
 
@@ -2096,6 +2111,64 @@ func TestSummarizeConversation_NotebookLeak_UnwrapsToInnerContent(t *testing.T) 
 	assert.NotContains(t, output, "</update_notebook>")
 	assert.Contains(t, output, "api-service cannot reach db-staging.internal:5432",
 		"the notebook's own content is genuinely informative — unwrap it, don't discard it")
+}
+
+// #39704 on the fallback path: a summary that is itself a tool plan written as
+// text fails the run visibly instead of being returned as the answer.
+func TestSummarizeConversation_TextToolPlan_Fails(t *testing.T) {
+	withFakeLLMModel(t, &fakeLLMModel{response: issue39704Leak})
+	e := &plannerExecutor{
+		ctx:          llmOverrideContext(),
+		agentRequest: NBAgentRequest{Query: "investigate oom on llm-server", AccountId: "acct-1", UserId: "user-1", ConversationId: "conv-1", MessageId: "msg-1"},
+	}
+
+	result, err := e.summarizeConversation()
+
+	require.ErrorIs(t, err, errSummaryTextToolCall)
+	assert.Nil(t, result)
+}
+
+// hsundar-git on #40562: a summary holding a call keeps the answer around it; only a summary that
+// is nothing but a call fails. Shapes are Bedrock Llama summaries stored on test.
+func TestSummarizeConversation_TextToolCallInsideAnswer(t *testing.T) {
+	analysis := "### Event Summary\n- **Title:** Pod chg-test/chg-test-api is crashing\n" +
+		"### Root Cause\nThe container is OOMKilled: its memory limit is 256Mi and the in-process cache grows without a bound, " +
+		"reaching the limit about 40 minutes after each restart.\n### Fix\nRaise the limit to 512Mi and cap the cache size.\n"
+	call := `{"type": "function", "name": "logs", "parameters": {"command": "Why is the pod crashing?", "_memory_refs": "[]"}}`
+	for name, tc := range map[string]struct {
+		summary  string
+		wantFail bool
+	}{
+		"answer then a trailing call":    {analysis + "\n### Related Alerts Check\n```json\n" + call + "\n```\n", false},
+		"how-to answer quoting a call":   {analysis + "\nExample: `" + call + "`", false},
+		"only a call":                    {"metrics = " + call, true},
+		"only a call with a short intro": {"I will check the logs next.\n\nlogs = json.dumps(" + call + ")\nprint(logs)", true},
+		"hermes block after an answer":   {analysis + "\n<tool_call>\n" + call + "\n</tool_call>", false},
+		"function call after an answer":  {analysis + "\n" + nemotronFunctionCall, false},
+		"only a function call":           {nemotronFunctionCall, true},
+		"answer naming the syntax":       {analysis + "\nNemotron's tool calls open with `<function=name>`.", false},
+		"unclosed call before more text": {analysis + "\n<function=logs>\n<parameter=command>\ntail\nRaise the limit to 512Mi.", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			withFakeLLMModel(t, &fakeLLMModel{response: tc.summary})
+			e := &plannerExecutor{
+				ctx:          llmOverrideContext(),
+				agentRequest: NBAgentRequest{Query: "why is chg-test-api crashing", AccountId: "acct-1", UserId: "user-1", ConversationId: "conv-1", MessageId: "msg-1"},
+			}
+
+			result, err := e.summarizeConversation()
+
+			if tc.wantFail {
+				require.ErrorIs(t, err, errSummaryTextToolCall)
+				return
+			}
+			require.NoError(t, err)
+			output, _ := result["output"].(string)
+			assert.Contains(t, output, "Raise the limit to 512Mi")
+			assert.False(t, containsTextToolCall(output, nil), "the call must be removed: %q", output)
+			assert.NotContains(t, output, "```json\n```", "an emptied fence must go too")
+		})
+	}
 }
 
 // A genuine prose answer that merely mentions the tag name in passing must

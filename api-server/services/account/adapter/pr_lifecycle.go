@@ -747,8 +747,9 @@ func dispatchPRFollowup(ctx *security.RequestContext, dbms *database.DatabaseMan
 		return nil
 	}
 
-	gitToken, err := getGitTokenForTenant(dbms, tenantID, meta.Provider)
-	if err != nil {
+	// Only confirms the tenant has a usable git integration; the token itself
+	// stays here. llm-server resolves its own from the same integration (#40868).
+	if _, err := getGitTokenForTenant(dbms, tenantID, meta.Provider); err != nil {
 		ctx.GetLogger().Error("pr_lifecycle: failed to get git token", "tenant", tenantID, "error", err)
 		markPRFollowupUnresolvableByURL(ctx, dbms, prURL, tenantID, createdAt, "missing_git_token")
 		return fmt.Errorf("failed to get git token: %w", err)
@@ -758,7 +759,7 @@ func dispatchPRFollowup(ctx *security.RequestContext, dbms *database.DatabaseMan
 		"pr_url", prURL, "current_iteration_count", oldIters)
 	common.MetricsPRFollowupDispatch(ctx.GetContext(), prFollowupTable, trigger)
 
-	chatRequest := buildPRFollowupChatRequest(meta, gitToken,
+	chatRequest := buildPRFollowupChatRequest(meta,
 		fmt.Sprintf("Follow up on PR %s — address CI failures and review comments", meta.PRURL),
 		"", addressedComments)
 
@@ -1232,12 +1233,16 @@ func markPRFollowupUnresolvableByURL(ctx *security.RequestContext, dbms *databas
 // refresh sends the changed rightsizing numbers as one (#34959). prompt cannot
 // carry that on its own: every followup sends one, so code-analysis cannot tell
 // an instruction from boilerplate. Keeping one builder means both callers get the
-// same branch fallback and credential handling.
+// same branch fallback.
+//
+// The payload carries no git credential: it is stored as the chat message and
+// logged downstream, and the agent resolves its own token from the tenant's
+// integration (#40868).
 // addressedComments is the set a previous run already answered (#36865),
 // forwarded so code-analysis — which has no metastore access — can use it as a
 // fallback skip source alongside GitHub's own resolved-thread state. Omitted
 // from the payload when empty, so nothing changes for a PR with no history.
-func buildPRFollowupChatRequest(meta prMetadata, gitToken, prompt, instruction string, addressedComments json.RawMessage) llm.ConversationApiRequest {
+func buildPRFollowupChatRequest(meta prMetadata, prompt, instruction string, addressedComments json.RawMessage) llm.ConversationApiRequest {
 	prBranch := meta.PRBranch
 	if prBranch == "" {
 		prBranch = meta.Branch
@@ -1249,7 +1254,6 @@ func buildPRFollowupChatRequest(meta prMetadata, gitToken, prompt, instruction s
 		"pr_url":    meta.PRURL,
 		"git_repo":  meta.RepoURL,
 		"pr_branch": prBranch,
-		"git_token": gitToken,
 	}
 	if instruction != "" {
 		followupQuery["instruction"] = instruction

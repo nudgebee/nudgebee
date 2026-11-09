@@ -29,7 +29,7 @@ import type {
   UsageTotals,
 } from '@api1/ai-cost';
 import type { ModelSlice } from './components/BreakdownWidgets';
-import { bucketKey, type KpiTotals } from './format';
+import { bucketKey, cleanConversationTitle, type KpiTotals } from './format';
 import type { Granularity, ModelCall, Provider, RankedSlice, Run, RunStatus, Step, StepToolCall, TimeBucket } from './types';
 
 const S_TO_MS = 1000;
@@ -88,7 +88,7 @@ export function toRunStatus(raw: string | undefined): RunStatus {
 export function rowToRun(row: ConversationCostRow): Run {
   return {
     runId: row.session_id || row.conversation_id,
-    title: row.title || row.session_id || '(untitled conversation)',
+    title: cleanConversationTitle(row.title) || row.session_id || '(untitled conversation)',
     templateId: '',
     triggerType: 'user_chat',
     triggerSource: row.source || '—',
@@ -285,7 +285,7 @@ export function treeToRun(tree: ConversationTree): Run {
 
   return {
     runId,
-    title: c.title || runId,
+    title: cleanConversationTitle(c.title) || runId,
     templateId: '',
     triggerType: 'user_chat',
     triggerSource: c.source || '—',

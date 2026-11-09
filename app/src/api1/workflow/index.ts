@@ -674,6 +674,8 @@ query AggregateExecutions($request: ExecutionAggregateRequest!) {
     failed
     running
     timed_out
+    terminated
+    canceled
     counts_are_approximate
     top_failed_is_approximate
     retention_days

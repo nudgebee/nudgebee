@@ -163,10 +163,94 @@ func TestCubeAPMTraceWhereRendering(t *testing.T) {
 
 func TestCubeAPMTraceWhereRejectsUnsupportedOperator(t *testing.T) {
 	_, err := cubeAPMTraceBaseQuery("", query.QueryWhereClause{
-		Binary: query.BinaryWhereClause{"duration_ns": {query.Gt: "10"}},
+		Binary: query.BinaryWhereClause{"span_name": {query.NLike: "GET%"}},
 	}, "")
 	if err == nil {
 		t.Fatal("an operator the builder cannot render must fail, not be dropped silently")
+	}
+}
+
+// The SLO page's Latency Traces tab filters on duration_ns >= threshold. CubeAPM
+// stores the span duration as a nanosecond count in `duration`; a filter on the
+// canonical name matched no span at all (verified live: 0 against 717).
+func TestCubeAPMTraceDurationRange(t *testing.T) {
+	tests := []struct {
+		name string
+		op   query.BinaryWhereClauseType
+		val  any
+		want string
+	}{
+		// The value arrives as a JSON number, so float64 is what really reaches here.
+		{"gte from a JSON number", query.Gte, float64(5000000), `duration:>=5000000`},
+		{"gt", query.Gt, "5000000", `duration:>5000000`},
+		{"lt", query.Lt, "5000000", `duration:<5000000`},
+		{"lte", query.Lte, 1.5, `duration:<=1.5`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mustTraceBase(t, query.QueryWhereClause{
+				Binary: query.BinaryWhereClause{"duration_ns": {tt.op: tt.val}},
+			}, "")
+			if !strings.Contains(got, tt.want) {
+				t.Errorf("query %q is missing %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// A range bound is rendered unquoted — a quoted bound compares as a string — so a
+// value that is not a finite number must be rejected rather than spliced into the
+// query. ParseFloat alone accepts NaN and the infinities, which would reach CubeAPM
+// as `duration:>=NaN`.
+func TestCubeAPMTraceRangeRejectsNonNumericValue(t *testing.T) {
+	for _, v := range []string{`1 | delete`, "NaN", "Inf", "+Inf", "-infinity"} {
+		_, err := cubeAPMTraceBaseQuery("", query.QueryWhereClause{
+			Binary: query.BinaryWhereClause{"duration_ns": {query.Gte: v}},
+		}, "")
+		if err == nil {
+			t.Errorf("range bound %q must be rejected", v)
+		}
+	}
+}
+
+// A bound ParseFloat accepts in another spelling (hex, exponent) is rendered as the
+// plain decimal it denotes, so CubeAPM only ever sees a form it is known to parse.
+func TestCubeAPMTraceRangeRendersPlainDecimal(t *testing.T) {
+	for v, want := range map[string]string{"0x1p3": `duration:>=8`, "5e+06": `duration:>=5000000`} {
+		got := mustTraceBase(t, query.QueryWhereClause{
+			Binary: query.BinaryWhereClause{"duration_ns": {query.Gte: v}},
+		}, "")
+		if !strings.Contains(got, want) {
+			t.Errorf("bound %q: query %q is missing %q", v, got, want)
+		}
+	}
+}
+
+// The exact where clause the SLO page's Latency Traces tab sends. A span names its
+// callee but carries no callee namespace, so destination_workload_namespace must be
+// dropped — rendered as a field, it matched nothing and blanked the tab.
+func TestCubeAPMTraceSLOLatencyWhere(t *testing.T) {
+	where := query.QueryWhereClause{Binary: query.BinaryWhereClause{
+		"destination_workload_namespace": {query.In: []any{"demo"}},
+		"destination_workload_name":      {query.In: []any{"flagd"}},
+		"duration_ns":                    {query.Gte: float64(5000000)},
+	}}
+	src := &CubeAPMTraceSource{}
+	for name, w := range map[string]query.QueryWhereClause{
+		"canonical":              where,
+		"after upstream mapping": convertWhereClauseWithMApping(where, src.GetLabelMapping()),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := mustTraceBase(t, w, "")
+			for _, want := range []string{`duration:>=5000000`, `peer.service:="flagd"`, `server.address:="flagd"`} {
+				if !strings.Contains(got, want) {
+					t.Errorf("query %q is missing %q", got, want)
+				}
+			}
+			if strings.Contains(got, "destination_workload_namespace") || strings.Contains(got, "duration_ns") {
+				t.Errorf("query %q filters on a field CubeAPM spans do not carry", got)
+			}
+		})
 	}
 }
 
@@ -258,11 +342,52 @@ func TestBuildCubeAPMTraceGroupQuery(t *testing.T) {
 		`count() if (status_code:=ERROR) error_count`,
 		`quantile(0.95, duration) p95`,
 		`quantile(0.99, duration) p99`,
+		`max(duration) max_duration`,
+		`avg(duration) avg_duration`,
 		`| sort by (count desc) | limit 10`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("group query %q is missing %q", got, want)
 		}
+	}
+	// The grouped view must never ask CubeAPM for a summed duration: the response field
+	// it feeds is an average, and a sum there reads as minutes on a group of fast spans.
+	if strings.Contains(got, "sum(duration)") {
+		t.Errorf("group query selects a summed duration: %q", got)
+	}
+}
+
+func TestBuildCubeAPMTraceGroupQuerySort(t *testing.T) {
+	tests := []struct {
+		name    string
+		orderBy []query.QueryOrderBy
+		want    string
+	}{
+		{"default", nil, "| sort by (count desc)"},
+		// The API's "duration_ns" is the grouped average, so it must sort on the average
+		// aggregate -- not on max_duration, and not on a summed duration.
+		{"avg duration", []query.QueryOrderBy{{Column: "duration_ns", Order: "desc"}}, "| sort by (avg_duration desc)"},
+		{"avg duration asc", []query.QueryOrderBy{{Column: "duration_ns", Order: "asc"}}, "| sort by (avg_duration asc)"},
+		{"p99", []query.QueryOrderBy{{Column: "p99_latency", Order: "desc"}}, "| sort by (p99 desc)"},
+		{"p95", []query.QueryOrderBy{{Column: "p95_latency", Order: "desc"}}, "| sort by (p95 desc)"},
+		{"max", []query.QueryOrderBy{{Column: "max_latency", Order: "desc"}}, "| sort by (max_duration desc)"},
+		{"error count", []query.QueryOrderBy{{Column: "error_count", Order: "desc"}}, "| sort by (error_count desc)"},
+		// A column this source does not aggregate keeps the busiest group first rather
+		// than sorting on a stats alias that is not in the pipeline.
+		{"unknown column", []query.QueryOrderBy{{Column: "http_status_code", Order: "asc"}}, "| sort by (count desc)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := buildCubeAPMTraceGroupQuery(TracesV3Request{
+				QueryRequest: TracesQueryBuilderRequest{OrderBy: tt.orderBy, Limit: 10},
+			}, "")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !strings.Contains(got, tt.want) {
+				t.Errorf("group query %q is missing %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -487,7 +612,7 @@ func TestCubeAPMTraceRowStatusFallsBackToErrorFlag(t *testing.T) {
 }
 
 func TestCubeAPMTraceGroupRowToValues(t *testing.T) {
-	rows := decodeTraceRows(t, `{"count":"1538","service":"checkout","span_name":"sql.query","_resource.k8s.namespace.name":"payments","error_count":"3","p95":"1768549","p99":"2500000.5","max_duration":"10392193","total_duration":"1185111982"}`)
+	rows := decodeTraceRows(t, `{"count":"1538","service":"checkout","span_name":"sql.query","_resource.k8s.namespace.name":"payments","error_count":"3","p95":"1768549","p99":"2500000.5","max_duration":"10392193","avg_duration":"770554.6"}`)
 	g := cubeAPMTraceGroupRowToValues(rows[0])
 
 	if g.Count != 1538 || g.ErrorCount != 3 {
@@ -499,8 +624,12 @@ func TestCubeAPMTraceGroupRowToValues(t *testing.T) {
 	if g.WorkloadName != "checkout" || g.WorkloadNamespace != "payments" || g.SpanName != "sql.query" {
 		t.Errorf("dimensions = %q/%q/%q", g.WorkloadName, g.WorkloadNamespace, g.SpanName)
 	}
-	if g.DurationNS != 1185111982 {
-		t.Errorf("DurationNS = %d", g.DurationNS)
+	// The average, not the summed duration, and so never above the row's own max.
+	if g.DurationNS != 770554 {
+		t.Errorf("DurationNS = %d, want the group average 770554", g.DurationNS)
+	}
+	if g.DurationNS > g.MaxLatency {
+		t.Errorf("DurationNS %d exceeds MaxLatency %d", g.DurationNS, g.MaxLatency)
 	}
 }
 
@@ -1083,6 +1212,25 @@ func TestCubeAPMCount(t *testing.T) {
 	for _, tt := range tests {
 		if got := cubeAPMCount(tt.in); got != tt.want {
 			t.Errorf("cubeAPMCount(%v) = %d, want %d", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestCubeAPMFilterValues_NumbersStayDecimal(t *testing.T) {
+	tests := []struct {
+		in   any
+		want []string
+	}{
+		{float64(300000000), []string{"300000000"}},
+		{float64(0.5), []string{"0.5"}},
+		{[]any{float64(500), float64(1e21)}, []string{"500", "1000000000000000000000"}},
+		{7, []string{"7"}},
+		{"300ms", []string{"300ms"}},
+	}
+	for _, tt := range tests {
+		got := cubeAPMFilterValues(tt.in)
+		if strings.Join(got, ",") != strings.Join(tt.want, ",") {
+			t.Errorf("cubeAPMFilterValues(%v) = %v, want %v", tt.in, got, tt.want)
 		}
 	}
 }

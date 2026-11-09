@@ -17,6 +17,13 @@ import { Link } from '@ui/Link';
 import apiIntegrations from '@api1/integrations';
 import observability from '@api1/observability';
 import { ENCRYPTED_MASK } from '@api1/integrations/helpers';
+import {
+  joinConfigArray,
+  shouldShowField as sharedShouldShowField,
+  isFieldRequired as sharedIsFieldRequired,
+  getSortedFieldKeys as sharedGetSortedFieldKeys,
+  buildProbeConfigValues as sharedBuildProbeConfigValues,
+} from '@components/integrations/form/schemaForm';
 import { ds } from 'src/utils/colors';
 import CopyButton from '@shared/buttons/CopyButton';
 import { titleCase } from '@lib/formatter';
@@ -28,16 +35,18 @@ import CloudProviderIcon from '@shared/icons/CloudIcon';
 import apiTicketIntegrations from '@api1/tickets';
 import cache from '@lib/cache';
 import VmAgentCredentialsDialog from './VmAgentCredentialsDialog';
+import { buildWebhookUrl } from '@lib/webhookUrl';
 import { docsUrl } from '@lib/externalUrls';
 import ModelAliasList from '@components/common/forms/ModelAliasList';
 import LabelMappingCards, { parseLogLabelMappings, serializeLogLabelMappings } from './LabelMappingCards';
+import WebhookLabelHelpTooltip from './WebhookLabelHelpTooltip';
 import useLogFieldOptions, { fieldOptionsKey, indexForAccount } from './useLogFieldOptions';
 import DefaultFiltersCard, { emptyFilterCard, hasCardMissingAccount, parseDefaultFilters, serializeDefaultFilters } from './DefaultFiltersCard';
 import { TRACE_LABEL_ADVANCED_FIELDS, TRACE_LABEL_FIELDS } from '@components/common/settings/labelMapperFields';
 
 // Array-typed config fields travel as one comma-joined string in
 // integration_config_values; chips may be plain values or {label, value}.
-const joinConfigArray = (values) => values.map((v) => (v && typeof v === 'object' ? v.value : v)).join(',');
+// joinConfigArray moved to @components/integrations/form/schemaForm (imported above).
 
 // Group-header icon for the account dropdown — maps a group (the account's
 // cloud_provider: K8S/AWS/Azure/GCP) to its provider icon. Same pattern as the
@@ -523,7 +532,7 @@ const IntegrationDynamicFormModal = ({
                   }
                 }
                 if (prop.is_encrypted && editData?.integration_config_values?.[key]) {
-                  initialValues[key] = '*************************************************';
+                  initialValues[key] = ENCRYPTED_MASK;
                 } else {
                   initialValues[key] = val;
                 }
@@ -796,123 +805,16 @@ const IntegrationDynamicFormModal = ({
     });
   }, [editData]);
 
-  // Helper function to check if condition values match current value
-  const checkConditionMatch = (conditionValues, currentValue) => {
-    if (Array.isArray(conditionValues)) {
-      return conditionValues.includes(currentValue);
-    }
-    return conditionValues === currentValue;
-  };
+  // Conditional-field machinery lives in @components/integrations/form/schemaForm
+  // (moved verbatim; the closure variables became parameters). These wrappers
+  // bind this modal's config/formValues back in so every call site below is
+  // unchanged.
+  const shouldShowField = (_key, field, valuesOverride, _visiting) =>
+    sharedShouldShowField(config, valuesOverride || formValues, _key, field, _visiting);
 
-  // Helper function to check if a field should be visible
-  const shouldShowField = (_key, field, valuesOverride, _visiting) => {
-    const values = valuesOverride || formValues;
-    if (field.hidden) {
-      return false;
-    }
-    // Always show fields without show_when or required_when conditions
-    if (!field.show_when && !field.required_when) {
-      return true;
-    }
+  const isFieldRequired = (key, field) => sharedIsFieldRequired(config, formValues, key, field);
 
-    // Helper to check that a dependency field is itself visible (with recursion guard)
-    const isDependencyVisible = (conditionKey) => {
-      const depField = config?.properties?.[conditionKey];
-      if (!depField) return true; // unknown field, assume visible
-      // Prevent infinite recursion: if we're already checking this key up the call stack
-      if (_visiting && _visiting.has(conditionKey)) return true;
-      const visiting = new Set(_visiting || []);
-      visiting.add(_key);
-      return shouldShowField(conditionKey, depField, values, visiting);
-    };
-
-    let shouldShow = false;
-    // Check show_when conditions (all must be satisfied)
-    if (field.show_when) {
-      shouldShow = true;
-      for (const [conditionKey, conditionValues] of Object.entries(field.show_when)) {
-        if (!isDependencyVisible(conditionKey)) {
-          shouldShow = false;
-          break;
-        }
-        const currentValue = values[conditionKey];
-        if (!checkConditionMatch(conditionValues, currentValue)) {
-          shouldShow = false;
-          break;
-        }
-      }
-    }
-
-    // Check required_when conditions (all must be satisfied)
-    if (field.required_when) {
-      let allRequiredConditionsMet = true;
-      for (const [conditionKey, conditionValues] of Object.entries(field.required_when)) {
-        if (!isDependencyVisible(conditionKey)) {
-          allRequiredConditionsMet = false;
-          break;
-        }
-        const currentValue = values[conditionKey];
-        if (!checkConditionMatch(conditionValues, currentValue)) {
-          allRequiredConditionsMet = false;
-          break;
-        }
-      }
-      if (allRequiredConditionsMet) {
-        shouldShow = true;
-      }
-    }
-
-    return shouldShow;
-  };
-
-  // Helper function to check if a field is required based on current form state
-  const isFieldRequired = (key, field) => {
-    // account_id and integration_config_name are always required
-    if (key === 'account_id' || key === 'integration_config_name') return true;
-
-    // Check if it's in the base required array
-    const isBaseRequired = config.required?.includes(key);
-
-    // Check required_when conditions (all must be satisfied)
-    if (field.required_when) {
-      let allRequiredConditionsMet = true;
-      for (const [conditionKey, conditionValues] of Object.entries(field.required_when)) {
-        // If the dependency field is hidden, the required condition is not met
-        const depField = config?.properties?.[conditionKey];
-        if (depField && !shouldShowField(conditionKey, depField)) {
-          allRequiredConditionsMet = false;
-          break;
-        }
-        const currentValue = formValues[conditionKey];
-        if (!checkConditionMatch(conditionValues, currentValue)) {
-          allRequiredConditionsMet = false;
-          break;
-        }
-      }
-      if (allRequiredConditionsMet) {
-        return true;
-      }
-    }
-
-    return isBaseRequired;
-  };
-
-  // Helper function to sort fields by priority (highest first)
-  const getSortedFieldKeys = () => {
-    const visibleFields = Object.keys(config?.properties || {}).filter((key) => shouldShowField(key, config.properties[key]));
-
-    return visibleFields.sort((a, b) => {
-      const fieldA = config.properties[a];
-      const fieldB = config.properties[b];
-
-      // Get priority values, default to 0 if not specified
-      const priorityA = fieldA.priority || 0;
-      const priorityB = fieldB.priority || 0;
-
-      // Sort in descending order (highest priority first)
-      return priorityB - priorityA;
-    });
-  };
+  const getSortedFieldKeys = () => sharedGetSortedFieldKeys(config, formValues);
 
   const renderAdvancedToggle = () => (
     <Box
@@ -1271,7 +1173,6 @@ const IntegrationDynamicFormModal = ({
       return false;
     }
 
-    const ENCRYPTED_MASK = '*************************************************';
     const patternErrors = {};
     for (const key of filledKeys) {
       const field = config.properties[key];
@@ -1309,7 +1210,7 @@ const IntegrationDynamicFormModal = ({
       const currentValue = formValues[key];
 
       // For encrypted fields, if value is masked, it hasn't changed
-      if (field?.is_encrypted && currentValue === '*************************************************') {
+      if (field?.is_encrypted && currentValue === ENCRYPTED_MASK) {
         return false;
       }
 
@@ -1321,35 +1222,10 @@ const IntegrationDynamicFormModal = ({
     return !testableFieldChanged;
   };
 
-  // Build the config-values payload for connectivity / index probes: booleans and
-  // integers stringified; untyped encrypted secrets sent as the stored ciphertext
-  // with is_encrypted=true (omit-to-keep). Shared by Test Connection and the ES
-  // index fetch.
-  const buildProbeConfigValues = () => {
-    const { account_id: _a, integration_config_name: _n, account_mapping: _m, ...restFormValues } = formValues;
-    return Object.entries(restFormValues).map(([key, value]) => {
-      const field = config.properties?.[key];
-      const fieldType = field?.type;
-      let transformedValue = value;
-      if (fieldType === 'boolean' || fieldType === 'bool' || fieldType === 'integer') {
-        transformedValue = String(value);
-      } else if (field?.is_encrypted && editData?.integration_config_values?.[key] && value === ENCRYPTED_MASK) {
-        transformedValue = editData?.integration_config_values?.[key];
-      } else if (Array.isArray(value)) {
-        transformedValue = joinConfigArray(value);
-      }
-      return {
-        name: key,
-        // Both coerced, never left undefined. `&&` yields undefined when the schema
-        // carries no is_encrypted, and callers that inline this into a GraphQL string
-        // (gqlStringify) then emit the bare token `undefined`, which the Go decoder
-        // rejects with "expected type 'bool', got unconvertible type 'string'". The
-        // variables-based callers never saw it, because JSON.stringify drops undefined.
-        value: transformedValue ?? '',
-        is_encrypted: !!(field?.is_encrypted && editData?.integration_config_values?.[key] && value === ENCRYPTED_MASK),
-      };
-    });
-  };
+  // Probe payload builder lives in @components/integrations/form/schemaForm
+  // (moved verbatim; editData's config values became a parameter). Shared by
+  // Test Connection and the ES index fetch.
+  const buildProbeConfigValues = () => sharedBuildProbeConfigValues(config, formValues, editData?.integration_config_values);
 
   // One field-list probe shared by both Advanced Settings sections that need it:
   // Default Log Filters (which column to filter on) and Log Label Mapping (which field
@@ -1609,11 +1485,7 @@ const IntegrationDynamicFormModal = ({
         let transformedValue = value;
         if (fieldType === 'boolean' || fieldType === 'bool') {
           transformedValue = String(value);
-        } else if (
-          field?.is_encrypted &&
-          editData?.integration_config_values?.[key] &&
-          value === '*************************************************'
-        ) {
+        } else if (field?.is_encrypted && editData?.integration_config_values?.[key] && value === ENCRYPTED_MASK) {
           // User didn't re-enter the secret. Send empty so the backend preserves the stored value.
           transformedValue = '';
         }
@@ -1688,7 +1560,7 @@ const IntegrationDynamicFormModal = ({
       let transformedValue = value;
       if (fieldType === 'boolean' || fieldType === 'bool' || fieldType === 'integer') {
         transformedValue = String(value);
-      } else if (field?.is_encrypted && editData?.integration_config_values?.[key] && value === '*************************************************') {
+      } else if (field?.is_encrypted && editData?.integration_config_values?.[key] && value === ENCRYPTED_MASK) {
         transformedValue = editData?.integration_config_values?.[key];
       } else if (Array.isArray(value)) {
         transformedValue = joinConfigArray(value);
@@ -1696,10 +1568,7 @@ const IntegrationDynamicFormModal = ({
       return {
         name: key,
         value: transformedValue,
-        is_encrypted:
-          field?.is_encrypted && editData?.integration_config_values?.[key] && value === '*************************************************'
-            ? true
-            : false,
+        is_encrypted: field?.is_encrypted && editData?.integration_config_values?.[key] && value === ENCRYPTED_MASK ? true : false,
       };
     });
 
@@ -1944,7 +1813,8 @@ const IntegrationDynamicFormModal = ({
               const accessKey = configs.find((f) => f.name === 'access_key');
               const accessSecret = configs.find((f) => f.name === 'access_secret');
               if (accessKey && accessSecret) {
-                setVmAgentCredentials({ accessKey: accessKey.value, accessSecret: accessSecret.value });
+                // The agent is created on the first selected account (CreateProxyAgent).
+                setVmAgentCredentials({ accessKey: accessKey.value, accessSecret: accessSecret.value, accountId: normalizedAccountIds[0] });
                 setShowModal(true);
               } else {
                 handleCloseModal(true);
@@ -2084,6 +1954,21 @@ const IntegrationDynamicFormModal = ({
         'Add the following URL as a Webhook notification channel in SigNoz (Settings → Alert Channels → New Channel → Webhook). Alert rules Nudgebee creates in SigNoz notify the channels that use this URL',
     },
   };
+
+  // Lets a user reopen an already-created webhook integration and get its URL
+  // back — the one-time "here's your token" screen above only ever fires on
+  // first creation (`isNewCreation` in handleSubmit), so this is the only
+  // other place that URL is reachable in-form. `editData?.id` (not just
+  // `editData`, which the Add flow passes as `{}`) is what tells an edit row
+  // apart from a fresh one. `integration_config_values` here is already the
+  // flattened field=>value map `toDynamicFormEditData` builds, not the raw
+  // array `getWebhookToken` (ListIntegrations' table) reads — so the token is
+  // read directly rather than through that helper.
+  const existingWebhookUrl = useMemo(() => {
+    if (!editData?.id || !integrationName?.endsWith('_webhook')) return '';
+    const token = editData?.integration_config_values?.token;
+    return typeof token === 'string' ? buildWebhookUrl(integrationName, token) : '';
+  }, [editData, integrationName]);
 
   // List rows carry integrations_cloud_accounts / integration_config_values as
   // JSON strings; the edit row arrives already parsed. Accept either.
@@ -2349,6 +2234,7 @@ const IntegrationDynamicFormModal = ({
         onClose={() => handleCloseModal(true)}
         accessKey={vmAgentCredentials?.accessKey}
         accessSecret={vmAgentCredentials?.accessSecret}
+        accountId={vmAgentCredentials?.accountId}
       />
       <Modal
         handleClose={() => {
@@ -2466,6 +2352,24 @@ const IntegrationDynamicFormModal = ({
                 </Box>
               ) : (
                 <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[5] }}>
+                  {existingWebhookUrl && (
+                    <Box
+                      data-testid='existing-webhook-url'
+                      sx={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: ds.space[2],
+                        border: `1px solid ${ds.brand[200]}`,
+                        borderRadius: ds.radius.lg,
+                        p: ds.space[4],
+                      }}
+                    >
+                      <Typography sx={{ flex: 1, color: ds.gray[600], fontSize: 'var(--ds-text-body)', wordBreak: 'break-all' }}>
+                        {existingWebhookUrl}
+                      </Typography>
+                      <CopyButton text={existingWebhookUrl} size='sm' />
+                    </Box>
+                  )}
                   {webhookConfig[integrationName]?.learnMore && (
                     <Typography variant='body2' sx={{ fontSize: 'var(--ds-text-body)', color: ds.gray[400] }}>
                       Learn more about{' '}
@@ -2988,7 +2892,16 @@ const IntegrationDynamicFormModal = ({
                           <Box sx={{ display: 'flex', gap: ds.space[3], alignItems: 'flex-end', mb: ds.space[2] }}>
                             <Box sx={{ flex: 1 }}>
                               <Input
-                                label={condIdx === 0 ? 'Label name' : ''}
+                                label={
+                                  condIdx === 0 ? (
+                                    <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[1] }}>
+                                      Label name
+                                      <WebhookLabelHelpTooltip help={config.webhook_label_help} matchesValues />
+                                    </Box>
+                                  ) : (
+                                    ''
+                                  )
+                                }
                                 placeholder='e.g. env'
                                 value={cond.key}
                                 onChange={(value) => handleConditionChange(ruleIdx, condIdx, 'key', value)}
@@ -3071,9 +2984,13 @@ const IntegrationDynamicFormModal = ({
                     fontWeight: 'var(--ds-font-weight-medium)',
                     mt: ds.space[6],
                     mb: ds.space[2],
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: ds.space[1],
                   }}
                 >
                   Webhook Label Mapping (Optional)
+                  <WebhookLabelHelpTooltip help={config.webhook_label_help} />
                 </Typography>
                 <Typography
                   variant='body2'

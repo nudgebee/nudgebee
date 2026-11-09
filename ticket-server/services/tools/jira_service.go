@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -51,6 +52,21 @@ func (s *JiraService) AddComment(ctx *gin.Context, config models.TicketConfigura
 
 func (s *JiraService) GetComments(ctx *gin.Context, config models.TicketConfigurations, ticketID string) ([]models.Comments, error) {
 	return GetTicketComments(config, ticketID)
+}
+
+// GetAttachment streams a Jira attachment's bytes. The browser cannot fetch
+// Jira's attachment URL directly - it requires the same instance credentials
+// this request authenticates with, which only ticket-server holds.
+func (s *JiraService) GetAttachment(ctx *gin.Context, config models.TicketConfigurations, ticketID, attachmentID string) (string, io.ReadCloser, error) {
+	jc, err := clients.CreateJiraClient(config.AuthType, config.Username, config.Password, config.URL)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to create Jira client: %w", err)
+	}
+	resp, err := jc.Issue.DownloadAttachmentWithContext(ctx, attachmentID)
+	if err != nil {
+		return "", nil, fmt.Errorf("jira get attachment: %w", err)
+	}
+	return resp.Header.Get("Content-Type"), resp.Body, nil
 }
 
 func (s *JiraService) Get(ctx *gin.Context, config models.TicketConfigurations, ticketID string) (*models.Ticket, error) {
@@ -1004,6 +1020,33 @@ func GetTicketComments(config models.TicketConfigurations, ticketID string) ([]m
 	return fetchCommentsFromJira(ticketID, jc)
 }
 
+// jiraWikiImageRef matches Jira wiki-markup's embedded-object syntax, e.g.
+// "!screenshot.png!" or "!screenshot.png|thumbnail!". A matching reference is
+// replaced in place with an attachmentMarker (see fetchCommentsFromJira) so
+// the frontend can render the image where it actually was, not just append it
+// after the full comment text. A reference that doesn't resolve to a known
+// attachment is left as literal text.
+var jiraWikiImageRef = regexp.MustCompile(`!([^|!\s]+)(?:\|[^!]*)?!`)
+
+// jiraIssueAttachmentsByFilename fetches just the issue's attachment metadata
+// (not the full issue) and indexes it by filename, so wiki-markup refs like
+// "!screenshot.png!" in a comment body can be resolved to a downloadable
+// attachment ID. Returns nil (not an error) if the issue has none.
+func jiraIssueAttachmentsByFilename(ticketID string, jc *jira.Client) (map[string]*jira.Attachment, error) {
+	issue, _, err := jc.Issue.Get(ticketID, &jira.GetQueryOptions{Fields: "attachment"})
+	if err != nil {
+		return nil, err
+	}
+	if issue == nil || issue.Fields == nil || len(issue.Fields.Attachments) == 0 {
+		return nil, nil
+	}
+	byName := make(map[string]*jira.Attachment, len(issue.Fields.Attachments))
+	for _, a := range issue.Fields.Attachments {
+		byName[a.Filename] = a
+	}
+	return byName, nil
+}
+
 func fetchCommentsFromJira(ticketID string, jc *jira.Client) ([]models.Comments, error) {
 	const (
 		pageSize = 100
@@ -1014,6 +1057,13 @@ func fetchCommentsFromJira(ticketID string, jc *jira.Client) ([]models.Comments,
 	)
 	startAt := 0
 	var all []models.Comments
+
+	// A failure here shouldn't hide the comments that do load - just means
+	// wiki-markup image refs stay unresolved (comment text is unaffected).
+	attachmentsByName, err := jiraIssueAttachmentsByFilename(ticketID, jc)
+	if err != nil {
+		slog.Error("jira attachments: failed to list, comments will show without resolved images", "ticketID", ticketID, "error", err)
+	}
 
 	for page := 0; page < maxPages; page++ {
 		endpoint := fmt.Sprintf(
@@ -1038,11 +1088,26 @@ func fetchCommentsFromJira(ticketID string, jc *jira.Client) ([]models.Comments,
 		}
 
 		for _, c := range result.Comments {
+			var attachments []models.CommentAttachment
+			body := jiraWikiImageRef.ReplaceAllStringFunc(c.Body, func(ref string) string {
+				m := jiraWikiImageRef.FindStringSubmatch(ref)
+				att, ok := attachmentsByName[m[1]]
+				if !ok {
+					return ref
+				}
+				attachments = append(attachments, models.CommentAttachment{
+					ID:          att.ID,
+					Name:        att.Filename,
+					ContentType: att.MimeType,
+				})
+				return attachmentMarker(att.ID)
+			})
 			all = append(all, models.Comments{
-				Author:  c.Author.DisplayName,
-				Comment: c.Body,
-				Created: c.Created,
-				Updated: c.Updated,
+				Author:      c.Author.DisplayName,
+				Comment:     body,
+				Created:     c.Created,
+				Updated:     c.Updated,
+				Attachments: attachments,
 			})
 		}
 

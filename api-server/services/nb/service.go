@@ -327,13 +327,21 @@ func CleanupData(ctx *security.RequestContext, job ...string) {
 					cleanupBatchSize),
 			},
 			{
+				// The FK recommendation_resolution(recommendation_id) → recommendation is
+				// ON DELETE RESTRICT, so one referenced row fails the entire batch and
+				// aborts the run. Recommendations with a resolution are the PR / ticket
+				// history behind the Resolutions view, so they are intentionally retained
+				// (not cascade-deleted). idx_rr_recommendation_id keeps the anti-join cheap.
 				Name:      "recommendations_archive",
 				Metastore: database.Metastore,
 				Batched:   true,
 				Query: fmt.Sprintf(`WITH to_del AS (
-					SELECT id FROM recommendation
-					WHERE status = 'Archive'
-					  AND updated_at < now() - interval '%d days'
+					SELECT r.id FROM recommendation r
+					WHERE r.status = 'Archive'
+					  AND r.updated_at < now() - interval '%d days'
+					  AND NOT EXISTS (
+						SELECT 1 FROM recommendation_resolution rr WHERE rr.recommendation_id = r.id
+					  )
 					LIMIT %d
 				) DELETE FROM recommendation WHERE id IN (SELECT id FROM to_del)`,
 					config.Config.NBRetentionDaysRecommendationsArchive, cleanupBatchSize),

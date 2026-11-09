@@ -12,6 +12,7 @@ import type { WorkflowCreateRequest } from '@api1/workflow/types';
 import { parseHttpResponseBodyMessage } from 'src/utils/common';
 import { ds } from 'src/utils/colors';
 import { Toggle } from '@ui/Toggle';
+import { buildWorkflowRequestFromCode } from '../workflowExport';
 
 type CodeFormat = 'json' | 'yaml';
 
@@ -136,15 +137,27 @@ const CreateWorkflowFromCodeModal: React.FC<CreateWorkflowFromCodeModalProps> = 
       return;
     }
 
-    const tagsValid = parsed.tags && typeof parsed.tags === 'object' && !Array.isArray(parsed.tags);
+    // Refused rather than dropped: an optional field that is silently ignored is
+    // only noticed after the automation exists without it.
+    if (parsed.description != null && typeof parsed.description !== 'string') {
+      snackbar.error(`"description" must be a string`);
+      return;
+    }
+    if (
+      parsed.tags != null &&
+      (typeof parsed.tags !== 'object' || (Array.isArray(parsed.tags) && parsed.tags.some((tag: unknown) => typeof tag !== 'string')))
+    ) {
+      snackbar.error(`"tags" must be ${format === 'json' ? 'an object' : 'a mapping'} or a list of "key:value" strings`);
+      return;
+    }
+    if (parsed.status != null && typeof parsed.status !== 'string') {
+      snackbar.error(`"status" must be a string`);
+      return;
+    }
+
     const request: WorkflowCreateRequest = {
       account_id: accountId,
-      workflow: {
-        name: parsed.name,
-        definition: parsed.definition,
-        tags: tagsValid ? parsed.tags : {},
-        status: typeof parsed.status === 'string' ? parsed.status : undefined,
-      },
+      workflow: buildWorkflowRequestFromCode(parsed),
     };
 
     setSubmitting(true);
@@ -219,8 +232,8 @@ const CreateWorkflowFromCodeModal: React.FC<CreateWorkflowFromCodeModalProps> = 
           error={Boolean(parseError)}
         />
         <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400] }}>
-          The {formatLabel} must include a <strong>name</strong> string and a <strong>definition</strong> {containerWord}. <strong>tags</strong> and{' '}
-          <strong>status</strong> are optional.
+          The {formatLabel} must include a <strong>name</strong> string and a <strong>definition</strong> {containerWord}.{' '}
+          <strong>description</strong>, <strong>tags</strong> and <strong>status</strong> are optional.
         </Typography>
       </Box>
     </Modal>

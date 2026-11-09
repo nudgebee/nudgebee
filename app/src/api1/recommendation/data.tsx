@@ -8330,6 +8330,16 @@ Restart the instance (*Optional — skip if you want to start it yourself later*
         'Snapshot the volume if data needs to be preserved, then delete the unattached volume to eliminate unnecessary storage costs.',
       ],
     },
+    disk_performance_overprovisioned: {
+      title: 'Disk Performance Overprovisioned',
+      description:
+        'This disk is provisioned with more IOPS or throughput than its workload used at any point in the last 30 days. Provisioned performance is billed whether or not it is used, so the unused part is a cost with no benefit.',
+      recommendations: [
+        'Lower the disk to the recommended IOPS and throughput. They are set from the busiest interval observed, plus headroom, and never below the minimum the disk type allows.',
+        'Check the observed peak and the observation period shown on this recommendation against what you know of the workload before changing it. A job that runs less often than every 30 days will not appear in the peak.',
+        'NudgeBee cannot make this change for you. The saving shown is an estimate from list prices.',
+      ],
+    },
     storage_class_optimization: {
       title: 'Storage Class Optimization',
       description:

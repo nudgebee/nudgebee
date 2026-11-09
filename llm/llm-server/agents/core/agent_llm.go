@@ -170,6 +170,9 @@ func (l ClarificationAgent) GetPlannerType() AgentPlannerType {
 }
 
 func (l ClarificationAgent) Execute(ctx *security.RequestContext, request NBAgentRequest) (NBAgentResponse, error) {
+	if IsReadOnlyRun(ctx) {
+		return NBAgentResponse{Response: []string{ReadOnlyQuestionRefusal}, Status: ConversationStatusFailed}, nil
+	}
 
 	queryContext := request.QueryContext
 

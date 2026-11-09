@@ -66,10 +66,8 @@ func resolveModelProvider(model string) (provider schemas.ModelProvider, name st
 	// Explicit "provider/model" wins when the prefix is a known provider; otherwise
 	// the "/" is part of the model name (e.g. Gemini's "models/…") and we fall
 	// through to the prefix heuristic on the whole string.
-	if prefix, rest, found := strings.Cut(name, "/"); found && rest != "" {
-		if p, known := genericProviderAliases[strings.ToLower(prefix)]; known {
-			return p, rest, true
-		}
+	if p, rest, ok := explicitProvider(name); ok {
+		return p, rest, true
 	}
 	switch {
 	case hasAnyPrefix(name, "claude"):
@@ -80,6 +78,21 @@ func resolveModelProvider(model string) (provider schemas.ModelProvider, name st
 		return schemas.Gemini, name, true
 	}
 	return "", "", false
+}
+
+// explicitProvider splits a "provider/model" name whose first segment is a known provider
+// or alias, on the first "/" only: "openrouter/anthropic/claude-3.5-sonnet" is OpenRouter's
+// "anthropic/claude-3.5-sonnet". ok is false for any other name.
+func explicitProvider(name string) (provider schemas.ModelProvider, model string, ok bool) {
+	prefix, rest, found := strings.Cut(name, "/")
+	if !found || rest == "" {
+		return "", "", false
+	}
+	p, known := genericProviderAliases[strings.ToLower(prefix)]
+	if !known {
+		return "", "", false
+	}
+	return p, rest, true
 }
 
 // hasAnyPrefix reports whether s (case-insensitively) starts with any of prefixes.

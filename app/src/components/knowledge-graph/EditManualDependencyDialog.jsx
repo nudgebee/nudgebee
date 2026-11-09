@@ -103,8 +103,7 @@ const TOOLTIPS = {
   cluster: 'Optional. K8s cluster name. Use it when the same workload exists in more than one cluster.',
   resourceId:
     'Optional. Deterministic cloud identifier — AWS ARN, Azure resource ID, or GCP self-link. When set, this wins over name matching (most specific match possible).',
-  cloudAccount:
-    'Optional. Strict qualifier — currently AWS-only (Azure subscription_id / GCP project_id support is a deferred backend follow-up). For Azure / GCP, narrow via Region + Resource ID instead.',
+  cloudAccount: 'Optional. Strict qualifier — only nodes in this connected account match (AWS, GCP and Azure).',
   region: 'Optional. Cloud region (us-east-1, eastus, us-central1, …). Useful when the same logical resource exists in multiple regions.',
   relationship:
     'Edge type. CALLS for synchronous request/response. PUBLISHES_TO / SUBSCRIBES_TO for pub-sub (you must declare both directions; no automatic inverse).',

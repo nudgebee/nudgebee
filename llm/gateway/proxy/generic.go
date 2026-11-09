@@ -29,7 +29,7 @@ const chatCompletionsPath = "/v1/chat/completions"
 // from the model name (explicit "provider/model" or a well-known prefix); the
 // request is parsed into Bifrost's unified chat schema and dispatched through the
 // unified engine (so it can target any provider); and the response is returned in
-// the canonical OpenAI shape. The same auth + control pipeline (route → ratelimit →
+// the canonical OpenAI shape. The same auth + control pipeline (access → route → policy → ratelimit →
 // resolver → filter) and metering as the native mounts apply.
 func (h *handler) handleChat(c *gin.Context) {
 	start := time.Now()
@@ -53,7 +53,12 @@ func (h *handler) handleChat(c *gin.Context) {
 
 	identity := auth.FromContext(c)
 
-	requestedModel, streaming := parseBody(body)
+	requestedModel, streaming, bodyOK := parseBody(body)
+	if !bodyOK {
+		edgeerr.Write(c, edgeerr.OpenAI, http.StatusBadRequest, "invalid_request", unreadableBodyMessage)
+		h.recordReject(identity, schemas.OpenAI, "", c.Request.Method, chatCompletionsPath, http.StatusBadRequest, "unreadable_body", start)
+		return
+	}
 	// Resolution order — a tenant's explicit model mapping wins over built-in heuristics.
 	// Mappings select the exact integration account for every provider and are checked first;
 	// this also prevents a configured MaaS id like "google/gemma-…-maas" from being
@@ -93,6 +98,7 @@ func (h *handler) handleChat(c *gin.Context) {
 		Identity: identity, Provider: provider,
 		Model: model, Path: chatCompletionsPath, Body: body, Streaming: streaming,
 		DirectKey: mappedKey, DirectKeyURLPath: mappedKeyPath,
+		Endpoint: auth.EndpointChat, Generative: true, Generic: true,
 	}
 	rc.MappedModel = mappedModel
 	if stop, err := h.pipeline.Run(rc); err != nil {
@@ -188,12 +194,22 @@ func (h *handler) unaryChat(c *gin.Context, bctx *schemas.BifrostContext, rc *Re
 	// chat_template_kwargs) so passthrough-capable lanes forward them to the upstream.
 	applyChatExtraParams(&oaiReq, rc.Body)
 	sanitizeChatMetadata(&oaiReq) // OpenAI `metadata` must be string→string; strict providers (Vertex) 400 otherwise
-	breq := oaiReq.ToBifrostChatRequest(bctx)
+	breq := engineChatRequest(bctx, &oaiReq)
 	// Pin the routed target: the client addressed a model name; routing may have
 	// re-mapped it, and the provider is derived from that name, not the request body.
 	breq.Provider = rc.Provider
 	breq.Model = rc.Model
 	h.unaryChatWith(c, bctx, rm, breq)
+}
+
+// engineChatRequest converts a parsed OpenAI chat body for the engine. The converter carries
+// a body "fallbacks" list along, which the engine would try on any failure of the primary,
+// past every check policyStage made. The gateway fails over only to the routing decision's
+// fallbacks (docs/failover.md), which the policy has already pruned, so a client's are dropped.
+func engineChatRequest(bctx *schemas.BifrostContext, req *openai.OpenAIChatRequest) *schemas.BifrostChatRequest {
+	breq := req.ToBifrostChatRequest(bctx)
+	breq.Fallbacks = nil
+	return breq
 }
 
 // unaryChatWith dispatches a prebuilt chat request through the unified engine and
@@ -266,10 +282,34 @@ func (h *handler) handleModels(c *gin.Context) {
 		ServedModel string `json:"served_model,omitempty"`
 		Integration string `json:"integration,omitempty"`
 	}
-	tenantModels := resolveModelCatalog(auth.FromContext(c).TenantID)
+	identity := auth.FromContext(c)
+	if msg := identity.Access.Denial(time.Now()); msg != "" {
+		edgeerr.Write(c, edgeerr.OpenAI, http.StatusForbidden, "access_suspended", msg)
+		return
+	}
+	tenantModels := resolveModelCatalog(identity.TenantID)
 	data := make([]model, 0, len(genericModelCatalog)+len(tenantModels))
 	seen := make(map[string]bool, cap(data))
+	// A restricted user or key lists only what it may call, so a client picking from this list
+	// never picks a model the gateway will refuse.
+	allowed := func(provider, id string) bool {
+		if !identity.Restricted() {
+			return true
+		}
+		// A tier alias is judged by the model it routes to, as policyStage judges it.
+		if provider == "nudgebee" && h.router != nil {
+			d := h.router.Resolve(routing.Input{Model: id, TenantID: identity.TenantID, UserID: identity.UserID})
+			if d.Denied || d.ResolvedProvider == "" {
+				return false
+			}
+			provider, id = d.ResolvedProvider, d.ResolvedModel
+		}
+		return targetAllowed(identity, provider, id)
+	}
 	for _, m := range tenantModels {
+		if !allowed(string(m.Provider), m.ID) {
+			continue
+		}
 		data = append(data, model{
 			ID: m.ID, Object: "model", OwnedBy: string(m.Provider),
 			ServedModel: m.ServedModel, Integration: m.Integration,
@@ -282,7 +322,12 @@ func (h *handler) handleModels(c *gin.Context) {
 		if m.ownedBy == "nudgebee" && !config.Config.TiersEnabled {
 			continue
 		}
-		if seen[m.id] {
+		// A "provider/model" entry is judged as the target a /v1 request for it reaches.
+		provider, name := m.ownedBy, m.id
+		if p, n, ok := explicitProvider(m.id); ok {
+			provider, name = string(p), n
+		}
+		if seen[m.id] || !allowed(provider, name) {
 			continue
 		}
 		data = append(data, model{ID: m.id, Object: "model", OwnedBy: m.ownedBy})
@@ -305,7 +350,7 @@ func (h *handler) streamChat(c *gin.Context, bctx *schemas.BifrostContext, cance
 	}
 	applyChatExtraParams(&oaiReq, rc.Body)
 	sanitizeChatMetadata(&oaiReq) // OpenAI `metadata` must be string→string; strict providers (Vertex) 400 otherwise
-	breq := oaiReq.ToBifrostChatRequest(bctx)
+	breq := engineChatRequest(bctx, &oaiReq)
 	breq.Provider = rc.Provider
 	breq.Model = rc.Model
 	h.streamChatWith(c, bctx, cancel, rm, breq)

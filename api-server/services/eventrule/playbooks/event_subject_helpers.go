@@ -17,6 +17,11 @@ import (
 // SubjectPodNamespace extracts (name, namespace) for a pod-subject event.
 // Returns empty strings when the event's subject is not a pod.
 func SubjectPodNamespace(event PlaybookEvent) (string, string) {
+	// A node alert keeps the labels of the exporter pod that reported it, so its
+	// `pod` and `namespace` labels name the reporter, not a pod the alert is about.
+	if strings.EqualFold(event.SubjectType, "node") {
+		return "", ""
+	}
 	if !strings.EqualFold(event.SubjectType, "pod") {
 		// Trigger-matched k8s events set SubjectType="pod"; alertmanager alerts
 		// may not, so fall back to a "pod" label when present.

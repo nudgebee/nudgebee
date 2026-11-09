@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
-import { classifyAction, buildCatalog, normalizeModule, type PermissionClass } from '@lib/permissionCatalog';
+import { classifyAction, buildCatalog, normalizeModule, isTokenScopeBlockedAction, type PermissionClass } from '@lib/permissionCatalog';
 
 // Pull every action name from actions.yaml (+ the EE overlay) directly, so this
 // test stays decoupled from rpcRoutes internals and exercises the real action
@@ -88,6 +88,25 @@ describe('permissionCatalog', () => {
     'billing_list',
     'billing_list_usage_costs',
     'billing_aggregate',
+    // AI Gateway administration is tenant-admin only (#38963, #38965).
+    'llm_gateway_get_settings',
+    'llm_gateway_update_settings',
+    'llm_gateway_list_routing_rules',
+    'llm_gateway_create_routing_rule',
+    'llm_gateway_update_routing_rule',
+    'llm_gateway_delete_routing_rule',
+    'llm_gateway_list_tiers',
+    'llm_gateway_set_tier',
+    'llm_gateway_reset_tier',
+    'llm_gateway_list_models',
+    'llm_gateway_list_rate_limits',
+    'llm_gateway_upsert_rate_limit',
+    'llm_gateway_delete_rate_limit',
+    'llm_gateway_list_user_access',
+    'llm_gateway_upsert_user_access',
+    // Every key in the tenant, and revoking any of them, is tenant-admin only (#38965).
+    'users_list_tenant_tokens',
+    'users_delete_tenant_token',
   ];
 
   it('classifies every action in actions.yaml except the non-grantable ones', () => {
@@ -127,6 +146,37 @@ describe('permissionCatalog', () => {
     const customroles = buildCatalog(ACTION_NAMES).find((e) => e.module === 'customroles');
     expect(customroles).toBeDefined();
     expect(customroles!.classes).toEqual(['Read']);
+  });
+
+  it('keeps AI Gateway administration non-grantable and usage grantable', () => {
+    for (const name of [
+      'llm_gateway_get_settings',
+      'llm_gateway_update_settings',
+      'llm_gateway_list_routing_rules',
+      'llm_gateway_create_routing_rule',
+      'llm_gateway_update_routing_rule',
+      'llm_gateway_delete_routing_rule',
+      'llm_gateway_list_tiers',
+      'llm_gateway_set_tier',
+      'llm_gateway_reset_tier',
+      'llm_gateway_list_models',
+      'llm_gateway_list_rate_limits',
+      'llm_gateway_upsert_rate_limit',
+      'llm_gateway_delete_rate_limit',
+      'llm_gateway_list_user_access',
+      'llm_gateway_upsert_user_access',
+    ]) {
+      expect(classifyAction(name)).toBeNull();
+    }
+    for (const name of ['llm_gateway_aggregate_usage', 'llm_gateway_list_requests', 'llm_gateway_list_sessions', 'llm_gateway_get_request_body']) {
+      expect(classifyAction(name)).not.toBeNull();
+    }
+  });
+
+  it('keeps tenant-wide API key actions non-grantable', () => {
+    expect(classifyAction('users_list_tenant_tokens')).toBeNull();
+    expect(classifyAction('users_delete_tenant_token')).toBeNull();
+    expect(isTokenScopeBlockedAction('users_list_tenant_tokens')).toBe(true);
   });
 
   it('keeps non-grantable modules out of the catalog', () => {

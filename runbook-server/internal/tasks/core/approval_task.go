@@ -79,6 +79,9 @@ func (t *ApprovalTask) Execute(taskCtx types.TaskContext, params map[string]any)
 		if !ok || imProvider == "" {
 			return nil, fmt.Errorf("im_provider is required when approval_type is instant_message")
 		}
+		if notification.IsWebhookPlatform(imProvider) {
+			return nil, fmt.Errorf("a %s can't carry the approve and reject buttons; send the approval request through the Slack or Teams app", notification.PlatformName(imProvider))
+		}
 
 		imChannel, ok := params["im_channel"].(string)
 		if !ok || imChannel == "" {
@@ -122,6 +125,9 @@ func (t *ApprovalTask) Execute(taskCtx types.TaskContext, params map[string]any)
 			taskCtx.GetLogger().Error("Failed to send IM notification for approval", "error", err)
 			// We don't fail the task here because the primary purpose is to wait for approval,
 			// and the signal might still come through other means or the user might retry the notification.
+		} else if resp.Status == notification.StatusFailed || resp.Status == notification.StatusNotSent {
+			// Not failed either, for the same reason.
+			taskCtx.GetLogger().Warn("The approval request was not posted", "status", resp.Status, "reason", resp.Reason, "details", notification.NotDeliveredMessage(imProvider, imChannel, resp.Reason))
 		} else if resp.MessageTs != "" {
 			// Stash the originating IM coordinates as activity heartbeat data so
 			// CompleteApprovalTask can surface them in the task output for #29110

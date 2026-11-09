@@ -2,10 +2,12 @@ package observability
 
 import (
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"nudgebee/services/query"
 )
@@ -111,14 +113,56 @@ func tempoLiteral(attr, v string) string {
 		if strings.TrimSpace(v) == "" {
 			return "nil"
 		}
-		if _, err := strconv.ParseInt(v, 10, 64); err == nil {
+		if n, ok := tempoInteger(v); ok {
 			if attr == "duration" {
-				return v + "ns"
+				return n + "ns"
 			}
-			return v
+			return n
+		}
+		// duration_ns is canonical, but a caller may still say "300ms"; TraceQL only
+		// compares a duration with a duration, so a quoted string is a 400.
+		if d, err := time.ParseDuration(strings.TrimSpace(v)); attr == "duration" && err == nil {
+			return strconv.FormatInt(d.Nanoseconds(), 10) + "ns"
 		}
 	}
 	return strconv.Quote(v)
+}
+
+// tempoInteger reads an integer operand, accepting a whole number written as a float
+// ("3e+08", "300000000.0") — the form a JSON number takes once something has printed it.
+func tempoInteger(v string) (string, bool) {
+	v = strings.TrimSpace(v)
+	if _, err := strconv.ParseInt(v, 10, 64); err == nil {
+		return v, true
+	}
+	if f, err := strconv.ParseFloat(v, 64); err == nil && f == math.Trunc(f) && math.Abs(f) < 1<<63 {
+		return strconv.FormatInt(int64(f), 10), true
+	}
+	return "", false
+}
+
+// tempoLikePattern turns a SQL LIKE pattern into a regex body: `%` is any run, `_` any
+// one character, `\%` and `\_` are literals. TraceQL's =~ matches the whole value, so
+// LIKE's implicit anchoring needs nothing extra.
+func tempoLikePattern(p string) string {
+	var b strings.Builder
+	runes := []rune(p)
+	for i := 0; i < len(runes); i++ {
+		switch r := runes[i]; {
+		// Only `\%`, `\_` and `\\` are escapes (sqllike.go); any other backslash is a
+		// literal, so a Windows path like `C:\assets` keeps its separator.
+		case r == '\\' && i+1 < len(runes) && (runes[i+1] == '%' || runes[i+1] == '_' || runes[i+1] == '\\'):
+			b.WriteString(regexp.QuoteMeta(string(runes[i+1])))
+			i++
+		case r == '%':
+			b.WriteString(".*")
+		case r == '_':
+			b.WriteString(".")
+		default:
+			b.WriteString(regexp.QuoteMeta(string(r)))
+		}
+	}
+	return b.String()
 }
 
 func tempoJoin(parts []string, sep string) string {
@@ -148,6 +192,52 @@ func tempoStatusCondition(op query.BinaryWhereClauseType, values []string) (stri
 	return tempoJoin(parts, sep), nil
 }
 
+// tempoAttrKeyPattern is a plain dotted OTel attribute key, as the service map's label
+// filter sends it (http.method, k8s.namespace.name).
+var tempoAttrKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.\-]*$`)
+
+// tempoSpanAttributeConditions renders the service map's label filter, which arrives as
+// "spanattributes": {operator: {attribute: value}}. A key without a scope becomes the
+// unscoped ".key", which Tempo matches on either the span or the resource, so a label works
+// without knowing where the exporter put it; an already-scoped key is kept as is.
+func tempoSpanAttributeConditions(byOp map[query.BinaryWhereClauseType]any) ([]string, error) {
+	ops := make([]string, 0, len(byOp))
+	for op := range byOp {
+		ops = append(ops, string(op))
+	}
+	sort.Strings(ops)
+	var conds []string
+	for _, opName := range ops {
+		op := query.BinaryWhereClauseType(opName)
+		attrs, ok := byOp[op].(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("grafana tempo: spanattributes %q filter must map attribute names to values", op)
+		}
+		keys := make([]string, 0, len(attrs))
+		for key := range attrs {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			attr := key
+			if !tempoAttrPattern.MatchString(key) {
+				if !tempoAttrKeyPattern.MatchString(key) {
+					return nil, fmt.Errorf("grafana tempo: unsupported span attribute name %q", key)
+				}
+				attr = "." + key
+			}
+			cond, err := tempoCondition(attr, op, attrs[key])
+			if err != nil {
+				return nil, err
+			}
+			if cond != "" {
+				conds = append(conds, cond)
+			}
+		}
+	}
+	return conds, nil
+}
+
 func tempoCondition(attr string, op query.BinaryWhereClauseType, raw any) (string, error) {
 	values := cubeAPMFilterValues(raw)
 	if len(values) == 0 {
@@ -158,10 +248,21 @@ func tempoCondition(attr string, op query.BinaryWhereClauseType, raw any) (strin
 	}
 	plain := func(v string) string { return tempoLiteral(attr, v) }
 	contains := func(v string) string { return strconv.Quote("(?i).*" + regexp.QuoteMeta(v) + ".*") }
-	like := func(v string) string {
-		return strconv.Quote("(?i)" + strings.ReplaceAll(regexp.QuoteMeta(v), "%", ".*"))
+	like := func(v string) string { return strconv.Quote("(?i)" + tempoLikePattern(v)) }
+	// TraceQL anchors =~ at both ends, but the canonical _regex is a search ("contains
+	// regex match"): bare `pay` must match "payments", and `payment|ledger` both
+	// services. Wrapping keeps an explicit ^…$ meaning exactly what it says; (?s) lets
+	// the padding cross a newline in the value.
+	rx := func(v string) string { return strconv.Quote("(?s).*(?:" + v + ").*") }
+	if op == query.Regex || op == query.NRegex {
+		// Validate the pattern on its own: wrapped, an unbalanced `a)(b` would parse
+		// as a different, valid regex instead of failing.
+		for _, v := range values {
+			if _, err := regexp.Compile(v); err != nil {
+				return "", fmt.Errorf("grafana tempo: invalid regex %q for field %q: %w", v, attr, err)
+			}
+		}
 	}
-	rx := func(v string) string { return strconv.Quote(v) }
 	each := func(cmp string, lit func(string) string, sep string) string {
 		parts := make([]string, 0, len(values))
 		for _, v := range values {
@@ -212,6 +313,14 @@ func tempoWhereExpr(w query.QueryWhereClause) (string, error) {
 	sort.Strings(labels)
 	for _, label := range labels {
 		if tempoTraceUnsupportedFields[label] {
+			continue
+		}
+		if label == "spanattributes" {
+			conds, err := tempoSpanAttributeConditions(w.Binary[label])
+			if err != nil {
+				return "", err
+			}
+			parts = append(parts, conds...)
 			continue
 		}
 		attr, err := tempoAttrFor(label)

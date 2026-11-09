@@ -120,6 +120,24 @@ func (z ZenDutyWebhook) Category() core.IntegrationCategory {
 	return core.IntegrationCategoryIncidentWebhook
 }
 
+// WebhookLabelHelp describes the labels ProcessEventWebook builds. Update it with the parser.
+func (z ZenDutyWebhook) WebhookLabelHelp() core.WebhookLabelHelp {
+	return core.WebhookLabelHelp{
+		Summary: "The Zenduty service and alert source are always sent. The original alert's labels need a Labels: block in the incident summary, or the Zenduty integration linked.",
+		Labels: []core.WebhookLabelSource{
+			{Label: "nb_zenduty_service_name", Source: "incident.service.name"},
+			{Label: "nb_zenduty_service_id", Source: "incident.service.unique_id"},
+			{Label: "alert_source", Source: "incident.alert_source"},
+			{Label: "alert_type", Source: "incident.alert_type"},
+			{Label: "<alert label>", Source: "Labels: and Annotations: lines in incident.summary"},
+			{Label: "alertname", Source: "the original alert, read through the Zenduty API"},
+		},
+		Notes: []string{
+			"Zenduty tags, urgency and status are not labels.",
+		},
+	}
+}
+
 func (z ZenDutyWebhook) ConfigSchema() core.IntegrationSchema {
 	return core.IntegrationSchema{
 		Type:     core.ToolSchemaTypeObject,

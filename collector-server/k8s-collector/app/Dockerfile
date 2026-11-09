@@ -25,6 +25,15 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 # Stage 2: production
 FROM python-base AS production
+ARG IMAGE_VERSION=0.0.0
+ARG IMAGE_RELEASE=1
+LABEL name="nudgebee-k8s-collector" \
+      maintainer="nudgebee" \
+      vendor="nudgebee" \
+      version="${IMAGE_VERSION}" \
+      release="${IMAGE_RELEASE}" \
+      summary="Nudgebee Kubernetes collector" \
+      description="Receives and processes Kubernetes cluster data sent by Nudgebee agents."
 
 # The pinned nudgebee-python base is rebuilt infrequently, so its Alpine OS
 # packages drift behind security patches (openssl/libcrypto3/libssl3, musl,

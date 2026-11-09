@@ -244,6 +244,10 @@ const (
 	// contextKeyPreserveInput forbids evidence truncation, summarization, fallback and continuation for audits.
 	contextKeyPreserveInput LLMContextKey = "preserve_input"
 	contextKeyClaimUsageID  LLMContextKey = "claim_usage_id"
+	// contextKeyIterationsLeft is how many planning iterations a run whose answer
+	// is critiqued has left, counting the current one; set by the executor
+	// before each Plan.
+	contextKeyIterationsLeft LLMContextKey = "iterations_left"
 )
 
 var errPreservedPromptChanged = errors.New("complete evidence does not fit model input budget")
@@ -447,6 +451,10 @@ type retryContext struct {
 	// getLLMApiKey — resolve the SAME tier-specific key as the client-build
 	// path, instead of dropping the tier and falling back to the global key.
 	resolution *LLMConfigResolution
+	// Live status shown in the chat while this call retries (see llm_live_status.go).
+	liveStatusSet        bool
+	liveConfigName       string
+	liveConfigNameLoaded bool
 }
 
 func GetLLMNumTokensFromStringMessages(context *security.RequestContext, messages []string, provider string, model string) (numTokens int) {
@@ -526,7 +534,7 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 	llm, err := newLLMModel(provider, model, agentName, agentName != "", accountId, res)
 	if err != nil {
 		ctx.GetLogger().Error("Failed to initialize LLM model", "error", err, "agentName", agentName, "provider", provider, "model", model)
-		return nil, ErrLlmUnableToGenerate(err)
+		return nil, newLLMFailure(ctx, ErrLlmUnableToGenerate(err), accountId, provider, model, res)
 	}
 
 	// Optimize chunk size to reduce continuation attempts.
@@ -690,7 +698,7 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 			recordTokenUsageFailure(ctx, conversationId, messageId, agentId, agentName,
 				provider, model, accountId, userId, callMetadata, err)
 		}
-		return nil, err
+		return nil, newLLMFailure(ctx, err, accountId, provider, model, res)
 	}
 
 	// Add safety check for nil completion (should not happen after retry logic)
@@ -843,7 +851,7 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 			"nonCachedTokens", totalTokenInfo.InputTokens-totalTokenInfo.CacheReadTokens,
 			"outputTokens", totalTokenInfo.OutputTokens,
 			"totalInputTokens", totalTokenInfo.InputTokens,
-			"cacheHitRate", fmt.Sprintf("%.1f%%", float64(totalTokenInfo.CacheReadTokens)/float64(totalTokenInfo.InputTokens)*100))
+			"cacheHitRate", fmt.Sprintf("%.1f%%", float64(totalTokenInfo.CacheReadTokens)/float64(PromptTokens(provider, totalTokenInfo.InputTokens, totalTokenInfo.CacheCreationTokens))*100))
 	}
 
 	// Extract content from completion
@@ -1342,7 +1350,8 @@ func resolveThinkingBudget(tier ModelTier) int {
 	switch tier {
 	case ModelTierReasoning:
 		tierBudget = config.Config.LlmThinkingBudgetReasoning
-	case ModelTierSummary:
+	case ModelTierSummary, ModelTierClassification:
+		// Classification is a lightweight tier that otherwise resolves as summary.
 		tierBudget = config.Config.LlmThinkingBudgetSummary
 	default:
 		tierBudget = config.Config.LlmThinkingBudgetRetrieval
@@ -2029,6 +2038,8 @@ func tryFallbackModel(rc *retryContext, next FallbackModel, attempt int) (*llms.
 		return nil, errors.New("invalid or already tried model")
 	}
 
+	rc.setLiveFallback(next)
+
 	// Save current state before mutation
 	previousModel := rc.currentModel
 	previousLLM := rc.llm
@@ -2230,6 +2241,7 @@ func buildCallMetadata(rc *retryContext, success bool) *LLMCallMetadata {
 func handleTokenLimitError(rc *retryContext) (*llms.ContentResponse, *LLMCallMetadata, error) {
 	ctx := rc.ctx
 
+	rc.setLiveSummarising()
 	ctx.GetLogger().Info("STRATEGY 1: Token limit error detected, applying chunking with context preservation",
 		"agentId", rc.agentId,
 		"model", rc.currentModel,
@@ -2815,6 +2827,7 @@ func handleTransientError(rc *retryContext, maxAttempts int) (*llms.ContentRespo
 			"maxAttempts", maxAttempts,
 			"previousError", safeError(rc.lastErr))
 
+		rc.setLiveRetry(backoffDuration, attempt+1, maxAttempts)
 		time.Sleep(backoffDuration)
 
 		// Retry with original model
@@ -2979,6 +2992,7 @@ func generateLLMContentWithRetry(ctx *security.RequestContext, llm llms.Model, p
 		capabilities:     capabilities,
 		promptVariant:    promptVariant,
 	}
+	defer rc.clearLiveStatus()
 
 	// Use the provided resolution or resolve it now
 	if res == nil {
@@ -3097,7 +3111,14 @@ func generateLLMContentWithRetry(ctx *security.RequestContext, llm llms.Model, p
 	isSummarization, _ := rc.ctx.GetContext().Value(summarizationCtxKey).(bool)
 
 	// Route based on error type
-	if isTokenLimitError(rc.lastErr) {
+	if isAffordableWithFewerTokens(rc.lastErr) {
+		// A fallback's lower max_tokens can still fit the remaining credit.
+		return handleQuotaError(rc, fallbackModels, false, fallbackCauseQuota)
+	} else if kind := classifyLLMFailure(rc.lastErr); kind.NeedsSettingsFix() {
+		// Credits, keys and model names don't recover on retry.
+		ctx.GetLogger().Warn("Primary model needs a settings fix, skipping retries", "kind", string(kind), "model", rc.currentModel, "agentId", agentId)
+		return handleSettingsFixError(rc, fallbackModels, kind)
+	} else if isTokenLimitError(rc.lastErr) {
 		// STRATEGY 1: Token Limit → Chunking with Context Preservation
 		if isSummarization {
 			ctx.GetLogger().Error("Token limit error during summarization (recursive), cannot handle",
@@ -3140,6 +3161,7 @@ func generateLLMContentWithRetry(ctx *security.RequestContext, llm llms.Model, p
 				backoff := min(base+jitter, emptyResponseMaxBackoff)
 				ctx.GetLogger().Warn("Empty response backoff before retry",
 					"attempt", attempt, "backoff", backoff, "model", rc.currentModel)
+				rc.setLiveRetry(backoff, attempt+1, emptyResponseMaxRetries+1)
 				time.Sleep(backoff)
 			} else {
 				ctx.GetLogger().Warn("Empty response immediate retry",
@@ -3332,6 +3354,20 @@ func isQuotaError(err error) bool {
 		strings.Contains(errMsg, "resource exhausted")
 }
 
+// isOutOfCreditError matches provider billing exhaustion (Anthropic, OpenAI, OpenRouter wording).
+func isOutOfCreditError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsg := strings.ToLower(safeError(err))
+	for _, p := range []string{"credit balance is too low", "no credits remaining", "more credits", "available credits", "insufficient_quota"} {
+		if strings.Contains(errMsg, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // isTransientError checks if the error is temporary and might succeed on retry
 // This includes network issues, timeouts, and temporary server errors
 func isTransientError(err error) bool {
@@ -3489,6 +3525,11 @@ func classifyUserFacingLLMError(err error) error {
 	if err == nil {
 		return nil
 	}
+	// A failed model call already carries its own message.
+	var failure *LLMFailure
+	if errors.As(err, &failure) {
+		return err
+	}
 
 	// Idempotence: an error this function already produced is returned unchanged
 	// rather than re-derived from its own message text. The detectors below match
@@ -3507,9 +3548,13 @@ func classifyUserFacingLLMError(err error) error {
 		return ErrLLMRequestTooLarge
 	case errors.Is(err, ErrLLMServiceUnavailable):
 		return ErrLLMServiceUnavailable
+	case errors.Is(err, ErrLLMOutOfCredit):
+		return ErrLLMOutOfCredit
 	}
 
 	switch {
+	case isOutOfCreditError(err): // before quota: OpenAI sends it as a 429
+		return ErrLLMOutOfCredit
 	case isQuotaError(err):
 		// Specialised by which limit the provider named, so a daily cap isn't
 		// answered with "wait a moment". Falls back to the plain sentinel when
@@ -3764,7 +3809,7 @@ func trackTokenUsage(
 			"cacheCreationTokens", tokenInfo.CacheCreationTokens,
 			"nonCachedTokens", tokenInfo.InputTokens-tokenInfo.CacheReadTokens,
 			"outputTokens", tokenInfo.OutputTokens,
-			"cacheSavings", fmt.Sprintf("%.1f%%", float64(tokenInfo.CacheReadTokens)/float64(tokenInfo.InputTokens)*100))
+			"cacheSavings", fmt.Sprintf("%.1f%%", float64(tokenInfo.CacheReadTokens)/float64(PromptTokens(provider, tokenInfo.InputTokens, tokenInfo.CacheCreationTokens))*100))
 	}
 
 	// Parse agentId to check if it's a valid UUID (skip nil UUID which indicates a failed agent record creation)
@@ -3775,8 +3820,8 @@ func trackTokenUsage(
 
 	// Calculate cache hit rate
 	var cacheHitRate *float64
-	if tokenInfo.InputTokens > 0 && tokenInfo.CacheReadTokens > 0 {
-		rate := (float64(tokenInfo.CacheReadTokens) / float64(tokenInfo.InputTokens)) * 100
+	if prompt := PromptTokens(provider, tokenInfo.InputTokens, tokenInfo.CacheCreationTokens); prompt > 0 && tokenInfo.CacheReadTokens > 0 {
+		rate := (float64(tokenInfo.CacheReadTokens) / float64(prompt)) * 100
 		cacheHitRate = &rate
 	}
 
@@ -4008,12 +4053,10 @@ func cloneConfigMap(src map[string]string) map[string]string {
 // db:<uuid> source ids: GetAllConfiguredModels emits a pickable row per slot per
 // integration, and resolveFromPinnedSource accepts only ids present in this list.
 //
-// Visibility is integrations linked to this cloud account, plus this tenant's
-// integrations that are not linked to any account. Another tenant's integration
-// can never appear here, which is what makes the pin path tenant-safe without a
-// second authorization check. Note this is wider than what resolution will pick
-// on its own: an unlinked integration is offered here but is never selected
-// automatically — only by an explicit db:<uuid> pin.
+// Visibility is llmPickableForAccount: integrations linked to this cloud account,
+// this tenant's integrations linked to no account, and the tenant default.
+// Another tenant's integration can never appear here, which is what makes the
+// pin path tenant-safe without a second authorization check.
 // cloneIntegrations deep-copies cached integrations before they leave the
 // accessor. Slices and maps are reference types, so handing out the cached ones
 // makes every caller a potential cache mutator — and a write while another
@@ -4063,28 +4106,61 @@ func getLLMIntegrationsForAccount(ctx *security.RequestContext, accountId string
 		return nil, fmt.Errorf("getLLMIntegrationsForAccount: failed to get database manager: %w", err)
 	}
 
-	// i.name and icv.name are aliased apart — the scan below is positional, but
-	// two columns called "name" is a trap worth removing.
-	query := `SELECT i.id AS integration_id, i.name AS integration_name,
-					 icv.name AS config_key, icv.value AS config_value, icv.is_encrypted
-			  FROM integrations i
-			  JOIN integration_config_values icv ON i.id = icv.integration_id
+	// Which of these the account may pick is decided by llmPickableForAccount,
+	// so the flags come back with every row. Rows outside the tenant are never
+	// read unless they are linked to this account.
+	query := llmIntegrationRowsSelect + `
 			  WHERE i."type" = 'llm' AND i.status = 'enabled'
-				AND (EXISTS (SELECT 1 FROM integrations_cloud_accounts ia
-							 WHERE ia.integration_id = i.id AND ia.cloud_account_id = :ac_id)
-					 OR (i.tenant_id = :tenant_id
-						 AND NOT EXISTS (SELECT 1 FROM integrations_cloud_accounts ia
-										 WHERE ia.integration_id = i.id)))`
+				AND (i.tenant_id = :tenant_id
+					 OR EXISTS (SELECT 1 FROM integrations_cloud_accounts ia
+								WHERE ia.integration_id = i.id AND ia.cloud_account_id = :ac_id))`
 	params := map[string]any{"ac_id": accountId, "tenant_id": tenantParam}
+	integrations, err := queryLLMIntegrations(ctx, dbManager, query, params, llmPickableForAccount, accountId)
+	if err != nil {
+		return nil, fmt.Errorf("getLLMIntegrationsForAccount: %w", err)
+	}
 
+	llmIntegrationsCacheMutex.Lock()
+	llmIntegrationsCache[accountId] = struct {
+		integrations []llmIntegration
+		ts           time.Time
+	}{integrations: integrations, ts: time.Now()}
+	llmIntegrationsCacheMutex.Unlock()
+
+	slog.Debug("Loaded LLM integrations for account", "accountId", accountId, "count", len(integrations))
+	return integrations, nil
+}
+
+// llmIntegrationRowsSelect is the shared column list for queryLLMIntegrations:
+// one row per config value, with the flags llmCandidate needs. Callers append
+// the WHERE clause and bind :ac_id (use NULL when there is no account).
+// i.name and icv.name are aliased apart: the scan is positional, but two
+// columns called "name" is a trap worth removing.
+const llmIntegrationRowsSelect = `SELECT i.id AS integration_id, i.name AS integration_name,
+					 icv.name AS config_key, icv.value AS config_value, icv.is_encrypted,
+					 EXISTS (SELECT 1 FROM integrations_cloud_accounts ia
+							 WHERE ia.integration_id = i.id AND ia.cloud_account_id = :ac_id) AS linked,
+					 EXISTS (SELECT 1 FROM integrations_cloud_accounts ia
+							 WHERE ia.integration_id = i.id) AS has_accounts,
+					 EXISTS (SELECT 1 FROM integration_config_values d
+							 WHERE d.integration_id = i.id AND d.name = 'default_llm_provider' AND d.value = 'true') AS tenant_default
+			  FROM integrations i
+			  JOIN integration_config_values icv ON i.id = icv.integration_id`
+
+// queryLLMIntegrations runs a llmIntegrationRowsSelect query and keeps the
+// integrations `keep` accepts, decrypted and sorted by name then id so lists
+// built from them are stable.
+func queryLLMIntegrations(ctx *security.RequestContext, dbManager *common.DatabaseManager, query string,
+	params map[string]any, keep func(llmCandidate) bool, logId string) ([]llmIntegration, error) {
 	var rows *sqlx.Rows
+	var err error
 	if ctx != nil {
 		rows, err = dbManager.Db.NamedQueryContext(ctx.GetContext(), query, params)
 	} else {
 		rows, err = dbManager.Db.NamedQuery(query, params)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("getLLMIntegrationsForAccount: query failed for account %s: %w", accountId, err)
+		return nil, fmt.Errorf("query failed for %s: %w", logId, err)
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
@@ -4097,11 +4173,15 @@ func getLLMIntegrationsForAccount(ctx *security.RequestContext, accountId string
 		var id string
 		var integrationName, key, value sql.NullString
 		var isEncrypted sql.NullBool
-		if err := rows.Scan(&id, &integrationName, &key, &value, &isEncrypted); err != nil {
-			return nil, fmt.Errorf("getLLMIntegrationsForAccount: failed to scan row for account %s: %w", accountId, err)
+		var c llmCandidate
+		if err := rows.Scan(&id, &integrationName, &key, &value, &isEncrypted, &c.Linked, &c.HasAccounts, &c.TenantDefault); err != nil {
+			return nil, fmt.Errorf("failed to scan row for %s: %w", logId, err)
+		}
+		if !keep(c) {
+			continue
 		}
 		if !key.Valid || key.String == "" {
-			slog.Warn("LLM integration config: row has empty name; skipping", "accountId", accountId, "integrationId", id)
+			slog.Warn("LLM integration config: row has empty name; skipping", "scope", logId, "integrationId", id)
 			continue
 		}
 		plain := value.String
@@ -4109,7 +4189,7 @@ func getLLMIntegrationsForAccount(ctx *security.RequestContext, accountId string
 			decrypted, decErr := common.Decrypt(plain)
 			if decErr != nil {
 				slog.Warn("LLM integration config: failed to decrypt encrypted field; skipping row",
-					"error", decErr, "accountId", accountId, "integrationId", id, "key", key.String)
+					"error", decErr, "scope", logId, "integrationId", id, "key", key.String)
 				continue
 			}
 			plain = decrypted
@@ -4122,10 +4202,9 @@ func getLLMIntegrationsForAccount(ctx *security.RequestContext, accountId string
 		integ.Config[key.String] = plain
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("getLLMIntegrationsForAccount: failed iterating rows for account %s: %w", accountId, err)
+		return nil, fmt.Errorf("failed iterating rows for %s: %w", logId, err)
 	}
 
-	// Sorted so the model picker's row order is stable across calls.
 	integrations := make([]llmIntegration, 0, len(byId))
 	for _, integ := range byId {
 		integrations = append(integrations, *integ)
@@ -4136,16 +4215,28 @@ func getLLMIntegrationsForAccount(ctx *security.RequestContext, accountId string
 		}
 		return integrations[a].Id < integrations[b].Id
 	})
-
-	llmIntegrationsCacheMutex.Lock()
-	llmIntegrationsCache[accountId] = struct {
-		integrations []llmIntegration
-		ts           time.Time
-	}{integrations: integrations, ts: time.Now()}
-	llmIntegrationsCacheMutex.Unlock()
-
-	slog.Debug("Loaded LLM integrations for account", "accountId", accountId, "count", len(integrations))
 	return integrations, nil
+}
+
+// tenantWideLLMIntegrations is replaced in tests, which have no database.
+var tenantWideLLMIntegrations = getTenantWideLLMIntegrations
+
+// getTenantWideLLMIntegrations returns a tenant's enabled integrations that a
+// config saved with no accounts may reference: those linked to no account, and
+// the tenant default.
+func getTenantWideLLMIntegrations(ctx *security.RequestContext, tenantId string) ([]llmIntegration, error) {
+	if tenantId == "" {
+		return nil, nil
+	}
+	dbManager, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return nil, fmt.Errorf("getTenantWideLLMIntegrations: failed to get database manager: %w", err)
+	}
+	query := llmIntegrationRowsSelect + `
+			  WHERE i."type" = 'llm' AND i.status = 'enabled' AND i.tenant_id = :tenant_id`
+	params := map[string]any{"ac_id": nil, "tenant_id": tenantId}
+	keep := func(c llmCandidate) bool { return !c.HasAccounts || c.TenantDefault }
+	return queryLLMIntegrations(ctx, dbManager, query, params, keep, tenantId)
 }
 
 // fetchLLMIntegrationConfigByAccount queries LLM integration config linked to a specific cloud account.
@@ -4165,28 +4256,23 @@ func fetchLLMIntegrationConfigByAccount(ctx *security.RequestContext, dbManager 
 	return execLLMIntegrationConfigQuery(ctx, dbManager, query, map[string]any{"integration_id": integrationId}, accountId)
 }
 
-// selectAccountLLMIntegration picks which of an account's enabled LLM
-// integrations to resolve against, returning "" when there is no single answer.
-//
-// The choice is: the integration flagged default_llm_provider on its account
-// link row; otherwise the account's only enabled LLM integration, since linking
-// exactly one provider to an account is itself the operator's choice for it;
-// otherwise the tenant default provider when it is among the account's links,
-// because the integrations list shows that provider as "Default" for every
-// account it is linked to, whether or not the link row carries the flag.
-//
-// Every remaining no-single-answer shape ("several flagged", "several linked,
-// none flagged, tenant default not among them") falls through to ENV, the
-// documented final fallback, rather than guessing — picking one anyway would
-// silently bind an account to a credential its operator didn't choose.
+// selectAccountLLMIntegration picks the LLM integration an account resolves
+// against, returning "" to fall through to ENV. The rule lives in
+// chooseAccountLLMIntegration; this only loads the candidates: integrations
+// linked to the account, plus the account's tenant default whether or not it is
+// linked to the account.
 func selectAccountLLMIntegration(ctx *security.RequestContext, dbManager *common.DatabaseManager, accountId string) (string, error) {
-	// tenant_default mirrors the integration's own default_llm_provider config
-	// value, which the "Default LLM provider" checkbox keeps unique per tenant.
-	query := `SELECT i.id, ia.default_llm_provider, COALESCE(icv.value = 'true', false) AS tenant_default
+	query := `SELECT i.id,
+				  bool_or(ia.cloud_account_id IS NOT NULL) AS linked,
+				  bool_or(COALESCE(ia.default_llm_provider, false)) AS account_default,
+				  bool_or(COALESCE(icv.value = 'true', false)) AS tenant_default
 			  FROM integrations i
-			  JOIN integrations_cloud_accounts ia ON i.id = ia.integration_id
+			  LEFT JOIN integrations_cloud_accounts ia ON ia.integration_id = i.id AND ia.cloud_account_id = :ac_id
 			  LEFT JOIN integration_config_values icv ON icv.integration_id = i.id AND icv.name = 'default_llm_provider'
-			  WHERE i."type" = 'llm' AND i.status = 'enabled' AND ia.cloud_account_id = :ac_id`
+			  WHERE i."type" = 'llm' AND i.status = 'enabled'
+				AND (ia.cloud_account_id IS NOT NULL
+					 OR (icv.value = 'true' AND i.tenant_id = (SELECT tenant FROM cloud_accounts WHERE id = :ac_id)))
+			  GROUP BY i.id`
 	params := map[string]any{"ac_id": accountId}
 
 	var rows *sqlx.Rows
@@ -4206,45 +4292,20 @@ func selectAccountLLMIntegration(ctx *security.RequestContext, dbManager *common
 		}
 	}()
 
-	var all, defaults, tenantDefaults []string
+	var candidates []llmCandidate
 	for rows.Next() {
-		var id string
-		var isDefault sql.NullBool
-		var isTenantDefault bool
-		if err := rows.Scan(&id, &isDefault, &isTenantDefault); err != nil {
+		var c llmCandidate
+		if err := rows.Scan(&c.Id, &c.Linked, &c.AccountDefault, &c.TenantDefault); err != nil {
 			slog.Error("Failed to scan LLM integration row", "error", err, "accountId", accountId)
 			return "", err
 		}
-		all = append(all, id)
-		if isDefault.Valid && isDefault.Bool {
-			defaults = append(defaults, id)
-		}
-		if isTenantDefault {
-			tenantDefaults = append(tenantDefaults, id)
-		}
+		candidates = append(candidates, c)
 	}
 	if err := rows.Err(); err != nil {
 		slog.Error("iterating LLM integration rows", "error", err, "accountId", accountId)
 		return "", err
 	}
-
-	switch {
-	case len(defaults) == 1:
-		return defaults[0], nil
-	case len(defaults) > 1:
-		slog.Error("LLM config: account has multiple integrations flagged default; falling back to ENV",
-			"accountId", accountId, "defaultCount", len(defaults))
-		return "", nil
-	case len(all) == 1:
-		return all[0], nil
-	case len(tenantDefaults) == 1:
-		return tenantDefaults[0], nil
-	case len(all) > 1:
-		slog.Warn("LLM config: account has several enabled integrations, none flagged default and none the tenant default; falling back to ENV",
-			"accountId", accountId, "count", len(all))
-		return "", nil
-	}
-	return "", nil
+	return chooseAccountLLMIntegration(accountId, candidates), nil
 }
 
 // execLLMIntegrationConfigQuery runs a named query and scans results into a config map.

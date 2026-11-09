@@ -50,7 +50,7 @@ func RegisterAutoGenHandler(name string, h AutoGenHandler) {
 		slog.Warn("autogen: handler already registered, overwriting", "name", name)
 	}
 	autoGenHandlers[key] = h
-	slog.Info("autogen: registered handler", "name", name)
+	slog.Debug("autogen: registered handler", "name", name)
 }
 
 // GetAutoGenHandler returns the handler registered under name (case-insensitive).

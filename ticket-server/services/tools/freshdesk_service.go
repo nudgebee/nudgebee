@@ -47,6 +47,7 @@ func init() {
 // freshdeskAttachment is a file attachment returned on a ticket or a conversation.
 // AttachmentURL is a pre-signed, short-lived S3 URL fetchable without a Freshdesk key.
 type freshdeskAttachment struct {
+	ID            int64  `json:"id"`
 	Name          string `json:"name"`
 	ContentType   string `json:"content_type"`
 	Size          int64  `json:"size"`
@@ -89,6 +90,62 @@ type freshdeskConversation struct {
 }
 
 var freshdeskTicketIDRe = regexp.MustCompile(`^[0-9]+$`)
+
+// freshdeskInlineImageRe matches an <img> tag's src attribute. An image pasted
+// mid-reply in Freshdesk's editor (as opposed to attached as a file) is embedded
+// directly in the conversation's HTML body and never appears in its attachments
+// array - confirmed live (body_text and attachments both lose it entirely, only
+// body has it). This is the only way to recover it.
+var freshdeskInlineImageRe = regexp.MustCompile(`<img\b[^>]*\bsrc="([^"]+)"[^>]*>`)
+
+var (
+	freshdeskBrRe       = regexp.MustCompile(`(?i)<br\s*/?>`)
+	freshdeskBlockEndRe = regexp.MustCompile(`(?i)</(div|p)>`)
+	freshdeskTagRe      = regexp.MustCompile(`<[^>]*>`)
+	freshdeskBlankLines = regexp.MustCompile(`\n{3,}`)
+)
+
+// freshdeskBodyToTextWithMarkers converts a conversation's HTML body to plain
+// text, replacing each inline <img> with an attachmentMarker so the frontend
+// (routed through the same [[nb-attachment:<id>]] renderer as GitHub/Jira) can
+// show it in its original position instead of always trailing the comment.
+// Only called when the body actually contains an inline image (see GetComments)
+// - for the common case without one, body_text is used as-is, since this
+// regex-based HTML->text conversion is an approximation of Freshdesk's own and
+// isn't worth the risk of subtly reformatting every other comment.
+func freshdeskBodyToTextWithMarkers(bodyHTML string) (string, []models.CommentAttachment) {
+	matches := freshdeskInlineImageRe.FindAllStringSubmatchIndex(bodyHTML, -1)
+	if len(matches) == 0 {
+		return "", nil
+	}
+
+	attachments := make([]models.CommentAttachment, 0, len(matches))
+	var sb strings.Builder
+	last := 0
+	for i, m := range matches {
+		sb.WriteString(bodyHTML[last:m[0]])
+		id := fmt.Sprintf("fd-inline-%d", i+1)
+		sb.WriteString(attachmentMarker(id))
+		attachments = append(attachments, models.CommentAttachment{
+			ID:   id,
+			Name: fmt.Sprintf("inline-image-%d.png", i+1),
+			// Freshdesk's inline markup carries no real content type; every
+			// observed case is a pasted screenshot (PNG), and the frontend
+			// only uses this to decide image-vs-link rendering.
+			ContentType: "image/png",
+			URL:         html.UnescapeString(bodyHTML[m[2]:m[3]]),
+		})
+		last = m[1]
+	}
+	sb.WriteString(bodyHTML[last:])
+
+	text := freshdeskBrRe.ReplaceAllString(sb.String(), "\n")
+	text = freshdeskBlockEndRe.ReplaceAllString(text, "\n")
+	text = freshdeskTagRe.ReplaceAllString(text, "")
+	text = html.UnescapeString(text)
+	text = freshdeskBlankLines.ReplaceAllString(text, "\n\n")
+	return strings.TrimSpace(text), attachments
+}
 
 // validateFreshdeskTicketID rejects non-numeric ids so they can't rewrite the URL path.
 func validateFreshdeskTicketID(id string) error {
@@ -423,17 +480,41 @@ func (s *FreshdeskService) GetComments(ctx *gin.Context, config models.TicketCon
 		return nil, err
 	}
 
-	body, statusCode, err := freshdeskRequest(ctx, config, http.MethodGet, fmt.Sprintf("/tickets/%s/conversations?per_page=%d", ticketID, freshdeskListPageSize), nil)
-	if err != nil {
-		return nil, err
-	}
-	if statusCode != http.StatusOK {
-		return nil, freshdeskStatusError("get comments", statusCode, body)
-	}
-
+	// The conversations endpoint doesn't return a total count, so a short page
+	// (fewer than per_page entries) is the only signal that there's no more to
+	// fetch. freshdeskMaxConversationPages bounds the loop in case Freshdesk
+	// ever returns a full page forever.
+	const freshdeskMaxConversationPages = 100
 	var convs []freshdeskConversation
-	if err := json.Unmarshal(body, &convs); err != nil {
-		return nil, fmt.Errorf("freshdesk: unmarshal conversations: %w", err)
+	for page := 1; page <= freshdeskMaxConversationPages; page++ {
+		body, statusCode, err := freshdeskRequest(ctx, config, http.MethodGet,
+			fmt.Sprintf("/tickets/%s/conversations?per_page=%d&page=%d", ticketID, freshdeskListPageSize, page), nil)
+		// A failure fetching page 2+ shouldn't hide the conversations that did
+		// load (e.g. Freshdesk's undocumented deep-pagination cap on some list
+		// endpoints) - surface what we have instead of failing the whole thread.
+		if err != nil {
+			if page > 1 {
+				slog.Error("freshdesk: failed to fetch comments page, returning partial result", "ticketID", ticketID, "page", page, "error", err)
+				break
+			}
+			return nil, err
+		}
+		if statusCode != http.StatusOK {
+			if page > 1 {
+				slog.Error("freshdesk: comments page returned non-200, returning partial result", "ticketID", ticketID, "page", page, "statusCode", statusCode)
+				break
+			}
+			return nil, freshdeskStatusError("get comments", statusCode, body)
+		}
+
+		var pageConvs []freshdeskConversation
+		if err := json.Unmarshal(body, &pageConvs); err != nil {
+			return nil, fmt.Errorf("freshdesk: unmarshal conversations: %w", err)
+		}
+		convs = append(convs, pageConvs...)
+		if len(pageConvs) < freshdeskListPageSize {
+			break
+		}
 	}
 
 	comments := make([]models.Comments, 0, len(convs))
@@ -442,21 +523,39 @@ func (s *FreshdeskService) GetComments(ctx *gin.Context, config models.TicketCon
 		if author == "" && c.UserID != nil {
 			author = strconv.FormatInt(*c.UserID, 10)
 		}
-		text := c.BodyText
+		text, attachments := freshdeskBodyToTextWithMarkers(c.Body)
 		if text == "" {
-			text = c.Body
+			text = c.BodyText
+			if text == "" {
+				text = c.Body
+			}
 		}
 		if c.Private {
 			text = "[private note] " + text
 		}
+		for _, a := range c.Attachments {
+			attachments = append(attachments, models.CommentAttachment{
+				ID:          strconv.FormatInt(a.ID, 10),
+				Name:        a.Name,
+				ContentType: a.ContentType,
+				URL:         a.AttachmentURL,
+			})
+		}
 		comments = append(comments, models.Comments{
-			Author:  author,
-			Comment: text,
-			Created: c.CreatedAt,
-			Updated: c.UpdatedAt,
+			Author:      author,
+			Comment:     text,
+			Created:     c.CreatedAt,
+			Updated:     c.UpdatedAt,
+			Attachments: attachments,
 		})
 	}
 	return comments, nil
+}
+
+// GetAttachment is unimplemented: Freshdesk conversation attachments already carry
+// a direct, pre-signed AttachmentURL (see GetComments) - no proxy fetch is needed.
+func (s *FreshdeskService) GetAttachment(ctx *gin.Context, config models.TicketConfigurations, ticketID, attachmentID string) (string, io.ReadCloser, error) {
+	return "", nil, ticket.ErrNotSupported
 }
 
 // Create opens a new Freshdesk ticket. Freshdesk requires a requester (email or

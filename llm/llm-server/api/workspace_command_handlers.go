@@ -272,8 +272,18 @@ func resolveAwsWorkspaceTarget(ctx *security.RequestContext, req WorkspaceExecut
 	if requested != "" {
 		return tools.AccountTargetByName(ctx, req.AccountId, tools.ToolExecuteAwsCliCommand, requested)
 	}
+	// The shim forwards the account aws_execute chose (and bound the token to)
+	// as ConfigName, so it must win over the conversation's own account even
+	// when the own account sorts first.
+	if req.ConfigName != "" {
+		for _, target := range targets {
+			if strings.EqualFold(target.Name, req.ConfigName) {
+				return target, nil
+			}
+		}
+	}
 	for _, target := range targets {
-		if tools.TargetAccountID(target) == req.AccountId || req.ConfigName != "" && strings.EqualFold(target.Name, req.ConfigName) {
+		if tools.TargetAccountID(target) == req.AccountId {
 			return target, nil
 		}
 	}

@@ -99,28 +99,9 @@ export const revertTargetLabel = (resourceName) => {
   return kind ? `${kind} ${parts[1]}/${parts[2]}` : '';
 };
 
-// Recorded paths address list items by POSITION ("containers[1].env[2]"), and a revert is written at
-// that position. These mirror the server's conflict rules (event/service.go laterChangeConflict), so
-// the page never offers a rollback the server would refuse.
-
-/** Whether `ancestor` names a field or list item that contains `path`. */
-export const isPathAncestor = (ancestor, path) => path.startsWith(`${ancestor}.`) || path.startsWith(`${ancestor}[`);
-
-/**
- * Whether adding or removing the list item at `itemPath` ("…env[1]") moves an item `path` addresses
- * by position ("…env[2].value"): same list, at or before it.
- */
-export const shiftsListPosition = (itemPath, path) => {
-  const item = /^(.*)\[(\d+)\]$/.exec(itemPath);
-  if (!item) return false;
-  const [, list, changedAt] = item;
-  const positions = /\[(\d+)\]/g;
-  let match;
-  while ((match = positions.exec(path))) {
-    if (path.slice(0, match.index) === list) return Number(changedAt) <= Number(match[1]);
-  }
-  return false;
-};
+// The server prefixes a refusal with the subsystem that refused ("event resolution: …"). The operator
+// needs the sentence; one place strips it so a refusal reads the same before the click and after it.
+export const resolutionRefusalText = (reason) => String(reason || '').replace(/^event resolution:\s*/i, '');
 
 const snakeCase = (key) => key.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
 

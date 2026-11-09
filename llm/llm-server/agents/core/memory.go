@@ -48,6 +48,7 @@ var (
 		fact MemoryFact,
 		memType MemoryType,
 		confidence float64,
+		memoryWriteSucceeded bool,
 	) error {
 		return errors.New("memory-v2 unavailable in this build")
 	}
@@ -322,7 +323,19 @@ type MemoryExtractionStats struct {
 	Errors       int // save/dedup failures
 }
 
-func extractLongTermMemory(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest, response string, notebook string, toolCallCount int) MemoryExtractionStats {
+// memoryWriteSucceeded reports whether this turn saved something through the
+// memory_write tool. A refused call (Failed) does not count, so the extractor
+// still acts as the fallback for it.
+func memoryWriteSucceeded(invocations []ToolInvocation) bool {
+	for _, inv := range invocations {
+		if !inv.Failed && inv.Call.FunctionCall != nil && inv.Call.FunctionCall.Name == "memory_write" {
+			return true
+		}
+	}
+	return false
+}
+
+func extractLongTermMemory(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest, response string, notebook string, toolCallCount int, memoryWriteSucceeded bool) MemoryExtractionStats {
 	var stats MemoryExtractionStats
 	// A request that asked for no memory must not leave any behind either.
 	// Reading and writing are the same switch: a turn run with memory off is an
@@ -474,7 +487,7 @@ func extractLongTermMemory(ctx *security.RequestContext, agent NBAgent, request 
 					// shape-conversion, super-admin user-id rescue, and agent-module
 					// resolution live in memory_v2.go so this OSS-kept file never
 					// references memory.ExtractedFact.
-					if berr := recordExtractedFactViaMemoryV2Fn(ctx, agent, request, fact, memType, groundedConfidence(memType, toolCallCount)); berr != nil {
+					if berr := recordExtractedFactViaMemoryV2Fn(ctx, agent, request, fact, memType, groundedConfidence(memType, toolCallCount), memoryWriteSucceeded); berr != nil {
 						if errors.Is(berr, errMemoryRecordSkipped) {
 							// Intended grounding-gate skip (e.g. a Decisions fact
 							// without a user-agreement quote), not a save failure.

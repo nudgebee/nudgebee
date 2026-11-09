@@ -103,17 +103,23 @@ type UsageMetricsFilter struct {
 	UserID     string
 }
 
+// usageScopeWhere is the account + window scope every analyser screen and the
+// cost report share: calls that RAN in the window (t.created_at), for the
+// account their spend belongs to (t.conversation_account_id, the
+// conversation's account, copied onto each row) — the same attribution and
+// time base as budgets (#40241). idx_llm_token_usage_conv_account_created_at
+// (V992) serves it; scoping through llm_conversations instead would probe
+// every conversation the account ever had. Older rows get the column from the
+// usage-account backfill job (budget/account_backfill.go).
+const usageScopeWhere = "t.conversation_account_id = ANY($1::uuid[]) AND t.created_at >= $2 AND t.created_at <= $3"
+
 // buildWhere renders the WHERE condition (without the WHERE keyword) and the
 // positional args. account_id is cast to uuid[] on the param side so the
-// existing idx_llm_conversations_account_created_at index serves the scan.
+// index serves the scan.
 func (f UsageMetricsFilter) buildWhere() (string, []any) {
 	args := []any{pq.Array(f.AccountIDs), f.StartDate, f.EndDate}
 	n := 4
-	clauses := []string{
-		"c.account_id = ANY($1::uuid[])",
-		"c.created_at >= $2",
-		"c.created_at <= $3",
-	}
+	clauses := []string{usageScopeWhere}
 	addArray := func(col string, vals []string) {
 		if len(vals) > 0 {
 			clauses = append(clauses, fmt.Sprintf("%s = ANY($%d)", col, n))
@@ -150,8 +156,7 @@ func (f UsageMetricsFilter) buildWhere() (string, []any) {
 // filters). Used by the filters endpoint so dropdowns list every value present
 // in the window, independent of which other filters are currently selected.
 func (f UsageMetricsFilter) buildScopeWhere() (string, []any) {
-	return "c.account_id = ANY($1::uuid[]) AND c.created_at >= $2 AND c.created_at <= $3",
-		[]any{pq.Array(f.AccountIDs), f.StartDate, f.EndDate}
+	return usageScopeWhere, []any{pq.Array(f.AccountIDs), f.StartDate, f.EndDate}
 }
 
 // buildToolWhere renders the WHERE for the tool-usage aggregation (alias tc on
@@ -159,15 +164,19 @@ func (f UsageMetricsFilter) buildScopeWhere() (string, []any) {
 // model / provider / request_status columns, so only the dimensions it can reach —
 // account + date + source — are honoured here; the bar's model/provider/status
 // filters do NOT apply to tools (mirrors buildCacheStorageWhere ignoring the
-// dimensions the cache table lacks). Date scopes on c.created_at so the Tools tab
-// covers the same conversations as every other analyser screen.
+// dimensions the cache table lacks). Tool calls that ran in the window
+// (tc.created_at), in conversations with LLM calls in the window for the
+// account — the same call-time scope as every other analyser screen, found
+// through the usage index rather than every conversation the account had.
 func (f UsageMetricsFilter) buildToolWhere() (string, []any) {
 	args := []any{pq.Array(f.AccountIDs), f.StartDate, f.EndDate}
 	n := 4
 	clauses := []string{
-		"c.account_id = ANY($1::uuid[])",
-		"c.created_at >= $2",
-		"c.created_at <= $3",
+		`c.id IN (SELECT tu.conversation_id FROM llm_conversation_token_usage tu
+			WHERE tu.conversation_account_id = ANY($1::uuid[]) AND tu.created_at >= $2 AND tu.created_at <= $3
+				AND tu.conversation_id IS NOT NULL)`,
+		"tc.created_at >= $2",
+		"tc.created_at <= $3",
 	}
 	if len(f.Sources) > 0 {
 		clauses = append(clauses, fmt.Sprintf("c.source = ANY($%d)", n))
@@ -305,7 +314,9 @@ type totalsScan struct {
 	InputTokens       int64   `db:"input_tokens"`
 	OutputTokens      int64   `db:"output_tokens"`
 	CachedInputTokens int64   `db:"cached_input_tokens"`
-	Requests          int64   `db:"requests"`
+	// Cache writes for providers that keep them outside input (see promptTokens); hit-rate denominator only.
+	CacheWritesOutsideInput int64 `db:"cache_writes_outside_input"`
+	Requests                int64 `db:"requests"`
 }
 
 type groupScan struct {
@@ -314,9 +325,11 @@ type groupScan struct {
 	InputTokens       int64   `db:"input_tokens"`
 	OutputTokens      int64   `db:"output_tokens"`
 	CachedInputTokens int64   `db:"cached_input_tokens"`
-	Requests          int64   `db:"requests"`
-	Conversations     int     `db:"conversations"`
-	AvgLatencySeconds float64 `db:"avg_latency_seconds"`
+	// Cache writes for providers that keep them outside input (see promptTokens); hit-rate denominator only.
+	CacheWritesOutsideInput int64   `db:"cache_writes_outside_input"`
+	Requests                int64   `db:"requests"`
+	Conversations           int     `db:"conversations"`
+	AvgLatencySeconds       float64 `db:"avg_latency_seconds"`
 }
 
 func cacheHitPct(cached, input int64) float64 {
@@ -507,9 +520,11 @@ type gsScan struct {
 	InputTokens       int64   `db:"input_tokens"`
 	OutputTokens      int64   `db:"output_tokens"`
 	CachedInputTokens int64   `db:"cached_input_tokens"`
-	Requests          int64   `db:"requests"`
-	Conversations     int     `db:"conversations"`
-	AvgLatencySeconds float64 `db:"avg_latency_seconds"`
+	// Cache writes for providers that keep them outside input (see promptTokens); hit-rate denominator only.
+	CacheWritesOutsideInput int64   `db:"cache_writes_outside_input"`
+	Requests                int64   `db:"requests"`
+	Conversations           int     `db:"conversations"`
+	AvgLatencySeconds       float64 `db:"avg_latency_seconds"`
 }
 
 // runGroupedUsageSets computes the KPI totals AND the five join-free breakdowns
@@ -534,13 +549,14 @@ func (chat *ConversationDao) runGroupedUsageSets(where string, args []any) (Usag
 			COALESCE(SUM(t.input_tokens), 0)                 AS input_tokens,
 			COALESCE(SUM(t.output_tokens), 0)                AS output_tokens,
 			COALESCE(SUM(COALESCE(t.cached_input_tokens, 0)), 0) AS cached_input_tokens,
+			%s AS cache_writes_outside_input,
 			COUNT(*)                                         AS requests,
 			COUNT(DISTINCT c.id)                             AS conversations,
 			COALESCE(AVG(t.latency_seconds), 0)              AS avg_latency_seconds
 		%s
 		WHERE %s
 		GROUP BY GROUPING SETS ( (), (t.llm_model), (t.llm_provider), (c.source), (t.agent_name), (t.request_status) )`,
-		perCallCostExpr, cacheSavingsExpr, usageBaseFrom, where)
+		perCallCostExpr, cacheSavingsExpr, CacheWritesOutsideInputSQL, usageBaseFrom, where)
 
 	var scans []gsScan
 	if err := chat.dbManager.Db.Select(&scans, query, args...); err != nil {
@@ -562,7 +578,7 @@ func (chat *ConversationDao) runGroupedUsageSets(where string, args []any) (Usag
 				TotalInputTokens:       s.InputTokens,
 				TotalOutputTokens:      s.OutputTokens,
 				TotalCachedInputTokens: s.CachedInputTokens,
-				CacheHitRatePct:        cacheHitPct(s.CachedInputTokens, s.InputTokens),
+				CacheHitRatePct:        cacheHitPct(s.CachedInputTokens, s.InputTokens+s.CacheWritesOutsideInput),
 				TotalRequests:          s.Requests,
 			}
 			continue
@@ -588,7 +604,7 @@ func (chat *ConversationDao) runGroupedUsageSets(where string, args []any) (Usag
 			InputTokens:       s.InputTokens,
 			OutputTokens:      s.OutputTokens,
 			CachedInputTokens: s.CachedInputTokens,
-			CacheHitRatePct:   cacheHitPct(s.CachedInputTokens, s.InputTokens),
+			CacheHitRatePct:   cacheHitPct(s.CachedInputTokens, s.InputTokens+s.CacheWritesOutsideInput),
 			Requests:          s.Requests,
 			Conversations:     s.Conversations,
 			AvgLatencySeconds: s.AvgLatencySeconds,
@@ -625,8 +641,8 @@ func (chat *ConversationDao) breakdownForDimension(dim, where string, args []any
 			where, args, limit)
 	case "account":
 		return chat.runUsageBreakdown(
-			"COALESCE(ca.account_name, c.account_id::text)",
-			"LEFT JOIN cloud_accounts ca ON ca.id = c.account_id",
+			"COALESCE(ca.account_name, t.conversation_account_id::text)",
+			"LEFT JOIN cloud_accounts ca ON ca.id = t.conversation_account_id",
 			"", where, args, limit)
 	default:
 		return nil, fmt.Errorf("breakdownForDimension: invalid dimension %q", dim)
@@ -643,9 +659,10 @@ func (chat *ConversationDao) runUsageTotals(where string, args []any) (UsageTota
 			COALESCE(SUM(t.input_tokens), 0)                 AS input_tokens,
 			COALESCE(SUM(t.output_tokens), 0)                AS output_tokens,
 			COALESCE(SUM(COALESCE(t.cached_input_tokens, 0)), 0) AS cached_input_tokens,
+			%s AS cache_writes_outside_input,
 			COUNT(*)                                         AS requests
 		%s
-		WHERE %s`, perCallCostExpr, cacheSavingsExpr, usageBaseFrom, where)
+		WHERE %s`, perCallCostExpr, cacheSavingsExpr, CacheWritesOutsideInputSQL, usageBaseFrom, where)
 
 	var ts totalsScan
 	if err := chat.dbManager.Db.Get(&ts, query, args...); err != nil {
@@ -659,7 +676,7 @@ func (chat *ConversationDao) runUsageTotals(where string, args []any) (UsageTota
 		TotalInputTokens:       ts.InputTokens,
 		TotalOutputTokens:      ts.OutputTokens,
 		TotalCachedInputTokens: ts.CachedInputTokens,
-		CacheHitRatePct:        cacheHitPct(ts.CachedInputTokens, ts.InputTokens),
+		CacheHitRatePct:        cacheHitPct(ts.CachedInputTokens, ts.InputTokens+ts.CacheWritesOutsideInput),
 		TotalRequests:          ts.Requests,
 	}, nil
 }
@@ -720,6 +737,7 @@ func (chat *ConversationDao) runUsageBreakdown(keyExpr, extraJoins, extraWhere, 
 			COALESCE(SUM(t.input_tokens), 0)                 AS input_tokens,
 			COALESCE(SUM(t.output_tokens), 0)                AS output_tokens,
 			COALESCE(SUM(COALESCE(t.cached_input_tokens, 0)), 0) AS cached_input_tokens,
+			%s AS cache_writes_outside_input,
 			COUNT(*)                                         AS requests,
 			COUNT(DISTINCT c.id)                             AS conversations,
 			COALESCE(AVG(t.latency_seconds), 0)              AS avg_latency_seconds
@@ -728,7 +746,7 @@ func (chat *ConversationDao) runUsageBreakdown(keyExpr, extraJoins, extraWhere, 
 		WHERE %s%s
 		GROUP BY 1
 		ORDER BY cost_usd DESC%s`,
-		keyExpr, perCallCostExpr, usageBaseFrom, extraJoins, where, extraWhere, limitClause)
+		keyExpr, perCallCostExpr, CacheWritesOutsideInputSQL, usageBaseFrom, extraJoins, where, extraWhere, limitClause)
 
 	var scans []groupScan
 	if err := chat.dbManager.Db.Select(&scans, query, args...); err != nil {
@@ -744,7 +762,7 @@ func (chat *ConversationDao) runUsageBreakdown(keyExpr, extraJoins, extraWhere, 
 			InputTokens:       s.InputTokens,
 			OutputTokens:      s.OutputTokens,
 			CachedInputTokens: s.CachedInputTokens,
-			CacheHitRatePct:   cacheHitPct(s.CachedInputTokens, s.InputTokens),
+			CacheHitRatePct:   cacheHitPct(s.CachedInputTokens, s.InputTokens+s.CacheWritesOutsideInput),
 			Requests:          s.Requests,
 			Conversations:     s.Conversations,
 			AvgLatencySeconds: s.AvgLatencySeconds,
@@ -769,15 +787,15 @@ type tsScan struct {
 }
 
 // runUsageTimeSeries buckets cost + request count by date_trunc(granularity,
-// c.created_at) crossed with EACH stackable dimension (model/source/agent) in a
+// t.created_at) crossed with EACH stackable dimension (model/source/agent) in a
 // SINGLE scan via GROUP BY GROUPING SETS — the time analogue of
 // runGroupedUsageSets. granularity is interpolated only after the
 // usageGranularities whitelist check (a fixed date_trunc unit), never raw input;
-// every other value comes from the shared where/args. Bucketed on c.created_at
-// (conversation start) so the series reconciles with the KPI totals, which
+// every other value comes from the shared where/args. Bucketed on t.created_at
+// (when the call ran) so the series reconciles with the KPI totals, which
 // filter on the same column.
 func (chat *ConversationDao) runUsageTimeSeries(where string, args []any, granularity string) (*UsageTimeSeries, error) {
-	bucketExpr := fmt.Sprintf("date_trunc('%s', c.created_at)", granularity)
+	bucketExpr := fmt.Sprintf("date_trunc('%s', t.created_at)", granularity)
 	query := fmt.Sprintf(`
 		SELECT
 			%s                                      AS bucket,
@@ -1057,9 +1075,9 @@ func (chat *ConversationDao) GetUsageFilters(filter UsageMetricsFilter, readable
 		WHERE ca.id = ANY($1::uuid[]) AND ca.status = 'active'
 			AND (ca.id = ANY($4::uuid[]) OR EXISTS (
 				SELECT 1
-				FROM llm_conversations c
-				INNER JOIN llm_conversation_token_usage t ON t.conversation_id = c.id
-				WHERE c.account_id = ca.id AND c.created_at >= $2 AND c.created_at <= $3))
+				FROM llm_conversation_token_usage t
+				INNER JOIN llm_conversations c ON c.id = t.conversation_id
+				WHERE t.conversation_account_id = ca.id AND t.created_at >= $2 AND t.created_at <= $3))
 		ORDER BY name`
 	accounts := []UsageFilterOption{}
 	if err = chat.dbManager.Db.Select(&accounts, accountQuery,

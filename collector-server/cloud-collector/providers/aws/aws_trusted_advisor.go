@@ -1,6 +1,7 @@
 package aws
 
 import (
+	"errors"
 	"fmt"
 	"nudgebee/collector/cloud/providers"
 	"regexp"
@@ -271,7 +272,7 @@ func stringValue(s *string) string {
 }
 
 func (a *awsTrustedAdvisor) ApplyRecommendation(ctx providers.CloudProviderContext, account providers.Account, recommendation providers.Recommendation) error {
-	return nil
+	return errors.ErrUnsupported
 }
 
 func (a *awsTrustedAdvisor) ApplyCommand(ctx providers.CloudProviderContext, account providers.Account, command providers.ApplyCommandRequest) (providers.ApplyCommandResponse, error) {

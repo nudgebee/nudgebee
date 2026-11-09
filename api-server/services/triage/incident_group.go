@@ -70,13 +70,15 @@ const (
 	// topologyGroupingEnvFlag kills only the cross-service (stored-map) attach
 	// path; same-subject grouping keeps its own switch above.
 	topologyGroupingEnvFlag = "INCIDENT_TOPOLOGY_GROUPING"
-	// unlocatedGroupingEnvFlag kills the co-timing attach for alerts that have
-	// no position in the graph at all. Defaults on like the other two, so the
-	// narrowness has to come from the rule rather than from the switch: it fires
+	// unlocatedGroupingEnvFlag turns on the co-timing attach for alerts that
+	// have no position in the graph at all. Unlike the other two it defaults
+	// off: with nothing but the clock to go on, alarms that fire on a schedule
+	// (a job failing every ten minutes, an hourly check, a host pinned at high
+	// CPU) start within minutes of each other every hour and were filed under
+	// each other's incidents, whatever resource they were on. When on, it fires
 	// only when nothing else matched, only into an existing incident in the
-	// seed's own scope (namespace, or AWS as a whole) that began with the seed,
-	// and only when exactly one such incident exists. This is the flag to pull
-	// first if grouping ever looks too eager.
+	// seed's own scope (namespace, node, or a cloud account as a whole) that
+	// began with the seed, and only when exactly one such incident exists.
 	unlocatedGroupingEnvFlag = "INCIDENT_UNLOCATED_GROUPING"
 	// timingOnlyReasonPrefix starts the reason on every link written on timing
 	// alone. The path is counted and audited by it, and a firing that was linked
@@ -1400,12 +1402,12 @@ func topologyGroupingEnabled() bool {
 	return !strings.EqualFold(v, "false") && v != "0"
 }
 
-// unlocatedGroupingEnabled defaults to true; only an explicit "false"/"0"
-// disables, matching the other two grouping switches — a default-off flag
-// nobody flips leaves the path dead in config.
+// unlocatedGroupingEnabled defaults to false; only an explicit "true"/"1"
+// enables. See unlocatedGroupingEnvFlag for why this switch, unlike the other
+// two, is an opt-in.
 func unlocatedGroupingEnabled() bool {
 	v := strings.TrimSpace(os.Getenv(unlocatedGroupingEnvFlag))
-	return !strings.EqualFold(v, "false") && v != "0"
+	return strings.EqualFold(v, "true") || v == "1"
 }
 
 // attachUnlocatedIncident is the last resort for an alert that the graph cannot
@@ -1416,9 +1418,9 @@ func unlocatedGroupingEnabled() bool {
 // that prompted this ran on a host whose load balancer and target groups were
 // alarming in the same two minutes — it is that we have no edge to prove it.
 //
-// So this groups on co-timing. That is the weakest claim this file makes, and it
-// runs by default, so the narrowness lives in the rule: it refuses every case
-// where co-timing is not decisive.
+// So this groups on co-timing. That is the weakest claim this file makes, so it
+// is opt-in (unlocatedGroupingEnabled), and when on the narrowness lives in the
+// rule: it refuses every case where co-timing is not decisive.
 //
 //   - It runs only when the seed reached this point with no members of its own,
 //     and only for an alert the graph could not place (timingFallbackAllowed).

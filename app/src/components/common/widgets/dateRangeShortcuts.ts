@@ -23,3 +23,26 @@ const ROLLING = new Set(Object.values(TIME_ADJUSTMENTS));
 export function isRollingShortcut(shortcutClickTime: number): boolean {
   return ROLLING.has(shortcutClickTime);
 }
+
+/**
+ * The instant a held value names, in ms. The picker's own state is a number, but what a page seeds it with
+ * is whatever that page holds — a Date, a date string — and the fields already read all of them through
+ * `new Date(value)`. Nothing held is not an instant; `new Date(null)` would call it 1970.
+ */
+function instantOf(value: unknown): number {
+  if (value === null || value === undefined || value === '') return NaN;
+  return new Date(value as number | string | Date).getTime();
+}
+
+/**
+ * Why an absolute range cannot be applied, or '' when it can. The picker bounds each field against the
+ * calendar — not earlier than the retention floor, not in the future — but not against the other field,
+ * so a From after To can be picked and typed like any other value.
+ */
+export function rangeProblem(startTime: unknown, endTime: unknown): string {
+  const start = instantOf(startTime);
+  const end = instantOf(endTime);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return 'Enter a valid date and time in both fields.';
+  if (start >= end) return 'From must be earlier than To.';
+  return '';
+}

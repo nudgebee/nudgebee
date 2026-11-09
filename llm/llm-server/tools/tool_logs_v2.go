@@ -138,20 +138,45 @@ func (t *NBLogToolV2) Call(nbRequestContext core.NbToolContext, input core.NBToo
 	} else if t1, t2, ok := resolveWindowFromLabelsAt(nbRequestContext.QueryConfig.Labels, now.UTC()); ok {
 		start, end = t1.UTC(), t2.UTC()
 	}
+	requestedStart, requestedEnd := start, end
 	start, end = ExpandNarrowTimeWindow(nbRequestContext.Ctx.GetLogger(), start, end)
+	widened := !start.Equal(requestedStart) || !end.Equal(requestedEnd)
 
-	configs := map[string]any{
-		"end_time":   end.UnixMilli(),
-		"start_time": start.UnixMilli(),
-		"limit":      queryBuilder.Limit,
+	index := queryBuilder.Index
+	if index == "" {
+		index = logProvider.DefaultIndex
 	}
-	if queryBuilder.Index != "" {
-		configs["index"] = queryBuilder.Index
-	} else if logProvider.DefaultIndex != "" {
-		configs["index"] = logProvider.DefaultIndex
+	read := func(start, end time.Time) (core.ObservabilityLogResponse, error) {
+		configs := map[string]any{
+			"end_time":   end.UnixMilli(),
+			"start_time": start.UnixMilli(),
+			"limit":      queryBuilder.Limit,
+		}
+		if index != "" {
+			configs["index"] = index
+		}
+		return executeFetchLogsCanonical(nbRequestContext, logProvider, queryBuilder.Where, configs)
 	}
 
-	response, err := executeFetchLogsCanonical(nbRequestContext, logProvider, queryBuilder.Where, configs)
+	response, err := read(start, end)
+	if err == nil && widened && response.Coverage != nil {
+		if coverageSpans(response.Coverage, requestedStart, requestedEnd) {
+			// The widened read holds the whole requested window; say which
+			// window was asked for and which one was read.
+			response.Coverage.ReadStart = response.Coverage.RequestedStart
+			response.Coverage.ReadEnd = response.Coverage.RequestedEnd
+			response.Coverage.RequestedStart = requestedStart.UTC().Format(time.RFC3339)
+			response.Coverage.RequestedEnd = requestedEnd.UTC().Format(time.RFC3339)
+		} else {
+			// The read stopped at its limit inside the widening: the backend
+			// returns the newest lines first, so on a busy workload every line
+			// can come from after the requested window. Read that window alone.
+			nbRequestContext.Ctx.GetLogger().Info("logs_v2: widened read stopped short of the requested window, reading it alone",
+				"requested_start", requestedStart.Format(time.RFC3339), "requested_end", requestedEnd.Format(time.RFC3339))
+			start, end = requestedStart, requestedEnd
+			response, err = read(start, end)
+		}
+	}
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("logs_v2: unable to execute canonical query", "provider", logProvider.Provider, "error", err.Error())
 		return core.NBToolResponse{
@@ -186,6 +211,30 @@ func (t *NBLogToolV2) Call(nbRequestContext core.NbToolContext, input core.NBToo
 		Status:     core.NBToolResponseStatusSuccess,
 		References: []core.NBToolResponseReference{logsUIRef(nbRequestContext, queryBuilder)},
 	}, nil
+}
+
+// coverageSpans reports whether the lines of a read that stopped short reach
+// from start to end, so every line of that window was read. Both ends are
+// checked because the backend's read order is not known here: a newest-first
+// read covers the window when its oldest line is at or before start, an
+// oldest-first one when its newest line is at or after end. A newest-first
+// read of a window that ends now therefore never passes (its newest line is
+// before the widened end) and is read again; that costs a backend call, not
+// correctness. False when the span of the lines is unknown.
+//
+// Oldest and Newest are cut to the second, so the oldest line can be up to a
+// second later than Oldest says; it is only taken to reach start when that
+// whole second is before start.
+func coverageSpans(coverage *core.ObservabilityLogCoverage, start, end time.Time) bool {
+	oldest, err := time.Parse(time.RFC3339, coverage.Oldest)
+	if err != nil {
+		return false
+	}
+	newest, err := time.Parse(time.RFC3339, coverage.Newest)
+	if err != nil {
+		return false
+	}
+	return !oldest.Add(time.Second).After(start) && !newest.Before(end)
 }
 
 // noLogsFoundMessage builds the tool response body for a canonical query that ran

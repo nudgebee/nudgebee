@@ -115,18 +115,10 @@ func TriggerCisScanApi(tenantId, accountId, userId, jobName string) (string, err
 
 }
 
-func (m CisScanTool) InferToolRequestTypePrompt(ctx *security.RequestContext, toolName, input string) (string, error) {
-	prompt := `You are a knowledgeable and concise Kubernetes expert, acting as an SRE. Your primary tool is "trigger_cis_scan,". 
-
-	Based on provided command, you need to categorize it into one of the following types:
-	* read - Command can trigger a CIS scan
-
-	you should only return command type without any explanations and internal thoughts added added. If you are unable to identify command-type then return 'unknown'
-	
-	For example -
-	command - trigger a CIS scan
-	answer - read
-	reason - command is triggering a CIS scan
-	`
-	return prompt, nil
+// InferToolRequestType: this tool only starts Nudgebee's CIS scan, the same
+// scan job Nudgebee runs on its own schedule, and changes nothing the customer
+// owns, so it is always a read. (It used to ask an LLM with a prompt whose
+// only listed answer was "read".)
+func (m CisScanTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
+	return core.ToolRequestTypeRead, nil
 }

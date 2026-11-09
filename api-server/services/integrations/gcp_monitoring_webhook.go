@@ -77,6 +77,27 @@ func (m GCPMonitoringWebhook) Category() core.IntegrationCategory {
 	return core.IntegrationCategoryIncidentWebhook
 }
 
+// WebhookLabelHelp describes the labels cloud-collector's ConvertWebhookIncident
+// builds; ProcessEventWebook passes them through. Update it with that code.
+func (m GCPMonitoringWebhook) WebhookLabelHelp() core.WebhookLabelHelp {
+	return core.WebhookLabelHelp{
+		Summary: "A fixed set of incident fields under a gcp_ prefix, plus the policy's user labels, the resource's labels and the metric's labels under their own prefixes.",
+		Labels: []core.WebhookLabelSource{
+			{Label: "gcp_policy_name", Source: "the alert policy's display name"},
+			{Label: "condition_name", Source: "incident.condition_name"},
+			{Label: "gcp_project_id", Source: "incident.resource.labels.project_id, else the account's project"},
+			{Label: "gcp_event_resource_type", Source: "incident.resource.type"},
+			{Label: "policy_<name>", Source: "incident.policy_user_labels.<name>"},
+			{Label: "resource_<name>", Source: "incident.resource.labels.<name>"},
+			{Label: "metric_<name>", Source: "incident.metric.labels.<name>"},
+			{Label: "gcp_region", Source: "region or zone of the resource"},
+		},
+		Notes: []string{
+			"severity and summary are not labels.",
+		},
+	}
+}
+
 func (m GCPMonitoringWebhook) ConfigSchema() core.IntegrationSchema {
 	return core.IntegrationSchema{
 		Type:     core.ToolSchemaTypeObject,

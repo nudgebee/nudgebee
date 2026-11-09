@@ -58,9 +58,7 @@ Known limits, accepted rather than engineered around:
     stays outstanding and is attempted again on every run, within the budget.
 
 Resumable and idempotent. Gated behind RAG_KB_CAPABILITY_BACKFILL_ENABLED,
-default OFF — unlike the retag/embedding migrations this spends real money at
-real production KB volume, so an operator opts in per environment rather than
-inheriting it silently.
+default ON; set it to "false" to opt out.
 """
 
 import contextlib
@@ -101,7 +99,9 @@ PAYLOAD_BATCH = 500
 # Label keys a chunk's payload ``metadata`` carries (processing.KB_LABEL_KEYS,
 # kept in step by a test); stripped from the copies handed to the classifier so
 # a stale label from an earlier run can never be mistaken for a fresh result.
-_LABEL_KEYS = ("kind", "shape", "capabilities")
+_LABEL_KEYS = ("kind", "shape", "capabilities", "capabilities_extracted")
+# The labels a re-extraction may add to a document that already has its kind and shape.
+_CAPABILITY_KEYS = ("capabilities", "capabilities_extracted")
 # The kinds that make a chunk count as classified (processing._KB_KINDS).
 _KINDS = ["sop", "knowledge"]
 
@@ -182,10 +182,8 @@ def _exclusive_run() -> Iterator[Optional[Callable[[], bool]]]:
 
 
 def is_enabled() -> bool:
-    """Opt-in, default off. Unlike module_retag/embedding_migration this makes
-    real LLM calls at real production KB volume — an operator greenlights it
-    per environment rather than inheriting it from a code default."""
-    return os.environ.get("RAG_KB_CAPABILITY_BACKFILL_ENABLED", "false").strip().lower() == "true"
+    """Default on; RAG_KB_CAPABILITY_BACKFILL_ENABLED=false opts out."""
+    return os.environ.get("RAG_KB_CAPABILITY_BACKFILL_ENABLED", "true").strip().lower() == "true"
 
 
 def _max_documents_per_run() -> int:
@@ -197,8 +195,9 @@ def _max_documents_per_run() -> int:
 
 def _pending_knowledgebases() -> List[KBCollection]:
     """Every active, enabled KB's collection, deduped by collection name, with
-    every account that maps to it — integration KBs share one collection per
-    integration, one KB row per cloud account.
+    the account whose LLM settings classify it. An organisation KB (no
+    account_id — every integration's KB since #40605) uses an active account of
+    its tenant; one whose tenant has none is skipped.
 
     Mirrors kbCollectionName in llm-server's tools/core/knowledgebase_service.go;
     the two must stay in sync or this looks at the wrong collection.
@@ -211,11 +210,15 @@ def _pending_knowledgebases() -> List[KBCollection]:
     with engine.connect() as connection:
         rows = connection.execute(
             text(
-                "SELECT id, account_id, kb_type, integration_id FROM llm_knowledgebases "
-                "WHERE status = 'active' AND enabled = true"
+                "SELECT kb.id, kb.kb_type, kb.integration_id, COALESCE(kb.account_id, "
+                "(SELECT ca.id FROM cloud_accounts ca WHERE ca.tenant = kb.tenant_id AND ca.status = 'active' "
+                "ORDER BY ca.id LIMIT 1)) AS account_id "
+                "FROM llm_knowledgebases kb WHERE kb.status = 'active' AND kb.enabled = true"
             )
         )
         for row in rows:
+            if row.account_id is None:
+                continue
             if row.kb_type == "integration" and row.integration_id:
                 name, is_manual = f"{row.integration_id}_knowledge_base", False
             else:
@@ -256,6 +259,36 @@ def _any_point(client, collection_name: str, *, labelled: bool) -> bool:
     return bool(points)
 
 
+def _any_ungrounded_point(client, collection_name: str) -> bool:
+    """Whether the collection holds a classified point whose capabilities were never
+    extracted against a real catalog (no ``capabilities_extracted`` stamp): labelled
+    before the catalog existed, or while it was unreachable. Decided by Qdrant in one
+    filtered request, like _any_point."""
+    from qdrant_client import models
+
+    stamped = models.FieldCondition(key="metadata.capabilities_extracted", match=models.MatchValue(value=True))
+    points, _ = client.scroll(
+        collection_name=collection_name,
+        scroll_filter=models.Filter(must=[_kind_condition()], must_not=[stamped]),
+        limit=1,
+        with_payload=False,
+        with_vectors=False,
+    )
+    return bool(points)
+
+
+def _catalog_ready() -> bool:
+    """Whether there is a real catalog to extract capabilities against. An empty one
+    (not synced yet, or unreachable) is why the earliest labels carry none."""
+    from rag.core.utils.db_query import get_capability_catalog
+
+    try:
+        return bool(get_capability_catalog())
+    except Exception:
+        logger.exception("kb_capability_backfill: could not read the capability catalog")
+        return False
+
+
 def _scroll_all(client, collection_name: str) -> List[Any]:
     points: List[Any] = []
     offset = None
@@ -280,6 +313,11 @@ def _is_labelled(point) -> bool:
     return _metadata(point).get("kind") in _KINDS
 
 
+def _is_grounded(point) -> bool:
+    """Capabilities were extracted against a real catalog (see processing.KB_LABEL_KEYS)."""
+    return bool(_metadata(point).get("capabilities_extracted"))
+
+
 def _position(point) -> int:
     md = _metadata(point)
     try:
@@ -293,7 +331,7 @@ def _group_points(kb: KBCollection, points: List[Any]) -> List[List[Any]]:
 
     A manual KB collection is one document. An integration collection is one
     document per page, identified by the id its scraper stamped (Confluence
-    page_id, ServiceNow sys_id — the same id the source store and the Fact/SOP
+    page_id, ServiceNow kb_number — the same id the source store and the Fact/SOP
     marks key a document on), which every chunk of the page carries, including
     its figure descriptions. That id, not ``parent_id``, is the key: a page's
     ``parent_id`` is a hash of its whole text, so after an edit the chunks that
@@ -343,7 +381,11 @@ def _write_labels(client, kb: KBCollection, group: List[Any], labels: Dict[str, 
 
 
 def _backfill_collection(
-    client, kb: KBCollection, budget: int, summarised: Optional[Set[str]] = None
+    client,
+    kb: KBCollection,
+    budget: int,
+    summarised: Optional[Set[str]] = None,
+    regrounding: Optional[bool] = None,
 ) -> CollectionResult:
     """Classify and label at most `budget` outstanding documents of one
     collection, then bring its rollup row in line with what its payload says.
@@ -358,18 +400,29 @@ def _backfill_collection(
 
     from rag.core.documents.processing import refresh_kb_collection_summary
 
+    # A classified document whose capabilities were never extracted against a real
+    # catalog is outstanding too, but only while there is a catalog to extract
+    # against: without one it would be re-classified on every run for nothing.
+    if regrounding is None:
+        regrounding = _catalog_ready()
+
     # The steady state (everything already labelled) must not cost a payload
     # read of every collection on every restart: Qdrant answers this one.
-    if budget <= 0 or not _any_point(client, kb.name, labelled=False):
+    nothing_to_do = not _any_point(client, kb.name, labelled=False) and not (
+        regrounding and _any_ungrounded_point(client, kb.name)
+    )
+    if budget <= 0 or nothing_to_do:
         if summarised is not None and kb.name not in summarised and _any_point(client, kb.name, labelled=True):
             refresh_kb_collection_summary(kb.name)
             return CollectionResult(summary_rebuilt=1)
         return CollectionResult()
 
     points = _scroll_all(client, kb.name)
-    outstanding = [group for group in _group_points(kb, points) if any(not _is_labelled(point) for point in group)][
-        :budget
-    ]
+    outstanding = [
+        group
+        for group in _group_points(kb, points)
+        if any(not _is_labelled(point) or (regrounding and not _is_grounded(point)) for point in group)
+    ][:budget]
     if not outstanding:
         return CollectionResult()
 
@@ -392,7 +445,15 @@ def _backfill_collection(
         stamped = documents[0].metadata
         if "kind" not in stamped:
             continue  # classification failed; stays outstanding for the next run
-        labels = {key: stamped[key] for key in _LABEL_KEYS if key in stamped}
+        if all(_is_labelled(point) for point in group):
+            # Only the capabilities are missing. The kind and shape it already has stay: they are
+            # what the Postgres label owner and the query-time filter agree on, and a second model
+            # call may answer differently. Without the stamp nothing was extracted, so write nothing.
+            if "capabilities_extracted" not in stamped:
+                continue
+            labels = {key: stamped[key] for key in _CAPABILITY_KEYS if key in stamped}
+        else:
+            labels = {key: stamped[key] for key in _LABEL_KEYS if key in stamped}
         try:
             _write_labels(client, kb, group, labels)
         except Exception:
@@ -444,6 +505,7 @@ def run(client, still_held: Callable[[], bool] = lambda: True) -> Dict[str, int]
         summarised = None
 
     summary["collections_scanned"] = len(pending)
+    regrounding = _catalog_ready()  # once per run, not once per collection
     for kb in pending:
         if not still_held():
             logger.warning("kb_capability_backfill: stopping early, the migration lock is no longer held")
@@ -455,7 +517,7 @@ def run(client, still_held: Callable[[], bool] = lambda: True) -> Dict[str, int]
             )
             summary["budget_exhausted"] = 1
         try:
-            result = _backfill_collection(client, kb, budget, summarised)
+            result = _backfill_collection(client, kb, budget, summarised, regrounding)
         except Exception:
             summary["errors"] += 1
             logger.exception("kb_capability_backfill: %s failed", kb.name)

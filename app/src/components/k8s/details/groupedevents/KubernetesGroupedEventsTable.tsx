@@ -33,13 +33,16 @@ import k8sApi from '@api1/kubernetes';
 import apiUser from '@api1/user';
 import ticketsApi from '@api1/tickets';
 import { applyFiltersOnRouter } from '@lib/router';
-import { hasWriteAccess, hasPermission, getCurrentTenant } from '@lib/auth';
+import { hasWriteAccess, canCreateTicket, getCurrentTenant } from '@lib/auth';
 import {
-  convertToReadableFormat,
   titleCaseForAggregationKey,
   syncFilterFromQuery,
   toSeverityLevel,
   EXCLUDED_TRIAGE_AGGREGATION_KEYS,
+  ALERT_STATUS_OPTIONS,
+  getAlertStatusLabel,
+  getAlertStatusTone,
+  deriveGroupAlertStatus,
 } from 'src/utils/common';
 import { Box, Typography } from '@mui/material';
 import useKubernetesEventFilters from '@hooks/useKubernetesEventFilters';
@@ -87,16 +90,17 @@ const getNBStatusDisplay = (nbStatus: string) => {
 
 // Menu items for ThreeDotsMenu — disableTicket flips when a ticket already
 // exists for this fingerprint; canWrite gates the other modification actions for
-// read-only users (e.g. tenant_admin_readonly); canCreateTicket gates Create
-// Ticket specifically (account write OR the tickets:Write grant). ThreeDotsMenu
-// items can't show a hover tooltip when disabled, so the required grant is named
-// inline in the label instead.
-const getMenuItems = (disableTicket: boolean, canWrite: boolean, canCreateTicket: boolean) => [
+// read-only users (e.g. tenant_admin_readonly); ticketAllowed gates Create
+// Ticket specifically (account read access OR the tickets:Write grant —
+// @lib/auth#canCreateTicket, #40211). ThreeDotsMenu items can't show a hover
+// tooltip when disabled, so the required grant is named inline in the label
+// instead.
+const getMenuItems = (disableTicket: boolean, canWrite: boolean, ticketAllowed: boolean) => [
   {
     icon: TicketsIcon,
-    label: canCreateTicket ? 'Create Ticket' : 'Create Ticket · requires tickets:Write',
+    label: ticketAllowed ? 'Create Ticket' : 'Create Ticket · requires account access',
     id: 'create-ticket',
-    disabled: disableTicket || !canCreateTicket,
+    disabled: disableTicket || !ticketAllowed,
     iconBlack: true,
   },
   {
@@ -145,12 +149,7 @@ const transformTableData = (
     }
 
     // Determine Status
-    let status = 'OPEN';
-    if (item.distinct_status?.includes('FIRING')) {
-      status = 'FIRING';
-    } else if (item.distinct_status?.includes('CLOSED')) {
-      status = 'CLOSED';
-    }
+    const status = deriveGroupAlertStatus(item.distinct_status);
 
     // Resolve account name for the Alert cell
     const account = isTroubleshootPage ? accounts.find((acc: any) => (acc.id || acc.value) === item.account_id) : null;
@@ -190,9 +189,7 @@ const transformTableData = (
     // require write access on the row's account. Read-only users
     // (tenant_admin_readonly, account_admin_readonly) see them disabled.
     const canWrite = hasWriteAccess(item.account_id);
-    // Creating a ticket needs write access to the row's account OR the tickets:Write
-    // custom-role grant (tickets_create → tickets:Write).
-    const canCreateTicket = canWrite || hasPermission('tickets', 'Write');
+    const ticketAllowed = canCreateTicket(item.account_id);
 
     // Columns based on type
     if (groupEventType === 'fingerprint') {
@@ -299,9 +296,7 @@ const transformTableData = (
           ),
         },
         {
-          component: (
-            <Label margin='auto' text={convertToReadableFormat(status)} variant={status === 'FIRING' ? 'red' : status === 'CLOSED' ? 'grey' : ''} />
-          ),
+          component: <Label margin='auto' text={getAlertStatusLabel(status)} variant={getAlertStatusTone(status)} />,
         },
         {
           component: (
@@ -345,7 +340,7 @@ const transformTableData = (
               />
               <ThreeDotsMenu
                 sx={{ ...action.primary }}
-                menuItems={getMenuItems(hasExistingTicket, canWrite, canCreateTicket)}
+                menuItems={getMenuItems(hasExistingTicket, canWrite, ticketAllowed)}
                 data={item}
                 onMenuClick={onMenuClick}
               />
@@ -928,7 +923,10 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
       priority: selectedPriority,
       priority_nin: !selectedPriority ? ['DEBUG', 'INFO'] : undefined,
       source: selectedSource?.map((f: any) => f.value) || [],
-      nb_priority: selectedNbPriority,
+      // Only the fingerprint view renders the Triage Priority filter. The value
+      // also arrives from the URL and from saved filters, and in the other views
+      // it would filter the list with nothing on screen to show or clear it.
+      nb_priority: groupEventType === 'fingerprint' ? selectedNbPriority : undefined,
       nb_status: selectedNBStatus.length > 0 ? selectedNBStatus.map((s) => s?.value || s) : undefined,
       is_new_issue: selectedIssueType === 'new' ? true : selectedIssueType === 'recurring' ? false : undefined,
     };
@@ -1299,10 +1297,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
           {
             type: 'dropdown',
             enabled: true,
-            options: [
-              { value: 'FIRING', label: 'Firing' },
-              { value: 'CLOSED', label: 'Closed' },
-            ],
+            options: ALERT_STATUS_OPTIONS.map(({ value, label }) => ({ value, label })),
             onSelect: (e: any) => {
               setSelectedStatus(e.target.value);
               setCurrentPage(1);

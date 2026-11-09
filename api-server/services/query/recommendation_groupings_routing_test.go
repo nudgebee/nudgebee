@@ -51,6 +51,14 @@ func TestRecommendationGroupingsRouting(t *testing.T) {
 			Columns: cols("count"),
 			Where:   QueryWhereClause{Binary: BinaryWhereClause{"is_primary_recommendation": {Eq: true}}},
 		}, lean},
+		{"a created_at age filter keeps the fast path", QueryRequest{
+			Columns: cols("count"),
+			Where:   QueryWhereClause{Binary: BinaryWhereClause{"created_at": {Lt: "2026-01-01T00:00:00Z"}}},
+		}, fast},
+		{"an aged savings roll-up needs the window but no join", QueryRequest{
+			Columns: cols("count", "sum_estimated_savings"),
+			Where:   QueryWhereClause{Binary: BinaryWhereClause{"created_at": {Lt: "2026-01-01T00:00:00Z"}}},
+		}, lean},
 		{"a display column forces the join", QueryRequest{Columns: cols("count", "sum_estimated_savings", "resource_cloud_service")}, full},
 		{"resource_names aggregates resource_name, so it forces the join", QueryRequest{
 			Columns: cols("vuln_id", "count", "resource_names"),

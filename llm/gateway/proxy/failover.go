@@ -86,7 +86,7 @@ func (h *handler) attemptTranslatedUnary(c *gin.Context, bctx *schemas.BifrostCo
 		if json.Unmarshal(rm.body, &oaiReq) != nil {
 			return false
 		}
-		breq := oaiReq.ToBifrostChatRequest(bctx)
+		breq := engineChatRequest(bctx, &oaiReq)
 		breq.Provider, breq.Model = target, model
 		resp, bErr := h.client.ChatCompletionRequest(bctx, breq)
 		if bErr != nil || resp == nil {
@@ -145,7 +145,7 @@ func (h *handler) tryFailoverStream(c *gin.Context, bctx *schemas.BifrostContext
 			if json.Unmarshal(rm.body, &oaiReq) != nil {
 				continue
 			}
-			breq := oaiReq.ToBifrostChatRequest(bctx)
+			breq := engineChatRequest(bctx, &oaiReq)
 			breq.Provider, breq.Model = target, model
 			markFailover(c, rm, target, model, primaryStatus)
 			h.streamChatWith(c, bctx, cancel, rm, breq)

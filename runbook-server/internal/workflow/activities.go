@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"nudgebee/runbook/common"
+	"nudgebee/runbook/internal/logsafe"
 	"nudgebee/runbook/internal/model"
+	"nudgebee/runbook/internal/tasks"
 	configSvc "nudgebee/runbook/services/config"
 	"time"
 )
@@ -33,7 +35,21 @@ func (a *WorkflowActivities) scrubSecrets(ctx context.Context, tenantID, account
 	if err != nil {
 		return text
 	}
-	return ScrubSecretValues(text, SecretValues(resp.Secrets))
+	return logsafe.ScrubSecretValues(text, logsafe.SecretValues(resp.Secrets))
+}
+
+// StepSecretLoader loads an account's secret values for TaskWrapper to mask in
+// each step's logs and errors: every secret a run could render, tenant-wide
+// ones included, whatever the run's restrict_to_account setting.
+func StepSecretLoader(configService configSvc.ConfigService) tasks.SecretLoader {
+	a := &WorkflowActivities{ConfigService: configService}
+	return tasks.NewCachedSecretLoader(func(ctx context.Context, tenantID, accountID string) ([]string, error) {
+		resp, err := a.FetchWorkflowConfigsActivity(ctx, tenantID, accountID, false)
+		if err != nil {
+			return nil, err
+		}
+		return logsafe.SecretValues(resp.Secrets), nil
+	})
 }
 
 // FetchWorkflowDefinitionActivity fetches a workflow definition by its name.

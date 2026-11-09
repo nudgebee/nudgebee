@@ -24,6 +24,7 @@ import (
 	"nudgebee/code-analysis-agent/internal/ownership"
 	"nudgebee/code-analysis-agent/internal/session"
 	"nudgebee/code-analysis-agent/llm"
+	"nudgebee/code-analysis-agent/tools"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -134,6 +135,11 @@ type AgenticAnalyzeRequest struct {
 	// It is returned with every model call made through llm-server, which
 	// records that call's usage against the run's conversation.
 	AgentRunID string `json:"agent_run_id,omitempty"`
+	// WorkspaceToken is the execution token llm-server issued for this
+	// analysis. Model calls through llm-server authenticate with it. It is
+	// kept on the request context only: never logged, never put in a child
+	// process's environment.
+	WorkspaceToken string `json:"workspace_token,omitempty"`
 	// AnalysisID is set internally by HandleAnalyze (the async entrypoint) to the
 	// progress-store key so the analysis can attach its tool tracker for live
 	// /status streaming. Not part of the wire contract — callers never send it.
@@ -741,6 +747,7 @@ func secureSessionWorkspace(path string) error {
 
 func (ah *AgenticAnalyzeHandler) PerformAgenticAnalysis(ctx context.Context, req AgenticAnalyzeRequest) (*AgenticAnalyzeResponse, error) {
 	ctx = llm.WithAgentRunID(ctx, req.AgentRunID)
+	ctx = llm.WithWorkspaceToken(ctx, req.WorkspaceToken)
 	if len(req.KnowledgeFiles) > 0 {
 		req.Skills += NewFileHandler(ah.config).renderKnowledgeFiles(ctx, req.KnowledgeFiles)
 	}
@@ -2200,6 +2207,16 @@ func (ah *AgenticAnalyzeHandler) performFollowupAnalysis(ctx context.Context, cf
 					"output": string(cfgOut),
 				})
 			}
+		}
+
+		// This clone does not go through the repo_clone tool, so run the
+		// repository's setup script here too. ah.config holds the workspace
+		// root; the per-request cfg points at this run's own directory.
+		if setup := tools.RunRepoSetup(ctx, ah.config.Analysis.WorkspaceDir, workspaceDir, cloneURL); setup != nil {
+			logger.Log(common.EventStepComplete, "Repository setup script handled for followup", map[string]any{
+				"status":    setup.Status,
+				"exit_code": setup.ExitCode,
+			})
 		}
 	}
 

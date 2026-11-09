@@ -38,8 +38,9 @@ import { ANNOTATIONS } from '@lib/annotationKeys';
 import UndoConfirmDialog from '@components/k8s/investigate/UndoConfirmDialog';
 import RecurrenceSince from '@components/k8s/investigate/RecurrenceSince';
 import apiRecommendations from '@api1/recommendation';
-import { hasReadAccess, hasWriteAccess, hasFeatureAccess } from '@lib/auth';
+import { hasReadAccess, hasWriteAccess } from '@lib/auth';
 import InvestigateResolution from '@components/k8s/investigate/InvestigateResolution';
+import RollbackActionDetail from '@components/k8s/investigate/RollbackActionDetail';
 import { Card } from '@ui/Card';
 import ArrowForwardRoundedIcon from '@mui/icons-material/ArrowForwardRounded';
 import RefreshIcon from '@mui/icons-material/Refresh';
@@ -115,6 +116,8 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import RemediationPanel, { isRemediationPlan, runnableActionCount } from '@components/k8s/investigate/cards/RemediationPanel';
 import { podDetailsFromEvidence } from '@components/k8s/investigate/podFacts';
 import { uniqueInsightLines } from '@components/k8s/investigate/insightLines';
+import { placeByFinding } from '@components/k8s/investigate/cardOrder';
+import { showsStoredRuleGraph } from '@components/k8s/investigate/storedRuleGraph';
 import EventAlertControlsSection from '@components/k8s/investigate/EventAlertControlsSection';
 // Cloud-specific card imports
 import CloudTrailEventCard from '@components/cloudaccount/investigate/cards/CloudTrailEventCard';
@@ -480,7 +483,6 @@ const Investigate = () => {
   const [collapsedObj, setCollapsedObj] = useState({});
   const [generateRcaVisible, setGenerateRcaVisible] = useState(false);
   const [ticketData, setTicketData] = useState({ id: '', url: '' });
-  const [hasRcaFeatureAccess, setHasRcaFeatureAccess] = useState(false);
   const [sentFeedback, setSentFeedback] = useState({});
   const [alertLabels, setAlertLabels] = useState({});
   const [tabValue, setTabValue] = useState(1);
@@ -1192,6 +1194,7 @@ const Investigate = () => {
       const dynamicCards = isCloud ? [] : [new AskAiCard(), new RCACard()];
 
       // K8s: Prometheus event graph
+      let eventGraphCard = null;
       if (isK8s && row.source === 'prometheus' && row?.labels?.alertname) {
         const response = await apiKubernetes1.getEventRules(
           {
@@ -1213,6 +1216,7 @@ const Investigate = () => {
           );
           if (await card.canRenderContent()) {
             dynamicCards.push(card);
+            eventGraphCard = card;
           }
         }
       }
@@ -1343,7 +1347,7 @@ const Investigate = () => {
             if (await card.canRenderContent()) dynamicCards.push(card);
           }
           if (actionType == 'application_performance_metrics') {
-            const card = new ExecutePrometheus(d, row);
+            const card = new ExecutePrometheus(d, row, { requireData: true });
             if (await card.canRenderContent()) dynamicCards.push(card);
           }
           const hasAnomaly = d?.is_anomaly;
@@ -1477,6 +1481,13 @@ const Investigate = () => {
         }
       }
 
+      // The alert pipeline already ran the rule's query when the alert fired and stored the result,
+      // with the object that fired marked. When that stored chart is the one on show, the page's
+      // own run of the same query is a repeat of it, so it is left out.
+      if (eventGraphCard && showsStoredRuleGraph(dynamicCards, eventGraphCard.queries[0]?.query)) {
+        dynamicCards.splice(dynamicCards.indexOf(eventGraphCard), 1);
+      }
+
       // Build final card list
       const availableCards = isK8s ? k8sAvailableCards : cloudAvailableCards;
       let allCards;
@@ -1517,7 +1528,9 @@ const Investigate = () => {
             safeSetState(setMatchedOptions, (old) => {
               const cardExists = old.some((existingCard) => existingCard.id === card.id);
               if (cardExists) return old;
-              return [...old, card];
+              // Kubernetes cards go in by the strength of their own finding; cloud cards are
+              // ordered before this loop.
+              return isK8s ? placeByFinding(old, card) : [...old, card];
             });
             // Dynamic cards are id'd per evidence index ('TracesCard_3'), so the
             // equality check this replaces never matched and CorrespondingEvents — the
@@ -1825,12 +1838,6 @@ const Investigate = () => {
     });
   };
   handleGenerateRCARef.current = handleGenerateRCA;
-
-  useEffect(() => {
-    hasFeatureAccess('GENERATE_RCA').then((res) => {
-      setHasRcaFeatureAccess(res);
-    });
-  }, []);
 
   const aiCreateFeedback = async (createFeedbackObject) => {
     if (row.id) {
@@ -2466,7 +2473,7 @@ const Investigate = () => {
                             ) : null}
                           </Box>
                           {/* Generate RCA */}
-                          {hasWriteAccess(router.query.accountId) && hasRcaFeatureAccess && generateRcaVisible ? (
+                          {hasWriteAccess(router.query.accountId) && generateRcaVisible ? (
                             <Box sx={{ mr: 'var(--ds-space-2)' }}>
                               <Button
                                 tone='secondary'
@@ -2860,6 +2867,17 @@ const Investigate = () => {
                                             const line = [detail, effect && detail ? effect.charAt(0).toLowerCase() + effect.slice(1) : effect]
                                               .filter(Boolean)
                                               .join(' · ');
+                                            if (resolvableOption.checksRollback && !settled) {
+                                              return (
+                                                <RollbackActionDetail
+                                                  accountId={row?.cloud_account_id}
+                                                  eventId={row?.id}
+                                                  changeEventId={resolvableOption.rollbackChoices?.[0]?.changeEventId || ''}
+                                                  line={line}
+                                                  blockedLine={resolvableOption.blockedActionDetail}
+                                                />
+                                              );
+                                            }
                                             return line ? <Text value={line} sx={{ fontSize: ds.text.caption, color: ds.gray[600] }} /> : null;
                                           })()}
                                           {outcome?.isSlow && (

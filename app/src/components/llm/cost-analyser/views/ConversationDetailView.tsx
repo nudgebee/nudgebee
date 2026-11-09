@@ -115,16 +115,17 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 }
 
 /** Latency vs wait-time split bar (spec §6a / §2.2). */
-function TimeSplitBar({ run }: { run: Run }) {
+function TimeSplitBar({ run, wallMs }: { run: Run; wallMs: number }) {
   const toolTime = run.steps.reduce((a, s) => a + s.toolTimeMs, 0);
-  const overhead = Math.max(0, run.wallClockMs - run.totalModelLatencyMs - toolTime - run.totalWaitTimeMs);
+  const overhead = Math.max(0, wallMs - run.totalModelLatencyMs - toolTime - run.totalWaitTimeMs);
   const segs = [
     { label: 'Model latency', ms: run.totalModelLatencyMs, color: 'var(--ds-blue-400)' },
     { label: 'Tool time', ms: toolTime, color: 'var(--ds-gray-400)' },
     { label: 'Wait (approval)', ms: run.totalWaitTimeMs, color: 'var(--ds-amber-400)' },
     { label: 'Overhead', ms: overhead, color: 'var(--ds-gray-300)' },
   ].filter((s) => s.ms > 0);
-  const total = run.wallClockMs || 1;
+  // The bar must span at least the segments it draws, or the widths pass 100%.
+  const total = Math.max(wallMs, run.totalModelLatencyMs + toolTime + run.totalWaitTimeMs, 1);
 
   return (
     <Box>
@@ -2517,8 +2518,15 @@ export function ConversationDetailView({
       {/* Header summary */}
       <Card>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 'var(--ds-space-4)', flexWrap: 'wrap' }}>
-          <Box>
-            <Box sx={{ fontSize: 'var(--ds-text-heading)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-gray-700)' }}>
+          <Box sx={{ flex: '1 1 240px', minWidth: 0 }}>
+            <Box
+              sx={{
+                fontSize: 'var(--ds-text-heading)',
+                fontWeight: 'var(--ds-font-weight-semibold)',
+                color: 'var(--ds-gray-700)',
+                overflowWrap: 'anywhere',
+              }}
+            >
               {run.title}
             </Box>
             <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)', alignItems: 'center', mt: 'var(--ds-space-1)', flexWrap: 'wrap' }}>
@@ -2592,7 +2600,7 @@ export function ConversationDetailView({
         </Box>
 
         <Box sx={{ mt: 'var(--ds-space-4)' }}>
-          <TimeSplitBar run={run} />
+          <TimeSplitBar run={run} wallMs={wallMs} />
         </Box>
       </Card>
 

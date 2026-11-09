@@ -14,6 +14,7 @@ from server.recommendation.vertical_rightsizing.strategy.strategies import BaseS
 
 from server.recommendation.vertical_rightsizing.models.result import PodsTimeData
 from server.recommendation.vertical_rightsizing.services.batched import batched
+from server.utils.utils import safe_get
 
 from server.recommendation.vertical_rightsizing.metrics.base import PrometheusMetric
 from server.recommendation.vertical_rightsizing.services.metric_base_service import MetricsService
@@ -229,7 +230,7 @@ class PrometheusMetricsService(MetricsService):
                 end=datetime.now(),
                 step=timedelta(hours=1),
             )
-            pod_owners = {replicaset["metric"]["replicaset"] for replicaset in replicasets}
+            pod_owners = {r for replicaset in replicasets if (r := safe_get(replicaset, ["metric", "replicaset"]))}
             pod_owner_kind = "ReplicaSet"
             del replicasets
 
@@ -245,7 +246,9 @@ class PrometheusMetricsService(MetricsService):
                 step=timedelta(hours=1),
             )
             pod_owners = {
-                repl_controller["metric"]["replicationcontroller"] for repl_controller in replication_controllers
+                r
+                for repl_controller in replication_controllers
+                if (r := safe_get(repl_controller, ["metric", "replicationcontroller"]))
             }
             pod_owner_kind = "ReplicationController"
 
@@ -265,7 +268,7 @@ class PrometheusMetricsService(MetricsService):
                 end=datetime.now(),
                 step=timedelta(hours=1),
             )
-            pod_owners = {job["metric"]["job_name"] for job in jobs}
+            pod_owners = {j for job in jobs if (j := safe_get(job, ["metric", "job_name"]))}
             pod_owner_kind = "Job"
 
             del jobs
@@ -298,7 +301,7 @@ class PrometheusMetricsService(MetricsService):
         if related_pods_result == []:
             return []
 
-        related_pods = [pod["metric"]["pod"] for pod in related_pods_result]
+        related_pods = [p for pod in related_pods_result if (p := safe_get(pod, ["metric", "pod"]))]
         current_pods_set = set()
         del related_pods_result
 
@@ -323,7 +326,7 @@ class PrometheusMetricsService(MetricsService):
 
         async def instant_batch(pod_group: Iterable[str]) -> set[str]:
             result = await self.query(liveness_query("|".join(pod_group)))
-            return {pod["metric"]["pod"] for pod in result}
+            return {p for pod in result if (p := safe_get(pod, ["metric", "pod"]))}
 
         for batch_pods in await asyncio.gather(*(instant_batch(g) for g in batched(related_pods, 100))):
             current_pods_set |= batch_pods
@@ -341,7 +344,7 @@ class PrometheusMetricsService(MetricsService):
                     end=now,
                     step=timedelta(minutes=15),
                 )
-                return {pod["metric"]["pod"] for pod in result}
+                return {p for pod in result if (p := safe_get(pod, ["metric", "pod"]))}
 
             for batch_pods in await asyncio.gather(*(range_batch(g) for g in batched(related_pods, 100))):
                 current_pods_set |= batch_pods

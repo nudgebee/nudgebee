@@ -697,12 +697,32 @@ func builtInHealthFlags(providerType, provider string) []string {
 	return nil
 }
 
+// normalizeProviderName maps a caller-supplied provider name onto the spelling the
+// source switches and the integrations table use, so "Prometheus", "PROMETHEUS " and
+// "prometheus" all resolve the same provider. Every provider name is lower-case except
+// "ES", the stored type of the Elasticsearch integration. Whitespace-only becomes "",
+// which means "use the account's default", the same as leaving the field empty.
+func normalizeProviderName(provider string) string {
+	provider = strings.TrimSpace(provider)
+	if strings.EqualFold(provider, "ES") {
+		return "ES"
+	}
+	return strings.ToLower(provider)
+}
+
+// normalizeProviderSource does the same for the integration source ("agent" / "user").
+func normalizeProviderSource(source string) string {
+	return strings.ToLower(strings.TrimSpace(source))
+}
+
 func getLogsMetricsTracesProviderWithIntegration(ctx *security.RequestContext, accountId, logProviderFromRequest, providerType string, logSourceFromRequest string) (string, string, *core.IntegrationDto, error) {
 	if ctx == nil || ctx.GetSecurityContext() == nil {
 		return "", "", nil, ErrNoTenantContext
 	}
-	defaultProvider := logProviderFromRequest
-	defaultSource := logSourceFromRequest
+	// Provider and source often arrive as typed free text (automation task fields,
+	// LLM tool calls), so match them regardless of letter case and surrounding spaces.
+	defaultProvider := normalizeProviderName(logProviderFromRequest)
+	defaultSource := normalizeProviderSource(logSourceFromRequest)
 	var matchedIntegration *core.IntegrationDto
 	valueProvider := ""
 	switch providerType {
@@ -881,6 +901,13 @@ func getLogsMetricsTracesProviderWithIntegration(ctx *security.RequestContext, a
 	return defaultProvider, defaultSource, matchedIntegration, nil
 }
 
+// PartialLogSource is a LogSource that can say its answer stopped short: it returns the lines
+// it found plus partial=true when it ran out of time before reading the whole window and
+// before reaching the limit (FetchLogsResult.Partial).
+type PartialLogSource interface {
+	QueryLogsPartial(ctx *security.RequestContext, req FetchLogRequest) ([]OutputLog, bool, error)
+}
+
 func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (FetchLogsResult, error) {
 	source, err := getLogSourceForAccount(ctx, fetchLogRequest.AccountId, fetchLogRequest.LogProvider, fetchLogRequest.LogProviderSource)
 	if err != nil {
@@ -973,7 +1000,16 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 		}
 	}
 
-	logs, err := source.QueryLogs(ctx, fetchLogRequest)
+	var logs []OutputLog
+	var details LogQueryDetails
+	partial := false
+	if ps, ok := source.(PartialLogSource); ok {
+		logs, partial, err = ps.QueryLogsPartial(ctx, fetchLogRequest)
+	} else if ds, ok := source.(DetailedLogSource); ok {
+		logs, details, err = ds.QueryLogsDetailed(ctx, fetchLogRequest)
+	} else {
+		logs, err = source.QueryLogs(ctx, fetchLogRequest)
+	}
 
 	// Resolve the query that was actually used so callers (UI, LLM, runbooks) can show
 	// it — including on the empty-result diagnosis early-returns below, not just the
@@ -1007,7 +1043,8 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 	// suggestions — rather than an error: the diagnosis successfully determined what to fix, it
 	// didn't fail. Best-effort: each check fails open (returns nil) when it can't establish the
 	// provider's label/value set, so a legitimately-empty query falls through unchanged.
-	if fetchLogRequest.ValidateRequest && (err != nil || len(logs) == 0) {
+	countsOnly := countsQueryMatched(details)
+	if fetchLogRequest.ValidateRequest && (err != nil || (len(logs) == 0 && !countsOnly)) {
 		// One structured line per diagnosis run, so the trigger rate and hit rate are
 		// queryable in Loki (filter on msg="log_query_empty_result_diagnosis"). "outcome"
 		// distinguishes which check produced the hint the agent then rewrites against
@@ -1049,7 +1086,9 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 	}
 	normalizeOutputLogLabels(logs, filteringMap)
 
-	return FetchLogsResult{Logs: logs, Query: usedQuery, Provider: provider}, nil
+	result := FetchLogsResult{Logs: logs, Query: usedQuery, Provider: provider, Partial: partial}
+	applyLogQueryDetails(&result, details, fetchLogRequest.Limit, fetchLogRequest.Offset, partial, fetchLogRequest.IncludeRaw)
+	return result, nil
 }
 
 // lineContentFields are where-clause fields that filter the log message body
@@ -1871,17 +1910,43 @@ func FetchLogLabels(ctx *security.RequestContext, fetchLogRequest FetchLogLabelR
 	if err != nil {
 		return nil, err
 	}
-	labels, err := source.QueryLabels(ctx, fetchLogRequest)
+	// Discovery failure still propagates. Serving the canonical vocabulary on a broken
+	// integration would turn "your ES config is wrong" into a successful response with
+	// a short field list, hiding the misconfiguration from the caller — and
+	// TestFetchLogLabels_WithoutOverrideDoesNotUseProbeValues pins that contract.
+	discovered, err := source.QueryLabels(ctx, fetchLogRequest)
 	if err != nil {
 		return nil, err
 	}
 	// Normalize each provider's own type vocabulary (Pinot "INT", Signoz "int64",
 	// Hive "bigint", ES "long", …) into DataType here, at the one place every
 	// provider's labels pass through, so no provider has to implement anything.
-	for i := range labels {
-		labels[i].DataType = normalizeLabelDataType(labels[i].Attributes)
+	for i := range discovered {
+		discovered[i].DataType = normalizeLabelDataType(discovered[i].Attributes)
+	}
+
+	// Union the canonical vocabulary in, so a caller is told what it may filter on
+	// rather than only what this backend happens to report. Raw QueryLabels omits the
+	// canonical names on every provider — Loki reports stream labels, SigNoz reports
+	// attributes — which is why llm-server had to invent its own `_body` token.
+	merged := getMergedLabelMapping(ctx, fetchLogRequest.AccountId, source)
+	labels := buildLogLabels(resolvableCanonicalLogFields(source, merged), merged, discovered)
+	annotateLogLabelKinds(labels, merged, discovered, source)
+	if fetchLogRequest.FieldsOnly {
+		labels = fieldLabelsOnly(labels)
 	}
 	return labels, nil
+}
+
+// fieldLabelsOnly keeps the labels a query in the provider's own language understands.
+func fieldLabelsOnly(labels []OutputLogLabel) []OutputLogLabel {
+	out := make([]OutputLogLabel, 0, len(labels))
+	for _, l := range labels {
+		if l.Kind == "field" {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 func FetchLogLabelValues(ctx *security.RequestContext, fetchLogRequest FetchLogLabelValuesRequest) ([]OutputLogLabelValue, error) {
@@ -2120,7 +2185,8 @@ func mergeLogGroupsByPattern(out LogGroupOutput) LogGroupOutput {
 	// longer holds.
 	sort.SliceStable(groups, func(i, j int) bool { return groups[i].Count > groups[j].Count })
 
-	return LogGroupOutput{Groups: groups}
+	// Merging regroups; it does not change how much of the window was read.
+	return LogGroupOutput{Groups: groups, Sampled: out.Sampled, SampleStartTime: out.SampleStartTime}
 }
 
 // timestampedValues keeps a group's Values aligned with its Timestamps while
@@ -2305,10 +2371,11 @@ var allProviderCaps = map[string]providerStaticCaps{
 		TraceSource:           "otel",
 	},
 	// Traces only. Grouping is computed by Tempo itself (TraceQL metrics, ≤24h); the
-	// waterfall is trace-by-id. ServiceMap stays false for v1: edges would need a TraceQL
-	// structural query, deferred (spec §1).
+	// waterfall is trace-by-id. ServiceMap is true because the map links each span to its
+	// parent and every Tempo span carries its own service, namespace and parent id — so,
+	// unlike Splunk Enterprise, both ends of an edge have a namespace.
 	"grafana_tempo": {
-		SupportsServiceMap:    false,
+		SupportsServiceMap:    true,
 		SupportsTraceGrouping: true,
 		SupportsHeatmap:       true,
 		SupportsRawQuery:      true,
@@ -2358,7 +2425,13 @@ func getProviderCapabilities(ctx *security.RequestContext, accountId, provider, 
 			// when accountId is empty: with no account the lookup can only return the
 			// provider defaults, so there's nothing to merge.
 			if accountId != "" {
-				caps.LabelMappings = getMergedLabelMapping(ctx, accountId, source)
+				merged := getMergedLabelMapping(ctx, accountId, source)
+				caps.LabelMappings = merged
+				caps.CanonicalFields = canonicalLogFieldNamesFor(source, merged)
+			} else {
+				// No account: the merge can only return provider defaults, but the
+				// vocabulary does not depend on the account, so it is still honest.
+				caps.CanonicalFields = canonicalLogFieldNamesFor(source, source.GetLabelMapping())
 			}
 		} else {
 			slog.Warn("getProviderCapabilities: failed to get log source", "provider", provider, "error", err)
@@ -3635,10 +3708,6 @@ func FetchMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTren
 		result.Results = completeUtilisationResults(result.Results, meta.RequestedMetrics, queries, metricsProvider, esUtilisationScope(meta))
 	}()
 
-	// swRequest carries SolarWinds-specific filter/groupBy params passed as FetchMetricsRequest.Request.
-	// Nil for all other providers (safe — no other MetricSource reads req.Request).
-	var swRequest map[string]any
-
 	// --- 2. Build Queries based on Provider and Kind ---
 	switch metricsProvider {
 	case "datadog":
@@ -3682,23 +3751,45 @@ func FetchMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTren
 		}
 
 	case "solarwinds":
-		clusterLevel := meta.Namespace == "" && meta.Name == "" && meta.NodeName == ""
-		if meta.Kind == "node" {
+		// An aggregate is answered by fetching the range and collapsing it below, not
+		// by an instant read: the last bucket is one point, not the window's max or avg.
+		if meta.Aggregate.Name != "" {
+			instant = false
+		}
+		var out OutputMetricQuery
+		switch {
+		case meta.Kind == "node":
 			// Node queries use AVG: per-node utilization values are already singular series.
 			queries = buildSolarWindsNodeQueries(meta.NodeName, meta.RequestedMetrics)
-			swRequest = buildSolarWindsRequestParams(meta, buildSolarWindsGroupBy(meta), "AVG")
-		} else if clusterLevel {
-			// Cluster-level needs two separate API calls (different groupBy per metric group).
-			// The helper handles both calls, merges results, and post-processes percentiles.
-			out, err := fetchSolarWindsClusterUtilisation(ctx, req, metricsProvider, integrationSource, meta, instant)
-			canonicaliseUtilisationLabels(out.Results, metricsProvider)
-			return out, err
-		} else {
-			// Workload queries use SUM: pod-level metrics must be summed across all pods
-			// belonging to the workload to yield total workload resource consumption.
+			out, err = FetchMetricsQuery(ctx, FetchMetricsRequest{
+				AccountId:            req.AccountId,
+				MetricProvider:       metricsProvider,
+				MetricProviderSource: integrationSource,
+				Queries:              queries,
+				StartTime:            req.StartTime,
+				EndTime:              req.EndTime,
+				StepInterval:         req.StepInterval,
+				Instant:              instant,
+				Request:              buildSolarWindsRequestParams(meta, buildSolarWindsGroupBy(meta), "AVG", ""),
+			})
+		case meta.Namespace == "" && meta.Name == "" && meta.NodeName == "":
+			// Cluster-level needs separate API calls (different groupBy per metric group).
+			// The helper handles the calls, merges results, and post-processes percentiles.
+			out, err = fetchSolarWindsClusterUtilisation(ctx, req, metricsProvider, integrationSource, meta, instant)
+		default:
+			// Workload queries SUM pod-level metrics across the workload's pods, one call
+			// per entity the SUM must pre-group by.
 			queries = buildSolarWindsWorkloadQueries(meta, meta.RequestedMetrics)
-			swRequest = buildSolarWindsRequestParams(meta, buildSolarWindsGroupBy(meta), "SUM")
+			out, err = fetchSolarWindsWorkloadUtilisation(ctx, req, metricsProvider, integrationSource, meta, queries, instant)
 		}
+		if err != nil {
+			return out, err
+		}
+		// After the cluster path's cross-node percentile, so p90_cpu with aggregate=max is
+		// the peak of the cluster's p90, not a p90 of each node's peak.
+		solarwindsCollapseOverTime(out.Results, meta)
+		canonicaliseUtilisationLabels(out.Results, metricsProvider)
+		return out, nil
 
 	// OpenObserve speaks PromQL but its engine is a subset: no falling-back `or`, no
 	// binary vector arithmetic, no quantile() aggregation. The cluster keys depend on
@@ -3747,7 +3838,6 @@ func FetchMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTren
 		EndTime:              req.EndTime,
 		StepInterval:         req.StepInterval,
 		Instant:              instant,
-		Request:              swRequest,
 	})
 	if err != nil {
 		return output, err

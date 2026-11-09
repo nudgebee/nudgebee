@@ -31,7 +31,8 @@ knowledge_graph/
 │   ├── cloud_enrichment.go          ExternalService → real cloud resource
 │   ├── enrichment_{aws,azure,gcp}_classifier.go, enrichment_k8s_dns_parser.go
 │   ├── ip_mapper.go, dns_resolver.go, eni_resolver.go, matcher.go
-│   └── edge_priority.go             k8s > aws > ebpf > traces > datadog-apm
+│   ├── manual_*.go                  user-declared dependencies and nodes (see Manual Nodes & Dependencies)
+│   └── edge_priority.go             k8s > manual > aws > ebpf > traces > datadog-apm
 ├── queue/                # RabbitMQ async build pipeline
 │   ├── publisher.go, consumer.go    consumer applies resource refs, then enqueues + claims builds
 │   └── types.go                     KGUpdateMessage, KGResourceRef
@@ -186,6 +187,34 @@ Traces is the reference implementation; the shape generalises:
 | `vpc_ip_workload_not_in_graph` | exactly one workload held it, but the K8s source didn't emit that workload |
 
 When adding a guard, give it its **own** reason code rather than reusing a near-neighbour — a review row labelled `outbound_span_kind` for a span that carried no span kind is worse than no row, because it sends whoever reads it looking for something that was never there.
+
+---
+
+## Manual Nodes & Dependencies
+
+Users declare what the collectors cannot see. Both halves are run by the always-on `manual` flow source ([flow_sources/manual_flow_source.go](flow_sources/manual_flow_source.go)) every build.
+
+- **Dependencies** (`kg_manual_dependencies`, V743) — `A CALLS B` between nodes, resolved by type + name (+ namespace/cluster/arn) against `knowledge_graph_node` and emitted as `source='manual'` edges.
+- **Nodes** (`kg_manual_nodes`, V989) — resources no collector discovered, so a dependency has something to resolve to. RPCs: `kg_*_manual_node*` in [api/actions_kg_manual_nodes.go](../api/actions_kg_manual_nodes.go).
+
+**A declared node must get the id the collector will write for the same resource**, or the collector later adds a second node. So nothing hand-builds a cloud key: each cloud registers a `core.ManualNodeBuilder` ([sources/manual_node.go](sources/manual_node.go), `sources/<cloud>/manual_node.go`) that feeds a synthetic inventory row through its own `createNodeFromResource`, and AWS re-keys by the picked VPC node's name the way `propagateVPCNamesToResources` does. The compulsory form fields are exactly what that cloud's `GenerateUniqueKey` reads (name, region, plus the VPC for EC2 / load balancers / RDS / Redshift). Kubernetes clusters do the same through `createNodeFromWorkload` (`sources/k8s/manual_node.go`: Deployment, StatefulSet, DaemonSet, CronJob, Service; key fields name + namespace; the cluster name is the account name, as the k8s source stamps it). `TestManualNode_<Cloud>KeyMatchesCollector` runs every declarable type through both paths (for K8s Services, the relay path too) and fails on any drift — if you change a `GenerateUniqueKey` or a VPC/naming pass, that test tells you whether declared nodes still merge.
+
+- **Outside any connected account** a node is tenant-scoped (`external:<tenant>::<type>:<namespace>:<name>`, `cloud_account_id = tenant`, like the identity nodes). No collector can produce that key; it never merges.
+- **Declarable types** are `core.ManualNodeTypes` (clouds and outside accounts) plus `core.ManualKubernetesNodeTypes` (Workload, K8sService; Kubernetes accounts only).
+- **`markInactiveNodes` never sweeps `source = 'manual'`.** The Kubernetes types are infra-authoritative, so without that exclusion any build that did not re-emit a declared workload would retire it (`TestMarkInactiveNodes_NeverSweepsDeclaredNodes` fails both ways without it). The manual flow source's reconcile is the only thing that retires a declared node.
+- **Writes are authorised per account.** Create, update, delete, Merge and every node of an imported document check `HasAccountAccess` on the declaration's account (handlers in `api/actions_kg_manual_nodes.go`); a declaration outside any connected account needs tenant-wide access, and so does Delete all. Dependencies follow the same rule for **every account they touch**: the accounts of both endpoint nodes (resolved or pinned) and of the endpoints' account qualifiers (`ManualDependencyRepository.WithAccountAuthorizer`); a tenant-wide endpoint node needs tenant access, and a pin must name an active node of the tenant. An unmatched endpoint with no qualifier constrains nothing at write time, so the build may later resolve it in any account. Re-resolve all is not account-checked: it changes no declaration.
+- **Identity is immutable.** Account, type, name, region, VPC/namespace decide the id; edits change only description / schema properties / labels. Optional properties come from `core.SchemaProperties`: the type's `SpecificTypeSchema` minus key inputs (`core.IsManualReservedProperty`), fields only the collector can know — timestamps, runtime state, allocated IPs/ports, internal ids, derived flags (`core.IsManualObservedProperty`) — and lists of objects. A value must have the schema's `PropertyDef.Shape` (map / list / scalar), the shape the collector stores it in; declare `Shape` on any new non-scalar schema field.
+- **The row stores the built node** (`kg_node_id`, `unique_key`, `base_properties`); `core.MaterializeManualNode` rebuilds the identical node at create time and every build.
+- **Import is one JSON document** (`kg_create_manual_declarations`, [flow_sources/manual_declarations.go](flow_sources/manual_declarations.go)): `{nodes: [...], dependencies: [...]}`. A node is a create request plus a `ref` (defaults to `name`, unique in the document); a dependency side is a ref string or an endpoint object for a node already in the graph. The handler parses it with `encoding/json` (the mapstructure decoder the other handlers use cannot tell a string side from an object one); a bad document, unknown field, duplicate or unknown ref is a 400 with nothing written. Nodes land first, through `prepare` + `createPrepared`, so a node that is already declared (`ErrManualNodeDuplicate`) or collected (`ManualNodeExistsError`) comes back `existing` with its node id and still binds. A ref'd side is stored as that node's type / name / namespace / account (so it re-resolves to the same node on its own) and pinned to its id through `createPinned`, which checks the pin before the INSERT. A refused node gets no node id and binds nothing, so its dependencies are rejected too. A dependency already declared (`ErrManualDependencyDuplicate`) comes back `existing`; the dedupe index (`idx_kg_manual_deps_dedupe`, V998) includes each side's account, because a ref'd side carries no cluster or ARN. At most 500 items per document. The filter-options cache is invalidated once per import, not per node. Not transactional: the per-item result says what landed, and a cancelled request still returns it.
+
+**Per build** (`ManualNodeRepository.RunCycle`), before dependencies resolve:
+
+1. **Adopt** — a declaration whose node a collector now writes (in this build's nodes, or in the graph with a non-manual source) is marked `adopted` and no longer emitted: in-build dedup lets later properties win, so emitting it would overwrite the collector's data, including the `source` the sweep reads. Adopted declarations are re-checked every build: when the collector no longer writes the node (the sweep retired it), the declaration is revived to `active` and emitted again.
+2. **Emit** the rest, and add them to the node index the dependency resolver and `buildEdge` use. They are returned with the edges because `SaveEdges` drops edges whose endpoints are not in the build's node list.
+3. **Reconcile** — retire `source='manual'` nodes with no live declaration. Needed because a delete that lands mid-build is undone by that build's `SaveNodes` (it writes every node active) and no sweep retires manual nodes.
+4. **Flag possible duplicates** — a collected node with the same type + name (same account, or any account for a tenant-scoped declaration) under a different key. The UI offers **Merge**: pinned dependencies move to it, the declaration goes.
+
+Declared `ExternalService` nodes are skipped by the ExternalService enricher and both collapse passes (`CollapseEnrichedExternalServices`, `ResolveGCPManagedServiceCalls`): they are what the user said they are, not observed stubs to fold into a cloud resource.
 
 ---
 

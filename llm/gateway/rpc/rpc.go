@@ -54,48 +54,62 @@ func RequireTenant(c *gin.Context) (string, bool) {
 // service-to-service / curl calls that don't set it.
 func CallerRole(c *gin.Context) string { return c.GetHeader("x-user-role") }
 
-// tenantAdminRoles may read ANY user's data within their OWN tenant (never
-// cross-tenant — tenant scoping still applies). Read-only variants are included:
-// viewing is a read.
-var tenantAdminRoles = map[string]bool{
-	"tenant_admin": true, "tenant_admin_readonly": true,
-	"account_admin": true, "account_admin_readonly": true,
-	"super_admin": true, "super_admin_readonly": true,
+// AI Gateway administration (config, quotas, user access; #38963, #38965) is tenant-admin only:
+// tenant admins manage, read-only tenant admins view. Super admins pass so platform staff are not locked out.
+var (
+	tenantManagerRoles = map[string]bool{"tenant_admin": true, "super_admin": true}
+	tenantViewerRoles  = map[string]bool{"tenant_admin": true, "tenant_admin_readonly": true, "super_admin": true, "super_admin_readonly": true}
+)
+
+// callerRoles returns the caller's roles from x-user-roles (every role the app resolved), falling
+// back to the single x-user-role label from an older app pod. ok=false means a direct service call.
+func callerRoles(c *gin.Context) (roles []string, ok bool) {
+	if v, set := c.Request.Header["X-User-Roles"]; set {
+		for _, r := range strings.Split(strings.Join(v, ","), ",") {
+			if r = strings.ToLower(strings.TrimSpace(r)); r != "" && r != "-" {
+				roles = append(roles, r)
+			}
+		}
+		return roles, true
+	}
+	if label := strings.ToLower(strings.TrimSpace(CallerRole(c))); label != "" {
+		return []string{label}, true
+	}
+	return nil, false
 }
 
-// IsTenantAdmin reports whether the caller's role grants tenant-wide read access
-// (e.g. viewing another user's captured request body, within the same tenant).
-func IsTenantAdmin(c *gin.Context) bool { return tenantAdminRoles[CallerRole(c)] }
-
-// readOnlyRoles are the built-in roles whose name promises no mutations. The app
-// grants every llm_gateway_* action to all six built-in roles, and this plane is
-// otherwise guarded only by the shared service token — so without this check a
-// k8s_namespace_admin_readonly could rewrite the tenant's routing rules, rate
-// limits and tier mappings. Matching on the role NAME is sound because
-// x-user-role carries the caller's HIGHEST-priority role (app rolePriority.ts):
-// if it is a read-only variant, the caller holds no write role at all.
-var readOnlyRoles = map[string]bool{
-	"tenant_admin_readonly":        true,
-	"account_admin_readonly":       true,
-	"k8s_namespace_admin_readonly": true,
-	"super_admin_readonly":         true,
+func hasAnyRole(c *gin.Context, allowed map[string]bool) bool {
+	roles, fromUser := callerRoles(c)
+	if !fromUser {
+		// No role headers at all: only a direct service-token caller sends none (the app always
+		// forwards x-user-roles), so this branch admits everything.
+		return true
+	}
+	for _, r := range roles {
+		if allowed[r] {
+			return true
+		}
+	}
+	return false
 }
 
-// RequireWriteRole rejects a caller whose effective role is read-only. Mounted on
-// the config plane's MUTATION routes only — reads stay open to every role the app
-// admits. An EMPTY x-user-role is allowed through: that is a direct
-// service-to-service call (see CallerRole), which the service token already gates.
-func RequireWriteRole() gin.HandlerFunc {
+// IsTenantViewer reports whether the caller may see gateway config and other users' access, quotas and usage.
+func IsTenantViewer(c *gin.Context) bool { return hasAnyRole(c, tenantViewerRoles) }
+
+// RequireTenantManager admits only callers who may change AI Gateway configuration.
+func RequireTenantManager() gin.HandlerFunc {
+	return requireRoles(tenantManagerRoles, "only a tenant admin can change AI Gateway configuration")
+}
+
+// RequireTenantViewer admits only callers who may view AI Gateway configuration.
+func RequireTenantViewer() gin.HandlerFunc {
+	return requireRoles(tenantViewerRoles, "only a tenant admin can view AI Gateway configuration")
+}
+
+func requireRoles(allowed map[string]bool, msg string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Normalize before the lookup so a header that differs only by case or
-		// surrounding whitespace ("Tenant_Admin_Readonly", " tenant_admin_readonly ")
-		// cannot slip past the map and be treated as write-capable. Kept in a local
-		// so CallerRole still reports the header verbatim to everything else.
-		role := strings.ToLower(strings.TrimSpace(CallerRole(c)))
-		if readOnlyRoles[role] {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error": gin.H{"type": "permission_error", "message": "read-only role cannot modify gateway configuration"},
-			})
+		if !hasAnyRole(c, allowed) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": gin.H{"type": "permission_error", "message": msg}})
 			return
 		}
 		c.Next()

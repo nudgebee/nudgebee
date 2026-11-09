@@ -340,6 +340,27 @@ func TestReAct4_ParseCompletion_PreservesProseAroundLegacyActionXML(t *testing.T
 	assert.Equal(t, "Checking pod health now.", actions[0].Log)
 }
 
+// A native call wins over leaked <function=> text: prose before a closed leak stays, an unclosed leak drops it.
+func TestReAct4_ParseCompletion_FunctionCallTextAlongsideNativeToolCall(t *testing.T) {
+	for name, tc := range map[string]struct{ content, wantLog string }{
+		"closed leak":   {"Checking the S3 buckets now. " + nemotronFunctionCall, "Checking the S3 buckets now."},
+		"unclosed leak": {"Checking the S3 buckets now. <function=cloud_resource_search_execute> <parameter=service> S3", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			actions, finish, err := (&NBReActPlanner4{}).parseCompletion(&llms.ContentChoice{
+				Content:   tc.content,
+				ToolCalls: []llms.ToolCall{toolCall("call_1", "cloud_resource_search_execute", `{"service":"S3"}`)},
+			})
+			assert.NoError(t, err)
+			assert.Nil(t, finish)
+			require.Len(t, actions, 1)
+			assert.Equal(t, "cloud_resource_search_execute", actions[0].Tool)
+			assert.JSONEq(t, `{"service":"S3"}`, actions[0].ToolInput)
+			assert.Equal(t, tc.wantLog, actions[0].Log)
+		})
+	}
+}
+
 func TestReAct4_ParseCompletion_StripsEncodedActionXMLInsideThought(t *testing.T) {
 	o := &NBReActPlanner4{}
 	choice := &llms.ContentChoice{
@@ -437,6 +458,37 @@ func TestReAct4_ParseCompletion_SynthesizesMissingID(t *testing.T) {
 	// A single-call turn gets the bare deterministic id, so a repeat collides with
 	// its earlier self and accumulateSteps can dedup it.
 	assert.Equal(t, generateToolId("kubectl", `{"command":"get pods"}`), actions[0].ToolID)
+}
+
+// changingResultTool is a tool whose result can change between identical
+// calls, like every MCP tool (#39635).
+type changingResultTool struct{ MockContextCapturingTool }
+
+func (*changingResultTool) ResultCanChange() bool { return true }
+
+// Gemini sends no call id. A repeated single call to a tool whose result can
+// change (a browser snapshot after a click) must get a new id, so the executor
+// runs it and keeps it as a new step instead of folding it into the first call
+// (#39635). A tool that does not say keeps the deterministic id.
+func TestReAct4_ParseCompletion_ResultCanChangeGetsStepUniqueID(t *testing.T) {
+	snapshot := &changingResultTool{MockContextCapturingTool{NameVal: "qa_browser_snapshot"}}
+	kubectl := &MockContextCapturingTool{NameVal: "kubectl"}
+	o := &NBReActPlanner4{tools: []toolcore.NBTool{snapshot, kubectl}}
+	parse := func(tool, args string) string {
+		t.Helper()
+		actions, _, err := o.parseCompletion(&llms.ContentChoice{ToolCalls: []llms.ToolCall{toolCall("", tool, args)}})
+		assert.NoError(t, err)
+		assert.Len(t, actions, 1)
+		return actions[0].ToolID
+	}
+
+	first := parse("qa_browser_snapshot", `{}`)
+	second := parse("qa_browser_snapshot", `{}`)
+	assert.NotEqual(t, first, second, "a repeated snapshot must not reuse the earlier call's id")
+	assert.Equal(t, generateToolId("qa_browser_snapshot", `{}`)+"-E2", second)
+
+	assert.Equal(t, parse("kubectl", `{"command":"get pods"}`), parse("kubectl", `{"command":"get pods"}`),
+		"a tool that does not say keeps the deterministic id, so repeats are still deduped")
 }
 
 func TestReAct4_ParseCompletion_SynthesizedIDsAreUniqueForIdenticalCalls(t *testing.T) {
@@ -721,9 +773,13 @@ func TestReAct4_ParseCompletion_TextToolCallShapesAreParseFailures(t *testing.T)
 		"tool as tag": "<update_notebook>Confirmed the root cause.</update_notebook>",
 		"gemini default_api": "Click on Troubleshoot in the sidebarcall:default_api:qa_browser_click" +
 			`{_thought:Click on Troubleshoot in the sidebar,element:link Troubleshoot,target:link "Troubleshoot" [ref=f5e71]}`,
-		"gemini unregistered tool": "Checking the pod.call:default_api:shell_execute{command:kubectl get pods}",
-		"brace call":               `Next step: qa_browser_click{"element":"link Troubleshoot"}`,
-		"paren call":               `qa_browser_click(element="link Troubleshoot")`,
+		"gemini unregistered tool":   "Checking the pod.call:default_api:shell_execute{command:kubectl get pods}",
+		"brace call":                 `Next step: qa_browser_click{"element":"link Troubleshoot"}`,
+		"paren call":                 `qa_browser_click(element="link Troubleshoot")`,
+		"qwen3_coder function form":  nemotronFunctionCall,
+		"function form in tool_call": "<tool_call>\n" + nemotronFunctionCall,
+		"unclosed function form":     "<function=cloud_resource_search_execute>\n<parameter=service>\nS3",
+		"function form in a fence":   "```\n" + nemotronFunctionCall + "\n```",
 	} {
 		t.Run(name, func(t *testing.T) {
 			actions, finish, err := o.parseCompletion(&llms.ContentChoice{Content: raw})
@@ -744,6 +800,73 @@ func TestReAct4_ParseCompletion_ToolNameWithoutCallSyntaxStillAnswers(t *testing
 		"The qa_browser_click (second call) succeeded.",
 		"my_qa_browser_click(x) is unrelated.",
 		"Clicking failed: qa_browser_click_v2{} is not a tool here.",
+		"vLLM's qwen3_coder parser expects each call to open with `<function=name>`.",
+		"qwen3_coder calls look like `<function=name><parameter=x>value</parameter></function>`.",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			_, finish, err := o.parseCompletion(&llms.ContentChoice{Content: raw})
+			assert.NoError(t, err)
+			assert.NotNil(t, finish)
+			assert.Equal(t, raw, stripTextToolCalls(raw), "the summary fallback must not cut prose")
+		})
+	}
+}
+
+// issue39704Plan is one copy of the block in issue39704Leak.
+const issue39704Plan = "<tool_call>\n```json\n[\n  {\n    \"action\": \"memory\",\n    \"args\": {\n      \"query\": \"llm-server OOM\"\n    }\n  },\n" +
+	"  {\n    \"action\": \"kubectl_execute\",\n    \"args\": {\n      \"command\": \"kubectl get pods -A | grep llm-server\"\n    }\n  },\n" +
+	"  {\n    \"action\": \"events\",\n    \"args\": {\n      \"query\": \"llm-server OOM\"\n    }\n  }\n]\n```"
+
+// issue39704Leak: the stored test reply (Qwen3.6, message 60277fdf), <tool_call> + fenced JSON plan
+// x2. It came from the summary fallback after a 400 "Extra data"; the planner can emit it too.
+var issue39704Leak = issue39704Plan + "\n" + issue39704Plan
+
+// #39704: a tool plan written as text — with or without Qwen's <tool_call>
+// delimiter, and whether or not the named tools were preloaded — is a retryable
+// text tool call, never the final answer.
+func TestReAct4_ParseCompletion_TextToolPlanIsParseFailure(t *testing.T) {
+	kubectl := []toolcore.NBTool{&stubTool{name: "kubectl_execute"}}
+	for name, tc := range map[string]struct {
+		raw   string
+		tools []toolcore.NBTool
+	}{
+		"observed reply, tool preloaded":     {issue39704Leak, kubectl},
+		"observed reply, no tools preloaded": {issue39704Leak, nil},
+		"closed tool_call tag":               {`<tool_call>{"name": "kubectl_execute", "arguments": {"command": "kubectl get pods"}}</tool_call>`, nil},
+		"bare JSON plan":                     {`[{"action":"kubectl_execute","args":{"command":"kubectl get pods -A"}}]`, kubectl},
+		"name/arguments JSON":                {`{"name": "kubectl_execute", "arguments": {"command": "kubectl get pods"}}`, kubectl},
+		"tool not loaded":                    {`{"name": "workflow_dry_run", "arguments": {"id": "a1"}}`, kubectl},
+		"arguments first":                    {`{"arguments": {"command": "kubectl get pods"}, "name": "kubectl_execute"}`, nil},
+		"extra fields between":               {`{"action":"kubectl_execute","description":"list pods","id":1,"args":{"command":"kubectl get pods"}}`, nil},
+		"nested arguments":                   {`{"type":"function","name":"logs","parameters":{"command":{"type":"string","value":"logs for pod x"}}}`, nil},
+		"call nested in prose JSON":          {"Next step:\n```json\n{\"plan\": [{\"tool\": \"metrics\", \"parameters\": {\"q\": \"cpu\"}}]}\n```", nil},
+		"llama assignment":                   {`kubectl_execute = {"type": "function", "name": "kubectl_execute", "parameters": {"command": "kubectl top nodes"}}`, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			actions, finish, err := (&NBReActPlanner4{tools: tc.tools}).parseCompletion(&llms.ContentChoice{Content: tc.raw})
+			assert.ErrorIs(t, err, errReact4TextToolCall)
+			assert.ErrorIs(t, err, ErrParseFailure)
+			assert.Nil(t, actions)
+			assert.Nil(t, finish, "a plan must NOT become the final answer")
+		})
+	}
+}
+
+// Real answers that quote a tool name or carry JSON data still answer.
+func TestReAct4_ParseCompletion_AnswerQuotingToolNameStillAnswers(t *testing.T) {
+	o := &NBReActPlanner4{tools: []toolcore.NBTool{&stubTool{name: "kubectl_execute"}, &stubTool{name: "metrics"}}}
+	for _, raw := range []string{
+		`The exporter sidecar is {"name": "metrics", "args": ["--port=9100"]}.`,
+		`The log line was {"msg":"tool execution time","tool":"shell_execute","time":0.1,"input":"{\"command\":\"ls\"}"}.`,
+		`Values: {"name": "llm-server", "resources": {"limits": {"memory": "917Mi"}}}`,
+		`Unbalanced {"name": "x", "args": {"a": 1} and more text`,
+		"I ran `kubectl_execute` and llm-server was OOMKilled at 10:42.",
+		`The pod status was {"reason": "OOMKilled", "exitCode": 137}.`,
+		`The tool "kubectl_execute" returned no pods.`,
+		// Tool definitions share a call's name + parameters shape; a schema is not a call.
+		`Defined tools: [{"type":"function","function":{"name":"kubectl_execute","description":"Run kubectl","parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}}]`,
+		`Gemini declaration: {"name": "metrics", "parameters": {"type": "OBJECT", "properties": {"q": {"type": "STRING"}}}}`,
+		"```json\n{\"tool\": \"logs\", \"input\": {\"type\": \"object\", \"properties\": {}}}\n```",
 	} {
 		t.Run(raw, func(t *testing.T) {
 			_, finish, err := o.parseCompletion(&llms.ContentChoice{Content: raw})
@@ -751,6 +874,47 @@ func TestReAct4_ParseCompletion_ToolNameWithoutCallSyntaxStillAnswers(t *testing
 			assert.NotNil(t, finish)
 		})
 	}
+}
+
+// End to end through Plan: the #39704 reply is re-prompted once, and the
+// model's native call on the retry is what gets dispatched.
+func TestReAct4_Plan_TextToolPlanRetriesIntoNativeCall(t *testing.T) {
+	model := &critiqueRecordingModel{replies: []recordedReply{
+		{content: issue39704Leak},
+		{content: "", toolCall: true}, // native metrics call
+	}}
+	withFakeLLMModel(t, model)
+	ctx := llmOverrideContext()
+	p := &NBReActPlanner4{ctx: ctx, request: NBAgentRequest{Query: "investigate oom on llm-server"}, nbAgent: notebookOptOutAgent{},
+		tools: []toolcore.NBTool{&stubTool{name: "metrics"}, &stubTool{name: "kubectl_execute"}}}
+
+	actions, finish, err := p.Plan(ctx.GetContext(), nil, "investigate oom on llm-server")
+
+	require.NoError(t, err)
+	require.Nil(t, finish, "the leaked plan must not be returned as the answer")
+	require.Len(t, actions, 1)
+	require.Equal(t, "metrics", actions[0].Tool)
+	requests := model.requests()
+	require.Len(t, requests, 2, "one re-prompt")
+	retry := requests[1]
+	require.Equal(t, issue39704Leak, messageText(retry[len(retry)-2]), "the leaked text is replayed")
+	require.Contains(t, messageText(retry[len(retry)-1]), "native function calling")
+}
+
+// Leak, re-prompt, leak again: Plan gives up with a parse failure and never
+// returns the second leak as the answer, so it cannot reach the user as one.
+func TestReAct4_Plan_RepeatedTextToolPlanIsParseFailure(t *testing.T) {
+	model := &critiqueRecordingModel{replies: []recordedReply{{content: issue39704Leak}, {content: issue39704Leak}}}
+	withFakeLLMModel(t, model)
+	ctx := llmOverrideContext()
+	p := &NBReActPlanner4{ctx: ctx, request: NBAgentRequest{Query: "investigate oom on llm-server"}, nbAgent: notebookOptOutAgent{}}
+
+	actions, finish, err := p.Plan(ctx.GetContext(), nil, "investigate oom on llm-server")
+
+	require.ErrorIs(t, err, ErrParseFailure)
+	require.Nil(t, finish)
+	require.Empty(t, actions)
+	require.Len(t, model.requests(), 2, "exactly one re-prompt")
 }
 
 // The re-prompt replays the leaked text as the assistant turn and follows it
@@ -1056,3 +1220,45 @@ func TestReAct4_ResolveAgentContext_DefaultsWithoutCacheProvider(t *testing.T) {
 	assert.NotNil(t, agentCtx)
 	assert.Equal(t, CacheScopeConversation, agentCtx.GetContext().Value(ContextKeyCacheScope))
 }
+
+// #39704 root cause: non-JSON args replayed as-is -> vLLM 400s every later request.
+// Valid args still replay byte-for-byte (thought signatures).
+func TestReAct4_RenderSteps_InvalidArgumentsReplayAsEmptyObject(t *testing.T) {
+	o := &NBReActPlanner4{}
+	for name, tc := range map[string]struct{ native, want string }{
+		"stray closing brace": {`{"query": "OOM kill investigation Kubernetes pod memory"}}`, `{}`},
+		"lost value":          {`{"command": "x", "_memory_refs": }`, `{}`},
+		"truncated":           {`{"query": "oom`, `{}`},
+		"not an object":       {`["oom"]`, `{}`},
+		"null":                {`null`, `{}`},
+		"valid kept verbatim": {`{"query": "oom",  "k": 1}`, `{"query": "oom",  "k": 1}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			steps := []NBAgentPlannerToolActionStep{{
+				Action:      NBAgentPlannerToolAction{Tool: "search_skills", ToolInput: tc.native, NativeToolInput: tc.native, ToolID: "c1"},
+				Observation: "search_skills did not run: the arguments of this call were not a valid JSON object",
+			}}
+			msgs := o.renderStepsToMessages(steps)
+			var call llms.ToolCall
+			for _, p := range msgs[0].Parts {
+				if c, ok := p.(llms.ToolCall); ok {
+					call = c
+				}
+			}
+			require.NotNil(t, call.FunctionCall)
+			assert.Equal(t, tc.want, call.FunctionCall.Arguments)
+		})
+	}
+}
+
+// The user never sees a rejected answer, so the send-back must ask for a
+// self-contained answer that does not narrate the correction (#39803).
+func TestReact4RefinementMessageAsksForSelfContainedAnswer(t *testing.T) {
+	msg := react4RefinementMessage("E2 contradicts the OOM claim")
+	assert.Contains(t, msg, "E2 contradicts the OOM claim")
+	assert.Contains(t, msg, "The user never saw the previous answer")
+	assert.Contains(t, msg, "do not mention a previous answer")
+}
+
+// nemotronFunctionCall is Nemotron Nano's leaked final answer on an S3 question (#38236).
+const nemotronFunctionCall = "<function=cloud_resource_search_execute> <parameter=service> S3 </parameter> </function> </tool_call>"

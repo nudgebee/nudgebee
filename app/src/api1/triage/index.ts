@@ -1,4 +1,4 @@
-import { queryGraphQL } from '@lib/HttpService';
+import { queryGraphQL, unwrapGraphQL } from '@lib/HttpService';
 
 // -------------------- GraphQL Mutations --------------------
 
@@ -180,6 +180,7 @@ mutation EventUpdateTriageRule(
   $name: String
   $description: String
   $apply_to_existing: Boolean
+  $enabled: Boolean
 ) {
   event_update_triage_rule(
     cloud_account_id: $cloud_account_id
@@ -200,6 +201,7 @@ mutation EventUpdateTriageRule(
     name: $name
     description: $description
     apply_to_existing: $apply_to_existing
+    enabled: $enabled
   ) {
     success
     rule {
@@ -479,8 +481,13 @@ mutation EventGetThresholdSuggestion($event_id: String!) {
       estimated_reduction
       method
       recommendation_type
+      recommendation_label
       suggested_duration
       duration_reason
+      current_duration_seconds
+      measured_on
+      measured_on_other
+      fetch_failed_at
       risk_level
       risk_warnings
     }
@@ -534,6 +541,7 @@ mutation EventListThresholdSuggestions(
       estimated_reduction
       method
       recommendation_type
+      recommendation_label
       computed_at
       event_aggregation_key
       firing_analysis
@@ -546,6 +554,9 @@ mutation EventListThresholdSuggestions(
       applied_by
       applied_threshold
       previous_threshold
+      pr_url
+      resolution_status
+      resolution_message
     }
     total
   }
@@ -567,6 +578,9 @@ mutation EventGetThresholdApplyOptions($alert_rule_key: String!, $cloud_account_
     current_threshold
     new_threshold
     operator
+    current_duration_seconds
+    current_duration_known
+    new_duration_minutes
   }
 }
 `;
@@ -728,6 +742,7 @@ export interface UpdateTriageRuleInput {
   name?: string;
   description?: string;
   apply_to_existing?: boolean;
+  enabled?: boolean;
 }
 
 export interface UpdateNBStatusInput {
@@ -1047,9 +1062,12 @@ const apiTriage = {
         description: data.description,
         apply_to_existing: data.apply_to_existing,
       });
-      return response?.data?.data?.event_create_triage_rule;
+      return unwrapGraphQL(response, 'Failed to create triage rule')?.event_create_triage_rule;
     } catch (error) {
-      console.error('Failed to create triage rule:', error);
+      // Log the message, not the Error object — Next's dev overlay promotes any
+      // console.error(Error) to a blocking runtime-error screen, even for an
+      // expected validation failure the caller already handles and displays.
+      console.error('Failed to create triage rule:', error instanceof Error ? error.message : error);
       throw error;
     }
   },
@@ -1156,10 +1174,14 @@ const apiTriage = {
         name: data.name,
         description: data.description,
         apply_to_existing: data.apply_to_existing,
+        enabled: data.enabled,
       });
-      return response?.data?.data?.event_update_triage_rule;
+      return unwrapGraphQL(response, 'Failed to update triage rule')?.event_update_triage_rule;
     } catch (error) {
-      console.error('Failed to update triage rule:', error);
+      // See the matching comment in createTriageRule: log the message, not the
+      // Error object, to avoid Next's dev overlay treating a handled validation
+      // failure as a runtime crash.
+      console.error('Failed to update triage rule:', error instanceof Error ? error.message : error);
       throw error;
     }
   },
@@ -1356,8 +1378,17 @@ export interface ThresholdSuggestionResponse {
     estimated_reduction: number;
     method?: string;
     recommendation_type?: string;
+    /** Server wording for recommendation_type; every screen shows this rather than its own. */
+    recommendation_label?: string;
     suggested_duration?: number;
     duration_reason?: string;
+    /** The rule's wait before firing today; meaningful when suggested_duration is set. */
+    current_duration_seconds?: number;
+    /** The instance whose metric was analysed, and whether it is another one than this alert's. */
+    measured_on?: string;
+    measured_on_other?: boolean;
+    /** When the last attempt to read the rule's metric failed; the verdict is then from an earlier run. */
+    fetch_failed_at?: string;
     risk_level?: string;
     risk_warnings?: string[];
   };
@@ -1392,6 +1423,8 @@ export interface ThresholdSuggestionItem {
   estimated_reduction?: number;
   method?: string;
   recommendation_type?: string;
+  /** Server wording for recommendation_type; every screen shows this rather than its own. */
+  recommendation_label?: string;
   computed_at?: string;
   event_aggregation_key?: string;
   firing_analysis?: {
@@ -1421,6 +1454,11 @@ export interface ThresholdSuggestionItem {
     recommendation_type?: string;
     suggested_duration?: number;
     duration_reason?: string;
+    current_duration_seconds?: number;
+    measured_on?: string;
+    measured_on_other?: boolean;
+    last_fetch_failed_at?: string;
+    last_fetch_error?: string;
     risk_level?: string;
     risk_warnings?: string[];
   };
@@ -1441,6 +1479,9 @@ export interface ThresholdSuggestionItem {
   applied_by?: string;
   applied_threshold?: number;
   previous_threshold?: number;
+  pr_url?: string | null;
+  resolution_status?: string | null;
+  resolution_message?: string | null;
 }
 
 export interface ThresholdApplyOption {
@@ -1458,6 +1499,10 @@ export interface ThresholdApplyOptions {
   current_threshold?: number;
   new_threshold?: number;
   operator?: string;
+  /** The rule's wait today (seconds) and the wait this suggestion would set (minutes; 0 = unchanged). */
+  current_duration_seconds?: number;
+  current_duration_known?: boolean;
+  new_duration_minutes?: number;
 }
 
 export interface ApplyThresholdInput {

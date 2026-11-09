@@ -137,6 +137,20 @@ func TestListToolUsage_UserFilter(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestUsageMetricsFilter_BuildToolWhere_CallTime: the Tools tab counts tool
+// calls that ran in the window, in conversations with LLM calls in the window
+// for the account — the call-time scope every other analyser screen uses
+// (#40241) — not conversations that started in the window.
+func TestUsageMetricsFilter_BuildToolWhere_CallTime(t *testing.T) {
+	f := UsageMetricsFilter{AccountIDs: []string{"acc-1"}, StartDate: time.Now(), EndDate: time.Now()}
+	where, args := f.buildToolWhere()
+
+	assert.Contains(t, where, "tu.conversation_account_id = ANY($1::uuid[]) AND tu.created_at >= $2 AND tu.created_at <= $3")
+	assert.Contains(t, where, "tc.created_at >= $2 AND tc.created_at <= $3")
+	assert.NotRegexp(t, `(^|[^a-z])c\.created_at`, where)
+	assert.Len(t, args, 3)
+}
+
 // TestListToolUsage_ScansRunConcurrently: the operational and downstream-cost scans
 // are independent, so the tab should wait for the slower one, not for both (#39745).
 func TestListToolUsage_ScansRunConcurrently(t *testing.T) {
@@ -210,4 +224,21 @@ func TestListToolCalls_NoToolName(t *testing.T) {
 	out, err := dao.ListToolCalls(UsageMetricsFilter{AccountIDs: []string{"acc-1"}}, "", nil, 100)
 	require.NoError(t, err)
 	assert.Empty(t, out.Rows)
+}
+
+func TestSortToolRows_ErrorsRanksByRateThenCount(t *testing.T) {
+	rows := []ToolUsageRow{
+		{ToolName: "kubectl_execute", Calls: 465, ErrorCount: 107, ErrorRatePct: 23},
+		{ToolName: "shell_execute", Calls: 896, ErrorCount: 76, ErrorRatePct: 8},
+		{ToolName: "gcloud_execute", Calls: 55, ErrorCount: 17, ErrorRatePct: 31},
+		{ToolName: "helm_execute", Calls: 100, ErrorCount: 23, ErrorRatePct: 23},
+	}
+	sortToolRows(rows, "errors")
+	got := []string{rows[0].ToolName, rows[1].ToolName, rows[2].ToolName, rows[3].ToolName}
+	want := []string{"gcloud_execute", "kubectl_execute", "helm_execute", "shell_execute"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("order = %v, want %v", got, want)
+		}
+	}
 }

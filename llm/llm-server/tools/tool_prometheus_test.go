@@ -394,6 +394,21 @@ func TestListMetricsLabelValuesTool_RequiresLabel(t *testing.T) {
 	assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
 	assert.Contains(t, resp.Data, ToolMetricsLabelsList,
 		"error must point at the tool that lists label names")
+	assert.True(t, resp.IsBadInput, "a missing label is the caller's mistake, not the tool failing")
+}
+
+// A label that looks like query-string syntax is the caller's mistake: it must
+// be flagged so it stays out of the tool-failure alert.
+func TestListMetricsLabelValuesTool_MalformedLabelIsBadInput(t *testing.T) {
+	tool := ListMetricsLabelValuesTool{Provider: "prometheus"}
+
+	resp, err := tool.Call(core.NbToolContext{}, core.NBToolCallRequest{
+		Arguments: map[string]any{"label": "kubernetes.pod.name&filter=api"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
+	assert.True(t, resp.IsBadInput)
 }
 
 func TestListMetricsLabelValuesTool_SchemaContract(t *testing.T) {
@@ -553,6 +568,116 @@ func TestESDiscoveryProvenance_SeparatesDataFromSchema(t *testing.T) {
 
 	assert.Equal(t, "none found", esDiscoveryProvenance(0, 0))
 }
+
+// ---------------------------------------------------------------------------
+// countSeriesPoints / statsOnlySeries / seriesSignificance
+// ---------------------------------------------------------------------------
+
+// seriesWithStats builds a series map matching what the stats pass in Call()
+// produces: metric labels, full timestamps/values, and a stats.max used to
+// rank significance.
+func seriesWithStats(name string, max float64) map[string]any {
+	return map[string]any{
+		"metric":     map[string]any{"__name__": name},
+		"timestamps": []any{1.0, 2.0},
+		"values":     []float64{max / 2, max},
+		"stats":      map[string]any{"min": 0.0, "max": max, "avg": max / 2, "p99": max},
+	}
+}
+
+// seriesWithPoints builds a series with the given number of raw points.
+func seriesWithPoints(name string, max float64, points int) map[string]any {
+	s := seriesWithStats(name, max)
+	ts := make([]any, points)
+	vals := make([]float64, points)
+	for i := range ts {
+		ts[i] = float64(i)
+		vals[i] = max
+	}
+	s["timestamps"] = ts
+	s["values"] = vals
+	return s
+}
+
+func byName(s any) string {
+	return s.(map[string]any)["metric"].(map[string]any)["__name__"].(string)
+}
+
+func TestCountSeriesPoints(t *testing.T) {
+	apiData := []any{seriesWithPoints("a", 1, 3), seriesWithPoints("b", 2, 4), "not a map", map[string]any{"metric": "no timestamps"}}
+	assert.Equal(t, 7, countSeriesPoints(apiData))
+}
+
+func TestStatsOnlySeries_DropsRawDataKeepsStatsRankedBySignificance(t *testing.T) {
+	apiData := []any{seriesWithStats("a", 1), seriesWithStats("b", 500), seriesWithStats("c", 50)}
+	kept, shown := statsOnlySeries(apiData, 0)
+
+	assert.Equal(t, 3, shown)
+	require.Len(t, kept, 3)
+	assert.Equal(t, []string{"b", "c", "a"}, []string{byName(kept[0]), byName(kept[1]), byName(kept[2])})
+	for _, s := range kept {
+		ss := s.(map[string]any)
+		assert.NotNil(t, ss["stats"], "stats stay inline")
+		assert.Nil(t, ss["values"])
+		assert.Nil(t, ss["timestamps"])
+	}
+}
+
+func TestStatsOnlySeries_CapsInlineSeriesAcrossBatch(t *testing.T) {
+	apiData := make([]any, 0, maxInlineSeries+5)
+	for i := 0; i < maxInlineSeries+5; i++ {
+		apiData = append(apiData, seriesWithStats(fmt.Sprintf("s%d", i), float64(maxInlineSeries+5-i)))
+	}
+	kept, shown := statsOnlySeries(apiData, 0)
+	assert.Equal(t, maxInlineSeries, shown)
+	require.Len(t, kept, maxInlineSeries)
+	assert.Equal(t, "s0", byName(kept[0]), "most significant series survives the inline cut")
+
+	// A second query in the same call inherits the spend rather than getting a fresh allowance.
+	kept2, shown2 := statsOnlySeries([]any{seriesWithStats("q2", 1)}, shown)
+	assert.Equal(t, maxInlineSeries, shown2)
+	assert.Empty(t, kept2)
+}
+
+func TestStatsOnlySeries_DeterministicAcrossRepeatedCalls(t *testing.T) {
+	build := func() []any {
+		return []any{seriesWithStats("a", 5), seriesWithStats("b", 500), seriesWithStats("c", 50)}
+	}
+	first, _ := statsOnlySeries(build(), 0)
+	second, _ := statsOnlySeries(build(), 0)
+	assert.Equal(t, first, second, "a retried query must not get a different inline subset")
+}
+
+func TestUniqueCleanedQueries_DropsRepeatsAfterCleanup(t *testing.T) {
+	tool := PrometheusExecuteTool{}
+	got := tool.uniqueCleanedQueries([]string{"up", " up ", "up{job=\"a\"}", "up"})
+	assert.Equal(t, []string{"up", "up{job=\"a\"}"}, got, "a repeated query (even with different whitespace) must run once")
+}
+
+func TestSeriesFileNote(t *testing.T) {
+	saved := seriesFileNote("metrics_prometheus_1.json", false, 6600, 90000, 150)
+	assert.Contains(t, saved, "metrics_prometheus_1.json")
+	assert.Contains(t, saved, "150 of 6600")
+	assert.Contains(t, saved, "If you have shell_execute", "the file is only readable by callers with shell access")
+	assert.Contains(t, saved, "sum by(", "callers without shell access must still get advice they can act on")
+
+	failed := seriesFileNote("", true, 6600, 90000, 150)
+	assert.Contains(t, failed, "could not be saved")
+	assert.NotContains(t, failed, "file_ref")
+}
+
+func TestSeriesSignificance_MissingOrMalformedStatsSortsLast(t *testing.T) {
+	assert.Equal(t, math.Inf(-1), seriesSignificance("not a map"))
+	assert.Equal(t, math.Inf(-1), seriesSignificance(map[string]any{"metric": "no stats key"}))
+	assert.Equal(t, math.Inf(-1), seriesSignificance(map[string]any{"stats": map[string]any{"max": "not a float"}}))
+	assert.Equal(t, 5.0, seriesSignificance(map[string]any{"stats": map[string]any{"max": 5.0}}))
+	assert.Equal(t, 5.0, seriesSignificance(map[string]any{"stats": map[string]any{"max": -5.0}}), "significance uses magnitude, so a negative-valued metric isn't always deprioritized")
+	assert.Equal(t, math.Inf(-1), seriesSignificance(map[string]any{"stats": map[string]any{"max": math.NaN()}}), "NaN must sort last, not propagate — every comparison against NaN returns false and would break sort.SliceStable's ordering requirement")
+}
+
+// ---------------------------------------------------------------------------
+// executePromQl — nil request context
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // metrics provider routing
@@ -737,4 +862,50 @@ func TestExecutePromQl_NilRequestContextReturnsError(t *testing.T) {
 		assert.Error(t, err)
 		assert.Nil(t, data)
 	})
+}
+
+func TestFilterLabelsByName(t *testing.T) {
+	labels := []core.ObservabilityMetricsSeriesLabel{
+		{Label: "aws.dimensions.DBInstanceIdentifier"}, {Label: "metricset.dimensions.DBInstanceIdentifier"}, {Label: "kubernetes.pod.name"},
+	}
+	got := filterLabelsByName(labels, "dbinstanceidentifier")
+	require.Len(t, got, 2)
+	assert.Len(t, filterLabelsByName(labels, ""), 3, "no filter keeps everything")
+	assert.Empty(t, filterLabelsByName(labels, "nope"))
+}
+
+// TestStatsOnlySeriesWithin_StopsAtByteBudget pins #39201: wide series under the
+// count limits still stop at promInlineBytes, most significant first, and later
+// queries in the same call share the spend.
+func TestStatsOnlySeriesWithin_StopsAtByteBudget(t *testing.T) {
+	wide := func(name string, max float64) map[string]any {
+		s := seriesWithStats(name, max)
+		s["metric"].(map[string]any)["pad"] = strings.Repeat("x", 4*1024)
+		return s
+	}
+	apiData := []any{}
+	for i := 0; i < 10; i++ {
+		apiData = append(apiData, wide(fmt.Sprintf("s%d", i), float64(i)))
+	}
+	kept, shown, used := statsOnlySeriesWithin(apiData, 0, 0)
+	require.NotEmpty(t, kept)
+	assert.Less(t, len(kept), 10, "the byte budget cuts before the count limit")
+	assert.Equal(t, len(kept), shown)
+	assert.LessOrEqual(t, used, promInlineBytes)
+	assert.Equal(t, "s9", byName(kept[0]), "most significant series kept first")
+	assert.Nil(t, kept[0].(map[string]any)["values"])
+
+	kept2, shown2, used2 := statsOnlySeriesWithin([]any{wide("q2", 100)}, shown, used)
+	assert.Empty(t, kept2, "a later query does not get a fresh budget")
+	assert.Equal(t, shown, shown2)
+	assert.Equal(t, used, used2)
+}
+
+func TestStatsOnlySeriesWithin_DropsUnmarshalableSeries(t *testing.T) {
+	bad := seriesWithStats("bad", 1000)
+	bad["stats"].(map[string]any)["avg"] = math.Inf(1)
+	kept, shown, _ := statsOnlySeriesWithin([]any{bad, seriesWithStats("ok", 1)}, 0, 0)
+	require.Len(t, kept, 1)
+	assert.Equal(t, "ok", byName(kept[0]))
+	assert.Equal(t, 1, shown)
 }

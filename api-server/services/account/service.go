@@ -14,13 +14,11 @@ import (
 	"net/http"
 	"net/url"
 	"nudgebee/services/audit"
-	"nudgebee/services/cloud"
 	"nudgebee/services/common"
 	"nudgebee/services/config"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/internal/database/models"
 	"nudgebee/services/license"
-	"nudgebee/services/llm"
 	"nudgebee/services/security"
 	tenantpkg "nudgebee/services/tenant"
 	"slices"
@@ -28,7 +26,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
@@ -409,7 +409,7 @@ var accountDataDeletePlan = []deleteGroup{
 	// insight tables
 	{defaultAccountIdColumn: "account_id", tables: []tableDetails{{name: "insight"}}},
 	// llm related tables
-	{defaultAccountIdColumn: "account_id", tables: []tableDetails{{name: "llm_retrieval_trace", accountColumnName: "cloud_account_id"}, {name: "llm_rags"}, {name: "llm_conversation_history"}, {name: "llm_conversation_saved", whereSubclause: "conversation_id in (select id from llm_conversations where account_id = $1)"}, {name: "llm_functions"}, {name: "llm_tools_installation"}, {name: "llm_agents_installation"}, {name: "llm_conversation_feedback", accountColumnName: "cloud_account_id"}, {name: "llm_conversation_tool_calls"}, {name: "llm_conversation_agent"}, {name: "llm_conversation_messages"}, {name: "llm_conversation_attachments"}, {name: "llm_conversation_references"}, {name: "llm_conversations"}}},
+	{defaultAccountIdColumn: "account_id", tables: []tableDetails{{name: "llm_retrieval_trace", accountColumnName: "cloud_account_id"}, {name: "llm_rags"}, {name: "llm_conversation_history"}, {name: "llm_conversation_saved", whereSubclause: "conversation_id in (select id from llm_conversations where account_id = $1)"}, {name: "llm_functions"}, {name: "llm_tools_installation"}, {name: "llm_agents_installation"}, {name: "llm_conversation_feedback", accountColumnName: "cloud_account_id"}, {name: "llm_conversation_tool_calls"}, {name: "llm_conversation_agent"}, {name: "llm_conversation_messages"}, {name: "llm_conversation_attachments"}, {name: "llm_conversation_references"}, {name: "llm_conversation_token_usage", whereSubclause: "conversation_id IN (SELECT id FROM llm_conversations WHERE account_id = $1)"}, {name: "llm_conversation_token_usage", whereSubclause: "conversation_id IS NULL AND tenant_id IS NOT NULL AND account_id = $1"}, {name: "llm_conversation_token_usage", whereSubclause: "conversation_id IS NULL AND tenant_id IS NOT NULL AND conversation_account_id = $1"}, {name: "llm_usage_daily"}, {name: "llm_conversations"}}},
 	// anomaly/slo related tables
 	{defaultAccountIdColumn: "cloud_account_id", tables: []tableDetails{{name: "anomaly_config"}, {name: "anomaly", accountColumnName: "account_id"}, {name: "slo_report"}, {name: "slo_config"}}},
 	// knowledge graph; edges carry no foreign key to nodes, and a cross-account
@@ -641,11 +641,18 @@ func DeleteAccount(context *security.RequestContext, query AccountDeleteRequest)
 		}
 		plan = append(plan, accountRowDeletePlan...)
 	}
+	orphanedLLM, err := llmIntegrationsOnlyLinkedTo(tx, query.Id)
+	if err != nil {
+		return AccountDeleteResponse{}, err
+	}
 	for _, group := range plan {
 		err = deleteTables(context, tx, group.tables, query.Id, group.defaultAccountIdColumn)
 		if err != nil {
 			return AccountDeleteResponse{}, err
 		}
+	}
+	if err := disableLLMIntegrations(tx, orphanedLLM); err != nil {
+		return AccountDeleteResponse{}, err
 	}
 
 	err = tx.Commit()
@@ -751,6 +758,19 @@ func insertCloudAccountOnboardingError(tenantId string, createdBy string, cloudP
 	}
 
 	return nil, nil
+}
+
+// Wire-compatible with collector-server's own CloudAccountCostReportJob
+// (cloud-collector/account/etl_usage_report.go) — same exchange/queue, same
+// consumer (ConsumeCloudAccountCostReportJobs), two Go modules that can't
+// share the type directly.
+type cloudAccountCostReportJob struct {
+	JobId     string `json:"job_id"`
+	AccountId string `json:"account_id"`
+	TenantId  string `json:"tenant_id"`
+	Month     int    `json:"month"`
+	Year      int    `json:"year"`
+	Backfill  bool   `json:"backfill"`
 }
 
 func CreateAccount(context *security.RequestContext, query AccountCreateRequest) (AccountCreateResponse, error) {
@@ -1168,10 +1188,6 @@ func CreateAccount(context *security.RequestContext, query AccountCreateRequest)
 		}
 	}
 
-	if err := llm.AttachTenantDefaultLLMProvider(context.GetContext(), dbms, query.Tenant, newAccountId); err != nil {
-		context.GetLogger().Error("account: created, but failed to attach the default LLM provider", "error", err, "account", newAccountId)
-	}
-
 	// invalidate tenant cache
 	err = security.InvalidateCacheForTenant(context.GetSecurityContext().GetTenantId())
 	if err != nil {
@@ -1180,30 +1196,44 @@ func CreateAccount(context *security.RequestContext, query AccountCreateRequest)
 
 	//load initial data
 	if query.CloudProvider == "AWS" || query.CloudProvider == "Azure" || query.CloudProvider == "GCP" || query.CloudProvider == "CloudFoundry" {
-		go func() {
-			context.GetLogger().Info("account: triggering intial load for account", "account", newAccountId)
-			// Backfill: this is the account's first sync, so the current month on
-			// its own is whatever fraction of it has elapsed. An account connected
-			// on the 20th would otherwise show 20 days of spend and no history at
-			// all — no month-on-month comparison, an empty trend chart, and no
-			// baseline for spend-anomaly detection to work from. The organisation
-			// auto-registration path already asks for this; account creation from
-			// the UI never did.
-			// UTC, not local: billing periods are UTC, so a server west of it would
-			// ask for the previous month during the first hours of a new UTC month.
-			// That month is also what the backfill skips as already-processed, so a
-			// local-time answer would skip the wrong one.
-			now := time.Now().UTC()
-			_, err := cloud.StoreUsageReport(context, cloud.StoreUsageRequest{
-				AccountId: newAccountId,
-				Month:     now.Month(),
-				Year:      now.Year(),
-				Backfill:  true,
-			})
-			if err != nil {
-				context.GetLogger().Error("failed to hit store_usage", "error", err)
-			}
-		}()
+		context.GetLogger().Info("account: triggering intial load for account", "account", newAccountId)
+		// Backfill: this is the account's first sync, so the current month on
+		// its own is whatever fraction of it has elapsed. An account connected
+		// on the 20th would otherwise show 20 days of spend and no history at
+		// all — no month-on-month comparison, an empty trend chart, and no
+		// baseline for spend-anomaly detection to work from. The organisation
+		// auto-registration path already asks for this; account creation from
+		// the UI never did.
+		// UTC, not local: billing periods are UTC, so a server west of it would
+		// ask for the previous month during the first hours of a new UTC month.
+		// That month is also what the backfill skips as already-processed, so a
+		// local-time answer would skip the wrong one.
+		now := time.Now().UTC()
+		// #41116: this used to call cloud.StoreUsageReport synchronously in a
+		// goroutine — a plain HTTP POST with no explicit timeout, so it
+		// inherited common.HttpPost's 30s default. The collector runs the
+		// actual billing read bound to that same request's context, so a
+		// slow BigQuery export got its read cancelled at 30s: written up as
+		// a failed first sync, history backfill skipped, even though the
+		// account and every other sync were fine. The daily cron never hits
+		// this — it publishes a CloudAccountCostReportJob to this same
+		// queue instead of calling store_usage directly
+		// (etl_usage_report.go, StoreDailyUsageReportForAllAccounts), so a
+		// worker with no HTTP deadline does the read. Onboarding now does
+		// the same: publish and return, don't block the account-create
+		// response on it.
+		job := cloudAccountCostReportJob{
+			JobId:     uuid.New().String(),
+			AccountId: newAccountId,
+			TenantId:  context.GetSecurityContext().GetTenantId(),
+			Month:     int(now.Month()),
+			Year:      now.Year(),
+			Backfill:  true,
+		}
+		if err := common.MqPublish(config.Config.RabbitMqCloudAccountCostReportExchange, config.Config.RabbitMqCloudAccountCostReportQueue, job,
+			common.MqPublishWithContext(context.GetContext())); err != nil {
+			context.GetLogger().Error("account: failed to publish cost report job for initial load", "account", newAccountId, "error", err)
+		}
 	}
 
 	audit.LogChange(context, audit.ChangeInput{
@@ -2814,4 +2844,44 @@ func UpdateAccountByAction(context *security.RequestContext, request AccountUpda
 		})
 	}
 	return AccountUpdateResponse{AffectedRows: int(affected)}, nil
+}
+
+// llmIntegrationsOnlyLinkedTo returns the enabled LLM integrations linked to
+// this account and no other, except the tenant default. Deleting the account
+// would leave them with no accounts, which makes an LLM integration
+// tenant-wide; nobody chose that, so they are disabled instead and an admin
+// decides their scope. The tenant default stays enabled: every account without
+// its own default already uses it, so nothing changes for anyone.
+func llmIntegrationsOnlyLinkedTo(tx *sql.Tx, accountId string) ([]string, error) {
+	rows, err := tx.Query(`
+		SELECT i.id::text FROM integrations i
+		JOIN integrations_cloud_accounts ia ON ia.integration_id = i.id
+		WHERE ia.cloud_account_id = $1 AND i.type = 'llm' AND i.status = 'enabled'
+		  AND NOT EXISTS (SELECT 1 FROM integrations_cloud_accounts o
+		                  WHERE o.integration_id = i.id AND o.cloud_account_id <> $1)
+		  AND NOT EXISTS (SELECT 1 FROM integration_config_values d
+		                  WHERE d.integration_id = i.id AND d.name = 'default_llm_provider' AND d.value = 'true')`, accountId)
+	if err != nil {
+		return nil, fmt.Errorf("account: failed to find LLM integrations linked only to %s: %w", accountId, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func disableLLMIntegrations(tx *sql.Tx, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	if _, err := tx.Exec(`UPDATE integrations SET status = 'disabled', updated_at = now() WHERE id = ANY($1::uuid[])`, pq.Array(ids)); err != nil {
+		return fmt.Errorf("account: failed to disable LLM integrations left with no accounts: %w", err)
+	}
+	return nil
 }

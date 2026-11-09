@@ -1032,6 +1032,138 @@ func eventsListSQL(t *testing.T, where QueryWhereClause, orderBy string) string 
 	return strings.Join(strings.Fields(sql), " ")
 }
 
+// issuesByLatestRank is the request the Troubleshoot briefing sends for its rank
+// tiles: distinct issues (account + fingerprint), grouped by the rank of each
+// issue's newest event.
+func issuesByLatestRank() QueryRequest {
+	return QueryRequest{
+		Table: "event_groupings_v2",
+		Columns: []QueryColumn{
+			{Name: "latest_computed_priority"},
+			{Name: "event_count", Expr: "distinct", Args: []string{"account_id", "fingerprint"}},
+		},
+		Where:   QueryWhereClause{Binary: BinaryWhereClause{"tenant_id": {Eq: "t1"}}},
+		GroupBy: []string{"latest_computed_priority"},
+	}
+}
+
+func eventGroupingsSQL(t *testing.T, req QueryRequest, accountScope string) string {
+	t.Helper()
+	td, ok := GetTableMetadata("event_groupings_v2")
+	require.True(t, ok)
+	sql, err := generateSqlQuery(superAdminCtx(), "", req, td, accountScope)
+	require.NoError(t, err)
+	return strings.Join(strings.Fields(sql), " ")
+}
+
+// Grouping the events by their own rank and counting distinct issues counts an
+// issue once under every rank its events carry, so the ranks add up to more
+// issues than exist. Grouping by the aggregate has to make one row per issue
+// first and count those rows.
+func TestSQLGen_GroupCount_CountsEachGroupOnceByItsAggregate(t *testing.T) {
+	sql := eventGroupingsSQL(t, issuesByLatestRank(), "")
+
+	assert.Equal(t,
+		"SELECT latest_computed_priority,count(*) AS event_count FROM ("+
+			"SELECT cast((array_agg(computed_priority ORDER BY events.created_at DESC))[1] as TEXT) AS latest_computed_priority "+
+			"FROM events WHERE (events.tenant = 't1') "+
+			"GROUP BY cast(events.cloud_account_id as TEXT),cast(events.fingerprint as TEXT)"+
+			") AS grouped GROUP BY latest_computed_priority LIMIT 1000",
+		sql)
+}
+
+// The inner statement feeds the count, so it must return every group. A LIMIT
+// there (the engine's default is 1000) would silently cap the totals.
+func TestSQLGen_GroupCount_OnlyTheOuterStatementIsLimited(t *testing.T) {
+	req := issuesByLatestRank()
+	req.Limit = 5
+	req.Offset = 10
+	req.OrderBy = []QueryOrderBy{{Column: "event_count", Order: Desc}}
+	sql := eventGroupingsSQL(t, req, "")
+
+	assert.Equal(t, 1, strings.Count(sql, "LIMIT"))
+	assert.True(t, strings.HasSuffix(sql, ") AS grouped GROUP BY latest_computed_priority ORDER BY event_count DESC LIMIT 5 OFFSET 10"), sql)
+}
+
+// The server's account scope and the request's HAVING both belong to the
+// statement that reads the events: the scope so a scoped reader counts only
+// their accounts, the HAVING so it is decided once per group.
+func TestSQLGen_GroupCount_ScopeAndHavingStayInsideTheInnerStatement(t *testing.T) {
+	req := issuesByLatestRank()
+	req.Columns[1].Args = []string{"tenant_id", "account_id", "fingerprint"}
+	req.Having = QueryWhereClause{Binary: BinaryWhereClause{"latest_computed_priority": {Eq: "P2"}}}
+	sql := eventGroupingsSQL(t, req, "cloud_account_id IN ('acctA')")
+
+	inner, outer, found := strings.Cut(sql, ") AS grouped ")
+	require.True(t, found, sql)
+	assert.Contains(t, inner, "WHERE ((events.tenant = 't1')) AND (cloud_account_id IN ('acctA'))")
+	assert.Contains(t, inner, "GROUP BY cast(events.tenant as TEXT),cast(events.cloud_account_id as TEXT),cast(events.fingerprint as TEXT)")
+	assert.True(t, strings.HasSuffix(inner, "HAVING ((array_agg(computed_priority ORDER BY events.created_at DESC))[1] = 'P2')"), inner)
+	assert.Equal(t, "GROUP BY latest_computed_priority LIMIT 1000", outer)
+}
+
+// A column the request also groups by without aggregating splits the groups
+// further, and keeps the transformation the request gave it.
+func TestSQLGen_GroupCount_KeepsADateUnitOnAPlainGroupByColumn(t *testing.T) {
+	req := issuesByLatestRank()
+	req.Columns = append([]QueryColumn{{Name: "created_at", Expr: "date_unit", Args: []string{"hour"}}}, req.Columns...)
+	req.GroupBy = []string{"created_at", "latest_computed_priority"}
+	sql := eventGroupingsSQL(t, req, "")
+
+	inner, outer, found := strings.Cut(sql, ") AS grouped ")
+	require.True(t, found, sql)
+	assert.Contains(t, inner, "DATE_TRUNC('hour', events.created_at) AS created_at")
+	assert.Contains(t, inner, "GROUP BY cast(events.cloud_account_id as TEXT),cast(events.fingerprint as TEXT),DATE_TRUNC('hour', events.created_at)")
+	assert.True(t, strings.HasPrefix(sql, "SELECT created_at,latest_computed_priority,count(*) AS event_count FROM ("), sql)
+	assert.Equal(t, "GROUP BY created_at,latest_computed_priority LIMIT 1000", outer)
+}
+
+// Inside the inner statement event_count is events per group; outside it is
+// groups per row. Anything but the group by columns would mean one thing where
+// it is filtered and another where it is returned, so the request is refused
+// with an error that names the shape.
+func TestSQLGen_GroupCount_RefusesWhatItCannotAnswer(t *testing.T) {
+	td, ok := GetTableMetadata("event_groupings_v2")
+	require.True(t, ok)
+
+	cases := map[string]func(*QueryRequest){
+		"another aggregate selected": func(req *QueryRequest) {
+			req.Columns = append(req.Columns, QueryColumn{Name: "max_created_at"})
+		},
+		"having on the count": func(req *QueryRequest) {
+			req.Having = QueryWhereClause{Binary: BinaryWhereClause{"event_count": {Gt: 5}}}
+		},
+		"having on a column that is not grouped, nested": func(req *QueryRequest) {
+			req.Having = QueryWhereClause{And: []QueryWhereClause{{Or: []QueryWhereClause{{Binary: BinaryWhereClause{"latest_nb_status": {Eq: "OPEN"}}}}}}}
+		},
+		"order by a column that is not grouped": func(req *QueryRequest) {
+			req.OrderBy = []QueryOrderBy{{Column: "max_created_at", Order: Desc}}
+		},
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			req := issuesByLatestRank()
+			change(&req)
+			_, err := GenerateSqlQuery(superAdminCtx(), "", req, td)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "a request that groups by an aggregated column counts distinct groups")
+		})
+	}
+}
+
+// Without a distinct count the request names no unit to evaluate the aggregate
+// over, and stays the error it has always been.
+func TestSQLGen_GroupCount_NeedsADistinctCount(t *testing.T) {
+	td, ok := GetTableMetadata("event_groupings_v2")
+	require.True(t, ok)
+	req := issuesByLatestRank()
+	req.Columns[1] = QueryColumn{Name: "event_count"}
+
+	_, err := GenerateSqlQuery(superAdminCtx(), "", req, td)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "is aggregated and cannot be used in grouping")
+}
+
 func TestSQLGen_RealTable_Events_ComputedColumnsAreScalarSubqueries(t *testing.T) {
 	sql := eventsListSQL(t, QueryWhereClause{}, "created_at")
 

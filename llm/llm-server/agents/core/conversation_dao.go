@@ -263,6 +263,7 @@ type IConversationDao interface {
 	UpdateConversationMessageContext(messageId string, context map[string]any) error
 	UpdateConversationMessage(id, response string, status ConversationStatus) error
 	UpdateConversationMessageMetadata(id string, metadata map[string]any) error
+	SetMessageLiveStatus(messageId, key string, status *LiveStatus) error
 	UpdateConversationMessageAsync(id, response string, status ConversationStatus)
 	UpdateMessageCompactResponse(context *security.RequestContext, messageId, compactResponse string) error
 	UpdateConversationMessageMetrics(id string, metrics string) error
@@ -270,6 +271,8 @@ type IConversationDao interface {
 	DeleteConversationToolCalls(conversationId string) error
 	DeleteConversationAgents(conversationId string) error
 	DeleteConversationMessages(conversationId string) error
+	RetainConversationTokenUsage(conversationId string) error
+	UnlinkLateTokenUsage(conversationId string) error
 	DeleteConversationSaved(conversationId string) error
 	DeleteConversationReferences(conversationId string) error
 	DeleteConversationMemories(conversationId string) error
@@ -1964,6 +1967,41 @@ func (chat *ConversationDao) UpdateConversationMessage(id, response string, stat
 //
 // An empty or nil metadata is treated as a no-op so callers can call
 // unconditionally without an empty-check at the call site.
+// SetMessageLiveStatus sets one entry under metadata.live_status, or removes it
+// when status is nil. Entries are keyed per agent so parallel sub-agents writing
+// to the same message never overwrite each other.
+func (chat *ConversationDao) SetMessageLiveStatus(messageId, key string, status *LiveStatus) error {
+	if messageId == "" || key == "" {
+		return nil
+	}
+	if status == nil {
+		_, err := chat.dbManager.Db.Exec(`UPDATE llm_conversation_messages
+              SET metadata = metadata #- ARRAY['live_status', $2::text], updated_at = now()
+              WHERE id = $1 AND jsonb_typeof(metadata) = 'object'
+                AND jsonb_typeof(metadata->'live_status') = 'object' AND metadata->'live_status' ? $2`, messageId, key)
+		if err != nil {
+			return fmt.Errorf("history: failed to clear live status: %w", err)
+		}
+		return nil
+	}
+	b, err := common.MarshalJson(status)
+	if err != nil {
+		return fmt.Errorf("history: failed to marshal live status: %w", err)
+	}
+	_, err = chat.dbManager.Db.Exec(`UPDATE llm_conversation_messages
+              SET metadata = jsonb_set(COALESCE(NULLIF(metadata, 'null'::jsonb), '{}'::jsonb), '{live_status}',
+                      CASE WHEN jsonb_typeof(metadata->'live_status') = 'object'
+                           THEN metadata->'live_status'
+                           ELSE '{}'::jsonb
+                      END || jsonb_build_object($2::text, $3::jsonb)),
+                  updated_at = now()
+              WHERE id = $1`, messageId, key, string(b))
+	if err != nil {
+		return fmt.Errorf("history: failed to set live status: %w", err)
+	}
+	return nil
+}
+
 func (chat *ConversationDao) UpdateConversationMessageMetadata(id string, metadata map[string]any) error {
 	if id == "" || len(metadata) == 0 {
 		return nil
@@ -2019,7 +2057,7 @@ func (chat *ConversationDao) ClaimNextQueuedMessage(ctx context.Context, convers
 }
 
 func (chat *ConversationDao) ClaimQueuedMessageById(ctx *security.RequestContext, accountID, conversationID, messageID, userID string, isAdmin bool) (*ConversationMessage, error) {
-	return chat.terminateConversation(ctx, accountID, conversationID, messageID, userID, isAdmin)
+	return chat.terminateConversation(ctx, accountID, conversationID, messageID, userID, isAdmin, terminatedByUser)
 }
 
 func (chat *ConversationDao) DeleteQueuedMessage(id string, accountID string, userID string, isAdmin bool) error {
@@ -2156,12 +2194,37 @@ func (chat *ConversationDao) UpdateMessageCompactResponse(context *security.Requ
 	return nil
 }
 
+// termination says what an ended conversation shows and when it may be ended.
+type termination struct {
+	messageText   string // written to the ended messages
+	stepText      string // written to the ended agent and tool-call rows
+	onlyIfWaiting bool   // end it only if it is still WAITING when the row is locked
+}
+
+var terminatedByUser = termination{messageText: "Conversation terminated by user", stepText: "Terminated by user"}
+
+// errConversationNotWaiting means an expiry found the conversation no longer
+// WAITING (someone answered it) and left it alone.
+var errConversationNotWaiting = errors.New("conversation is no longer waiting")
+
 func (chat *ConversationDao) TerminateConversation(ctx *security.RequestContext, accountId, conversationId string) error {
-	_, err := chat.terminateConversation(ctx, accountId, conversationId, "", "", false)
+	_, err := chat.terminateConversation(ctx, accountId, conversationId, "", "", false, terminatedByUser)
 	return err
 }
 
-func (chat *ConversationDao) terminateConversation(ctx *security.RequestContext, accountId, conversationId, messageID, userID string, isAdmin bool) (*ConversationMessage, error) {
+// ExpireWaitingConversation ends a conversation that is still WAITING, the same
+// way Stop does, with note shown in place of the unanswered prompt. It returns
+// false, and changes nothing, when the conversation is no longer WAITING.
+func (chat *ConversationDao) ExpireWaitingConversation(ctx *security.RequestContext, accountId, conversationId, note string) (bool, error) {
+	_, err := chat.terminateConversation(ctx, accountId, conversationId, "", "", false,
+		termination{messageText: note, stepText: note, onlyIfWaiting: true})
+	if errors.Is(err, errConversationNotWaiting) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (chat *ConversationDao) terminateConversation(ctx *security.RequestContext, accountId, conversationId, messageID, userID string, isAdmin bool, how termination) (*ConversationMessage, error) {
 	tx, err := chat.dbManager.Db.Beginx()
 	if err != nil {
 		return nil, fmt.Errorf("history: failed to begin transaction: %w", err)
@@ -2170,6 +2233,9 @@ func (chat *ConversationDao) terminateConversation(ctx *security.RequestContext,
 	var conversationStatus ConversationStatus
 	if err = tx.Get(&conversationStatus, `SELECT status FROM llm_conversations WHERE id = $1 AND account_id = $2 FOR UPDATE`, conversationId, accountId); err != nil {
 		return nil, err
+	}
+	if how.onlyIfWaiting && conversationStatus != ConversationStatusWaiting {
+		return nil, errConversationNotWaiting
 	}
 	var claimed *ConversationMessage
 	if messageID != "" {
@@ -2189,7 +2255,7 @@ func (chat *ConversationDao) terminateConversation(ctx *security.RequestContext,
 	// Update the message status to TERMINATED and capture affected message IDs so
 	// we can invalidate their termination cache entries after commit.
 	messageQuery := `UPDATE llm_conversation_messages SET updated_at = now(), status = $2, response = $4 WHERE conversation_id = $1 AND account_id = $3 AND status in ('IN_PROGRESS', 'WAITING', 'WAITING_FOR_CLIENT_TOOL', 'PENDING') RETURNING id`
-	rows, err := tx.Queryx(messageQuery, conversationId, string(ConversationStatusTerminated), accountId, "Conversation terminated by user")
+	rows, err := tx.Queryx(messageQuery, conversationId, string(ConversationStatusTerminated), accountId, how.messageText)
 	if err != nil {
 		return nil, fmt.Errorf("history: failed to terminate message: %w", err)
 	}
@@ -2221,7 +2287,7 @@ func (chat *ConversationDao) terminateConversation(ctx *security.RequestContext,
 	// matches the late-write override in SaveConversationToolCall /
 	// UpdateConversationAgentResponse — keeping the bulk and late-write paths in
 	// sync.
-	const terminatedResponse = "Terminated by user"
+	terminatedResponse := how.stepText
 	agentQuery := `UPDATE llm_conversation_agent SET status = $2, response = $5, updated_at = now() WHERE conversation_id = $1 AND account_id = $6 AND status IN ($3, $4)`
 	_, err = tx.Exec(agentQuery, conversationId,
 		string(AgentExecutionStatusTerminated),
@@ -2802,6 +2868,50 @@ func (chat *ConversationDao) DeleteConversationToolCalls(conversationId string) 
 	return nil
 }
 
+// RetainConversationTokenUsage prepares a conversation's token usage rows to
+// outlive it. The rows have no foreign key to the conversation (V986), so the
+// delete leaves them alone; this stamps who the spend belongs to (rows written
+// before tenant_id/session_id existed have neither), clears the prompt,
+// response and error text, which must go with the conversation, and unlinks
+// them so budgets find them as deleted-conversation spend. Call it immediately before deleting the conversation row,
+// so a usage row written by a call still finishing is cleared too.
+func (chat *ConversationDao) RetainConversationTokenUsage(conversationId string) error {
+	query := `UPDATE llm_conversation_token_usage t
+		SET tenant_id = COALESCE(t.tenant_id, c.tenant_id),
+			session_id = COALESCE(t.session_id, c.session_id),
+			conversation_account_id = COALESCE(t.conversation_account_id, c.account_id),
+			prompt_messages = NULL,
+			response_content = NULL,
+			error_message = NULL,
+			conversation_id = NULL,
+			message_id = NULL
+		FROM llm_conversations c
+		WHERE c.id = t.conversation_id AND t.conversation_id = $1`
+	if _, err := chat.dbManager.Db.Exec(query, conversationId); err != nil {
+		return fmt.Errorf("history: failed to retain token usage: %w", err)
+	}
+	return nil
+}
+
+// UnlinkLateTokenUsage clears the text of, and unlinks, usage rows written for
+// a conversation after RetainConversationTokenUsage ran, by a call that was
+// still finishing while the conversation was deleted. With no foreign key
+// (V986) such a row would otherwise keep its text and a dangling id. Call it
+// after deleting the conversation.
+func (chat *ConversationDao) UnlinkLateTokenUsage(conversationId string) error {
+	query := `UPDATE llm_conversation_token_usage
+		SET prompt_messages = NULL,
+			response_content = NULL,
+			error_message = NULL,
+			conversation_id = NULL,
+			message_id = NULL
+		WHERE conversation_id = $1`
+	if _, err := chat.dbManager.Db.Exec(query, conversationId); err != nil {
+		return fmt.Errorf("history: failed to unlink late token usage: %w", err)
+	}
+	return nil
+}
+
 func (chat *ConversationDao) DeleteConversationMessages(conversationId string) error {
 	query := `DELETE FROM llm_conversation_messages WHERE conversation_id = $1`
 	_, err := chat.dbManager.Db.Exec(query, conversationId)
@@ -2930,9 +3040,21 @@ func DeleteConversation(conversationId uuid.UUID) error {
 	if err := history.DeleteConversationMemories(conversationId.String()); err != nil {
 		slog.Error("history: failed to delete memories", "error", err, "conversation_id", conversationId)
 	}
+	// Spend outlives the conversation; its text does not. Runs last, just before
+	// the conversation row goes (the rows are still linked to it), and a failure
+	// stops the delete so no text is left behind on unlinked rows.
+	if err := history.RetainConversationTokenUsage(conversationId.String()); err != nil {
+		slog.Error("history: failed to retain token usage", "error", err, "conversation_id", conversationId)
+		return err
+	}
 	if err := history.DeleteConversation(conversationId.String()); err != nil {
 		slog.Error("history: failed to delete conversation", "error", err, "conversation_id", conversationId)
 		return err
+	}
+	// The conversation is gone either way; a failure here only leaves a late
+	// row's text behind, so it is logged rather than returned.
+	if err := history.UnlinkLateTokenUsage(conversationId.String()); err != nil {
+		slog.Error("history: failed to unlink late token usage", "error", err, "conversation_id", conversationId)
 	}
 	return nil
 }
@@ -3030,20 +3152,22 @@ func (chat *ConversationDao) UpdateConversationMessageMetrics(id string, metrics
 type TokenMetrics struct {
 	AgentId              string          `json:"id"`
 	AgentName            string          `json:"agent_name"`              // Human-readable agent name
-	InputTokens          int             `json:"input_tokens"`            // Total input (cached + non-cached, includes cache_creation)
+	InputTokens          int             `json:"input_tokens"`            // Fresh input + cache reads. Cache writes are NOT included for Anthropic/Bedrock (see PromptTokens)
 	OutputTokens         int             `json:"output_tokens"`           // Total output
 	CachedInputTokens    int             `json:"cached_input_tokens"`     // Tokens served from cache
 	NonCachedInputTokens int             `json:"non_cached_input_tokens"` // New input tokens (full input rate)
 	CacheCreationTokens  int             `json:"cache_creation_tokens"`   // Tokens written to cache (Anthropic/Vertex)
 	ThinkingTokens       int             `json:"thinking_tokens"`         // Hidden chain-of-thought (Gemini 2.5+)
 	CacheHitRate         sql.NullFloat64 `json:"cache_hit_rate"`          // Cache hit rate percentage (0-100)
+	PromptTokens         int             `json:"-"`                       // Whole prompt sent (input + cache writes for providers that keep writes outside input); hit-rate denominator
 	Cost                 float64         `json:"cost"`
 	ModelProviderName    sql.NullString  `json:"model_provider_name"`
 	ModelName            sql.NullString  `json:"model_name"`
 	ModelTier            string          `json:"model_tier"` // reasoning / retrieval / summary; empty when the call was not tier-tagged
 	LLMConfigSource      string          `json:"llm_config_source"`
-	Requests             int             `json:"requests"`        // calls in this group
-	FailedRequests       int             `json:"failed_requests"` // of which failed — a failure spends no tokens, so 0/0 rows are real work, not noise
+	Requests             int             `json:"requests"`          // calls in this group
+	FailedRequests       int             `json:"failed_requests"`   // of which failed — a failure spends no tokens, so 0/0 rows are real work, not noise
+	UnpricedRequests     int             `json:"unpriced_requests"` // calls that spent tokens on a model with no llm_model_pricing row
 	MessageId            string          `json:"message_id"`
 	ConversationId       string          `json:"conversation_id"`
 }
@@ -3367,6 +3491,8 @@ func (chat *ConversationDao) GetConversationTokenUsage(conversationId, accountId
 
 	// Fetch Pricing Map upfront to avoid N+1 queries
 	pricingMap, err := chat.fetchModelPricing(TenantForPricing(accountId))
+	// A failed lookup says nothing about whether a price exists, so no call is flagged unpriced.
+	pricingLoaded := err == nil
 	if err != nil {
 		slog.Error("Failed to fetch model pricing", "error", err)
 		// Proceed with empty map, costs will be 0
@@ -3457,11 +3583,13 @@ func (chat *ConversationDao) GetConversationTokenUsage(conversationId, accountId
 		// that column existed, or calls with no matching pricing entry at insert
 		// time, fall back to a live recompute here.
 		var cost float64
+		priced := call.CostUsd.Valid
 		if call.CostUsd.Valid {
 			cost = call.CostUsd.Float64
 		} else if call.ModelProviderName.Valid && call.ModelName.Valid {
 			key := call.ModelProviderName.String + ":" + call.ModelName.String
 			if pricing, ok := pricingMap[key]; ok {
+				priced = true
 				cost = CalculateTotalCost(
 					&pricing,
 					nonCached,
@@ -3505,8 +3633,12 @@ func (chat *ConversationDao) GetConversationTokenUsage(conversationId, accountId
 		stat.CachedInputTokens += call.CachedInputTokens
 		stat.NonCachedInputTokens += nonCached
 		stat.CacheCreationTokens += call.CacheCreationTokens
+		stat.PromptTokens += PromptTokens(call.ModelProviderName.String, call.InputTokens, call.CacheCreationTokens)
 		stat.ThinkingTokens += call.ThinkingTokens
 		stat.Cost += cost
+		if pricingLoaded && !priced && call.InputTokens+call.OutputTokens > 0 {
+			stat.UnpricedRequests++
+		}
 	}
 	if err := rows.Err(); err != nil {
 		slog.Error("rows iteration error", "error", err)
@@ -3516,8 +3648,8 @@ func (chat *ConversationDao) GetConversationTokenUsage(conversationId, accountId
 	agents := make([]TokenMetrics, len(order))
 	for i, key := range order {
 		stat := groups[key]
-		if stat.InputTokens > 0 {
-			rate := (float64(stat.CachedInputTokens) / float64(stat.InputTokens)) * 100
+		if stat.PromptTokens > 0 {
+			rate := (float64(stat.CachedInputTokens) / float64(stat.PromptTokens)) * 100
 			stat.CacheHitRate = sql.NullFloat64{Float64: rate, Valid: true}
 		}
 		agents[i] = *stat
@@ -3851,11 +3983,23 @@ func (chat *ConversationDao) GetConversationTimeBreakdown(conversationId, accoun
 		WITH conversation_ids AS (
 			SELECT id FROM llm_conversations WHERE session_id = $1 AND account_id = $2::uuid
 		),
+		-- Span of actual message activity per conversation, not the row's
+		-- (updated_at - created_at): updated_at is re-stamped by anything that
+		-- touches the row later, which inflated wall time to days against minutes
+		-- of active work. Same definition the conversation list uses. Falls back to
+		-- the row timestamps only when a conversation has no messages.
 		wall_time AS (
-			SELECT
-				COALESCE(SUM(EXTRACT(EPOCH FROM (updated_at - created_at))), 0) as seconds
-			FROM llm_conversations
-			WHERE session_id = $1 AND account_id = $2::uuid
+			SELECT COALESCE(SUM(secs), 0) as seconds
+			FROM (
+				SELECT COALESCE(
+					EXTRACT(EPOCH FROM (MAX(COALESCE(m.responded_at, m.updated_at)) - MIN(m.created_at))),
+					EXTRACT(EPOCH FROM (c.updated_at - c.created_at))
+				) as secs
+				FROM llm_conversations c
+				LEFT JOIN llm_conversation_messages m ON m.conversation_id = c.id
+				WHERE c.session_id = $1 AND c.account_id = $2::uuid
+				GROUP BY c.id
+			) per_conversation
 		),
 		agent_time AS (
 			SELECT
@@ -4073,7 +4217,18 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 		return fmt.Errorf("token usage record is nil")
 	}
 
+	// conv looks the owning conversation up once. Its tenant, session and
+	// account are copied onto the row so the spend still counts toward budgets
+	// after the conversation is deleted. If a conversation id is given but that
+	// conversation is already gone (a call that finished after the delete), the
+	// row is stored unlinked and without its text, like the rows the delete
+	// cleared: there is no foreign key to reject it (V986).
 	query := `
+		WITH conv AS (
+			SELECT c.tenant_id, c.session_id, c.account_id FROM llm_conversations c WHERE c.id = $1::uuid
+		), live AS (
+			SELECT $1::uuid IS NULL OR EXISTS (SELECT 1 FROM conv) AS ok
+		)
 		INSERT INTO llm_conversation_token_usage (
 			conversation_id, message_id, agent_id, agent_name, account_id, user_id,
 			llm_provider, llm_model,
@@ -4087,21 +4242,28 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 			ttft_ms, itl_ms_avg, tokens_per_second, was_streaming,
 			cost_usd,
 			model_tier, task_type,
-			llm_config_source, id
+			llm_config_source, id,
+			tenant_id, session_id, conversation_account_id
 		) VALUES (
-			$1, $2, $3, $4, $5, $6,
+			CASE WHEN (SELECT ok FROM live) THEN $1::uuid END,
+			CASE WHEN (SELECT ok FROM live) THEN $2::uuid END,
+			$3, $4, $5, $6,
 			$7, $8,
 			$9, $10, $11, $12,
 			$13, $14,
 			$15, $16, $17,
-			$18, $19, $20,
+			$18, $19, CASE WHEN (SELECT ok FROM live) THEN $20::text END,
 			$21, $22, $23,
-			$24, $25,
+			CASE WHEN (SELECT ok FROM live) THEN $24::text END,
+			CASE WHEN (SELECT ok FROM live) THEN $25::text END,
 			$26,
 			$27, $28, $29, $30,
 			$31,
 			$32, $33,
-			$34, COALESCE($35::uuid, gen_random_uuid())
+			$34, COALESCE($35::uuid, gen_random_uuid()),
+			(SELECT tenant_id FROM conv),
+			(SELECT session_id FROM conv),
+			(SELECT account_id FROM conv)
 		)
 	`
 

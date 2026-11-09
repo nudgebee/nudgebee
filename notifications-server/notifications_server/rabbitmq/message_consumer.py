@@ -24,7 +24,10 @@ class Consumer:
     def __init__(self, queue, host, port, user, password):
         self.queue = queue
         self.exchange = queue + "_exchange"
-        self.dlx_exchange = "dlx"
+        # Dead-letter back into the main exchange (already declared and bound to
+        # self.queue) rather than an exchange literally named "dlx", which is never
+        # declared anywhere — RabbitMQ silently drops messages dead-lettered to it.
+        self.dlx_exchange = self.exchange
         self.consume_callback = None
 
         self.connection_parameters = {
@@ -42,7 +45,15 @@ class Consumer:
 
     @property
     def delayed_queue(self):
-        return self.queue + "_delayed"
+        # "_v2": the previous name's queue is already declared on live brokers with
+        # a different (broken) x-dead-letter-exchange argument, and RabbitMQ rejects
+        # a redeclare with different arguments (406 PRECONDITION_FAILED). A new name
+        # avoids that; the old queue can be deleted once rolled out everywhere.
+        return self.queue + "_delayed_v2"
+
+    @property
+    def dlq_queue(self):
+        return self.queue + "_dlq"
 
     async def connect(self):
         try:
@@ -100,6 +111,13 @@ class Consumer:
                 "x-dead-letter-routing-key": self.queue,
             },
         )
+        await self.setup_dlq_queue()
+
+    async def setup_dlq_queue(self):
+        # Parks messages that exhausted their retry attempts, for inspection/replay.
+        # Not TTL'd, so it never loses messages on its own.
+        LOG.info(f"Declaring DLQ queue {self.dlq_queue}")
+        await self._channel.declare_queue(self.dlq_queue, durable=True)
         await self.start_consuming()
 
     async def start_consuming(self):
@@ -198,7 +216,7 @@ class Consumer:
             LOG.info("RabbitMQ connection closed")
         LOG.info("Consumer stopped")
 
-    async def _publish_message(self, message, queue):
+    async def _publish_message(self, message, queue, headers=None):
         if self._connection is None or self._connection.is_closed:
             LOG.error("Failed to publish message. RabbitMQ connection not available")
             return
@@ -213,14 +231,21 @@ class Consumer:
 
         try:
             await self._channel.default_exchange.publish(
-                Message(body=json.dumps(message).encode(), delivery_mode=aio_pika.DeliveryMode.PERSISTENT),
+                Message(
+                    body=json.dumps(message).encode(),
+                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                    headers=headers,
+                ),
                 routing_key=queue,
             )
         except Exception as e:
             LOG.error(f"Failed to publish message to queue {queue}: {e}")
 
-    async def publish_message(self, message):
-        await self._publish_message(message, self.queue)
+    async def publish_message(self, message, headers=None):
+        await self._publish_message(message, self.queue, headers=headers)
 
-    async def publish_delayed_message(self, message):
-        await self._publish_message(message, self.delayed_queue)
+    async def publish_delayed_message(self, message, headers=None):
+        await self._publish_message(message, self.delayed_queue, headers=headers)
+
+    async def publish_dlq_message(self, message, headers=None):
+        await self._publish_message(message, self.dlq_queue, headers=headers)

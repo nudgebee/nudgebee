@@ -8,6 +8,7 @@ import (
 	"nudgebee/llm/audit"
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -370,7 +371,7 @@ func ListTools(context *security.RequestContext, accountId string) []ToolDto {
 	}
 
 	if dtos, ok := toolDtoCacheInstance.get(accountId); ok {
-		return dtos
+		return withMCPIntegrationToolDtos(dtos, accountId)
 	}
 
 	summary, err := GetAccountConfigSummary(context, accountId)
@@ -412,9 +413,18 @@ func ListTools(context *security.RequestContext, accountId string) []ToolDto {
 		}
 		finalTools = append(finalTools, t)
 	}
-	finalTools = append(finalTools, ListMCPIntegrationToolDtos(accountId)...)
 	toolDtoCacheInstance.set(accountId, finalTools)
-	return finalTools
+	return withMCPIntegrationToolDtos(finalTools, accountId)
+}
+
+// withMCPIntegrationToolDtos appends the account's MCP tools to a list held in
+// toolDtoCache. The MCP list has its own cache, which retries a failed
+// discovery within a minute (mcpDiscoveryRetryAfter). It is read here on every
+// call and never copied into the 30-minute entry, where a list built during a
+// short MCP outage would outlast the outage by up to half an hour.
+func withMCPIntegrationToolDtos(cached []ToolDto, accountId string) []ToolDto {
+	// Clip, so the append copies instead of writing into the cached slice.
+	return append(slices.Clip(cached), ListMCPIntegrationToolDtos(accountId)...)
 }
 
 func GetEnabledNBTools(context *security.RequestContext, accountId string) []NBTool {
@@ -424,7 +434,7 @@ func GetEnabledNBTools(context *security.RequestContext, accountId string) []NBT
 	}
 
 	if tools, ok := enabledToolsCacheInstance.get(accountId); ok {
-		return tools
+		return withAccountSourcedTools(tools, accountId)
 	}
 
 	summary, err := GetAccountConfigSummary(context, accountId)
@@ -482,14 +492,25 @@ func GetEnabledNBTools(context *security.RequestContext, accountId string) []NBT
 	}
 
 	finalTools = append(finalTools, ListCustomNbTool(accountId, ToolStatusEnabled)...)
-	// Per-account tools with dynamic names: MCP integrations, and the account's
-	// AI-invocable automations. Enumerating the automations here is what makes
-	// them *discoverable* rather than merely resolvable — search_tools and the
-	// agent tool-lists read this function, and a tool nobody can enumerate is a
-	// tool the model never learns exists.
-	finalTools = append(finalTools, ListAccountSourcedTools(accountId)...)
 	enabledToolsCacheInstance.set(accountId, finalTools)
-	return finalTools
+	return withAccountSourcedTools(finalTools, accountId)
+}
+
+// withAccountSourcedTools appends the per-account tools with dynamic names —
+// MCP integrations, and the account's AI-invocable automations — to a list held
+// in enabledToolsCache. Enumerating the automations here is what makes them
+// *discoverable* rather than merely resolvable — search_tools and the agent
+// tool-lists read GetEnabledNBTools, and a tool nobody can enumerate is a tool
+// the model never learns exists.
+//
+// Both sources have their own caches with their own expiry (a failed MCP
+// discovery is retried within a minute, automations refresh every few minutes).
+// They are read here on every call and never copied into the 30-minute entry,
+// where a list built during a short outage would outlast the outage by up to
+// half an hour.
+func withAccountSourcedTools(cached []NBTool, accountId string) []NBTool {
+	// Clip, so the append copies instead of writing into the cached slice.
+	return append(slices.Clip(cached), ListAccountSourcedTools(accountId)...)
 }
 
 func getToolStatus(tool NBTool) ToolStatus {
@@ -1198,12 +1219,12 @@ func createNBToolFromDto(accountId string, tool ToolDto) (NBTool, error) {
 	switch tool.ExecutorType {
 	case ToolExecutorTypeWorkflow:
 		// Workflow executor type is deprecated - use workflow tools instead
-		slog.Warn("tools: workflow executor type is deprecated", "tool_id", tool.Id)
+		slog.Debug("tools: workflow executor type is deprecated", "tool_id", tool.Id)
 		return nil, errors.New("workflow executor type is deprecated, use workflow tools instead")
 	case ToolExecutorTypeMCP:
 		// MCP tools from llm_tools are deprecated — MCP tools now come from integrations.
 		// Existing llm_tools MCP entries are ignored; use MCP integrations instead.
-		slog.Warn("tools: MCP executor type in llm_tools is deprecated, use MCP integrations instead", "tool_id", tool.Id)
+		slog.Debug("tools: MCP executor type in llm_tools is deprecated, use MCP integrations instead", "tool_id", tool.Id)
 		return nil, errors.New("MCP tools are now managed via integrations")
 	case ToolExecutorTypeContainer:
 		return nbCustomContainerTool{

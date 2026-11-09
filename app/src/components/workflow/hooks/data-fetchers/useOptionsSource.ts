@@ -225,10 +225,14 @@ const OPTIONS_SOURCE_FETCHERS: Record<string, FetcherFn> = {
   },
 
   mcp_tools: async (formValues) => {
-    const accountId = formValues._accountId;
+    const mode = formValues.connection_mode || 'integration';
+    // In integration mode the step can target another account; its tools are
+    // listed through that account, as the call itself will be. An expression is
+    // only known at run time, so it lists through the automation's account.
+    const stepAccountId = mode === 'integration' && formValues.account_id && !isTemplateString(formValues.account_id) ? formValues.account_id : '';
+    const accountId = stepAccountId || formValues._accountId;
     if (!accountId) return [];
 
-    const mode = formValues.connection_mode || 'integration';
     let params: Record<string, any>;
 
     if (mode === 'integration') {
@@ -526,7 +530,6 @@ export const useOptionsSource = (currentTaskDefinition: any, formValues: Record<
             return { fieldName: f.fieldName, options, loading: false };
           } catch (err: any) {
             if (err instanceof OptionsSourceError) {
-              snackbar.error(err.message);
               return { fieldName: f.fieldName, options: [], loading: false, error: err.message };
             }
             console.error('Failed to fetch options', { fieldName: f.fieldName, sourceType: f.sourceType, err });

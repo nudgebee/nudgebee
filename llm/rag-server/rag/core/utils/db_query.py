@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 engine = create_engine(DBConfig.url, poolclass=QueuePool, pool_size=5, max_overflow=20)
 
 # Simple in-memory cache for integrations
-_llm_integrations_cache: dict[str, dict] = {}
 _embeddings_integrations_cache: dict[str, dict] = {}
 
 
@@ -160,8 +159,27 @@ def get_servicenow_kb_integrations(cloud_account_id):
 # burst of concurrent requests for an uncached account collapses to a single
 # query (the sync fetches run in FastAPI's threadpool) instead of a thundering
 # herd. Cache hits don't take the lock.
-_llm_integrations_cache_lock = threading.Lock()
 _embeddings_integrations_cache_lock = threading.Lock()
+
+
+def _stored_config_value(integration_id, row):
+    """A config row's usable value, or None when it must be left unset.
+
+    Secrets are stored encrypted and the row says so, the same flag llm-server
+    reads (getLLMIntegrationsForAccount). Handing the stored form straight to a
+    provider sends ciphertext as the credential, which comes back as "API key not
+    valid" on a key that is perfectly good. decrypt_value returns its input
+    unchanged when it fails, so an undecryptable secret is dropped and the caller
+    falls back to configuration rather than authenticating with ciphertext.
+    """
+    value = row.value
+    if row.is_encrypted and value:
+        decrypted = decrypt_value(value)
+        if decrypted == value:
+            logger.warning("Integration %s: could not decrypt %s; leaving it unset", integration_id, row.name)
+            return None
+        return decrypted
+    return value
 
 
 def _get_integrations_cached(cache, lock, cloud_account_id, integration_type):
@@ -203,27 +221,9 @@ def _get_integrations_cached(cache, lock, cloud_account_id, integration_type):
                         integrations[integration_id]["account_id"] = row.cloud_account_id
                         integrations[integration_id]["config"] = {}
 
-                    # Secrets are stored encrypted and the row says so, the same flag
-                    # llm-server reads (getLLMIntegrationsForAccount). Handing the stored
-                    # form straight to a provider sends ciphertext as the credential,
-                    # which comes back as "API key not valid" on a key that is perfectly
-                    # good.
-                    value = row.value
-                    if row.is_encrypted and value:
-                        decrypted = decrypt_value(value)
-                        if decrypted == value:
-                            # decrypt_value returns its input unchanged when it fails, so
-                            # an undecryptable secret is indistinguishable from a real one.
-                            # Drop it and let the caller fall back to configuration rather
-                            # than authenticate with ciphertext.
-                            logger.warning(
-                                "Integration %s: could not decrypt %s; leaving it unset",
-                                integration_id,
-                                row.name,
-                            )
-                            continue
-                        value = decrypted
-
+                    value = _stored_config_value(integration_id, row)
+                    if value is None:
+                        continue
                     integrations[integration_id]["config"][row.name] = value
 
                 data = list(integrations.values())
@@ -236,43 +236,51 @@ def _get_integrations_cached(cache, lock, cloud_account_id, integration_type):
             return []
 
 
-def get_llm_integrations(cloud_account_id):
-    return _get_integrations_cached(_llm_integrations_cache, _llm_integrations_cache_lock, cloud_account_id, "llm")
+def choose_account_llm_integration(cloud_account_id, candidates):
+    """The integration an account resolves against, or None for the environment defaults.
+
+    Mirrors llm-server's chooseAccountLLMIntegration (agents/core/llm_default_pick.go),
+    and both run llm/llm-server/agents/core/testdata/llm_default_cases.json. Each
+    candidate is (id, linked to the account, marked default on the account's link,
+    tenant default). The account's own default wins, otherwise the tenant default.
+    Picking never depends on how many integrations an account has.
+    """
+    own = [c[0] for c in candidates if c[1] and c[2]]
+    tenant = [c[0] for c in candidates if c[3]]
+    if len(own) == 1:
+        return own[0]
+    if len(own) > 1:
+        logger.error(
+            f"LLM config: account {cloud_account_id} has {len(own)} integrations marked default; "
+            "using the tenant default"
+        )
+    if len(tenant) == 1:
+        return tenant[0]
+    if len(tenant) > 1:
+        logger.error(f"LLM config: tenant of account {cloud_account_id} has {len(tenant)} tenant defaults")
+    return None
 
 
 def get_default_llm_integration(cloud_account_id):
     """The one LLM integration this account resolves against, or None.
 
-    Mirrors llm-server's ``selectAccountLLMIntegration``
-    (agents/core/llm_common.go) so both services pick the same credential for
-    the same account, in its order: the integration flagged
-    ``default_llm_provider`` on its account link; failing that, the account's
-    only enabled LLM integration, since linking exactly one is itself the
-    operator's choice; failing that, the tenant's default provider when it is
-    among the account's links, because the integrations list shows that provider
-    as "Default" for every account it is linked to whether or not the link row
-    carries the flag.
-
-    The tenant default lives in ``integration_config_values``, written by the
-    "Default LLM provider" checkbox, and is a separate thing from the per-account
-    link flag. Reading only the link flag makes an account whose default was set
-    that way look like it has none, which drops the whole ingest onto the
-    environment defaults — a different model, and a different bill, from the one
-    its operator picked.
-
-    Every ambiguous shape — several flagged, or several linked with no single
-    default of either kind — returns None and falls through to the environment
-    defaults, exactly as llm-server does. Picking one anyway would silently bind
-    an account to a credential nobody chose, and for figure description that
-    shows up as "no vision-capable model" on an account that has one.
+    Loads the candidates llm-server's selectAccountLLMIntegration loads: enabled
+    integrations linked to the account, plus the tenant default whether or not it
+    is linked to the account. The rule is choose_account_llm_integration.
     """
     query = text("""
-        SELECT i.id, ia.default_llm_provider, COALESCE(icv.value = 'true', false) AS tenant_default
+        SELECT i.id,
+               bool_or(ia.cloud_account_id IS NOT NULL) AS linked,
+               bool_or(COALESCE(ia.default_llm_provider, false)) AS account_default,
+               bool_or(COALESCE(icv.value = 'true', false)) AS tenant_default
         FROM integrations i
-        JOIN integrations_cloud_accounts ia ON i.id = ia.integration_id
+        LEFT JOIN integrations_cloud_accounts ia ON ia.integration_id = i.id AND ia.cloud_account_id = :ac_id
         LEFT JOIN integration_config_values icv
                ON icv.integration_id = i.id AND icv.name = 'default_llm_provider'
-        WHERE i.type = 'llm' AND i.status = 'enabled' AND ia.cloud_account_id = :ac_id
+        WHERE i.type = 'llm' AND i.status = 'enabled'
+          AND (ia.cloud_account_id IS NOT NULL
+               OR (icv.value = 'true' AND i.tenant_id = (SELECT tenant FROM cloud_accounts WHERE id = :ac_id)))
+        GROUP BY i.id
         """)
     try:
         with engine.connect() as connection:
@@ -280,29 +288,32 @@ def get_default_llm_integration(cloud_account_id):
     except Exception as exc:
         logger.error(f"Failed to select default LLM integration for {cloud_account_id}: {exc}")
         return None
+    return choose_account_llm_integration(cloud_account_id, rows)
 
-    all_ids = [row[0] for row in rows]
-    defaults = [row[0] for row in rows if row[1]]
-    tenant_defaults = [row[0] for row in rows if row[2]]
 
-    if len(defaults) == 1:
-        return defaults[0]
-    if len(defaults) > 1:
-        logger.error(
-            f"LLM config: account {cloud_account_id} has {len(defaults)} integrations flagged default; "
-            "falling back to environment defaults"
-        )
-        return None
-    if len(all_ids) == 1:
-        return all_ids[0]
-    if len(tenant_defaults) == 1:
-        return tenant_defaults[0]
-    if len(all_ids) > 1:
-        logger.warning(
-            f"LLM config: account {cloud_account_id} has {len(all_ids)} enabled LLM integrations and no single "
-            f"default ({len(tenant_defaults)} marked the tenant default); falling back to environment defaults"
-        )
-    return None
+def get_llm_integration_config(integration_id):
+    """The decrypted config of one LLM integration, or {} when it cannot be read.
+
+    Read by id rather than through the account's links, because the integration an
+    account uses can be the tenant default, which need not be linked to it.
+    """
+    query = text("""
+        SELECT icv.name, icv.value, icv.is_encrypted
+        FROM integration_config_values icv
+        WHERE icv.integration_id = :integration_id
+        """)
+    try:
+        with engine.connect() as connection:
+            rows = connection.execute(query, {"integration_id": integration_id})
+            config = {}
+            for row in rows:
+                value = _stored_config_value(integration_id, row)
+                if value is not None and row.name:
+                    config[row.name] = value
+            return config
+    except Exception as exc:
+        logger.error(f"Failed to read LLM integration {integration_id}: {exc}")
+        return {}
 
 
 def get_embeddings_integrations(cloud_account_id):
@@ -405,6 +416,10 @@ def get_first_active_account_for_tenant(tenant_id):
                 "INNER JOIN agent a ON ca.id = a.cloud_account_id "
                 "WHERE ca.status = 'active' AND a.status = 'CONNECTED' "
                 "AND ca.tenant = :tenant_id "
+                # Deterministic choice: the account picked here sets the embedding
+                # model of tenant-scoped collections. It still changes if this account
+                # disconnects (tracked in #40313: record the model per collection).
+                "ORDER BY ca.id "
                 "LIMIT 1"
             )
             row = connection.execute(query, {"tenant_id": tenant_id}).fetchone()
@@ -436,27 +451,63 @@ def _kb_collection_name(row):
     return f"kb_{row.id}"
 
 
+def _org_kb_visible(row, own_names):
+    """Whether an organisation knowledge base (no ``account_id``) reaches this account.
+
+    ``organisation`` reaches every account in the tenant unless the account
+    switched it off; ``selected_accounts`` reaches only accounts switched on.
+    ``row.override_enabled`` is this account's switch (None when it has none).
+    The account's own manual knowledge base of the same name wins over it,
+    except over an integration's: that name comes from the integration (#40605).
+    """
+    shadowed = not row.integration_id and row.name and row.name.lower() in own_names
+    if not row.enabled or shadowed:
+        return False
+    if row.visibility == "organisation":
+        return row.override_enabled is not False
+    if row.visibility == "selected_accounts":
+        return row.override_enabled is True
+    return False
+
+
 def _live_kb_names_from_rows(rows, account_uuid):
     """Collapse ``llm_knowledgebases`` rows into the searchable collection names.
 
-    Enabled rows contribute their collection name. Disabled rows contribute
-    nothing — and a disabled row belonging to ``account_uuid`` additionally
-    *removes* that name, overriding any sibling row that would have added it.
+    Enabled account rows contribute their collection name; disabled ones
+    contribute nothing.
 
-    That asymmetry exists because an integration's vector collection is shared
-    by every account in the tenant, while the switch is per KB row. Without the
-    subtraction, "account A turned this Confluence KB off" would be silently
-    undone by account B leaving its own row on. A disabled row in another
-    account never subtracts — it has no say over what this account searches.
+    Organisation knowledge bases (no ``account_id``) follow ``_org_kb_visible``.
+    An integration's knowledge base is its organisation row (#40605); a
+    per-account integration row is the old shape and is ignored.
+    Another account's manual knowledge base never counts here: its collection is
+    already hidden by its ``account`` metadata, and leaving it out keeps this
+    gate equal to llm-server's visibility rule for an account query (shared
+    fixture ``tests/fixtures/kb_visibility_cases.json``). A tenant-only query
+    (no account) keeps account rows and hides ``selected_accounts`` ones;
+    collection metadata still decides what such a query can reach.
     """
-    names, disabled_here = set(), set()
+    rows = list(rows)
+    own_names = {
+        row.name.lower()
+        for row in rows
+        if account_uuid
+        and row.account_id is not None
+        and not row.integration_id
+        and str(row.account_id) == account_uuid
+        and row.name
+    }
+    names = set()
     for row in rows:
-        name = _kb_collection_name(row)
-        if row.enabled:
-            names.add(name)
-        elif account_uuid and str(row.account_id) == account_uuid:
-            disabled_here.add(name)
-    return names - disabled_here
+        if row.account_id is not None and row.integration_id:
+            continue
+        if account_uuid and row.account_id is not None and str(row.account_id) != account_uuid:
+            continue
+        if row.account_id is None:
+            if _org_kb_visible(row, own_names):
+                names.add(_kb_collection_name(row))
+        elif row.enabled:
+            names.add(_kb_collection_name(row))
+    return names
 
 
 def get_live_kb_collection_names(account_id, tenant_id):
@@ -482,13 +533,16 @@ def get_live_kb_collection_names(account_id, tenant_id):
     asynchronous, and search must not serve a disabled integration's content
     while it catches up.
 
-    Rows the user has switched off (``kb.enabled = false``) are excluded, and —
-    unlike every other rule here — a switched-off row for *this account* also
-    subtracts the name a sibling row would have contributed. The scope clause is
-    an OR across account and tenant, and integration KBs share one collection
-    per integration across the tenant's accounts, so without the subtraction one
-    account disabling its row would be overruled by another account that left
-    the same integration on. See ``_live_kb_names_from_rows``.
+    Rows the user has switched off (``kb.enabled = false``) are excluded. An
+    integration's knowledge base is one organisation row (#40605), switched off
+    per account through ``llm_kb_account_overrides``; a per-account integration
+    row is the old shape and contributes nothing. See ``_live_kb_names_from_rows``.
+
+    Organisation knowledge bases (``account_id`` NULL) are found through the
+    tenant clause; restriction, switch-off and the name clash with the
+    account's own knowledge bases are applied in ``_org_kb_visible``. Their
+    collections carry ``tenant_id`` metadata, so this gate is what keeps a
+    restricted one away from the other accounts of the tenant.
 
     Returns ``None`` when the scope can't be resolved (neither identifier is a
     UUID) or the query fails. Search excludes KB-backed collections in that case;
@@ -500,12 +554,14 @@ def get_live_kb_collection_names(account_id, tenant_id):
         return None
     try:
         with engine.connect() as connection:
-            # kb.enabled is NOT filtered in SQL: the disabled rows are needed
-            # below to subtract this account's own switched-off collections.
+            # kb.enabled is NOT filtered in SQL: a disabled own manual KB still
+            # shadows an organisation KB of the same name (_live_kb_names_from_rows).
             query = text("""
-                SELECT kb.id, kb.integration_id, kb.account_id, kb.enabled
+                SELECT kb.id, kb.integration_id, kb.account_id, kb.enabled, kb.name, kb.visibility,
+                       o.enabled AS override_enabled
                 FROM llm_knowledgebases kb
                 LEFT JOIN integrations i ON kb.integration_id = i.id
+                LEFT JOIN llm_kb_account_overrides o ON o.kb_id = kb.id AND o.account_id = :account_id
                 WHERE kb.status != 'archived'
                   AND (kb.account_id = :account_id OR kb.tenant_id = :tenant_id)
                   AND (kb.integration_id IS NULL OR i.status = 'enabled')
@@ -718,6 +774,113 @@ def set_kb_collection_summary(
         logger.exception("Error writing the KB classification summary of collection %s: %s", collection_name, e)
 
 
+def seed_kb_document_labels(rows: list[dict]) -> int:
+    """Insert entry_type = 'kb_document' rows that do not exist yet. An existing row is left
+    alone, with one exception: a row whose ``capabilities`` are empty takes the capabilities
+    the page's chunks now carry (non-empty only). Those empties were written while the
+    catalog was empty or unreachable, so they are not a classification to protect; kind,
+    shape and source_version are never changed.
+
+    Each row is ``{collection_name, document_key, kind, shape, capabilities, source_version}``. Rows
+    seeded from labels that already sit on a page's chunks carry no source_version
+    (NULL = "version unknown"). The seed is idempotent: a second run changes nothing.
+
+    Returns the number of rows written (inserted, or capabilities filled in). Raises on a
+    database error: the caller retries, and a swallowed failure would look like a run that
+    seeded nothing.
+    """
+    if not rows:
+        return 0
+    # ON CONFLICT DO UPDATE cannot touch the same row twice in one statement, so a batch
+    # carries one row per key: the first, unless a later one has capabilities and it has none.
+    unique: dict = {}
+    for row in rows:
+        key = (row["collection_name"], row["document_key"])
+        if key not in unique or (row.get("capabilities") and not unique[key].get("capabilities")):
+            unique[key] = row
+    rows = list(unique.values())
+    values, params = [], {}
+    for i, row in enumerate(rows):
+        values.append(
+            f"('kb_document', :collection_name_{i}, :document_key_{i}, :kinds_{i}, :shapes_{i}, "
+            f":capabilities_{i}, :source_version_{i}, NOW())"
+        )
+        params[f"collection_name_{i}"] = row["collection_name"]
+        params[f"document_key_{i}"] = row["document_key"]
+        params[f"kinds_{i}"] = [row["kind"]]
+        params[f"shapes_{i}"] = [row["shape"]] if row.get("shape") else []
+        params[f"capabilities_{i}"] = row.get("capabilities") or []
+        params[f"source_version_{i}"] = row.get("source_version")
+    # One statement per batch, one round trip; rowcount is the rows inserted plus the
+    # rows whose empty capabilities were filled.
+    statement = (
+        "INSERT INTO llm_kb_capability_entries "
+        "(entry_type, collection_name, document_key, kinds, shapes, capabilities, source_version, updated_at) "
+        f"VALUES {', '.join(values)} "
+        "ON CONFLICT (collection_name, document_key) WHERE entry_type = 'kb_document' DO UPDATE "
+        "SET capabilities = EXCLUDED.capabilities, updated_at = NOW() "
+        "WHERE llm_kb_capability_entries.capabilities = '{}' AND EXCLUDED.capabilities <> '{}'"
+    )
+    with engine.connect() as connection:
+        with connection.begin():
+            result = connection.execute(text(statement), params)
+            return result.rowcount or 0
+
+
+def list_sys_id_keyed_marks() -> list[str]:
+    """Fact/SOP mark keys still stored as ``<collection>|<ServiceNow sys_id>`` (32 hex
+    characters), from before the KB number became a ServiceNow article's key. Most recently
+    changed first, so when two versions of one article both carry a mark, the newer choice is
+    the one that moves. Raises on a database error."""
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT document_key FROM llm_kb_capability_entries "
+                "WHERE entry_type = 'kb_document_mark' AND document_key ~ '[|][0-9a-f]{32}$' "
+                "GROUP BY document_key ORDER BY MAX(updated_at) DESC"
+            )
+        )
+        return [row.document_key for row in rows]
+
+
+def rekey_kb_document_marks(pairs: list[tuple[str, str]]) -> int:
+    """Move each mark from its old key to its new one, keeping the user's choice. Where the
+    same tenant or account already has a mark under the new key, that newer mark wins and
+    the old row is dropped. Returns the number of rows moved or dropped. Raises on a
+    database error."""
+    changed = 0
+    with engine.connect() as connection:
+        with connection.begin():
+            # Replicas starting together run this one at a time, so each sees the other's moves.
+            connection.execute(text("SELECT pg_advisory_xact_lock(hashtext('kb_document_mark_rekey'))"))
+            for old, new in pairs:
+                params = {"old": old, "new": new}
+                changed += (
+                    connection.execute(
+                        text(
+                            "DELETE FROM llm_kb_capability_entries o "
+                            "WHERE o.entry_type = 'kb_document_mark' AND o.document_key = :old "
+                            "AND EXISTS (SELECT 1 FROM llm_kb_capability_entries n "
+                            "WHERE n.entry_type = 'kb_document_mark' AND n.document_key = :new "
+                            "AND n.tenant_id = o.tenant_id AND n.account_id IS NOT DISTINCT FROM o.account_id)"
+                        ),
+                        params,
+                    ).rowcount
+                    or 0
+                )
+                changed += (
+                    connection.execute(
+                        text(
+                            "UPDATE llm_kb_capability_entries SET document_key = :new, updated_at = NOW() "
+                            "WHERE entry_type = 'kb_document_mark' AND document_key = :old"
+                        ),
+                        params,
+                    ).rowcount
+                    or 0
+                )
+    return changed
+
+
 def get_kb_summary_collection_names() -> set[str]:
     """Every collection that has an entry_type = 'kb_collection' row. The backfill
     uses it to find collections whose chunks are labelled but whose row is missing.
@@ -753,25 +916,29 @@ def has_kb_collection_summary(collection_name: str) -> bool:
         return False
 
 
-def delete_kb_capabilities(collection_name: str) -> None:
-    """Drop a knowledge-base collection's entry_type = 'kb_collection' row.
+def delete_kb_capabilities(collection_name: str, keep_documents: bool = False) -> None:
+    """Drop a knowledge-base collection's entry_type = 'kb_collection' row and, unless
+    ``keep_documents``, its per-page entry_type = 'kb_document' label rows.
 
     Called when the collection itself is deleted (a KB delete, an integration KB
-    delete, or the delete-then-recreate an edit performs), so a recreated
-    collection never shows the labels of the one it replaced.
+    delete), so a recreated collection never shows the labels of the one it replaced.
+    A recreate that must keep the labels (a tag-only edit, a wiped Qdrant being
+    rebuilt) passes ``keep_documents``: Postgres owns the page labels and re-embedding
+    stamps them back without a classification call.
 
     Best-effort: the collection is already gone by the time this runs, so a
     failure is logged rather than failing the delete.
     """
+    entry_types = ["kb_collection"] if keep_documents else ["kb_collection", "kb_document"]
     try:
         with engine.connect() as connection:
             with connection.begin():
                 connection.execute(
                     text(
                         "DELETE FROM llm_kb_capability_entries "
-                        "WHERE entry_type = 'kb_collection' AND collection_name = :collection_name"
+                        "WHERE entry_type = ANY(:entry_types) AND collection_name = :collection_name"
                     ),
-                    {"collection_name": collection_name},
+                    {"collection_name": collection_name, "entry_types": entry_types},
                 )
     except Exception as e:
         logger.exception("Error deleting the KB classification summary of collection %s: %s", collection_name, e)

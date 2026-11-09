@@ -23,6 +23,7 @@ import ValidationResultBanner from '@components/accounts/ValidationResultBanner'
 import AccountEnvToggle, { DEFAULT_ACCOUNT_ENV } from '@shared/forms/AccountEnvToggle';
 import { ds } from 'src/utils/colors';
 import { getIntegrationDescription } from '@lib/integrationDescriptions';
+import { CloudFirstSyncStatus, useCloudFirstSync } from '@components/integrations/CloudFirstSync';
 
 const SETUP_GUIDE_CONTENT = `### Prerequisites
 
@@ -61,7 +62,7 @@ const PROJECT_TAB_OPTIONS = {
   ],
 };
 
-const AddGcpAccountModal = ({ open, onClose }) => {
+const AddGcpAccountModal = ({ open, onClose, onAccountCreated }) => {
   // Step 1: Service Account
   const [accountNameValue, setAccountNameValue] = useState('');
   const [accountEnvValue, setAccountEnvValue] = useState(DEFAULT_ACCOUNT_ENV);
@@ -98,6 +99,12 @@ const AddGcpAccountModal = ({ open, onClose }) => {
   const [step, setStep] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [onboardResults, setOnboardResults] = useState(null);
+  // Projects created by the onboard, held while their first data sync runs.
+  const [syncAccounts, setSyncAccounts] = useState([]);
+  const firstSync = useCloudFirstSync(
+    syncAccounts.map((a) => a.id),
+    'GCP'
+  );
 
   const isLoading = isSubmitting || isSettingUpWebhook || isDiscovering || isValidating || isValidatingBilling;
 
@@ -129,12 +136,28 @@ const AddGcpAccountModal = ({ open, onClose }) => {
     setStep(0);
     setIsSubmitting(false);
     setOnboardResults(null);
+    setSyncAccounts([]);
   };
 
   const handleCloseModal = (wasSuccessful = false) => {
     clearForm();
     onClose(wasSuccessful);
   };
+
+  // Close on its own only when every project onboarded and synced cleanly; a
+  // failed project is something the user still needs to read.
+  useEffect(() => {
+    if (firstSync.phase !== 'done') {
+      return;
+    }
+    if (onboardResults?.accounts?.some((a) => a.status !== 'created')) {
+      return;
+    }
+    snackbar.success('First data sync from GCP finished.');
+    handleCloseModal(true);
+    // handleCloseModal is stable enough for this one-shot close.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [firstSync.phase]);
 
   // The connect-gcp guided tour drives this modal to preview the Projects and
   // Billing steps without real data (see the Next buttons + banner below).
@@ -406,7 +429,15 @@ const AddGcpAccountModal = ({ open, onClose }) => {
         }
       }
 
-      handleCloseModal(true);
+      // The projects exist now: refresh the list and stay open for their first
+      // sync. With nothing created there is nothing to wait on.
+      const createdWithIds = created.filter((a) => a.account_id);
+      if (createdWithIds.length === 0) {
+        handleCloseModal(true);
+        return;
+      }
+      onAccountCreated?.();
+      setSyncAccounts(createdWithIds.map((a) => ({ id: a.account_id, name: a.project_id })));
     } catch (error) {
       snackbar.error('Failed to onboard GCP projects.');
       console.error('Failed to onboard GCP projects:', error);
@@ -423,6 +454,54 @@ const AddGcpAccountModal = ({ open, onClose }) => {
   };
 
   // ──── Render ────
+
+  // The projects exist; the form is done. Show only the first sync.
+  if (syncAccounts.length > 0) {
+    return (
+      <Modal
+        width='md'
+        open={open}
+        handleClose={() => handleCloseModal(true)}
+        // While the first sync is pending, only the explicit close gets out.
+        backdropClickClose={firstSync.phase !== 'waiting'}
+        title='Add GCP Account'
+        subtitle={getIntegrationDescription('GCP')}
+      >
+        <Typography sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.medium, color: ds.green[600], mt: ds.space[4] }}>
+          {syncAccounts.length} GCP project(s) onboarded successfully.
+        </Typography>
+        {onboardResults?.accounts?.some((a) => a.status === 'error') && (
+          <Box sx={{ mt: ds.space[2] }}>
+            <Banner
+              tone='warning'
+              message={
+                <>
+                  {onboardResults.accounts
+                    .filter((a) => a.status === 'error')
+                    .map((a) => (
+                      <Typography key={a.project_id} variant='caption' display='block'>
+                        {a.project_id}: {a.error}
+                      </Typography>
+                    ))}
+                </>
+              }
+            />
+          </Box>
+        )}
+        <CloudFirstSyncStatus
+          phase={firstSync.phase}
+          issues={firstSync.issues}
+          providerLabel='GCP'
+          accountNames={Object.fromEntries(syncAccounts.map((a) => [a.id, a.name]))}
+        />
+        <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: ds.space[4], mb: ds.space[6], '& button': { minWidth: ds.space.mul(1, 35) } }}>
+          <Button id='gcp-first-sync-close-btn' size='md' tone='primary' onClick={() => handleCloseModal(true)}>
+            Close
+          </Button>
+        </Box>
+      </Modal>
+    );
+  }
 
   return (
     <Modal

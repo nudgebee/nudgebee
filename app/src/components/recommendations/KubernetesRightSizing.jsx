@@ -76,7 +76,7 @@ const KubernetesRightSizing = ({ enabledSummary = true, enabledFilters = true, i
   const [workloadTypeFilter, setWorkloadTypeFilter] = useState([]);
   const [selectedWorkloadType, setSelectedWorkloadType] = useState('');
   const [workloadNameFilter, setWorkloadNameFilter] = useState([]);
-  const [selectedWorkloadName, setSelectedWorkloadName] = useState('');
+  const [selectedWorkloadName, setSelectedWorkloadName] = useState(enabledFilters ? router.query.workloadName || '' : '');
   const [recommendationStatus, setRecommendationStatus] = useState([{ label: 'Open', value: 'Open' }]);
   const [loading, setLoading] = useState(false);
   const [page, setPage] = useState(0);
@@ -127,7 +127,7 @@ const KubernetesRightSizing = ({ enabledSummary = true, enabledFilters = true, i
   const onNamespaceFilterChange = (e, _p) => {
     setSelectedNamespace(e?.target?.value);
     setSelectedWorkloadName('');
-    applyFiltersOnRouter(router, { namespace: e?.target?.value });
+    applyFiltersOnRouter(router, { namespace: e?.target?.value, workloadName: '' });
     setPage(0);
   };
 
@@ -138,6 +138,7 @@ const KubernetesRightSizing = ({ enabledSummary = true, enabledFilters = true, i
 
   const onWorkloadNameFilterChange = (e, _p) => {
     setSelectedWorkloadName(e?.target?.value);
+    applyFiltersOnRouter(router, { workloadName: e?.target?.value });
     setPage(0);
   };
 
@@ -443,6 +444,13 @@ const KubernetesRightSizing = ({ enabledSummary = true, enabledFilters = true, i
       setSelectedNamespace('');
     }
   }, [router.isReady, router.query.namespace, namespaceFilter]);
+
+  useEffect(() => {
+    if (!router.isReady || !enabledFilters) {
+      return;
+    }
+    setSelectedWorkloadName(router.query.workloadName || '');
+  }, [router.isReady, router.query.workloadName, enabledFilters]);
 
   useEffect(() => {
     if (!router?.query?.status) {

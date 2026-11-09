@@ -27,7 +27,7 @@ var k8sPVCSchema = core.SpecificTypeSchema{
 		{Name: "volume_mode"},
 		{Name: "resources"},
 		{Name: "uid"},
-		{Name: "annotations"},
+		{Name: "annotations", Shape: core.PropertyShapeMap},
 		{Name: "creation_timestamp"},
 	},
 }

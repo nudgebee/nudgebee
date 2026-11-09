@@ -16,7 +16,8 @@ import (
 )
 
 // TestUsageMetricsFilter_BuildWhere_BaseOnly verifies the always-present
-// account/date clauses and that no optional args leak in when filters are empty.
+// account/date clauses (call time, the spend account copied on each row) and
+// that no optional args leak in when filters are empty.
 func TestUsageMetricsFilter_BuildWhere_BaseOnly(t *testing.T) {
 	f := UsageMetricsFilter{
 		AccountIDs: []string{"acc-1"},
@@ -26,7 +27,7 @@ func TestUsageMetricsFilter_BuildWhere_BaseOnly(t *testing.T) {
 	where, args := f.buildWhere()
 
 	// With no explicit source filter, the optimizer's own runs are excluded by default.
-	assert.Equal(t, "c.account_id = ANY($1::uuid[]) AND c.created_at >= $2 AND c.created_at <= $3 AND c.source IS DISTINCT FROM 'Optimize'", where)
+	assert.Equal(t, "t.conversation_account_id = ANY($1::uuid[]) AND t.created_at >= $2 AND t.created_at <= $3 AND c.source IS DISTINCT FROM 'Optimize'", where)
 	assert.Len(t, args, 3) // the exclusion is a literal — no extra bound arg
 }
 
@@ -106,7 +107,7 @@ func TestUsageMetricsFilter_BuildScopeWhere(t *testing.T) {
 	}
 	where, args := f.buildScopeWhere()
 
-	assert.Equal(t, "c.account_id = ANY($1::uuid[]) AND c.created_at >= $2 AND c.created_at <= $3", where)
+	assert.Equal(t, "t.conversation_account_id = ANY($1::uuid[]) AND t.created_at >= $2 AND t.created_at <= $3", where)
 	assert.Len(t, args, 3)
 	assert.NotContains(t, where, "source")
 	assert.NotContains(t, where, "llm_model")

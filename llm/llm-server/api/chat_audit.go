@@ -19,6 +19,13 @@ func isWebChatSource(source core.ConversationSource) bool {
 	return webChatSources[source]
 }
 
+// chatAuditApplies reports whether a chat action is audited: web chat actions,
+// plus write approvals from every source (alert conversations, Slack,
+// automations), so every approved change records who approved it.
+func chatAuditApplies(eventType audit.EventType, source core.ConversationSource) bool {
+	return isWebChatSource(source) || eventType == audit.EventTypeChatToolConfirmationRespond
+}
+
 // maxAuditQueryPreviewRunes caps the query preview stored in EventState; the full message lives in llm_conversation_messages, so this bounds row size and sensitive content in retained logs.
 const maxAuditQueryPreviewRunes = 256
 
@@ -64,7 +71,7 @@ func emitChatActionAudit(
 	// ctx is always non-nil at the call sites (the handler dereferences it for
 	// auth before this runs); the guard is belt-and-suspenders for this
 	// fire-and-forget helper, whose contract is to never crash the chat request.
-	if ctx == nil || !isWebChatSource(source) || conversationId == "" {
+	if ctx == nil || !chatAuditApplies(eventType, source) || conversationId == "" {
 		return
 	}
 	if state == nil {

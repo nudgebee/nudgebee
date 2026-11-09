@@ -7,7 +7,6 @@ import { useData } from '@context/DataContext';
 import homeApi from '@api1/home';
 import { transformClusters } from '@shared/layout/UpdateDataContext';
 import { KubernetesClusterIcon } from '@assets';
-import { isCloudProvider, isSelfHostedProvider } from '@components/overview/providers';
 
 /**
  * Account Overview — the fleet-wide landing surface, one card per connected
@@ -22,6 +21,9 @@ import { isCloudProvider, isSelfHostedProvider } from '@components/overview/prov
 const Overview = () => {
   const { setSelectedCluster, allCluster, setAllCluster } = useData();
 
+  // Reported by AccountOverview from what it actually renders (see its
+  // onSectionsChange), so the anchor strip and the section headings cannot
+  // disagree when one of the two account queries fails.
   const [accountKinds, setAccountKinds] = useState({ k8s: false, cloud: false, vm: false });
 
   useEffect(() => {
@@ -34,15 +36,6 @@ const Overview = () => {
       });
     }
   }, []);
-
-  useEffect(() => {
-    const real = (allCluster || []).filter((account) => account.value !== 'demo');
-    setAccountKinds({
-      k8s: real.some((account) => account.cloud_provider?.toUpperCase() === 'K8S'),
-      cloud: real.some((account) => isCloudProvider(account.cloud_provider)),
-      vm: real.some((account) => isSelfHostedProvider(account.cloud_provider)),
-    });
-  }, [allCluster]);
 
   // Anchors mirror the sections AccountOverview actually renders — offering a
   // "Cloud Accounts" jump on a K8s-only tenant would scroll to nothing.
@@ -75,7 +68,7 @@ const Overview = () => {
       <AnchorComponent manageRoute={true} filterOptions={filterOptions} hideParentTabs={true} />
       <ErrorBoundary>
         <Box>
-          <AccountOverview />
+          <AccountOverview onSectionsChange={setAccountKinds} />
         </Box>
       </ErrorBoundary>
     </>

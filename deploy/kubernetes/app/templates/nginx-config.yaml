@@ -105,3 +105,4 @@ data:
     # Matches defaultWebhookMaxBodyBytes (5 MiB) in api/public_webhooks.go, so
     # the sidecar is never the tighter of the two limits.
     client_max_body_size 5m;
+    client_body_buffer_size 256k;

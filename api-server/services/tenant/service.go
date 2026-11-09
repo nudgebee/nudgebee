@@ -13,8 +13,10 @@ import (
 	"nudgebee/services/internal/database"
 	"nudgebee/services/internal/database/models"
 	"nudgebee/services/security"
+	"runtime/debug"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	bigcache_store "github.com/allegro/bigcache/v3"
@@ -269,6 +271,7 @@ func CreateTenant(context *security.RequestContext, request TenantCreateRequest)
 	if err != nil {
 		context.GetLogger().Error("Error invalidating cache for user", "error", err, "userId", request.UserId)
 	}
+	go sendTenantWelcomeEmail(context, request.TenantName, request.UserId)
 	go func() {
 		err := eventrule.LoadEventActions(context)
 		if err != nil {
@@ -298,6 +301,57 @@ func CreateTenant(context *security.RequestContext, request TenantCreateRequest)
 
 	return newTenant, nil
 
+}
+
+// sendTenantWelcomeEmail sends the onboarding welcome email to the tenant's owning
+// user. The self-signup flow (signup_verify.ts) sends this same email after its own
+// verification step, but a tenant created directly through this action (internal
+// tooling, superadmin-only) never goes through that flow, so without this call no
+// welcome email is ever sent for it.
+func sendTenantWelcomeEmail(ctx *security.RequestContext, tenantName, userId string) {
+	// This runs detached in its own goroutine (see the `go` call site) — an
+	// unrecovered panic here would take down the whole process, not just this
+	// email, so it gets its own safety net.
+	defer func() {
+		if r := recover(); r != nil {
+			ctx.GetLogger().Error("welcome email: recovered from panic", "panic", r, "stack", string(debug.Stack()))
+		}
+	}()
+
+	// Detach from the request context so this goroutine survives after the response is sent.
+	ctx = security.NewRequestContext(context.WithoutCancel(ctx.GetContext()), ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
+
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		ctx.GetLogger().Error("welcome email: error getting database manager", "error", err)
+		return
+	}
+
+	// Bounded lookup: a single indexed primary-key read, so a short timeout is
+	// plenty — without one, a stuck connection pool leaks this goroutine forever.
+	queryCtx, cancel := context.WithTimeout(ctx.GetContext(), 10*time.Second)
+	defer cancel()
+
+	var username, displayName string
+	if err := dbms.Db.QueryRowxContext(queryCtx, `SELECT username, display_name FROM users WHERE id = $1`, userId).Scan(&username, &displayName); err != nil {
+		ctx.GetLogger().Error("welcome email: user not found", "error", err, "user_id", userId)
+		return
+	}
+
+	message := map[string]any{
+		"kind":    "email",
+		"email":   []string{username},
+		"subject": fmt.Sprintf("%s is ready — one thing left to do", tenantName),
+		"type":    "signup_welcome",
+		"parameters": map[string]any{
+			"user_name": displayName,
+			"org_name":  tenantName,
+			"setup_url": fmt.Sprintf("%s/setup", strings.TrimRight(config.Config.BaseUrl, "/")),
+		},
+	}
+	if pubErr := common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message, common.MqPublishWithContext(ctx.GetContext())); pubErr != nil {
+		ctx.GetLogger().Error("welcome email: error publishing message to queue", "error", pubErr)
+	}
 }
 
 func IsFeatureEnabled(ctx *security.RequestContext, tenantId string, feature string) bool {
@@ -2456,6 +2510,15 @@ func DeleteTenant(ctx *security.RequestContext, request TenantDeleteRequest) (Te
 		{name: "knowledge_graph_tenant_filters"},
 		// llm
 		{name: "ai_cost_report_dispatch_log"},
+		// Token usage has no foreign key to its conversation (V986) and outlives
+		// it, so tenant removal deletes it explicitly: rows still linked to one
+		// of the tenant's conversations, then rows unlinked from a deleted
+		// conversation (served by idx_llm_token_usage_orphaned_spend). Two
+		// statements so each can use its index.
+		{name: "llm_conversation_token_usage", whereSubclause: "conversation_id IN (SELECT id FROM llm_conversations WHERE tenant_id = $1)"},
+		{name: "llm_conversation_token_usage", whereSubclause: "conversation_id IS NULL AND tenant_id IS NOT NULL AND tenant_id = $1"},
+		// Daily usage rollup built from those rows (V990).
+		{name: "llm_usage_daily"},
 		{name: "llm_conversations"},
 		{name: "llm_global_contexts"},
 		{name: "llm_knowledgebases"},

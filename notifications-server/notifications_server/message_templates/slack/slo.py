@@ -1,9 +1,9 @@
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Union
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 from notifications_server.configs.settings import URLRoutes, settings
-from notifications_server.message_templates.base import format_burn_rate, format_burn_rate_window
+from notifications_server.message_templates.base import format_burn_rate, format_burn_rate_window, is_resolved
 from notifications_server.message_templates.slack.recommendation_nudge_digest import (
     STRIPE_CRITICAL,
     legacy_attachment,
@@ -12,6 +12,23 @@ from notifications_server.message_templates.slack.recommendation_nudge_digest im
 import logging
 
 LOG = logging.getLogger(__name__)
+
+# What a firing SLO must carry and a resolved one need not: in the grouped
+# digest a resolved SLO is one line of name, place and time.
+RESOLVED_BLANKS = {
+    "account_id": "",
+    "account_name": "",
+    "namespace": "",
+    "workload": "",
+    "slo_name": "",
+    "slo_type": "",
+    "slo_target": "",
+    "current_value": "",
+    "firing_since": 0,
+    "bad_event_count": 0,
+    "good_event_count": 0,
+    "threshold": "",
+}
 
 
 class SLOAlertParams(BaseModel):
@@ -35,6 +52,17 @@ class SLOAlertParams(BaseModel):
     burn_rate_threshold: Optional[Union[str, float, int]] = None
     error_budget_remaining: Optional[Union[str, float, int]] = None
     end_time: Optional[Union[str, float, int]] = None
+    # Set once the SLO recovers; the Resolved section's "resolved <time>".
+    ends_at: Optional[Union[str, float, int]] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def blank_what_a_resolved_item_lacks(cls, data):
+        """One item failing validation fails its channel's whole digest, so a
+        resolved item missing a firing item's numbers is still accepted."""
+        if isinstance(data, dict) and is_resolved(data.get("status")):
+            return {**RESOLVED_BLANKS, **{key: value for key, value in data.items() if value is not None}}
+        return data
 
     @field_validator("firing_since", mode="before")
     @classmethod

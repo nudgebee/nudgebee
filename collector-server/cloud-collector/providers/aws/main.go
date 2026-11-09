@@ -106,6 +106,7 @@ func init() {
 		"systemsmanager":      &awsSystemsManager{},
 		"costoptimizationhub": &awsCostOptimizationHub{},
 		"costexplorer":        &awsCostExplorer{},
+		"commitments":         &awsCommitments{},
 		"computeoptimizer":    &awsComputeOptimizer{},
 		"trustedadvisor":      &awsTrustedAdvisor{},
 	}
@@ -1029,7 +1030,10 @@ func (a *awsProvider) DescribeECSTasks(ctx providers.CloudProviderContext, accou
 }
 
 func (a *awsProvider) GetUsageReport(ctx providers.CloudProviderContext, account providers.Account, month time.Month, year int) (providers.GetUsageReportResponse, error) {
-	return getAwsUsageReport(ctx, account, month, year)
+	resp, err := getAwsUsageReport(ctx, account, month, year)
+	// The spend sync is the only one that sets the account's connection status,
+	// and it shows this error as the reason.
+	return resp, explainAssumeRoleRefusal(account, err)
 }
 
 func (a *awsProvider) StreamUsageReport(ctx providers.CloudProviderContext, account providers.Account, month time.Month, year int, emit func([]providers.UsageReportItem) error) error {
@@ -1286,6 +1290,18 @@ func (a *awsProvider) ApplyRecommendation(ctx providers.CloudProviderContext, ac
 
 	// Call the service's ApplyRecommendation method
 	return service.ApplyRecommendation(ctx, account, recommendation)
+}
+
+func (a *awsProvider) GetApplyStatus(ctx providers.CloudProviderContext, account providers.Account, recommendation providers.Recommendation) (providers.ApplyStatusResult, error) {
+	serviceKey := getServiceKeyFromServiceName(recommendation.ResourceServiceName)
+	if serviceKey == "" {
+		return providers.ApplyStatusResult{}, fmt.Errorf("unknown service name: %s", recommendation.ResourceServiceName)
+	}
+	checker, ok := awsServiceMap[serviceKey].(providers.ApplyStatusChecker)
+	if !ok {
+		return providers.ApplyStatusResult{}, errors.ErrUnsupported
+	}
+	return checker.GetApplyStatus(ctx, account, recommendation)
 }
 
 // getServiceKeyFromServiceName maps service names (e.g., "AWSELB") to service keys (e.g., "elb")

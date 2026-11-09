@@ -6,6 +6,7 @@ import (
 	"net"
 	"nudgebee/runbook/internal/tasks/safehttp"
 	"nudgebee/runbook/internal/tasks/types"
+	"strings"
 	"time"
 )
 
@@ -40,6 +41,14 @@ func (t *TcpTask) Execute(taskCtx types.TaskContext, params map[string]any) (any
 		port = fmt.Sprintf("%d", p)
 	default:
 		return nil, fmt.Errorf("port parameter is required and must be a string or number")
+	}
+	// A bad port is a bad parameter, not an unreachable host: refuse it here
+	// rather than dial and report "reachable: false" for a port that cannot exist.
+	// LookupPort accepts what the dialer accepts (numbers, and service names such
+	// as "https"), so only values that could never connect are refused.
+	port = strings.TrimSpace(port)
+	if n, err := net.DefaultResolver.LookupPort(taskCtx.GetContext(), "tcp", port); err != nil || n < 1 {
+		return nil, fmt.Errorf("invalid port %q: use a port number between 1 and 65535", port)
 	}
 
 	timeout := 5 * time.Second

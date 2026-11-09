@@ -39,6 +39,27 @@ func (m SigNozWebhook) Category() core.IntegrationCategory {
 	return core.IntegrationCategoryIncidentWebhook
 }
 
+// WebhookLabelHelp describes the labels ProcessEventWebook builds. Update it with the parser.
+func (m SigNozWebhook) WebhookLabelHelp() core.WebhookLabelHelp {
+	return core.WebhookLabelHelp{
+		Summary: "Every label on the alert becomes a label under the same name, including the query's group-by attributes (k8s.namespace.name, k8s.pod.name, service.name, …). Labels common to the group fill in what the alert lacks.",
+		Labels: []core.WebhookLabelSource{
+			{Label: "<alert label>", Source: "alerts[].labels.<name>, else commonLabels.<name>"},
+			{Label: "ruleId", Source: "the SigNoz rule id"},
+			{Label: "ruleSource", Source: "link to the rule in SigNoz"},
+			{Label: "generatorURL", Source: "alerts[].generatorURL"},
+			{Label: "externalURL", Source: "externalURL"},
+			{Label: "runbook_url", Source: "annotations.runbook_url"},
+			{Label: "namespace", Source: "namespace or k8s.namespace.name, when namespace is not set"},
+			{Label: "service", Source: "the workload named by the alert's labels, when service is not set"},
+		},
+		Notes: []string{
+			"Annotations are not labels, except runbook_url.",
+			"status is not a label.",
+		},
+	}
+}
+
 func (m SigNozWebhook) ConfigSchema() core.IntegrationSchema {
 	return core.IntegrationSchema{
 		Type:     core.ToolSchemaTypeObject,

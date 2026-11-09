@@ -36,8 +36,12 @@ jest.mock('@context/SetupGateContext', () => ({ useSetupGate: () => gateState })
 let readinessState: {
   readiness: { done: number; total: number; percent: number; outstandingRequired: Array<{ id: string; name: string }> } | null;
 };
-const mockUseOnboardingReadiness = jest.fn(() => readinessState);
-jest.mock('@hooks/useOnboardingReadiness', () => ({ useOnboardingReadiness: () => mockUseOnboardingReadiness() }));
+const mockUseOnboardingReadiness = jest.fn((..._args: unknown[]) => readinessState);
+jest.mock('@hooks/useOnboardingReadiness', () => ({
+  useOnboardingReadiness: (...args: unknown[]) => mockUseOnboardingReadiness(...args),
+}));
+/** The `enabled` option the banner passed to the hook on its latest render. */
+const lastEnabled = () => mockUseOnboardingReadiness.mock.calls.at(-1)?.[1]?.enabled;
 
 const item = (name: string, id = name) => ({ id, name });
 
@@ -254,6 +258,38 @@ describe('the snooze', () => {
     session = null;
     render(<SetupProgressBanner />);
     expect(mockGetSetupBannerHiddenUntil).not.toHaveBeenCalled();
+  });
+});
+
+// The hook asks one capabilities request per account on every fetch, all
+// charged to the viewer's per-user GraphQL budget — so it must not run on a
+// `/home` load where the banner is never going to render.
+describe('only fetches readiness when it could render', () => {
+  it('fetches for an admin with an open gate and no snooze', () => {
+    render(<SetupProgressBanner />);
+    expect(lastEnabled()).toBe(true);
+  });
+
+  it.each([
+    ['the gate is still resolving', { loading: true }],
+    ['the gate is locked', { locked: true }],
+    ['the viewer is read-only', { canManageSetup: false }],
+  ])('does not fetch while %s', (_label, gateOverride) => {
+    gateState = { ...eligibleGate(), ...gateOverride };
+    render(<SetupProgressBanner />);
+    expect(lastEnabled()).toBe(false);
+  });
+
+  it('does not fetch while a stored snooze is active', () => {
+    mockGetSetupBannerHiddenUntil.mockReturnValue(new Date(Date.now() + 60 * 60 * 1000).toISOString());
+    render(<SetupProgressBanner />);
+    expect(lastEnabled()).toBe(false);
+  });
+
+  it('stops fetching once snoozed in this session', () => {
+    render(<SetupProgressBanner />);
+    fireEvent.click(screen.getByRole('button', { name: 'Snooze' }));
+    expect(lastEnabled()).toBe(false);
   });
 });
 

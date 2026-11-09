@@ -2,6 +2,7 @@ package core
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -58,4 +59,53 @@ func TestSanitizeErrorForUser_LazyConfigFailureIsCovered(t *testing.T) {
 	assert.NotContains(t, got, "k8s_orchestrator", "must not leak the internal agent name")
 	assert.NotContains(t, got, "react4", "must not leak the planner name")
 	assert.Contains(t, got, "default AI provider")
+}
+
+// #39704: planner failures reached users verbatim. The cases are the shapes
+// stored as FAILED replies on test; none may show planner internals.
+func TestSanitizeErrorForUser_PlannerInternalsAreHidden(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err  error
+		want string
+	}{
+		"text tool call after the re-prompt": {fmt.Errorf("react4: %w (no tool ran): %w", errReact4TextToolCall, ErrParseFailure), runStoppedEarlyMessage},
+		"summary wrote a plan":               {errSummaryTextToolCall, runStoppedEarlyMessage},
+		"raw provider 400": {fmt.Errorf("react4: llm generate: %w",
+			ErrLlmUnableToGenerate(errors.New("API returned unexpected status code: 400: Extra data: line 1 column 58 (char 57)"))), providerErrorMessage},
+		"parse failure mentioning a status code":      {fmt.Errorf("react4: reply was 500 chars: %w", ErrParseFailure), runStoppedEarlyMessage},
+		"classified provider error keeps its message": {fmt.Errorf("react4: llm generate: %w", ErrLLMServiceUnavailable), ErrLLMServiceUnavailable.Error()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := sanitizeErrorForUser(tc.err)
+			assert.Equal(t, tc.want, got)
+			assert.NotContains(t, got, "react4")
+		})
+	}
+}
+
+// The provider-error classifier matches on substrings, so it must not see
+// errors that never came from the provider: those keep their own text.
+func TestSanitizeErrorForUser_NonProviderErrorIsNotCalledAnOutage(t *testing.T) {
+	err := errors.New("integration connection not configured for account")
+	assert.Equal(t, err.Error(), sanitizeErrorForUser(err))
+}
+
+// Billing exhaustion must say so: the generic "AI service returned an error" hid an actionable cause.
+// Messages are the ones stored as FAILED replies on dev.
+func TestSanitizeErrorForUser_OutOfCreditIsNamed(t *testing.T) {
+	for name, raw := range map[string]string{
+		"anthropic 400":       "API returned unexpected status code: 400: Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.",
+		"openai 429":          "API returned unexpected status code: 429: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.",
+		"openrouter 402":      "API returned unexpected status code: 402: This request requires more credits, or fewer max_tokens. You requested up to 16384 tokens, but can only afford 14514.",
+		"openrouter inflight": "API returned unexpected status code: 402: This request would exceed your available credits given your current in-flight requests.",
+		"openai quota":        "API returned unexpected status code: 429: insufficient_quota: You exceeded your current quota, please check your plan and billing details.",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := sanitizeErrorForUser(fmt.Errorf("react4: llm generate: %w", ErrLlmUnableToGenerate(errors.New(raw))))
+			assert.Equal(t, ErrLLMOutOfCredit.Error(), got)
+		})
+	}
+	// A plain rate limit is still a rate limit.
+	rl := fmt.Errorf("react4: llm generate: %w", ErrLlmUnableToGenerate(errors.New("API returned unexpected status code: 429: Too Many Requests")))
+	assert.Equal(t, ErrLLMRateLimited.Error(), sanitizeErrorForUser(rl))
 }

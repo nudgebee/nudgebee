@@ -9,6 +9,20 @@ import (
 	"nudgebee/services/query"
 )
 
+// A JSON-number operand decodes to float64, which %v prints in exponent form. Log
+// filters must render it the same way the trace path does.
+func TestBuildCubeAPMConditionsRendersJSONNumbersAsDecimals(t *testing.T) {
+	got, err := buildCubeAPMConditions(query.QueryWhereClause{
+		Binary: query.BinaryWhereClause{"latency_ms": {query.Gte: float64(5000000)}},
+	}, cubeAPMLogLabelMapping)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(got, `latency_ms:>=5000000`) {
+		t.Errorf("conditions %q do not render the bound as a plain decimal", got)
+	}
+}
+
 func TestCubeAPMQuote(t *testing.T) {
 	tests := []struct {
 		name string

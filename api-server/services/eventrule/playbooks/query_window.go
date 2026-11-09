@@ -55,8 +55,14 @@ func (e PlaybookEvent) ResolveQueryWindow(durationMinutes int) (time.Time, time.
 		end = e.IncidentAt.UTC()
 		start = end
 	}
-	if end.IsZero() {
-		end = time.Now().UTC()
+	// An end in the future is not an end. getPlaybookStartEndTime gives a
+	// still-firing alert EndsAt = StartsAt + 1h, and Alertmanager sends a future
+	// endsAt of its own, so the window arrived as [start-10m, start+60m]: already
+	// wider than the floor below, which therefore never extended it backwards, and
+	// holding only the ten minutes before the alert. RangeQueryWindow clamps for
+	// the same reason.
+	if now := time.Now().UTC(); end.IsZero() || end.After(now) {
+		end = now
 	}
 
 	minWindow := time.Duration(durationMinutes) * time.Minute

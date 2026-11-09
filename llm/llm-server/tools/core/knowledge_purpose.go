@@ -47,5 +47,9 @@ func KnowledgeDocumentPurpose(doc RAGSearchResult) KnowledgeContentPurpose {
 		category, _ := doc.Metadata["note_category"].(string)
 		return KnowledgePurpose("manual", category)
 	}
+	// Integration pages have no manual KB category, so the classifier's kind is their only automatic signal.
+	if kind, _ := doc.Metadata["kind"].(string); kind == "sop" {
+		return KnowledgePurposeProcedure
+	}
 	return KnowledgePurposeReference
 }

@@ -26,9 +26,32 @@ func TestHandleConversationTimeAggregatesApi_ForbiddenAccount(t *testing.T) {
 	)
 
 	request := ConversationTimeAggregatesRequest{
-		AccountId: deniedAccount,
-		StartDate: "2026-05-01T00:00:00Z",
-		EndDate:   "2026-05-02T00:00:00Z",
+		AccountIds: []string{deniedAccount},
+		StartDate:  "2026-05-01T00:00:00Z",
+		EndDate:    "2026-05-02T00:00:00Z",
+	}
+	_, err := HandleConversationTimeAggregatesApi(ctx, request)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "forbidden")
+}
+
+// TestHandleConversationTimeAggregatesApi_MultipleAccounts_OneForbidden
+// verifies a forbidden account rejects the whole request, not just itself.
+func TestHandleConversationTimeAggregatesApi_MultipleAccounts_OneForbidden(t *testing.T) {
+	allowedAccount := "00000000-0000-0000-0000-000000000001"
+	deniedAccount := "11111111-1111-1111-1111-111111111111"
+
+	ctx := security.NewRequestContextForTenantAccountAdmin(
+		"00000000-0000-0000-0000-000000000000",
+		"00000000-0000-0000-0000-000000000099",
+		[]string{allowedAccount},
+	)
+
+	request := ConversationTimeAggregatesRequest{
+		AccountIds: []string{allowedAccount, deniedAccount},
+		StartDate:  "2026-05-01T00:00:00Z",
+		EndDate:    "2026-05-02T00:00:00Z",
 	}
 	_, err := HandleConversationTimeAggregatesApi(ctx, request)
 

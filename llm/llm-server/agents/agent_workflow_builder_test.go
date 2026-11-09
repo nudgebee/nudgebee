@@ -2,6 +2,7 @@ package agents
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -887,7 +888,7 @@ func TestBuildWorkflowSummary_CreateMode(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Contains(t, summary, "**`pod-health-monitor`**")
 	assert.Contains(t, summary, "built and saved")
-	assert.NotContains(t, summary, "not yet saved")
+	assert.NotContains(t, summary, "could not be saved")
 	assert.Contains(t, summary, "**Trigger:** schedule")
 	assert.Contains(t, summary, "1. **get-pods** — `k8s.cli`")
 	assert.Contains(t, summary, "2. **check-health** — `data.transform`")
@@ -909,8 +910,31 @@ func TestBuildWorkflowSummary_CreateMode_NotSaved(t *testing.T) {
 	summary, err := buildWorkflowSummary(workflowJSON, "", false, "")
 	assert.Nil(t, err)
 	assert.Contains(t, summary, "**`pod-health-monitor`**")
-	assert.Contains(t, summary, "not yet saved")
+	assert.Contains(t, summary, "was built but could not be saved")
 	assert.NotContains(t, summary, "built and saved")
+}
+
+// The reason a save failed sits right under the headline, ahead of the task list: at the end of
+// a fifteen-task summary it was below the visible part of the result window.
+func TestWithSaveFailure_ReasonFollowsHeadline(t *testing.T) {
+	workflowJSON := `{
+		"name": "pod-health-monitor",
+		"definition": {
+			"triggers": [{"type": "manual"}],
+			"tasks": [{"id": "t1", "type": "core.print"}, {"id": "t2", "type": "core.print"}]
+		}
+	}`
+	summary, err := buildWorkflowSummary(workflowJSON, "", false, "")
+	assert.Nil(t, err)
+
+	got := withSaveFailure(summary, errors.New("workflow_builder: an automation named \"pod-health-monitor\" already exists in this account"))
+
+	headline, rest, _ := strings.Cut(got, "\n\n")
+	assert.Contains(t, headline, "was built but could not be saved")
+	assert.True(t, strings.HasPrefix(rest, "**Reason:** an automation named \"pod-health-monitor\" already exists in this account"), rest)
+	assert.Contains(t, rest, "**Tasks:**")
+	assert.Less(t, strings.Index(got, "**Reason:**"), strings.Index(got, "**Tasks:**"))
+	assert.NotContains(t, got, "workflow_builder:", "the package prefix is for logs, not for the reader")
 }
 
 func TestBuildWorkflowSummary_FixMode(t *testing.T) {
@@ -928,7 +952,7 @@ func TestBuildWorkflowSummary_FixMode(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Contains(t, summary, "updated")
 	assert.NotContains(t, summary, "built and saved")
-	assert.NotContains(t, summary, "not yet saved")
+	assert.NotContains(t, summary, "could not be saved")
 }
 
 // TestBuildWorkflowSummary_ChangeSummary verifies the agent-authored change summary is
@@ -986,7 +1010,7 @@ func TestBuildWorkflowSummary_FixMode_NotSaved(t *testing.T) {
 	summary, err := buildWorkflowSummary(workflowJSON, "fix", false, "")
 	assert.Nil(t, err)
 	assert.Contains(t, summary, "**`daily-report`**")
-	assert.Contains(t, summary, "not yet saved")
+	assert.Contains(t, summary, "could not be saved")
 	assert.NotContains(t, summary, "has been updated")
 }
 
@@ -1098,9 +1122,9 @@ func TestSummaryHeadline(t *testing.T) {
 		expects string
 	}{
 		{"", true, "built and saved"},
-		{"", false, "not yet saved"},
+		{"", false, "was built but could not be saved"},
 		{"fix", true, "has been updated"},
-		{"fix", false, "not yet saved"},
+		{"fix", false, "could not be saved"},
 	}
 	for _, tc := range cases {
 		got := summaryHeadline("demo", tc.mode, tc.saved)
@@ -1804,48 +1828,40 @@ func TestWorkflowBuilder_CatchupWindowGuidanceAccurate(t *testing.T) {
 	}
 }
 
-// TestClarificationPrompt_DoesNotAskAboutSlackChannel guards the clarification
-// prompt against two regressions:
+// TestClarificationPrompt_AsksForTheSlackChannelWithoutNamingAny guards the clarification prompt
+// against the two ways this has gone wrong:
 //
-//  1. **No hardcoded channel names.** A prior revision shipped an example with
-//     literal "#alerts" / "#engineering" / "#incidents" — and because the LLM
-//     had no real channel data to draw from, it copied those names verbatim
-//     into the FollowupOptions rendered to the user. The fix moves channel
-//     selection out of the clarification flow entirely.
+//  1. **Hardcoded channel names.** An early revision shipped an example with literal "#alerts" /
+//     "#engineering" / "#incidents". The LLM has no channel data, so it copied those names
+//     verbatim into the options shown to the user.
 //
-//  2. **No clarification question about Slack channels.** Channel selection
-//     belongs to {{ Configs.slack_channel }} (filled via Configs UI) or to
-//     workflow Inputs at runtime — not to a single-select picker at planning
-//     time. The prompt must explicitly forbid the LLM from emitting such a
-//     question.
+//  2. **Not asking at all.** The next revision forbade the question and deferred to
+//     {{ Configs.slack_channel }}. On an account without that config the automation was saved
+//     INACTIVE and never ran.
 //
-// If anyone reintroduces hardcoded channel names or removes the "do not ask
-// about Slack channels" rule, this test fails.
-
-func TestClarificationPrompt_DoesNotAskAboutSlackChannel(t *testing.T) {
+// The prompt now asks, as a "chat_channel" question that carries no options: the user types the
+// channel and code checks it against the workspace (see resolveChatChannelAnswer).
+func TestClarificationPrompt_AsksForTheSlackChannelWithoutNamingAny(t *testing.T) {
 	prompt := getClarificationSystemPrompt(
 		"\nACCOUNT ENVIRONMENT:\nIntegrations: slack: my-workspace",
 		"\nAVAILABLE CONFIGS:\n[]",
 		"send an alert to slack when a pod crashes",
 	)
 
-	// (1) No hardcoded channel names — they were the original bug. The LLM
-	// copied these from the example into real user-facing options.
+	// (1) No channel names anywhere in the prompt, hardcoded or as an example.
 	for _, banned := range []string{"#alerts", "#engineering", "#incidents", "#ops", "internal-team"} {
 		assert.NotContains(t, prompt, banned,
 			"clarification prompt must not contain hardcoded Slack channel example %q — it was getting copied verbatim into user-facing options", banned)
 	}
+	assert.NotRegexp(t, `#[a-z][a-z0-9_-]+`, prompt, "clarification prompt must not name any Slack channel")
 
-	// (2) The prompt must explicitly forbid asking the user which Slack
-	// channel to use. We accept either phrasing of the rule.
-	assert.Regexp(t, `(?i)do not ask which slack channel|channel selection is not a clarification question`, prompt,
-		"clarification prompt must explicitly forbid asking the user which Slack channel to use — defer to Configs/Inputs instead")
+	// (2) The question is asked, typed so that code settles the answer, and without options.
+	assert.Contains(t, prompt, `"kind": "chat_channel"`)
+	assert.Regexp(t, `(?i)never propose channel names`, prompt)
+	assert.NotRegexp(t, `(?i)do not ask which slack channel`, prompt)
 
-	// (3) The prompt must point the LLM at the Configs placeholder so the
-	// workflow still gets built — without this, the LLM might omit the
-	// channel param entirely and produce an invalid notifications.im task.
-	assert.Contains(t, prompt, "{{ Configs.slack_channel }}",
-		"clarification prompt must reference {{ Configs.slack_channel }} so the LLM knows where the channel value comes from")
+	// (3) The placeholder survives only as what happens when the user skips the question.
+	assert.Regexp(t, `(?i)if the user skips, the workflow uses \{\{ Configs\.slack_channel \}\}`, prompt)
 }
 
 // TestParseClarifyingQuestionsJSON covers the shared post-processing used by both the create- and
@@ -2351,4 +2367,34 @@ func TestPlanApproval_RequestChangesNeverBuilds(t *testing.T) {
 			assert.Equal(t, "feedback", agent.state.Stage)
 		})
 	}
+}
+
+func TestTurnIntentClassification(t *testing.T) {
+	request := core.NBAgentRequest{AccountId: "acct", UserId: "user", AgentId: "agent", ConversationId: "conv", MessageId: "msg"}
+	for _, hasWorkflow := range []bool{true, false} {
+		call, task := turnIntentClassification(request, hasWorkflow)
+
+		// Stays on today's model; the classification tier is a separate switch.
+		assert.Equal(t, core.ModelTierRetrieval, call.Tier)
+		assert.Equal(t, "agent", call.AgentId, "agent id keys LLM config and cost")
+		assert.True(t, call.TrackContent)
+
+		assert.Equal(t, "workflow_turn_intent", task.Name)
+		assert.Contains(t, task.Instructions, map[bool]string{true: "There IS currently", false: "There is NOT currently"}[hasWorkflow])
+		assert.Contains(t, task.Instructions, "A pasted error message", "pasted-error rule (#39381)")
+		assert.NotContains(t, task.Instructions, "Respond with ONLY one word", "Classify adds its own answer format")
+
+		// parseTurnIntent maps these labels back to intents, so they must stay the intent constants.
+		var labels []string
+		for _, o := range task.Options {
+			labels = append(labels, o.Label)
+			assert.NotEmpty(t, o.Description, o.Label)
+		}
+		assert.Equal(t, []string{string(turnIntentAnswer), string(turnIntentEdit), string(turnIntentCreate)}, labels)
+	}
+
+	// An invalid answer reaches parseTurnIntent as "", which falls back safely.
+	assert.Equal(t, turnIntentEdit, parseTurnIntent("", true))
+	assert.Equal(t, turnIntentCreate, parseTurnIntent("", false))
+	assert.Equal(t, turnIntentCreate, parseTurnIntent(string(turnIntentEdit), false), "nothing to edit without a workflow")
 }

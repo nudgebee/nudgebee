@@ -101,3 +101,46 @@ func TestAnomalyReturnedDigestIsOffByDefaultAndReadFromTheEnvironment(t *testing
 		t.Error("default feature_anomaly_returned_digest_enabled = true, want false")
 	}
 }
+
+// Announcing a recovered SLO in the SLO digest is opt-in: an environment turns
+// it on only once its notifications-server lists resolved items. On by default,
+// a notifications-server a release behind would show every recovery as one more
+// breaching SLO.
+func TestSLOResolvedDigestDisabledByDefault(t *testing.T) {
+	if v, ok := os.LookupEnv("FEATURE_SLO_RESOLVED_DIGEST_ENABLED"); ok {
+		t.Skipf("FEATURE_SLO_RESOLVED_DIGEST_ENABLED=%q is set in the environment; the compiled-in default is not observable here", v)
+	}
+	if Config.FeatureSLOResolvedDigestEnabled {
+		t.Error("default feature_slo_resolved_digest_enabled = true, want false")
+	}
+}
+
+// Re-running workflows on a scheduled job's re-detection is opt-in, and the
+// switch has to be reachable from the environment.
+func TestScheduledAlertWorkflowRefireIsOffByDefaultAndReadFromTheEnvironment(t *testing.T) {
+	if !slices.Contains(viper.AllKeys(), "feature_scheduled_alert_workflow_refire_enabled") {
+		t.Error("feature_scheduled_alert_workflow_refire_enabled has no viper default, so FEATURE_SCHEDULED_ALERT_WORKFLOW_REFIRE_ENABLED is ignored")
+	}
+	if v, ok := os.LookupEnv("FEATURE_SCHEDULED_ALERT_WORKFLOW_REFIRE_ENABLED"); ok {
+		t.Skipf("FEATURE_SCHEDULED_ALERT_WORKFLOW_REFIRE_ENABLED=%q is set in the environment; the compiled-in default is not observable here", v)
+	}
+	if Config.FeatureScheduledAlertWorkflowRefireEnabled {
+		t.Error("default feature_scheduled_alert_workflow_refire_enabled = true, want false")
+	}
+}
+
+// Holding an anomaly's close is opt-in, and both settings have to be reachable
+// from the environment.
+func TestAnomalyStableCloseIsOffByDefaultAndReadFromTheEnvironment(t *testing.T) {
+	for _, key := range []string{"feature_anomaly_stable_close_enabled", "nb_anomaly_close_stable_hours"} {
+		if !slices.Contains(viper.AllKeys(), key) {
+			t.Errorf("%s has no viper default, so its environment variable is ignored", key)
+		}
+	}
+	if v, ok := os.LookupEnv("FEATURE_ANOMALY_STABLE_CLOSE_ENABLED"); ok {
+		t.Skipf("FEATURE_ANOMALY_STABLE_CLOSE_ENABLED=%q is set in the environment; the compiled-in default is not observable here", v)
+	}
+	if Config.FeatureAnomalyStableCloseEnabled {
+		t.Error("default feature_anomaly_stable_close_enabled = true, want false")
+	}
+}

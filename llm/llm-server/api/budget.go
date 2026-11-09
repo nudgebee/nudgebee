@@ -5,12 +5,14 @@ import (
 	"strings"
 	"time"
 
+	"nudgebee/llm/agents/core"
 	"nudgebee/llm/audit"
 	"nudgebee/llm/budget"
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -513,4 +515,58 @@ func handleBudgetStatusApi(r *gin.Engine, tracer trace.Tracer, meter metric.Mete
 		defaults := budget.GetSystemDefaults()
 		c.JSON(200, gin.H{"data": defaults})
 	})
+}
+
+// repliesPastCountLimit reports whether a chat request is one the count limits
+// must not stop, because it finishes or continues work a person already started:
+//
+//   - an answer to a waiting prompt (agentId is set), whatever started the
+//     conversation, since the run was already admitted and is stranded without it;
+//   - a message from a signed-in person in an existing conversation, including one
+//     typed into an alert investigation.
+//
+// An automatic re-run keeps the full check. Alert and automation callers resume a
+// session id to reuse a conversation, so an existing conversation alone does not
+// make a request a reply; the caller decides. Alert re-runs reach /chat as the
+// system user (no user, or the nil UUID), so they never count as a person. The
+// automation runner forwards the user it runs as, which can be a real person, so a
+// conversation from an automation only passes when it answers a waiting prompt. A
+// fresh session has no conversation, so a new investigation is never mistaken for
+// a reply.
+func repliesPastCountLimit(accountId, sessionId, agentId, callerUserId string, existing *core.Conversation) bool {
+	conv := existing
+	if conv == nil {
+		if sessionId == "" {
+			return false
+		}
+		found, err := core.GetConversationDao().GetConversationBySession(accountId, sessionId)
+		if err != nil || found.ID == uuid.Nil {
+			return false
+		}
+		conv = &found
+	}
+	if agentId != "" {
+		return true
+	}
+	if callerUserId == "" || callerUserId == security.GetSystemUserId() {
+		return false
+	}
+	return conv.Source == nil || *conv.Source != core.ConversationSourceAutomation
+}
+
+// checkChatBudgetAndRespond sends a 429 and returns true when the request is over
+// budget. A request that repliesPastCountLimit is held to the cost limits only: the
+// count limits cap how many conversations are created, so applying them to an
+// approval answer or a person's follow-up would strand a run that was already
+// admitted. The conversation lookup runs only after the strict check has failed.
+func checkChatBudgetAndRespond(c *gin.Context, tenantId, accountId, sessionId, agentId, callerUserId string, existing *core.Conversation, module string, logger *slog.Logger) bool {
+	exceeded, message := budget.CheckBudgetLimits(tenantId, accountId, module, logger)
+	if exceeded && repliesPastCountLimit(accountId, sessionId, agentId, callerUserId, existing) {
+		exceeded, message = budget.CheckBudgetLimitsForReply(tenantId, accountId, module, logger)
+	}
+	if !exceeded {
+		return false
+	}
+	c.JSON(429, buildApiResponse(nil, []error{common.Error{Message: message}}))
+	return true
 }

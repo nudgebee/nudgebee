@@ -239,7 +239,7 @@ func fetchOpenObservePerPod(ctx *security.RequestContext, req GetUtilisationTren
 // rejects a subquery whose inner expression matches nothing -- turning "this pod has no
 // data" into a hard error. Reducing in Go keeps an empty series empty.
 //
-// datadogReduceOverTime is reused rather than reimplemented: the reduction is arithmetic
+// reduceOverTime is reused rather than reimplemented: the reduction is arithmetic
 // over a slice, with nothing Datadog-specific in it, and a second copy would be a second
 // place for `max` and `avg` to drift apart.
 func ooReducePerPod(series []Result, agg ParsedAggregate) []Result {
@@ -254,7 +254,7 @@ func ooReducePerPod(series []Result, agg ParsedAggregate) []Result {
 			out = append(out, Result{Metric: s.Metric, Timestamps: []int64{}, Values: []float64{}})
 			continue
 		}
-		v, ok := datadogReduceOverTime(s.Values, agg)
+		v, ok := reduceOverTime(s.Values, agg)
 		if !ok {
 			// Every sample was a gap. Still exactly one point, carrying NaN rather than
 			// a zero that a caller would read as a measured idle pod.

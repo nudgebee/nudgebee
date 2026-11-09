@@ -53,7 +53,7 @@ import Datetime from '@shared/format/Datetime';
 import KGSettings from './KGSettings';
 import { downloadRelationshipsCsv, downloadGraphImage, IMAGE_MAX_NODES } from './kgExport';
 import { parseUniqueKey, formatTypeBadge, decodeFilterOptions, computeFilterOptionsClientSide } from './kgFilterCascade';
-import { isTenantAdmin } from '@lib/auth';
+import { getCurrentTenant, isTenantAdmin } from '@lib/auth';
 import PropTypes from 'prop-types';
 
 const MAX_NODE_LIMIT = 1500;
@@ -658,6 +658,10 @@ const useGraphBuilder = (rawData, onInfoClick, accMap, onFocusClick) => {
       return { initialNodes: [], initialEdges: [] };
     }
 
+    // Nodes declared outside any connected account are partitioned under the
+    // tenant id, which accMap never resolves; name the partition, not the UUID.
+    const tenantId = getCurrentTenant()?.id;
+
     // 1. Create Nodes (slim response: n.kind, n.name, n.account_id, n.logo_id, n.specific_type — no n.properties)
     const initialNodes = rawData.nodes.map((n) => {
       // Identity nodes — UserAccount (PagerDuty/GitHub/GitLab/Nudgebee-internal user)
@@ -668,7 +672,8 @@ const useGraphBuilder = (rawData, onInfoClick, accMap, onFocusClick) => {
       // back to the raw UUID; show the specific source system (e.g. "PagerDuty User",
       // "Nudgebee Group") in place of the generic "UserAccount"/"UserGroup" subtitle instead.
       const isIdentityNode = n.kind === 'UserAccount' || n.kind === 'UserGroup';
-      const accName = isIdentityNode ? '' : accMap.get(n.account_id) || n.account_id;
+      const tenantScopedName = tenantId && n.account_id === tenantId ? 'Not in a connected account' : n.account_id;
+      const accName = isIdentityNode ? '' : accMap.get(n.account_id) || tenantScopedName;
       const subtitle = isIdentityNode && n.specific_type ? humanizeNodeType(n.specific_type) : n.kind;
       return {
         id: n.id,

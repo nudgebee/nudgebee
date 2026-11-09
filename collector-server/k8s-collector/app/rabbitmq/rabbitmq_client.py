@@ -209,9 +209,6 @@ class RabbitConsumer(ConsumerMixin):
         # causing missed heartbeats. Configurable via K8S_COLLECTOR_CONSUMER_HEARTBEAT.
         self.connection = self._new_connection()
 
-        # Declare topology once at startup
-        self._declare_topology()
-
     @staticmethod
     def _new_connection() -> Connection:
         from config import Configs
@@ -337,13 +334,13 @@ class RabbitConsumer(ConsumerMixin):
                 # force it is to delete the queue, which discards the backlog
                 # the operator is usually trying to save.
                 #
-                # Retrying is worse than not insisting. This runs from
-                # __init__, which runs at gunicorn import time, so a retry loop
-                # here means the pod never finishes booting and never serves
-                # /health -- an upgrade would take out every collector at once.
-                # Attach to what exists instead; `nb-collector-agent-queues`
-                # (RabbitMQ policy, migration 002) supplies the TTL and the size
-                # cap on these queues, so the bound does not depend on this.
+                # Retrying is worse than not insisting. This runs on the
+                # consumer thread from get_consumers(), but a retry loop
+                # here would still leave the consumer stalled retrying a
+                # declare that can never succeed. Attach to what exists
+                # instead; `nb-collector-agent-queues` (RabbitMQ policy,
+                # migration 002) supplies the TTL and the size cap on these
+                # queues, so the bound does not depend on this.
                 self._legacy_queue = True
                 logger.warning(
                     "Queue %s already exists with different arguments (%s). Attaching to it as-is; "

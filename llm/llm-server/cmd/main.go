@@ -18,6 +18,7 @@ import (
 	"nudgebee/llm/agents"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/api"
+	"nudgebee/llm/budget"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/prompts"
@@ -323,12 +324,27 @@ func main() {
 		slog.Warn("main: failed to register event analysis digest job", "error", err)
 	}
 
+	// Daily LLM usage rollup that budget checks read (#40241). Convergent +
+	// leader-elected: rebuilds yesterday, today and any day not yet built.
+	if err := budget.RegisterUsageRollupJob(); err != nil {
+		slog.Warn("main: failed to register usage rollup job", "error", err)
+	}
+	// Fills conversation_account_id on older usage rows, which the AI Cost
+	// Analyser filters on (#40241).
+	if err := budget.RegisterUsageAccountBackfillJob(); err != nil {
+		slog.Warn("main: failed to register usage account backfill job", "error", err)
+	}
+
 	// Periodically delete never-used and stale long-term memories.
 	go core.StartMemoryTTLCleanup(syncCtx)
 
 	// Expire stale WAITING conversations so the Waiting list stays an inbox.
 	if err := core.RegisterWaitingConversationExpiry(syncCtx); err != nil {
 		slog.Warn("main: failed to register waiting conversation expiry job", "error", err)
+	}
+
+	if err := core.RegisterLLMHookLinkCleanup(); err != nil {
+		slog.Warn("main: failed to register LLM hook link cleanup job", "error", err)
 	}
 
 	// Memory-v2 scheduled maintenance jobs (both the SQL-only bundle in

@@ -9,58 +9,56 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestUnlocatedGroupingDefaultsOn — all three grouping switches are kill
-// switches, not opt-ins. A default-off flag nobody flips leaves the path dead in
-// config, which is the fate the threshold-suggestion audit measured.
-func TestUnlocatedGroupingDefaultsOn(t *testing.T) {
+// TestUnlocatedGroupingDefaultsOff — timing-only grouping is an opt-in: alarms
+// that fire on a schedule meet each other on the clock every hour, so an
+// unset or empty flag must leave the path off.
+func TestUnlocatedGroupingDefaultsOff(t *testing.T) {
 	t.Setenv(unlocatedGroupingEnvFlag, "")
-	if !unlocatedGroupingEnabled() {
-		t.Error("empty flag disabled the path; it is a kill switch, not an opt-in")
+	if unlocatedGroupingEnabled() {
+		t.Error("empty flag enabled the path; it is an opt-in")
 	}
 	if err := os.Unsetenv(unlocatedGroupingEnvFlag); err != nil {
 		t.Fatalf("unset flag: %v", err)
 	}
-	if !unlocatedGroupingEnabled() {
-		t.Error("absent flag disabled the path; it is a kill switch, not an opt-in")
+	if unlocatedGroupingEnabled() {
+		t.Error("absent flag enabled the path; it is an opt-in")
 	}
 }
 
-// TestUnlocatedGroupingKillSwitch — the spellings that must turn it off, and the
-// near-misses that must not. "no" and "off" read as disabling to a human but are
-// not honoured, so an operator reaching for the kill switch has to use the same
-// two words the other switches take.
-func TestUnlocatedGroupingKillSwitch(t *testing.T) {
-	for _, v := range []string{"false", "FALSE", "False", "0"} {
-		t.Run("off/"+v, func(t *testing.T) {
-			t.Setenv(unlocatedGroupingEnvFlag, v)
-			if unlocatedGroupingEnabled() {
-				t.Errorf("%q did not disable", v)
-			}
-		})
-	}
-	for _, v := range []string{"true", "1", "no", "off", "disabled"} {
+// TestUnlocatedGroupingOptIn — the spellings that must turn it on, and the
+// near-misses that must not, so a typo leaves timing-only grouping off.
+func TestUnlocatedGroupingOptIn(t *testing.T) {
+	for _, v := range []string{"true", "TRUE", "True", "1", " true "} {
 		t.Run("on/"+v, func(t *testing.T) {
 			t.Setenv(unlocatedGroupingEnvFlag, v)
 			if !unlocatedGroupingEnabled() {
-				t.Errorf("%q disabled the path; only false/0 may", v)
+				t.Errorf("%q did not enable", v)
+			}
+		})
+	}
+	for _, v := range []string{"false", "0", "yes", "on", "enabled"} {
+		t.Run("off/"+v, func(t *testing.T) {
+			t.Setenv(unlocatedGroupingEnvFlag, v)
+			if unlocatedGroupingEnabled() {
+				t.Errorf("%q enabled the path; only true/1 may", v)
 			}
 		})
 	}
 }
 
 // TestUnlocatedGroupingIsIndependentOfTheOtherSwitches — the three evidence
-// families are separately killable, so pulling this one must leave the other two
-// alone and vice versa.
+// families are switched separately, so this one being off must leave the other
+// two on.
 func TestUnlocatedGroupingIsIndependentOfTheOtherSwitches(t *testing.T) {
 	t.Setenv(unlocatedGroupingEnvFlag, "false")
 	t.Setenv(topologyGroupingEnvFlag, "")
 	t.Setenv(incidentGroupingEnvFlag, "")
 
 	if unlocatedGroupingEnabled() {
-		t.Error("co-timing path should be off when explicitly killed")
+		t.Error("co-timing path should be off when explicitly turned off")
 	}
 	if !topologyGroupingEnabled() || !incidentGroupingEnabled() {
-		t.Error("killing the co-timing path must not disturb the other two")
+		t.Error("the co-timing path being off must not disturb the other two")
 	}
 }
 

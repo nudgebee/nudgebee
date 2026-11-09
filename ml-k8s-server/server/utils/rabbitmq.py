@@ -1,11 +1,12 @@
+import json
 import logging
 import threading
 import time
-from typing import Any, Callable, cast
+from contextlib import suppress
+from typing import Any, Callable
 
-from kombu import Connection, Exchange, Message, Producer, Queue
+from kombu import Connection, Exchange, Producer
 from kombu.exceptions import OperationalError
-from kombu.transport.virtual import Channel
 from opentelemetry import trace
 from opentelemetry.propagate import extract
 from server.utils.utils import QueueConfig
@@ -82,6 +83,23 @@ def consume_message(
     consumer.start()
 
 
+# The broker sends a consumer its next message only after the previous one is acked, and a
+# message is acked when its scan ends, so a pod that is busy is never handed more work.
+PREFETCH_COUNT = 1
+MAX_RECONNECT_DELAY_SECONDS = 30.0
+# Set on the one copy a redelivered message is requeued as, so it is retried once, not forever.
+ATTEMPT_HEADER = "x-nb-attempt"
+
+
+def _describe(body: Any) -> str:
+    """Names a queued job for a log line without logging its body, which can carry credentials."""
+    try:
+        parsed = json.loads(body)
+        return f"{parsed.get('action_name')} for account {parsed.get('account_id') or parsed.get('account')}"
+    except (TypeError, ValueError, AttributeError):
+        return "an unreadable message"
+
+
 class KombuConsumerThread(threading.Thread):
     def __init__(
         self,
@@ -101,7 +119,7 @@ class KombuConsumerThread(threading.Thread):
         self.callback = callback
         self.connection: Connection | None = None
 
-    def callback_internal(self, message: Message) -> None:
+    def callback_internal(self, message: Any) -> None:
         try:
             # Continue the distributed trace: extract the W3C context the
             # publisher injected into the AMQP headers and run the handler
@@ -121,53 +139,74 @@ class KombuConsumerThread(threading.Thread):
                 message={"payload": message.body, "error": str(e)},
             )
 
-    def run(self) -> None:
-        self.connect()
-        while self.connection is not None:
-            try:
-                with cast(Channel, self.connection.channel()) as channel:
-                    channel.exchange_declare(
-                        exchange=self.exchange_name, type="direct", durable=True, auto_delete=False
-                    )
-                    queue = Queue(
-                        self.queue_name,
-                        Exchange(self.exchange_name),
-                        routing_key=self.routing_key,
-                    )
-                    channel.queue_declare(
-                        queue=self.queue_name, durable=True, exclusive=False, auto_delete=False, arguments=None
-                    )
-                    queue.maybe_bind(channel)
-                    channel.queue_bind(self.queue_name, self.exchange_name, self.routing_key)
-                    queue.consume(callback=self.callback_internal, no_ack=True)
-                    while True:
-                        try:
-                            self.connection.drain_events()
-                        except (ConnectionError, OperationalError):
-                            logger.exception("Connection lost, reconnecting...")
-                            self.connect()
-            except Exception:
-                logger.exception("Connection lost, reconnecting...")
-                self.connect()
+    def on_message(self, message: Any) -> None:
+        # A message comes back redelivered when an earlier delivery was never acked (the pod died
+        # mid-scan, or the scan outran the queue's consumer timeout and is still running) and also,
+        # for everything still queued, when the broker itself restarted uncleanly. So it is run once
+        # more, as a copy marked with ATTEMPT_HEADER, and dropped if that copy comes back too: a scan
+        # that kills its pod runs at most twice instead of looping.
+        try:
+            if not message.delivery_info.get("redelivered"):
+                self.callback_internal(message)
+            elif (message.headers or {}).get(ATTEMPT_HEADER):
+                logger.warning(
+                    f"Dropping {_describe(message.body)} from {self.queue_name}: its retry was redelivered too"
+                )
+            else:
+                self.requeue_for_retry(message)
+                logger.warning(f"Requeued redelivered {_describe(message.body)} on {self.queue_name} for one retry")
+        finally:
+            message.channel.basic_ack(message.delivery_tag)
 
-    def connect(self) -> None:
-        if self.connection is None or self.connection.connected is None:
-            retries = 1
-            max_retry = 15
-            while True:
-                try:
-                    self.connection = Connection(self.connection_string)
-                    self.connection.ensure_connection(max_retries=30)
-                    break
-                except Exception:
-                    time.sleep(10)
-                    retries += 1
-                    logger.warning(f"retrying ..... {retries}")
-                    if max_retry < retries:
-                        logger.exception(f"Maximum retry exhausted. Retry no. {retries} gracefully exiting application")
-                        raise Exception(f"Failed to connect to RabbitMQ after {retries} retries")
+    def requeue_for_retry(self, message: Any) -> None:
+        properties = dict(message.properties)
+        headers = {**(properties.pop("application_headers", None) or {}), ATTEMPT_HEADER: 2}
+        retry = message.channel.prepare_message(
+            message.body,
+            priority=properties.pop("priority", None),
+            content_type=properties.pop("content_type", None),
+            content_encoding=properties.pop("content_encoding", None),
+            headers=headers,
+            properties=properties,
+        )
+        message.channel.basic_publish(retry, exchange=self.exchange_name, routing_key=self.routing_key)
+
+    def run(self) -> None:
+        delay = 1.0
+        while True:
+            try:
+                connection = self.attach()
+                delay = 1.0
+                while True:
+                    connection.drain_events()
+            # BaseException too: a handler's CancelledError or SystemExit would otherwise end the thread
+            # with its connection still open, leaving the broker a consumer that never acks.
+            except BaseException:
+                logger.exception(f"RabbitMQ consumer for {self.queue_name} stopped, reconnecting in {delay:.0f}s")
+            self.close()
+            time.sleep(delay)
+            delay = min(delay * 2, MAX_RECONNECT_DELAY_SECONDS)
+
+    def attach(self) -> Any:
+        # Every attempt opens a new connection and declares everything again. Draining through the
+        # old kombu Connection instead lets it reopen a bare connection with no consumer on it.
+        # Heartbeats must stay off (kombu's default of 0): the scan runs on the thread that reads this
+        # socket, so nothing would answer them and the broker would drop the connection mid-scan.
+        # py-amqp's TCP keepalive still notices a dead broker within about 150s.
+        self.connection = Connection(self.connection_string)
+        self.connection.connect()
+        connection = self.connection.connection
+        channel = connection.channel()
+        channel.exchange_declare(self.exchange_name, "direct", durable=True, auto_delete=False)
+        channel.queue_declare(self.queue_name, durable=True, exclusive=False, auto_delete=False)
+        channel.queue_bind(self.queue_name, self.exchange_name, self.routing_key)
+        channel.basic_qos(0, PREFETCH_COUNT, False)
+        channel.basic_consume(self.queue_name, callback=self.on_message, no_ack=False)
+        logger.info(f"Consuming {self.queue_name}")
+        return connection
 
     def close(self) -> None:
         if self.connection:
-            self.connection.close()
+            with suppress(Exception):
+                self.connection.close()
             self.connection = None

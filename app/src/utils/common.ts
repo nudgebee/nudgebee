@@ -82,7 +82,8 @@ export const latestUpdatedAt = (rows: Array<{ updated_at?: string | null }> | nu
 
 /**
  * Maps raw API priority / severity strings (HIGH, MEDIUM, FIRING, DEBUG, OK,
- * HIGHEST, …) to ds/SeverityIcon's fixed 5-level union. Unknown / lower-signal
+ * HIGHEST, …) to ds/SeverityIcon's fixed 5-level union. 'warning' folds to the
+ * amber 'medium' tier (the DS has no Warning level). Unknown / lower-signal
  * values collapse to 'info'.
  */
 export type DsSeverityLevel = 'critical' | 'high' | 'medium' | 'low' | 'info';
@@ -90,7 +91,7 @@ export const toSeverityLevel = (value: unknown): DsSeverityLevel => {
   const v = (value ?? '').toString().toLowerCase();
   if (v === 'critical' || v === 'highest' || v === 'firing') return 'critical';
   if (v === 'high') return 'high';
-  if (v === 'medium') return 'medium';
+  if (v === 'medium' || v === 'warning') return 'medium';
   if (v === 'low' || v === 'lowest') return 'low';
   return 'info';
 };
@@ -744,6 +745,48 @@ export const convertToReadableFormat = (input: string) => {
     .join(' ');
 };
 
+// Canonical Alert Status values + display label/tone, shared by every surface that shows an
+// event's alert lifecycle status (Troubleshoot, Cloud Account Events, Pod/Node Details).
+// `events.status` is FK-constrained in Postgres to this exact set (migrations V175 + V209) and
+// has not changed since CLOSED was added, so it's safe to keep as a static list rather than
+// fetched. "Firing" (not "Open") matches the raw backend value, since "Open" also means
+// something different and unrelated on the Triage Status axis (#40108).
+export const ALERT_STATUS_OPTIONS = [
+  { value: 'FIRING', label: 'Firing', variant: 'red' },
+  { value: 'RESOLVED', label: 'Resolved', variant: 'green' },
+  { value: 'CLOSED', label: 'Closed', variant: 'grey' },
+];
+const ALERT_STATUS_BY_VALUE = Object.fromEntries(ALERT_STATUS_OPTIONS.map((s) => [s.value, s]));
+export const getAlertStatusLabel = (status?: string) => ALERT_STATUS_BY_VALUE[status as string]?.label ?? status ?? '';
+export const getAlertStatusTone = (status?: string) => ALERT_STATUS_BY_VALUE[status as string]?.variant ?? '';
+// Groups can span multiple underlying events with different statuses (`distinct_status`): a
+// still-firing member always wins (most urgent), closed beats resolved only because it's the
+// pre-existing convention seen across this codebase — otherwise the raw sole value passes
+// through untouched, which is what lets a RESOLVED-only group display correctly instead of
+// silently folding into "Firing"/"Open" by default. The Hasura/Postgres aggregate comes back as
+// a JSON-encoded string (e.g. `"[\"RESOLVED\"]"`), not a real array — `.includes()` still matches
+// FIRING/CLOSED by accident as a substring, but indexing a string for the fallback returns its
+// first character, not its first element, so this normalizes to a real array first.
+//
+// This can disagree with a row's own `latest_*` fields (latest_nb_status, latest_title, ...),
+// which the backend picks by recency instead — `(array_agg(id ORDER BY created_at DESC))[1]`,
+// i.e. whichever underlying event happened most recently, regardless of its status. A group
+// whose oldest event is still FIRING but whose newest event is RESOLVED will show "Firing" here
+// while its other displayed fields (title, nb_status, ...) come from that RESOLVED event.
+export const deriveGroupAlertStatus = (distinctStatus: unknown): string => {
+  let arr: unknown;
+  if (Array.isArray(distinctStatus)) {
+    arr = distinctStatus;
+  } else if (typeof distinctStatus === 'string') {
+    const trimmed = distinctStatus.trim();
+    arr = trimmed.startsWith('[') ? safeJSONParse(trimmed) : [trimmed];
+  }
+  if (!Array.isArray(arr)) return '';
+  if (arr.includes('FIRING')) return 'FIRING';
+  if (arr.includes('CLOSED')) return 'CLOSED';
+  return arr[0] ?? '';
+};
+
 // formatAuditActor humanizes an audit EventActor enum (e.g. "K8S_AGENT" -> "K8s Agent")
 // for display in the User column when an audit has no human user_id — i.e. machine /
 // service-initiated events such as agent-run K8s tasks.
@@ -923,6 +966,47 @@ export const snakeToTitleCase = (str: string) => {
       return word.charAt(0).toUpperCase() + word.slice(1);
     })
     .join(' ');
+};
+
+// --- Cloud filter display labels (#40334) --------------------------------
+// Alert Manager category and Optimize service-name filters store raw internal
+// values. These render readable labels for display only; callers keep the raw
+// value as the option `value`, so the rows a selection filters are unchanged.
+
+// camelCase categories snakeToTitleCase can't split. Acronyms (ci -> CI) and
+// lowercase words (issue -> Issue) fall through to snakeToTitleCase.
+const CLOUD_CATEGORY_LABELS: Record<string, string> = {
+  CostAnomaly: 'Cost Anomaly',
+};
+
+export const cloudCategoryLabel = (category?: string | null): string => {
+  if (!category) return '';
+  return CLOUD_CATEGORY_LABELS[category] ?? snakeToTitleCase(category);
+};
+
+// GCP resource_cloud_service values arrive as "<service>.googleapis.com/<Type>".
+// Map the API host to its product name, keeping the resource type in parens:
+// "compute.googleapis.com/Disk" -> "Compute Engine (Disk)". Non-GCP values
+// (e.g. AWS "AmazonRDS") are returned unchanged.
+const GCP_SERVICE_LABELS: Record<string, string> = {
+  'compute.googleapis.com': 'Compute Engine',
+  'storage.googleapis.com': 'Cloud Storage',
+  'sqladmin.googleapis.com': 'Cloud SQL',
+  'cloudsql.googleapis.com': 'Cloud SQL',
+  'bigquery.googleapis.com': 'BigQuery',
+  'container.googleapis.com': 'Kubernetes Engine',
+  'pubsub.googleapis.com': 'Pub/Sub',
+  'cloudfunctions.googleapis.com': 'Cloud Functions',
+  'iam.googleapis.com': 'IAM',
+};
+
+export const cloudServiceLabel = (service?: string | null): string => {
+  if (!service) return '';
+  const match = /^([a-z0-9-]+\.googleapis\.com)\/(.+)$/.exec(service);
+  if (!match) return service;
+  const [, host, resource] = match;
+  const friendly = GCP_SERVICE_LABELS[host] ?? convertStringCase(host.replace('.googleapis.com', ''));
+  return `${friendly} (${convertStringCase(resource)})`;
 };
 
 export const toKebabCase = (str: string) => {

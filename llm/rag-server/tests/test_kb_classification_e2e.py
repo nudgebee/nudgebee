@@ -200,7 +200,7 @@ class FakeKBTable:
             return False
         return collection_name in self.summaries
 
-    def delete_kb_capabilities(self, collection_name):
+    def delete_kb_capabilities(self, collection_name, keep_documents=False):
         self.deletes.append(collection_name)
         if self.down:
             return
@@ -631,7 +631,7 @@ class TestManualUploads:
         (labels,) = all_labels(stack.qdrant, "kb_kb-1")
         assert labels["capabilities"] == []
         assert labels["shape"] == "deterministic_procedure"  # shape does not depend on the catalog
-        assert "Capabilities referenced must be copied" not in stack.llm.prompts[0]
+        assert "Capabilities are the platform tools" not in stack.llm.prompts[0]
         assert stack.pg.summaries["kb_kb-1"] == SOP_ROLLUP
 
     def test_existing_metadata_survives_beside_the_labels(self, stack):
@@ -1741,10 +1741,11 @@ class TestBackfill:
         assert stack.llm.calls == 0
 
     def test_only_active_enabled_kbs_are_selected_and_named_like_llm_server_names_them(self, stack, monkeypatch):
+        # An integration's KB is one organisation row (#40605); the query gives
+        # it an active account of its tenant to classify with.
         rows = [
             SimpleNamespace(id="m1", account_id=ACCT, kb_type="manual", integration_id=None),
-            SimpleNamespace(id="i1", account_id=ACCT, kb_type="integration", integration_id="int-9"),
-            SimpleNamespace(id="i2", account_id=ACCT_B, kb_type="integration", integration_id="int-9"),
+            SimpleNamespace(id="i1", account_id=ACCT_B, kb_type="integration", integration_id="int-9"),
         ]
         seen_sql = []
 
@@ -1767,9 +1768,9 @@ class TestBackfill:
 
         pending = {k.name: k for k in backfill._pending_knowledgebases()}
 
-        assert "status = 'active' AND enabled = true" in seen_sql[0]
+        assert "kb.status = 'active' AND kb.enabled = true" in seen_sql[0]
         assert pending["kb_m1"] == backfill.KBCollection("kb_m1", True, [ACCT])
-        assert pending["int-9_knowledge_base"] == backfill.KBCollection(INT_KB, False, sorted([ACCT, ACCT_B]))
+        assert pending["int-9_knowledge_base"] == backfill.KBCollection(INT_KB, False, [ACCT_B])
 
 
 # ===========================================================================

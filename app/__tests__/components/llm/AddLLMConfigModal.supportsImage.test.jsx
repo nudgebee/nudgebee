@@ -13,7 +13,18 @@ jest.mock('@api1/user', () => ({
 }));
 jest.mock('@api1/integrations', () => ({
   __esModule: true,
-  default: { addIntegrations: (...a) => mockAddIntegrations(...a), listIntegrations: jest.fn() },
+  default: {
+    addIntegrations: (...a) => mockAddIntegrations(...a),
+    listIntegrations: jest.fn(),
+    // A tenant default exists and no account changes, so Save needs no popup.
+    checkLLMDefaults: jest.fn().mockResolvedValue({
+      env_configured: true,
+      tenant_default: { id: 'cfg-1', name: 'cfg' },
+      affected: [],
+      replaced_account_defaults: [],
+      blocked: [],
+    }),
+  },
 }));
 jest.mock('@api1/ask-nudgebee', () => ({
   __esModule: true,
@@ -30,8 +41,8 @@ jest.setTimeout(20000);
 const MODEL = 'my-vision-model';
 const NAME = /supports image input/i;
 
-// CONNECTED + default flag skips the Test Connection gate and the
-// default-coverage dialog, so Save goes straight to performSave.
+// CONNECTED skips the Test Connection gate; the defaults check above reports
+// nothing to confirm, so Save goes straight to performSave.
 const editData = {
   id: 'cfg-1',
   name: 'test-config',

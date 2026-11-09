@@ -1,13 +1,16 @@
 package azure
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"nudgebee/collector/cloud/common"
 	"nudgebee/collector/cloud/config"
 	"nudgebee/collector/cloud/providers"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -1219,6 +1222,189 @@ var azureBlockedCommands = []string{
 	"configure",
 }
 
+// azureCliSession is a logged-in az config dir kept in memory for one account, so
+// repeated ExecuteCliCommand calls skip `az login` / `az account set`. Each call
+// writes it out to its own dir and removes that dir afterwards, so the client
+// secret is on disk only during a login or a command, and whatever a command
+// writes to its dir (az account set, az config set, ...) is thrown away with it.
+type azureCliSession struct {
+	mu            sync.Mutex
+	files         []azureCliFile
+	loggedInAt    time.Time // zero when a login is needed
+	loginErr      error     // why the last login failed, if it did
+	loginFailedAt time.Time
+}
+
+// azureCliFile is one entry of a logged-in az config dir.
+type azureCliFile struct {
+	path string // relative to the config dir
+	mode fs.FileMode
+	data []byte // unset for a directory
+}
+
+// azureCliSessions maps tenant/client/subscription/secret hash to its
+// *azureCliSession.
+var azureCliSessions sync.Map
+
+// azureCliLoginTTL bounds how long a login is reused. Until it runs out, a
+// client secret that expired or was deleted in Azure keeps working here, so it
+// is kept short: long enough to cover a burst of commands, not a session.
+var azureCliLoginTTL = 5 * time.Minute
+
+// azureCliLoginRetryAfter is how long a failed login is remembered, so callers
+// queued behind it get its error instead of each repeating the same login.
+var azureCliLoginRetryAfter = 30 * time.Second
+
+// azureCliLoginTimeout bounds `az login` / `az account set`, which run under the
+// session lock.
+const azureCliLoginTimeout = 30 * time.Second
+
+// azureCliBadCredentialCodes are the Entra error codes for a client secret or
+// app that is no longer valid. Other AADSTS errors are about the request, not
+// our login (e.g. AADSTS500011 for a resource the tenant does not know).
+var azureCliBadCredentialCodes = []string{"AADSTS7000215", "AADSTS7000222", "AADSTS700016"}
+
+func azureCliEnv(configDir string) []string {
+	// AZURE_CORE_COLLECT_TELEMETRY=0 stops az from spawning a fire-and-forget
+	// telemetry-uploader subprocess on every invocation. That subprocess is never
+	// waited on, so it gets orphaned to PID 1 and (absent a reaper) leaks as a
+	// zombie forever — one per az call. See #36530.
+	cliEnv := []string{"AZURE_CONFIG_DIR=" + configDir, "AZURE_CORE_COLLECT_TELEMETRY=0"}
+
+	// Pass through AZURE_EXTENSION_DIR if configured, so extensions pre-installed
+	// in the container image are found when AZURE_CONFIG_DIR is overridden.
+	if extDir := os.Getenv("AZURE_EXTENSION_DIR"); extDir != "" {
+		cliEnv = append(cliEnv, "AZURE_EXTENSION_DIR="+extDir)
+	}
+	return cliEnv
+}
+
+// azureCliCallDir returns a private logged-in az config dir for one command; the
+// caller removes it. It logs in first if the account has no login yet for this
+// client secret, the login is older than azureCliLoginTTL, or it was
+// invalidated. The lock covers only this setup, so the commands themselves still
+// run in parallel.
+func azureCliCallDir(ctx providers.CloudProviderContext, session azureAuthSession) (string, *azureCliSession, error) {
+	// The secret is part of the key so that two accounts on the same app and
+	// subscription with different secrets don't log each other out.
+	key := fmt.Sprintf("%s/%s/%s/%x", session.TenantID, session.ClientID, session.SubscriptionID, sha256.Sum256([]byte(session.ClientSecret)))
+	v, _ := azureCliSessions.LoadOrStore(key, &azureCliSession{})
+	s := v.(*azureCliSession)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.loggedInAt.IsZero() || time.Since(s.loggedInAt) > azureCliLoginTTL {
+		if s.loginErr != nil && time.Since(s.loginFailedAt) < azureCliLoginRetryAfter {
+			return "", nil, s.loginErr
+		}
+		s.loggedInAt = time.Time{}
+		files, err := azureCliLogin(ctx, session)
+		if err != nil {
+			// A caller that gave up says nothing about the credentials.
+			if ctx.GetContext().Err() == nil {
+				s.loginErr, s.loginFailedAt = err, time.Now()
+			}
+			return "", nil, err
+		}
+		s.files, s.loginErr, s.loggedInAt = files, nil, time.Now()
+	}
+
+	callDir, err := os.MkdirTemp("", "azure-cli-exec-")
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to create temporary directory: %w", err)
+	}
+	for _, f := range s.files {
+		path := filepath.Join(callDir, f.path)
+		if f.mode.IsDir() {
+			err = os.MkdirAll(path, f.mode.Perm())
+		} else {
+			err = os.WriteFile(path, f.data, f.mode.Perm())
+		}
+		if err != nil {
+			_ = os.RemoveAll(callDir)
+			return "", nil, fmt.Errorf("failed to write az config directory: %w", err)
+		}
+	}
+	return callDir, s, nil
+}
+
+// azureCliLogin runs `az login` / `az account set` in a temporary az config dir
+// and returns that dir's contents. The dir itself is removed before returning.
+func azureCliLogin(ctx providers.CloudProviderContext, session azureAuthSession) ([]azureCliFile, error) {
+	dir, err := os.MkdirTemp("", "azure-cli-login-")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temporary directory: %w", err)
+	}
+	defer func() {
+		if err := os.RemoveAll(dir); err != nil {
+			ctx.GetLogger().Error("azure: failed to remove temporary directory", "error", err, "dir", dir)
+		}
+	}()
+	cliEnv := azureCliEnv(dir)
+
+	loginCmd := fmt.Sprintf("az login --service-principal -u %s -p %s --tenant %s --output none",
+		common.QuoteCommandArg(session.ClientID), common.QuoteCommandArg(session.ClientSecret), common.QuoteCommandArg(session.TenantID))
+	_, stderr, err := common.SecureExecute(ctx.GetContext(), common.SecureCommandOptions{
+		Command: loginCmd,
+		Env:     cliEnv,
+		Timeout: azureCliLoginTimeout,
+	})
+	if err != nil {
+		ctx.GetLogger().Error("az CLI login command execution failed", "error", err, "stderr", stderr)
+		return nil, fmt.Errorf("az CLI login failed: %w", err)
+	}
+
+	// Set subscription if provided
+	if session.SubscriptionID != "" {
+		setSubCmd := fmt.Sprintf("az account set --subscription %s", session.SubscriptionID)
+		_, stderr, err := common.SecureExecute(ctx.GetContext(), common.SecureCommandOptions{
+			Command: setSubCmd,
+			Env:     cliEnv,
+			Timeout: azureCliLoginTimeout,
+		})
+		if err != nil {
+			ctx.GetLogger().Error("az CLI account set command failed", "error", err, "stderr", stderr)
+			return nil, fmt.Errorf("az CLI account set failed: %w", err)
+		}
+	}
+
+	var files []azureCliFile
+	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || path == dir {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		f := azureCliFile{mode: info.Mode()}
+		if f.path, err = filepath.Rel(dir, path); err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			if f.data, err = os.ReadFile(path); err != nil {
+				return err
+			}
+		} else if !d.IsDir() {
+			return nil
+		}
+		files = append(files, f)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to read az config directory: %w", err)
+	}
+	return files, nil
+}
+
+// invalidate forces the next ExecuteCliCommand for this account to log in again.
+func (s *azureCliSession) invalidate() {
+	s.mu.Lock()
+	s.loggedInAt = time.Time{}
+	s.mu.Unlock()
+}
+
 func (a *azureProvider) ExecuteCliCommand(ctx providers.CloudProviderContext, account providers.Account, command string) (string, error) {
 	args := strings.Fields(command)
 	if len(args) < 1 || args[0] != "az" {
@@ -1234,53 +1420,19 @@ func (a *azureProvider) ExecuteCliCommand(ctx providers.CloudProviderContext, ac
 		return "", fmt.Errorf("failed to get access secret: %w", err)
 	}
 
-	// Create a temporary directory to isolate az config
-	tmpDir, err := os.MkdirTemp("", "azure-cli-exec-")
+	setupStart := time.Now()
+	callDir, cliSession, err := azureCliCallDir(ctx, session)
 	if err != nil {
-		return "", fmt.Errorf("failed to create temporary directory: %w", err)
+		return "", err
 	}
 	defer func() {
-		if err := os.RemoveAll(tmpDir); err != nil {
-			ctx.GetLogger().Error("azure: failed to remove temporary directory", "error", err, "dir", tmpDir)
+		if err := os.RemoveAll(callDir); err != nil {
+			ctx.GetLogger().Error("azure: failed to remove temporary directory", "error", err, "dir", callDir)
 		}
 	}()
-
-	// AZURE_CORE_COLLECT_TELEMETRY=0 stops az from spawning a fire-and-forget
-	// telemetry-uploader subprocess on every invocation. That subprocess is never
-	// waited on, so it gets orphaned to PID 1 and (absent a reaper) leaks as a
-	// zombie forever — one per az call. See #36530.
-	cliEnv := []string{"AZURE_CONFIG_DIR=" + tmpDir, "AZURE_CORE_COLLECT_TELEMETRY=0"}
-
-	// Pass through AZURE_EXTENSION_DIR if configured, so extensions pre-installed
-	// in the container image are found when AZURE_CONFIG_DIR is overridden.
-	if extDir := os.Getenv("AZURE_EXTENSION_DIR"); extDir != "" {
-		cliEnv = append(cliEnv, "AZURE_EXTENSION_DIR="+extDir)
-	}
-
-	// Login command
-	loginCmd := fmt.Sprintf("az login --service-principal -u %s -p %s --tenant %s --output none",
-		common.QuoteCommandArg(session.ClientID), common.QuoteCommandArg(session.ClientSecret), common.QuoteCommandArg(session.TenantID))
-	_, stderr, err := common.SecureExecute(ctx.GetContext(), common.SecureCommandOptions{
-		Command: loginCmd,
-		Env:     cliEnv,
-	})
-	if err != nil {
-		ctx.GetLogger().Error("az CLI login command execution failed", "error", err, "stderr", stderr)
-		return "", fmt.Errorf("az CLI login failed: %w", err)
-	}
-
-	// Set subscription if provided
-	if session.SubscriptionID != "" {
-		setSubCmd := fmt.Sprintf("az account set --subscription %s", session.SubscriptionID)
-		_, stderr, err := common.SecureExecute(ctx.GetContext(), common.SecureCommandOptions{
-			Command: setSubCmd,
-			Env:     cliEnv,
-		})
-		if err != nil {
-			ctx.GetLogger().Error("az CLI account set command failed", "error", err, "stderr", stderr)
-			return "", fmt.Errorf("az CLI account set failed: %w", err)
-		}
-	}
+	setupDuration := time.Since(setupStart)
+	cliEnv := azureCliEnv(callDir)
+	var stderr string
 
 	// Install cost management extension if needed
 	if strings.Contains(command, "costmanagement") {
@@ -1324,13 +1476,21 @@ func (a *azureProvider) ExecuteCliCommand(ctx providers.CloudProviderContext, ac
 		}
 	}
 
+	commandStart := time.Now()
 	if usePipeline {
 		stdout, stderr, err = common.SecureExecutePipeline(ctx.GetContext(), opts)
 	} else {
 		stdout, stderr, err = common.SecureExecute(ctx.GetContext(), opts)
 	}
+	ctx.GetLogger().Info("azure cli timing",
+		"setup_ms", setupDuration.Milliseconds(),
+		"command_ms", time.Since(commandStart).Milliseconds())
 
 	if err != nil {
+		// The cached login is no longer valid (e.g. secret revoked) — log in again next call.
+		if lo.ContainsBy(azureCliBadCredentialCodes, func(code string) bool { return strings.Contains(stderr, code) }) {
+			cliSession.invalidate()
+		}
 		ctx.GetLogger().Error("az CLI command execution failed", "error", err, "stderr", stderr, "command", command)
 		return stdout, fmt.Errorf("az CLI command failed: %w, Stderr: %s", err, stderr)
 	}

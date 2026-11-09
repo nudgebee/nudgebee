@@ -63,7 +63,32 @@ function toModelRow(r: UsageGroupRow): ModelRow {
   };
 }
 
+const GRANULARITY_NOUN: Record<string, string> = { day: 'day', week: 'week', month: 'month' };
+
+const MODEL_FILTER_NOTE_DISMISSED_KEY = 'cost-analyser:models-multi-model-note-dismissed';
+
+function readNoteDismissed(): boolean {
+  try {
+    return typeof window !== 'undefined' && window.localStorage.getItem(MODEL_FILTER_NOTE_DISMISSED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
 export function ModelsView({ metrics, filters }: ModelsViewProps) {
+  const period = GRANULARITY_NOUN[filters.granularity] ?? 'day';
+  const [noteDismissed, setNoteDismissed] = React.useState<boolean>(readNoteDismissed);
+  const dismissNote = React.useCallback(() => {
+    setNoteDismissed(true);
+    try {
+      window.localStorage.setItem(MODEL_FILTER_NOTE_DISMISSED_KEY, '1');
+    } catch {
+      // Storage unavailable (private mode) — the note stays hidden for this mount only.
+    }
+  }, []);
+  // The hint only helps someone who hasn't used the model filter yet.
+  const showNote = !noteDismissed && !filters.models?.length;
+
   const [sort, setSort] = React.useState<{ name: string; order: 'asc' | 'desc' }>({ name: 'Total cost', order: 'desc' });
 
   const rows = React.useMemo(() => (metrics?.breakdowns?.model ?? []).map(toModelRow), [metrics]);
@@ -143,13 +168,21 @@ export function ModelsView({ metrics, filters }: ModelsViewProps) {
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-5)' }}>
-      <Banner
-        tone='info'
-        title='Multi-model filter'
-        message='Select one or more models in the filter bar to re-scope the analyser to runs that used them.'
-      />
+      {showNote && (
+        <Banner
+          tone='info'
+          title='Multi-model filter'
+          message='Select one or more models in the filter bar to re-scope the analyser to runs that used them.'
+          dismissible
+          onDismiss={dismissNote}
+        />
+      )}
 
       <Card>
+        <SectionHeader
+          title='Models'
+          subtitle='Totals for the selected date range. The Day / Week / Month toggle only changes how the charts below are bucketed.'
+        />
         <CustomTable2
           id='models-table'
           headers={headers}
@@ -164,7 +197,7 @@ export function ModelsView({ metrics, filters }: ModelsViewProps) {
           <SectionHeader
             title='Calls per model over time'
             icon={<TimelineOutlinedIcon />}
-            subtitle='Number of model calls in each period, by model'
+            subtitle={`Number of model calls in each ${period}, by model`}
           />
           <Chart.TimeSeries
             {...bucketsToSeries(calls.buckets, calls.keys)}
@@ -177,7 +210,7 @@ export function ModelsView({ metrics, filters }: ModelsViewProps) {
         </Card>
 
         <Card sx={{ flex: '1 1 360px', minWidth: 0 }}>
-          <SectionHeader title='Model cost-share over time' icon={<ShowChartIcon />} />
+          <SectionHeader title='Model cost-share over time' icon={<ShowChartIcon />} subtitle={`Cost in each ${period}, by model`} />
           <Chart.TimeSeries
             {...bucketsToSeries(share.buckets, share.keys)}
             shape='bar'

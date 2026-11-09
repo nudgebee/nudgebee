@@ -30,7 +30,7 @@ func (m RecommendationApplyTool) Name() string             { return ToolRecommen
 func (m RecommendationApplyTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 
 func (m RecommendationApplyTool) Description() string {
-	return "Applies an optimisation recommendation after the user confirms: creates the deployment change, pull request, or cloud alarm through NudgeBee's apply flow, registers the resolution attempt, and returns the resulting recommendation status (plus pr_action when a PR is involved). Requires write access; the platform asks the user to approve each apply before it runs. Inputs: recommendation_id (required); data (per-rule payload — for pod_right_sizing a map of container name to {cpu:{request,limit}, memory:{request,limit}} with memory values like '512Mi'); provider ('' infers from the account; or 'git', 'github', 'gitlab', 'kubernetes', 'aws', 'azure', 'gcp'); provider_config (e.g. {\"in_place\": true} or {\"name\": \"<git integration>\"})."
+	return "Applies an optimisation recommendation after the user confirms: creates the deployment change or pull request, or makes the cloud change (an alarm, or a supported in-place change such as converting an EBS volume to gp3), through NudgeBee's apply flow, registers the resolution attempt, and returns the resulting recommendation status (plus pr_action when a PR is involved). Requires write access; the platform asks the user to approve each apply before it runs. Inputs: recommendation_id (required); data (per-rule payload — for pod_right_sizing a map of container name to {cpu:{request,limit}, memory:{request,limit}} with memory values like '512Mi'); provider ('' infers from the account; or 'git', 'github', 'gitlab', 'kubernetes', 'aws', 'azure', 'gcp'); provider_config (e.g. {\"in_place\": true} or {\"name\": \"<git integration>\"})."
 }
 
 func (m RecommendationApplyTool) InputSchema() core.ToolSchema {
@@ -51,7 +51,7 @@ func (m RecommendationApplyTool) InputSchema() core.ToolSchema {
 			},
 			"provider": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Resolution channel: '' (infer from account), 'kubernetes' (direct deployment change), 'git'/'github'/'gitlab' (pull request), or 'aws'/'azure'/'gcp' (cloud alarm apply).",
+				Description: "Resolution channel: '' (infer from account), 'kubernetes' (direct deployment change), 'git'/'github'/'gitlab' (pull request), or 'aws'/'azure'/'gcp' (cloud change: an alarm, or a supported in-place change).",
 			},
 			"provider_config": {
 				Type:        core.ToolSchemaTypeObject,
@@ -185,14 +185,14 @@ func (m RecommendationApplyTool) ConfirmationQuestion(toolInput string) string {
 	if recommendationId == "" {
 		return ""
 	}
-	channel := "the platform apply flow (deployment change, pull request, or cloud alarm)"
+	channel := "the platform apply flow (deployment change, pull request, or cloud change)"
 	switch provider, _ := args["provider"].(string); provider {
 	case "git", "github", "gitlab":
 		channel = "a pull request"
 	case "kubernetes":
 		channel = "a direct deployment change"
 	case "aws", "azure", "gcp":
-		channel = "the cloud alarm apply flow"
+		channel = "a change in your cloud account"
 	}
 
 	sections := []string{}

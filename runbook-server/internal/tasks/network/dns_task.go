@@ -7,6 +7,10 @@ import (
 	"strings"
 )
 
+// dnsRecordTypes are the record types Execute can look up. The input schema
+// offers them as the dropdown options and the unsupported-type error lists them.
+var dnsRecordTypes = []string{"A", "AAAA", "CNAME", "MX", "TXT", "NS"}
+
 // DnsTask implements the Task interface for performing DNS lookups.
 type DnsTask struct{}
 
@@ -29,8 +33,12 @@ func (t *DnsTask) Execute(taskCtx types.TaskContext, params map[string]any) (any
 	}
 
 	recordType := "A"
-	if val, ok := params["type"].(string); ok && val != "" {
-		recordType = strings.ToUpper(val)
+	if val, ok := params["type"].(string); ok {
+		// Trim before matching: a pasted or templated value often carries a
+		// stray space, and " A " is not a different record type.
+		if trimmed := strings.TrimSpace(val); trimmed != "" {
+			recordType = strings.ToUpper(trimmed)
+		}
 	}
 
 	// Future: Support custom DNS server using net.Resolver with specific Dial function.
@@ -102,7 +110,7 @@ func (t *DnsTask) Execute(taskCtx types.TaskContext, params map[string]any) (any
 			results = nsRecords
 		}
 	default:
-		return nil, fmt.Errorf("unsupported record type: %s", recordType)
+		return nil, fmt.Errorf("unsupported record type %q: must be one of %s", recordType, strings.Join(dnsRecordTypes, ", "))
 	}
 
 	if err != nil {
@@ -130,6 +138,7 @@ func (t *DnsTask) InputSchema() *types.Schema {
 				Type:        "string",
 				Description: "The DNS record type (A, AAAA, CNAME, MX, TXT, NS). Defaults to 'A'.",
 				Required:    false,
+				Options:     dnsRecordTypes,
 			},
 		},
 	}

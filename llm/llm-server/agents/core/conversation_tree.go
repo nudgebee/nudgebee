@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"math"
 	"time"
 
 	"nudgebee/llm/security"
@@ -226,7 +227,7 @@ func (chat *ConversationDao) GetConversationTree(sessionID, accountID string) (C
 	msgAgg := map[string]*agg{}
 	toolCountByAgent := map[string]int{}
 	var totalCost, totalLatency float64
-	var totalIn, totalOut, totalCached int64
+	var totalIn, totalOut, totalCached, totalPrompt int64
 
 	for _, m := range mcScans {
 		// Prefer the cost persisted at insert time (see cost_usd column
@@ -272,6 +273,7 @@ func (chat *ConversationDao) GetConversationTree(sessionID, accountID string) (C
 		totalIn += int64(m.InputTokens)
 		totalOut += int64(m.OutputTokens)
 		totalCached += int64(m.CachedInputTokens)
+		totalPrompt += int64(PromptTokens(m.Provider, m.InputTokens, m.CacheCreationTokens))
 	}
 
 	// --- Messages ---
@@ -472,7 +474,7 @@ func (chat *ConversationDao) GetConversationTree(sessionID, accountID string) (C
 		TotalInputTokens:       totalIn,
 		TotalOutputTokens:      totalOut,
 		TotalCachedInputTokens: totalCached,
-		CacheHitRatePct:        cacheHitPct(totalCached, totalIn),
+		CacheHitRatePct:        cacheHitPct(totalCached, totalPrompt),
 		MessageCount:           len(tree.Messages),
 		AgentCount:             len(tree.Agents),
 		ToolCallCount:          len(tree.ToolCalls),
@@ -487,7 +489,24 @@ func (chat *ConversationDao) GetConversationTree(sessionID, accountID string) (C
 	}
 	if !lastCallEnd.IsZero() {
 		tree.Conversation.EndedAt = lastCallEnd
-		tree.Conversation.WallClockSeconds = lastCallEnd.Sub(sum.StartedAt).Seconds()
+		// Measure from the first real activity, not the conversation row's
+		// created_at: event-driven conversations are created well before (or
+		// reused long after) the agent runs, and that idle gap is not work.
+		start := time.Time{}
+		for _, m := range tree.Messages {
+			if !m.CreatedAt.IsZero() && (start.IsZero() || m.CreatedAt.Before(start)) {
+				start = m.CreatedAt
+			}
+		}
+		for _, m := range mcScans {
+			if !m.CreatedAt.IsZero() && (start.IsZero() || m.CreatedAt.Before(start)) {
+				start = m.CreatedAt
+			}
+		}
+		if start.IsZero() {
+			start = sum.StartedAt
+		}
+		tree.Conversation.WallClockSeconds = math.Max(0, lastCallEnd.Sub(start).Seconds())
 	} else if sum.EndedAt.Valid {
 		tree.Conversation.EndedAt = sum.EndedAt.Time
 		tree.Conversation.WallClockSeconds = sum.EndedAt.Time.Sub(sum.StartedAt).Seconds()

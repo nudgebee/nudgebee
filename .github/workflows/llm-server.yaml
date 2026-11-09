@@ -170,6 +170,16 @@ jobs:
       # are decided by SQL comparisons over jsonb and a uuid array, and the
       # failure modes are a rewrite of every row on every run and insights that
       # never close; Go sees neither.
+      #
+      # user carries the AI Gateway key policy rows (#38966): the row lock that
+      # makes a concurrent edit of one key wait instead of merging both lists into
+      # a wider key, and the match by key and owner that keeps a restriction after
+      # the owner switches tenant. Both are Postgres behaviour; sqlmock shows neither.
+      #
+      # dashboard carries the save conflict check (#40228): the row lock that makes
+      # a save starting while another is committing wait and then see its revision.
+      # Without it the second save passes the version check and silently overwrites
+      # the first; sqlmock cannot show the wait.
       - name: Run PR-lifecycle DB tests
         working-directory: ./api-server/services
         env:
@@ -183,7 +193,7 @@ jobs:
         # integrations/core: the ms_teams rename migration must not collide with
         # integrations' unique key, which would abort the post-upgrade hook.
         run: |
-          go test ./account/adapter/ ./observability/ ./event/ ./recommendation/ ./query/ ./reports/ ./insight/ -run '_DB$' -v
+          go test ./account/adapter/ ./observability/ ./event/ ./recommendation/ ./query/ ./reports/ ./insight/ ./user/ ./dashboard/ -run '_DB$' -v
           go test ./triage/ ./eventrule/ -run '_DB$' -skip 'CascadePipeline' -v
           go test ./account/ -run 'NotificationRule.*_DB$' -v
           go test ./integrations/core/ -run 'MsTeams.*_DB$' -v

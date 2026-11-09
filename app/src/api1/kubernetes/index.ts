@@ -1,4 +1,4 @@
-import { queryGraphQL, gqlStringify, hitRelayServer } from '@lib/HttpService';
+import { queryGraphQL, gqlStringify, hitRelayServer, unwrapGraphQL } from '@lib/HttpService';
 
 import {
   getStartOfYear,
@@ -7,11 +7,12 @@ import {
   getEndOfDay,
   getStartOfMonth,
   getEndOfMonth,
+  getStartOfLastMonth,
   getYesterday,
   formatDateTime,
 } from '@lib/datetime';
 import { getBudgetExpectedMonthlyExpense, getExpectedYearlyExpense } from '@lib/budget';
-import { parseHttpResponseBodyMessage, safeJSONParse } from 'src/utils/common';
+import { parseHttpResponseBodyMessage, safeJSONParse, ALERT_STATUS_OPTIONS, deriveGroupAlertStatus } from 'src/utils/common';
 import getMockData from '@api1/mock';
 import observability from '@api1/observability';
 import { getClusterData } from '@context/DataContext';
@@ -740,8 +741,8 @@ query AiRemediationGet($accountId: String!, $eventId: String) {
 `;
 
 export const AI_REMEDIATION_EXECUTE = `
-mutation AiRemediationExecute($accountId: String!, $eventId: String, $command: String!, $configName: String, $slot: String, $executeCommand: String) {
-  ai_remediation_execute(account_id: $accountId, event_id: $eventId, command: $command, config_name: $configName, slot: $slot, execute_command: $executeCommand) {
+mutation AiRemediationExecute($accountId: String!, $eventId: String, $command: String!, $configName: String, $slot: String, $executeCommand: String, $action: String) {
+  ai_remediation_execute(account_id: $accountId, event_id: $eventId, command: $command, config_name: $configName, slot: $slot, execute_command: $executeCommand, action: $action) {
     data
   }
 }
@@ -773,11 +774,7 @@ export const priorityFilter = [
   { value: 'INFO', label: 'Info' },
 ];
 
-export const statusFilter = [
-  { value: 'FIRING', label: 'Firing' },
-  { value: 'RESOLVED', label: 'Resolved' },
-  { value: 'CLOSED', label: 'Closed' },
-];
+export const statusFilter = ALERT_STATUS_OPTIONS.map(({ value, label }) => ({ value, label }));
 
 export const GET_RESOURCE_ATTRIBUTES = `
 query GetResourceAttributes {
@@ -1053,6 +1050,44 @@ function filterDemoEvents(events: any[], query: any): any[] {
   });
 }
 
+// The overview renders two tiles per cluster that both need this rollup
+// (ClusterViewCard for MTD / last month / forecast, KubernetesSaving for the
+// savings potential). Share one request per account while it is pending so the
+// page sends N calls for N clusters, not 2N. Nothing is cached past settle.
+const yearlySavingInFlight = new Map<string, Promise<any>>();
+
+async function fetchK8sClusterYearlySaving(accountId: string) {
+  try {
+    const currentDate = new Date();
+    // Pinned to the 1st: stepping back a month from the 29th–31st with setMonth
+    // overflows into the current month (Oct 31 -> "Sep 31" -> Oct 1).
+    const lastMonthStart = getStartOfLastMonth(currentDate);
+    const response = await queryGraphQL(LIST_k8_CLUSTER_YEARLY_SAVING, 'listK8ClusterYearlySaving', {
+      accountId1: accountId,
+      startDate: getStartOfMonth(currentDate),
+      endDate: getEndOfMonth(currentDate),
+      yearStartDate: getStartOfYear(currentDate),
+      yearEndDate: getEndOfYear(currentDate),
+      lmStartDate: getStartOfMonth(lastMonthStart),
+      lmEndDate: getEndOfMonth(lastMonthStart),
+    });
+    return {
+      data: {
+        yearly_recommendation_saving: (response?.data?.data?.recommendation_aggregate?.rows?.[0]?.sum_estimated_savings || 0) * 12,
+        current_year_projected_spend: getExpectedYearlyExpense(
+          getBudgetExpectedMonthlyExpense(response?.data?.data?.spends_aggregate?.rows?.[0]?.spend_amount || 0),
+          response?.data?.data?.yearly_spends_aggregate?.rows?.[0]?.spend_amount || 0
+        ),
+        current_month_projected_spend: getBudgetExpectedMonthlyExpense(response?.data?.data?.spends_aggregate?.rows?.[0]?.spend_amount || 0),
+        previous_cost: response?.data?.data?.lm_spends_aggregate?.rows?.[0]?.spend_amount || 0,
+        mtd_cost: response?.data?.data?.spends_aggregate?.rows?.[0]?.spend_amount || 0,
+      },
+    };
+  } catch (error) {
+    return error;
+  }
+}
+
 const apiKubernetes = {
   async getLatestVersions() {
     try {
@@ -1280,9 +1315,6 @@ const apiKubernetes = {
   },
   async listk8ClusterData() {
     try {
-      const currentDate = new Date();
-      const lastMonthStart = new Date(currentDate);
-      lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
       const accountGroups: Record<string, any> = {};
 
       const response = await queryGraphQL(LIST_k8_CLUSTER_DATA, 'listK8ClusterData', {});
@@ -1325,8 +1357,6 @@ const apiKubernetes = {
   async listk8ClusterEventsData(accountId: string) {
     if (accountId === 'demo') return null;
     try {
-      const lastMonthStart = new Date();
-      lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
       const response = await queryGraphQL(GET_CLUSTER_EVENTS, 'getClusterEvents', {
         todayEnd: getEndOfDay(new Date()),
         yesterdayStart: getStartOfDay(getYesterday(new Date())),
@@ -1345,40 +1375,17 @@ const apiKubernetes = {
   },
   async listk8ClustersYearlySaving(accountId: string) {
     if (accountId === 'demo') return null;
-    try {
-      const currentDate = new Date();
-      const lastMonthStart = new Date();
-      lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
-      const response = await queryGraphQL(LIST_k8_CLUSTER_YEARLY_SAVING, 'listK8ClusterYearlySaving', {
-        accountId1: accountId,
-        startDate: getStartOfMonth(currentDate),
-        endDate: getEndOfMonth(currentDate),
-        yearStartDate: getStartOfYear(currentDate),
-        yearEndDate: getEndOfYear(currentDate),
-        lmStartDate: getStartOfMonth(lastMonthStart),
-        lmEndDate: getEndOfMonth(lastMonthStart),
-      });
-      return {
-        data: {
-          yearly_recommendation_saving: (response?.data?.data?.recommendation_aggregate?.rows?.[0].sum_estimated_savings || 0) * 12,
-          current_year_projected_spend: getExpectedYearlyExpense(
-            getBudgetExpectedMonthlyExpense(response?.data?.data?.spends_aggregate?.rows?.[0]?.spend_amount || 0),
-            response?.data?.data?.yearly_spends_aggregate?.rows?.[0]?.spend_amount || 0
-          ),
-          current_month_projected_spend: getBudgetExpectedMonthlyExpense(response?.data?.data?.spends_aggregate?.rows?.[0]?.spend_amount || 0),
-          previous_cost: response?.data?.data?.lm_spends_aggregate?.rows?.[0]?.spend_amount || 0,
-          mtd_cost: response?.data?.data?.spends_aggregate?.rows?.[0]?.spend_amount || 0,
-        },
-      };
-    } catch (error) {
-      console.log('Your Error is', error);
-      return error;
+    let pending = yearlySavingInFlight.get(accountId);
+    if (!pending) {
+      pending = fetchK8sClusterYearlySaving(accountId).finally(() => yearlySavingInFlight.delete(accountId));
+      yearlySavingInFlight.set(accountId, pending);
     }
+    return pending;
   },
 
   async getk8ClusterData(accountId: string) {
     const currentDate = new Date();
-    const lastMonthStart = new Date();
+    const lastMonthStart = getStartOfLastMonth(currentDate);
     if (accountId == 'demo') {
       const dashboardDemo = await getMockData('k8s-dashboard');
       return {
@@ -1423,8 +1430,6 @@ const apiKubernetes = {
     }
 
     try {
-      lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
-
       const [clusterRes, recommendationRes, spendRes, eventRes] = await Promise.all([
         queryGraphQL(GET_k8_CLUSTER_GROUPINGS, 'get_k8_cluster_groupings', {
           accountId1: accountId,
@@ -1989,6 +1994,7 @@ query list_k8_issues_count {
       fingerprint?: string;
       source?: string[];
       nb_priority?: string;
+      latest_priority?: string;
       nb_status?: string | string[];
       is_new_issue?: boolean;
     } = {
@@ -2010,10 +2016,7 @@ query list_k8_issues_count {
         let allGroupings = data.event_groupings || [];
         if (query?.status) {
           const statuses = Array.isArray(query.status) ? query.status : [query.status];
-          allGroupings = allGroupings.filter((g: any) => {
-            const derivedStatus = g.distinct_status?.includes('FIRING') ? 'FIRING' : 'CLOSED';
-            return statuses.includes(derivedStatus);
-          });
+          allGroupings = allGroupings.filter((g: any) => statuses.includes(deriveGroupAlertStatus(g.distinct_status)));
         }
         if (query?.priority) {
           const priorities = Array.isArray(query.priority) ? query.priority : [query.priority];
@@ -2134,9 +2137,19 @@ query list_k8_issues_count {
       } else if (query['source'] && !Array.isArray(query['source'])) {
         filterParams['source'] = { _eq: query['source'] };
       }
+      // The rank of a group is the rank of its newest event (the one its row
+      // shows), and so is its source severity. A filter on either must match
+      // that one value. Matching any event in the group instead puts a group
+      // that was re-scored into every rank it passed through, and the filtered
+      // lists then add up to more rows than the unfiltered one.
+      const havingParams: any = {};
       if (query['nb_priority']) {
-        filterParams['computed_priority'] = { _eq: query['nb_priority'] };
+        havingParams['latest_computed_priority'] = { _eq: query['nb_priority'] };
       }
+      if (query['latest_priority']) {
+        havingParams['latest_priority'] = { _eq: query['latest_priority'] };
+      }
+      const havingCols = Object.keys(havingParams);
       if (query['nb_status']) {
         if (Array.isArray(query['nb_status'])) {
           filterParams['nb_status'] = { _in: query['nb_status'] };
@@ -2162,13 +2175,13 @@ query list_k8_issues_count {
 
       let LIST_K8_EVENTS_GROUPINGS = `
 query k8s_event_groupings($limit:Int,$offset:Int){
-  event_groupings: event_groupings_v2(where:__WHERE__, group_by:__GROUP_BY__, limit:$limit,offset:$offset,order_by:__ORDER_BY__ __COLUMN_TRANSFORMATIONS__){
+  event_groupings: event_groupings_v2(where:__WHERE__,__HAVING__ group_by:__GROUP_BY__, limit:$limit,offset:$offset,order_by:__ORDER_BY__ __COLUMN_TRANSFORMATIONS__){
     rows{
       __COLS__
     }
   }
 
-  event_groupings_aggregate: event_groupings_v2(where:__WHERE__, group_by:[], column_transformations:[{name: "event_count", expr: "distinct", args: __GROUP_BY__}], columns:["event_count"]){
+  event_groupings_aggregate: event_groupings_v2(where:__WHERE__,__HAVING__ group_by:__COUNT_GROUP_BY__, column_transformations:[{name: "event_count", expr: "distinct", args: __GROUP_BY__}], columns:__COUNT_COLS__){
     rows{
       event_count
     }
@@ -2178,7 +2191,7 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       if (query.onlyGroupingCount) {
         LIST_K8_EVENTS_GROUPINGS = `
 query k8s_event_groupings($limit:Int,$offset:Int){
-  event_groupings: event_groupings_v2(where:__WHERE__, group_by:__GROUP_BY__, limit:$limit,offset:$offset,order_by:__ORDER_BY__, column_transformations:[{name: "created_at", expr: "date_unit", args: ["day"]}]){
+  event_groupings: event_groupings_v2(where:__WHERE__,__HAVING__ group_by:__GROUP_BY__, limit:$limit,offset:$offset,order_by:__ORDER_BY__, column_transformations:[{name: "created_at", expr: "date_unit", args: ["day"]}]){
     rows{
       __COLS__
     }
@@ -2187,6 +2200,12 @@ query k8s_event_groupings($limit:Int,$offset:Int){
 `;
       }
       let formattedQuery = LIST_K8_EVENTS_GROUPINGS.replaceAll('__WHERE__', gqlStringify(filterParams));
+      formattedQuery = formattedQuery.replaceAll('__HAVING__', havingCols.length ? ` having:${gqlStringify(havingParams)},` : '');
+      // The total counts the groups. With a having it has to count the groups
+      // that pass it, which the engine answers when the count is grouped by the
+      // filtered columns: one row, since each is pinned to a single value.
+      formattedQuery = formattedQuery.replaceAll('__COUNT_GROUP_BY__', gqlStringify(havingCols));
+      formattedQuery = formattedQuery.replaceAll('__COUNT_COLS__', gqlStringify([...havingCols, 'event_count']));
       formattedQuery = formattedQuery.replaceAll('__GROUP_BY__', gqlStringify(groupBy));
       formattedQuery = formattedQuery.replaceAll('__COLS__', cols.join(' '));
       formattedQuery = formattedQuery.replaceAll(
@@ -2205,12 +2224,14 @@ query k8s_event_groupings($limit:Int,$offset:Int){
         limit: limit,
         offset: offset,
       });
+      const aggregateRows = response?.data?.data?.event_groupings_aggregate?.rows;
       return {
         data: {
           event_groupings: response?.data?.data?.event_groupings?.rows,
           event_groupings_aggregate: {
             aggregate: {
-              count: response?.data?.data?.event_groupings_aggregate?.rows?.[0]?.event_count,
+              // A total filtered by a having has no row when no group passes it.
+              count: aggregateRows?.[0]?.event_count ?? (havingCols.length && aggregateRows ? 0 : undefined),
             },
           },
         },
@@ -3582,7 +3603,9 @@ query k8s_event_groupings($limit:Int,$offset:Int){
     slot?: string,
     // The action's execute command, sent on a verify run so the server can attach the result to the
     // attempt it checked rather than filing it as an attempt of its own.
-    executeCommand?: string
+    executeCommand?: string,
+    // The plan action, sent with slot "manual" to record a step the operator did outside NudgeBee.
+    action?: string
   ) {
     if (accountId === 'demo') return null;
     const response = await queryGraphQL(AI_REMEDIATION_EXECUTE, 'AiRemediationExecute', {
@@ -3592,8 +3615,10 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       configName: configName || null,
       slot: slot || null,
       executeCommand: executeCommand || null,
+      action: action || null,
     });
-    return response?.data?.data?.ai_remediation_execute?.data;
+    // Throws with the server's reason on a rejected request (a 400), so the panel can show it.
+    return unwrapGraphQL(response, 'Remediation request failed.')?.ai_remediation_execute?.data;
   },
   async scanImage({ accountId, namespace, workloadName }: { accountId: string; namespace: string; workloadName: string }) {
     if (accountId === 'demo') return null;

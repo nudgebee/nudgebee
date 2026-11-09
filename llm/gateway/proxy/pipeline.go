@@ -7,6 +7,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 
 	"nudgebee/llm-gateway/auth"
+	"nudgebee/llm-gateway/edgeerr"
 	"nudgebee/llm-gateway/routing"
 )
 
@@ -32,6 +33,16 @@ type RequestContext struct {
 
 	Streaming bool
 
+	// Endpoint is the family a key policy restricts (auth.Endpoint*, or endpointMeta);
+	// empty for a path the gateway does not model. Generative marks a call that creates
+	// output, which must name a model when the key is limited to models.
+	Endpoint   string
+	Generative bool
+
+	// Generic marks the provider-agnostic /v1 surface, whose clients always speak
+	// OpenAI's error shape whichever provider serves the request.
+	Generic bool
+
 	// DirectKey, when non-nil, is the exact integration credential selected by a model
 	// mapping before the pipeline (and may carry a custom upstream's base URL). The
 	// resolver stage injects it verbatim, bypassing provider-wide credential lookup.
@@ -55,9 +66,25 @@ type RequestContext struct {
 	// no_credentials, blocked, …); the handler records it on the rejection usage row.
 	RejectReason string
 
+	// PolicyTarget is the provider/model a policy refusal was about, which after routing
+	// may differ from the model the client asked for. Recorded on the rejection row.
+	PolicyTarget string
+
+	// RefusalSuppressed marks a key-policy refusal over its key's cap: answered, not recorded.
+	RefusalSuppressed bool
+
 	// DLP is set by the egress-filter stage when a secret is detected: the mode taken
 	// and the rule ids that fired. Recorded on the usage row and signalled to the client.
 	DLP map[string]any
+}
+
+// errorShape is the error envelope the caller's SDK parses: the addressed provider's on a
+// native mount, OpenAI's on the /v1 surface.
+func (rc *RequestContext) errorShape() string {
+	if rc.Generic {
+		return edgeerr.OpenAI
+	}
+	return string(rc.Provider)
 }
 
 // Stage is one step in the request pipeline. Handle may mutate rc in place.

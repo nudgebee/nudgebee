@@ -5,6 +5,7 @@ import { Banner } from '@ui/Banner';
 import ListTools from '@components/llm/ListTools';
 import MCPConfigList from '@components/llm/MCPConfigList';
 import AdminAccountFilter from './AdminAccountFilter';
+import useAdminAction from '@components/user-management/useAdminAction';
 import { ds } from '@utils/colors';
 
 /**
@@ -20,6 +21,10 @@ import { ds } from '@utils/colors';
 const ToolsAndMCPAdminTab = ({ stickyTable = false }) => {
   const [activeSubTab, setActiveSubTab] = useState('tools');
   const [accountId, setAccountId] = useState('');
+
+  // Overview's "N MCPs" chip deep-links here with ?action=tools-mcp-servers so it
+  // lands on the MCP Servers sub-view instead of the Tools default.
+  useAdminAction('tools-mcp-servers', () => setActiveSubTab('mcp'));
 
   return (
     <Box>

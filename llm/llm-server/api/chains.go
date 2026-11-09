@@ -92,7 +92,7 @@ type ConversationApiRequest struct {
 	// it. Only "dismiss" is supported (soft-skip the question, then end the
 	// conversation with a structured marker — see handleFollowupCancel for
 	// why a hard terminate isn't duplicated here). Empty means answer
-	// normally. Gated by FollowupCancelEnabled.
+	// normally.
 	Resolution string `json:"resolution,omitempty"`
 	// Reason is an optional user-supplied note recorded with a "dismiss"
 	// Resolution. Ignored otherwise.
@@ -219,9 +219,13 @@ func handleRequestExecution(
 				return
 			}
 			logger.Error("api: error executing request", "metrics_key", metricsKey, "latency", time.Since(startTime).String(), "error", err)
+			message, ok := core.LLMFailureMessage(err)
+			if !ok {
+				message = common.SanitizeErrorMessage(err.Error())
+			}
 			c.JSON(http.StatusInternalServerError, buildApiResponse(resp, []error{
 				common.Error{
-					Message: common.SanitizeErrorMessage(err.Error()),
+					Message: message,
 				},
 			}))
 			return
@@ -482,7 +486,7 @@ func dispatchQueuedMessage(parent *security.RequestContext, conversation core.Co
 		if strings.HasPrefix(conversation.SessionID, events.SessionIdPrefixEvent) {
 			module = budget.ModuleInvestigation
 		}
-		if exceeded, reason := budget.CheckBudgetLimits(sc.GetTenantId(), msg.AccountID.String(), module, logger); exceeded {
+		if exceeded, reason := budget.CheckBudgetLimitsForReply(sc.GetTenantId(), msg.AccountID.String(), module, logger); exceeded {
 			fail(errors.New(reason))
 			return
 		}
@@ -774,6 +778,9 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
+		// Resolved before the queue branch so a queued message and an immediately
+		// executed one attribute the same author.
+		request.UserId = attributionUserId(agentContext.GetSecurityContext(), request.UserId)
 
 		// Check if user has access to account
 		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
@@ -801,7 +808,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		timer.mark("session_and_access")
-		budgetExceeded := budget.CheckBudgetAndRespond(c, agentContext.GetSecurityContext().GetTenantId(), request.AccountId, module, logger)
+		budgetExceeded := checkChatBudgetAndRespond(c, agentContext.GetSecurityContext().GetTenantId(), request.AccountId, request.SessionId, request.AgentId, agentContext.GetSecurityContext().GetUserId(), nil, module, logger)
 		timer.mark("budget")
 		if budgetExceeded {
 			return
@@ -824,12 +831,6 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 					return
 				}
 			}
-		}
-
-		// Queued dispatch needs the authenticated author to reload permissions.
-		// Apply legacy system attribution only to immediate execution.
-		if agentContext.GetSecurityContext().IsSuperAdmin() {
-			request.UserId = security.GetSystemUserId()
 		}
 
 		if rejectUnfulfilledQueueRequest(c, &request) {
@@ -967,15 +968,17 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}
 		}
 
-		// Audit follow-up answers only, and only for web sources. Emit strictly
-		// when a follow-up is actually pending (the agent is 'waiting') — a normal
-		// send that merely carries agent_id/message_id has no pending follow-up and
-		// must not be logged as an answer. Gating on web source also lets non-web
-		// follow-ups skip the DB lookup entirely.
-		if !isNewConversation && (request.AgentId != "" || request.MessageId != "") && isWebChatSource(source) {
+		// Audit follow-up answers. Emit strictly when a follow-up is actually
+		// pending (the agent is 'waiting') — a normal send that merely carries
+		// agent_id/message_id has no pending follow-up and must not be logged as
+		// an answer. Clarification answers are audited for web sources only;
+		// write approvals for every source (alert conversations, Slack, automations),
+		// with the approving user, so every approved change has a record of who
+		// approved it.
+		if !isNewConversation && (request.AgentId != "" || request.MessageId != "") {
 			if info, perr := core.GetPendingFollowupInfo(request.AgentId, request.AccountId, request.ConversationId); perr != nil {
 				logger.Warn("chat audit: failed to load pending followup info", "error", perr, "agent_id", request.AgentId)
-			} else if info != nil {
+			} else if info != nil && (info.IsToolConfirmation || isWebChatSource(source)) {
 				// Consistent shape across follow-up events: query = originating user
 				// question, response = the user's answer, followup_type = the kind of
 				// follow-up (so credential/config selections stay filterable).
@@ -990,6 +993,15 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 					chatState["tool_name"] = info.ToolName
 					chatState["command"] = truncateQueryForAudit(info.Command)
 					chatState["decision"] = toolConfirmationDecision(request.Query)
+					// The signed-in identity that answered; request.UserId is
+					// rewritten to the system user for a super admin with no
+					// grant in this tenant.
+					approverUserID := ""
+					if sc := agentContext.GetSecurityContext(); sc != nil {
+						approverUserID = sc.GetUserId()
+					}
+					chatState["approver_user_id"] = approverUserID
+					chatState["source"] = string(source)
 				}
 				emitChatActionAudit(agentContext, chatEventType, audit.EventActionUpdate, request.AccountId, request.UserId, request.ConversationId, request.SessionId, source, nil, chatState)
 			}
@@ -1248,7 +1260,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			module = budget.ModuleInvestigation
 		}
 
-		if budget.CheckBudgetAndRespond(c, agentContext.GetSecurityContext().GetTenantId(), request.AccountId, module, logger) {
+		if checkChatBudgetAndRespond(c, agentContext.GetSecurityContext().GetTenantId(), request.AccountId, request.SessionId, request.AgentId, agentContext.GetSecurityContext().GetUserId(), nil, module, logger) {
 			return
 		}
 
@@ -2276,7 +2288,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		logger := slog.With("account_id", request.AccountId, "user_id", request.UserId)
+		logger := slog.With("account_ids", request.AccountIds, "user_id", request.UserId)
 
 		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
@@ -2284,10 +2296,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		// account_id is intentionally optional. The handler falls back to every
+		// account_ids is intentionally optional. The handler falls back to every
 		// account the caller's session is permitted to read, matching the
 		// multi-account roll-up the troubleshoot widget needs. Authorization
-		// of any explicit account_id happens inside the handler.
+		// of any explicit account_ids happens inside the handler.
 		if request.StartDate == "" || request.EndDate == "" {
 			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
 				common.Error{Message: "api: start_date and end_date are required"},

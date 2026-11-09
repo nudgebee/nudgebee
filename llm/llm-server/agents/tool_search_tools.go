@@ -54,6 +54,7 @@ func init() {
 // natural-language query and returns matching capabilities with their
 // descriptions and how to invoke them. It is deliberately read-only.
 type searchToolsTool struct {
+	toolcore.ReadOnlyTool
 	accountId string
 }
 

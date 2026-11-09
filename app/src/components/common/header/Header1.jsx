@@ -271,11 +271,15 @@ const Header1 = ({ showBorder = false }) => {
   const buildHelpMenuItems = () => {
     const close = () => {};
     const items = [
-      {
-        label: 'Browse guides',
-        icon: <SafeIcon src={HelpOutlineDarkIcon} alt='Guides' />,
-        onSelect: () => setGuidesOpen(true),
-      },
+      ...(setupLocked
+        ? []
+        : [
+            {
+              label: 'Browse guides',
+              icon: <SafeIcon src={HelpOutlineDarkIcon} alt='Guides' />,
+              onSelect: () => setGuidesOpen(true),
+            },
+          ]),
       {
         label: 'Documentation',
         icon: <SafeIcon src={DocumentationIcon} alt='Documentation' />,
@@ -283,6 +287,7 @@ const Header1 = ({ showBorder = false }) => {
       },
     ];
     headerMenuExtras().forEach(({ id, getItem }) => {
+      if (setupLocked && id === 'chatwoot-trigger') return;
       const item = getItem?.(data, close);
       if (item) items.push({ ...item, id });
     });
@@ -991,6 +996,7 @@ const Header1 = ({ showBorder = false }) => {
                       showPadding={true}
                       showAutoEllipsis={true}
                       isDisabled={Boolean(anchorActiveTab.disableDropdown)}
+                      disableRouteChanges={setupLocked}
                     />
                   </Box>
                 )}

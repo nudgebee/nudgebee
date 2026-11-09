@@ -134,6 +134,15 @@ type appConfig struct {
 	BaseUrl                                      string `mapstructure:"base_url"`
 	BrandingName                                 string `mapstructure:"branding_name"`
 
+	// Same exchange/queue collector-server's ConsumeCloudAccountCostReportJobs
+	// already consumes (cloud-collector/account/etl_usage_report.go) — the
+	// daily cron publishes here instead of calling store_usage synchronously.
+	// account.CreateAccount's first-sync-on-onboarding publishes here too
+	// (#41116), rather than blocking on an HTTP call bound to the request's
+	// own client timeout.
+	RabbitMqCloudAccountCostReportExchange string `mapstructure:"rabbit_mq_cloud_account_cost_report_exchange"`
+	RabbitMqCloudAccountCostReportQueue    string `mapstructure:"rabbit_mq_cloud_account_cost_report_queue"`
+
 	RabbitMqTroubleshootExchange string `mapstructure:"rabbit_mq_troubleshoot_exchange"`
 	RabbitMqTroubleshootQueue    string `mapstructure:"rabbit_mq_troubleshoot_queue"`
 
@@ -277,6 +286,13 @@ type appConfig struct {
 
 	NBAnomalyTrainingDays    int `mapstructure:"nb_anomaly_training_days"`
 	NBAnomalyEvaluationHours int `mapstructure:"nb_anomaly_evaluation_hours"`
+	// When true, a Kubernetes anomaly is resolved only once its latest
+	// anomalous detection is NBAnomalyCloseStableHours old and a later run
+	// found it clean, so one that flaps hour to hour stays open instead of
+	// resolving and reopening every hour. Default off: alerts then close at the
+	// first clean run, as before.
+	FeatureAnomalyStableCloseEnabled bool `mapstructure:"feature_anomaly_stable_close_enabled"`
+	NBAnomalyCloseStableHours        int  `mapstructure:"nb_anomaly_close_stable_hours"`
 
 	NBSpendAnomalyBaselineDays               int     `mapstructure:"nb_spend_anomaly_baseline_days"`
 	NBSpendAnomalyZScoreThreshold            float64 `mapstructure:"nb_spend_anomaly_zscore_threshold"`
@@ -304,12 +320,28 @@ type appConfig struct {
 	// always-open behavior is the bug.
 	FeatureEventPointInTimeCloseEnabled bool `mapstructure:"feature_event_point_in_time_close_enabled"`
 
+	// When true, each re-detection of a still-firing alert that a scheduled job
+	// raises (Kubernetes and spend anomalies, SLO breaches) re-runs matching
+	// event-trigger workflows, as often as the job runs (hourly for anomalies
+	// and SLOs). Default off: a webhook alert's repeat delivery never re-runs
+	// them, and these jobs never did either until #40181 fixed the event id
+	// their re-fire message carried.
+	FeatureScheduledAlertWorkflowRefireEnabled bool `mapstructure:"feature_scheduled_alert_workflow_refire_enabled"`
+
 	// When true, a Kubernetes anomaly that fires again after it had cleared is
 	// announced in the next anomaly digest, labelled "returned" (issue #40007).
 	// The producer reads the stored status before its upsert to tell a return
 	// from the hourly re-detection of an open anomaly, which stays silent.
 	// Default off.
 	FeatureAnomalyReturnedDigestEnabled bool `mapstructure:"feature_anomaly_returned_digest_enabled"`
+
+	// When true, an SLO that recovers is published to notifications-server as a
+	// RESOLVED item of the SLO digest, which lists it under "Resolved" (issue
+	// #40006). Default off: turn it on only once notifications-server runs a
+	// build that knows resolved digest items — an older one shows the item as
+	// one more breaching SLO. That build lists the item when its
+	// DIGEST_RESOLVED_ENABLED is on, and drops it when off.
+	FeatureSLOResolvedDigestEnabled bool `mapstructure:"feature_slo_resolved_digest_enabled"`
 
 	// Triage scoring: when true, ComputeScore uses the LLM-verdict-per-class + deterministic
 	// policy path instead of the legacy severity*env formula. Default off (legacy formula).
@@ -338,6 +370,11 @@ type appConfig struct {
 	// together would mean a CloudFormation bug also reverts the ENI, Route 53 and
 	// load-balancer paths.
 	FeatureKGCFNStackResourcesFromDB bool `mapstructure:"feature_kg_cfn_stack_resources_from_db"`
+
+	// ESMetricsZeroMatchSampleEnabled makes an Elasticsearch metrics query that matches
+	// no documents also return a few real documents from the index, so the agent can
+	// see the actual field paths. Costs at most two extra bounded searches per miss.
+	ESMetricsZeroMatchSampleEnabled bool `mapstructure:"es_metrics_zero_match_sample_enabled"`
 
 	// Webhook execution mode - true for async (default), false for sync (useful for tests)
 	WebhookAsyncExecution bool `mapstructure:"webhook_async_execution"`
@@ -503,6 +540,11 @@ func init() {
 	viper.SetDefault("rabbit_mq_services_cloudaccount_onboarding_queue", "cloudaccount_onboarding")
 	viper.SetDefault("rabbit_mq_services_anomaly_processing_queue", "anomaly_processing")
 	viper.SetDefault("rabbit_mq_services_anomaly_processing_concurrency", "1")
+
+	// Must match collector-server's own defaults for the same two keys
+	// (cloud-collector/config/config.go) — same physical queue, two services.
+	viper.SetDefault("rabbit_mq_cloud_account_cost_report_exchange", "cloud_account_cost_report_exchange")
+	viper.SetDefault("rabbit_mq_cloud_account_cost_report_queue", "cloud_account_cost_report")
 	viper.SetDefault("base_url", "http://nudgebee")
 	viper.SetDefault("branding_name", "Nudgebee")
 
@@ -590,14 +632,19 @@ func init() {
 
 	viper.SetDefault("nb_anomaly_training_days", 7)
 	viper.SetDefault("nb_anomaly_evaluation_hours", 1)
+	viper.SetDefault("feature_anomaly_stable_close_enabled", false)
+	viper.SetDefault("nb_anomaly_close_stable_hours", 3)
 
 	viper.SetDefault("feature_event_point_in_time_close_enabled", true)
+	viper.SetDefault("feature_scheduled_alert_workflow_refire_enabled", false)
 	// Off by default, but declared: Unmarshal skips a key with no default, so
 	// without this line the environment variable could never turn it on.
 	viper.SetDefault("feature_anomaly_returned_digest_enabled", false)
+	viper.SetDefault("feature_slo_resolved_digest_enabled", false)
 	viper.SetDefault("feature_kg_cloud_topology_from_db", true)
 	viper.SetDefault("feature_kg_cfn_stack_resources_from_db", true)
 	viper.SetDefault("webhook_async_execution", true)
+	viper.SetDefault("es_metrics_zero_match_sample_enabled", true)
 
 	viper.SetDefault("LLM_SERVER_TOOL_SHELL_IMAGE", "ghcr.io/nudgebee/nudgebee-debug:0.3.12")
 

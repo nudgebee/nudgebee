@@ -50,7 +50,7 @@ func RegisterFlowSourceFactory(name string, factory FlowSourceFactory, descripti
 		Category:    category,
 	}
 
-	slog.Info("registered knowledge graph flow source factory",
+	slog.Debug("registered knowledge graph flow source factory",
 		"flow_source", name,
 		"description", description,
 		"category", category)

@@ -115,12 +115,17 @@ func GetCloudAccountCredentials(accountId string) (CloudAccountCredentials, erro
 // Tool inputs arrive as JSON (e.g. {"command":"az vm list --help"}) but the verb-classification
 // heuristics expect a plain command string. Returns the input unchanged if it's not valid JSON
 // or doesn't contain a "command" string field.
+//
+// The key is matched exactly, as the executor reads it when it builds the
+// call (agents/core/executor_planner.go). A struct field would also match
+// "Command" or "COMMAND", so an input carrying both could show the classifier
+// one command while the other runs.
 func extractCommandFromToolInput(input string) string {
-	var parsed struct {
-		Command string `json:"command"`
-	}
-	if err := json.Unmarshal([]byte(input), &parsed); err == nil && parsed.Command != "" {
-		return parsed.Command
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(input), &parsed); err == nil {
+		if command, ok := parsed["command"].(string); ok && command != "" {
+			return command
+		}
 	}
 	return input
 }

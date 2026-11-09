@@ -1080,6 +1080,12 @@ type BatchedFindingsPayload struct {
 	BatchEndTime       time.Time                 `json:"batch_end_time"`
 }
 
+// An empty rule severity means any severity. Rules store it lowercase while
+// events.priority is uppercase.
+func batchRuleMatchesPriority(ruleSeverity, priority string) bool {
+	return ruleSeverity == "" || strings.EqualFold(ruleSeverity, priority)
+}
+
 func ProcessHourlyEventsBatchNotification(ctx *security.RequestContext) error {
 	startTime := time.Now()
 	end := startTime
@@ -1092,7 +1098,7 @@ func ProcessHourlyEventsBatchNotification(ctx *security.RequestContext) error {
 	}
 
 	const rulesQuery = `
-		SELECT nr.id, nr.name, nra.account_id, ca.account_name, nr.frequency, nr.severity, nr.tenant_id
+		SELECT nr.id, nr.name, nra.account_id, ca.account_name, COALESCE(nr.frequency, ''), COALESCE(nr.severity, ''), nr.tenant_id
 		FROM notification_rules nr
 		JOIN notification_rule_accounts nra ON nra.rule_id = nr.id
 		JOIN cloud_accounts ca ON ca.id = nra.account_id
@@ -1184,7 +1190,7 @@ func ProcessHourlyEventsBatchNotification(ctx *security.RequestContext) error {
 			continue
 		}
 
-		if rule.Severity != "" && rule.Severity != priority {
+		if !batchRuleMatchesPriority(rule.Severity, priority) {
 			continue
 		}
 

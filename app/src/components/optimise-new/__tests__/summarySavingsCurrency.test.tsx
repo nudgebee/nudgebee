@@ -23,7 +23,8 @@ jest.mock('@api1/recommendation', () => ({
     getOptimisationSummaryRecommendations: () => Promise.resolve({ data: { recommendation: [] } }),
     getK8sRecommendationSummaryByRuleName: () => Promise.resolve([]),
     getK8sRecommendationSummaryByAccount: () => Promise.resolve([]),
-    getRecommendationResolutionStatusCounts: () => Promise.resolve({}),
+    getRecommendationResolutionStatusTotals: () => Promise.resolve({}),
+    getK8sRecommendation: () => Promise.resolve({ data: { recommendation: [] } }),
     getK8sRecommendationSafetyGroups: () => Promise.resolve([]),
   },
 }));

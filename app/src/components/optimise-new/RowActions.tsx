@@ -1,5 +1,6 @@
 import { hasCliCommand } from './cliCommands';
 import { k8sActionFor } from './k8sActions';
+import { canStartCloudAction } from './cloudActions';
 /**
  * The per-row quick actions every recommendation listing shares — Optimize and
  * Ask Nubi as icon buttons, ticket / dismiss / CLI behind the overflow menu.
@@ -20,7 +21,7 @@ import { DropdownMenu } from '@ui/DropdownMenu';
 import SafeIcon from '@shared/icons/SafeIcon';
 import OptimizeIcon from 'src/assets/images/home/optimize-icon-button.svg';
 import { getNubiIconUrl } from '@hooks/useTenantBranding';
-import { hasPermission, hasWriteAccess } from '@lib/auth';
+import { canCreateTicket, hasWriteAccess } from '@lib/auth';
 import { ds } from 'src/utils/colors';
 
 /**
@@ -50,16 +51,18 @@ interface RowActionsProps {
 }
 
 const RowActions = memo(({ rowId, rec, ticketId, assistantName, onAskNubi, onResolve, onCreateTicket, onCopyCli, onDismiss }: RowActionsProps) => {
-  const showResolve = (rec.rule_name === 'pod_right_sizing' || k8sActionFor(rec) != null) && hasWriteAccess(rec.account_id);
+  const showResolve =
+    (rec.rule_name === 'pod_right_sizing' || k8sActionFor(rec) != null || canStartCloudAction(rec)) && hasWriteAccess(rec.account_id);
   const showCopyCli = hasCliCommand(rec);
   // Only offer what the backend legality matrix accepts: dismiss from Open,
   // reactivate from Dismissed. Other statuses (InProgress, Closed, Archive) get
   // no menu entry rather than a guaranteed error toast.
   const canDismiss = hasWriteAccess(rec.account_id) && (!rec.status || rec.status === 'Open' || rec.status === 'Dismissed');
-  // Creating a ticket needs write access to the row's account OR the
-  // tickets:Write custom-role grant (tickets_create → tickets:Write). Disabled
-  // rather than dropped so an existing ticket id stays readable.
-  const canCreateTicket = hasWriteAccess(rec.account_id) || hasPermission('tickets', 'Write');
+  // Creating a ticket needs read access to the row's account OR the tickets:Write
+  // custom-role grant — the backend authorizes every *_readonly role
+  // (@lib/auth#canCreateTicket, #40211). Disabled rather than dropped so an
+  // existing ticket id stays readable.
+  const ticketAllowed = canCreateTicket(rec.account_id);
 
   const menuItems: Array<{ label: string; icon: React.ReactNode; onSelect: () => void; disabled?: boolean; id?: string }> = [
     {
@@ -67,7 +70,7 @@ const RowActions = memo(({ rowId, rec, ticketId, assistantName, onAskNubi, onRes
       label: ticketId ? `Ticket: ${ticketId}` : 'Create ticket',
       icon: <ConfirmationNumberOutlinedIcon sx={{ fontSize: 16 }} />,
       onSelect: () => onCreateTicket(rec),
-      disabled: !!ticketId || !canCreateTicket,
+      disabled: !!ticketId || !ticketAllowed,
     },
     ...(canDismiss
       ? [

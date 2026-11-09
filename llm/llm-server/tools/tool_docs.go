@@ -24,7 +24,7 @@ func init() {
 
 const SearchDocsToolName = "search_docs"
 
-type DocsAgentTool struct{}
+type DocsAgentTool struct{ core.ReadOnlyTool }
 
 func (m DocsAgentTool) Name() string {
 	return SearchDocsToolName

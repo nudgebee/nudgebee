@@ -42,7 +42,7 @@ The planner decides whether a candidate is useful and calls:
 
 `load_skills` resolves the ID from the turn-scoped cache and returns the bounded document content. It also accepts an exact, case-insensitive active KB name within the account, without requiring an agent mapping. Unknown names are reported as missing: the loader never substitutes substring matches or nearest-neighbour RAG results. Known integration KB records retain their content-retrieval path.
 
-`search_skills` remains an explicit fallback tool for follow-up discovery. It returns exact names for manual KBs and cached candidate IDs for RAG documents, with compact previews. Load those IDs in the same turn. It is not required for the automatic first-pass candidate search. Search ranking can still return weak matches; discovery results do not prove relevance or count as loaded knowledge.
+`search_skills` remains an explicit fallback tool for follow-up discovery. It returns exact names for manual KBs and cached candidate IDs for RAG documents, with compact previews. Load those IDs in the same turn. It is not required for the automatic first-pass candidate search. Search ranking can still return weak matches; discovery results do not prove relevance or count as loaded knowledge. An optional `id` (e.g. a ServiceNow KB number) is matched exactly against document metadata first, because an ID is never in the embedded text.
 
 ### Custom-planner agents
 

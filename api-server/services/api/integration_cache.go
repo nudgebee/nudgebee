@@ -5,6 +5,8 @@ import (
 	"nudgebee/services/llm"
 	"nudgebee/services/observability"
 	"nudgebee/services/security"
+	"nudgebee/services/tenant"
+	"strings"
 	"time"
 )
 
@@ -107,4 +109,19 @@ func mergeAccountIds(requested, affected []string) []string {
 		}
 	}
 	return merged
+}
+
+// llmTenantWideAccounts widens an LLM change to every account in the tenant: a
+// tenant-wide integration or the tenant default reaches accounts that are not
+// linked to it, so clearing only the linked ones would leave the rest stale.
+func llmTenantWideAccounts(ctx *security.RequestContext, integrationName string, accountIds []string) []string {
+	if !strings.EqualFold(integrationName, "llm") {
+		return accountIds
+	}
+	ids, err := tenant.GetAccountIdsForTenant(ctx, ctx.GetSecurityContext().GetTenantId())
+	if err != nil {
+		ctx.GetLogger().Error("integrations: failed to list tenant accounts for LLM cache clear", "error", err)
+		return accountIds
+	}
+	return mergeAccountIds(accountIds, ids)
 }

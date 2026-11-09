@@ -302,6 +302,14 @@ func traceSourceExpr(tableName string) string {
 	return "CASE WHEN SpanAttributes['otel.scope.name'] = 'nudgebee-node-agent' THEN 'ebpf' ELSE 'otel' END"
 }
 
+// DestinationZoneExpr reads a span's destination zone straight from SpanAttributes, for accounts
+// whose otel_traces has no materialized destination_workload_zone column. nudgebee/node-agent
+// emits the key misspelled ("availablity"), and the agent builds its materialized column from that
+// same spelling, so the misspelled key is the one live spans carry. Do not correct the spelling
+// here alone: #37036 did, and the column came back empty (#40498). The correct spelling is the
+// fallback, so an agent that later fixes the key keeps working.
+const DestinationZoneExpr = "CASE WHEN mapContains(SpanAttributes, 'destination.cloud.availablity_zone') THEN SpanAttributes['destination.cloud.availablity_zone'] ELSE SpanAttributes['destination.cloud.availability_zone'] END"
+
 func GetTracesProviderAndUrl(ctx *security.RequestContext, accountId string) (string, string, bool) {
 	agentDetails, err := account.GetAgentConnectionDetails(accountId)
 	traceProvider := "otel_clickhouse"
@@ -1803,6 +1811,14 @@ var table_metadata = map[string]TableDefinition{
 			"latest_computed_priority": {
 				Type:         ColumnDefinitionTypeString,
 				Def:          "(array_agg(computed_priority ORDER BY events.created_at DESC))[1]",
+				IsAggregated: true,
+			},
+			// The source severity of the same newest event latest_computed_priority
+			// reads its rank from. Severity changes within an issue as rank does, so
+			// a count of issues by severity needs the one value per issue.
+			"latest_priority": {
+				Type:         ColumnDefinitionTypeString,
+				Def:          "(array_agg(priority ORDER BY events.created_at DESC))[1]",
 				IsAggregated: true,
 			},
 			"latest_nb_status": {
@@ -3411,7 +3427,7 @@ var table_metadata = map[string]TableDefinition{
 			traceProvider, traceProviderUrl, hasMaterializedColumn := GetTracesProviderAndUrl(ctx, accountId)
 			baseQuery := fmt.Sprintf(`(SELECT workload_zone, destination_workload_zone, TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, cloud_availability_zone, workload_namespace,workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, resource, Duration AS duration_ns, destination_workload_name, destination_workload_namespace, destination_name, headers, http_status_code, request_payload, http_response, trace_source FROM %s) AS traces_grouping_v2`, tableName)
 			if !hasMaterializedColumn {
-				baseQuery = fmt.Sprintf(`(SELECT ResourceAttributes['cloud.availability_zone'] AS workload_zone, SpanAttributes['destination.cloud.availability_zone'] AS destination_workload_zone, TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, ResourceAttributes['cloud.availability_zone'] AS cloud_availability_zone, CASE WHEN mapContains(SpanAttributes, 'source.workload_namespace') THEN SpanAttributes['source.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS workload_namespace, CASE WHEN mapContains(SpanAttributes, 'source.workload_name') THEN SpanAttributes['source.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] ELSE ResourceAttributes['service.name'] END AS workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, CASE WHEN mapContains(SpanAttributes, 'db.statement') THEN SpanAttributes['db.statement'] ELSE SpanAttributes['http.url'] END AS resource, Duration AS duration_ns, CASE WHEN mapContains(SpanAttributes, 'destination.workload_name') THEN SpanAttributes['destination.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_workload_name, CASE WHEN mapContains(SpanAttributes, 'destination.workload_namespace') THEN SpanAttributes['destination.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS destination_workload_namespace, CASE WHEN mapContains(SpanAttributes, 'destination.name') THEN SpanAttributes['destination.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_name, SpanAttributes['http.headers'] AS headers, SpanAttributes['http.status_code'] AS http_status_code, SpanAttributes['http.request_payload'] AS request_payload, SpanAttributes['http.response'] AS http_response, %s AS trace_source FROM %s) AS traces_grouping_v2`, traceSourceExpr(tableName), tableName)
+				baseQuery = fmt.Sprintf(`(SELECT ResourceAttributes['cloud.availability_zone'] AS workload_zone, %s AS destination_workload_zone, TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, ResourceAttributes['cloud.availability_zone'] AS cloud_availability_zone, CASE WHEN mapContains(SpanAttributes, 'source.workload_namespace') THEN SpanAttributes['source.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS workload_namespace, CASE WHEN mapContains(SpanAttributes, 'source.workload_name') THEN SpanAttributes['source.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] ELSE ResourceAttributes['service.name'] END AS workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, CASE WHEN mapContains(SpanAttributes, 'db.statement') THEN SpanAttributes['db.statement'] ELSE SpanAttributes['http.url'] END AS resource, Duration AS duration_ns, CASE WHEN mapContains(SpanAttributes, 'destination.workload_name') THEN SpanAttributes['destination.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_workload_name, CASE WHEN mapContains(SpanAttributes, 'destination.workload_namespace') THEN SpanAttributes['destination.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS destination_workload_namespace, CASE WHEN mapContains(SpanAttributes, 'destination.name') THEN SpanAttributes['destination.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_name, SpanAttributes['http.headers'] AS headers, SpanAttributes['http.status_code'] AS http_status_code, SpanAttributes['http.request_payload'] AS request_payload, SpanAttributes['http.response'] AS http_response, %s AS trace_source FROM %s) AS traces_grouping_v2`, DestinationZoneExpr, traceSourceExpr(tableName), tableName)
 			}
 			if traceProvider == "bigquery" {
 				baseQuery = fmt.Sprintf(`(SELECT span.attributes.attributeMap.source_workload_namespace AS workload_namespace, span.attributes.attributeMap.source_workload_name AS workload_name, span.startTime AS timestamp, span.displayName.value AS span_name, CASE WHEN SAFE_CAST(span.attributes.attributeMap._http_status_code AS INT64) >= 400 OR SAFE_CAST(span.attributes.attributeMap._http_status_code AS INT64) < 200 OR SAFE_CAST(span.attributes.attributeMap._http_status_code AS INT64) IS NULL THEN 'STATUS_CODE_ERROR' ELSE 'STATUS_CODE_UNSET' END AS status_code, span.attributes.attributeMap._http_status_code as http_status_code, TIMESTAMP_DIFF(span.endTime, span.startTime, MICROSECOND) * 1000 AS duration_ns, CASE WHEN span.attributes.attributeMap.http_url IS NOT NULL THEN span.attributes.attributeMap.http_url ELSE span.attributes.attributeMap._http_path END AS resource, CASE WHEN span.attributes.attributeMap.destination_workload_name IS NOT NULL THEN span.attributes.attributeMap.destination_workload_name ELSE span.attributes.attributeMap.net_peer_name END AS destination_workload_name, CASE WHEN span.attributes.attributeMap.destination_workload_namespace IS NOT NULL THEN span.attributes.attributeMap.destination_workload_namespace ELSE span.attributes.attributeMap.destination_namespace END AS destination_workload_namespace FROM %s) AS traces_grouping_v2`, traceProviderUrl)
@@ -4049,6 +4065,14 @@ var table_metadata = map[string]TableDefinition{
 			"updated_at": {
 				Type: ColumnDefinitionTypeDatetime,
 				Def:  "updated_at",
+			},
+			// When the finding was first raised. The only age a tenant-wide roll-up
+			// can use: updated_at (and "timestamp") is bumped on nearly every open
+			// row by the ~6h finops-score cron. Comes from r.* on every path, so it
+			// is in neither joinRequiringCols nor windowRequiringCols.
+			"created_at": {
+				Type: ColumnDefinitionTypeDatetime,
+				Def:  "created_at",
 			},
 			// Mirrors recommendations_v2: safety band is stamped into the finops
 			// breakdown JSONB, not a dedicated column.
@@ -6268,7 +6292,7 @@ var table_metadata = map[string]TableDefinition{
 		sr.workload_name,
 		sr.cloud_account_id,
 		sr.tenant_id,
-		MAX(sr.timestamp) AS timestamp,
+		sr.timestamp,
 		SUM(sr.good_events_count) AS total_good_events,
 		SUM(sr.bad_events_count) AS total_bad_events,
 		SUM(sr.events_count) AS total_events,
@@ -8795,10 +8819,29 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"k8s_nodes_v2": {
-		PermissionModule:    "k8s",
-		Type:                Normal,
-		Source:              database.Metastore,
-		Def:                 "k8s_nodes",
+		PermissionModule: "k8s",
+		Type:             Normal,
+		Source:           database.Metastore,
+		Def:              "k8s_nodes",
+		// pod_count is one grouped pass over the active pods, joined by node
+		// name. As a per-row subquery it re-read every active pod of the
+		// account for each node it counted (k8s_pods has no node_name index),
+		// so a page cost 10 such passes and sorting by pod_count one per node
+		// (#39743). The account and tenant filters reach the grouped pods
+		// through the join keys. Postgres cannot drop the join when nothing
+		// reads pod_count, so it is only added when the request does.
+		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
+			if !requestReferencesColumns(request, map[string]bool{"pod_count": true}) {
+				return "k8s_nodes", request, nil
+			}
+			return `(SELECT n.*, COALESCE(pc.pod_count, 0) AS pod_count
+			FROM k8s_nodes n
+			LEFT JOIN (SELECT cloud_account_id, tenant_id, node_name, COUNT(*) AS pod_count
+				FROM k8s_pods
+				WHERE is_active = true
+				GROUP BY cloud_account_id, tenant_id, node_name) pc
+				ON pc.cloud_account_id = n.cloud_account_id AND pc.tenant_id = n.tenant_id AND pc.node_name = n.name) AS k8s_nodes`, request, nil
+		},
 		Name:                "k8s_nodes_v2",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "cloud_account_id",
@@ -8827,10 +8870,7 @@ var table_metadata = map[string]TableDefinition{
 			"cost":               {Type: ColumnDefinitionTypeFloat},
 			"meta":               {Type: ColumnDefinitionTypeJson},
 			"tenant_id":          {Type: ColumnDefinitionTypeString},
-			"pod_count": {
-				Type: ColumnDefinitionTypeInt,
-				Def:  "(SELECT COUNT(*) FROM k8s_pods WHERE k8s_pods.cloud_account_id = k8s_nodes.cloud_account_id::uuid AND k8s_pods.tenant_id = k8s_nodes.tenant_id::uuid AND k8s_pods.node_name = k8s_nodes.name AND k8s_pods.is_active = true)",
-			},
+			"pod_count":          {Type: ColumnDefinitionTypeInt},
 		},
 	},
 	"k8s_nodes_groupings_v2": {
@@ -9651,6 +9691,11 @@ var table_metadata = map[string]TableDefinition{
 			LEFT JOIN users uu ON uu.id = ag.updated_by
 		) as application_group_v2`,
 		TenantIdColumnName: "tenant_id",
+		// "id" is a placeholder to clear service.go's empty-AccountIdColumnName
+		// check; the real restriction is AccountScope below.
+		AccountIdColumnName: "id",
+		AccountScope:        applicationGroupAccountScope("application_group_v2"),
+		PermissionModule:    "applications",
 		Columns: map[string]ColumnDefinition{
 			"id":                      {Type: ColumnDefinitionTypeString},
 			"name":                    {Type: ColumnDefinitionTypeString},
@@ -9665,12 +9710,16 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"application_group_groupings_v2": {
-		Type:               Aggregate,
-		Source:             database.Metastore,
-		Def:                "application_group",
-		Name:               "application_group_groupings_v2",
-		TenantIdColumnName: "tenant_id",
+		Type:                Aggregate,
+		Source:              database.Metastore,
+		Def:                 "application_group",
+		Name:                "application_group_groupings_v2",
+		TenantIdColumnName:  "tenant_id",
+		AccountIdColumnName: "id",
+		AccountScope:        applicationGroupAccountScope("application_group"),
+		PermissionModule:    "applications",
 		Columns: map[string]ColumnDefinition{
+			"id":        {Type: ColumnDefinitionTypeString},
 			"tenant_id": {Type: ColumnDefinitionTypeString},
 			"name":      {Type: ColumnDefinitionTypeString},
 			"count": {
@@ -9959,7 +10008,26 @@ var table_metadata = map[string]TableDefinition{
 		// as well as listed: the frontend sends one where clause to the listing and
 		// another to this aggregate, and a column missing here would leave
 		// pagination reporting totals for a filter it never applied.
-		Def:                 "(SELECT rr.*, r.tenant_id, r.cloud_account_id as account_id, r.severity as rec_severity FROM recommendation_resolution rr LEFT JOIN recommendation r ON r.id = rr.recommendation_id) as rr_agg",
+		//
+		// rec_savings_once carries the recommendation's savings on exactly one
+		// resolution row per (recommendation, status), 0 on the rest. Nothing stops
+		// one recommendation collecting several Success rows (a ticket and a pull
+		// request, or a retried pull request), and summing r.estimated_savings over
+		// all of them would count the same saving once per row. The lowest id wins;
+		// which row is picked does not matter, since every candidate joins the same
+		// recommendation. A correlated NOT EXISTS rather than ROW_NUMBER(): the
+		// window's partition would not include tenant_id, so it would rank every
+		// tenant's resolutions before the outer tenant filter applied, while this
+		// runs per surviving row on idx_rr_recommendation_id, and only when
+		// sum_rec_estimated_savings is selected (Postgres drops unused outputs).
+		// Caveat: a type/resolver_type filter can exclude the chosen row, and that
+		// recommendation then contributes 0 to a filtered sum.
+		Def: `(SELECT rr.*, r.tenant_id, r.cloud_account_id as account_id, r.severity as rec_severity,
+			CASE WHEN NOT EXISTS (
+				SELECT 1 FROM recommendation_resolution d
+				WHERE d.recommendation_id = rr.recommendation_id AND d.status = rr.status AND d.id < rr.id
+			) THEN GREATEST(COALESCE(r.estimated_savings, 0), 0) ELSE 0 END as rec_savings_once
+			FROM recommendation_resolution rr LEFT JOIN recommendation r ON r.id = rr.recommendation_id) as rr_agg`,
 		Name:                "recommendation_resolution_groupings_v2",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
@@ -9967,6 +10035,17 @@ var table_metadata = map[string]TableDefinition{
 			"count": {
 				Type:         ColumnDefinitionTypeInt,
 				Def:          "count(*)",
+				IsAggregated: true,
+			},
+			// Monthly savings of the recommendations these resolutions resolved,
+			// each recommendation counted once (see rec_savings_once above). It is
+			// the recommendation's current estimate, the same figure the weekly
+			// digest's resolved_savings sums, not a value snapshotted at resolution.
+			// GREATEST matches recommendation_groupings_v2's sum_estimated_savings:
+			// a negative estimate is a cost increase, not a saving.
+			"sum_rec_estimated_savings": {
+				Type:         ColumnDefinitionTypeFloat,
+				Def:          "COALESCE(sum(rec_savings_once), 0)",
 				IsAggregated: true,
 			},
 			"resolver_type":     {Type: ColumnDefinitionTypeString},
@@ -11147,6 +11226,10 @@ var table_metadata = map[string]TableDefinition{
 		Name:                "cloud_resource_metrics_v2",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "cloud_account_id",
+		// cloud_account_id and tenant_id stay uuid: every caller filters on
+		// both plus a time window, and a text cast hides them from the
+		// (tenant_id, cloud_account_id, timestamp) index on a multi-GB table
+		// (#39743). The select list still returns them as text.
 		Def: `(
 			SELECT
 				crm.id::text as id,
@@ -11154,8 +11237,8 @@ var table_metadata = map[string]TableDefinition{
 				crm.value,
 				crm.timestamp,
 				crm.cloud_resource_id::text as cloud_resource_id,
-				crm.cloud_account_id::text as cloud_account_id,
-				crm.tenant_id::text as tenant_id,
+				crm.cloud_account_id,
+				crm.tenant_id,
 				cr.name as resource_name,
 				cr.resourse_id as resource_id,
 				cr.service_name as service_name

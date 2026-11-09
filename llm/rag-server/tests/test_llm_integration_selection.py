@@ -1,14 +1,21 @@
 """Which LLM credential an account resolves against.
 
-Mirrors llm-server's selectAccountLLMIntegration, so the two services never
-disagree about which provider an account is using.
+Mirrors llm-server's chooseAccountLLMIntegration, so the two services never
+disagree about which provider an account is using. Both run the shared cases in
+llm/llm-server/agents/core/testdata/llm_default_cases.json.
 
-Rows are (integration id, per-account link flag, tenant default). The two flags
-come from different places — the link row and the "Default LLM provider"
-checkbox — and an account that only sets the second one still has a default.
+Rows are (integration id, linked to the account, marked default on the account's
+link, tenant default).
 """
 
+import json
+from pathlib import Path
+
+import pytest
+
 from rag.core.utils import db_query
+
+CASES = Path(__file__).resolve().parents[2] / "llm-server/agents/core/testdata/llm_default_cases.json"
 
 
 class FakeConnection:
@@ -32,28 +39,53 @@ def use_rows(monkeypatch, rows):
     monkeypatch.setattr(db_query, "engine", type("E", (), {"connect": lambda self: FakeConnection(rows)})())
 
 
-def test_flagged_default_wins(monkeypatch):
-    use_rows(monkeypatch, [("a", False, False), ("b", True, False)])
+def candidates_for(account, configs):
+    """What the selection query loads for one account: enabled configs linked to it, and the tenant default."""
+    rows = []
+    for c in configs:
+        if c.get("enabled", True) is False:
+            continue
+        linked = account in c.get("accounts", [])
+        tenant_default = c.get("tenant_default", False)
+        if linked or tenant_default:
+            rows.append((c["id"], linked, account in c.get("account_defaults", []), tenant_default))
+    return rows
+
+
+@pytest.mark.parametrize("case", json.loads(CASES.read_text(encoding="utf-8"))["cases"], ids=lambda c: c["name"])
+def test_shared_cases(case):
+    for account, want in case["accounts"].items():
+        got = db_query.choose_account_llm_integration(account, candidates_for(account, case["configs"]))
+        assert (got or "") == want["uses"], account
+
+
+def test_account_default_wins(monkeypatch):
+    use_rows(monkeypatch, [("a", True, False, False), ("b", True, True, False)])
 
     assert db_query.get_default_llm_integration("acct") == "b"
 
 
-def test_single_integration_needs_no_flag(monkeypatch):
-    # Linking exactly one provider is itself the operator's choice for it.
-    use_rows(monkeypatch, [("only", None, False)])
-
-    assert db_query.get_default_llm_integration("acct") == "only"
-
-
-def test_several_linked_none_flagged_falls_through(monkeypatch):
-    # Guessing would silently bind the account to a credential nobody chose.
-    use_rows(monkeypatch, [("a", False, False), ("b", False, False)])
+def test_an_only_config_that_is_not_marked_is_not_used(monkeypatch):
+    # Picking never depends on how many configs an account has.
+    use_rows(monkeypatch, [("only", True, False, False)])
 
     assert db_query.get_default_llm_integration("acct") is None
 
 
-def test_several_flagged_falls_through(monkeypatch):
-    use_rows(monkeypatch, [("a", True, False), ("b", True, False)])
+def test_unlinked_tenant_default_is_used(monkeypatch):
+    use_rows(monkeypatch, [("a", True, False, False), ("t", False, False, True)])
+
+    assert db_query.get_default_llm_integration("acct") == "t"
+
+
+def test_account_default_outranks_the_tenant_default(monkeypatch):
+    use_rows(monkeypatch, [("a", True, True, False), ("b", True, False, True)])
+
+    assert db_query.get_default_llm_integration("acct") == "a"
+
+
+def test_several_tenant_defaults_fall_through(monkeypatch):
+    use_rows(monkeypatch, [("a", False, False, True), ("b", False, False, True)])
 
     assert db_query.get_default_llm_integration("acct") is None
 
@@ -70,27 +102,5 @@ def test_query_failure_is_not_fatal(monkeypatch):
             raise RuntimeError("db down")
 
     monkeypatch.setattr(db_query, "engine", Broken())
-
-    assert db_query.get_default_llm_integration("acct") is None
-
-
-def test_tenant_default_is_used_when_no_link_row_is_flagged(monkeypatch):
-    # The checkbox marks a provider "Default" for every account it is linked to,
-    # without writing the per-account flag. Reading only the flag drops the whole
-    # ingest onto the environment defaults instead.
-    use_rows(monkeypatch, [("a", False, False), ("b", False, True), ("c", False, False)])
-
-    assert db_query.get_default_llm_integration("acct") == "b"
-
-
-def test_link_flag_outranks_the_tenant_default(monkeypatch):
-    # Per-account is the more specific choice, and llm-server resolves it first.
-    use_rows(monkeypatch, [("a", True, False), ("b", False, True)])
-
-    assert db_query.get_default_llm_integration("acct") == "a"
-
-
-def test_several_tenant_defaults_falls_through(monkeypatch):
-    use_rows(monkeypatch, [("a", False, True), ("b", False, True)])
 
     assert db_query.get_default_llm_integration("acct") is None

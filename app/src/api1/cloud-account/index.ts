@@ -1,4 +1,4 @@
-import { gqlStringify, queryGraphQL } from '@lib/HttpService';
+import { escapeLikePattern, gqlStringify, queryGraphQL } from '@lib/HttpService';
 import {
   getEndOfDay,
   getEndOfMonth,
@@ -15,6 +15,23 @@ import {
 const GET_DISTINCT_REGIONS = `
 query GetDistinctRegions($where: CloudResourceGroupingsWhereRequest) {
   cloud_resource_groupings_v2(where: $where, column_transformations: [{expr: "distinct", name: "region"}]) {
+    rows {
+      region
+    }
+  }
+}
+`;
+
+// Regions present in the list view itself (not the groupings view), so the
+// Instances Region filter matches what the table can show. See getInstanceRegions.
+// cloud_resources_list_v2 has no distinct column_transformation (only the
+// *_groupings_v2 views do), so we fetch region rows and de-dupe client-side. The
+// limit caps how many instances contribute regions: an account with more than
+// ~5000 listable instances in one service could miss a region. A server-side
+// distinct (e.g. via cloud_metric_groupings_v2) would remove the cap.
+const LIST_INSTANCE_REGIONS = `
+query ListInstanceRegions {
+  cloud_resourses: cloud_resources_list_v2(where: __WHERE__, limit: 5000) {
     rows {
       region
     }
@@ -522,6 +539,18 @@ query GetTagKeys($where: CloudResourcesWhereRequest) {
 }
 `;
 
+// GCP labels (and some AWS tags) may carry an empty value (e.g. `goog-vertex-ai: ""`).
+// An empty string is falsy, so a raw "" value collapses to "no filter" everywhere the
+// tag-value dropdown funnels through — `value || null` in the components, `|| undefined`
+// at the getCloudResource call site, and the `&&`-guarded where clause below — and the
+// dropdown renders it as a blank, unreadable row (#40330). So carry an empty value as
+// this sentinel through the UI instead (truthy), label it "(empty)", and translate it
+// back to "" when building the query. The sentinel is collision-proof because GCP labels
+// allow only [a-z0-9_-] and AWS tag values exclude "$", so no real value can equal it; an
+// ASCII token (rather than a NUL-prefixed one) avoids WAF/proxy/log mangling of the value.
+export const EMPTY_TAG_VALUE = '$$nb_empty_tag_value$$';
+export const EMPTY_TAG_VALUE_LABEL = '(empty)';
+
 function applyTypeFilter(where: any, type: string | string[] | undefined) {
   if (Array.isArray(type)) {
     where.type = { _in: type };
@@ -691,7 +720,7 @@ const apiCloudAccount = {
       });
       return Array.from(valueSet)
         .sort((a, b) => a.localeCompare(b))
-        .map((v) => ({ label: v, value: v }));
+        .map((v) => (v === '' ? { label: EMPTY_TAG_VALUE_LABEL, value: EMPTY_TAG_VALUE } : { label: v, value: v }));
     } catch (error) {
       console.log('failed to fetch tag values-', error);
       return [];
@@ -743,6 +772,47 @@ const apiCloudAccount = {
       return [];
     }
   },
+  // Region options for the Instances tabs. Derived from the SAME view and base
+  // filters the list itself uses (cloud_resources_list_v2 + type + status +
+  // metric), so the dropdown can never offer a region the list cannot populate.
+  // getDistinctRegions reads cloud_resource_groupings_v2, which carries rows the
+  // list filters out (instances with no live cpu/mem metric), producing phantom
+  // regions that return "No Data Available" when picked (#40153).
+  getInstanceRegions: async function (
+    accountId: string,
+    serviceName: string | undefined,
+    type: string | string[] | undefined,
+    metric?: string | string[]
+  ): Promise<{ label: string; value: string }[]> {
+    try {
+      if (accountId === 'demo') {
+        return [];
+      }
+      const where: any = { account: { _eq: accountId }, status: { _in: ['Active', 'Inactive'] } };
+      if (serviceName) {
+        where.service_name = { _eq: serviceName };
+      }
+      applyTypeFilter(where, type);
+      if (metric) {
+        where.metric = Array.isArray(metric) ? { _in: metric } : { _eq: metric };
+      }
+      const query = LIST_INSTANCE_REGIONS.replaceAll('__WHERE__', gqlStringify(where));
+      const response = await queryGraphQL(query, 'ListInstanceRegions', {});
+      const rows: { region: string }[] = response?.data?.data?.cloud_resourses?.rows || [];
+      const regions = new Set<string>();
+      rows.forEach((r) => {
+        if (r.region) {
+          regions.add(r.region);
+        }
+      });
+      return Array.from(regions)
+        .sort((a, b) => a.localeCompare(b))
+        .map((region) => ({ label: region, value: region }));
+    } catch (error) {
+      console.log('failed to fetch instance regions-', error);
+      return [];
+    }
+  },
   getCloudResource: async function (data: any, limit?: number, offset?: number) {
     try {
       if (data.account_id === 'demo') {
@@ -783,16 +853,22 @@ const apiCloudAccount = {
       // as part of the id/name and find nothing.
       const nameFilter = data.nameFilter?.trim();
       if (nameFilter) {
+        // Match the typed text literally — escape %, _ and \ so a search like "%" does
+        // not become the ILIKE wildcard that matches every row (#40558).
+        const namePattern = '%' + escapeLikePattern(nameFilter) + '%';
         andConditions.push({
-          _or: [{ resourse_id: { _ilike: '%' + nameFilter + '%' } }, { name: { _ilike: '%' + nameFilter + '%' } }],
+          _or: [{ resourse_id: { _ilike: namePattern } }, { name: { _ilike: namePattern } }],
         });
       }
-      // Handle tag filtering with JSON _contains (values serialized as JSON strings)
+      // Handle tag filtering with JSON _contains (values serialized as JSON strings).
+      // The dropdown carries an empty label value as EMPTY_TAG_VALUE (see getDistinctTagValues);
+      // translate it back to "" here so it matches resources whose label value is empty.
       if (data.tagFilterKey && data.tagFilterValue) {
+        const tagFilterValue = data.tagFilterValue === EMPTY_TAG_VALUE ? '' : data.tagFilterValue;
         andConditions.push({
           _or: [
-            { tags: { _contains: JSON.stringify({ [data.tagFilterKey]: [data.tagFilterValue] }) } },
-            { tags: { _contains: JSON.stringify({ [data.tagFilterKey]: data.tagFilterValue }) } },
+            { tags: { _contains: JSON.stringify({ [data.tagFilterKey]: [tagFilterValue] }) } },
+            { tags: { _contains: JSON.stringify({ [data.tagFilterKey]: tagFilterValue }) } },
           ],
         });
       } else if (data.tagFilterKey) {

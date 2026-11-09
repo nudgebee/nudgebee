@@ -12,13 +12,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestSolarWindsConfigSchema_HasDefaultTraceProvider guards the re-enabled
-// DefaultTraceProvider option: without it in the schema, a user can't select
-// SolarWinds as their default trace provider from the integration UI.
-func TestSolarWindsConfigSchema_HasDefaultTraceProvider(t *testing.T) {
+// TestSolarWindsConfigSchema_HasNoDefaultTraceProvider guards the disabled
+// DefaultTraceProvider option: SolarWinds has no span listing, so selecting it
+// as the default trace provider leaves the Traces tab permanently empty.
+func TestSolarWindsConfigSchema_HasNoDefaultTraceProvider(t *testing.T) {
 	schema := SolarWinds{}.ConfigSchema()
 	_, ok := schema.Properties[core.DefaultTraceProvider]
-	assert.True(t, ok, "SolarWinds config schema must expose DefaultTraceProvider")
+	assert.False(t, ok, "SolarWinds config schema must not expose DefaultTraceProvider")
 
 	// Sibling default-provider toggles remain present.
 	_, hasLog := schema.Properties[core.DefaultLogProvider]

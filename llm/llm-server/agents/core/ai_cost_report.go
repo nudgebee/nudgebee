@@ -168,7 +168,7 @@ type accountTotalScan struct {
 // UsageMetricsFilter.buildWhere's account-scope + Optimize self-run exclusion
 // (spec: the report must reconcile with the Overview screen's numbers).
 func accountReportWhere(accountIDs []string, start, end time.Time) (string, []any) {
-	return "c.account_id = ANY($1::uuid[]) AND c.created_at >= $2 AND c.created_at <= $3 AND c.source IS DISTINCT FROM 'Optimize'",
+	return usageScopeWhere + " AND c.source IS DISTINCT FROM 'Optimize'",
 		[]any{pq.Array(accountIDs), start, end}
 }
 
@@ -182,12 +182,12 @@ func (chat *ConversationDao) runAccountDimensionCost(accountIDs []string, start,
 	where, args := accountReportWhere(accountIDs, start, end)
 	query := fmt.Sprintf(`
 		SELECT
-			c.account_id::text                            AS account_id,
-			COALESCE(ca.account_name, c.account_id::text)  AS account_name,
+			t.conversation_account_id::text                            AS account_id,
+			COALESCE(ca.account_name, t.conversation_account_id::text)  AS account_name,
 			COALESCE(%s::text, 'unknown')                  AS dim_key,
 			COALESCE(SUM(%s), 0)                           AS cost_usd
 		%s
-		LEFT JOIN cloud_accounts ca ON ca.id = c.account_id
+		LEFT JOIN cloud_accounts ca ON ca.id = t.conversation_account_id
 		WHERE %s
 		GROUP BY 1, 2, 3`,
 		dimExpr, perCallCostExpr, usageBaseFrom, where)
@@ -209,11 +209,11 @@ func (chat *ConversationDao) runAccountTotalCost(accountIDs []string, start, end
 	where, args := accountReportWhere(accountIDs, start, end)
 	query := fmt.Sprintf(`
 		SELECT
-			c.account_id::text                            AS account_id,
-			COALESCE(ca.account_name, c.account_id::text)  AS account_name,
+			t.conversation_account_id::text                            AS account_id,
+			COALESCE(ca.account_name, t.conversation_account_id::text)  AS account_name,
 			COALESCE(SUM(%s), 0)                           AS cost_usd
 		%s
-		LEFT JOIN cloud_accounts ca ON ca.id = c.account_id
+		LEFT JOIN cloud_accounts ca ON ca.id = t.conversation_account_id
 		WHERE %s
 		GROUP BY 1, 2`,
 		perCallCostExpr, usageBaseFrom, where)

@@ -3,6 +3,7 @@ package core
 import (
 	"database/sql"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -21,29 +22,33 @@ type ConversationUsageMetricsResponse struct {
 }
 
 type ConversationMetrics struct {
-	ConversationId              string           `json:"conversation_id"`
-	Messages                    []MessageMetrics `json:"messages"`
-	TotalCostUsd                float64          `json:"total_cost_usd"`
-	TotalInputTokens            int              `json:"total_input_tokens"`
-	TotalOutputTokens           int              `json:"total_output_tokens"`
-	TotalCachedInputTokens      int              `json:"total_cached_input_tokens"`
+	ConversationId         string           `json:"conversation_id"`
+	Messages               []MessageMetrics `json:"messages"`
+	TotalCostUsd           float64          `json:"total_cost_usd"`
+	TotalInputTokens       int              `json:"total_input_tokens"`
+	TotalOutputTokens      int              `json:"total_output_tokens"`
+	TotalCachedInputTokens int              `json:"total_cached_input_tokens"`
+	// Reasoning tokens, billed at the output rate on top of TotalOutputTokens.
+	TotalThinkingTokens         int              `json:"total_thinking_tokens"`
 	TotalCacheHitRatePercentage *float64         `json:"total_cache_hit_rate_percentage,omitempty"`
 	ModelUsage                  []ModelUsageStat `json:"model_usage"`
-	CacheSavings                CacheSavingsInfo `json:"cache_savings"`
-	SuccessRatePercentage       *float64         `json:"success_rate_percentage,omitempty"`
-	TotalRequests               int              `json:"total_requests"`
-	SuccessfulRequests          int              `json:"successful_requests"`
-	FailedRequests              int              `json:"failed_requests"`
-	TotalToolCalls              int              `json:"total_tool_calls"`
-	SuccessfulToolCalls         int              `json:"successful_tool_calls"`
-	TotalLatencySeconds         *float64         `json:"total_latency_seconds,omitempty"`
-	AverageLatencySeconds       *float64         `json:"average_latency_seconds,omitempty"`
-	WallTimeSeconds             *float64         `json:"wall_time_seconds,omitempty"`
-	AgentActiveTimeSeconds      *float64         `json:"agent_active_time_seconds,omitempty"`
-	ToolTimeSeconds             *float64         `json:"tool_time_seconds,omitempty"`
-	ApiTimeSeconds              *float64         `json:"api_time_seconds,omitempty"`
-	ApiTimePercentage           *float64         `json:"api_time_percentage,omitempty"`
-	ToolTimePercentage          *float64         `json:"tool_time_percentage,omitempty"`
+	// Calls whose model has no Model Pricing entry, so TotalCostUsd leaves them out.
+	TotalUnpricedRequests  int              `json:"total_unpriced_requests"`
+	CacheSavings           CacheSavingsInfo `json:"cache_savings"`
+	SuccessRatePercentage  *float64         `json:"success_rate_percentage,omitempty"`
+	TotalRequests          int              `json:"total_requests"`
+	SuccessfulRequests     int              `json:"successful_requests"`
+	FailedRequests         int              `json:"failed_requests"`
+	TotalToolCalls         int              `json:"total_tool_calls"`
+	SuccessfulToolCalls    int              `json:"successful_tool_calls"`
+	TotalLatencySeconds    *float64         `json:"total_latency_seconds,omitempty"`
+	AverageLatencySeconds  *float64         `json:"average_latency_seconds,omitempty"`
+	WallTimeSeconds        *float64         `json:"wall_time_seconds,omitempty"`
+	AgentActiveTimeSeconds *float64         `json:"agent_active_time_seconds,omitempty"`
+	ToolTimeSeconds        *float64         `json:"tool_time_seconds,omitempty"`
+	ApiTimeSeconds         *float64         `json:"api_time_seconds,omitempty"`
+	ApiTimePercentage      *float64         `json:"api_time_percentage,omitempty"`
+	ToolTimePercentage     *float64         `json:"tool_time_percentage,omitempty"`
 	// Streaming-latency averages over calls that reported them. Nil when no call
 	// streamed. AvgTtftMs is how long until the first token appeared; AvgItlMs is
 	// the per-token gap after that — together they separate "slow to start" from
@@ -82,6 +87,8 @@ type ModelUsageStat struct {
 	SuccessRatePercentage  *float64 `json:"success_rate_percentage,omitempty"`
 	SuccessfulRequests     int      `json:"successful_requests"`
 	FailedRequests         int      `json:"failed_requests"`
+	// Calls that spent tokens with no Model Pricing entry — CostUsd excludes them.
+	UnpricedRequests int `json:"unpriced_requests"`
 }
 
 type CacheSavingsInfo struct {
@@ -100,6 +107,7 @@ type MessageMetrics struct {
 	MessageInputTokens            int            `json:"message_input_tokens"`
 	MessageOutputTokens           int            `json:"message_output_tokens"`
 	MessageCachedInputTokens      int            `json:"message_cached_input_tokens"`
+	MessageThinkingTokens         int            `json:"message_thinking_tokens"`
 	MessageCacheHitRatePercentage *float64       `json:"message_cache_hit_rate_percentage,omitempty"`
 }
 
@@ -108,6 +116,7 @@ type AgentMetrics struct {
 	InputTokens            int             `json:"input_tokens"`
 	OutputTokens           int             `json:"output_tokens"`
 	CachedInputTokens      int             `json:"cached_input_tokens"`
+	ThinkingTokens         int             `json:"thinking_tokens"`
 	CacheHitRatePercentage sql.NullFloat64 `json:"cache_hit_rate_percentage"`
 	CostUsd                float64         `json:"cost_usd"`
 	ModelProviderName      sql.NullString  `json:"model_provider_name"`
@@ -118,9 +127,13 @@ type AgentMetrics struct {
 	// True when LLMConfigName names an actual configured slot, false when it
 	// describes the resolution layer instead (nothing was pinned). The UI must
 	// not present the second kind as a config name.
-	LLMConfigIsSlot bool `json:"llm_config_is_slot"`
-	Requests        int  `json:"requests"`
-	FailedRequests  int  `json:"failed_requests"`
+	LLMConfigIsSlot  bool `json:"llm_config_is_slot"`
+	Requests         int  `json:"requests"`
+	FailedRequests   int  `json:"failed_requests"`
+	UnpricedRequests int  `json:"unpriced_requests"`
+
+	// promptTokens is the hit-rate denominator for the message total; not sent.
+	promptTokens int
 }
 
 func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request ConversationUsageMetricsRequest) (ConversationUsageMetricsResponse, error) {
@@ -166,9 +179,12 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 	messageMap := make(map[string][]AgentMetrics)
 	conversationId := ""
 	totalCost := 0.0
+	totalUnpriced := 0
 	totalInputTokens := 0
 	totalOutputTokens := 0
 	totalCachedInputTokens := 0
+	totalPromptTokens := 0
+	totalThinkingTokens := 0
 
 	for _, agent := range agents {
 		if conversationId == "" {
@@ -180,27 +196,33 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 			InputTokens:            agent.InputTokens,
 			OutputTokens:           agent.OutputTokens,
 			CachedInputTokens:      agent.CachedInputTokens,
+			ThinkingTokens:         agent.ThinkingTokens,
 			CacheHitRatePercentage: agent.CacheHitRate,
 			CostUsd:                agent.Cost,
+			promptTokens:           agent.PromptTokens,
 			ModelProviderName:      agent.ModelProviderName,
 			ModelName:              agent.ModelName,
 			ModelTier:              agent.ModelTier,
 			Requests:               agent.Requests,
 			FailedRequests:         agent.FailedRequests,
+			UnpricedRequests:       agent.UnpricedRequests,
 			LLMConfigSource:        agent.LLMConfigSource,
 		}
 
 		messageMap[agent.MessageId] = append(messageMap[agent.MessageId], agentMetric)
 		totalCost += agentMetric.CostUsd
+		totalUnpriced += agent.UnpricedRequests
 		totalInputTokens += agent.InputTokens
 		totalOutputTokens += agent.OutputTokens
 		totalCachedInputTokens += agent.CachedInputTokens
+		totalPromptTokens += agent.PromptTokens
+		totalThinkingTokens += agent.ThinkingTokens
 	}
 
 	// Calculate conversation-level cache hit rate
 	var totalCacheHitRate *float64
-	if totalInputTokens > 0 {
-		rate := (float64(totalCachedInputTokens) / float64(totalInputTokens)) * 100
+	if totalPromptTokens > 0 {
+		rate := (float64(totalCachedInputTokens) / float64(totalPromptTokens)) * 100
 		totalCacheHitRate = &rate
 	}
 
@@ -284,18 +306,22 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 		messageInputTokens := 0
 		messageOutputTokens := 0
 		messageCachedInputTokens := 0
+		messagePromptTokens := 0
+		messageThinkingTokens := 0
 
 		for _, agent := range agentsList {
 			messageCost += agent.CostUsd
 			messageInputTokens += agent.InputTokens
 			messageOutputTokens += agent.OutputTokens
 			messageCachedInputTokens += agent.CachedInputTokens
+			messagePromptTokens += agent.promptTokens
+			messageThinkingTokens += agent.ThinkingTokens
 		}
 
 		// Calculate message-level cache hit rate
 		var messageCacheHitRate *float64
-		if messageInputTokens > 0 {
-			rate := (float64(messageCachedInputTokens) / float64(messageInputTokens)) * 100
+		if messagePromptTokens > 0 {
+			rate := (float64(messageCachedInputTokens) / float64(messagePromptTokens)) * 100
 			messageCacheHitRate = &rate
 		}
 
@@ -306,6 +332,7 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 			MessageInputTokens:            messageInputTokens,
 			MessageOutputTokens:           messageOutputTokens,
 			MessageCachedInputTokens:      messageCachedInputTokens,
+			MessageThinkingTokens:         messageThinkingTokens,
 			MessageCacheHitRatePercentage: messageCacheHitRate,
 		})
 	}
@@ -365,9 +392,14 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 		apiTimePtr = mergedApiTime
 		// Calculate percentages if we have agent active time
 		if timeBreakdown.AgentActiveTimeSeconds > 0 {
-			apiPct := (*mergedApiTime / timeBreakdown.AgentActiveTimeSeconds) * 100
+			// Active time is the sum of top-level agent row durations while API and
+			// tool time are measured from model-call / tool-call timestamps, so the
+			// parts can exceed it. Use the larger of the two as the denominator so
+			// the split never goes past 100%.
+			denom := math.Max(timeBreakdown.AgentActiveTimeSeconds, *mergedApiTime+timeBreakdown.ToolTimeSeconds)
+			apiPct := (*mergedApiTime / denom) * 100
 			apiTimePercentagePtr = &apiPct
-			toolPct := (timeBreakdown.ToolTimeSeconds / timeBreakdown.AgentActiveTimeSeconds) * 100
+			toolPct := (timeBreakdown.ToolTimeSeconds / denom) * 100
 			toolTimePercentagePtr = &toolPct
 		}
 	}
@@ -379,8 +411,10 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 		TotalInputTokens:            totalInputTokens,
 		TotalOutputTokens:           totalOutputTokens,
 		TotalCachedInputTokens:      totalCachedInputTokens,
+		TotalThinkingTokens:         totalThinkingTokens,
 		TotalCacheHitRatePercentage: totalCacheHitRate,
 		ModelUsage:                  modelUsage,
+		TotalUnpricedRequests:       totalUnpriced,
 		CacheSavings:                cacheSavings,
 		SuccessRatePercentage:       successRate,
 		TotalRequests:               totalRequests,
@@ -422,8 +456,12 @@ func calculateModelUsageStats(records []TokenUsageDetailedRecord, tenantId strin
 	// Fetch costs in batch. Tolerate a nil DAO (unit tests) — without pricing,
 	// CostUsd stays zero and only the per-model token aggregates are populated.
 	var costs map[string]modelPricing
+	pricingLoaded := false
 	if dao := GetConversationDao(); dao != nil {
-		costs, _ = dao.GetConversationCosts(modelNames, tenantId)
+		var err error
+		costs, err = dao.GetConversationCosts(modelNames, tenantId)
+		// A failed lookup says nothing about whether a price exists, so no call is flagged unpriced.
+		pricingLoaded = err == nil
 	}
 
 	modelMap := make(map[string]*ModelUsageStat)
@@ -478,6 +516,8 @@ func calculateModelUsageStats(records []TokenUsageDetailedRecord, tenantId strin
 				record.OutputTokens,
 				record.ThinkingTokens,
 			)
+		} else if pricingLoaded && record.InputTokens+record.OutputTokens > 0 {
+			stat.UnpricedRequests++
 		}
 	}
 
@@ -485,8 +525,8 @@ func calculateModelUsageStats(records []TokenUsageDetailedRecord, tenantId strin
 	result := []ModelUsageStat{}
 	for _, stat := range modelMap {
 		// Calculate cache hit rate
-		if stat.InputTokens > 0 {
-			rate := (float64(stat.CachedInputTokens) / float64(stat.InputTokens)) * 100
+		if prompt := PromptTokens(stat.ModelProvider, stat.InputTokens, stat.CacheCreationTokens); prompt > 0 {
+			rate := (float64(stat.CachedInputTokens) / float64(prompt)) * 100
 			stat.CacheHitRatePercentage = &rate
 		}
 
@@ -513,12 +553,12 @@ func calculateModelUsageStats(records []TokenUsageDetailedRecord, tenantId strin
 // cached-read discount and any cache-write premium (e.g. Anthropic 1.25x).
 func calculateCacheSavings(records []TokenUsageDetailedRecord, actualCost float64, costs map[string]modelPricing) CacheSavingsInfo {
 	totalCachedTokens := 0
-	totalInputTokens := 0
+	totalPromptTokens := 0
 	estimatedCostWithoutCache := 0.0
 
 	for _, record := range records {
 		totalCachedTokens += record.CachedInputTokens
-		totalInputTokens += record.InputTokens
+		totalPromptTokens += PromptTokens(record.LLMProvider, record.InputTokens, record.CacheCreationTokens)
 
 		if pricing, ok := costs[record.LLMProvider+":"+record.LLMModel]; ok {
 			// "Without cache" hypothetical: all input tokens billed at the
@@ -535,8 +575,8 @@ func calculateCacheSavings(records []TokenUsageDetailedRecord, actualCost float6
 	}
 
 	var cacheHitRate *float64
-	if totalInputTokens > 0 {
-		rate := (float64(totalCachedTokens) / float64(totalInputTokens)) * 100
+	if totalPromptTokens > 0 {
+		rate := (float64(totalCachedTokens) / float64(totalPromptTokens)) * 100
 		cacheHitRate = &rate
 	}
 

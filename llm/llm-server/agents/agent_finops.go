@@ -172,7 +172,7 @@ func (a *FinOpsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 		"Only count recommendations with status='Open' as actionable savings. Archive/Closed recommendations were already handled.",
 		"Savings sanity check (MANDATORY for cost answers): before presenting any savings figure, compare it to the spend it would reduce. If a recommendation's savings exceed that resource's own spend, or total savings exceed total spend, the estimates are unreliable — you MUST surface the discrepancy (⚠ with both numbers, e.g. \"claimed $410/mo savings vs $26/mo actual spend — estimate looks inflated, verify before acting\") and never present such savings as achievable or as 'offsetting' anything.",
 		"To help a user act on a recommendation, ALWAYS first present its safety band in the product's words — safe → Safe, review → Quick check, risky → Plan it, a destructive change_class → Irreversible (Stops workload when rule_name is abandoned_resource or abandoned-resources, a scale-down to zero replicas), NULL/unknown → Not assessed (the stored value goes unchanged to tools that take safety_band) — its blast radius (dependent services / production dependents), and the estimated monthly savings — select safety_band, safety_reason, change_class, rule_name, dependent_count, and production_dependents from recommendation_view (they are in the default column set). If safety_band is NULL, say impact analysis has not run for this recommendation; NEVER substitute other data (strategy settings, replica counts, percentile windows) and present it as the safety band or blast radius. Then either hand off with propose_recommendation_apply (a review-and-apply link) or, when the user asks you to do it, resolve it directly with the typed write tools. Voice: the product's promise is that applying saves money — state the fact and the safeguard (no-restart apply, maintenance window, a heads-up to the owner) and never talk the user out of applying.",
-		"Resolution tool selection: recommendation_apply for the platform apply flow (deployment change, pull request, or cloud alarm); recommendation_execute_cli for recommendations resolved by cloud CLI commands (always pass recommendation_id so the run lands in its resolution history); ticket_master_v2 to create a tracking ticket, followed by recommendation_record_ticket_resolution to link that ticket to the recommendation.",
+		"Resolution tool selection: recommendation_apply for the platform apply flow (deployment change, pull request, or cloud change); recommendation_execute_cli for recommendations resolved by cloud CLI commands (always pass recommendation_id so the run lands in its resolution history); ticket_master_v2 to create a tracking ticket, followed by recommendation_record_ticket_resolution to link that ticket to the recommendation.",
 		"Parking a recommendation: when the user says a finding is accepted risk, not worth doing, or should wait, use recommendation_set_dismissal — dismiss to keep it off the list until someone reactivates it, snooze with snooze_days to bring it back on a date (default 30), reactivate to put a dismissed or snoozed row back. Pass the user's reason. Only an Open row can be dismissed or snoozed and only a Dismissed one reactivated; if the tool reports the status does not allow it, say so rather than retrying.",
 		"Before recommendation_apply: fetch that recommendation's concrete values first (SELECT the `recommendation` column from recommendation_view for that id) — the backend applies EXACTLY the `data` payload, with no fallback to the recommendation's own values, so for rightsizing `data` (per-container current → proposed) is required and an empty payload changes nothing. Fill `summary` with the numbers — the approval card shows your summary plus the exact values from `data`. Pass `safety_band`, `safety_reason`, `change_class` and `rule_name` exactly as read from recommendation_view — the apply refuses without the band and re-checks it against the store; change_class and rule_name are what make the approval card read Irreversible or Stops workload.",
 		"Every write tool pauses for the user's explicit confirmation before running — state what you are about to do, then call the tool and let the platform ask. Never claim a recommendation was applied, executed, or ticketed unless the tool returned success; report failures verbatim.",
@@ -251,8 +251,8 @@ type topServiceRow struct {
 //
 // It degrades gracefully: the cloud-footprint section (from the already-cached
 // AccountConfigSummary) is always present, while the spend / recommendation
-// sections are omitted silently if their queries fail — a partial context is
-// more useful to the agent than none.
+// sections are replaced by an "unavailable" note if their queries fail — a
+// partial context is more useful to the agent than none.
 func (a *FinOpsAgent) fetchFinOpsAccountContext(ctx *security.RequestContext) string {
 	cacheKey := finOpsContextKey(a.accountId)
 
@@ -416,9 +416,12 @@ func (a *FinOpsAgent) renderAccountContext(ctx *security.RequestContext, withSpe
 	}
 
 	// Spend baseline + recommendation summary — best-effort. Any failure leaves
-	// the cloud-footprint section intact and is logged, not surfaced.
+	// the cloud-footprint section intact and says what is missing, so the agent
+	// does not read an absent line as a zero.
 	if withSpend {
 		complete = a.appendSpendContext(ctx, &b)
+	} else {
+		b.WriteString(finOpsSpendBaselineMissingNote)
 	}
 
 	// Optimize-page deep-link base. Surfaced so the agent can render per-row
@@ -441,7 +444,7 @@ func (a *FinOpsAgent) renderAccountContext(ctx *security.RequestContext, withSpe
 
 // appendSpendContext writes the 30-day spend, top services, and open
 // recommendation lines. Each query is independent and best-effort: a failure
-// logs and skips only its own line.
+// logs and replaces only its own line with an "unavailable" note.
 //
 // It reports whether every query answered. An empty result is not a failure —
 // a new account legitimately has no top services and no open recommendations —
@@ -450,11 +453,13 @@ func (a *FinOpsAgent) appendSpendContext(ctx *security.RequestContext, b *string
 	tenantId, err := security.GetTenantIdFromAccountId(a.accountId)
 	if err != nil || tenantId == "" {
 		slog.Warn("finops: cannot resolve tenant for account context", "error", err, "account_id", a.accountId)
+		b.WriteString(finOpsSpendBaselineMissingNote)
 		return false
 	}
 	dbManager, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
 		slog.Warn("finops: db manager unavailable for account context", "error", err)
+		b.WriteString(finOpsSpendBaselineMissingNote)
 		return false
 	}
 	complete := true
@@ -475,6 +480,7 @@ func (a *FinOpsAgent) appendSpendContext(ctx *security.RequestContext, b *string
 		 WHERE tenant = $1 AND cloud_account = $2 AND date >= $3 AND date < $4 AND exclude_aggregate = false`,
 		tenantId, a.accountId, windowStart, windowEnd); err != nil {
 		slog.Warn("finops: 30-day spend query failed for account context", "error", err, "account_id", a.accountId)
+		writeFinOpsLineUnavailable(b, "30-day spend", "spend_summary")
 		complete = false
 	} else {
 		fmt.Fprintf(b, "30-day spend: $%.2f\n", spend)
@@ -493,6 +499,7 @@ func (a *FinOpsAgent) appendSpendContext(ctx *security.RequestContext, b *string
 		 LIMIT 3`,
 		tenantId, a.accountId, windowStart, windowEnd); err != nil {
 		slog.Warn("finops: top services query failed for account context", "error", err, "account_id", a.accountId)
+		writeFinOpsLineUnavailable(b, "Top services", "spend_summary")
 		complete = false
 	} else if len(topServices) > 0 {
 		parts := make([]string, 0, len(topServices))
@@ -525,6 +532,7 @@ func (a *FinOpsAgent) appendSpendContext(ctx *security.RequestContext, b *string
 		 WHERE dedupe_rank = 1`,
 		a.accountId); err != nil {
 		slog.Warn("finops: open recommendation query failed for account context", "error", err, "account_id", a.accountId)
+		writeFinOpsLineUnavailable(b, "Open recommendations", "recommendation_execute")
 		complete = false
 	} else if rec.Count > 0 {
 		fmt.Fprintf(b, "Open recommendations: %d (savings quantified for %d, total $%.2f/month)\n",
@@ -532,6 +540,18 @@ func (a *FinOpsAgent) appendSpendContext(ctx *security.RequestContext, b *string
 	}
 
 	return complete
+}
+
+// finOpsSpendBaselineMissingNote replaces the spend section when it was not
+// loaded at all: a first build that overran its budget, or one that could not
+// reach the metastore.
+const finOpsSpendBaselineMissingNote = "Spend baseline: not loaded. This context has no 30-day spend, top services or open-recommendation totals; " +
+	"get them from spend_summary and recommendation_execute, and never read their absence as zero.\n"
+
+// writeFinOpsLineUnavailable stands in for one spend-section line whose query
+// failed.
+func writeFinOpsLineUnavailable(b *strings.Builder, line, tool string) {
+	fmt.Fprintf(b, "%s: unavailable (query failed); get it from %s before quoting a figure.\n", line, tool)
 }
 
 // sortedKeys returns the true-valued keys of a string-keyed bool set, sorted for

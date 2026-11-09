@@ -8,6 +8,7 @@ import (
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -26,10 +27,50 @@ func init() {
 }
 
 type K8sResourceSearchTool struct {
+	core.ReadOnlyTool
 	// workspaceAccountID stays on the conversation's origin account while an
 	// explicit cluster changes the inventory and relay target for this call.
 	workspaceAccountID string
 	targetConfig       core.ToolConfig
+	// cmdCache is set per Call so identical kubectl commands within one search
+	// run once — see kubectlCommandCache.
+	cmdCache *kubectlCommandCache
+}
+
+// kubectlCommandCache memoizes kubectl output for the duration of one tool call.
+// The live fallback reaches the same command from several paths (the label
+// selectors run in both the parallel fan and the strategy list; every
+// ReplicaSet in findPodsViaReplicaSet lists the same namespace's pods), and each
+// repeat was a full workspace round-trip plus its own telemetry row. Concurrent
+// callers of a command already in flight wait for that run instead of
+// starting a second one.
+type kubectlCommandCache struct {
+	mu      sync.Mutex
+	entries map[string]*kubectlCommandEntry
+}
+
+type kubectlCommandEntry struct {
+	done   chan struct{}
+	output string
+}
+
+func newKubectlCommandCache() *kubectlCommandCache {
+	return &kubectlCommandCache{entries: map[string]*kubectlCommandEntry{}}
+}
+
+func (c *kubectlCommandCache) do(command string, run func() string) string {
+	c.mu.Lock()
+	if e, ok := c.entries[command]; ok {
+		c.mu.Unlock()
+		<-e.done
+		return e.output
+	}
+	e := &kubectlCommandEntry{done: make(chan struct{})}
+	c.entries[command] = e
+	c.mu.Unlock()
+	defer close(e.done)
+	e.output = run()
+	return e.output
 }
 
 // Accepted values for K8sResourceSearchRequest.SearchType. Kept in sync with the
@@ -87,6 +128,9 @@ type K8sResourceSearchStrategy struct {
 	Command      string `json:"command"`
 	Description  string `json:"description"`
 	ResourceType string `json:"resource_type,omitempty"`
+	// LabelValue, when set, makes this a pod label lookup run through
+	// searchPodsByLabelValue instead of parsing Command's output by type.
+	LabelValue string `json:"label_value,omitempty"`
 }
 
 // Common resource type mappings for fuzzy resolution
@@ -372,6 +416,7 @@ func (r K8sResourceSearchTool) Call(nbRequestContext core.NbToolContext, input c
 	// a 16s lookup is indistinguishable from a 0.1s one in the persisted row.
 	stats := &core.ToolCallStats{}
 	nbRequestContext.Stats = stats
+	r.cmdCache = newKubectlCommandCache()
 
 	result, err := r.processSearchRequest(input.Command, nbRequestContext)
 	provenance := map[string]any{
@@ -663,7 +708,7 @@ func (r K8sResourceSearchTool) searchDbForResources(resourceName, namespace, acc
 		nsClause = fmt.Sprintf(" AND meta->>'namespace' = '%s'", namespace)
 	}
 	nbRequestContext.Stats.RecordDB(
-		fmt.Sprintf("SELECT type, name, namespace, status FROM cloud_resourses WHERE account = %s AND cloud_provider = 'K8s' AND is_active = true AND (name ILIKE ANY %v OR resourse_id ILIKE ANY %v)%s ORDER BY name LIMIT 20", accountId, patterns, patterns, nsClause),
+		fmt.Sprintf("WITH matches AS MATERIALIZED (SELECT type, name, namespace, status FROM cloud_resourses WHERE account = %s AND cloud_provider = 'K8s' AND is_active = true AND (name ILIKE ANY %v OR resourse_id ILIKE ANY %v)%s) SELECT * FROM matches ORDER BY name LIMIT 20", accountId, patterns, patterns, nsClause),
 		dbOutput, err, time.Since(dbStart))
 	if err != nil {
 		// Soft failure — fall through to the live-kubectl fallback, but surface
@@ -686,21 +731,25 @@ func (r K8sResourceSearchTool) searchDbForResources(resourceName, namespace, acc
 // the package touching the same DB manager.
 func buildResourceSearchDBQuery(accountId, namespace string, patterns []string) (string, []interface{}) {
 	query := `
-		SELECT type,
-		       name,
-		       COALESCE(meta->>'namespace', '') AS namespace,
-		       COALESCE(meta->>'status', '')    AS status
-		FROM cloud_resourses
-		WHERE account = $1
-		  AND cloud_provider = 'K8s'
-		  AND is_active = true
-		  AND (name ILIKE ANY($2) OR resourse_id ILIKE ANY($2))`
+		WITH matches AS MATERIALIZED (
+			SELECT type,
+			       name,
+			       COALESCE(meta->>'namespace', '') AS namespace,
+			       COALESCE(meta->>'status', '')    AS status
+			FROM cloud_resourses
+			WHERE account = $1
+			  AND cloud_provider = 'K8s'
+			  AND is_active = true
+			  AND (name ILIKE ANY($2) OR resourse_id ILIKE ANY($2))`
 	args := []interface{}{accountId, pq.Array(patterns)}
 	if namespace != "" {
 		query += ` AND meta->>'namespace' = $3`
 		args = append(args, namespace)
 	}
 	query += `
+		)
+		SELECT type, name, namespace, status
+		FROM matches
 		ORDER BY name
 		LIMIT 20`
 	return query, args
@@ -725,6 +774,16 @@ func buildResourceSearchDBQuery(accountId, namespace string, patterns []string) 
 // inside the same WHERE clause, before ORDER BY/LIMIT — not as a Go-side filter
 // on the result — so a real match in the requested namespace can't be crowded
 // out of the top-20 by same-name matches in other namespaces.
+//
+// The filter runs in a MATERIALIZED CTE and ORDER BY/LIMIT apply to its result.
+// Written as one query block, `ORDER BY name LIMIT 20` lets Postgres walk the
+// (account, name) index in name order and stop at the 20th match, which reads
+// every row of the account — inactive ones included — until it gets there:
+// measured at 26s and 45s for accounts with 2M and 250k rows whose matches sort
+// late, against 0.3s and 1.3s cold with the filter materialized first. The
+// planner cannot see that cost because it assumes matches are spread evenly
+// through the name order. Materializing keeps the lookup on the trigram and
+// active-row indexes, so its cost is bounded by the account's active rows.
 func (r K8sResourceSearchTool) queryK8sResourcesByName(accountId, namespace string, patterns []string) ([]K8sResourceInfo, error) {
 	if len(patterns) == 0 {
 		return nil, nil
@@ -764,20 +823,20 @@ func (r K8sResourceSearchTool) isSpecificResourceType(resourceType string) bool 
 // "Deployment", "node") while kubectl output uses plural/short forms ("pods",
 // "no"). Both collapse to a canonical singular before comparison.
 func (r K8sResourceSearchTool) filterResourcesByType(resources []K8sResourceInfo, resourceType string) []K8sResourceInfo {
-	want := normalizeK8sType(resourceType)
+	want := NormalizeK8sType(resourceType)
 	var filtered []K8sResourceInfo
 	for _, res := range resources {
-		if normalizeK8sType(res.Type) == want {
+		if NormalizeK8sType(res.Type) == want {
 			filtered = append(filtered, res)
 		}
 	}
 	return filtered
 }
 
-// normalizeK8sType collapses a resource type/kind to a canonical lowercase
+// NormalizeK8sType collapses a resource type/kind to a canonical lowercase
 // singular so values from cloud_resourses ("Pod", "ReplicaSet") and kubectl
 // ("pods", "rs") compare equal.
-func normalizeK8sType(t string) string {
+func NormalizeK8sType(t string) string {
 	switch strings.ToLower(strings.TrimSpace(t)) {
 	case "po", "pod", "pods":
 		return "pod"
@@ -885,7 +944,12 @@ func (r K8sResourceSearchTool) handleResourceSuggestions(request K8sResourceSear
 			strategies := r.generateResourceSearchStrategies(searchName, namespace)
 			// Try executing the strategies internally instead of suggesting them
 			for _, strategy := range strategies {
-				found := r.executeKubectlAndParseResources(strategy.Command, strategy.ResourceType, namespace, nbRequestContext)
+				var found []K8sResourceInfo
+				if strategy.LabelValue != "" {
+					found = r.searchPodsByLabelValue(strategy.LabelValue, namespace, nbRequestContext)
+				} else {
+					found = r.executeKubectlAndParseResources(strategy.Command, strategy.ResourceType, namespace, nbRequestContext)
+				}
 				// Guard: filter by relevance before accepting results. The grep pipe in the
 				// strategy commands may not be supported by every relay implementation, so we
 				// must validate results client-side as well.
@@ -1147,6 +1211,55 @@ func (r K8sResourceSearchTool) findSimilarResourceTypes(input string) []string {
 	return suggestions
 }
 
+// resourceSearchLabelKeys are the pod labels a workload name is looked up under.
+var resourceSearchLabelKeys = []string{"app", "app.kubernetes.io/name", "app.kubernetes.io/instance", "k8s-app"}
+
+// podsByLabelValueCommand lists pods with their labels, narrowed by grep to
+// rows mentioning value. One call replaces a `-l key=value` selector per key in
+// resourceSearchLabelKeys; searchPodsByLabelValue applies the exact match.
+func podsByLabelValueCommand(value, namespace string) string {
+	nsFlag := fmt.Sprintf("-n %s", namespace)
+	if strings.HasPrefix(namespace, "-") {
+		nsFlag = namespace
+	}
+	return fmt.Sprintf("kubectl get pods %s --show-labels --no-headers | grep -i -- '%s'", nsFlag, strings.ReplaceAll(value, "'", `'\''`))
+}
+
+// searchPodsByLabelValue returns the pods carrying value under any of
+// resourceSearchLabelKeys, matched exactly and case-sensitively as a label
+// selector would. Rows keep kubectl's pod table followed by a LABELS column
+// (comma-separated key=value), so parsePodLine reads them as before.
+func (r K8sResourceSearchTool) searchPodsByLabelValue(value, namespace string, nbRequestContext core.NbToolContext) []K8sResourceInfo {
+	output := r.executeKubectlCommand(podsByLabelValueCommand(value, namespace), nbRequestContext)
+	if output == "" {
+		return nil
+	}
+	isAllNamespaces := namespace == "--all-namespaces" || namespace == "-A"
+	var pods []K8sResourceInfo
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || !podLabelsMatch(fields[len(fields)-1], value) {
+			continue
+		}
+		if pod := r.parsePodLine(strings.TrimSpace(line), namespace, isAllNamespaces); pod != nil {
+			pods = append(pods, *pod)
+		}
+	}
+	return pods
+}
+
+// podLabelsMatch reports whether a --show-labels value ("k8s-app=kube-dns,
+// pod-template-hash=55cb58b774") sets any of resourceSearchLabelKeys to value.
+func podLabelsMatch(labels, value string) bool {
+	for _, pair := range strings.Split(labels, ",") {
+		key, v, ok := strings.Cut(pair, "=")
+		if ok && v == value && slices.Contains(resourceSearchLabelKeys, key) {
+			return true
+		}
+	}
+	return false
+}
+
 // generateResourceSearchStrategies creates multiple search strategies for a resource name
 func (r K8sResourceSearchTool) generateResourceSearchStrategies(resourceName, namespace string) []K8sResourceSearchStrategy {
 	var strategies []K8sResourceSearchStrategy
@@ -1167,21 +1280,19 @@ func (r K8sResourceSearchTool) generateResourceSearchStrategies(resourceName, na
 		nsFlag = namespace
 	}
 
-	// Strategy 1: Exact label matches with multiple label keys
-	labelKeys := []string{"app", "app.kubernetes.io/name", "app.kubernetes.io/instance", "k8s-app"}
-	for i, labelKey := range labelKeys {
-		// Label selectors don't support spaces easily, so we only use the first term or the hyphenated version
-		selectorValue := resourceName
-		if len(searchTerms) > 1 {
-			selectorValue = strings.Join(searchTerms, "-")
-		}
-		strategies = append(strategies, K8sResourceSearchStrategy{
-			Strategy:     fmt.Sprintf("label_match_%d", i+1),
-			Command:      fmt.Sprintf("kubectl get pods -l '%s=%s' %s --no-headers", labelKey, selectorValue, nsFlag),
-			Description:  fmt.Sprintf("Search using label %s", labelKey),
-			ResourceType: "pods",
-		})
+	// Strategy 1: Exact label matches with multiple label keys, one call
+	// Label selectors don't support spaces easily, so we only use the first term or the hyphenated version
+	selectorValue := resourceName
+	if len(searchTerms) > 1 {
+		selectorValue = strings.Join(searchTerms, "-")
 	}
+	strategies = append(strategies, K8sResourceSearchStrategy{
+		Strategy:     "label_match",
+		Command:      podsByLabelValueCommand(selectorValue, namespace),
+		Description:  fmt.Sprintf("Search pods labelled %s=%s", strings.Join(resourceSearchLabelKeys, "|"), selectorValue),
+		ResourceType: "pods",
+		LabelValue:   selectorValue,
+	})
 
 	// Strategy 2: Partial name match with wildcards using grep
 	strategies = append(strategies, K8sResourceSearchStrategy{
@@ -1260,38 +1371,29 @@ func (r K8sResourceSearchTool) findActualResources(resourceName, namespace, requ
 	crdResChan := make(chan searchResult, 1)
 	labelResChan := make(chan searchResult, 1)
 
-	// Strategy 1: Try common resource types in parallel
-	commonResourceTypes := []string{"pods", "services", "deployments", "statefulsets", "daemonsets", "configmaps", "secrets", "jobs", "cronjobs", "rollouts"}
-
+	// Strategy 1: namespaced kinds, listed by one kubectl call rather than one
+	// call per kind (see namespacedSearchTypes). Rollouts stay separate:
+	// kubectl rejects the whole list when one type is unknown, and the Argo
+	// Rollouts CRD is often absent.
 	go func() {
 		defer func() {
 			if recover() != nil {
 				commonResChan <- searchResult{}
 			}
 		}()
-		var resources []K8sResourceInfo
-		// We can further parallelize this inner loop if needed, but grouping by strategy is a good start
-		for _, resourceType := range commonResourceTypes {
-			res := r.searchResourceType(resourceName, namespace, resourceType, nbRequestContext)
-			resources = append(resources, res...)
-		}
+		resources := r.searchResourceTypes(resourceName, namespace, namespacedSearchTypes, nbRequestContext)
+		resources = append(resources, r.searchResourceType(resourceName, namespace, "rollouts", nbRequestContext)...)
 		commonResChan <- searchResult{resources: resources}
 	}()
 
-	// Strategy 2: Try cluster-wide resources in parallel
-	clusterResourceTypes := []string{"clusterroles", "clusterrolebindings", "nodes", "persistentvolumes", "storageclasses", "customresourcedefinitions"}
+	// Strategy 2: cluster-wide kinds, one kubectl call
 	go func() {
 		defer func() {
 			if recover() != nil {
 				clusterResChan <- searchResult{}
 			}
 		}()
-		var resources []K8sResourceInfo
-		for _, resourceType := range clusterResourceTypes {
-			res := r.searchResourceType(resourceName, namespace, resourceType, nbRequestContext)
-			resources = append(resources, res...)
-		}
-		clusterResChan <- searchResult{resources: resources}
+		clusterResChan <- searchResult{resources: r.searchResourceTypes(resourceName, "", clusterSearchTypes, nbRequestContext)}
 	}()
 
 	// Strategy 3: CRD discovery (can be slow, run in parallel)
@@ -1301,14 +1403,21 @@ func (r K8sResourceSearchTool) findActualResources(resourceName, namespace, requ
 				crdResChan <- searchResult{}
 			}
 		}()
-		var resources []K8sResourceInfo
-		crdTypes := r.getCustomResourceTypes(nbRequestContext)
-		for _, resourceType := range crdTypes {
-			res := r.searchResourceType(resourceName, namespace, resourceType, nbRequestContext)
-			resources = append(resources, res...)
-			if len(resources) > 5 {
-				break
+		// One combined call for the custom types, like the built-in kinds. A
+		// type the access check blocks (sealedsecrets, externalsecrets, …) is
+		// dropped first: left in, it would reject the whole combined command.
+		var crdTypes []string
+		// rollouts is skipped because Strategy 1 already searches it; found
+		// here too it would be reported under a second type name and not
+		// deduplicate.
+		for _, t := range r.getCustomResourceTypes(nbRequestContext) {
+			if t != "rollouts" && validateKubectlCommandAccess("kubectl get "+t) == nil {
+				crdTypes = append(crdTypes, t)
 			}
+		}
+		var resources []K8sResourceInfo
+		if len(crdTypes) > 0 {
+			resources = r.searchResourceTypes(resourceName, namespace, crdTypes, nbRequestContext)
 		}
 		crdResChan <- searchResult{resources: resources}
 	}()
@@ -1320,21 +1429,9 @@ func (r K8sResourceSearchTool) findActualResources(resourceName, namespace, requ
 				labelResChan <- searchResult{}
 			}
 		}()
-		var resources []K8sResourceInfo
-		labelKeys := []string{"app", "app.kubernetes.io/name", "app.kubernetes.io/instance", "k8s-app"}
-		for _, labelKey := range labelKeys {
-			var cmd string
-			if namespace == "--all-namespaces" || namespace == "-A" {
-				cmd = fmt.Sprintf("kubectl get pods -l '%s=%s' --all-namespaces --no-headers", labelKey, resourceName)
-			} else {
-				cmd = fmt.Sprintf("kubectl get pods -l '%s=%s' -n %s --no-headers", labelKey, resourceName, namespace)
-			}
-			res := r.executeKubectlAndParseResources(cmd, "pods", namespace, nbRequestContext)
-			// Label selectors can return pods from a broad label match; validate by name.
-			res = r.filterResourcesByRelevance(res, resourceName)
-			resources = append(resources, res...)
-		}
-		labelResChan <- searchResult{resources: resources}
+		res := r.searchPodsByLabelValue(resourceName, namespace, nbRequestContext)
+		// Label selectors can return pods from a broad label match; validate by name.
+		labelResChan <- searchResult{resources: r.filterResourcesByRelevance(res, resourceName)}
 	}()
 
 	// Collect results with a timeout to ensure we don't hang forever
@@ -1548,39 +1645,8 @@ func (r K8sResourceSearchTool) searchResourceType(resourceName, namespace, resou
 		}
 	}
 
-	// Optimization: If resourceName is provided, try grepping for terms to reduce output size
-	// We try terms one by one until we get some output
-	searchTerms := strings.Fields(strings.ToLower(resourceName))
-
-	// Heuristic: If resourceName contains spaces, it might be a delimited name (e.g. "llm server" -> "llm-server", "llm_server")
-	// We want to prioritize finding these variations if they exist.
-	var variations []string
-	if len(searchTerms) > 1 {
-		delimiters := []string{"-", "_", ".", ""}
-		for _, d := range delimiters {
-			variations = append(variations, strings.Join(searchTerms, d))
-		}
-	}
-
-	var response string
-	if len(searchTerms) > 0 {
-		// Try terms in reverse order often works better for names like "the llm server" (server is better than the)
-		// But let's just try all of them until one hits.
-		for i := len(searchTerms) - 1; i >= 0; i-- {
-			term := searchTerms[i]
-			if (len(term) < 3 || term == "server" || term == "service" || term == "pod") && len(searchTerms) > 1 {
-				continue // Skip very short or generic terms if we have others
-			}
-			tempCmd := fmt.Sprintf("%s | grep -i -- '%s'", cmd, term)
-			response = r.executeKubectlCommand(tempCmd, nbRequestContext)
-			if response != "" {
-				break
-			}
-		}
-	} else {
-		response = r.executeKubectlCommand(cmd, nbRequestContext)
-	}
-
+	searchTerms, variations := resourceSearchTerms(resourceName)
+	response := r.grepKubectlOutput(cmd, searchTerms, nbRequestContext)
 	if response == "" {
 		return allResources
 	}
@@ -1595,30 +1661,7 @@ func (r K8sResourceSearchTool) searchResourceType(resourceName, namespace, resou
 		}
 
 		// Check if the resource name matches (partial or full)
-		// If resourceName is empty, we match all resources of the given type.
-		matchesAll := len(searchTerms) == 0 && len(variations) == 0
-		normalizedLine := strings.ToLower(line)
-
-		// 1. Check variation matches if applicable (Prioritized)
-		for _, variation := range variations {
-			if strings.Contains(normalizedLine, variation) {
-				matchesAll = true
-				break
-			}
-		}
-
-		// 2. Fallback to component match (all terms must be present)
-		if !matchesAll && len(searchTerms) > 0 {
-			matchesAll = true
-			for _, term := range searchTerms {
-				if !strings.Contains(normalizedLine, term) {
-					matchesAll = false
-					break
-				}
-			}
-		}
-
-		if matchesAll {
+		if lineMatchesSearch(line, searchTerms, variations) {
 			if resource := r.parseGenericResourceLine(line, resourceType, namespace, isAllNamespaces); resource != nil {
 				allResources = append(allResources, *resource)
 			}
@@ -1626,6 +1669,216 @@ func (r K8sResourceSearchTool) searchResourceType(resourceName, namespace, resou
 	}
 
 	return allResources
+}
+
+// namespacedSearchTypes and clusterSearchTypes are what the untyped live
+// fallback lists, each set as one comma-separated kubectl request (see
+// searchResourceTypes). "all" is kubectl's own workload category (pods,
+// services, deployments, replicasets, statefulsets, daemonsets, jobs, cronjobs,
+// HPAs, replication controllers); configmaps are not in it. Secrets are not
+// listed: validateKubectlCommandAccess rejects any command naming them, which
+// would reject the whole combined request.
+var (
+	namespacedSearchTypes = []string{"all", "configmaps"}
+	// allCategoryKinds lists "all" kind by kind for the no-name path, matching
+	// the kinds the per-kind search covered (configmaps are listed separately).
+	allCategoryKinds   = []string{"pods", "services", "deployments", "statefulsets", "daemonsets", "jobs", "cronjobs"}
+	clusterSearchTypes = []string{"clusterroles", "clusterrolebindings", "nodes", "persistentvolumes", "storageclasses", "customresourcedefinitions"}
+)
+
+// kindColumns makes kubectl print the kind on every row. The default table
+// output only adds a kind/ prefix when the rows span several kinds, so a
+// namespace holding only pods, or a list where every other kind is forbidden,
+// would come back without one.
+const kindColumns = "-o custom-columns=KIND:.kind,NAMESPACE:.metadata.namespace,NAME:.metadata.name,STATUS:.status.phase --no-headers"
+
+// searchResourceTypes searches several resource types with a single
+// `kubectl get a,b,c` call instead of one call per type, and reports each row
+// under the plural type name searchResourceType would have used. namespace ==
+// "" means the types are cluster-scoped.
+//
+// Matching is the same as searchResourceType's: grep narrows on one term (any
+// row containing every term contains that term), then lineMatchesSearch runs on
+// the row's namespace and name only, because the kind column ("ConfigMap",
+// "Secret") would otherwise satisfy terms like "config" for every row of that
+// kind.
+func (r K8sResourceSearchTool) searchResourceTypes(resourceName, namespace string, resourceTypes []string, nbRequestContext core.NbToolContext) []K8sResourceInfo {
+	searchTerms, variations := resourceSearchTerms(resourceName)
+	if len(searchTerms) == 0 {
+		// Without a grep pipe kubectl's own exit status reaches the workspace,
+		// and one kind the account may not list would fail the whole combined
+		// call. Listing everything is rare enough to keep one call per kind.
+		var resources []K8sResourceInfo
+		for _, resourceType := range resourceTypes {
+			kinds := []string{resourceType}
+			if resourceType == "all" {
+				// "all" is a category, not a kind: searchResourceType can't parse
+				// its kind-prefixed rows, so list the kinds the per-kind search used.
+				kinds = allCategoryKinds
+			}
+			for _, kind := range kinds {
+				resources = append(resources, r.searchResourceType(resourceName, namespace, kind, nbRequestContext)...)
+			}
+		}
+		return resources
+	}
+
+	cmd := fmt.Sprintf("kubectl get %s %s", strings.Join(resourceTypes, ","), kindColumns)
+	switch {
+	case namespace == "":
+	case strings.HasPrefix(namespace, "-"):
+		cmd = fmt.Sprintf("kubectl get %s %s %s", strings.Join(resourceTypes, ","), namespace, kindColumns)
+	default:
+		cmd = fmt.Sprintf("kubectl get %s -n %s %s", strings.Join(resourceTypes, ","), namespace, kindColumns)
+	}
+
+	response := r.grepKubectlOutput(cmd, searchTerms, nbRequestContext)
+	if response == "" {
+		return nil
+	}
+
+	var resources []K8sResourceInfo
+	for _, line := range strings.Split(response, "\n") {
+		resource := parseKindColumnsLine(line)
+		if resource == nil {
+			continue
+		}
+		if excludedKinds[resource.Type] {
+			continue
+		}
+		if !lineMatchesSearch(resource.Namespace+" "+resource.Name, searchTerms, variations) {
+			continue
+		}
+		resources = append(resources, *resource)
+	}
+	return resources
+}
+
+// parseKindColumnsLine parses one row of kindColumns output:
+// KIND NAMESPACE NAME STATUS, where kubectl prints <none> for an empty field.
+func parseKindColumnsLine(line string) *K8sResourceInfo {
+	if isNonResourceOutputLine(line) {
+		return nil
+	}
+	fields := strings.Fields(line)
+	if len(fields) < 3 {
+		return nil
+	}
+	none := func(v string) string {
+		if v == "<none>" {
+			return ""
+		}
+		return v
+	}
+	resource := &K8sResourceInfo{
+		Source:    resourceSourceCluster,
+		Type:      resourceTypeForKind(fields[0]),
+		Namespace: none(fields[1]),
+		Name:      fields[2],
+	}
+	if len(fields) >= 4 {
+		resource.Status = none(fields[3])
+	}
+	return resource
+}
+
+// resourceTypeByKind maps each kind the combined search can return (what
+// "all", configmaps and clusterSearchTypes expand to) to the plural type name
+// the per-kind search reported, which expandWorkloadResources and the type
+// filters compare against.
+var resourceTypeByKind = map[string]string{
+	"Pod":                      "pods",
+	"Service":                  "services",
+	"Deployment":               "deployments",
+	"StatefulSet":              "statefulsets",
+	"DaemonSet":                "daemonsets",
+	"Job":                      "jobs",
+	"CronJob":                  "cronjobs",
+	"ConfigMap":                "configmaps",
+	"ClusterRole":              "clusterroles",
+	"ClusterRoleBinding":       "clusterrolebindings",
+	"Node":                     "nodes",
+	"PersistentVolume":         "persistentvolumes",
+	"StorageClass":             "storageclasses",
+	"CustomResourceDefinition": "customresourcedefinitions",
+}
+
+// excludedKinds are kinds kubectl's "all" category returns that the per-kind
+// search never listed. Left in, a deployment's old ReplicaSet revisions crowd
+// the results (over 20 skips owner enrichment) and change the match quality.
+var excludedKinds = map[string]bool{"replicaset": true, "horizontalpodautoscaler": true, "replicationcontroller": true}
+
+// resourceTypeForKind returns the type name for a kind. A kind outside the
+// table (a custom resource that joins the "all" category) is reported as its
+// lowercase kind.
+func resourceTypeForKind(kind string) string {
+	if t, ok := resourceTypeByKind[kind]; ok {
+		return t
+	}
+	return strings.ToLower(kind)
+}
+
+// resourceSearchTerms splits a resource name into lowercase search terms and,
+// for multi-word names, the joined variations ("llm server" -> "llm-server",
+// "llm_server", "llm.server", "llmserver") that are matched first.
+func resourceSearchTerms(resourceName string) (terms, variations []string) {
+	terms = strings.Fields(strings.ToLower(resourceName))
+	if len(terms) > 1 {
+		for _, d := range []string{"-", "_", ".", ""} {
+			variations = append(variations, strings.Join(terms, d))
+		}
+	}
+	return terms, variations
+}
+
+// grepKubectlOutput runs cmd piped through `grep -i` on one term at a time,
+// last term first ("the llm server" -> "server" is more specific than "the"),
+// skipping short or generic terms when a specific one exists, and returns the
+// first non-empty output. When every term is short or generic ("my pod") they
+// are all tried rather than none. With no terms it runs cmd unfiltered.
+func (r K8sResourceSearchTool) grepKubectlOutput(cmd string, searchTerms []string, nbRequestContext core.NbToolContext) string {
+	if len(searchTerms) == 0 {
+		return r.executeKubectlCommand(cmd, nbRequestContext)
+	}
+	isGeneric := func(term string) bool {
+		return len(term) < 3 || term == "server" || term == "service" || term == "pod"
+	}
+	terms := searchTerms
+	if specific := slices.DeleteFunc(slices.Clone(searchTerms), isGeneric); len(specific) > 0 {
+		terms = specific
+	}
+	for i := len(terms) - 1; i >= 0; i-- {
+		// Names are sanitized before they get here; escaping keeps the quoting
+		// safe if that ever changes.
+		term := strings.ReplaceAll(terms[i], "'", `'\''`)
+		if response := r.executeKubectlCommand(fmt.Sprintf("%s | grep -i -- '%s'", cmd, term), nbRequestContext); response != "" {
+			return response
+		}
+	}
+	return ""
+}
+
+// lineMatchesSearch reports whether text matches the searched name: any
+// variation as a substring, otherwise every term. Empty terms match everything.
+func lineMatchesSearch(text string, searchTerms, variations []string) bool {
+	if len(searchTerms) == 0 && len(variations) == 0 {
+		return true
+	}
+	normalized := strings.ToLower(text)
+	for _, variation := range variations {
+		if strings.Contains(normalized, variation) {
+			return true
+		}
+	}
+	if len(searchTerms) == 0 {
+		return false
+	}
+	for _, term := range searchTerms {
+		if !strings.Contains(normalized, term) {
+			return false
+		}
+	}
+	return true
 }
 
 // isClusterWideResource determines if a resource type is cluster-wide (not namespaced).
@@ -1718,8 +1971,19 @@ func (r K8sResourceSearchTool) parseGenericResourceLine(line, resourceType, name
 	return resource
 }
 
-// executeKubectlCommand runs a kubectl command and returns the output
+// executeKubectlCommand runs a kubectl command and returns the output, reusing
+// the result of an identical command earlier in the same Call.
 func (r K8sResourceSearchTool) executeKubectlCommand(command string, nbRequestContext core.NbToolContext) string {
+	if r.cmdCache == nil {
+		return r.runKubectlCommand(command, nbRequestContext)
+	}
+	return r.cmdCache.do(command, func() string {
+		return r.runKubectlCommand(command, nbRequestContext)
+	})
+}
+
+// runKubectlCommand executes one kubectl command in the workspace pod.
+func (r K8sResourceSearchTool) runKubectlCommand(command string, nbRequestContext core.NbToolContext) string {
 	// Ensure kubectl prefix
 	if !strings.HasPrefix(command, "kubectl") {
 		command = "kubectl " + command

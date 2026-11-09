@@ -11,6 +11,7 @@ import (
 
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
+	"nudgebee/llm/security/egressfilter"
 	"nudgebee/llm/tools"
 )
 
@@ -60,20 +61,20 @@ type eventFacts struct {
 var remediationNow = func() time.Time { return time.Now().UTC() }
 
 // buildRemediationFacts renders the structured facts as markdown sections appended to the
-// investigation. Returns "" when nothing could be read.
+// investigation, and the event facts they were built from. Returns "" when nothing could be read.
 // Facts only; reasoning from them is the prompt's job, so it generalises past any rule.
-func buildRemediationFacts(ctx *security.RequestContext, accountId, eventId string) string {
+func buildRemediationFacts(ctx *security.RequestContext, accountId, eventId string) (string, *eventFacts) {
 	if strings.TrimSpace(eventId) == "" || strings.TrimSpace(accountId) == "" {
-		return ""
+		return "", nil
 	}
 	dbms, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
-		return ""
+		return "", nil
 	}
 
 	ev := loadEventFacts(ctx, dbms, accountId, eventId)
 	if ev == nil {
-		return ""
+		return "", nil
 	}
 
 	now := remediationNow()
@@ -86,7 +87,7 @@ func buildRemediationFacts(ctx *security.RequestContext, accountId, eventId stri
 		config,
 		attemptsSection(ctx, dbms, accountId, eventId, ev.SubjectNS, now),
 	}
-	return withinBudget(nonEmpty(sections))
+	return withinBudget(nonEmpty(sections)), ev
 }
 
 // withinBudget fits the sections to factsBudget by trimming the configuration section, which is the
@@ -728,6 +729,8 @@ type attempt struct {
 	// FiredAfter counts recorded firings after the attempt: the outcome a value read-back can't see.
 	FiredAfter int
 	LastFired  sql.NullTime
+	// Reason says why a failed run failed, redacted; without it the planner swaps the command.
+	Reason string
 }
 
 // attemptsSection lists what was already tried for this alert, here and on earlier firings. Without
@@ -765,6 +768,7 @@ func attemptsSection(ctx *security.RequestContext, dbms *common.DatabaseManager,
 		if !attemptInScope(a, subjectNS) {
 			continue
 		}
+		a.Reason = failedRunReason(ctx, a)
 		lines = append(lines, renderAttempt(a))
 	}
 	if err := rows.Err(); err != nil {
@@ -774,7 +778,10 @@ func attemptsSection(ctx *security.RequestContext, dbms *common.DatabaseManager,
 		return ""
 	}
 	return "## Remediation already attempted\n" + strings.Join(lines, "\n") +
-		"\nDo not repeat an attempt that failed; address why it failed or propose a different action. " +
+		"\nA run refused by NudgeBee's permissions does not show the command was wrong: keep it while the evidence supports it " +
+		"(it is shown to the operator to run). A run that failed with a stated error: address that error. A failed run with no " +
+		"recorded reason: do not swap in a different or placeholder value on that basis; keep it if the evidence supports it and " +
+		"say its failure reason is unknown. " +
 		"A merged fix followed by this firing either did not address this cause or fixed a different one: " +
 		"check what it changed before relying on it. An open fix pull request that addresses this cause is " +
 		"the fix to recommend, so name it."
@@ -813,11 +820,70 @@ func renderAttempt(a attempt) string {
 		}
 		return line + firedAfterNote(a)
 	}
+	if isManualAttempt(a.Data) {
+		if change, ok := strings.CutPrefix(a.Ref, operatorChangePrefix); ok {
+			return fmt.Sprintf("- %s on %s: the operator made the change %q outside NudgeBee", at, scope, truncate(change, 200)) + firedAfterNote(a)
+		}
+		return fmt.Sprintf("- %s on %s: the operator ran %s outside NudgeBee", at, scope, truncate(a.Ref, 200)) + firedAfterNote(a)
+	}
 	line := fmt.Sprintf("- %s on %s: ran %s -> %s", at, scope, truncate(a.Ref, 200), strings.ToLower(firstNonEmpty(a.Status, "unknown")))
+	if a.Reason != "" {
+		line += ", " + a.Reason
+	}
 	if v := verifyOutcome(a.Data); v != "" {
 		line += ", " + v
 	}
 	return line + firedAfterNote(a)
+}
+
+// isManualAttempt reports a step the operator marked done outside NudgeBee ("I ran this").
+func isManualAttempt(data []byte) bool {
+	var d struct {
+		Manual bool `json:"manual"`
+	}
+	return json.Unmarshal(data, &d) == nil && d.Manual
+}
+
+// failedRunReason states why a failed run failed, from the executor's error the attempt keeps
+// (data.error): a permission refusal, another error, or "reason not recorded" for older runs.
+func failedRunReason(ctx *security.RequestContext, a attempt) string {
+	if a.Kind != "CommandExecution" || !strings.EqualFold(a.Status, "Failed") {
+		return ""
+	}
+	var d struct {
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal(a.Data, &d)
+	text := strings.TrimSpace(d.Error)
+	if text == "" {
+		return "reason not recorded"
+	}
+	redact := func(s string) string {
+		return truncate(egressfilter.RedactToolOutput(ctx, "remediation", "remediation_attempt", s), 240)
+	}
+	if isPermissionRefusal(text) {
+		return fmt.Sprintf("refused by NudgeBee's permissions: %q", redact(errorLine(text, isPermissionRefusal)))
+	}
+	return fmt.Sprintf("error: %q", redact(errorLine(text, func(l string) bool { return strings.Contains(strings.ToLower(l), "error") })))
+}
+
+// errorLine picks the line of an executor's output that matches: not the cloud CLI's "[account: x]"
+// banner or a blank line; else the first remaining line.
+func errorLine(text string, match func(string) bool) string {
+	first := ""
+	for _, l := range strings.Split(text, "\n") {
+		l = strings.TrimSpace(l)
+		if l == "" || (strings.HasPrefix(l, "[account: ") && strings.HasSuffix(l, "]")) {
+			continue
+		}
+		if match(l) {
+			return l
+		}
+		if first == "" {
+			first = l
+		}
+	}
+	return first
 }
 
 // firedAfterNote states a recorded firing after an attempt; with none it says nothing, since re-fires
@@ -879,4 +945,29 @@ func humanDuration(d time.Duration) string {
 		return fmt.Sprintf("%dm", int(d.Minutes()))
 	}
 	return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+}
+
+// inventoryReplicas is the replica lookup finalizePlan uses for this account, nil without a database.
+func inventoryReplicas(accountId string) func(kind, name, ns string) string {
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return nil
+	}
+	return func(kind, name, ns string) string { return recordedReplicas(dbms, accountId, kind, name, ns) }
+}
+
+// recordedReplicas is a workload's replica count as inventory last recorded it, "" when unknown. A zero
+// count is omitted from status_info (Kubernetes drops zero-valued status), so total_pods stands in.
+func recordedReplicas(dbms *common.DatabaseManager, accountId, kind, name, ns string) string {
+	if ns == "" {
+		return "" // an unscoped name can match another workload
+	}
+	// The kind only orders the lookup, so pass its full name: "sts" would lose to a same-named Service.
+	kind = tools.NormalizeK8sType(kind)
+	res := loadResource(dbms, accountId, name, "", kind, ns)
+	if res == nil || tools.NormalizeK8sType(res.Type) != kind {
+		return ""
+	}
+	statusInfo, _ := res.Meta["status_info"].(map[string]any)
+	return firstNonEmpty(scalarString(statusInfo["replicas"]), scalarString(res.Meta["total_pods"]))
 }

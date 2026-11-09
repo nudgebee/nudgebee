@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	"nudgebee/llm/security/egressfilter"
 	"nudgebee/llm/tools/core"
 	"os"
 	"os/exec"
@@ -260,7 +261,7 @@ func ExecuteCliCommand(toolContext core.NbToolContext, command string, env []str
 	combinedStderr := combinedStderrBuilder.String()
 
 	if finalErr != nil {
-		toolContext.Ctx.GetLogger().Error("tools: cli command execution failed", "error", finalErr, "stderr", combinedStderr, "command", command)
+		toolContext.Ctx.GetLogger().Error("tools: cli command execution failed", "error", finalErr, "stderr", combinedStderr, "command", egressfilter.RedactForLog(command))
 		return finalStdout.String(), fmt.Errorf("tools: cli command failed: %v\nStderr: %s", finalErr, combinedStderr)
 	}
 

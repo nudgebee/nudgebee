@@ -250,8 +250,9 @@ func main() {
 
 	// Register tasks with the worker
 	taskWorker := executor.GetWorker()
+	secretLoader := workflow.StepSecretLoader(configService)
 	for _, task := range taskRegistry.ListTasks() { // Use the new ListTasks with taskRegistry
-		wrapper := &tasks.TaskWrapper{Task: task, TemporalClient: executor.GetClient(), Store: dbStore, Converter: dc}
+		wrapper := &tasks.TaskWrapper{Task: task, TemporalClient: executor.GetClient(), Store: dbStore, Converter: dc, Secrets: secretLoader}
 		taskWorker.RegisterActivityWithOptions(wrapper.Execute, activity.RegisterOptions{
 			Name: task.GetName(),
 		})

@@ -26,7 +26,7 @@ var azureVirtualMachineSchema = core.SpecificTypeSchema{
 		{Name: "subnet_id", Indexed: true},
 		{Name: "nsg_id", Indexed: true},
 		{Name: "resource_group", Indexed: true},
-		{Name: "network_interface_ids"},
+		{Name: "network_interface_ids", Shape: core.PropertyShapeList},
 		{Name: "vnet_name_hierarchy"},
 		// Provider VM fields lifted from ARG meta when present.
 		{Name: "license_type"},

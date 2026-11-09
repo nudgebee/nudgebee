@@ -139,6 +139,19 @@ def test_a_connected_tenant_is_welcomed_without_sign_up():
     assert "Mention" in text
 
 
+def test_the_welcome_uses_the_app_name_and_the_brand(monkeypatch):
+    monkeypatch.setattr(settings.urls, "assistant_name", "Nubi")
+    monkeypatch.setattr(settings.urls, "branding_name", "Acme")
+    for connected in (True, False):
+        card = CommonService.create_teams_welcome_card(connected)
+        texts = [b.get("text", "") for b in card["body"]]
+        texts += [i["text"] for c in card["body"][0]["columns"] for i in c["items"] if i.get("text")]
+        assert "Welcome to Nubi!" in texts
+        assert any(t.startswith("Hi there! I'm Nubi, your Acme assistant.") for t in texts)
+    connected_text = json.dumps(CommonService.create_teams_welcome_card(True))
+    assert "@Nubi" in connected_text and "@Acme" not in connected_text
+
+
 def test_an_unconnected_tenant_is_asked_to_connect():
     card = CommonService.create_teams_welcome_card(False)
     assert _action_titles(card) == ["Connect Microsoft Teams"]
@@ -174,12 +187,18 @@ def _events():
     return events
 
 
+ASKER_CLICK = SimpleNamespace(from_property=SimpleNamespace(aad_object_id="aad-user"))
+
+
 def test_picking_an_account_turns_the_picker_into_the_account():
     events = _events()
-    events.cache.get_event_entry.side_effect = [_entry(account_id=None), _entry(text="")]
+    events.cache.get_event_entry.side_effect = [
+        _entry(account_id=None, aad_user_id="aad-user", offered_account_ids=[ACCOUNT]),
+        _entry(text=""),
+    ]
     account = {"id": ACCOUNT, "account_name": "k8s-dev", "tenant": NB_TENANT}
     with mock.patch("notifications_server.services.events.get_account_by_id", return_value=account):
-        asyncio.run(events._handle_teams_cluster_selection_and_query_llm(SimpleNamespace(), ACCOUNT, THREAD, "aad"))
+        asyncio.run(events._handle_teams_cluster_selection_and_query_llm(ASKER_CLICK, ACCOUNT, THREAD, "aad"))
     card = events.common_service.teams_update_clicked_card.call_args.args[1]
     assert card["body"][0]["text"] == "Working with **k8s-dev**"
     events.common_service.teams_reply.assert_not_called()
@@ -188,10 +207,13 @@ def test_picking_an_account_turns_the_picker_into_the_account():
 def test_the_confirmation_is_sent_when_the_picker_cant_be_updated():
     events = _events()
     events.common_service.teams_update_clicked_card.return_value = False
-    events.cache.get_event_entry.side_effect = [_entry(account_id=None), _entry(text="")]
+    events.cache.get_event_entry.side_effect = [
+        _entry(account_id=None, aad_user_id="aad-user", offered_account_ids=[ACCOUNT]),
+        _entry(text=""),
+    ]
     account = {"id": ACCOUNT, "account_name": "k8s-dev", "tenant": NB_TENANT}
     with mock.patch("notifications_server.services.events.get_account_by_id", return_value=account):
-        asyncio.run(events._handle_teams_cluster_selection_and_query_llm(SimpleNamespace(), ACCOUNT, THREAD, "aad"))
+        asyncio.run(events._handle_teams_cluster_selection_and_query_llm(ASKER_CLICK, ACCOUNT, THREAD, "aad"))
     assert "k8s-dev" in events.common_service.teams_reply.call_args.args[1]
 
 

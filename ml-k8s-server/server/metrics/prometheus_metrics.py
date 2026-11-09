@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Union, cast
 import pandas as pd
 import requests
 from server.metrics.api_server_metrics import (
+    _step_seconds,
     query_utilisation_via_api_server,
     AgentNotConnectedError,
     query_metrics_via_api_server,
@@ -25,6 +26,7 @@ from server.utils.utils import (
     get_prediction_time_range,
     get_trace,
     resolve_tenant_id,
+    safe_get,
 )
 
 from opentelemetry import context
@@ -164,24 +166,111 @@ def _entries_for(
             instant=instant,
         )
 
+    request = {
+        "kind": "deployment",
+        "workload_namespace": query_obj.namespace,
+        "workload_name": query_obj.deployment_name,
+        "metrics": [key],
+    }
+    key_errors: Dict[str, str] = {}
     answered = query_utilisation_via_api_server(
         account_id=account_id,
         tenant_id=tenant_id,
-        request={
-            "kind": "deployment",
-            "workload_namespace": query_obj.namespace,
-            "workload_name": query_obj.deployment_name,
-            "metrics": [key],
-        },
+        request=request,
         start_time=start_time,
         end_time=end_time,
         step=step,
+        on_key_error=key_errors.__setitem__,
     )
     series = answered.get(key) or []
+    if not series and _window_too_large(key_errors.get(key)):
+        series = _fetch_in_day_pieces(key, request, account_id, tenant_id, start_time, end_time, step)
     scale = getattr(query_obj, "utilisation_scale", 1.0)
     if scale == 1.0:
         return series
     return [{**s, "values": [_scaled(v, scale) for v in (s.get("values") or [])]} for s in series]
+
+
+# How Prometheus (`query processing would load too many samples into memory`) and
+# VictoriaMetrics (`-search.maxSamplesPerQuery`, `-search.maxPointsPerTimeseries`) say a
+# range query matched more than they will hold. The anomaly detector reads 7 or 14 days
+# at a 2m step in one call, so a workload with enough HTTP series trips this every hour
+# and, with the key absent, trains on nothing (#39744).
+_WINDOW_TOO_LARGE_MARKERS = ("too many samples", "too many points", "maxsamplesperquery", "maxpointspertimeseries")
+_PIECE_SECONDS = 86400
+
+
+def _window_too_large(error: Optional[str]) -> bool:
+    text = (error or "").lower()
+    return any(marker in text for marker in _WINDOW_TOO_LARGE_MARKERS)
+
+
+def _fetch_in_day_pieces(
+    key: str,
+    request: Dict[str, Any],
+    account_id: str,
+    tenant_id: str,
+    start_time: datetime,
+    end_time: datetime,
+    step: Union[str, int, None],
+) -> List[dict]:
+    """Re-ask a rejected multi-day window one day at a time, on the same step grid.
+
+    Each piece starts where the last one ended, a whole number of steps from the original
+    start, so every point lands where the single query would have put it; the point the
+    two pieces share is kept once. A piece that is itself rejected gives up on the whole
+    key rather than returning the days that did answer: a training window with a day
+    missing from the middle reads as a workload that was idle that day.
+    """
+    # Without an explicit step the backend picks one from the range, so a day piece
+    # would come back at a different resolution from the week: nothing to stitch.
+    step_seconds = _step_seconds(step)
+    piece = 0 if step_seconds <= 0 else (_PIECE_SECONDS // step_seconds) * step_seconds
+    if piece <= 0 or piece >= (end_time - start_time).total_seconds():
+        logger.warning(f"utilisation key '{key}' was rejected as too large and the window cannot be split")
+        return []
+
+    merged: Dict[str, dict] = {}
+    pieces = 0
+    piece_start = start_time
+    while piece_start < end_time:
+        piece_end = min(piece_start + timedelta(seconds=piece), end_time)
+        piece_errors: Dict[str, str] = {}
+        answered = query_utilisation_via_api_server(
+            account_id=account_id,
+            tenant_id=tenant_id,
+            request=request,
+            start_time=piece_start,
+            end_time=piece_end,
+            step=step,
+            on_key_error=piece_errors.__setitem__,
+        )
+        if key in piece_errors:
+            logger.warning(
+                f"utilisation key '{key}' failed for {piece_start:%Y-%m-%d %H:%M}..{piece_end:%Y-%m-%d %H:%M} "
+                f"even as a day piece: {piece_errors[key]}"
+            )
+            return []
+        for series in answered.get(key) or []:
+            _merge_series(merged, series)
+        pieces += 1
+        piece_start = piece_end
+
+    logger.info(f"utilisation key '{key}' answered in {pieces} day pieces after the whole window was rejected")
+    return list(merged.values())
+
+
+def _merge_series(merged: Dict[str, dict], series: dict) -> None:
+    """Append a piece's samples to the series with the same labels, skipping any timestamp it already holds."""
+    label_key = json.dumps(series.get("metric") or {}, sort_keys=True)
+    target = merged.setdefault(label_key, {"metric": series.get("metric") or {}, "timestamps": [], "values": []})
+    seen = set(target["timestamps"])
+    for timestamp, value in zip(series.get("timestamps") or [], series.get("values") or []):
+        if timestamp in seen:
+            continue
+        seen.add(timestamp)
+        target["timestamps"].append(timestamp)
+        target["values"].append(value)
 
 
 def _scaled(value: Any, scale: float) -> Any:
@@ -336,12 +425,14 @@ class Prometheus(Metrics):
             start_time = datetime.now(UTC) - timedelta(days=14)
         response = self.query_metrics(query, start_time, end_time, "", True, raw=True)
         if len(response) > 0:
+            # A series without a metric or a value is skipped rather than returned as a [None, None] row.
             return [
                 {
-                    "metric": r["metric"],
-                    "value": [r["value"]["timestamp"], r["value"]["value"]],
+                    "metric": safe_get(r, "metric", {}),
+                    "value": [safe_get(r, ["value", "timestamp"]), safe_get(r, ["value", "value"])],
                 }
                 for r in response
+                if safe_get(r, ["value", "timestamp"]) is not None and safe_get(r, ["value", "value"]) is not None
             ]
         return response
 

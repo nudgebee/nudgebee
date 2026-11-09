@@ -3,6 +3,7 @@ import { Divider } from '@ui/Divider';
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import apiAccount from '@api1/account';
+import { normalizeIntegrationAccounts } from '@lib/integrationsSummary';
 import { useRouter } from 'next/router';
 import { getCloudProviderLabel } from 'src/utils/common';
 import { Skeleton } from '@ui/Skeleton';
@@ -744,91 +745,6 @@ const Integrations = () => {
 
   // --- DATA PROCESSING HELPERS ---
 
-  const normalizeApiResponse = (resData) => {
-    const map = {}; // Structure: { [ProviderKey]: Array<Account> }
-
-    const addToMap = (key, item) => {
-      const k = key?.toUpperCase();
-      if (!k) {
-        return;
-      }
-      if (!map[k]) {
-        map[k] = [];
-      }
-      map[k].push(item);
-    };
-
-    // 1. Process Cloud Accounts
-    resData?.all_accounts?.forEach((acc) => {
-      addToMap(acc.cloud_provider, { ...acc, status: acc.status || (acc.is_active ? 'active' : 'disabled') });
-    });
-
-    // 2. Process Messaging Platforms (Custom parsing logic preservation)
-    resData?.messaging_platforms?.forEach((acc) => {
-      let channels = [];
-      if (acc.platform === 'slack' && acc.channels) {
-        // ... (Keep existing complex slack parsing logic or simplify if API is consistent)
-        channels = [acc.team_name]; // simplified based on code analysis
-      } else if (acc.platform === 'ms_teams' && acc.channels?.team_name) {
-        channels = [acc.channels.team_name];
-      } else if (acc.platform === 'google_chat' || acc.platform === 'discord') {
-        try {
-          const parsed = typeof acc.channels === 'string' ? JSON.parse(acc.channels) : acc.channels;
-          if (parsed?.name) {
-            channels = [parsed.name];
-          }
-        } catch {
-          // Ignore parsing errors
-        }
-      }
-
-      const key = acc.platform === 'ms_teams' ? 'MSTEAMS' : acc.platform;
-      // Messaging platforms in this API usually don't have 'disabled' status in same way, assuming active if exists
-      addToMap(key, { ...acc, status: 'active', channels });
-    });
-
-    // 3. Process Generic Integrations
-    resData?.integrations?.forEach((acc) => {
-      // Map 'status: enabled' to 'active' for consistency
-      const status = acc.status === 'enabled' ? 'active' : 'disabled';
-
-      // google_chat_space bindings count under the Google Chat card; the space is the
-      // destination (no channel picker), so seed channels for the messaging badge check.
-      if (acc.type === 'google_chat_space') {
-        addToMap('GOOGLE_CHAT', { ...acc, status, channels: [acc.name] });
-        return;
-      }
-
-      // Slack / MS Teams / Discord integration installs supersede legacy
-      // messaging_platforms entries for the same card; multiple installs of the same
-      // type accumulate. Seeding channels keeps the messaging badge check from reading
-      // .length on undefined.
-      if (acc.type === 'slack' || acc.type === 'ms_teams' || acc.type === 'discord') {
-        const cardKey = acc.type === 'ms_teams' ? 'MSTEAMS' : acc.type.toUpperCase();
-        // Clear legacy messaging_platforms entries (they carry a `platform` field) once,
-        // then append so multiple same-type integration installs are preserved.
-        if (!map[cardKey] || map[cardKey].some((item) => item.platform)) {
-          map[cardKey] = [];
-        }
-        map[cardKey].push({ ...acc, status, channels: [acc.name] });
-        return;
-      }
-
-      // Special case mapping for OTel/Clickhouse naming if needed
-      let key = acc.type;
-      if (acc.type === 'postgresql') {
-        key = 'POSTGRES';
-      }
-      if (acc.type === 'otel_clickhouse') {
-        key = 'OTEL';
-      }
-
-      addToMap(key, { ...acc, status });
-    });
-
-    return map;
-  };
-
   const generateSectionData = (dataMap) => {
     return SECTIONS_CONFIG.map((section) => {
       const sectionAccounts = section.providers.map((providerKey) => {
@@ -863,7 +779,7 @@ const Integrations = () => {
         // the catch below, so a failed lookup reads as a failure rather than as
         // a tenant with no integrations at all.
         if (res instanceof Error) throw res;
-        const dataMap = normalizeApiResponse(res?.data);
+        const dataMap = normalizeIntegrationAccounts(res?.data);
         const processedSections = generateSectionData(dataMap);
         setSectionsData(processedSections);
       } catch (error) {

@@ -97,7 +97,7 @@ test("Task Runner - select account, select Network Ping task, enter host, run ta
   await runTask(page, locators, "Task Runner Network Ping");
   await expectRunSucceeded(locators);
 
-  // The task returns raw ping stdout rather than the parsed schema fields.
+  // The raw ping stdout is in the output's `output` field, next to the parsed fields.
   expect(await readRunOutput(locators)).toMatch(/packets transmitted|bytes from|rtt/i);
   console.log(`network.ping reported reachability for ${PROBE_HOST}`);
 });

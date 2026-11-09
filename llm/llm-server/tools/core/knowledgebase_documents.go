@@ -49,6 +49,19 @@ type KBDocument struct {
 	// NoteCategory is the mark a user put on this document: "sop", "fact", or
 	// "" when it carries none and keeps its knowledge base's treatment.
 	NoteCategory string `json:"note_category"`
+	// AccountMarks counts the accounts whose own mark overrides the tenant's on
+	// this document. Set only when listing an integration's organisation
+	// knowledge base (#40605), so a tenant admin sees where they differ.
+	AccountMarks int `json:"account_marks,omitempty"`
+	// Kind, Shape and Capabilities are what the classifier decided about this
+	// document ("sop"/"knowledge", the procedure shape, the platform capabilities
+	// it references), read from Postgres (llm_kb_capability_entries, entry_type
+	// 'kb_document'), never from the vector index. nil/empty means no label row, which
+	// is not the same as classified as knowledge. They describe the classifier's output
+	// only: how retrieval treats the page also depends on user marks and the knowledge base.
+	Kind         *string  `json:"kind"`
+	Shape        *string  `json:"shape"`
+	Capabilities []string `json:"capabilities"`
 }
 
 // KBDocumentsPage is one page of a knowledge base's documents. NextOffset is
@@ -90,7 +103,8 @@ func kbDocumentsCollection(sc *security.RequestContext, accountId, kbId string) 
 		KBType        string  `db:"kb_type"`
 		IntegrationID *string `db:"integration_id"`
 	}
-	err = dbms.Db.GetContext(sc.GetContext(), &kbMeta, "SELECT name, kb_type, integration_id FROM llm_knowledgebases WHERE id = $1 AND account_id = $2", kbId, accountId)
+	scope, scopeArgs := KBAccountScope("", 2, 3, VisibleOrgKnowledgebaseIDs(sc.GetContext(), accountId))
+	err = dbms.Db.GetContext(sc.GetContext(), &kbMeta, "SELECT name, kb_type, integration_id FROM llm_knowledgebases WHERE id = $1 AND "+scope, append([]any{kbId, accountId}, scopeArgs...)...)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", "", errors.New(errKBNotFound)
@@ -129,6 +143,7 @@ func kbManualKB(ctx context.Context, accountId, kbId string, withContent bool) (
 	if withContent {
 		dataColumn = `data`
 	}
+	scope, scopeArgs := KBAccountScope("", 2, 3, VisibleOrgKnowledgebaseIDs(ctx, accountId))
 	err = dbms.Db.GetContext(
 		ctx,
 		&row,
@@ -136,8 +151,8 @@ func kbManualKB(ctx context.Context, accountId, kbId string, withContent bool) (
 		        COALESCE(data_format, 'text') AS data_format,
 		        COALESCE(data_filename, '') AS data_filename
 		   FROM llm_knowledgebases
-		  WHERE id = $1 AND account_id = $2 AND kb_type = 'manual'`, dataColumn),
-		kbId, accountId,
+		  WHERE id = $1 AND %s AND kb_type = 'manual'`, dataColumn, scope),
+		append([]any{kbId, accountId}, scopeArgs...)...,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -220,6 +235,21 @@ func getRAG(ctx context.Context, path string, out any) (found bool, err error) {
 	return true, nil
 }
 
+// integrationOrgKBTenant returns the tenant of kbId when it is an integration's
+// organisation knowledge base (#40605), and "" otherwise or on a failed read.
+func integrationOrgKBTenant(ctx context.Context, kbId string) string {
+	dbms, err := knowledgeDatabase(common.Metastore)
+	if err != nil {
+		return ""
+	}
+	var tenantId string
+	if err := dbms.Db.GetContext(ctx, &tenantId, `SELECT tenant_id::text FROM llm_knowledgebases
+		WHERE id = $1 AND account_id IS NULL AND kb_type = 'integration'`, kbId); err != nil {
+		return ""
+	}
+	return tenantId
+}
+
 // ListKBDocuments returns one page of a knowledge base's stored documents
 // (title and link only). A KB whose collection was never built returns an
 // empty page.
@@ -239,6 +269,7 @@ func ListKBDocuments(sc *security.RequestContext, accountId, kbId string, limit 
 		if offset != "" {
 			items = []KBDocument{}
 		}
+		applyKBDocumentLabels(sc, kbId, collection, items)
 		return &KBDocumentsPage{
 			Items:   items,
 			Indexed: kbIndexHasDocuments(sc.GetContext(), collection),
@@ -276,6 +307,7 @@ func ListKBDocuments(sc *security.RequestContext, accountId, kbId string, limit 
 			keys = append(keys, key)
 		}
 	}
+	applyKBDocumentLabels(sc, kbId, collection, page.Items)
 	// A failed read shows the page unmarked rather than failing the list: the
 	// documents are still worth seeing, and the marks still apply at retrieval.
 	categories, err := kbDocumentCategories(sc.GetContext(), accountId, keys)
@@ -285,6 +317,15 @@ func ListKBDocuments(sc *security.RequestContext, accountId, kbId string, limit 
 	}
 	for i := range page.Items {
 		page.Items[i].NoteCategory = categories[page.Items[i].DocumentKey]
+	}
+	if tenantId := integrationOrgKBTenant(sc.GetContext(), kbId); tenantId != "" {
+		counts, err := kbDocumentAccountMarkCounts(sc.GetContext(), tenantId, keys)
+		if err != nil {
+			sc.GetLogger().Warn("kb: unable to count account document marks", "error", err, "kb_id", kbId)
+		}
+		for i := range page.Items {
+			page.Items[i].AccountMarks = counts[page.Items[i].DocumentKey]
+		}
 	}
 	page.NextOffset = ragPage.NextOffset
 	// An offset means an earlier page was served, so the index holds documents even
@@ -389,11 +430,12 @@ func uploadedKBSource(sc *security.RequestContext, accountId, kbId string) (*KBD
 		Data      string `db:"data"`
 		UpdatedAt string `db:"updated_at"`
 	}
+	scope, scopeArgs := KBAccountScope("", 2, 3, VisibleOrgKnowledgebaseIDs(sc.GetContext(), accountId))
 	err = dbms.Db.GetContext(sc.GetContext(), &row, `SELECT name, COALESCE(data_filename, '') AS data_filename,
 	                                COALESCE(data_format, '') AS data_format, COALESCE(data, '') AS data,
 	                                COALESCE(updated_at::text, '') AS updated_at
 	                         FROM llm_knowledgebases
-	                         WHERE id = $1 AND account_id = $2 AND enabled`, kbId, accountId)
+	                         WHERE id = $1 AND `+scope+` AND enabled`, append([]any{kbId, accountId}, scopeArgs...)...)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, errors.New(errKBDocumentNotFound)

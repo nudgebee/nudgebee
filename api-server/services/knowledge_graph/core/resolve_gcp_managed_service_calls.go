@@ -89,6 +89,10 @@ func ResolveGCPManagedServiceCalls(
 		nodeByID[n.ID] = n
 		switch n.NodeType {
 		case NodeTypeExternalService:
+			if n.Source == ManualNodeSource {
+				// Declared by a user, not an observed stub.
+				continue
+			}
 			if t, ok := gcpManagedServiceLeafTargets[normalizeManagedServiceName(n)]; ok {
 				stubTargets[n.ID] = t
 			}

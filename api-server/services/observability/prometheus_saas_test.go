@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"nudgebee/services/integrations"
 	"nudgebee/services/security"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -279,6 +280,71 @@ func TestPrometheusSaas_FetchMetricLabelValues(t *testing.T) {
 	got := recorder.first(t)
 	assert.Equal(t, "/api/v1/label/job/values", got.URL.Path)
 	assert.Equal(t, `{__name__="up"}`, got.URL.Query().Get("match[]"))
+}
+
+// The UI and the agent source send the metric as metric_name.
+func TestPrometheusSaas_FetchMetricLabelValues_MetricNameAndDefaultWindow(t *testing.T) {
+	recorder := newPrometheusSaasServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"success","data":["poc-orders"]}`))
+	})
+
+	values, err := (&PrometheusSaasMetricSource{}).FetchMetricLabelValues(testRequestContext(), FetchMetricsLabelValueRequest{
+		AccountId: "acc",
+		Label:     "namespace",
+		Request:   map[string]any{"metric_name": "kube_pod_info"},
+	})
+	require.NoError(t, err)
+	assert.Len(t, values, 1)
+
+	q := recorder.first(t).URL.Query()
+	assert.Equal(t, `{__name__="kube_pod_info"}`, q.Get("match[]"))
+	start, err := strconv.ParseInt(q.Get("start"), 10, 64)
+	require.NoError(t, err)
+	end, err := strconv.ParseInt(q.Get("end"), 10, 64)
+	require.NoError(t, err)
+	assert.Equal(t, int64(prometheusSaasLabelValuesWindow.Seconds()), end-start, "no window given: last 24h")
+}
+
+// A caller that sends only the end gets a start 24h before it.
+func TestPrometheusSaas_FetchMetricLabelValues_OnlyEndGiven(t *testing.T) {
+	recorder := newPrometheusSaasServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"success","data":[]}`))
+	})
+	_, err := (&PrometheusSaasMetricSource{}).FetchMetricLabelValues(testRequestContext(), FetchMetricsLabelValueRequest{
+		AccountId: "acc", Label: "namespace", EndTime: 1700000000000,
+		Request: map[string]any{"metric_name": "up"},
+	})
+	require.NoError(t, err)
+	q := recorder.first(t).URL.Query()
+	assert.Equal(t, "1700000000", q.Get("end"))
+	assert.Equal(t, "1699913600", q.Get("start"))
+}
+
+// Label names for a metric get the same default window (Azure needs one).
+func TestPrometheusSaas_FetchMetricsLabels_DefaultWindow(t *testing.T) {
+	recorder := newPrometheusSaasServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"success","data":["namespace"]}`))
+	})
+	_, err := (&PrometheusSaasMetricSource{}).FetchMetricsLabels(testRequestContext(), FetchMetricLabelsRequest{AccountId: "acc", MetricName: "kube_pod_info"})
+	require.NoError(t, err)
+	q := recorder.first(t).URL.Query()
+	start, err := strconv.ParseInt(q.Get("start"), 10, 64)
+	require.NoError(t, err)
+	end, err := strconv.ParseInt(q.Get("end"), 10, 64)
+	require.NoError(t, err)
+	assert.Equal(t, int64(prometheusSaasLabelValuesWindow.Seconds()), end-start)
+}
+
+// Azure Managed Prometheus answers 501 when no metric is named.
+func TestPrometheusSaas_FetchMetricLabelValues_NoMetricOnAzure(t *testing.T) {
+	newPrometheusSaasServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotImplemented)
+		_, _ = w.Write([]byte(`{"status":"error","errorType":"Not Implemented","error":"Bad Request: No metric found. Exactly one metric name must be specified.."}`))
+	})
+
+	_, err := (&PrometheusSaasMetricSource{}).FetchMetricLabelValues(testRequestContext(), FetchMetricsLabelValueRequest{AccountId: "acc", Label: "namespace"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "choose a metric first")
 }
 
 func TestPrometheusSaas_FetchMetricLabelValues_RequiresLabel(t *testing.T) {

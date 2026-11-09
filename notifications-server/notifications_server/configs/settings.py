@@ -99,6 +99,9 @@ class URLSettings(BaseSettings):
     branding_name: str = "Nudgebee"
     assistant_name: str = "Nubi"
     branding_logo_url: str = "/branding/default/logo.png"
+    # Display name for the email From header. Only the database row sets it (email.fromName);
+    # empty falls back to EMAIL_FROM_NAME.
+    branding_from_name: str = ""
     branding_support_email: str = ""
     branding_primary_color: str = "#3470e9"
     branding_header_bg_color: str = "#004C74"
@@ -106,6 +109,11 @@ class URLSettings(BaseSettings):
     branding_footer_link_color: str = "#ffcc00"
     branding_address: str = "Pune"
     branding_copyright_start_year: int = 2022
+    # Email footer links to the legal pages. Empty (the default) shows no link: the app's bundled pages
+    # name one company's legal entity, which is not who runs a self-hosted install. Only the host's
+    # branding row sets them (`privacyUrl` / `termsUrl`, see branding_overrides.py).
+    branding_privacy_url: str = ""
+    branding_terms_url: str = ""
 
     model_config = SettingsConfigDict(env_prefix="", env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -736,7 +744,7 @@ class NotificationSettings(BaseSettings):
     max_detailed_evidences: int = Field(
         3, validation_alias=AliasChoices("MAX_DETAILED_EVIDENCES", "max_detailed_evidences")
     )
-    task_retry_count: int = Field(5, validation_alias=AliasChoices("TASK_RETRY_COUNT", "task_retry_count"))
+    task_retry_count: int = Field(3, validation_alias=AliasChoices("TASK_RETRY_COUNT", "task_retry_count"))
     slow_task_threshold_seconds: int = Field(
         30, validation_alias=AliasChoices("SLOW_TASK_THRESHOLD_SECONDS", "slow_task_threshold_seconds")
     )
@@ -748,6 +756,7 @@ class NotificationSettings(BaseSettings):
     )
     # An anomaly that clears joins the next grouped anomaly digest, in a
     # "Resolved" section. Off: its resolve looks for a Slack thread, as before.
+    # An SLO that recovers joins the SLO digest the same way. Off: it is dropped.
     digest_resolved_enabled: bool = Field(
         False, validation_alias=AliasChoices("DIGEST_RESOLVED_ENABLED", "digest_resolved_enabled")
     )

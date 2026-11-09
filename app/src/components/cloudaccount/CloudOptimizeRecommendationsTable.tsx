@@ -25,7 +25,7 @@ import DownloadButton from '@shared/buttons/DownloadButton';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
 import Datetime from '@shared/format/Datetime';
 import { useRecommendationCloudFilter } from '@hooks/useCloudFilters';
-import { snakeToTitleCase, syncFilterFromQuery } from '@utils/common';
+import { snakeToTitleCase, syncFilterFromQuery, cloudServiceLabel } from '@utils/common';
 import Text from '@shared/format/Text';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import Currency from '@shared/format/Currency';
@@ -196,7 +196,7 @@ const CloudOptimizeRecommendationsTable = (props: {
             res?.data?.data?.recommendation
               ?.filter((g: any) => g.resource_cloud_service)
               .map((e: any) => ({
-                label: e.resource_cloud_service,
+                label: cloudServiceLabel(e.resource_cloud_service),
                 value: e.resource_cloud_service,
               })) || [];
           setServiceNamesFilterWithRuleName(filters);

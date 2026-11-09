@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 jest.mock('@ui/Toast', () => ({ toast: { success: jest.fn(), error: jest.fn(), info: jest.fn(), warning: jest.fn() } }));
 
@@ -76,5 +76,26 @@ describe('FollowupSheet cancel menu', () => {
         resolution: 'dismiss',
       })
     );
+  });
+});
+
+describe('FollowupSheet submit failure', () => {
+  it('rolls back and reports the budget message when the gateway answers with a 429 error', async () => {
+    mockAiFollowupResponse.mockResolvedValue({
+      data: {
+        errors: [{ message: 'budget: daily budget limit exceeded', extensions: { upstream: { status: 429 } } }],
+      },
+    });
+    const onSubmitError = jest.fn();
+    const onSubmitted = jest.fn();
+    render(
+      <FollowupSheet followup={baseFollowup} accountId='acct-1' conversationId='conv-1' onSubmitError={onSubmitError} onSubmitted={onSubmitted} />
+    );
+
+    fireEvent.change(screen.getByPlaceholderText('Type your response…'), { target: { value: 'yes' } });
+    fireEvent.click(screen.getByLabelText('Send'));
+
+    await waitFor(() => expect(onSubmitError).toHaveBeenCalledWith(expect.stringContaining('Budget Limit exceeded')));
+    expect(onSubmitted).not.toHaveBeenCalled();
   });
 });

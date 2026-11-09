@@ -1,6 +1,7 @@
 package integrations
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -1098,6 +1099,56 @@ func TestIsRetriablePagerDutyFetchError(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, isRetriablePagerDutyFetchError(tt.err))
+		})
+	}
+}
+
+func TestPagerDutyIntegrationKeyKeptOutOfLabelsAndEvidence(t *testing.T) {
+	const integrationKey = "0123456789abcdef0123456789abcdef"
+	const firing = `Labels:\n - alertname = QueueUnroutableMessages\n - exchange = orders\n - namespace = shop\nAnnotations:\n - summary = Unroutable messages\nSource: http://alerts.example.com/rule/1\n`
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "v1 event: service_key on the envelope, routing_key in the CEF payload",
+			body: `{"type":"incident_body","details":{"client":"Alertmanager","event_type":"trigger","incident_key":"dedup-1","service_key":"` + integrationKey + `","details":{"firing":"` + firing + `"},"__pd_cef_payload":{"client":"Alertmanager","dedup_key":"dedup-1","routing_key":"` + integrationKey + `","severity":"critical","details":{"firing":"` + firing + `","routing_key":"orders.created"}}}}`,
+		},
+		{
+			name: "v2 event: routing_key on the envelope",
+			body: `{"type":"incident_body","details":{"event_action":"trigger","dedup_key":"dedup-1","routing_key":"` + integrationKey + `","firing":"` + firing + `","__pd_cef_payload":{"client":"SigNoz Alert Manager","dedup_key":"dedup-1","routing_key":"` + integrationKey + `","details":{"routing_key":"orders.created"}}}}`,
+		},
+		{
+			name: "Chronosphere",
+			body: `{"type":"incident_body","details":{"routing_key":"` + integrationKey + `","__pd_cef_payload":{"client":"Chronosphere","dedup_key":"dedup-1","routing_key":"` + integrationKey + `","details":{"routing_key":"orders.created"}}}}`,
+		},
+		{
+			name: "alerts-endpoint fallback: CEF in cef_details",
+			body: `{"type":"alert_body","details":{"client":"Grafana","routing_key":"` + integrationKey + `","details":{"firing":"` + firing + `","routing_key":"orders.created"}},"cef_details":{"client":"Grafana","routing_key":"` + integrationKey + `","service_key":"` + integrationKey + `"}}`,
+		},
+	}
+
+	sc := security.NewRequestContextForTenantAdmin(testenv.FakeTenantID, nil, nil, nil)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			incident := &Incident{ID: "PEXAMPLE1"}
+			assert.NoError(t, json.Unmarshal([]byte(tt.body), &incident.Body))
+
+			parsed := core.EventIncomingWebhook{EventId: incident.ID}
+			applyPagerDutyIncident(sc, &parsed, incident)
+
+			// Labels, description and evidence together: the key must be in none of them.
+			event, err := json.Marshal(parsed)
+			assert.NoError(t, err)
+			assert.NotContains(t, string(event), integrationKey)
+			assert.NotEmpty(t, parsed.Investigation.Labels)
+
+			// A routing_key inside the alert's own details is the alert's data, not the integration key.
+			if assert.Len(t, parsed.Investigation.Evidences, 1) {
+				raw, _ := parsed.Investigation.Evidences[0].Data.(map[string]any)["data"].(string)
+				assert.Contains(t, raw, `"routing_key":"orders.created"`)
+			}
 		})
 	}
 }

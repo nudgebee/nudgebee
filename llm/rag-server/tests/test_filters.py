@@ -1,5 +1,7 @@
 """Tests for rag.search.filters value-shape dispatcher."""
 
+import os
+
 from qdrant_client.models import MatchAny, MatchValue, Range
 
 from rag.search.filters import build_field_condition, build_metadata_filter
@@ -82,3 +84,137 @@ def test_build_metadata_filter_scalar_only_regression():
 def test_empty_filter_returns_none():
     assert build_metadata_filter() is None
     assert build_metadata_filter(custom_fields={}) is None
+
+
+def test_must_not_only_filter_is_structured():
+    from rag.search.filters import build_filter_from_dict, is_structured_filter
+
+    spec = {"must_not": [{"field": "source", "value": "nudgebee_docs"}]}
+    assert is_structured_filter(spec)
+    built = build_filter_from_dict(spec)
+    assert built.must is None
+    assert len(built.must_not) == 1
+    assert built.must_not[0].key == "metadata.source"
+    assert built.must_not[0].match.value == "nudgebee_docs"
+
+
+def test_flat_filter_is_not_structured():
+    from rag.search.filters import is_structured_filter
+
+    assert not is_structured_filter({"source": "nudgebee_docs"})
+    assert not is_structured_filter({})
+    assert not is_structured_filter(None)
+
+
+def _capture_search_filter(monkeypatch, metadata_filter):
+    # search_logic imports utils.config, which refuses to load without these.
+    for name, value in {
+        "APP_DATABASE_URL": "postgres://test",
+        "RELAY_SERVER_ENDPOINT": "http://test",
+        "RELAY_SERVER_SECRET_KEY": "test",
+    }.items():
+        monkeypatch.setenv(name, os.environ.get(name, value))
+    from rag.search.search_logic import _search_single_collection_by_vector
+
+    captured = {}
+
+    class _Response:
+        points = []
+
+    class _Client:
+        def query_points(self, **kwargs):
+            captured.update(kwargs)
+            return _Response()
+
+    _search_single_collection_by_vector("kb_test", [0.0], _Client(), 3, metadata_filter)
+    return captured["query_filter"]
+
+
+def test_search_applies_must_not_filter(monkeypatch):
+    query_filter = _capture_search_filter(monkeypatch, {"must_not": [{"field": "source", "value": "nudgebee_docs"}]})
+    assert query_filter.must is None
+    assert query_filter.must_not[0].key == "metadata.source"
+
+
+def test_search_keeps_flat_filter_semantics(monkeypatch):
+    query_filter = _capture_search_filter(monkeypatch, {"agent_module": "k8s_ops", "kind": ["a", "b"]})
+    assert [c.key for c in query_filter.must] == ["metadata.agent_module", "metadata.kind"]
+    assert query_filter.must_not is None
+
+
+def test_structured_filter_keeps_flat_keys_as_must():
+    from rag.search.filters import build_filter_from_dict
+
+    built = build_filter_from_dict(
+        {"agent_module": "k8s_ops", "must_not": [{"field": "source", "value": "nudgebee_docs"}]}
+    )
+    assert [c.key for c in built.must] == ["metadata.agent_module"]
+    assert built.must_not[0].key == "metadata.source"
+
+
+def test_search_rejects_structured_filter_without_valid_conditions(monkeypatch):
+    for name, value in {
+        "APP_DATABASE_URL": "postgres://test",
+        "RELAY_SERVER_ENDPOINT": "http://test",
+        "RELAY_SERVER_SECRET_KEY": "test",
+    }.items():
+        monkeypatch.setenv(name, os.environ.get(name, value))
+    from rag.search.search_logic import _search_single_collection_by_vector
+
+    called = []
+
+    class _Client:
+        def query_points(self, **kwargs):
+            called.append(kwargs)
+
+    # "any" is a typo for "values": the clause is dropped, so nothing would be excluded.
+    docs = _search_single_collection_by_vector(
+        "kb_test", [0.0], _Client(), 3, {"must_not": [{"field": "source", "any": ["nudgebee_docs"]}]}
+    )
+    assert docs == []
+    assert called == [], "a filter that excludes nothing must not run unfiltered"
+
+
+def test_search_rejects_partly_malformed_structured_filter(monkeypatch):
+    for name, value in {
+        "APP_DATABASE_URL": "postgres://test",
+        "RELAY_SERVER_ENDPOINT": "http://test",
+        "RELAY_SERVER_SECRET_KEY": "test",
+    }.items():
+        monkeypatch.setenv(name, os.environ.get(name, value))
+    from rag.search.search_logic import _search_single_collection_by_vector
+
+    called = []
+
+    class _Client:
+        def query_points(self, **kwargs):
+            called.append(kwargs)
+
+    # A valid "must" must not let a dropped (typo'd) exclusion through.
+    docs = _search_single_collection_by_vector(
+        "kb_test",
+        [0.0],
+        _Client(),
+        3,
+        {
+            "must": [{"field": "module", "value": "knowledge_base"}],
+            "must_not": [{"field": "source", "any": ["nudgebee_docs"]}],
+        },
+    )
+    assert docs == []
+    assert called == []
+
+
+def test_structured_filter_rejects_malformed_conditions():
+    import pytest
+
+    from rag.search.filters import build_filter_from_dict
+
+    for spec in (
+        {"must_not": [{"field": "source", "any": ["nudgebee_docs"]}]},  # no value/values/range
+        {"must_not": [{"value": "nudgebee_docs"}]},  # no field
+        {"must_not": "nudgebee_docs"},  # clause is not a list
+        {"must_not": ["source"]},  # condition is not a dict
+    ):
+        with pytest.raises(ValueError):
+            build_filter_from_dict(spec)

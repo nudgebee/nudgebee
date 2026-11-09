@@ -146,9 +146,9 @@ Do not generalise from it to the other four types.
 
 INSTRUCTIONS:
 1. Call init_workflow to set up the automation structure (name from plan, triggers, inputs).
-2. For each task in the plan:
-   a. Call get_task_schema with the task type to understand required/optional parameters.
-   b. Call add_task with the correct id, type, params, depends_on, and if condition.
+2. Add the tasks in the plan:
+   a. Call get_task_schema once, passing every task type in the plan as task_types, to understand their required/optional parameters.
+   b. Add the tasks with add_tasks, several per call, each with the correct id, type, params, depends_on, and if condition. Use add_task only when adding a single task.
 3. After adding ALL tasks, call validate to check for errors.
 4. If validation fails:
    a. Read the error message carefully — it identifies the problem and often the specific field.

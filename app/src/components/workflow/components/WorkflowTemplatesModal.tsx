@@ -354,6 +354,56 @@ const TemplateCard = ({ workflow, onUseTemplate, index }: { workflow: any; onUse
   );
 };
 
+const templatesOf = (response: any): any[] => {
+  const templates = response?.data?.workflow_list_template?.templates;
+  return Array.isArray(templates) ? templates : [];
+};
+
+const TemplateGrid = ({
+  workflows,
+  onUseTemplate,
+  startIndex = 0,
+}: {
+  workflows: any[];
+  onUseTemplate: (workflow: any) => void;
+  startIndex?: number;
+}) => (
+  <Box
+    sx={{
+      display: 'grid',
+      gap: 'var(--ds-space-4)',
+      padding: 'var(--ds-space-3) var(--ds-space-4)',
+      gridTemplateColumns: 'repeat(4, 1fr)',
+      '@media (max-width: 1199px)': {
+        gridTemplateColumns: 'repeat(3, 1fr)',
+      },
+      '@media (max-width: 1023px)': {
+        gridTemplateColumns: 'repeat(2, 1fr)',
+      },
+      '@media (max-width: 767px)': {
+        gridTemplateColumns: '1fr',
+      },
+    }}
+  >
+    {workflows.map((workflow, index) => (
+      <TemplateCard key={workflow.id} workflow={workflow} onUseTemplate={onUseTemplate} index={startIndex + index} />
+    ))}
+  </Box>
+);
+
+const SectionHeading = ({ id, value }: { id: string; value: string }) => (
+  <Text
+    id={id}
+    value={value}
+    sx={{
+      fontSize: 'var(--ds-text-small)',
+      fontWeight: 'var(--ds-font-weight-semibold)',
+      fontFamily: ds.font.display,
+      color: ds.gray[600],
+    }}
+  />
+);
+
 const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
   open,
   onClose,
@@ -366,6 +416,9 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
 }) => {
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [workflows, setWorkflows] = useState<any[]>([]);
+  // Templates matching the event (source / alert / subject); shown above the full list.
+  const [recommended, setRecommended] = useState<any[]>([]);
+  const [noMatch, setNoMatch] = useState(false);
   const [loading, setLoading] = useState(false);
   const [selectedLabels, setSelectedLabels] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -377,8 +430,7 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
-  // Event context the template list is filtered by (source / alert name), shown
-  // as labels under the modal title so it's obvious why the list is narrowed.
+  // Event context (source / alert name) the recommended templates were matched on.
   const contextChips = useMemo(() => {
     const chips: { key: string; label: string; value: string }[] = [];
     (eventSources || []).filter(Boolean).forEach((s) => chips.push({ key: `source-${s}`, label: 'Source', value: s }));
@@ -394,16 +446,22 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
     return Array.from(set).sort();
   }, [workflows, selectedLabels]);
 
-  // Templates narrowed by the selected labels (match ANY selected label).
-  const displayedWorkflows = useMemo(() => {
-    if (selectedLabels.length === 0) {
-      return workflows;
-    }
-    return workflows.filter((w) => {
+  // Both sections narrowed by the selected labels (match ANY selected label);
+  // templates already recommended are not repeated in the full list.
+  const { displayedRecommended, displayedOthers } = useMemo(() => {
+    const matchesLabels = (w: any) => {
+      if (selectedLabels.length === 0) {
+        return true;
+      }
       const labels: string[] = Array.isArray(w?.tags?.labels) ? w.tags.labels : [];
       return selectedLabels.some((l) => labels.includes(l));
-    });
-  }, [workflows, selectedLabels]);
+    };
+    const recommendedIds = new Set(recommended.map((w) => w.id));
+    return {
+      displayedRecommended: recommended.filter(matchesLabels),
+      displayedOthers: workflows.filter((w) => !recommendedIds.has(w.id) && matchesLabels(w)),
+    };
+  }, [workflows, recommended, selectedLabels]);
 
   const toggleLabel = useCallback((label: string) => {
     setSelectedLabels((prev) => (prev.includes(label) ? prev.filter((l) => l !== label) : [...prev, label]));
@@ -430,6 +488,7 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
   // identity. The parent passes fresh array literals every render; keying on the
   // arrays directly refetched on every parent re-render (infinite polling, #34351).
   const filterKey = JSON.stringify({ eventSources, alertNames, subjectTypes });
+  const hasEventFilter = Boolean(eventSources?.length || alertNames?.length || subjectTypes?.length);
 
   // Bumped per fetch so a late-arriving (stale) response can't overwrite newer
   // data — previously overlapping requests raced and an empty response could
@@ -442,20 +501,24 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
     setLoading(true);
     try {
       const category = selectedCategory === 'all' ? undefined : selectedCategory;
-      const response: any = await apiWorkflow.listTemplates(
-        category,
-        debouncedQuery || undefined,
-        TEMPLATE_FETCH_LIMIT,
-        undefined,
-        eventSources,
-        alertNames,
-        subjectTypes
-      );
+      const name = debouncedQuery || undefined;
+      // The event-matched list and the full list load together; a failed match
+      // request just leaves the recommended section empty.
+      const [matchedResponse, allResponse]: any[] = await Promise.all([
+        hasEventFilter
+          ? apiWorkflow.listTemplates(category, name, TEMPLATE_FETCH_LIMIT, undefined, eventSources, alertNames, subjectTypes)
+          : Promise.resolve(null),
+        apiWorkflow.listTemplates(category, name, TEMPLATE_FETCH_LIMIT),
+      ]);
       if (seq !== fetchSeqRef.current) {
         return; // a newer fetch superseded this one
       }
-      const templates = response?.data?.workflow_list_template?.templates;
-      setWorkflows(Array.isArray(templates) ? templates : []);
+      const matched = templatesOf(matchedResponse);
+      setRecommended(matched);
+      // Decided per response: a failed request or a search / category-narrowed
+      // empty result says nothing about the event itself.
+      setNoMatch(hasEventFilter && !matchedResponse?.errors?.length && matched.length === 0 && !name && !category);
+      setWorkflows(templatesOf(allResponse));
     } catch (error) {
       if (seq === fetchSeqRef.current) {
         console.error('Failed to fetch templates:', error);
@@ -474,6 +537,8 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
   useEffect(() => {
     setSelectedLabels([]);
     setWorkflows([]);
+    setRecommended([]);
+    setNoMatch(false);
   }, [selectedCategory, filterKey]);
 
   // The parent keeps this modal mounted, so clear the search and chips on close —
@@ -491,6 +556,26 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
       fetchWorkflows();
     }
   }, [open, fetchWorkflows]);
+
+  const sectionHeaderSx = {
+    display: 'flex',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 'var(--ds-space-2)',
+    px: 'var(--ds-space-4)',
+    pt: 'var(--ds-space-2)',
+  };
+
+  // Why the recommended section holds what it does (or why nothing matched).
+  const eventContextChips = contextChips.length > 0 && (
+    <Box id='wf-template-event-context' sx={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--ds-space-2)' }}>
+      {contextChips.map((chip) => (
+        <Chip key={chip.key} variant='tag' size='xs' tone='subtle' displayTooltip tooltipCharLimit={60}>
+          {`${chip.label}: ${chip.value}`}
+        </Chip>
+      ))}
+    </Box>
+  );
 
   return (
     <Modal
@@ -514,20 +599,6 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
           maxHeight: `calc(85vh - ${ds.space.mul(2, 10)})`,
         }}
       >
-        {/* Event context (source / alert name) the list is filtered by */}
-        {contextChips.length > 0 && (
-          <Box
-            id='wf-template-event-context'
-            sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 'var(--ds-space-2)', mb: 'var(--ds-space-3)' }}
-          >
-            {contextChips.map((chip) => (
-              <Chip key={chip.key} variant='tag' size='xs' tone='subtle' displayTooltip tooltipCharLimit={60}>
-                {`${chip.label}: ${chip.value}`}
-              </Chip>
-            ))}
-          </Box>
-        )}
-
         {/* Search */}
         <Box sx={{ mb: 'var(--ds-space-3)' }}>
           <SearchInput
@@ -585,7 +656,7 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
             flex: 1,
           }}
         >
-          {loading && workflows.length === 0 ? (
+          {loading && workflows.length === 0 && recommended.length === 0 ? (
             <Box
               sx={{
                 display: 'flex',
@@ -596,7 +667,7 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
             >
               <Loader style={{ position: 'static', height: '100%', width: '100%' }} />
             </Box>
-          ) : displayedWorkflows.length === 0 ? (
+          ) : displayedRecommended.length === 0 && displayedOthers.length === 0 ? (
             <Box
               sx={{
                 display: 'flex',
@@ -616,28 +687,35 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
                 sx={{ color: ds.gray[400] }}
               />
             </Box>
+          ) : displayedRecommended.length > 0 ? (
+            <>
+              <Box sx={sectionHeaderSx}>
+                <SectionHeading id='wf-template-recommended-heading' value='Recommended for this event' />
+                {eventContextChips}
+              </Box>
+              <TemplateGrid workflows={displayedRecommended} onUseTemplate={handleUseTemplate} />
+              {displayedOthers.length > 0 && (
+                <>
+                  <Box sx={{ ...sectionHeaderSx, mt: 'var(--ds-space-3)' }}>
+                    <SectionHeading id='wf-template-others-heading' value='Other templates' />
+                  </Box>
+                  <TemplateGrid workflows={displayedOthers} onUseTemplate={handleUseTemplate} startIndex={displayedRecommended.length} />
+                </>
+              )}
+            </>
           ) : (
-            <Box
-              sx={{
-                display: 'grid',
-                gap: 'var(--ds-space-4)',
-                padding: 'var(--ds-space-3) var(--ds-space-4)',
-                gridTemplateColumns: 'repeat(4, 1fr)',
-                '@media (max-width: 1199px)': {
-                  gridTemplateColumns: 'repeat(3, 1fr)',
-                },
-                '@media (max-width: 1023px)': {
-                  gridTemplateColumns: 'repeat(2, 1fr)',
-                },
-                '@media (max-width: 767px)': {
-                  gridTemplateColumns: '1fr',
-                },
-              }}
-            >
-              {displayedWorkflows.map((workflow, index) => (
-                <TemplateCard key={workflow.id} workflow={workflow} onUseTemplate={handleUseTemplate} index={index} />
-              ))}
-            </Box>
+            <>
+              {noMatch && (
+                <Box id='wf-template-no-match' sx={sectionHeaderSx}>
+                  <Text
+                    value='No templates matched this event — showing all templates'
+                    sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400] }}
+                  />
+                  {eventContextChips}
+                </Box>
+              )}
+              <TemplateGrid workflows={displayedOthers} onUseTemplate={handleUseTemplate} />
+            </>
           )}
         </Box>
 

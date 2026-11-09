@@ -681,9 +681,6 @@ func buildArgoCDFlagsFromConfig(configValues []db.WorkspaceConfigValue) string {
 	if strings.ToLower(configVal(configValues, "grpc_web")) == "true" {
 		flags = append(flags, "--grpc-web")
 	}
-	if timeout := configVal(configValues, "timeout"); timeout != "" && timeout != "30" {
-		flags = append(flags, "--request-timeout", timeout+"s")
-	}
 	if cfgPath := configVal(configValues, "config_file_path"); cfgPath != "" {
 		flags = append(flags, "--config", cfgPath)
 	}

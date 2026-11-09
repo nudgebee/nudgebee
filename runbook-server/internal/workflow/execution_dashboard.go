@@ -472,23 +472,14 @@ func (s *Service) AggregateExecutions(ctx *security.RequestContext, req model.Ag
 		return resp.GetCount()
 	}
 
-	// Temporal cannot GROUP BY ExecutionStatus on the SQL visibility store, so
-	// each bucket is its own count. Each bucket is intersected with the user's
-	// own status filter, otherwise the cards would contradict the table.
-	failedStatuses := intersectStatuses(req.Statuses, model.FailedExecutionStatuses)
-	response := model.AggregateExecutionsResponse{
-		Total:                countFor(req.Statuses),
-		Succeeded:            countFor(intersectStatuses(req.Statuses, []model.WorkflowExecutionStatus{model.WorkflowExecutionStatusCompleted})),
-		Failed:               countFor(failedStatuses),
-		Running:              countFor(intersectStatuses(req.Statuses, []model.WorkflowExecutionStatus{model.WorkflowExecutionStatusRunning})),
-		TimedOut:             countFor(intersectStatuses(req.Statuses, []model.WorkflowExecutionStatus{model.WorkflowExecutionStatusTimedOut})),
-		CountsAreApproximate: true,
-		TopFailed:            []model.FailedAutomationCount{},
-		RetentionDays:        s.executionRetentionDays(ctx.GetContext()),
-	}
+	response := executionStatusCounts(req.Statuses, countFor)
+	response.CountsAreApproximate = true
+	response.TopFailed = []model.FailedAutomationCount{}
+	response.RetentionDays = s.executionRetentionDays(ctx.GetContext())
 
-	// A count of zero for an intersected-away bucket is correct, not a bug: a
-	// user filtering to COMPLETED genuinely has no failures in view.
+	// A user filtering to COMPLETED genuinely has no failures in view, so there
+	// is nothing to rank.
+	failedStatuses := intersectStatuses(req.Statuses, model.FailedExecutionStatuses)
 	if len(failedStatuses) > 0 {
 		topFailed, approximate, err := s.topFailedAutomations(ctx, tenantID, req.ExecutionDashboardFilter, failedStatuses, response.Failed, topFailedLimit)
 		if err != nil {
@@ -500,6 +491,50 @@ func (s *Service) AggregateExecutions(ctx *security.RequestContext, req model.Ag
 	}
 
 	return response, nil
+}
+
+// executionStatusCounts fills the aggregate's per-status counts. `count` runs
+// one visibility count for a status set, where an empty set means "no status
+// clause at all".
+//
+// Temporal cannot GROUP BY ExecutionStatus on the SQL visibility store, so each
+// bucket is its own count. Each bucket is intersected with the user's own
+// status filter, otherwise the cards would contradict the table.
+func executionStatusCounts(userStatuses []model.WorkflowExecutionStatus, count func([]model.WorkflowExecutionStatus) int64) model.AggregateExecutionsResponse {
+	bucket := func(status model.WorkflowExecutionStatus) int64 {
+		statuses := intersectStatuses(userStatuses, []model.WorkflowExecutionStatus{status})
+		// The user filtered this status out. Passing the empty set on would
+		// drop the status clause and count every run instead of none.
+		if len(statuses) == 0 {
+			return 0
+		}
+		return count(statuses)
+	}
+
+	failedOnly := bucket(model.WorkflowExecutionStatusFailed)
+	timedOut := bucket(model.WorkflowExecutionStatusTimedOut)
+	terminated := bucket(model.WorkflowExecutionStatusTerminated)
+	return model.AggregateExecutionsResponse{
+		Total:     count(userStatuses),
+		Succeeded: bucket(model.WorkflowExecutionStatusCompleted),
+		// Summed from its parts rather than counted as one OR query, so that
+		// Failed - TimedOut - Terminated is exactly the FAILED-status count.
+		Failed:     failedOnly + timedOut + terminated,
+		Running:    bucket(model.WorkflowExecutionStatusRunning),
+		TimedOut:   timedOut,
+		Terminated: terminated,
+		Canceled:   bucket(model.WorkflowExecutionStatusCanceled),
+	}
+}
+
+// leaderboardKey is the id a failure is ranked under. Every dry run has its own
+// "dry-run-<uuid>" id and no automation behind it, so ranked by id each one is
+// a separate one-failure row, all labelled "Dry run". They rank as one row.
+func leaderboardKey(workflowID string) string {
+	if strings.HasPrefix(workflowID, model.DryRunWorkflowIDPrefix) {
+		return model.DryRunWorkflowIDPrefix
+	}
+	return workflowID
 }
 
 // topFailedAutomations ranks automations by failure count within the filter,
@@ -588,7 +623,7 @@ func (s *Service) topFailedAutomations(
 	tally := map[string]int64{}
 	for _, info := range resp.GetExecutions() {
 		if workflowID := s.searchAttrString(info.GetSearchAttributes(), model.SearchAttrWorkflowID); workflowID != "" {
-			tally[workflowID]++
+			tally[leaderboardKey(workflowID)]++
 		}
 	}
 
@@ -620,7 +655,7 @@ func (s *Service) tallyFailuresByScan(ctx context.Context, query string, maxPage
 		}
 		for _, info := range resp.GetExecutions() {
 			if workflowID := s.searchAttrString(info.GetSearchAttributes(), model.SearchAttrWorkflowID); workflowID != "" {
-				tally[workflowID]++
+				tally[leaderboardKey(workflowID)]++
 			}
 		}
 		token = resp.GetNextPageToken()

@@ -28,7 +28,7 @@ var gcpLoadBalancerSchema = core.SpecificTypeSchema{
 		{Name: "is_public_entry", Indexed: true},
 		{Name: "ip_protocol"},
 		{Name: "port_range"},
-		{Name: "ports"},
+		{Name: "ports", Shape: core.PropertyShapeList},
 		{Name: "network_tier"},
 		{Name: "self_link"},
 		{Name: "vpc_network_url"},

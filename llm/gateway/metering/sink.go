@@ -2,6 +2,7 @@ package metering
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"runtime/debug"
 	"strconv"
@@ -12,6 +13,8 @@ import (
 
 	"nudgebee/llm-gateway/common"
 	"nudgebee/llm-gateway/config"
+
+	"github.com/lib/pq"
 )
 
 // Sink receives usage events. Record must never block the request path.
@@ -156,7 +159,7 @@ func (s *dbSink) run() {
 			return
 		}
 		if err := s.insert(batch); err != nil {
-			slog.Error("metering: batch insert failed", "rows", len(batch), "error", err)
+			s.insertEach(batch, err)
 		}
 		batch = batch[:0]
 	}
@@ -201,6 +204,65 @@ var usageColumns = []string{
 	"cost_usd",
 }
 
+// sanitize strips what Postgres refuses (NUL in text, the \u0000 escape in jsonb), since
+// one refused row fails the whole batch insert and drops every other row in it.
+func sanitize(ev UsageEvent) UsageEvent {
+	for _, f := range []*string{
+		&ev.ID, &ev.TenantID, &ev.AccountID, &ev.UserID, &ev.TokenID, &ev.APIKeyID, &ev.SessionID,
+		&ev.Provider, &ev.Model, &ev.RequestedProvider, &ev.RequestedModel, &ev.RespondedModel,
+		&ev.RoutingReason, &ev.RoutingRule, &ev.Method, &ev.Path, &ev.RequestID, &ev.ServiceTier,
+	} {
+		*f = cleanText(*f)
+	}
+	ev.Attributes = stripNULEscapes(cleanText(ev.Attributes))
+	return ev
+}
+
+// stripNULEscapes drops each \u0000 escape from a JSON document. It walks escapes in pairs,
+// so an escaped backslash followed by literal "u0000" text is left intact and stays valid JSON.
+func stripNULEscapes(s string) string {
+	if !strings.Contains(s, `\u0000`) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' || i+1 >= len(s) {
+			b.WriteByte(s[i])
+			continue
+		}
+		if strings.HasPrefix(s[i:], `\u0000`) {
+			i += len(`\u0000`) - 1
+			continue
+		}
+		b.WriteString(s[i : i+2])
+		i++
+	}
+	return b.String()
+}
+
+func cleanText(s string) string {
+	return strings.ToValidUTF8(strings.ReplaceAll(s, "\x00", ""), "\uFFFD")
+}
+
+// insertEach retries a refused batch one row at a time, so a row Postgres rejects loses only
+// itself. A non-Postgres error (DB unreachable) would fail every row too, so the batch is dropped.
+func (s *dbSink) insertEach(batch []UsageEvent, batchErr error) {
+	var pqErr *pq.Error
+	if len(batch) == 1 || !errors.As(batchErr, &pqErr) {
+		slog.Error("metering: batch insert failed", "rows", len(batch), "error", batchErr)
+		return
+	}
+	failed := 0
+	for i := range batch {
+		if err := s.insert(batch[i : i+1]); err != nil {
+			failed++
+			slog.Error("metering: usage row refused", "id", batch[i].ID, "error", err)
+		}
+	}
+	slog.Warn("metering: batch insert refused, retried row by row", "rows", len(batch), "failed", failed, "error", batchErr)
+}
+
 // insert writes a batch as a single multi-row INSERT. DatabaseManager.Exec
 // rebinds $N placeholders to the active driver (Postgres or ClickHouse).
 func (s *dbSink) insert(evs []UsageEvent) error {
@@ -212,6 +274,7 @@ func (s *dbSink) insert(evs []UsageEvent) error {
 
 	args := make([]any, 0, len(evs)*n)
 	for i, ev := range evs {
+		ev = sanitize(ev)
 		if i > 0 {
 			sb.WriteByte(',')
 		}

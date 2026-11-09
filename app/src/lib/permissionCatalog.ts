@@ -297,6 +297,25 @@ const NON_GRANTABLE_ACTIONS = new Set<string>([
   'customroles_update_user_assignments',
   'customroles_update_group_assignments',
   'customroles_update_group_account_assignments',
+  // AI Gateway administration is tenant-admin only (#38963, #38965); usage stays grantable
+  'llm_gateway_get_settings',
+  'llm_gateway_update_settings',
+  'llm_gateway_list_routing_rules',
+  'llm_gateway_create_routing_rule',
+  'llm_gateway_update_routing_rule',
+  'llm_gateway_delete_routing_rule',
+  'llm_gateway_list_tiers',
+  'llm_gateway_set_tier',
+  'llm_gateway_reset_tier',
+  'llm_gateway_list_models',
+  'llm_gateway_list_rate_limits',
+  'llm_gateway_upsert_rate_limit',
+  'llm_gateway_delete_rate_limit',
+  'llm_gateway_list_user_access',
+  'llm_gateway_upsert_user_access',
+  // every key in the tenant, and revoking any of them, is tenant-admin only, #38965
+  'users_list_tenant_tokens',
+  'users_delete_tenant_token',
 ]);
 
 export function normalizeModule(rawModule: string): string {

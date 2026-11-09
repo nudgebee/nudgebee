@@ -34,6 +34,12 @@ var (
 		Code:    http.StatusServiceUnavailable,
 		Message: "The AI service is temporarily unavailable due to a network or timeout issue. Please try again in a few moments.",
 	}
+	// ErrLLMOutOfCredit maps to the provider account running out of credit; unlike a
+	// rate limit it won't clear by waiting.
+	ErrLLMOutOfCredit = common.Error{
+		Code:    http.StatusPaymentRequired,
+		Message: "The AI provider account used for this request has run out of credit. Ask an account admin to add credit with the provider, or choose a different default under Integrations → LLM Providers.",
+	}
 )
 
 // RateLimitedLLMError is ErrLLMRateLimited carrying a message specialised to the

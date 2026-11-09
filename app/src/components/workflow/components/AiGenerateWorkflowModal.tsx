@@ -5,7 +5,9 @@ import { ProgressLinear } from '@ui/ProgressLinear';
 import { Button } from '@ui/Button';
 import { FormField } from '@shared/forms/FormComponents';
 import MarkDowns from '@shared/viewers/MarkDowns';
+import { ds } from '@utils/colors';
 import ClarificationQuestion from './ClarificationQuestion';
+import { getAiBuildActions, SavedAutomationSummary } from '@components/workflow/automationMenu';
 
 type ModalStage = 'input' | 'generating' | 'plan_review' | 'text_followup' | 'success' | 'error';
 
@@ -49,6 +51,12 @@ interface AiGenerateWorkflowModalProps {
   onGenerateAsync?: (query: string) => Promise<{ sessionId: string; conversationId: string } | null>;
   onPollConversation?: (sessionId: string) => Promise<{
     status: string;
+    // Whether this session saved an automation; unset when the caller could not check.
+    saved?: boolean;
+    // The automation this session saved, as the list returns it; unset when it is not known.
+    savedWorkflow?: SavedAutomationSummary;
+    // What the builder has done so far in this conversation: tool calls made, and tasks added.
+    progress?: { steps: number; tasksAdded: number };
     workflowJson?: string;
     summaryText?: string;
     planText?: string;
@@ -63,10 +71,19 @@ interface AiGenerateWorkflowModalProps {
   onApproveOrRespond?: (query: string, conversationId: string, sessionId: string, messageId?: string, agentId?: string) => Promise<void>;
   onCancel?: (conversationId: string) => Promise<void>;
   onWorkflowCompleted?: (workflowJson: string, conversationId: string, sessionId: string) => void;
+  // Offered on the success screen for the automation the build saved. The caller owns what each
+  // does; leaving one out hides its button.
+  onRunNow?: (savedWorkflow: SavedAutomationSummary) => void;
+  onActivate?: (savedWorkflow: SavedAutomationSummary) => void;
   loading: boolean;
 }
 
 const POLL_INTERVAL_MS = 4000;
+
+// How long a run may show no observable change before the modal says so. The longest quiet
+// stretch of a healthy run is the model writing out its final answer, which has taken about two
+// minutes on large automations.
+const STALL_AFTER_MS = 3 * 60 * 1000;
 
 const STAGE_MESSAGES = [
   'Understanding your request...',
@@ -84,6 +101,8 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
   onApproveOrRespond,
   onCancel,
   onWorkflowCompleted,
+  onRunNow,
+  onActivate,
   loading,
 }) => {
   const [query, setQuery] = useState('');
@@ -93,14 +112,27 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
   const [feedbackText, setFeedbackText] = useState('');
   const [showFeedbackInput, setShowFeedbackInput] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  // The AI's own reply (markdown), shown under the error message when a run ends without an automation.
+  const [errorDetail, setErrorDetail] = useState('');
   const [stageMessageIndex, setStageMessageIndex] = useState(0);
   const [summaryText, setSummaryText] = useState('');
-  const [completedData, setCompletedData] = useState<{ workflowJson: string; conversationId: string; sessionId: string } | null>(null);
+  // Tasks the builder has added so far, read from the conversation on every poll.
+  const [tasksAdded, setTasksAdded] = useState(0);
+  // True once the conversation has shown no change for STALL_AFTER_MS.
+  const [stalled, setStalled] = useState(false);
+  const [completedData, setCompletedData] = useState<{
+    workflowJson: string;
+    conversationId: string;
+    sessionId: string;
+    savedWorkflow?: SavedAutomationSummary;
+  } | null>(null);
 
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const elapsedIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const lastPlanMessageIdRef = useRef<string>('');
   const processingWaitingRef = useRef(false);
+  // The last distinct state the poll returned and when it was first seen, for the stall check.
+  const lastActivityRef = useRef({ key: '', at: 0 });
 
   const clearPolling = useCallback(() => {
     if (pollIntervalRef.current) {
@@ -140,6 +172,7 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
     setFeedbackText('');
     setShowFeedbackInput(false);
     setErrorMessage('');
+    setErrorDetail('');
     setStageMessageIndex(0);
     setSummaryText('');
     setCompletedData(null);
@@ -170,6 +203,8 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
 
       const startedAt = Date.now();
       setProgress({ sessionId, conversationId, startedAt, elapsedSeconds: 0 });
+      lastActivityRef.current = { key: '', at: startedAt };
+      setStalled(false);
 
       // Update elapsed timer every second
       elapsedIntervalRef.current = setInterval(() => {
@@ -177,27 +212,53 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
       }, 1000);
 
       // Poll for status
-      pollIntervalRef.current = setInterval(async () => {
+      const pollInterval = setInterval(async () => {
         try {
           const result = await onPollConversation?.(sessionId);
-          if (!result) {
+          // Cancelled, closed or restarted while the request was in flight: this answer belongs
+          // to a run the modal has already left.
+          if (pollIntervalRef.current !== pollInterval) {
             return;
           }
 
+          // A run is moving while its status, its step count or the question it is asking keeps
+          // changing. When none of them has changed for STALL_AFTER_MS — or the conversation could
+          // not be read at all for that long — say so instead of showing a progress bar over a run
+          // that may be dead; polling goes on, and the notice clears if the run moves again.
+          const activityKey = result ? `${result.status}:${result.progress?.steps ?? 0}:${followupIdentity(result)}` : lastActivityRef.current.key;
+          if (activityKey !== lastActivityRef.current.key) {
+            lastActivityRef.current = { key: activityKey, at: Date.now() };
+            setStalled(false);
+          } else if (Date.now() - lastActivityRef.current.at >= STALL_AFTER_MS) {
+            setStalled(true);
+          }
+          if (!result) {
+            return;
+          }
+          setTasksAdded(result.progress?.tasksAdded ?? 0);
+
           if (result.status === 'COMPLETED') {
             clearIntervals();
-            if (result.workflowJson) {
+            if (result.saved ?? Boolean(result.workflowJson)) {
               // Automation built. Show the build summary + an Open-in-Editor button rather than
               // navigating away immediately, so the user can see what was created.
               setSummaryText(result.summaryText || '');
               setCompletedData({
-                workflowJson: result.workflowJson,
+                workflowJson: result.workflowJson || '',
                 conversationId: result.conversationId || conversationId,
                 sessionId,
+                savedWorkflow: result.savedWorkflow,
               });
               setStage('success');
+            } else if (result.summaryText) {
+              // Nothing was saved, but the AI did reply — a failed save with its reason, or a
+              // plain answer to a prompt that was not a build request. That reply is the whole
+              // message: the title says no automation was saved, and nothing here guesses why.
+              setErrorMessage('');
+              setErrorDetail(result.summaryText);
+              setStage('error');
             } else {
-              // Non-workflow completion (e.g., "hi" prompt) — show helpful message
+              // Non-workflow completion with no reply at all — show helpful message
               setErrorMessage(
                 "This prompt didn't result in an automation. Try describing a specific task, " + 'e.g., "Send a Slack alert when CPU exceeds 80%".'
               );
@@ -246,6 +307,7 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
           console.error('Error polling conversation:', err);
         }
       }, POLL_INTERVAL_MS);
+      pollIntervalRef.current = pollInterval;
     },
     [onPollConversation, clearIntervals, clearPolling]
   );
@@ -258,6 +320,8 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
     setStage('generating');
     setStageMessageIndex(0);
     setErrorMessage('');
+    setTasksAdded(0);
+    setStalled(false);
 
     try {
       const result = await onGenerateAsync?.(query);
@@ -343,6 +407,7 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
     setFeedbackText('');
     setShowFeedbackInput(false);
     setErrorMessage('');
+    setErrorDetail('');
     setStageMessageIndex(0);
     setSummaryText('');
     setCompletedData(null);
@@ -354,6 +419,7 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
   const handleRetry = () => {
     setStage('input');
     setErrorMessage('');
+    setErrorDetail('');
     setProgress(null);
   };
 
@@ -397,7 +463,7 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
             }}
           >
             <Typography variant='body1' sx={{ fontWeight: 'var(--ds-font-weight-medium)', color: 'text.primary' }}>
-              {STAGE_MESSAGES[stageMessageIndex]}
+              {tasksAdded > 0 ? `Building automation: ${tasksAdded} ${tasksAdded === 1 ? 'task' : 'tasks'} added` : STAGE_MESSAGES[stageMessageIndex]}
             </Typography>
             <Box sx={{ width: '60%' }}>
               <ProgressLinear mode='indeterminate' tone='info' surface='section' aria-label='Generating automation' />
@@ -405,6 +471,11 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
             {progress && (
               <Typography variant='body2' sx={{ color: 'text.secondary' }}>
                 Elapsed: {formatElapsed(progress.elapsedSeconds)}
+              </Typography>
+            )}
+            {stalled && (
+              <Typography id='wf-ai-stalled-notice' variant='body2' sx={{ color: 'warning.main', textAlign: 'center' }}>
+                No progress for {STALL_AFTER_MS / 60000} minutes. This run may be stuck: keep waiting, or cancel and try again.
               </Typography>
             )}
           </Box>
@@ -542,9 +613,28 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
               justifyContent: 'center',
             }}
           >
-            <Typography variant='body1' sx={{ color: 'error.main', fontWeight: 'var(--ds-font-weight-medium)', textAlign: 'center' }}>
-              {errorMessage}
-            </Typography>
+            {errorMessage && (
+              <Typography variant='body1' sx={{ color: 'error.main', fontWeight: 'var(--ds-font-weight-medium)', textAlign: 'center' }}>
+                {errorMessage}
+              </Typography>
+            )}
+            {errorDetail && (
+              <Box
+                id='wf-ai-error-detail'
+                sx={{
+                  alignSelf: 'stretch',
+                  p: ds.space[4],
+                  borderRadius: 'var(--ds-radius-sm)',
+                  border: '1px solid',
+                  borderColor: 'divider',
+                  bgcolor: 'background.default',
+                  fontSize: 'var(--ds-text-body)',
+                  lineHeight: 1.6,
+                }}
+              >
+                <MarkDowns data={errorDetail} sx={{}} allowExecutable={false} onLinkClick={null} />
+              </Box>
+            )}
           </Box>
         );
 
@@ -662,14 +752,22 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
           </Box>
         );
 
-      case 'success':
+      case 'success': {
+        // A new automation is saved paused and "built and saved" was where this window stopped,
+        // so most were never run and almost none with a schedule was switched on. Offer both
+        // here. One primary button: the next step for this automation, else Open in Editor.
+        const savedWorkflow = completedData?.savedWorkflow;
+        const actions = getAiBuildActions(savedWorkflow);
+        const showRunNow = Boolean(savedWorkflow && actions.runNow && onRunNow);
+        const showActivate = Boolean(savedWorkflow && actions.activate && onActivate);
         return (
           <Box sx={{ p: 2, pt: 0, display: 'flex', gap: 2, justifyContent: 'flex-end', '& button': { minWidth: '140px' } }}>
             <Button tone='secondary' size='md' onClick={handleClose}>
               Close
             </Button>
             <Button
-              tone='primary'
+              id='wf-ai-open-editor-btn'
+              tone={showRunNow || showActivate ? 'secondary' : 'primary'}
               size='md'
               onClick={() => {
                 if (!completedData) {
@@ -680,8 +778,19 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
             >
               Open in Editor
             </Button>
+            {savedWorkflow && showActivate && (
+              <Button id='wf-ai-activate-btn' tone={showRunNow ? 'secondary' : 'primary'} size='md' onClick={() => onActivate?.(savedWorkflow)}>
+                Activate
+              </Button>
+            )}
+            {savedWorkflow && showRunNow && (
+              <Button id='wf-ai-run-now-btn' tone='primary' size='md' onClick={() => onRunNow?.(savedWorkflow)}>
+                Run now
+              </Button>
+            )}
           </Box>
         );
+      }
 
       case 'error':
         return (
@@ -720,7 +829,8 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
       case 'success':
         return 'Automation Built';
       case 'error':
-        return 'Generation Failed';
+        // With the AI's reply on screen the run did finish; what is missing is a saved automation.
+        return errorDetail ? 'Automation not saved' : 'Generation Failed';
       default:
         return 'Generate Automation with AI';
     }

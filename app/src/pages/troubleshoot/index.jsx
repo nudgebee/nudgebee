@@ -188,8 +188,14 @@ const TroubleshootPage = () => {
     // window. Either way start_time/end_time take precedence over
     // KubernetesEvents' own default and over persisted ranges (just cleared),
     // so the list window matches the widget.
+    // Carry over the briefing's own account scope. The briefing aggregates are
+    // scoped by accountIds in the URL (see BriefingFilters/useBriefingData),
+    // but the widget's own `query` never carries it — so without this the
+    // clean push below drops the filter and the drill-down counts every
+    // account instead of the one the tile was scoped to.
     const rangedQuery = {
       ...query,
+      accountIds: query.accountIds ?? router.query.accountIds,
       start_time: query.start_time ?? String(summaryRange.startDate.getTime()),
       end_time: query.end_time ?? String(summaryRange.endDate.getTime()),
     };

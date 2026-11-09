@@ -7,6 +7,15 @@
 # clean. EE deploys still override PYTHON_BASE via --build-arg.
 ARG PYTHON_BASE=ghcr.io/nudgebee/nudgebee-python:3.12
 FROM ${PYTHON_BASE} AS python-base
+ARG IMAGE_VERSION=0.0.0
+ARG IMAGE_RELEASE=1
+LABEL name="nudgebee-notifications-server" \
+      maintainer="nudgebee" \
+      vendor="nudgebee" \
+      version="${IMAGE_VERSION}" \
+      release="${IMAGE_RELEASE}" \
+      summary="Nudgebee notifications server" \
+      description="Delivers alerts and notifications for the Nudgebee platform."
 # Bumping OS_PKG_EPOCH changes this layer's cache key so the registry cache
 # can't serve a stale package layer (same convention as api-server/services).
 ARG OS_PKG_EPOCH=2026-W44

@@ -26,6 +26,7 @@ import SearchInput from '@ui/SearchInput';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import ServiceRefreshButton from '@components/cloudaccount/ServiceRefreshButton';
 import { CustomText, DataBlock } from '@components/cloudaccount/common';
+import { resourceCreatedAt } from '@components/cloudaccount/resourceCreatedAt';
 import { ds } from '@utils/colors';
 
 // White card frame shared by every ECS drilldown detail panel (matches the EC2/RDS detail cards).
@@ -267,7 +268,7 @@ export const ECSTasks = (props: {
       >
         <SearchInput
           id='ecs-tasks-search'
-          label='Search by Name/ARN Snippet'
+          label='Search by Name'
           value={searchFilter}
           onChange={(next) => {
             if (searchFilter !== '' && next === '') {
@@ -294,8 +295,9 @@ export const ECSTasks = (props: {
           value={selectedTagKey}
           options={availableTagKeys}
           onSelect={(e: any) => {
-            setSelectedTagKey(e.target.value || null);
-            if (!e.target.value) {
+            const nextKey = e.target.value || null;
+            if (nextKey !== selectedTagKey) {
+              setSelectedTagKey(nextKey);
               setSelectedTagValue(null);
             }
           }}
@@ -452,7 +454,7 @@ export const ECSServices = (props: {
           });
           data.push({ component: <TagsCell tags={item.tags} /> });
           data.push({
-            component: <Datetime value={item.created_at} />,
+            component: <Datetime value={resourceCreatedAt(item)} />,
           });
           data.push({
             component:
@@ -542,7 +544,7 @@ export const ECSServices = (props: {
       >
         <SearchInput
           id='ecs-services-search'
-          label='Search by Name/ARN Snippet'
+          label='Search by Name'
           value={searchFilter}
           onChange={(next) => {
             if (searchFilter !== '' && next === '') {
@@ -569,8 +571,9 @@ export const ECSServices = (props: {
           value={selectedTagKey}
           options={availableTagKeys}
           onSelect={(e: any) => {
-            setSelectedTagKey(e.target.value || null);
-            if (!e.target.value) {
+            const nextKey = e.target.value || null;
+            if (nextKey !== selectedTagKey) {
+              setSelectedTagKey(nextKey);
               setSelectedTagValue(null);
             }
           }}
@@ -975,7 +978,21 @@ const ECSDeploymentsDetails = ({ ecsDetails }: ECSDeploymentsDetailsProps) => {
 
 // --- ECS Clusters Component ---
 
-const CLUSTER_HEADER = ['Cluster Name', 'Status', 'Services', 'Tasks', 'Container Instances', 'Tags', 'CreatedAt', ''];
+// AWS DescribeClusters returns no creation time, so the collector stores none for
+// clusters. This column shows when NudgeBee first saw the cluster, labelled honestly
+// as "First Seen" rather than a creation date it can't know (#39708). Columns carry
+// explicit widths (the table is table-layout:fixed) so the two-word header and the
+// dates stay on one line instead of collapsing the column.
+const CLUSTER_HEADER = [
+  { name: 'Cluster Name', width: '20%' },
+  { name: 'Status', width: '10%' },
+  { name: 'Services', width: '8%' },
+  { name: 'Tasks', width: '10%' },
+  { name: 'Container Instances', width: '16%' },
+  { name: 'Tags', width: '16%' },
+  { name: 'First Seen', width: '12%' },
+  { name: '', width: '8%' },
+];
 
 const clusterInfoComponentFn = (_opt: any, dq: any) => <ECSClusterInfo clusterDetails={dq} />;
 
@@ -1159,7 +1176,7 @@ export const ECSClusters = (props: {
       >
         <SearchInput
           id='ecs-clusters-search'
-          label='Search by Name/ARN Snippet'
+          label='Search by Name'
           value={searchFilter}
           onChange={(next) => {
             if (searchFilter !== '' && next === '') {
@@ -1186,8 +1203,9 @@ export const ECSClusters = (props: {
           value={selectedTagKey}
           options={availableTagKeys}
           onSelect={(e: any) => {
-            setSelectedTagKey(e.target.value || null);
-            if (!e.target.value) {
+            const nextKey = e.target.value || null;
+            if (nextKey !== selectedTagKey) {
+              setSelectedTagKey(nextKey);
               setSelectedTagValue(null);
             }
           }}

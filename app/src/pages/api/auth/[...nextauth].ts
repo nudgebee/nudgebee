@@ -37,6 +37,7 @@ import { adapterUserUpdateDataOnUserRoles, groupBelongsToTenant } from '@lib/use
 import { pickDefaultTenant } from '@lib/defaultTenant';
 import { findTenantByDomain } from '@lib/tenantLookup';
 import { dummyCredsAdminEmail } from '@lib/dummyCredsAdmin';
+import { ldapBindName, ldapSearchFilter } from '@lib/ldapUsername';
 import { getLicenseDetails, SERVICES_SERVER_UNREACHABLE_MSG, type LicenseTier } from '@lib/license';
 import { enrichAuthToken, enrichSession, onReturningOAuthSignIn, onUnknownOAuthSignIn, resolveLicensedTenantUser } from '@lib/authHooks';
 
@@ -579,13 +580,18 @@ if (process.env.EMAIL_SERVER_HOST && (process.env.NEXTAUTH_MAGICLINK_CREDS_ENABL
         // to the end user — keep the diagnostic detail in server logs and the
         // outward-facing copy comes from app/src/pages/auth/error.tsx.
         const notificationServiceUrl = process.env.NOTIFICATION_SERVICE_URL ?? 'http://notifications:80';
+        const notificationToken = process.env.NOTIFICATION_SERVER_TOKEN;
         try {
-          await axios.post(`${notificationServiceUrl}/api/emails/send`, {
-            recipients: email,
-            subject: 'Sign in to your account',
-            template: 'magic_link',
-            template_params: { magic_link_url: url },
-          });
+          await axios.post(
+            `${notificationServiceUrl}/api/emails/send`,
+            {
+              recipients: email,
+              subject: "Here's your sign-in link",
+              template: 'magic_link',
+              template_params: { magic_link_url: url, email },
+            },
+            notificationToken ? { headers: { 'X-ACTION-TOKEN': notificationToken } } : undefined
+          );
         } catch (err: any) {
           // axios throws on non-2xx by default. Capture status + body when
           // available, plus the raw error code for network failures
@@ -902,8 +908,7 @@ if (process.env.NEXTAUTH_LDAP_URI) {
         }
         try {
           const searchFilter = process.env.NEXTAUTH_LDAP_LOGIN_FILTER ?? '(uid=%s)';
-          const searchDn = searchFilter.replace('%s', credentials.username);
-          console.log('searchDn', searchDn);
+          const searchDn = ldapBindName(searchFilter, credentials.username);
           await client.bind(searchDn, credentials.password);
         } catch (e) {
           console.log('LDAP Auth Error', e);
@@ -928,7 +933,7 @@ if (process.env.NEXTAUTH_LDAP_URI) {
             throw Error('Unable to bind to search user');
           }
           let searchFilter = process.env.NEXTAUTH_LDAP_SEARCH_FILTER ?? '(uid=%s)';
-          searchFilter = searchFilter.replace('%s', credentials.username);
+          searchFilter = ldapSearchFilter(searchFilter, credentials.username);
           const searchOptions = {
             filter: searchFilter,
             attributes: [ldapAttributeEmail, ldapAttributeGroup, ldapAttributeName, ldapAttributeFirstName, ldapAttributeLastName],

@@ -31,6 +31,25 @@ func (m CubeAPMWebhook) Category() core.IntegrationCategory {
 	return core.IntegrationCategoryIncidentWebhook
 }
 
+// WebhookLabelHelp describes the labels ProcessEventWebook builds. Update it with the parser.
+func (m CubeAPMWebhook) WebhookLabelHelp() core.WebhookLabelHelp {
+	return core.WebhookLabelHelp{
+		Summary: "Every label on the alert becomes a label under the same name. Labels common to the group fill in what the alert lacks.",
+		Labels: []core.WebhookLabelSource{
+			{Label: "<alert label>", Source: "alerts[].labels.<name>, else commonLabels.<name>"},
+			{Label: "externalURL", Source: "externalURL"},
+			{Label: "generatorURL", Source: "alerts[].generatorURL"},
+			{Label: "runbook_url", Source: "annotations.runbook_url"},
+			{Label: "namespace", Source: "the alert's workload namespace label, when namespace is not set"},
+			{Label: "service", Source: "the workload named by the alert's labels, when service is not set"},
+		},
+		Notes: []string{
+			"Annotations are not labels, except runbook_url.",
+			"status is not a label.",
+		},
+	}
+}
+
 func (m CubeAPMWebhook) ConfigSchema() core.IntegrationSchema {
 	return core.IntegrationSchema{
 		Type:     core.ToolSchemaTypeObject,

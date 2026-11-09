@@ -6,6 +6,9 @@ const providerLabels: Record<string, string> = {
   slack: 'Slack',
   ms_teams: 'MS Teams',
   google_chat: 'Google Chat',
+  slack_webhook: 'Slack webhook',
+  ms_teams_webhook: 'Teams webhook',
+  google_chat_webhook: 'Google Chat webhook',
 };
 
 const enrichTaskDescription = (taskType: string, params: any, baseDescription: string): string | null => {

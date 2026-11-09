@@ -24,6 +24,19 @@ const knowledgeReadBytes = 8192
 // The existing JSON save API buffers each body. Bound concurrent materialization.
 var knowledgeSaveSlots = make(chan struct{}, 2)
 
+// headBuffer keeps the first limit bytes written to it and discards the rest.
+type headBuffer struct {
+	strings.Builder
+	limit int
+}
+
+func (b *headBuffer) Write(p []byte) (int, error) {
+	if room := b.limit - b.Len(); room > 0 {
+		b.Builder.Write(p[:min(len(p), room)])
+	}
+	return len(p), nil
+}
+
 func knowledgeFailure(err error) (core.NBToolResponse, error) {
 	return core.NBToolResponse{Status: core.NBToolResponseStatusError, Type: core.NBToolResponseTypeText, Data: fmt.Sprintf("Knowledge read failed: %s. No complete document was loaded.", common.TruncateHead(err.Error(), 1024))}, nil
 }
@@ -104,7 +117,7 @@ func (m LoadSkillsTool) callWorkspaceKnowledge(ctx core.NbToolContext, input cor
 			if len(menu) == 0 {
 				return knowledgeFailure(fmt.Errorf("no indexed documents found in this knowledge base"))
 			}
-			return core.NBToolResponse{Status: core.NBToolResponseStatusSuccess, Type: core.NBToolResponseTypeText, Data: "Select an exact indexed document with load_skills:\n" + strings.Join(menu, "\n")}, nil
+			return core.NBToolResponse{Status: core.NBToolResponseStatusSuccess, Type: core.NBToolResponseTypeText, Data: "Select an exact indexed document with load_skills:\n" + withSearchGuidance(menu, "\n")}, nil
 		}
 		if c.FileSHA256 != "" && selected.Version != c.Version {
 			return knowledgeFailure(fmt.Errorf("manual knowledge changed; select its name again"))
@@ -141,11 +154,13 @@ func (m LoadSkillsTool) callWorkspaceKnowledge(ctx core.NbToolContext, input cor
 		reader = io.NopCloser(strings.NewReader(c.Content))
 	}
 	defer func() { _ = reader.Close() }()
-	text, err := readKnowledgeLinesFromByte(reader, c.FileSHA256, keyword, start, startByte, c.Purpose)
+	// The panel shows the page itself, not this call's numbered read window.
+	page := &headBuffer{limit: core.MaxKnowledgeReferenceBytes}
+	text, err := readKnowledgeLinesFromByte(io.TeeReader(reader, page), c.FileSHA256, keyword, start, startByte, c.Purpose)
 	if err != nil {
 		return knowledgeFailure(err)
 	}
-	refs := []core.NBToolResponseReference{{Text: c.Title, Url: c.ReferenceID, Type: "knowledge_base", Description: core.KnowledgePurposeGuidance(c.Purpose), Snippet: text}}
+	refs := []core.NBToolResponseReference{{Text: c.Title, Url: c.ReferenceID, Type: "knowledge_base", Description: core.KnowledgePurposeGuidance(c.Purpose), Snippet: strings.ToValidUTF8(page.String(), "")}}
 	result := fmt.Sprintf("%s\nTitle: %s\nHandle: %s\nSize: %d bytes. Use load_skills with this handle and keyword or start_line for selective reads.\n%s", core.KnowledgePurposeGuidance(c.Purpose), c.Title, c.ID, c.Bytes, text)
 	if c.Path != "" {
 		refs = append(refs, core.NBToolResponseReference{Text: c.Title, Url: c.Path, Type: "file", Query: c.ID, Description: core.KnowledgePurposeGuidance(c.Purpose) + " Read through load_skills using " + c.ID})
@@ -174,10 +189,11 @@ func materializeKnowledge(ctx core.NbToolContext, wm workspace.WorkspaceManager,
 	defer func() { _ = temp.Close(); _ = os.Remove(temp.Name()) }()
 	digest := sha256.New()
 	out := io.MultiWriter(temp, digest)
+	wholeDocument, wholeSHA256 := false, ""
 	if c.KBID != "" {
 		err = core.WriteManualKnowledge(ctx.Ctx, ctx.AccountId, *c, out)
 	} else {
-		var source io.ReadCloser
+		var source *core.KnowledgeDocumentStream
 		source, err = core.OpenKnowledgeDocument(ctx.Ctx.GetContext(), ctx.AccountId, *c, false)
 		if err == nil {
 			var n int64
@@ -186,8 +202,14 @@ func materializeKnowledge(ctx core.NbToolContext, wm workspace.WorkspaceManager,
 			if n > core.MaxKnowledgeDocumentBytes {
 				err = fmt.Errorf("document exceeds transfer limit")
 			}
-			if err == nil && n != c.Bytes {
+			if err == nil && n != source.Bytes {
 				err = fmt.Errorf("incomplete indexed document")
+			}
+			// The handle described one chunk. Once the whole page arrives, the
+			// size, and the hash the file is verified against, describe the page.
+			if err == nil && source.Scope == core.KnowledgeScopeDocument {
+				wholeDocument, wholeSHA256 = true, source.SHA256
+				c.Bytes = source.Bytes
 			}
 		}
 	}
@@ -195,7 +217,11 @@ func materializeKnowledge(ctx core.NbToolContext, wm workspace.WorkspaceManager,
 		return fmt.Errorf("materialize knowledge: %w", err)
 	}
 	c.FileSHA256 = hex.EncodeToString(digest.Sum(nil))
-	if c.KBID == "" && c.FileSHA256 != c.Version {
+	expectedSHA256 := c.Version
+	if wholeDocument {
+		expectedSHA256 = wholeSHA256
+	}
+	if c.KBID == "" && c.FileSHA256 != expectedSHA256 {
 		return fmt.Errorf("indexed document content version mismatch")
 	}
 	if _, err = temp.Seek(0, io.SeekStart); err != nil {

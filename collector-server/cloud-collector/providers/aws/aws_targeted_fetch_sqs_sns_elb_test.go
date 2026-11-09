@@ -29,10 +29,27 @@ const (
 
 // fakeAwsRequest is one AWS API call as the fake endpoint saw it. Op is
 // "<service>:<Action>"; Params holds the query-protocol form fields or, for the
-// JSON protocol SQS speaks, the top-level string fields of the body.
+// JSON protocol SQS speaks, the top-level string fields of the body. Region is
+// the region the call was signed for, which is the region the client targeted:
+// every client shares the one fake endpoint, so the host cannot tell them apart.
 type fakeAwsRequest struct {
 	Op     string
 	Params map[string]string
+	Region string
+}
+
+// sigV4Region reads the region out of a SigV4 Authorization header, whose
+// credential scope is <access key>/<date>/<region>/<service>/aws4_request.
+func sigV4Region(authorization string) string {
+	_, scope, found := strings.Cut(authorization, "Credential=")
+	if !found {
+		return ""
+	}
+	parts := strings.Split(scope, "/")
+	if len(parts) < 3 {
+		return ""
+	}
+	return parts[2]
 }
 
 // fakeAwsEndpoint stands in for the regional AWS endpoints. Every SDK client the
@@ -48,7 +65,7 @@ type fakeAwsEndpoint struct {
 
 func (f *fakeAwsEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
-	req := fakeAwsRequest{Params: map[string]string{}}
+	req := fakeAwsRequest{Params: map[string]string{}, Region: sigV4Region(r.Header.Get("Authorization"))}
 	if target := r.Header.Get("X-Amz-Target"); strings.HasPrefix(target, "AmazonSQS.") {
 		req.Op = "sqs:" + strings.TrimPrefix(target, "AmazonSQS.")
 		var fields map[string]any

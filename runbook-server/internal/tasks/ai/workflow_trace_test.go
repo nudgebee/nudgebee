@@ -4,8 +4,10 @@ import (
 	"nudgebee/runbook/internal/tasks/testutils"
 	"nudgebee/runbook/internal/tasks/types"
 	"nudgebee/runbook/services/llm"
+	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -67,6 +69,48 @@ func TestWorkflowTraceFields_SessionScope(t *testing.T) {
 		// Trace fields stay per-run — only the conversation identity is shared.
 		assert.Equal(t, "wfid", workflowId)
 		assert.Equal(t, "runid", executionId)
+	})
+}
+
+// An isolated "Run Task" execution (Task Runner) carries no workflow id and no
+// run id. Every such run used to get the constant session id `wf____`, so
+// llm-server resumed one conversation for all of them (#39834).
+func TestWorkflowTraceFields_IsolatedRunGetsOwnSession(t *testing.T) {
+	taskCtx := &testutils.MockTaskContext{Account: "acct"}
+
+	for _, scope := range []string{sessionScopeExecution, "", sessionScopeWorkflow} {
+		t.Run("scope "+scope, func(t *testing.T) {
+			first, workflowId, executionId, labels := workflowTraceFields(taskCtx, scope)
+			second, _, _, _ := workflowTraceFields(taskCtx, scope)
+
+			assert.NotEqual(t, first, second, "two isolated runs must not share a conversation")
+			for _, sessionId := range []string{first, second} {
+				id, found := strings.CutPrefix(sessionId, "wf__runtask__")
+				require.True(t, found, "got %q", sessionId)
+				require.NoError(t, uuid.Validate(id), "got %q", sessionId)
+			}
+			// No workflow identity is fabricated for the trace fields.
+			assert.Empty(t, workflowId)
+			assert.Empty(t, executionId)
+			assert.Nil(t, labels)
+		})
+	}
+
+	t.Run("request carries the unique session and no workflow identity", func(t *testing.T) {
+		req := applyWorkflowTrace(taskCtx, sessionScopeExecution, llm.LLMRequest{})
+		assert.True(t, strings.HasPrefix(req.SessionId, "wf__runtask__"), "got %q", req.SessionId)
+		assert.Empty(t, req.WorkflowId)
+		assert.Empty(t, req.ExecutionId)
+	})
+
+	t.Run("a run id alone is still a real run", func(t *testing.T) {
+		sessionId, _, _, _ := workflowTraceFields(&testutils.MockTaskContext{WorkflowRunId: "runid"}, sessionScopeExecution)
+		assert.Equal(t, "wf____runid", sessionId)
+	})
+
+	t.Run("workflow scope without a workflow id falls back to the run", func(t *testing.T) {
+		sessionId, _, _, _ := workflowTraceFields(&testutils.MockTaskContext{WorkflowRunId: "runid"}, sessionScopeWorkflow)
+		assert.Equal(t, "wf____runid", sessionId)
 	})
 }
 

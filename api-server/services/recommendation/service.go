@@ -426,6 +426,14 @@ func ApplyRecommendation(ctx *security.RequestContext, query RecommendationApply
 		return RecommendationApplyResponse{}, err
 	}
 
+	// A refusal the adapter can see coming is returned before the attempt is
+	// recorded. Stored as Failed it would be offered for a retry that replays the
+	// same values and is refused again, and it would count as a failed apply.
+	if err := adapter.PrecheckApply(ctx, adptr, recommendationRequest); err != nil {
+		ctx.GetLogger().Info("recommendation apply refused before an attempt was recorded", "error", err, "recommendation_id", r.Id)
+		return RecommendationApplyResponse{}, err
+	}
+
 	// insert resolution
 	statusMessage := "Configuring"
 	found, recommendationResolutionId := hasInProgressRecommendation(existingRecommendations)
@@ -1225,6 +1233,9 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 			if adapter.PRStatusCheckExpired(resolution.LastPRCheckAt, time.Now().UTC()) {
 				status = models.RecommendationResolutionStatusFailed
 				statusMsg = adapter.PRStatusGaveUpMessage(resp.StatusMessage)
+				if resolution.Type == models.RecommendationResolutionTypeCloudResource {
+					statusMsg = adapter.CloudStatusGaveUpMessage(resp.StatusMessage)
+				}
 			} else {
 				lastCheck = "COALESCE(last_pr_check_at, (now() AT TIME ZONE 'UTC'))"
 			}

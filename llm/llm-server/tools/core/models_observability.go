@@ -35,9 +35,10 @@ type ObservabilityLogResponse struct {
 	// (unknown label name / unknown label value) when a canonical query matched nothing.
 	// Empty when the diagnosis found nothing actionable (a genuinely empty result).
 	Suggestion string `json:"suggestion,omitempty"`
-	// Coverage is set when the read stopped at its line limit. Nil means only
-	// that the limit asked for was not reached — a backend that lowers the
-	// limit on its own gives no sign of it here.
+	// Coverage is set when the read stopped at its line limit, or when the
+	// backend reported it stopped before reading the whole window (Partial).
+	// Nil means only that neither happened — a backend that lowers the limit on
+	// its own and does not say so gives no sign of it here.
 	Coverage *ObservabilityLogCoverage `json:"coverage,omitempty"`
 }
 
@@ -49,6 +50,15 @@ type ObservabilityLogResponse struct {
 type ObservabilityLogCoverage struct {
 	Limit    int `json:"limit"`
 	Returned int `json:"returned"`
+	// Partial is set when the backend stopped before reading the whole window
+	// although the limit was not reached (services-server's `partial`, e.g. a
+	// SolarWinds search out of time). Returned is then a lower bound.
+	Partial bool `json:"partial,omitempty"`
+	// Total is the backend's own count of matching lines, when it reports one with
+	// the result (Elasticsearch / OpenSearch `hits.total`); nil otherwise.
+	// TotalRelation is "eq" when Total is exact and "gte" when it is a lower bound.
+	Total         *int64 `json:"total,omitempty"`
+	TotalRelation string `json:"total_relation,omitempty"`
 	// Oldest and Newest bound the returned lines, RFC3339 UTC. Empty unless
 	// every line carried a timestamp that could be read: a span drawn from
 	// some of the lines would understate what was returned.
@@ -57,6 +67,10 @@ type ObservabilityLogCoverage struct {
 	// RequestedStart and RequestedEnd are the window that was asked for.
 	RequestedStart string `json:"requested_start,omitempty"`
 	RequestedEnd   string `json:"requested_end,omitempty"`
+	// ReadStart and ReadEnd are the window the read ran over, set only when
+	// the log tool widened a narrow requested window before reading.
+	ReadStart string `json:"read_start,omitempty"`
+	ReadEnd   string `json:"read_end,omitempty"`
 }
 
 // logTimestampLayouts are the timestamp forms log backends return.
@@ -74,6 +88,45 @@ func NewObservabilityLogCoverage(logs []ObservabilityLog, limit int, startMs, en
 	if limit <= 0 || len(logs) < limit {
 		return nil
 	}
+	return newObservabilityLogCoverage(logs, limit, startMs, endMs)
+}
+
+// WithBackendLogTotal adds the backend's own match count to a read's coverage. A read that did
+// not reach its limit gets coverage too when the backend says more lines matched than came back
+// (a backend that lowered the limit on its own). Unchanged when the backend reports no total.
+func WithBackendLogTotal(coverage *ObservabilityLogCoverage, logs []ObservabilityLog, limit int, startMs, endMs int64, total *int64, relation string) *ObservabilityLogCoverage {
+	if total == nil {
+		return coverage
+	}
+	// An exact count no larger than what came back: everything that matched was read, so a read
+	// that happened to fill its limit is whole and says nothing.
+	if relation != "gte" && *total <= int64(len(logs)) {
+		// A backend that flagged the read partial keeps its note; its count says nothing more.
+		if coverage != nil && coverage.Partial {
+			return coverage
+		}
+		return nil
+	}
+	if coverage == nil {
+		if *total <= int64(len(logs)) {
+			return nil
+		}
+		coverage = newObservabilityLogCoverage(logs, limit, startMs, endMs)
+	}
+	coverage.Total = total
+	coverage.TotalRelation = relation
+	return coverage
+}
+
+// NewPartialObservabilityLogCoverage is the coverage of a read the backend says it
+// stopped before the end of the window (partial), whatever the line count.
+func NewPartialObservabilityLogCoverage(logs []ObservabilityLog, limit int, startMs, endMs int64) *ObservabilityLogCoverage {
+	coverage := newObservabilityLogCoverage(logs, limit, startMs, endMs)
+	coverage.Partial = true
+	return coverage
+}
+
+func newObservabilityLogCoverage(logs []ObservabilityLog, limit int, startMs, endMs int64) *ObservabilityLogCoverage {
 	coverage := &ObservabilityLogCoverage{Limit: limit, Returned: len(logs)}
 	// The lines are not sorted: several backends return them grouped by stream.
 	var oldest, newest time.Time
@@ -129,6 +182,20 @@ type ObservabilityTraceResponse struct {
 	// name / unknown field value) when it fires. It arrives with an EMPTY Traces and a 200, so an
 	// empty trace result can say WHY it is empty instead of leaving the agent to guess and retry.
 	Suggestion string `json:"suggestion,omitempty"`
+	// Coverage is set when a cap cut the result: the backend returned as many rows as the
+	// query's limit, or the tool kept fewer than it received. Nil means no cap was hit.
+	Coverage *ObservabilityTraceCoverage `json:"coverage,omitempty"`
+}
+
+// ObservabilityTraceCoverage says a trace result stopped at a cap, so it is a sample of the
+// window, not all of it. Note is the same fact in words the agent can repeat.
+type ObservabilityTraceCoverage struct {
+	// Limit is the cap that was hit.
+	Limit int `json:"limit"`
+	// Received is how many rows the backend returned; Returned is how many the tool kept.
+	Received int    `json:"received"`
+	Returned int    `json:"returned"`
+	Note     string `json:"note"`
 }
 
 // ObservabilityTraceRawTable mirrors observability.RawTraceResult: an arbitrary ClickHouse result
@@ -219,6 +286,9 @@ type ObservabilityMetricsQueryResult struct {
 	DocsMatched *int64 `json:"docs_matched,omitempty"`
 	// Note explains an empty Payload when the backend knows why.
 	Note string `json:"note,omitempty"`
+	// Sample holds real documents, flattened to `path: value` lines, when an
+	// Elasticsearch query matched nothing. Note says which search found them.
+	Sample string `json:"sample,omitempty"`
 }
 
 type ObservabilityMetricsQuerySeries struct {

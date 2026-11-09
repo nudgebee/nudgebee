@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -65,6 +66,45 @@ func TestEveryToolDeclaresAnAccountScope(t *testing.T) {
 		assert.True(t, registered[name], "%s has an account scope declared but no such tool exists", name)
 	}
 	assert.Empty(t, toolcore.DuplicateAccountScopeNames(), "declared more than once across the tool_account_scopes.go files")
+}
+
+// A write tool embedding toolcore.ReadOnlyTool would run every call as a read,
+// with no approval prompt.
+func TestReadOnlyToolsAreNotWriteTools(t *testing.T) {
+	account := "00000000-0000-0000-0000-000000000001"
+	readOnly := reflect.TypeOf(toolcore.ReadOnlyTool{})
+	found := 0
+	for _, name := range productionToolNames() {
+		tool, ok := toolcore.GetNBTool(account, name)
+		if !ok || tool == nil {
+			continue // some factories need a database
+		}
+		typ := reflect.TypeOf(tool)
+		if typ.Kind() == reflect.Pointer {
+			typ = typ.Elem()
+		}
+		if typ.Kind() != reflect.Struct {
+			continue
+		}
+		field, ok := typ.FieldByName("ReadOnlyTool")
+		if !ok || !field.Anonymous || field.Type != readOnly {
+			continue
+		}
+		found++
+		decl, _ := toolcore.AccountScopeOf(name)
+		assert.False(t, decl.Scope == toolcore.AccountScopeOriginBound && decl.Reason == toolcore.OriginBoundWrite,
+			"%s embeds ReadOnlyTool but is declared a write tool", name)
+		_, hasPrompt := tool.(toolcore.ToolRequestInferencePrompt)
+		assert.False(t, hasPrompt, "%s embeds ReadOnlyTool, so its LLM classifier would never run", name)
+	}
+	assert.NotZero(t, found, "no registered tool embeds ReadOnlyTool")
+}
+
+// event_summary is agent-local, so the registry walk above never sees it.
+func TestEventSummaryIsARead(t *testing.T) {
+	got, err := EventSummaryTool{}.InferToolRequestType(security.NewRequestContextForSuperAdmin(), ToolEventSummary, `{}`)
+	require.NoError(t, err)
+	assert.Equal(t, toolcore.ToolRequestTypeRead, got)
 }
 
 // The declarations must describe what each tool does today, so replacing the

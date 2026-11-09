@@ -22,6 +22,7 @@ from rag.core.embeddings.generator import get_embeddings
 from rag.core.llm.rag import get_matching_documents
 from rag.core.types import Document
 from rag.core.documents.knowledge_tags import add_knowledge_context_tags
+from rag.core.utils.db_query import get_first_active_account_for_tenant
 from rag.core.documents import figure_cache, pdf_ingest, source_store
 
 router = APIRouter()
@@ -30,7 +31,10 @@ logger = logging.getLogger(__name__)
 
 # Pydantic models
 class KBCreateRequest(BaseModel):
-    account_id: str
+    # An organisation knowledge base has no account: it sends tenant_id instead,
+    # and its collection is scoped to the tenant.
+    account_id: Optional[str] = None
+    tenant_id: Optional[str] = None
     kb_id: str
     data: str
     format: str = "text"
@@ -40,6 +44,31 @@ class KBCreateRequest(BaseModel):
     triggered_by: str = "system"
     trigger_type: str = "user_create"
     context_tags: list[str] = Field(default_factory=list)
+
+
+class KBScopeRequest(BaseModel):
+    kb_id: str
+    # Exactly one: account_id for an account knowledge base, tenant_id for an
+    # organisation one.
+    account_id: Optional[str] = None
+    tenant_id: Optional[str] = None
+
+
+def _config_account_id(account_id: Optional[str], tenant_id: Optional[str]) -> str:
+    """Account whose LLM settings embed (and describe the figures of) a knowledge base.
+
+    An organisation knowledge base has no account; any active account in the
+    tenant serves, as for the tenant's integration knowledge bases.
+    """
+    if account_id:
+        return account_id
+    # "" falls back to the server's own LLM settings, as get_embeddings does for no account.
+    if not tenant_id:
+        return ""
+    account = get_first_active_account_for_tenant(tenant_id)
+    if not account:
+        logger.warning("No active account in tenant %s; using the server's default LLM settings", tenant_id)
+    return str(account or "")
 
 
 class KBSearchRequest(BaseModel):
@@ -55,7 +84,9 @@ class KBSearchRequest(BaseModel):
 
 
 class KBRetriggerIntegrationRequest(BaseModel):
-    account_id: str
+    # Unused: the scrape is selected by integration_id. Empty for an
+    # integration's organisation knowledge base (#40605).
+    account_id: str = ""
     integration_id: str
     kb_source: str
     triggered_by: str = "system"
@@ -123,7 +154,7 @@ class KBLineByLineLoader:
             return documents
 
 
-async def _create_pdf_kb(request: KBCreateRequest, collection_name: str) -> dict:
+async def _create_pdf_kb(request: KBCreateRequest, collection_name: str, config_account_id: str) -> dict:
     """Index a PDF: page text plus a description of every figure.
 
     Kept apart from the text path because a PDF arrives as base64 and its
@@ -134,7 +165,7 @@ async def _create_pdf_kb(request: KBCreateRequest, collection_name: str) -> dict
         documents, warning = await asyncio.to_thread(
             pdf_ingest.build_pdf_documents,
             request.data,
-            request.account_id,
+            config_account_id,
             request.filename,
             None,
             collection_name,
@@ -144,13 +175,15 @@ async def _create_pdf_kb(request: KBCreateRequest, collection_name: str) -> dict
         # are the uploader's to fix, and all of them carry a reason worth showing.
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     documents = add_knowledge_context_tags(documents, request.context_tags)
-    embeddings = await asyncio.to_thread(get_embeddings, request.account_id)
+    embeddings = await asyncio.to_thread(get_embeddings, config_account_id)
 
     _, document_ids = await asyncio.to_thread(
         process_documents,
         documents=documents,
         embeddings=embeddings,
         account_id=request.account_id,
+        tenant_id=None if request.account_id else request.tenant_id,
+        classify_account_id=config_account_id,
         module="knowledge_base",
         collection_name=collection_name,
         knowledgebase_id=request.kb_id,
@@ -187,6 +220,8 @@ async def create_kb(request: KBCreateRequest):
     Collection name format: kb_{account_id}_{kb_id}
     Supports formats: json, xml, csv, text, pdf
     """
+    if not request.account_id and not request.tenant_id:
+        raise HTTPException(status_code=400, detail="account_id or tenant_id is required")
     try:
         logger.info(
             f"Creating KB collection for account_id={request.account_id}, kb_id={request.kb_id}, "
@@ -195,9 +230,10 @@ async def create_kb(request: KBCreateRequest):
 
         # Generate collection name
         collection_name = f"kb_{request.kb_id}"
+        config_account_id = await asyncio.to_thread(_config_account_id, request.account_id, request.tenant_id)
 
         if request.format == "pdf":
-            return await _create_pdf_kb(request, collection_name)
+            return await _create_pdf_kb(request, collection_name, config_account_id)
 
         # Write data to temporary file asynchronously
         tmp_fd, tmp_path = await asyncio.to_thread(tempfile.mkstemp, suffix=f".{request.format}", text=True)
@@ -225,7 +261,7 @@ async def create_kb(request: KBCreateRequest):
             source_document_count = 1 if request.format == "text" else None
 
             # Get embeddings for the account (run in thread as it may do I/O)
-            embeddings = await asyncio.to_thread(get_embeddings, request.account_id)
+            embeddings = await asyncio.to_thread(get_embeddings, config_account_id)
 
             # Process documents and create vector collection (blocking - run in thread)
             await asyncio.to_thread(
@@ -233,6 +269,8 @@ async def create_kb(request: KBCreateRequest):
                 documents=documents,
                 embeddings=embeddings,
                 account_id=request.account_id,
+                tenant_id=None if request.account_id else request.tenant_id,
+                classify_account_id=config_account_id,
                 module="knowledge_base",
                 collection_name=collection_name,
                 knowledgebase_id=request.kb_id,
@@ -292,6 +330,23 @@ async def delete_kb(account_id: str, kb_id: str):
             logger.warning(f"Collection {collection_name} not found, considering it deleted")
             return {"status": "deleted", "collection": collection_name, "note": "collection not found"}
         raise HTTPException(status_code=500, detail=f"Failed to delete KB collection: {str(e)}")
+
+
+@router.post("/kb/scope")
+async def set_kb_scope(request: KBScopeRequest):
+    """Move a knowledge base between account and organisation scope without re-indexing it."""
+    if bool(request.account_id) == bool(request.tenant_id):
+        raise HTTPException(status_code=400, detail="exactly one of account_id or tenant_id is required")
+    collection_name = f"kb_{request.kb_id}"
+    try:
+        updated = await asyncio.to_thread(
+            document_collection.set_collection_scope, collection_name, request.account_id, request.tenant_id
+        )
+    except Exception as e:
+        logger.exception(f"Error re-scoping KB collection {collection_name}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to re-scope KB collection: {str(e)}")
+    # updated is False when the knowledge base has no collection yet; that is not an error.
+    return {"status": "success", "collection": collection_name, "updated": updated}
 
 
 @router.post("/kb/search")

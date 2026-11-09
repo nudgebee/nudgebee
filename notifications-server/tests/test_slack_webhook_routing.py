@@ -70,7 +70,7 @@ def test_template_send_posts_to_url_and_reports_success(mock_post):
 
 
 @patch("notifications_server.services.message.SlackClient.post_to_slack_webhook")
-def test_template_send_surfaces_4xx_body(mock_post):
+def test_template_send_reports_a_4xx_as_rejected(mock_post):
     mock_post.return_value = SimpleNamespace(status_code=400, text="invalid_payload")
     svc = MessageService.__new__(MessageService)
     ip = _webhook_ip("aaaa")
@@ -78,7 +78,8 @@ def test_template_send_surfaces_4xx_body(mock_post):
     resp = asyncio.run(svc.send_slack_webhook_template_notification(ip, lambda _p: {}, None, "t1"))
 
     assert resp["status"] == "failed"
-    assert "invalid_payload" in resp["reason"]
+    assert resp["reason"] == "message_rejected" and resp["error_code"] == "400"
+    assert resp["retryable"] is False
 
 
 @patch("notifications_server.services.message.SlackClient.post_to_slack_webhook")

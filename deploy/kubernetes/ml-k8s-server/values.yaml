@@ -93,8 +93,11 @@ ingress:
 # See the [API reference](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#resources) for details.
 # @default -- No requests or limits.
 # Small-tier defaults. See docs/sizing-and-tiers.md.
-# Memory grows with the number of workloads analysed: 818Mi-1.75Gi average and
-# 1.4-4.4Gi peak across measured deployments. It is bursty but bounded — the
+# Memory: 818Mi-1.75Gi average and 1.4-4.4Gi peak across measured deployments,
+# measured while rightsizing still fetched its metrics in this process. Those
+# fetches now go through api-server, and a medium-estate rightsizing scan
+# measured since adds under 100Mi, so most of the pod's memory is its gunicorn
+# worker processes rather than the scan. It is bursty but bounded — the
 # process does release (sawtooth, not a ramp) — so the limit carries the headroom
 # and the request tracks the average.
 # The 4Gi limit is unchanged from before. Measurement alone would have justified

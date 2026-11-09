@@ -230,6 +230,7 @@ func TestBuildCubeAPMImageEvidence(t *testing.T) {
 		ev := buildCubeAPMImageEvidence("https://cube.example.com/render/alert/2.png")
 		if ev == nil {
 			t.Fatal("expected evidence")
+			return
 		}
 		data := ev.Data.(map[string]any)
 		if !strings.Contains(data["data"].(string), "![CubeAPM alert chart](https://cube.example.com/render/alert/2.png)") {
@@ -243,6 +244,7 @@ func TestBuildCubeAPMImageEvidence(t *testing.T) {
 		ev := buildCubeAPMImageEvidence("https://cube.example.com/r.png?q=a)b")
 		if ev == nil {
 			t.Fatal("expected evidence")
+			return
 		}
 		markdown := ev.Data.(map[string]any)["data"].(string)
 		if strings.Contains(markdown, "a)b") {
@@ -265,6 +267,7 @@ func TestBuildCubeAPMSampleLogEvidence(t *testing.T) {
 		ev := buildCubeAPMSampleLogEvidence("ERROR upstream timeout")
 		if ev == nil {
 			t.Fatal("expected evidence")
+			return
 		}
 		if ev.Type != "markdown" {
 			t.Errorf("Type = %q, want markdown", ev.Type)

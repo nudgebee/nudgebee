@@ -443,7 +443,6 @@ func handleOrgAccountCreate(
 
 	// Step 4: Upsert cloud_account_attrs for aws_org_type = member
 	upsertOrgTypeAttr(dbms, newAccountId, "member", logger)
-	attachTenantDefaultLLMProvider(dbms, tenant.TenantID, newAccountId, logger)
 
 	// Step 5: Trigger initial data load (async, same as CreateAccount flow)
 	triggerStoreUsageReport(newAccountId, tenant.TenantID, true, logger)
@@ -563,38 +562,6 @@ func upsertOrgTypeAttr(dbms *common.DatabaseManager, accountId string, orgType s
 	)
 	if err != nil {
 		logger.Error("aws: failed to upsert aws_org_type attr", "error", err, "accountId", accountId)
-	}
-}
-
-// attachTenantDefaultLLMProvider links the tenant's default LLM provider
-// (the LLM integration whose default_llm_provider config value is 'true') to a
-// newly registered account and flags it as
-// that account's default. No-op when the tenant has no single enabled default.
-// Copy of llm.AttachTenantDefaultLLMProviderSQL in api-server
-// (api-server/services/llm/tenant_default.go) — keep the two in sync.
-func attachTenantDefaultLLMProvider(dbms *common.DatabaseManager, tenantId string, accountId string, logger *slog.Logger) {
-	_, err := dbms.Exec(
-		`INSERT INTO integrations_cloud_accounts (
-			integration_id, cloud_account_id, tenant_id, link_role, default_llm_provider
-		)
-		SELECT i.id, $2, $1, 'own', true
-		FROM integrations i
-		JOIN integration_config_values icv
-		  ON icv.integration_id = i.id AND icv.name = 'default_llm_provider' AND icv.value = 'true'
-		WHERE i.tenant_id = $1
-		  AND i.type = 'llm'
-		  AND i.status = 'enabled'
-		  AND (
-			SELECT count(*) FROM integrations d
-			JOIN integration_config_values dv
-			  ON dv.integration_id = d.id AND dv.name = 'default_llm_provider' AND dv.value = 'true'
-			WHERE d.tenant_id = $1 AND d.type = 'llm' AND d.status = 'enabled'
-		  ) = 1
-		ON CONFLICT (integration_id, cloud_account_id, tenant_id, link_role) DO NOTHING`,
-		tenantId, accountId,
-	)
-	if err != nil {
-		logger.Error("aws: failed to attach the default LLM provider", "error", err, "accountId", accountId)
 	}
 }
 
@@ -857,8 +824,6 @@ func handleSingleAccountCreate(
 	}
 
 	logger.Info("aws: created single-account via auto-registration", "accountId", newAccountId, "accountNumber", accountNumber, "externalId", props.ExternalId)
-
-	attachTenantDefaultLLMProvider(dbms, tenant.TenantID, newAccountId, logger)
 
 	// Trigger initial data load
 	triggerStoreUsageReport(newAccountId, tenant.TenantID, true, logger)

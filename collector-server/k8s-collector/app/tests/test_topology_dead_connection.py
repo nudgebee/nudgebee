@@ -96,6 +96,19 @@ def _make_consumer(**kwargs) -> rc.RabbitConsumer:
 
 
 class TestTopologyDeadConnection(unittest.TestCase):
+    def test_consumer_init_does_not_declare_topology(self):
+        """Constructing a RabbitConsumer must not touch the broker or declare topology."""
+        with mock.patch.object(rc, "Connection"), mock.patch.object(
+            rc.RabbitConsumer, "_declare_topology"
+        ) as mock_declare:
+            rc.RabbitConsumer(
+                exchange_name="test-ex",
+                queue_name="test-init-queue",
+                routing_key="test-rk",
+                callback=lambda _body: None,
+            )
+            mock_declare.assert_not_called()
+
     def test_closed_connection_is_replaced_instead_of_retried_forever(self):
         """The declare loop must escape a closed Connection, not spin on it.
 

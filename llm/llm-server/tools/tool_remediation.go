@@ -5,6 +5,7 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
+	"nudgebee/llm/security/egressfilter"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
 	"regexp"
@@ -235,10 +236,6 @@ func (r RemediationExecuteTool) InputSchema() core.ToolSchema {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Kubernetes namespace for the command (optional, can be included in command with -n flag)",
 			},
-			"timeout_seconds": {
-				Type:        core.ToolSchemaTypeNumber,
-				Description: "Command execution timeout in seconds (default: 30)",
-			},
 		},
 		Required: []string{"command"},
 	}
@@ -257,7 +254,7 @@ type RemediationExecutionResult struct {
 
 func (r RemediationExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
 	logger := nbRequestContext.Ctx.GetLogger()
-	logger.Info("remediation: executing remediation command", "command", input.Command)
+	logger.Info("remediation: executing remediation command", "command", egressfilter.RedactForLog(input.Command))
 
 	command := strings.TrimSpace(input.Command)
 	if command == "" {
@@ -269,7 +266,7 @@ func (r RemediationExecuteTool) Call(nbRequestContext core.NbToolContext, input 
 
 	// Validate command safety
 	if err := r.validateCommandSafety(command); err != nil {
-		logger.Warn("remediation: unsafe command rejected", "command", command, "error", err)
+		logger.Warn("remediation: unsafe command rejected", "command", egressfilter.RedactForLog(command), "error", err)
 		return core.NBToolResponse{
 			Data:   fmt.Sprintf("Command rejected for safety reasons: %s", err.Error()),
 			Status: core.NBToolResponseStatusError,
@@ -309,7 +306,7 @@ func (r RemediationExecuteTool) Call(nbRequestContext core.NbToolContext, input 
 	// and gets recorded as a successful remediation for an action that never happened (#28804).
 	substrate := RemediationSubstrateFor(GetCloudProviderForAccount(nbRequestContext.AccountId), command)
 	if substrate.Reject != "" {
-		logger.Warn("remediation: command does not match the account's provider", "command", command, "reason", substrate.Reject)
+		logger.Warn("remediation: command does not match the account's provider", "command", egressfilter.RedactForLog(command), "reason", substrate.Reject)
 		return core.NBToolResponse{
 			Data:   "Command rejected: " + substrate.Reject,
 			Status: core.NBToolResponseStatusError,
@@ -320,7 +317,7 @@ func (r RemediationExecuteTool) Call(nbRequestContext core.NbToolContext, input 
 		result.Duration = time.Since(startTime).String()
 		result.Stdout = stdout
 		if execErr != nil {
-			logger.Error("remediation: cloud cli command failed", "command", command, "tool", cloudCliTool, "error", execErr)
+			logger.Error("remediation: cloud cli command failed", "command", egressfilter.RedactForLog(command), "tool", cloudCliTool, "error", execErr)
 			result.Success = false
 			result.ExitCode = 1
 			result.Error = execErr.Error()
@@ -363,7 +360,7 @@ func (r RemediationExecuteTool) Call(nbRequestContext core.NbToolContext, input 
 	result.Duration = duration.String()
 
 	if err != nil {
-		logger.Error("remediation: command execution failed in workspace", "command", command, "error", err)
+		logger.Error("remediation: command execution failed in workspace", "command", egressfilter.RedactForLog(command), "error", err)
 		result.Success = false
 		result.ExitCode = 1
 		result.Error = err.Error()
@@ -392,7 +389,7 @@ func (r RemediationExecuteTool) Call(nbRequestContext core.NbToolContext, input 
 	result.Stdout = response
 
 	logger.Info("remediation: command executed successfully in workspace",
-		"command", command,
+		"command", egressfilter.RedactForLog(command),
 		"duration", duration,
 		"stdout_length", len(response))
 
@@ -610,6 +607,14 @@ func (r RemediationExecuteTool) formatExecutionResult(result RemediationExecutio
 		return "", fmt.Errorf("failed to marshal execution result: %w", err)
 	}
 	return string(data), nil
+}
+
+// InferToolRequestType classifies the command with the shell tool's rules,
+// which hand a kubectl, helm or argocd command to that CLI's own classifier.
+// Anything those rules cannot decide (a host command, a compound expression)
+// returns "" and goes to the prompt below.
+func (r RemediationExecuteTool) InferToolRequestType(ctx *security.RequestContext, toolName, input string) (core.ToolRequestType, error) {
+	return ShellTool{}.InferToolRequestType(ctx, toolName, input)
 }
 
 // InferToolRequestTypePrompt returns a prompt to classify the remediation command type

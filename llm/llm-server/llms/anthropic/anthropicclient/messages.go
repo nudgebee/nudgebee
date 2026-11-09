@@ -116,6 +116,31 @@ type Usage struct {
 	// CacheCreation splits CacheCreationInputTokens by TTL; 1-hour writes
 	// bill at 2x input instead of 1.25x.
 	CacheCreation *CacheCreationUsage `json:"cache_creation,omitempty"`
+
+	// OutputTokensDetails is where Anthropic reports thinking: a breakdown of
+	// OutputTokens, which already includes the thinking tokens.
+	OutputTokensDetails *OutputTokensDetails `json:"output_tokens_details,omitempty"`
+}
+
+// OutputTokensDetails breaks down Usage.OutputTokens.
+type OutputTokensDetails struct {
+	ThinkingTokens int `json:"thinking_tokens"`
+}
+
+// SplitThinking moves the thinking share of OutputTokens into ThinkingTokens, so
+// OutputTokens counts only the visible answer. Callers price output and thinking
+// separately and add them (the Gemini convention); without the split, thinking
+// would be billed twice. Safe to call more than once.
+func (u *Usage) SplitThinking() {
+	if u.OutputTokensDetails == nil || u.ThinkingTokens > 0 {
+		return
+	}
+	thinking := u.OutputTokensDetails.ThinkingTokens
+	if thinking <= 0 || thinking > u.OutputTokens {
+		return
+	}
+	u.ThinkingTokens = thinking
+	u.OutputTokens -= thinking
 }
 
 // CacheCreationUsage is the per-TTL breakdown of cache writes.
@@ -370,6 +395,10 @@ func (c *Client) createMessageStream(ctx context.Context, req *MessageRequest) (
 					finalResp.Usage.OutputTokens = ev.Usage.OutputTokens
 					if ev.Usage.ThinkingTokens > 0 {
 						finalResp.Usage.ThinkingTokens = ev.Usage.ThinkingTokens
+					}
+					// Only the final message_delta carries the thinking breakdown.
+					if ev.Usage.OutputTokensDetails != nil {
+						finalResp.Usage.OutputTokensDetails = ev.Usage.OutputTokensDetails
 					}
 				}
 			}

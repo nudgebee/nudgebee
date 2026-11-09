@@ -6,6 +6,7 @@ import NotifyBanner from '@shared/NotifyBanner';
 import Text from '@shared/format/Text';
 import ClusterDropDown from '@shared/navigation/ClusterDropDown';
 import ConversationLoader from '@shared/ConversationLoader';
+import { LiveStatusLoader } from './common/liveStatus';
 import Tooltip from '@ui/Tooltip';
 import AskNudgebeeLayout from '@shared/layout/AskNudgebeeLayoutV2';
 import { Button } from '@ui/Button';
@@ -328,6 +329,18 @@ const KubernetesLLMResponseGenerator = ({
     clearModelConfig,
     imageSupport,
   } = useLLMInvestigationControl(accountId, eventId);
+  // While a model call waits on a retry or a summary, the thinking indicator shows why.
+  const runningLiveStatus = useMemo(() => {
+    if (!Array.isArray(messages)) {
+      return undefined;
+    }
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]?.type === 'question') {
+        return messages[i].liveStatus;
+      }
+    }
+    return undefined;
+  }, [messages]);
 
   const isConversationInProgress = useMemo(
     () => conversationStatus === 'IN_PROGRESS' || !!currentlyProcessingQuestion,
@@ -1112,6 +1125,40 @@ const KubernetesLLMResponseGenerator = ({
     };
   }, [shouldPollConversation, needsConversationRefresh, selectedSessionId, selectedConversationId, fetchConversation]);
 
+  // The same conversation can be open in another surface — the Ask Nudgebee page in one tab
+  // and the automation editor's Nubi panel in another (#30669). Polling above only runs while
+  // this surface knows of an active turn, so an idle surface never sees a turn started
+  // elsewhere: it keeps accepting prompts as if the conversation were free, and misses what
+  // that turn changed. Re-read the conversation whenever the user comes back to this tab or
+  // window; a turn running elsewhere then shows as in progress here (which starts polling and
+  // gates the composer), and a turn that finished elsewhere appears in the thread.
+  const canRefreshOnReturn =
+    !shouldPollConversation &&
+    !isNewChat &&
+    !isConversationLoading &&
+    !currentlyProcessingQuestion &&
+    Boolean(selectedSessionId || selectedConversationId);
+  useEffect(() => {
+    if (!canRefreshOnReturn) return;
+    let inFlight = false;
+    const refresh = async () => {
+      // Switching tabs fires both events; one read is enough.
+      if (inFlight || document.visibilityState !== 'visible') return;
+      inFlight = true;
+      try {
+        await fetchConversation(selectedSessionId, selectedConversationId, 'poll', false);
+      } finally {
+        inFlight = false;
+      }
+    };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, [canRefreshOnReturn, selectedSessionId, selectedConversationId, fetchConversation]);
+
   useEffect(() => {
     if (conversationStatus === 'IN_PROGRESS') {
       const timeout = setTimeout(() => {
@@ -1192,7 +1239,26 @@ const KubernetesLLMResponseGenerator = ({
   // brief reset to '') before COMPLETED — leaving the editor canvas stale after an AI edit.
   // The active-latch is reset on a session switch so opening a historical (already-completed)
   // thread never fires this.
+  //
+  // A turn can also run in another surface on the same conversation (the Ask Nudgebee page in
+  // another tab, #30669) and finish before this one ever saw it active. It is recognised by a
+  // new last question: the last question is recorded whenever this surface sees a turn running
+  // or completed (the first read of a session only records it), so a completed read showing a
+  // question this surface never saw fires the same signal. A turn sent or watched here is
+  // recorded while it runs and never counts as one from elsewhere.
+  const lastQuestionId = useMemo(() => {
+    if (!Array.isArray(messages)) {
+      return null;
+    }
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]?.type === 'question' && !messages[i].isOptimistic && messages[i].messageId) {
+        return messages[i].messageId;
+      }
+    }
+    return null;
+  }, [messages]);
   const assistantWasActiveRef = useRef(false);
+  const seenQuestionIdRef = useRef(null);
   const completionSessionRef = useRef(selectedSessionId);
   useEffect(() => {
     if (apiMode !== 'workflow') {
@@ -1201,14 +1267,22 @@ const KubernetesLLMResponseGenerator = ({
     if (completionSessionRef.current !== selectedSessionId) {
       completionSessionRef.current = selectedSessionId;
       assistantWasActiveRef.current = false;
+      seenQuestionIdRef.current = null;
     }
-    if (conversationStatus === 'IN_PROGRESS' || conversationStatus === 'WAITING') {
+    const isActive = isConversationActivelyExecuting(conversationStatus) || conversationStatus === 'WAITING';
+    if (isActive) {
       assistantWasActiveRef.current = true;
-    } else if (conversationStatus === 'COMPLETED' && assistantWasActiveRef.current && onConversationComplete) {
-      assistantWasActiveRef.current = false;
-      onConversationComplete(selectedSessionId);
+    } else if (conversationStatus === 'COMPLETED') {
+      const finishedElsewhere = seenQuestionIdRef.current !== null && lastQuestionId !== null && lastQuestionId !== seenQuestionIdRef.current;
+      if ((assistantWasActiveRef.current || finishedElsewhere) && onConversationComplete) {
+        assistantWasActiveRef.current = false;
+        onConversationComplete(selectedSessionId);
+      }
     }
-  }, [conversationStatus, apiMode, onConversationComplete, selectedSessionId]);
+    if ((isActive || conversationStatus === 'COMPLETED') && lastQuestionId !== null) {
+      seenQuestionIdRef.current = lastQuestionId;
+    }
+  }, [conversationStatus, apiMode, onConversationComplete, selectedSessionId, lastQuestionId]);
 
   const handleDropdownChange = useCallback(
     (e) => {
@@ -2206,7 +2280,7 @@ const KubernetesLLMResponseGenerator = ({
                   mb={popup ? ds.space.mul(1, 5) : ds.space.mul(0, 35)}
                   sx={{ width: '100%', minWidth: popup ? ds.space.mul(1, 100) : 0, boxSizing: 'border-box' }}
                 >
-                  <ConversationLoader query={currentlyProcessingQuestion} startedAt={activeQuestionStartedAt} />
+                  <LiveStatusLoader liveStatus={runningLiveStatus} query={currentlyProcessingQuestion} startedAt={activeQuestionStartedAt} />
                 </Box>
               );
             })()}
@@ -2261,9 +2335,9 @@ const KubernetesLLMResponseGenerator = ({
                     popup={popup}
                     onStop={handleStopInvestigation}
                     onOptimisticSubmit={(answer) => setOptimisticFollowupAnswer({ key: activeFollowupKey, answer })}
-                    onSubmitError={() => {
+                    onSubmitError={(message) => {
                       setOptimisticFollowupAnswer(null);
-                      snackbar.error('Couldn’t submit your response. Please try again.');
+                      snackbar.error(message || 'Couldn’t submit your response. Please try again.');
                     }}
                   />
                 </Box>

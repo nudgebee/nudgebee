@@ -115,6 +115,40 @@ def test_partial_row_keeps_bundled_values_for_the_rest():
     assert urls.branding_address == "Pune"
 
 
+def test_renaming_row_without_an_email_logo_drops_the_bundled_logo():
+    # The bundled logo is the house mark; beside a partner's name it is the leak.
+    urls = make_urls()
+    refresh(refresher_with(urls, [{"calsoft.example.com": {"title": "Calsoft", "email": {"primaryColor": "#0047AB"}}}]))
+    assert urls.branding_name == "Calsoft"
+    assert urls.branding_logo_url == ""
+
+
+def test_renaming_row_keeps_whatever_logo_it_names():
+    # Even the bundled path: the row asked for it, so it is not a leftover.
+    urls = make_urls()
+    row = {"title": "Calsoft", "email": {"logoUrl": "/branding/default/logo.png"}}
+    refresh(refresher_with(urls, [{"calsoft.example.com": row}]))
+    assert urls.branding_logo_url == "https://calsoft.example.com/branding/default/logo.png"
+
+
+def test_row_that_keeps_the_bundled_name_keeps_the_bundled_logo():
+    urls = make_urls()
+    refresh(
+        refresher_with(urls, [{"calsoft.example.com": {"title": "Nudgebee", "email": {"primaryColor": "#0047AB"}}}])
+    )
+    assert urls.branding_logo_url == "https://calsoft.example.com/branding/default/logo.png"
+
+
+def test_bundled_logo_returns_when_the_renaming_row_is_removed():
+    urls = make_urls()
+    refresher = refresher_with(urls, [{"calsoft.example.com": {"title": "Calsoft"}}, {}])
+    refresh(refresher)
+    assert urls.branding_logo_url == ""
+    refresh(refresher)
+    assert urls.branding_name == "Nudgebee"
+    assert urls.branding_logo_url == "https://calsoft.example.com/branding/default/logo.png"
+
+
 def test_malformed_fields_never_blank_the_brand():
     urls = make_urls()
     row = {
@@ -220,3 +254,48 @@ def test_a_row_that_cannot_be_applied_does_not_stop_the_refresher():
     assert urls.branding_name == "Calsoft"
     assert refresh(refresher) is True
     assert urls.branding_name == "Calsoft Cloud"
+
+
+def test_row_sets_the_email_from_name():
+    urls = make_urls()
+    refresh(refresher_with(urls, [{"calsoft.example.com": {"email": {"fromName": "Calsoft Ops"}}}]))
+    assert urls.branding_from_name == "Calsoft Ops"
+
+
+def test_from_name_goes_back_to_the_default_when_the_row_drops_it():
+    urls = make_urls()
+    refresher = refresher_with(
+        urls,
+        [
+            {"calsoft.example.com": {"email": {"fromName": "Calsoft Ops"}}},
+            {"calsoft.example.com": {"title": "Calsoft"}},
+        ],
+    )
+    refresh(refresher)
+    assert urls.branding_from_name == "Calsoft Ops"
+    refresh(refresher)
+    assert urls.branding_from_name == ""
+
+
+def test_from_name_with_a_line_break_is_ignored():
+    # It is written into a mail header, where a line break starts a new header.
+    urls = make_urls()
+    row = {"email": {"fromName": "Calsoft\r\nBcc: evil@example.com", "primaryColor": "#0047AB"}}
+    refresh(refresher_with(urls, [{"calsoft.example.com": row}]))
+    assert urls.branding_from_name == ""
+    assert urls.branding_primary_color == "#0047AB"
+
+
+def test_blank_from_name_falls_back_to_the_default():
+    # Spaces alone would send mail with an empty display name ahead of EMAIL_FROM_NAME.
+    urls = make_urls()
+    refresh(refresher_with(urls, [{"calsoft.example.com": {"email": {"fromName": "   "}}}]))
+    assert urls.branding_from_name == ""
+
+
+@pytest.mark.parametrize("invisible", ["\u00a0", "\u200b", "\u202e"])
+def test_from_name_with_an_invisible_character_is_ignored(invisible):
+    # The write path refuses these too, so a saved name is never silently dropped.
+    urls = make_urls()
+    refresh(refresher_with(urls, [{"calsoft.example.com": {"email": {"fromName": f"Calsoft{invisible}Ops"}}}]))
+    assert urls.branding_from_name == ""

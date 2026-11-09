@@ -26,6 +26,10 @@ func (c nbCustomContainerTool) Name() string {
 	return c.tool.Name
 }
 
+// ResultCanChange: a container tool runs the user's own command, which can
+// read anything that changes between calls (#39635).
+func (c nbCustomContainerTool) ResultCanChange() bool { return true }
+
 // GetImplType labels metrics emitted on behalf of this tool so
 // dashboards can slice container vs MCP vs builtin tool traffic.
 func (c nbCustomContainerTool) GetImplType() string {

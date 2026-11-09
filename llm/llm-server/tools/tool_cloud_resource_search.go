@@ -16,7 +16,7 @@ func init() {
 	})
 }
 
-type CloudResourceSearchTool struct{}
+type CloudResourceSearchTool struct{ core.ReadOnlyTool }
 
 type CloudResourceSearchRequest struct {
 	ResourceName string `json:"resource_name,omitempty"`

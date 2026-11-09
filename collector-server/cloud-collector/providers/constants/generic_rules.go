@@ -66,10 +66,33 @@ const (
 	// Azure: azure_disk_unattached_volume
 	UnattachedVolume = "unattached_volume"
 
+	// DiskPerformanceOverprovisioned - Attached disks whose provisioned IOPS or
+	// throughput is far above the observed peak
+	// AWS, Azure, GCP: disk_performance_overprovisioned
+	DiskPerformanceOverprovisioned = "disk_performance_overprovisioned"
+
 	// StorageLifecycle - Object storage without lifecycle policies
 	// AWS: aws_s3_lifecycle_policy_not_enabled
 	// Azure: azure_storage_lifecycle_management_disabled
 	StorageLifecycle = "storage_lifecycle"
+)
+
+// -----------------------------------------------------------------------------
+// COMMITMENTS - Savings Plans, Reserved Instances, Committed Use Discounts
+// -----------------------------------------------------------------------------
+
+const (
+	// UnderutilizedCommitment - A purchased commitment whose committed usage is not being consumed
+	// AWS: Savings Plans, EC2 and RDS Reserved Instances
+	UnderutilizedCommitment = "underutilized_commitment"
+
+	// CommitmentExpiringSoon - A purchased commitment that ends soon and needs a renewal decision
+	// AWS: Savings Plans, EC2 and RDS Reserved Instances
+	CommitmentExpiringSoon = "commitment_expiring_soon"
+
+	// LowCommitmentCoverage - Too little commitment-eligible usage is covered by a commitment
+	// AWS: Savings Plans
+	LowCommitmentCoverage = "low_commitment_coverage"
 )
 
 // -----------------------------------------------------------------------------

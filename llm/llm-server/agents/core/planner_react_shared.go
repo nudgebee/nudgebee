@@ -1,15 +1,20 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
 	"nudgebee/llm/common"
 	toolcore "nudgebee/llm/tools/core"
+
+	"github.com/google/uuid"
+	"github.com/tmc/langchaingo/llms"
 )
 
 // This file holds symbols shared across ReAct-family planners. They originally
@@ -186,4 +191,83 @@ func reActPromptToolNames(tools []toolcore.NBTool) string {
 	}
 
 	return tn.String()
+}
+
+// finalIterationsWarning is how many remaining planning iterations get the
+// finish-now note. Two leaves room for one critique refinement that asks for a
+// tool read before the loop ends.
+const finalIterationsWarning = 2
+
+// finalIterationsNote tells a top-level planner its iteration budget is nearly
+// spent, so it writes the final answer itself, through the critiqued finish
+// path, instead of the executor's fallback summary writing it unreviewed
+// (#40774). ok is false when the executor set no budget or more remains.
+func finalIterationsNote(ctx context.Context) (string, bool) {
+	left, set := ctx.Value(contextKeyIterationsLeft).(int)
+	if !set || left > finalIterationsWarning {
+		return "", false
+	}
+	return fmt.Sprintf("You have %d planning step(s) left in this run. Stop collecting evidence and write your final answer now from the evidence already gathered, stating plainly what remains unverified.", max(left, 1)), true
+}
+
+// appendNoteToLastMessage adds note to the request's last message rather than
+// as a new message: a human turn straight after tool results is rejected by
+// providers that require alternating roles, and OpenAI reads only the first
+// part of a tool message, so after tool results the note joins the last tool
+// response's text. Only the tail changes, which keeps the cached prefix.
+func appendNoteToLastMessage(messages []llms.MessageContent, note string) []llms.MessageContent {
+	if len(messages) == 0 {
+		return messages
+	}
+	// Copy so the caller's slice and its parts are never modified.
+	out := slices.Clone(messages)
+	last := &out[len(out)-1]
+	switch last.Role {
+	case llms.ChatMessageTypeHuman:
+		last.Parts = append(slices.Clone(last.Parts), llms.TextContent{Text: note})
+		return out
+	case llms.ChatMessageTypeTool:
+		parts := slices.Clone(last.Parts)
+		for i := len(parts) - 1; i >= 0; i-- {
+			if resp, ok := parts[i].(llms.ToolCallResponse); ok {
+				resp.Content += "\n\n" + note
+				parts[i] = resp
+				last.Parts = parts
+				return out
+			}
+		}
+	}
+	return append(out, llms.MessageContent{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: note}}})
+}
+
+// saveCritiqueCard writes a synthetic tool-call record so that the critique
+// feedback that sent an answer back surfaces in the conversation as a
+// "Critique Feedback" step. Shared by ReAct3 and ReAct4 (#41546). Callers
+// swallow its error — this is a visibility feature and must never fail the
+// planner.
+func saveCritiqueCard(request NBAgentRequest, feedback string) error {
+	if request.AgentId == "" || request.ConversationId == "" || strings.TrimSpace(feedback) == "" {
+		return nil
+	}
+	conversationDAO := GetConversationDao()
+	toolId := uuid.New().String()
+	return conversationDAO.SaveConversationToolCall(
+		request.ConversationId,
+		request.AccountId,
+		request.UserId,
+		request.MessageId,
+		request.AgentId,
+		toolId,
+		"react_critique",
+		"Answer rejected by critique — refining for better quality",   // title shown on the UI card
+		"Critiquing the final answer to ensure quality and accuracy.", // thought shown in Tool Details drawer
+		"", // no SQL
+		feedback,
+		toolcore.NBToolResponseStatusSuccess,
+		toolcore.NBToolTypeTool,
+		nil,
+		nil,
+		nil,
+		nil, // memoryRefs — synthetic critique-feedback tool call
+	)
 }

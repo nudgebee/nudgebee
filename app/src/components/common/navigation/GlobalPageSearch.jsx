@@ -31,6 +31,7 @@ import Divider from '@ui/Divider';
 import CustomTooltip from '@ui/Tooltip';
 import { Button as DsButton } from '@ui/Button';
 import { toast as snackbar } from '@ui/Toast';
+import { getGraphqlErrorMessage } from '@lib/errorMessages';
 import SafeIcon from '@shared/icons/SafeIcon';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { useData } from '@context/DataContext';
@@ -1687,7 +1688,7 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
         const res = await apiAskNudgebee.aiGenerateInvestigate({ account_id: accountId, query, session_id: sessionId });
         const response = res?.data?.data?.ai_execute_investigation ?? {};
         if (!response?.data?.query) {
-          snackbar.error("Can't process your request right now.");
+          snackbar.error(getGraphqlErrorMessage(res, "Can't process your request right now.") || "Can't process your request right now.");
           return;
         }
         setAnchorEl(null);

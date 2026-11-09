@@ -136,6 +136,7 @@ const cisScanView = `
 const ToolSecurityExecute = "security_execute"
 
 type SecurityExecuteTool struct {
+	core.ReadOnlyTool
 }
 
 func (m SecurityExecuteTool) Name() string {

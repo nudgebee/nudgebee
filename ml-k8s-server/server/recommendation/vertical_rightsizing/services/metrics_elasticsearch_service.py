@@ -12,6 +12,7 @@ import numpy as np
 
 from server.metrics.api_server_metrics import METRIC_PROVIDER_ELASTICSEARCH, query_metrics_via_api_server
 from server.recommendation.elasticsearch_client import ElasticsearchTransport
+from server.utils.utils import safe_get
 from server.recommendation.vertical_rightsizing.models.config import Config
 from server.recommendation.vertical_rightsizing.models.objects import K8sObjectData, PodData
 from server.recommendation.vertical_rightsizing.models.result import PodsTimeData
@@ -219,7 +220,7 @@ class ElasticsearchMetricsService(MetricsService):
             return []
         names = []
         for entry in entries:
-            name = (entry.get("metric") or {}).get(POD_LABEL)
+            name = safe_get(entry, ["metric", POD_LABEL])
             if name and name not in names:
                 names.append(name)
         return [PodData(name=name, deleted=False) for name in names]

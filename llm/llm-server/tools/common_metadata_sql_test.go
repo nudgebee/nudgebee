@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"regexp"
-	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -98,50 +97,49 @@ func TestBuildLimitedQuery(t *testing.T) {
 	}
 }
 
-func TestSqlUpdateQueryWithAccountIdFilter_InvalidUUID(t *testing.T) {
-	query := "SELECT * FROM recommendation_view WHERE severity = 'high'"
-	_, err := SqlUpdateQueryWithAccountIdFilter(nil, query, "not-a-uuid", "recommendation_view")
-	assert.Error(t, err, "Invalid UUID should return an error")
-	assert.Contains(t, err.Error(), "invalid account_id format")
+func TestSqlBindTable_InvalidUUID(t *testing.T) {
+	_, _, err := sqlBindTable("SELECT * FROM recommendation_view", "not-a-uuid", "recommendation_view", "VIEW")
+	assert.Error(t, err)
 }
 
-func TestSqlUpdateQueryWithAccountIdFilter_ValidUUID(t *testing.T) {
-	query := "SELECT * FROM recommendation_view WHERE severity = 'high'"
-	validUUID := "550e8400-e29b-41d4-a716-446655440000"
-	result, err := SqlUpdateQueryWithAccountIdFilter(nil, query, validUUID, "recommendation_view")
-	assert.NoError(t, err)
-	assert.Contains(t, result, validUUID, "Valid UUID should be included in filtered query")
-	assert.Contains(t, result, "cloud_account_id", "Should filter by cloud_account_id")
+func TestSqlBindTable_FiltersViewsByAccount(t *testing.T) {
+	q, src, err := sqlBindTable("SELECT id FROM recommendation_view WHERE status = 'Open'", "550e8400-e29b-41d4-a716-446655440000", "recommendation_view", "VIEW")
+	require.NoError(t, err)
+	assert.Equal(t, "SELECT id FROM "+sqlTablePlaceholder+" WHERE status = 'Open'", q)
+	assert.Equal(t, "(select * from (VIEW) as tv where cloud_account_id = '550e8400-e29b-41d4-a716-446655440000') as recommendation_view", src)
 }
 
-func TestSqlUpdateQueryWithAccountIdFilter_MultipleTableReferences(t *testing.T) {
-	// Self-join: every reference to the table must be wrapped with the tenant
-	// filter, otherwise a multi-table query could bypass tenant isolation.
-	query := "SELECT a.id FROM recommendation_view a JOIN recommendation_view b ON a.id = b.parent_id"
-	validUUID := "550e8400-e29b-41d4-a716-446655440000"
-	result, err := SqlUpdateQueryWithAccountIdFilter(nil, query, validUUID, "recommendation_view")
-	assert.NoError(t, err)
-	// Both occurrences should be replaced and aliases must be unique.
-	assert.Equal(t, 2, strings.Count(result, "cloud_account_id = '"+validUUID+"'"),
-		"both table occurrences must be wrapped with the tenant filter")
-	assert.Contains(t, result, ") q0")
-	assert.Contains(t, result, ") q1")
+// events and anomaly views filter by account themselves.
+func TestSqlBindTable_EventsAndAnomalyUseTheViewAsIs(t *testing.T) {
+	for _, table := range []string{"events", "anomaly"} {
+		_, src, err := sqlBindTable("SELECT * FROM "+table, "550e8400-e29b-41d4-a716-446655440000", table, "VIEW")
+		require.NoError(t, err)
+		assert.Equal(t, "(VIEW) as "+table, src)
+	}
 }
 
-func TestSqlUpdateQueryWithAccountIdFilter_SkipsEventsAndAnomaly(t *testing.T) {
-	validUUID := "550e8400-e29b-41d4-a716-446655440000"
-
-	query := "SELECT * FROM events WHERE severity = 'high'"
-	result, err := SqlUpdateQueryWithAccountIdFilter(nil, query, validUUID, "events")
-	assert.NoError(t, err)
-	assert.Equal(t, query, result, "events table should skip account filter")
-
-	query2 := "SELECT * FROM anomaly WHERE severity = 'high'"
-	result2, err := SqlUpdateQueryWithAccountIdFilter(nil, query2, validUUID, "anomaly")
-	assert.NoError(t, err)
-	assert.Equal(t, query2, result2, "anomaly table should skip account filter")
+// Only the FROM item is replaced: a literal or a column naming the table is
+// left alone, and the view keeps the table's name so those still resolve.
+func TestSqlBindTable_ReplacesOnlyTheFromItem(t *testing.T) {
+	q, _, err := sqlBindTable("SELECT events.id, row_to_json(events) FROM events WHERE subject_name ILIKE '%payflow-events%'", "550e8400-e29b-41d4-a716-446655440000", "events", "VIEW")
+	require.NoError(t, err)
+	assert.Equal(t, "SELECT events.id, row_to_json(events) FROM "+sqlTablePlaceholder+" WHERE subject_name ILIKE '%payflow-events%'", q)
 }
 
+// A "from" inside a literal before the real FROM is not taken for the keyword.
+func TestSqlBindTable_IgnoresFromInsideLiterals(t *testing.T) {
+	q, src, err := sqlBindTable("SELECT 'event from system' AS src, id FROM events WHERE title = 'x where y'", "550e8400-e29b-41d4-a716-446655440000", "events", "VIEW")
+	require.NoError(t, err)
+	assert.Equal(t, "SELECT 'event from system' AS src, id FROM "+sqlTablePlaceholder+" WHERE title = 'x where y'", q)
+	assert.Equal(t, "(VIEW) as events", src)
+}
+
+func TestSqlBindTable_KeepsUserAlias(t *testing.T) {
+	q, src, err := sqlBindTable("select e.id from Events e where e.priority = 'HIGH'", "550e8400-e29b-41d4-a716-446655440000", "events", "VIEW")
+	require.NoError(t, err)
+	assert.Equal(t, "select e.id from "+sqlTablePlaceholder+" e where e.priority = 'HIGH'", q)
+	assert.Equal(t, "(VIEW)", src)
+}
 func TestSqlValidateReadOnly(t *testing.T) {
 	testCases := []struct {
 		name         string
@@ -249,20 +247,22 @@ func TestSqlValidateReadOnly(t *testing.T) {
 			query:        "SELECT * FROM users",
 			allowedTable: "events",
 			expectError:  true,
-			errorMsg:     "sql: not allowed",
+			errorMsg:     "sql: query only events",
 		},
 		{
+			// A join reads a second table, even when the allowed one comes first (#39880).
 			name:         "SELECT from allowed table with join (allowed table first)",
 			query:        "SELECT e.*, u.name FROM events e JOIN users u ON e.user_id = u.id",
 			allowedTable: "events",
-			expectError:  false,
+			expectError:  true,
+			errorMsg:     "sql: query only events; JOIN, UNION, WITH, TABLE and LATERAL are not allowed (write timestamp with time zone as timestamptz)",
 		},
 		{
-			name:         "SELECT from allowed table with join (allowed table second, not caught)",
+			name:         "SELECT from allowed table with join (allowed table second)",
 			query:        "SELECT u.name, e.* FROM users u JOIN events e ON e.user_id = u.id",
 			allowedTable: "events",
-			expectError:  true, // This should ideally be caught if strict table checking is desired for all parts
-			errorMsg:     "sql: not allowed",
+			expectError:  true,
+			errorMsg:     "sql: query only events; JOIN, UNION, WITH, TABLE and LATERAL are not allowed (write timestamp with time zone as timestamptz)",
 		},
 		{
 			name:         "DELETE from allowed table (should be caught by DML check first)",
@@ -278,24 +278,26 @@ func TestSqlValidateReadOnly(t *testing.T) {
 			expectError:  false,
 		},
 		{
-			name:         "SELECT from allowed table with schema prefix (not supported by current check)",
+			// Never ran: the view substitution produced "public.(view)".
+			name:         "SELECT from allowed table with schema prefix",
 			query:        "SELECT * FROM public.events WHERE id = 1",
-			allowedTable: "events", // The current logic correctly handles "public.events"
-			expectError:  false,    // Expect no error as 'events' is the table after schema
+			allowedTable: "events",
+			expectError:  true,
+			errorMsg:     "sql: query only events",
 		},
 		{
 			name:         "SELECT from allowed table, but table name is a substring of another",
 			query:        "SELECT * FROM allevents WHERE id = 1",
 			allowedTable: "events",
 			expectError:  true,
-			errorMsg:     "sql: not allowed",
+			errorMsg:     "sql: query only events",
 		},
 		{
 			name:         "SELECT from allowed table, query has table name in comments",
 			query:        "SELECT * -- from events \n FROM real_table WHERE id = 1",
 			allowedTable: "events",
 			expectError:  true,
-			errorMsg:     "sql: not allowed",
+			errorMsg:     "sql: comments and quoted names are not allowed",
 		},
 		{
 			name:         "Valid SELECT query with mixed case table name and FROM keyword",
@@ -396,7 +398,7 @@ func TestSqlExecuteQueryCapsOnTheCallersSQL(t *testing.T) {
 	ctx := security.NewRequestContext(context.Background(), nil, nil, nil, nil)
 
 	view := "SELECT e.id FROM events e WHERE e.id = (SELECT id FROM events LIMIT 1)"
-	expectToolQuery(mock, `^select \* from \(SELECT id FROM \(.*LIMIT 1.*\) as tv\) as ql limit 10;$`).
+	expectToolQuery(mock, `^select \* from \(SELECT id FROM \(.*LIMIT 1.*\) as events\) as ql limit 10;$`).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 
 	_, err := sqlExecuteQuery(ctx, "SELECT id FROM events", "550e8400-e29b-41d4-a716-446655440000", "events", view, 0)

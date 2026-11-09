@@ -419,6 +419,83 @@ func TestFetchCommentsFromJira_AdvancesByReturnedCount(t *testing.T) {
 	mustEqual(t, "comments fetched", len(got), total)
 }
 
+// A wiki-markup image reference ("!file.png|width=588!") that resolves to a
+// real issue attachment must be replaced with an attachmentMarker in the
+// returned body - not left as raw markup - so the frontend can render the
+// image in its original position instead of as literal text.
+func TestFetchCommentsFromJira_ReplacesResolvedImageRefWithMarker(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/comment") {
+			_, _ = fmt.Fprint(w, `{"startAt":0,"maxResults":100,"total":1,"comments":[
+				{"author":{"displayName":"alice"},
+				 "body":"First Line\n\n!image-20261006.png|width=588,alt=\"image-20261006.png\"!\n\nLast line",
+				 "created":"2026-10-06T05:26:00.000+0000","updated":"2026-10-06T05:26:00.000+0000"}
+			]}`)
+			return
+		}
+		// jiraIssueAttachmentsByFilename's GET /issue/{id}?fields=attachment
+		_, _ = fmt.Fprint(w, `{"fields":{"attachment":[
+			{"id":"10033","filename":"image-20261006.png","mimeType":"image/png"}
+		]}}`)
+	}))
+	defer ts.Close()
+	client, err := jira.NewClient(ts.Client(), ts.URL)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	got, err := fetchCommentsFromJira("PROJ-1", client)
+	if err != nil {
+		t.Fatalf("fetchCommentsFromJira: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len(comments) = %d, want 1", len(got))
+	}
+
+	wantBody := "First Line\n\n[[nb-attachment:10033]]\n\nLast line"
+	if got[0].Comment != wantBody {
+		t.Fatalf("comment body = %q, want %q", got[0].Comment, wantBody)
+	}
+	if len(got[0].Attachments) != 1 || got[0].Attachments[0].ID != "10033" || got[0].Attachments[0].Name != "image-20261006.png" {
+		t.Fatalf("attachments = %+v, want one with id=10033 name=image-20261006.png", got[0].Attachments)
+	}
+}
+
+// A wiki-markup image reference that does NOT match any known issue
+// attachment (e.g. the attachment lookup failed, or it references something
+// stale) must be left as literal text, not silently dropped.
+func TestFetchCommentsFromJira_LeavesUnresolvedImageRefAsText(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/comment") {
+			_, _ = fmt.Fprint(w, `{"startAt":0,"maxResults":100,"total":1,"comments":[
+				{"author":{"displayName":"alice"}, "body":"see !unknown.png! here",
+				 "created":"2026-10-06T05:26:00.000+0000","updated":"2026-10-06T05:26:00.000+0000"}
+			]}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"fields":{"attachment":[]}}`)
+	}))
+	defer ts.Close()
+	client, err := jira.NewClient(ts.Client(), ts.URL)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	got, err := fetchCommentsFromJira("PROJ-1", client)
+	if err != nil {
+		t.Fatalf("fetchCommentsFromJira: %v", err)
+	}
+	wantBody := "see !unknown.png! here"
+	if len(got) != 1 || got[0].Comment != wantBody {
+		t.Fatalf("got %+v, want body %q unchanged with no attachments", got, wantBody)
+	}
+	if len(got[0].Attachments) != 0 {
+		t.Fatalf("attachments = %+v, want none", got[0].Attachments)
+	}
+}
+
 // The approximate count is fetched once per (integration, jql) and reused across
 // pages, and an unavailable endpoint leaves the total unknown (0).
 func TestJiraApproximateCount_CachesAndDegrades(t *testing.T) {

@@ -4,6 +4,15 @@
 # insufficient for ClickHouse). Every other client we install is glibc-friendly
 # on this base too.
 FROM ghcr.io/nudgebee/python:3.13-slim
+ARG IMAGE_VERSION=0.0.0
+ARG IMAGE_RELEASE=1
+LABEL name="nudgebee-debug" \
+      maintainer="nudgebee" \
+      vendor="nudgebee" \
+      version="${IMAGE_VERSION}" \
+      release="${IMAGE_RELEASE}" \
+      summary="Nudgebee debug toolbox" \
+      description="Troubleshooting toolbox image used by Nudgebee to debug workloads in Kubernetes clusters."
 
 
 ENV DEBIAN_FRONTEND=noninteractive

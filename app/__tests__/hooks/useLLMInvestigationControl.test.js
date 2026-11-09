@@ -498,6 +498,32 @@ describe('useLLMInvestigationControl', () => {
     expect(result.current.needsConversationRefresh).toBe(false);
   });
 
+  it('does not let a read started before a send mark the conversation idle', async () => {
+    // #30669: returning to a tab re-reads the conversation; a send made while that read is in
+    // flight must not be undone by the read's pre-send snapshot.
+    let finishRead;
+    mockGetConversation.mockReturnValue(
+      new Promise((resolve) => {
+        finishRead = resolve;
+      })
+    );
+    mockGenerateInvestigate.mockReturnValue(new Promise(() => {}));
+    const { result } = renderHook(() => useLLMInvestigationControl('acc-1'));
+    let read;
+    act(() => {
+      read = result.current.fetchConversation('sess-1', '', 'poll', false);
+    });
+    act(() => {
+      result.current.startInvestigation({ text: 'Check pods', selectedSessionId: 'sess-1' });
+    });
+    await act(async () => {
+      finishRead({ data: { data: { llm_conversations: [{ id: 'conv-1', status: 'COMPLETED', llm_conversation_messages: [] }] } } });
+      await read;
+    });
+    expect(result.current.currentlyProcessingQuestion).toBe('Check pods');
+    expect(result.current.conversationStatus).not.toBe('COMPLETED');
+  });
+
   it('fetchConversation sets conversationStatus from response', async () => {
     mockGetConversation.mockResolvedValue({
       data: {

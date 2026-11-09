@@ -1,7 +1,10 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
+	"github.com/google/shlex"
+	"nudgebee/llm/tools"
 	"nudgebee/llm/tools/core"
 	"regexp"
 	"strings"
@@ -19,15 +22,9 @@ import (
 // Everything below is a pure function of the plan text. No environment lookup, no second model
 // call, so it adds no latency and cannot itself fail at runtime.
 
-// Confidence ceilings applied by the deterministic checks below. Both sit under
-// maxMitigationConfidence so a demoted action also sorts beneath a genuine mitigation.
-const (
-	// A command carrying a stand-in value cannot be run as-is, so it ranks last among mitigations.
-	placeholderMaxConfidence = Confidence(20)
-	// Cycling a workload whose cause survives a restart may still clear a wedged process, so it is
-	// worth offering — just not ahead of anything that touches the actual cause.
-	restartAgainstResistantCauseMaxConfidence = Confidence(25)
-)
+// placeholderMaxConfidence sits under maxMitigationConfidence: a command carrying a stand-in value
+// cannot be run as-is, so it ranks last among mitigations.
+const placeholderMaxConfidence = Confidence(20)
 
 // placeholderValue matches a stand-in the model was told to emit instead of a real secret, plus the
 // other shapes it reaches for when it does not know a value. The prompt's own advice ("use a clearly
@@ -49,7 +46,63 @@ var readOnlyKubectlVerbs = map[string]bool{
 	"explain": true, "version": true, "api-resources": true, "cluster-info": true,
 }
 
-var readOnlyCloudVerb = regexp.MustCompile(`(?i)\b(describe|list|get|show)[-\s]`)
+// cloudReadOperation judges the operation token, never flag values (a whole-string regex read
+// `aws ec2 terminate-instances --query "list "` as a read); outside aws the first known verb decides.
+func cloudReadOperation(argv []string) bool {
+	// Leading global flags are skipped ("aws --region r ec2 ..."); unknown ones are taken as boolean.
+	rest := argv[1:]
+	for len(rest) > 0 && strings.HasPrefix(rest[0], "-") {
+		if !strings.Contains(rest[0], "=") && cloudGlobalValueFlags[argv[0]][rest[0]] && len(rest) > 1 {
+			rest = rest[1:]
+		}
+		rest = rest[1:]
+	}
+	var words []string
+	for _, a := range rest {
+		if strings.HasPrefix(a, "-") {
+			break
+		}
+		words = append(words, strings.ToLower(a))
+	}
+	isRead := func(w string) bool {
+		return w == "describe" || w == "list" || w == "show" || w == "ls" || w == "stat" ||
+			strings.HasPrefix(w, "describe-") || strings.HasPrefix(w, "list-") || strings.HasPrefix(w, "get-") || strings.HasPrefix(w, "show-")
+	}
+	if argv[0] == "aws" {
+		return len(words) >= 2 && words[1] != "ls" && words[1] != "stat" && isRead(words[1])
+	}
+	for _, w := range words {
+		if isRead(w) {
+			return true
+		}
+		if cloudWriteVerb(w) {
+			return false
+		}
+	}
+	return false
+}
+
+var cloudGlobalValueFlags = map[string]map[string]bool{
+	"aws": {"--region": true, "--profile": true, "--output": true, "--query": true, "--endpoint-url": true, "--color": true,
+		"--cli-read-timeout": true, "--cli-connect-timeout": true, "--ca-bundle": true},
+	"gcloud": {"--project": true, "--account": true, "--configuration": true, "--format": true, "--verbosity": true,
+		"--impersonate-service-account": true, "--billing-project": true, "--zone": true, "--region": true, "--flags-file": true},
+	"az": {"--subscription": true, "--output": true, "-o": true, "--query": true},
+}
+
+// cloudWriteVerb matches the verbs gcloud, az and gsutil use for changes, so a read verb used as a
+// resource name after one ("instances delete list") does not make the command a read.
+func cloudWriteVerb(w string) bool {
+	// Bare "run" is not here: it is gcloud's Cloud Run group ("gcloud run services describe").
+	for _, p := range []string{"create", "delete", "update", "set", "add", "remove", "deploy", "start", "stop", "restart", "reset",
+		"patch", "replace", "apply", "import", "export", "resize", "ssh", "scp", "cp", "mv", "rm", "rsync", "attach", "detach",
+		"enable", "disable", "invoke", "execute", "run-command", "send", "put", "upload", "download", "rotate", "purge", "move", "rename", "assign", "grant", "revoke", "login", "logout", "configure"} {
+		if w == p || strings.HasPrefix(w, p+"-") {
+			return true
+		}
+	}
+	return false
+}
 
 // isReadOnlyCommand reports whether the command only observes state. Used two ways: an action whose
 // execute command is read-only is not a remediation at all (the audit found `kubectl get pods -l
@@ -72,7 +125,8 @@ func isReadOnlyCommand(command string) bool {
 		if strings.Contains(command, "ssm send-command") {
 			return core.SSMPayloadIsReadOnly(command)
 		}
-		return readOnlyCloudVerb.MatchString(command)
+		argv, err := shlex.Split(command)
+		return err == nil && len(argv) > 1 && cloudReadOperation(argv)
 	case "helm":
 		return fields[1] == "list" || fields[1] == "status" || fields[1] == "get" || fields[1] == "history"
 	}
@@ -181,11 +235,13 @@ func settingsWritten(command string) []string {
 
 var resourceFlag = regexp.MustCompile(`--(limits|requests)=(\S+)`)
 
-// flagTakesValue lists the `kubectl set env` flags whose value is a separate token. The `--flag=x`
-// form needs no entry: it is one token and is skipped as a flag.
+// flagTakesValue lists the kubectl flags whose value is a separate token. The `--flag=x` form needs
+// no entry: it is one token and is skipped as a flag.
 var flagTakesValue = map[string]bool{
 	"-c": true, "--containers": true, "-n": true, "--namespace": true,
 	"-f": true, "--filename": true, "--from": true, "--keys": true, "-o": true, "--output": true,
+	"-l": true, "--selector": true, "-p": true, "--patch": true, "--type": true, "--replicas": true,
+	"--context": true, "--grace-period": true, "--timeout": true,
 }
 
 // deriveRollback builds the complete inverse of a `kubectl set` that the plan's own rollback failed
@@ -347,82 +403,6 @@ var alarmStateVerify = regexp.MustCompile(`(?i)cloudwatch\s+describe-alarms|Metr
 // Undo button.
 var destructiveRollback = regexp.MustCompile(`(?i)\b(delete|destroy|terminate|purge|remove|rb|stop)\b|--replicas[= ]0\b`)
 
-// causeResistsRestart matches root causes that survive a restart or a pod delete untouched: the pod
-// comes back and fails on the same credential, the same denied permission, the same full disk. The
-// audit found five such commands, each offered against a cause the evidence had already named —
-// restart a pod whose IAM policy still denies it, delete a pod on a volume with 0 bytes free.
-//
-// Deliberately does NOT cover `rollout undo`: reverting configuration genuinely can fix a bad value,
-// and three plans used it correctly against a bad image tag.
-// ephemeralStorageCause marks the one disk-full case a restart genuinely does clear: storage that
-// lives and dies with the pod. Without this the rule demotes a correct mitigation — one plan
-// restarts a Redis whose emptyDir filled, and recreating the pod recreates an empty volume.
-var ephemeralStorageCause = regexp.MustCompile(`(?i)\b(emptydir|tmpfs|memory-backed|ephemeral (storage|volume))\b`)
-
-// The trailing boundary deliberately admits common inflections and an underscore.
-//
-// A plain `\b` here silently failed on the way these causes are actually written: "credentials
-// are invalid", "missing permissions", "disk space exhausted" and "AUTHENTICATION_FAILED" all
-// missed, because `\b` rejects a following `s`/`ed` and treats `_` as a word character. The stems
-// only ever appeared to work because a plan's concatenated cause text is long enough to usually
-// contain one singular form somewhere; a short cause carrying only the plural slipped straight
-// through the rule.
-//
-// Suffixes are enumerated rather than left open so a stem cannot swallow an unrelated word
-// ("secret" must not match "secretary"), and the leading `\b` is kept so "iam" cannot match
-// "Miami".
-var causeResistsRestart = regexp.MustCompile(`(?i)\b(credential|password|secret|token|unauthorized|forbidden|access[ _]?denied|permission|iam|rbac|signature|authentication|expired certificate|quota exceeded|no space left|disk (space )?(exhaust|full)|out of disk|no such host|nxdomain|dns resolution)(?:s|es|ed|ing)?(?:\b|_)`)
-
-// appLevelMemorySetting matches a cause whose memory ceiling lives inside the application, where a
-// container limit cannot reach it. Twice, five days apart, the audit saw Redis thrashing at
-// `maxmemory 1048MB` answered with `kubectl set resources --limits=memory=2Gi` labelled a fix:
-// the container gets more room and `maxmemory` — the thing doing the evicting — never changes.
-var appLevelMemorySetting = regexp.MustCompile(`(?i)\b(maxmemory|max-memory|GOMEMLIMIT|-Xmx|heap size|shared_buffers|work_mem|innodb_buffer_pool)\b`)
-
-// restartLikeCommand reports whether the command only cycles a workload rather than changing it.
-func restartLikeCommand(command string) bool {
-	c := strings.TrimSpace(command)
-	if strings.HasPrefix(c, "kubectl rollout restart") ||
-		strings.HasPrefix(c, "kubectl delete pod") || strings.HasPrefix(c, "kubectl delete po ") {
-		return true
-	}
-	// The same act on the other substrate. This rule is about what a restart can and cannot
-	// achieve, which has nothing to do with which CLI delivers it - but the implementation was
-	// kubectl-only, so every EC2-hosted remediation escaped it entirely. Rebooting an instance is
-	// the bluntest restart there is, and a service restart delivered over SSM is exactly the
-	// kubectl case wearing different clothes.
-	if instanceReboot.MatchString(c) {
-		return true
-	}
-	if strings.Contains(c, "ssm send-command") {
-		return hostServiceRestart(core.SSMPayload(c))
-	}
-	return false
-}
-
-var instanceReboot = regexp.MustCompile(`^aws\s+ec2\s+reboot-instances\b`)
-
-// hostServiceRestart reports whether an in-host payload restarts a service.
-//
-// `start` is deliberately excluded: on a stopped service that is the correct fix, not a blunt
-// cycle, and capping it would penalise the one scenario where it is the right answer.
-func hostServiceRestart(payload string) bool {
-	f := strings.Fields(payload)
-	if len(f) > 0 && f[0] == "sudo" {
-		f = f[1:]
-	}
-	if len(f) < 2 {
-		return false
-	}
-	switch f[0] {
-	case "systemctl":
-		return f[1] == "restart" || f[1] == "reload-or-restart"
-	case "service":
-		return len(f) > 2 && f[2] == "restart"
-	}
-	return false
-}
-
 // planValidationNote records one deterministic correction, for logging and for the replay harness.
 type planValidationNote struct {
 	Action string
@@ -441,11 +421,6 @@ func validatePlanCommands(plan *RemediationPlan) []planValidationNote {
 	note := func(action, rule, detail string) {
 		notes = append(notes, planValidationNote{Action: action, Rule: rule, Detail: detail})
 	}
-	causeText := plan.RootCause + " " + plan.Summary
-	for _, h := range plan.Hypotheses {
-		causeText += " " + h.Hypothesis + " " + strings.Join(h.Reasoning, " ")
-	}
-
 	// Names created by an action we had to block, so later actions that consume them can be demoted
 	// too. Actions arrive in the model's own order, which is the order the operator would run them.
 	blockedNames := []string{}
@@ -501,32 +476,6 @@ func validatePlanCommands(plan *RemediationPlan) []planValidationNote {
 			a.Kind = RemediationKindMitigation
 			if a.Confidence > placeholderMaxConfidence {
 				a.Confidence = placeholderMaxConfidence
-			}
-		}
-
-		// A cause that survives a restart is not addressed by one. The action stays — cycling a pod
-		// is still a reasonable thing to try — but it cannot claim to remove the cause.
-		if exec != "" && restartLikeCommand(exec) && causeResistsRestart.MatchString(causeText) && !ephemeralStorageCause.MatchString(causeText) {
-			if a.Kind == RemediationKindFix {
-				note(a.Action, "restart_cannot_fix_this_cause_demoted", exec)
-			} else if a.Confidence > restartAgainstResistantCauseMaxConfidence {
-				note(a.Action, "restart_cannot_fix_this_cause_capped", exec)
-			}
-			a.Kind = RemediationKindMitigation
-			if a.Confidence > restartAgainstResistantCauseMaxConfidence {
-				a.Confidence = restartAgainstResistantCauseMaxConfidence
-			}
-		}
-
-		// A container limit is not the application's own memory ceiling. Raising it gives headroom,
-		// which is worth doing, so the action stays — but it is a mitigation, not the fix.
-		if exec != "" && strings.HasPrefix(exec, "kubectl set resources") && appLevelMemorySetting.MatchString(causeText) {
-			if a.Kind == RemediationKindFix {
-				note(a.Action, "container_limit_is_not_the_app_setting_demoted", exec)
-			}
-			a.Kind = RemediationKindMitigation
-			if a.Confidence > maxMitigationConfidence {
-				a.Confidence = maxMitigationConfidence
 			}
 		}
 
@@ -677,3 +626,104 @@ func referencesAny(command string, names []string) bool {
 // independent, narrower copy. See core.ReadOnlyRemoteCommands's doc comment for why entries there
 // must be safe under "runs with no human confirmation," a stricter bar than this file's own
 // confidence-scoring use.
+
+// destructiveEffect says what a kubectl execute command takes away, judged on its verb and target,
+// never on the cause text: a delete (a pod delete is a restart), a scale to zero, a suspend, a drain
+// or cordon. "" otherwise.
+func destructiveEffect(a *RemediationAction) string {
+	argv := a.ExecuteArgv
+	if len(argv) == 0 {
+		argv, _ = shlex.Split(a.ExecuteCommand)
+	}
+	if len(argv) < 2 || argv[0] != "kubectl" {
+		return ""
+	}
+	pos := positionals(argv)
+	if len(pos) == 0 {
+		return ""
+	}
+	target := strings.Join(pos[1:], " ")
+	switch pos[0] {
+	case "delete":
+		if f := flagValue(argv, "-f", "--filename"); f != "" {
+			return "deletes the objects in " + f
+		}
+		if len(pos) < 2 {
+			return ""
+		}
+		if kind, _, _ := strings.Cut(pos[1], "/"); tools.NormalizeK8sType(kind) == "pod" {
+			return ""
+		}
+		return "deletes " + target
+	case "scale":
+		if flagValue(argv, "--replicas") == "0" {
+			return "scales " + target + " to zero"
+		}
+	case "patch":
+		var p struct {
+			Spec struct {
+				Suspend bool `json:"suspend"`
+			} `json:"spec"`
+		}
+		if json.Unmarshal([]byte(flagValue(argv, "-p", "--patch")), &p) == nil && p.Spec.Suspend {
+			return "suspends " + target
+		}
+	case "drain", "cordon":
+		return "takes node " + target + " out of service"
+	}
+	return ""
+}
+
+// positionals returns argv's words after the program, skipping flags and the values they take.
+func positionals(argv []string) []string {
+	var out []string
+	for i := 1; i < len(argv); i++ {
+		a := argv[i]
+		if strings.HasPrefix(a, "-") {
+			if flagTakesValue[a] {
+				i++
+			}
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// flagValue returns the value given to any of names ("--x v" or "--x=v"), "" when absent.
+func flagValue(argv []string, names ...string) string {
+	for i, a := range argv {
+		for _, n := range names {
+			if a == n && i+1 < len(argv) {
+				return strings.Trim(argv[i+1], `'"`)
+			}
+			if strings.HasPrefix(a, n+"=") {
+				return strings.Trim(strings.TrimPrefix(a, n+"="), `'"`)
+			}
+		}
+	}
+	return ""
+}
+
+// markScaleFromZero states, from inventory rather than the model's words, that a step scales a workload
+// up from the zero replicas it is recorded at: zero is often deliberate, and the operator must see that
+// the step reverses it. replicas returns the recorded desired count, "" when unknown.
+func markScaleFromZero(plan *RemediationPlan, replicas func(kind, name, ns string) string) {
+	for i := range plan.Actions {
+		a := &plan.Actions[i]
+		cmd := a.ExecuteCommand
+		if len(a.ExecuteArgv) > 0 {
+			cmd = strings.Join(a.ExecuteArgv, " ")
+		}
+		verb, kind, name, ns, ok := kubectlSetTarget(cmd)
+		to := flagValue(strings.Fields(cmd), "--replicas")
+		if !ok || verb != "scale" || ns == "" || to == "" || to == "0" || replicas(kind, name, ns) != "0" {
+			continue
+		}
+		what := fmt.Sprintf("scales %s/%s up from the 0 running pods inventory records; if that zero is deliberate, this reverses it", kind, name)
+		if t := strings.TrimSpace(a.TradeOff); t != "" {
+			what += "; " + t
+		}
+		a.TradeOff = what
+	}
+}

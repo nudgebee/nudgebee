@@ -25,10 +25,14 @@ import PropTypes from 'prop-types';
 import FilterDropdown from '@ui/FilterDropdown';
 import { toast as snackbar } from '@ui/Toast';
 import apiKnowledgeGraph from '@api1/knowledge-graph';
+import { getCurrentTenant } from '@lib/auth';
 import { ds } from 'src/utils/colors';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 
-const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
+// CloudProviderIcon falls back to the AWS logo for an unknown provider, which
+// would mislabel the "Other" group (nodes outside any connected account).
+const renderAccountGroupIcon = (provider) =>
+  provider === 'Other' ? null : <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
 const KgNodePicker = ({ pickedAccountId, pickedNodeType, pickedNodeId, selectedLabel, cloudAccounts, onAccountChange, onNodeTypeChange, onPick }) => {
   const [nodeTypes, setNodeTypes] = useState([]);
@@ -44,15 +48,20 @@ const KgNodePicker = ({ pickedAccountId, pickedNodeType, pickedNodeId, selectedL
   const [loadedNodesKey, setLoadedNodesKey] = useState('');
   const [fetchingNode, setFetchingNode] = useState(false);
 
-  const accountOptions = useMemo(
-    () =>
-      cloudAccounts.map((acc) => ({
-        value: acc.id,
-        label: [acc.account_name || acc.account_number || acc.id, acc.cloud_provider, acc.account_number].filter(Boolean).join(' · '),
-        group: acc.cloud_provider || 'Other',
-      })),
-    [cloudAccounts]
-  );
+  const accountOptions = useMemo(() => {
+    const options = cloudAccounts.map((acc) => ({
+      value: acc.id,
+      label: [acc.account_name || acc.account_number || acc.id, acc.cloud_provider, acc.account_number].filter(Boolean).join(' · '),
+      group: acc.cloud_provider || 'Other',
+    }));
+    // Nodes outside any connected account — manually declared ones, and the
+    // tenant's identities — are partitioned under the tenant id.
+    const tenantId = getCurrentTenant()?.id;
+    if (tenantId) {
+      options.push({ value: tenantId, label: 'Not in a connected account', group: 'Other' });
+    }
+    return options;
+  }, [cloudAccounts]);
 
   // Account changed → drop the cached type + node lists so the next time a
   // downstream dropdown is opened it re-fetches for the new account.

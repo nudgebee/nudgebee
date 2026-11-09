@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
+	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
@@ -111,6 +112,33 @@ func sanitizeQuestionOptions(options []string) []string {
 }
 
 const readOnlyToolStreakThreshold = 6
+
+// Step budget of the agentic tool loop. The loop makes one tool call per step, so a fixed budget
+// is a ceiling on the size of automation it can handle: a build spends a step per task it adds,
+// and an edit spends a step per task it has to read. A flat 20 ended every build past about
+// thirteen tasks, and edits of larger automations, before they reached finalize.
+//
+// toolLoopBaseSteps covers the work that does not grow with the automation (schema lookups,
+// validate, finalize, corrections) and is the whole budget of a turn that only answers a
+// question. toolLoopStepsPerTask lets a build or an edit read each task once and change it once.
+// toolLoopMaxSteps bounds what a loop that never converges can cost, whatever the size.
+const (
+	toolLoopBaseSteps    = 20
+	toolLoopStepsPerTask = 2
+	toolLoopMaxSteps     = 80
+)
+
+// toolLoopStepBudget returns how many steps a loop that builds or edits the given automation may
+// take. Callers re-read it every step, so a build's budget grows as it adds tasks.
+func toolLoopStepBudget(workflow map[string]interface{}) int {
+	tasks := 0
+	if definition, ok := workflow["definition"].(map[string]interface{}); ok {
+		if list, ok := definition["tasks"].([]interface{}); ok {
+			walkTaskMaps(list, func(map[string]interface{}) { tasks++ })
+		}
+	}
+	return min(toolLoopBaseSteps+toolLoopStepsPerTask*tasks, toolLoopMaxSteps)
+}
 
 // isRawWorkflowJSON checks whether content is valid JSON with both "name" and "definition"
 // top-level keys — the two required fields for a workflow definition. This is stricter than
@@ -348,6 +376,8 @@ func safePlanContent(completion *llms.ContentResponse) (string, error) {
 type ClarifyingQuestion struct {
 	Question string   `json:"question"`
 	Options  []string `json:"options"`
+	// Kind marks a question whose answer is settled in code. See clarifyKindChatChannel.
+	Kind string `json:"kind,omitempty"`
 }
 
 type WorkflowBuilderState struct {
@@ -371,6 +401,12 @@ type WorkflowBuilderState struct {
 	ClarifyingQuestions []ClarifyingQuestion `json:"clarifying_questions,omitempty"`
 	ClarifyingAnswers   []string             `json:"clarifying_answers,omitempty"`
 	ClarifyingIndex     int                  `json:"clarifying_index"`
+	// ChatChannels maps each Slack channel the user named in a clarifying answer, in normalised
+	// form, to its id. The build writes the name; rewriteChatChannels swaps in the id.
+	ChatChannels map[string]string `json:"chat_channels,omitempty"`
+	// ChatChannelRetriedAt is the position, counted from 1, of the channel question that has
+	// already been asked a second time; 0 when none has.
+	ChatChannelRetriedAt int `json:"chat_channel_retried_at,omitempty"`
 }
 
 func init() {
@@ -419,10 +455,39 @@ type WorkflowBuilderAgent struct {
 	// correction of a raw-JSON answer so a model that will not fix its shape fails loudly instead
 	// of spending every remaining iteration on it. Transient per-loop: reset in runToolLoop.
 	triggerShapeRejections int
+
+	// toolLoopModel, when set, answers the tool loop's model calls in place of the LLM. Tests set
+	// it to script a loop turn by turn; it is nil everywhere else.
+	toolLoopModel func(messages []llms.MessageContent) (*llms.ContentResponse, error)
+
+	// chatChannelLister, when set, lists the Slack channels in place of the notification service.
+	// Tests set it; it is nil everywhere else.
+	chatChannelLister func(ctx *security.RequestContext) ([]chatChannel, bool)
+
+	// validatedSnapshot is the definition as it stood when validate last passed, empty when the
+	// last validate failed or none has run. A build ends at finalize only for this definition.
+	validatedSnapshot string
+
+	// batchResults holds each task's outcome from the last add_tasks call, so the loop can record
+	// one history row per task. Transient: reset at the start of every add_tasks call.
+	batchResults []addTaskResult
+}
+
+// addTaskResult is one task's outcome within an add_tasks call.
+type addTaskResult struct {
+	input       string // the task as the model wrote it
+	observation string // what add_task returns for it
 }
 
 func newWorkflowBuilderAgent(accountId string) *WorkflowBuilderAgent {
 	return &WorkflowBuilderAgent{accountId: accountId}
+}
+
+// GetMemoryEnabled opts the builder out of per-turn memory composition. The builder assembles
+// its own prompts and never reads the composed memory, yet composing it cost three model calls,
+// about ten seconds, on every turn of a build.
+func (a *WorkflowBuilderAgent) GetMemoryEnabled() bool {
+	return false
 }
 
 func (a *WorkflowBuilderAgent) MarshalState() ([]byte, error) {
@@ -691,6 +756,9 @@ func (a *WorkflowBuilderAgent) handleEntry(ctx *security.RequestContext, request
 // existing workflow ("also fetch comments and summarise") are recognised as edits rather than being
 // funnelled into failure diagnosis.
 //
+// The decision goes through the common classification API (core.Classify), so its model or backend
+// can change without touching this code; the fallback below stays here.
+//
 // Conservative defaults: on classifier error or an unparseable answer it returns EDIT when a
 // workflow is loaded (the safe non-create choice for the canvas) and CREATE otherwise. It never
 // returns EDIT when no workflow exists — a stray "edit" with nothing to edit becomes CREATE.
@@ -700,7 +768,21 @@ func (a *WorkflowBuilderAgent) classifyTurnIntent(ctx *security.RequestContext, 
 		fallback = turnIntentEdit
 	}
 
-	systemPrompt := fmt.Sprintf(`You classify a user's message in an automation-builder chat into exactly one of three intents. There %s currently an automation open in the editor.
+	call, task := turnIntentClassification(request, hasWorkflow)
+	decision, err := core.Classify(ctx, call, task, request.Query)
+	if err != nil {
+		ctx.GetLogger().Warn("workflow_builder: turn intent classification failed, using fallback", "error", err, "fallback", fallback)
+		return fallback
+	}
+	// An invalid answer has an empty label, which parseTurnIntent maps to the fallback.
+	return parseTurnIntent(decision.Label(), hasWorkflow)
+}
+
+// turnIntentClassification builds the turn-intent decision for core.Classify: the call stays on the
+// retrieval tier (today's model; moving it to the classification tier is a later switch), and the
+// options' descriptions are short because the full rules are in the instructions.
+func turnIntentClassification(request core.NBAgentRequest, hasWorkflow bool) (core.ClassificationCall, core.ClassificationTask) {
+	instructions := fmt.Sprintf(`You classify a user's message in an automation-builder chat into exactly one of three intents. There %s currently an automation open in the editor.
 
 ANSWER — the user wants information, an explanation, or a diagnosis with NO change requested. Examples:
 - "explain this workflow", "what does this automation do?", "summarize it"
@@ -727,41 +809,37 @@ Rules:
 - "create"/"build"/"make a new" a fresh automation is CREATE. If something is already open and the
   user asks to change it, that is EDIT, not CREATE.
 - If the user only asks to understand or diagnose (even an error or failure) and requests NO change,
-  it is ANSWER.
+  it is ANSWER — for example "why did it fail?" or "what does this error mean?".
+- A pasted error message, or "still failing" / "getting this error again", with an automation open and
+  no question about why, is a request to repair it: EDIT.
 - If genuinely ambiguous between ANSWER and a change, prefer the change (EDIT if an automation is
-  open, otherwise CREATE).
-
-Respond with ONLY one word: ANSWER, EDIT, or CREATE.`, map[bool]string{true: "IS", false: "is NOT"}[hasWorkflow])
-
-	messageContent := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),
-		llms.TextParts(llms.ChatMessageTypeHuman, request.Query),
+  open, otherwise CREATE).`, map[bool]string{true: "IS", false: "is NOT"}[hasWorkflow])
+	call := core.ClassificationCall{
+		UserId:         request.UserId,
+		AccountId:      request.AccountId,
+		ConversationId: request.ConversationId,
+		MessageId:      request.MessageId,
+		AgentId:        request.AgentId,
+		Tier:           core.ModelTierRetrieval,
+		TrackContent:   true,
 	}
-
-	// Lite/fast model — this is a one-word classification.
-	classifyCtx := security.NewRequestContext(
-		context.WithValue(ctx.GetContext(), core.ContextKeyModelTier, core.ModelTierRetrieval),
-		ctx.GetSecurityContext(),
-		ctx.GetLogger(),
-		ctx.GetTracer(),
-		ctx.GetMeter(),
-	)
-
-	completion, err := core.GenerateAndTrackLLMContent(classifyCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
-	if err != nil {
-		ctx.GetLogger().Warn("workflow_builder: turn intent classification failed, using fallback", "error", err, "fallback", fallback)
-		return fallback
+	task := core.ClassificationTask{
+		Name:         "workflow_turn_intent",
+		Instructions: instructions,
+		Options: []core.ClassificationOption{
+			{Label: string(turnIntentAnswer), Description: "The user wants information, an explanation, a diagnosis or status, with no change requested."},
+			{Label: string(turnIntentEdit), Description: "The user wants to change or repair the automation that is open."},
+			{Label: string(turnIntentCreate), Description: "The user wants to build a new automation from scratch."},
+		},
 	}
-	if completion == nil || len(completion.Choices) == 0 || completion.Choices[0] == nil {
-		return fallback
-	}
-	return parseTurnIntent(completion.Choices[0].Content, hasWorkflow)
+	return call, task
 }
 
-// parseTurnIntent interprets the classifier's raw answer into a turnIntent. It checks for EDIT/CREATE
-// before ANSWER so a verbose reply naming a change wins over an incidental "answer" mention, and it
-// downgrades EDIT to CREATE when no workflow is loaded (nothing to edit). On no match it returns the
-// hasWorkflow-aware fallback (EDIT when a workflow is open, else CREATE) — never silently ANSWER.
+// parseTurnIntent maps the classifier's label to a turnIntent. It downgrades EDIT to CREATE when no
+// workflow is loaded (nothing to edit), and turns an empty label — an invalid answer — into the
+// hasWorkflow-aware fallback (EDIT when a workflow is open, else CREATE), never silently ANSWER.
+// core.Classify only ever returns an exact label or "", so the substring matching below is lenient
+// beyond what it needs to be; it is kept for the existing table of raw answers.
 func parseTurnIntent(answer string, hasWorkflow bool) turnIntent {
 	up := strings.ToUpper(strings.TrimSpace(answer))
 	switch {
@@ -808,7 +886,7 @@ func (a *WorkflowBuilderAgent) handleReadOnly(ctx *security.RequestContext, requ
 		}
 	}
 
-	answer, err := a.runToolLoop(ctx, request, buildReadOnlyPrompt(request.Query, definitionContext), fmt.Sprintf("Answer the user's question: %s", request.Query))
+	answer, err := a.runToolLoop(ctx, request, buildReadOnlyPrompt(request.Query, definitionContext), fmt.Sprintf("Answer the user's question: %s", request.Query), toolLoopOptions{stepBudget: fixedStepBudget})
 	if err != nil {
 		return core.NBAgentResponse{}, fmt.Errorf("read-only answer failed: %w", err)
 	}
@@ -1109,11 +1187,11 @@ QUESTION STYLE:
 
 DO NOT INVENT RESOURCE VALUES:
 - Specific resource names (Slack channels, k8s namespaces, S3 buckets, DB tables, repo names, etc.) MUST come from the context above. Never guess or fabricate them.
-- DO NOT ask which Slack channel to send notifications to. The workflow will use {{ Configs.slack_channel }} as a placeholder, and the user will fill in the channel via Configs UI or via workflow Inputs at runtime. Channel selection is NOT a clarification question.
-- Same rule for any other resource value that is not enumerated in the context above: do not ask about it here. Defer to {{ Configs.<key> }} or workflow Inputs.
+- Slack channel: if the automation posts to Slack, the request names no channel, and no key under AVAILABLE CONFIGS holds the channel to use, ask where to post — as a question with "kind": "chat_channel" and an empty options list. Never propose channel names yourself: the user types the channel and it is checked against the workspace. If the user skips, the workflow uses {{ Configs.slack_channel }} as a placeholder.
+- Any other resource value that is not enumerated in the context above: do not ask about it here. Defer to {{ Configs.<key> }} or workflow Inputs.
 
 WHEN TO RETURN ZERO QUESTIONS:
-- The request describes a clear action (e.g., "check pod health and alert on Slack every hour")
+- The request describes a clear action and names what it needs (e.g., "check pod health every hour and restart pods that are crash-looping")
 - All needed integrations/accounts can be inferred from context (e.g., only one of a type exists)
 - The user already named specific integrations, clusters, trigger type, etc.
 
@@ -1123,6 +1201,11 @@ OUTPUT FORMAT (JSON only, no other text):
     {
       "question": "I'll run this against prod-aws. Use that account?",
       "options": ["prod-aws (recommended)", "staging-aws"]
+    },
+    {
+      "question": "Which Slack channel should this post to?",
+      "kind": "chat_channel",
+      "options": []
     }
   ]
 }
@@ -1194,9 +1277,15 @@ func parseClarifyingQuestionsJSON(content string, maxQuestions int) ([]Clarifyin
 		return nil, err
 	}
 
-	if len(result.Questions) > maxQuestions {
-		result.Questions = result.Questions[:maxQuestions]
+	// A chat-channel question carries no options from the model: it has no channel data, so any
+	// name it offered would be invented. The user types the channel and code checks it.
+	for i := range result.Questions {
+		result.Questions[i].Kind = normalizeQuestionKind(result.Questions[i].Kind)
+		if result.Questions[i].Kind == clarifyKindChatChannel {
+			result.Questions[i].Options = nil
+		}
 	}
+	result.Questions = keepChatChannelQuestions(result.Questions, maxQuestions)
 
 	// Strip internal identifiers (provider annotations, id=<uuid>, bare UUIDs) that the LLM copies
 	// from the ACCOUNT ENVIRONMENT context into user-facing option labels (#30885, #31141).
@@ -1310,6 +1399,17 @@ func (a *WorkflowBuilderAgent) handleClarificationResponse(ctx *security.Request
 	answer := strings.TrimSpace(request.Query)
 	idx := a.state.ClarifyingIndex
 
+	// A channel answer is checked against the workspace before it is recorded, and asked about
+	// again when the workspace has no such channel.
+	if idx < len(a.state.ClarifyingQuestions) && a.state.ClarifyingQuestions[idx].Kind == clarifyKindChatChannel &&
+		answer != "" && !strings.EqualFold(answer, "Skip") {
+		resolved, askAgain := a.resolveChatChannelAnswer(ctx, request, answer)
+		if askAgain != nil {
+			return *askAgain, nil
+		}
+		answer = resolved
+	}
+
 	// Store the answer (unless skipped)
 	if idx < len(a.state.ClarifyingAnswers) && !strings.EqualFold(answer, "Skip") {
 		a.state.ClarifyingAnswers[idx] = answer
@@ -1419,9 +1519,9 @@ AUTOMATION SCHEMA REFERENCE:
 
 INSTRUCTIONS:
 1. Call init_workflow to set up the automation structure (name from plan, triggers, inputs).
-2. For each task in the plan:
-   a. Call get_task_schema with the task type to understand required/optional parameters.
-   b. Call add_task with the correct id, type, params, depends_on, and if condition.
+2. Add the tasks in the plan:
+   a. Call get_task_schema once, passing every task type in the plan as task_types, to understand their required/optional parameters.
+   b. Add the tasks with add_tasks, several per call, each with the correct id, type, params, depends_on, and if condition. Use add_task only when adding a single task.
 3. After adding ALL tasks, call validate to check for errors.
 4. If validation fails:
    a. Read the error message carefully — it identifies the problem and often the specific field.
@@ -1609,7 +1709,7 @@ func (a *WorkflowBuilderAgent) buildAndValidate(ctx *security.RequestContext, re
 	systemPrompt := getBuildSystemPrompt(intent, plan, schema) + a.toolLoopEnvironment(ctx)
 
 	before := a.workflowSnapshot()
-	answer, err := a.runToolLoop(ctx, request, systemPrompt, fmt.Sprintf("Build the automation now based on the plan. Original request: %s", request.Query))
+	answer, err := a.runToolLoop(ctx, request, systemPrompt, fmt.Sprintf("Build the automation now based on the plan. Original request: %s", request.Query), toolLoopOptions{stepBudget: a.sizedStepBudget, commitOnFinalize: true, lowReasoning: true})
 	if err != nil {
 		finalized, ok := a.finalizedAfterFailure(before)
 		if !ok {
@@ -2000,7 +2100,7 @@ func (a *WorkflowBuilderAgent) checkMissingConfigs(ctx *security.RequestContext,
 			IsTerminal: true,
 		}, nil
 	}
-	workflowJSON = resolvedJSON
+	workflowJSON = rewriteChatChannelsJSON(resolvedJSON, a.state.ChatChannels)
 
 	refs := extractConfigReferences(workflowJSON)
 	if len(refs) == 0 {
@@ -2040,10 +2140,14 @@ func (a *WorkflowBuilderAgent) checkMissingConfigs(ctx *security.RequestContext,
 	return a.finalizeWithAutoSave(ctx, request, inactiveJSON, missing), nil
 }
 
-// workflowStatusInactive mirrors the runbook model.WorkflowStatusInactive value. The valid workflow
-// statuses are ACTIVE, INACTIVE and PAUSED (there is no DRAFT — the builder prompt schema is wrong);
-// brand-new workflows default to PAUSED at the DAO.
-const workflowStatusInactive = "INACTIVE"
+// These mirror the runbook model's workflow statuses. The valid ones are ACTIVE, INACTIVE and
+// PAUSED (there is no DRAFT — the builder prompt schema is wrong); brand-new workflows default to
+// PAUSED at the DAO.
+const (
+	workflowStatusInactive = "INACTIVE"
+	workflowStatusPaused   = "PAUSED"
+	workflowStatusActive   = "ACTIVE"
+)
 
 // setWorkflowStatus returns the workflow JSON with its top-level status set to the given value.
 // The runbook server honours a non-empty top-level status on save.
@@ -2119,7 +2223,14 @@ func (a *WorkflowBuilderAgent) finalizeWithAutoSave(ctx *security.RequestContext
 			}}
 		}
 	default:
-		summary += fmt.Sprintf("\n\n*Auto-save failed — %s*", truncateSaveError(saveErr))
+		summary = withSaveFailure(summary, saveErr)
+	}
+
+	// A new automation's state goes right under the headline: "built and saved" alone left
+	// people with a scheduled automation that never fired, because nothing said it was paused.
+	// An automation saved INACTIVE has its own note below; an edit does not change the state.
+	if saved && a.state.Mode != "fix" && len(missingConfigs) == 0 {
+		summary = insertUnderHeadline(summary, a.savedAutomationNote(ctx, workflowId))
 	}
 
 	if len(missingConfigs) > 0 {
@@ -2156,6 +2267,91 @@ func (a *WorkflowBuilderAgent) buildWorkflowEditorLink(request core.NBAgentReque
 	return toolcore.BuildAutomationURL(accountId, workflowId, q, "editor")
 }
 
+// withSaveFailure puts the reason a save failed directly under the summary's headline. Appended
+// after the task list, where it used to go, it is the one line a reader of a long automation
+// never reaches, and on a failed save it is the line that matters.
+func withSaveFailure(summary string, saveErr error) string {
+	// The reason is read by the person who asked for the automation, so it drops the prefix that
+	// names this package in logs.
+	return insertUnderHeadline(summary, "**Reason:** "+strings.TrimPrefix(truncateSaveError(saveErr), "workflow_builder: "))
+}
+
+// insertUnderHeadline puts note directly under the summary's first paragraph. An empty note
+// leaves the summary as it is.
+func insertUnderHeadline(summary string, note string) string {
+	if note == "" {
+		return summary
+	}
+	headline, rest, _ := strings.Cut(summary, "\n\n")
+	if rest == "" {
+		return headline + "\n\n" + note
+	}
+	return headline + "\n\n" + note + "\n\n" + rest
+}
+
+// savedAutomationNote says what state a newly saved automation is in, read back from the
+// workflow server. The server decides the status, not the definition that was sent: it saves
+// anything but its own three statuses as paused, and a save that lands on an automation this
+// conversation built earlier keeps the status that automation has now. When the automation
+// cannot be read back the reply goes out without the sentence.
+func (a *WorkflowBuilderAgent) savedAutomationNote(ctx *security.RequestContext, workflowId string) string {
+	saved, err := tools.DoRunbookRequest("GET", fmt.Sprintf("workflows/%s", workflowId), nil, a.accountId, ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId())
+	if err != nil {
+		ctx.GetLogger().Warn("workflow_builder: could not read back the saved automation, its state is left out of the reply", "workflow_id", workflowId, "error", err)
+		return ""
+	}
+	return savedStateNote(string(saved))
+}
+
+// savedStateNote is one sentence on what a saved automation's status means for its trigger:
+// whether it will fire on its own, and whether it can be run by hand. savedAutomation is the
+// automation as the workflow server returns it. An inactive automation, and a status this code
+// does not know, get no sentence.
+func savedStateNote(savedAutomation string) string {
+	var workflow struct {
+		Status     string `json:"status"`
+		Definition struct {
+			Triggers []struct {
+				Type string `json:"type"`
+			} `json:"triggers"`
+		} `json:"definition"`
+	}
+	if err := json.Unmarshal([]byte(savedAutomation), &workflow); err != nil {
+		return ""
+	}
+
+	// The first trigger that fires on its own decides the wording.
+	firing := ""
+	for _, trigger := range workflow.Definition.Triggers {
+		if t := strings.ToLower(strings.TrimSpace(trigger.Type)); t != "" && t != "manual" {
+			firing = t
+			break
+		}
+	}
+
+	switch workflow.Status {
+	case workflowStatusPaused:
+		switch firing {
+		case "":
+			return "It runs only when you start it."
+		case "schedule":
+			return "It is saved **paused**: its schedule will not fire until you activate it. You can still run it by hand."
+		default:
+			return fmt.Sprintf("It is saved **paused**: its %s trigger will not fire until you activate it.", firing)
+		}
+	case workflowStatusActive:
+		switch firing {
+		case "":
+			return "It runs only when you start it."
+		case "schedule":
+			return "It is saved **active**: its schedule is on."
+		default:
+			return fmt.Sprintf("It is saved **active**: its %s trigger is on.", firing)
+		}
+	}
+	return ""
+}
+
 // truncateSaveError returns a short, user-facing rendition of the save error.
 // The full error is already in logs; the UI just needs enough to act on.
 // Truncates by runes (not bytes) so multi-byte UTF-8 characters are not split.
@@ -2175,16 +2371,19 @@ func truncateSaveError(err error) string {
 // summaryHeadline produces the first line of the workflow summary, varying the
 // verb based on whether the change was persisted (saved) and whether it is a
 // new build or a fix. Callers append the per-attempt save status separately.
+//
+// saved is false only after a save was tried and refused, so the headline says that. The old
+// "not yet saved" read as if a save was still to come; none is.
 func summaryHeadline(name, mode string, saved bool) string {
 	switch {
 	case mode == "fix" && saved:
 		return fmt.Sprintf("The automation **`%s`** has been updated.", name)
 	case mode == "fix":
-		return fmt.Sprintf("The automation **`%s`** changes are ready (not yet saved).", name)
+		return fmt.Sprintf("The changes to **`%s`** could not be saved.", name)
 	case saved:
 		return fmt.Sprintf("The automation **`%s`** has been built and saved.", name)
 	default:
-		return fmt.Sprintf("The automation **`%s`** has been built (not yet saved).", name)
+		return fmt.Sprintf("The automation **`%s`** was built but could not be saved.", name)
 	}
 }
 
@@ -2316,7 +2515,7 @@ func (a *WorkflowBuilderAgent) autoSaveWorkflow(ctx *security.RequestContext, wo
 				}
 				ctx.GetLogger().Warn("workflow_builder: idempotent update after create-conflict failed", "workflow_id", existingId, "error", putErr)
 			}
-			return "", fmt.Errorf("workflow_builder: an automation named %q already exists for this account; rename it or open the existing one to edit", workflowDefinitionName(definition))
+			return "", fmt.Errorf("workflow_builder: an automation named %q already exists in this account; ask again with a different name, or open the existing one to edit it", workflowDefinitionName(definition))
 		}
 		return "", fmt.Errorf("workflow_builder: auto-create failed: %w", err)
 	}
@@ -3122,13 +3321,18 @@ func getWorkflowToolDescriptions() string {
 	tools := []workflowToolDef{
 		{
 			Name:        "init_workflow",
-			Description: "Initialize a new automation with name, triggers, and optional inputs. Call this first when creating a new automation. Valid trigger types: manual, schedule, webhook, event, optimization (see TRIGGER STRUCTURE and TRIGGER TYPES for the params each one needs). A trigger has exactly two keys you write: \"type\" and \"params\". Every setting goes inside \"params\" — a setting at the trigger's top level is rejected. Only \"manual\" needs no params.",
+			Description: "Initialize a new automation with name, triggers, and optional inputs. Call this first when creating a new automation. Valid trigger types: manual, schedule, webhook, event, optimization (see TRIGGER STRUCTURE and TRIGGER TYPES for the params each one needs). A trigger has exactly two keys you write: \"type\" and \"params\". Every setting goes inside \"params\" — a setting at the trigger's top level is rejected. Only \"manual\" needs no params. Automation-level settings the plan asks for (timeout, retry_policy, hooks, output, set_execution_tags, tags) are also set here, as extra keys — no other tool sets them; to change one after tasks exist, call init_workflow again with just the settings.",
 			Params:      `{"name": "string", "triggers": [{"type": "schedule", "params": {"cron": "0 9 * * *", "overlap_policy": "Skip"}}], "inputs": [{"id": "ns", "type": "string", "default": "nudgebee"}]}`,
 		},
 		{
 			Name:        "add_task",
 			Description: "Add a task to the automation. Provide the full task object with id, type, params, depends_on, and optional if condition.",
 			Params:      `{"id": "task-id", "type": "task.type", "params": {...}, "depends_on": ["other-task"], "if": "{{ condition }}"}`,
+		},
+		{
+			Name:        "add_tasks",
+			Description: "Add several tasks in one call — much faster than one add_task per task. Each entry is a full task object, exactly as for add_task, and tasks are added in the order given. The result names any task that was not added and any warnings to act on. Send up to about ten tasks per call.",
+			Params:      `{"tasks": [{"id": "task-a", "type": "task.type", "params": {...}}, {"id": "task-b", "type": "task.type", "params": {...}, "depends_on": ["task-a"]}]}`,
 		},
 		{
 			Name:        "get_task",
@@ -3157,8 +3361,8 @@ func getWorkflowToolDescriptions() string {
 		},
 		{
 			Name:        "get_task_schema",
-			Description: "Get the parameter schema for a specific task type. Call this BEFORE adding a task to understand its required and optional parameters.",
-			Params:      `{"task_type": "notifications.im"}`,
+			Description: "Get the parameter schema for a task type, or for several at once with task_types. Call this BEFORE adding a task to understand its required and optional parameters.",
+			Params:      `{"task_types": ["notifications.im", "scripting.run_script"]}  (or {"task_type": "notifications.im"} for one)`,
 		},
 		{
 			Name:        "get_event_trigger_schema",
@@ -3202,18 +3406,24 @@ func getWorkflowToolDescriptions() string {
 // toolInitWorkflow initializes the working workflow with name, triggers, and inputs.
 // If a workflow is already loaded with tasks, it refuses to silently overwrite them.
 func (a *WorkflowBuilderAgent) toolInitWorkflow(ctx *security.RequestContext, args map[string]interface{}) string {
-	name, _ := args["name"].(string)
-	if name == "" {
-		return "Error: 'name' is required"
-	}
-
 	// Guard: refuse re-init when tasks already exist to prevent silent data loss.
 	if a.state.WorkingWorkflow != nil {
 		if def, ok := a.state.WorkingWorkflow["definition"].(map[string]interface{}); ok {
 			if tasks, ok := def["tasks"].([]interface{}); ok && len(tasks) > 0 {
+				// Settings are the one thing a second call may change. No other tool sets them,
+				// so a setting that validate rejects could not otherwise be corrected without
+				// discarding the tasks.
+				if set := a.applyAutomationSettings(args); len(set) > 0 {
+					return fmt.Sprintf("Automation settings updated: %s. The name, triggers, inputs and %d task(s) were left as they are.", strings.Join(set, ", "), len(tasks))
+				}
 				return fmt.Sprintf("Warning: automation already has %d task(s). Use modify_task/add_task/delete_task to change it, or call finalize to complete it. Re-initializing would discard all existing tasks.", len(tasks))
 			}
 		}
+	}
+
+	name, _ := args["name"].(string)
+	if name == "" {
+		return "Error: 'name' is required"
 	}
 
 	definition := map[string]interface{}{
@@ -3248,6 +3458,9 @@ func (a *WorkflowBuilderAgent) toolInitWorkflow(ctx *security.RequestContext, ar
 		"name":       name,
 		"definition": definition,
 	}
+	// Automation-level settings. No other tool sets them and a build ends at finalize, so
+	// whatever the plan asks for has to arrive here.
+	a.applyAutomationSettings(args)
 
 	triggerCount := 0
 	if triggers, ok := definition["triggers"].([]interface{}); ok {
@@ -3256,24 +3469,59 @@ func (a *WorkflowBuilderAgent) toolInitWorkflow(ctx *security.RequestContext, ar
 	return fmt.Sprintf("Automation '%s' initialized with %d trigger(s).", name, triggerCount)
 }
 
+// The optional settings of an automation that init_workflow passes through as given: the keys
+// of the definition, and of the automation itself, that are not triggers, inputs or tasks.
+var (
+	initWorkflowDefinitionSettings = []string{"hooks", "output", "set_execution_tags", "retry_policy", "timeout"}
+	initWorkflowTopLevelSettings   = []string{"tags", "status"}
+)
+
+// applyAutomationSettings copies the automation-level settings present in args onto the working
+// automation, as given, and returns the keys it set.
+func (a *WorkflowBuilderAgent) applyAutomationSettings(args map[string]interface{}) []string {
+	definition, _ := a.state.WorkingWorkflow["definition"].(map[string]interface{})
+	var set []string
+	for _, key := range initWorkflowDefinitionSettings {
+		if value := args[key]; value != nil && definition != nil {
+			definition[key] = value
+			set = append(set, key)
+		}
+	}
+	for _, key := range initWorkflowTopLevelSettings {
+		if value := args[key]; value != nil {
+			a.state.WorkingWorkflow[key] = value
+			set = append(set, key)
+		}
+	}
+	return set
+}
+
 // toolAddTask adds a task to the working workflow.
 func (a *WorkflowBuilderAgent) toolAddTask(ctx *security.RequestContext, args map[string]interface{}) string {
+	message, hints, _ := a.addTask(ctx, args)
+	return message + hints
+}
+
+// addTask adds one task to the working workflow. It returns the confirmation and any warnings
+// about the task separately, so a batch can report them apart; added is false when nothing was
+// added, and message is then the reason.
+func (a *WorkflowBuilderAgent) addTask(ctx *security.RequestContext, args map[string]interface{}) (message string, hints string, added bool) {
 	if a.state.WorkingWorkflow == nil {
-		return "Error: automation not initialized. Call init_workflow first."
+		return "Error: automation not initialized. Call init_workflow first.", "", false
 	}
 
 	taskId, _ := args["id"].(string)
 	if taskId == "" {
-		return missingKeyError(ctx, "add_task", "id", args)
+		return missingKeyError(ctx, "add_task", "id", args), "", false
 	}
 	taskType, _ := args["type"].(string)
 	if taskType == "" {
-		return "Error: task 'type' is required"
+		return "Error: task 'type' is required", "", false
 	}
 
 	definition, ok := a.state.WorkingWorkflow["definition"].(map[string]interface{})
 	if !ok {
-		return "Error: automation definition is invalid"
+		return "Error: automation definition is invalid", "", false
 	}
 
 	tasks, ok := definition["tasks"].([]interface{})
@@ -3285,7 +3533,7 @@ func (a *WorkflowBuilderAgent) toolAddTask(ctx *security.RequestContext, args ma
 	for _, t := range tasks {
 		if task, ok := t.(map[string]interface{}); ok {
 			if id, ok := task["id"].(string); ok && id == taskId {
-				return fmt.Sprintf("Error: task '%s' already exists. Use modify_task to update it.", taskId)
+				return fmt.Sprintf("Error: task '%s' already exists. Use modify_task to update it.", taskId), "", false
 			}
 		}
 	}
@@ -3303,9 +3551,70 @@ func (a *WorkflowBuilderAgent) toolAddTask(ctx *security.RequestContext, args ma
 	result := fmt.Sprintf("Task '%s' (type: %s) added successfully. Automation now has %d task(s).", taskId, taskType, len(tasks))
 
 	// Emit smart warnings for common mistakes
-	result += a.validateTaskHints(taskType, args, a.cachedTaskTypes)
+	return result, a.validateTaskHints(taskType, args, a.cachedTaskTypes), true
+}
 
-	return result
+// toolAddTasks adds several tasks in one tool call. One model call per task was most of a
+// build's wall-clock: every call waits several seconds for the model to start replying, on top
+// of writing the task. Each task still goes through addTask, so the checks and warnings are the
+// ones add_task gives; only the round trips are saved.
+func (a *WorkflowBuilderAgent) toolAddTasks(ctx *security.RequestContext, args map[string]interface{}) string {
+	a.batchResults = nil
+	rawTasks, ok := args["tasks"].([]interface{})
+	if !ok || len(rawTasks) == 0 {
+		// A tool input that is not valid JSON arrives wrapped as {"input": "..."}.
+		if _, notJSON := args["input"].(string); notJSON && len(args) == 1 {
+			return "Error: the add_tasks input was not valid JSON, so no task was added. Check the escaping of quotes and newlines inside scripts and strings, and send fewer tasks per call if the input was cut off."
+		}
+		return "Error: add_tasks needs 'tasks': a non-empty array of task objects, each exactly as for add_task"
+	}
+
+	var added, notAdded, warnings []string
+	for i, raw := range rawTasks {
+		task, ok := raw.(map[string]interface{})
+		if !ok {
+			notAdded = append(notAdded, fmt.Sprintf("- tasks[%d]: not a task object", i))
+			continue
+		}
+		message, hints, wasAdded := a.addTask(ctx, task)
+		input, _ := json.Marshal(task)
+		a.batchResults = append(a.batchResults, addTaskResult{input: string(input), observation: message + hints})
+
+		taskId, _ := task["id"].(string)
+		if taskId == "" {
+			taskId = fmt.Sprintf("tasks[%d]", i)
+		}
+		if !wasAdded {
+			notAdded = append(notAdded, fmt.Sprintf("- %s: %s", taskId, message))
+			continue
+		}
+		added = append(added, taskId)
+		if hints = strings.TrimSpace(hints); hints != "" {
+			warnings = append(warnings, fmt.Sprintf("- %s: %s", taskId, hints))
+		}
+	}
+
+	// What needs acting on comes first, so it is the part read first and the part that survives
+	// if this result is ever shortened.
+	var sb strings.Builder
+	if len(notAdded) > 0 {
+		fmt.Fprintf(&sb, "NOT ADDED (%d) — fix and add these again:\n%s\n", len(notAdded), strings.Join(notAdded, "\n"))
+	}
+	if len(warnings) > 0 {
+		fmt.Fprintf(&sb, "WARNINGS — fix these with modify_task:\n%s\n", strings.Join(warnings, "\n"))
+	}
+	if len(added) == 0 {
+		return "Error: no task was added.\n" + strings.TrimRight(sb.String(), "\n")
+	}
+	fmt.Fprintf(&sb, "Added %d of %d task(s): %s. Automation now has %d task(s).", len(added), len(rawTasks), strings.Join(added, ", "), a.taskCount())
+	return sb.String()
+}
+
+// taskCount is the number of top-level tasks in the working automation.
+func (a *WorkflowBuilderAgent) taskCount() int {
+	definition, _ := a.state.WorkingWorkflow["definition"].(map[string]interface{})
+	tasks, _ := definition["tasks"].([]interface{})
+	return len(tasks)
 }
 
 // toolGetTask returns a specific task's full definition.
@@ -3804,11 +4113,29 @@ func (a *WorkflowBuilderAgent) toolListTasks(args map[string]interface{}) string
 
 // toolGetTaskSchema returns the schema for a specific task type from the cached task types.
 func (a *WorkflowBuilderAgent) toolGetTaskSchema(args map[string]interface{}, cachedTaskTypes string) string {
-	taskType, _ := args["task_type"].(string)
-	if taskType == "" {
-		return "Error: 'task_type' is required"
+	// Several types in one call. The lookup is local and instant, so asking for each type
+	// separately cost nothing but a model round trip per type.
+	if rawTypes, ok := args["task_types"].([]interface{}); ok {
+		var sb strings.Builder
+		for _, raw := range rawTypes {
+			if taskType, _ := raw.(string); taskType != "" {
+				fmt.Fprintf(&sb, "## %s\n%s\n\n", taskType, taskSchema(taskType, cachedTaskTypes))
+			}
+		}
+		if sb.Len() > 0 {
+			return strings.TrimRight(sb.String(), "\n")
+		}
 	}
 
+	taskType, _ := args["task_type"].(string)
+	if taskType == "" {
+		return "Error: 'task_type' (or 'task_types') is required"
+	}
+	return taskSchema(taskType, cachedTaskTypes)
+}
+
+// taskSchema returns one task type's schema from the registry, or why it could not.
+func taskSchema(taskType string, cachedTaskTypes string) string {
 	if cachedTaskTypes == "" {
 		return fmt.Sprintf("Task types not available. Use task type '%s' with your best knowledge of its parameters.", taskType)
 	}
@@ -4293,6 +4620,9 @@ func (a *WorkflowBuilderAgent) toolValidate(ctx *security.RequestContext) string
 		return fmt.Sprintf("Validation FAILED: %s\n\nFix the `account_id` on the named task(s) with modify_task, then call validate again.", resolveErr.Error())
 	}
 
+	// A channel the user named in a clarifying answer is written by name; put its id in place.
+	rewriteChatChannels(a.state.WorkingWorkflow, a.state.ChatChannels)
+
 	// Local account lint: a cloud-CLI task with no resolvable account saves as an automation
 	// that looks live and runs against nothing. The server accepts both shapes (#35391).
 	if accountIssues := a.lintCloudAccountIds(ctx, a.state.WorkingWorkflow); len(accountIssues) > 0 {
@@ -4672,6 +5002,8 @@ func (a *WorkflowBuilderAgent) executeWorkflowTool(ctx *security.RequestContext,
 		return a.toolInitWorkflow(ctx, args)
 	case "add_task":
 		return a.toolAddTask(ctx, args)
+	case "add_tasks":
+		return a.toolAddTasks(ctx, args)
 	case "get_task":
 		return a.toolGetTask(args)
 	case "modify_task":
@@ -4687,7 +5019,13 @@ func (a *WorkflowBuilderAgent) executeWorkflowTool(ctx *security.RequestContext,
 	case "get_event_trigger_schema":
 		return a.toolGetEventTriggerSchema(ctx)
 	case "validate":
-		return a.toolValidate(ctx)
+		result := a.toolValidate(ctx)
+		// Taken after the call: validate itself rewrites account names to ids.
+		a.validatedSnapshot = ""
+		if strings.HasPrefix(result, "Validation OK") {
+			a.validatedSnapshot = a.workflowSnapshot()
+		}
+		return result
 	case "dry_run":
 		return a.toolDryRun(ctx, args)
 	case "finalize":
@@ -4719,7 +5057,7 @@ func (a *WorkflowBuilderAgent) executeWorkflowTool(ctx *security.RequestContext,
 	case "get_execution":
 		return a.toolGetExecution(ctx, args)
 	default:
-		return fmt.Sprintf("Unknown tool: '%s'. Available tools: init_workflow, add_task, get_task, modify_task, set_task_params, delete_task, list_tasks, get_task_schema, get_event_trigger_schema, validate, dry_run, finalize, list_executions, get_execution", toolName)
+		return fmt.Sprintf("Unknown tool: '%s'. Available tools: init_workflow, add_task, add_tasks, get_task, modify_task, set_task_params, delete_task, list_tasks, get_task_schema, get_event_trigger_schema, validate, dry_run, finalize, list_executions, get_execution", toolName)
 	}
 }
 
@@ -4799,12 +5137,157 @@ func trimStaleObservations(messages []llms.MessageContent, observations []loopOb
 	}
 }
 
+// firstStep cuts a model reply down to its first step and closes the tags the stop words
+// consumed, so the XML can be parsed.
+//
+// A reply is meant to hold one tool call or one final answer. The model sometimes writes out a
+// whole run instead — a tool call, the result it imagines, the next call, and so on, each in a
+// new <thought_action> it never closes, sometimes ending in an empty <final_answer>. Only the
+// first call can be run; the rest is the model talking to itself about results that do not
+// exist. Read whole, such a reply ran its first call, dropped the others without a word, and —
+// when an empty <final_answer> trailed it — ended the build with a closing tag as its answer.
+func firstStep(content string) string {
+	// A call starts at the <action> that names a tool. An <action> that names none is text.
+	action := -1
+	if name := strings.Index(content, "<tool_name>"); name >= 0 {
+		action = strings.LastIndex(content[:name], "<action>")
+	}
+	final := strings.Index(content, "<final_answer>")
+
+	step := content
+	switch {
+	case action >= 0 && (final < 0 || action < final):
+		// A tool call comes first.
+		step = strings.TrimRight(content[:action+callEnd(content[action:])], " \t\r\n") + "</action>"
+	case final >= 0:
+		// A final answer comes first. One with nothing in it is not an answer.
+		answer := content[final+len("<final_answer>"):]
+		if i := strings.Index(answer, "</final_answer>"); i >= 0 {
+			answer = answer[:i]
+		}
+		step = content[:final]
+		if strings.TrimSpace(answer) != "" {
+			step += "<final_answer>" + answer + "</final_answer>"
+		}
+	}
+	if strings.Contains(step, "<thought_action>") && !strings.Contains(step, "</thought_action>") {
+		step += "</thought_action>"
+	}
+	return step
+}
+
+// callEnd is where the tool call that opens call ends.
+//
+// A call ends with its input. Whatever the input holds is part of the call, so a script or a
+// message that happens to contain one of the loop's own tags does not cut it short. A call
+// whose input is missing or never closes ends at its closing tag, or failing that where the
+// next step or a final answer begins.
+func callEnd(call string) int {
+	if name := strings.Index(call, "</tool_name>"); name >= 0 {
+		input := name + len("</tool_name>")
+		input += len(call[input:]) - len(strings.TrimLeft(call[input:], " \t\r\n"))
+		if strings.HasPrefix(call[input:], "<tool_input>") {
+			if i := strings.Index(call[input:], "</tool_input>"); i >= 0 {
+				return input + i + len("</tool_input>")
+			}
+		}
+	}
+	if i := strings.Index(call, "</action>"); i >= 0 {
+		return i
+	}
+	end := len(call)
+	for _, next := range []string{"<thought_action>", "<final_answer>"} {
+		if i := strings.Index(call, next); i >= 0 && i < end {
+			end = i
+		}
+	}
+	return end
+}
+
+// toolLoopStopWords end a reply after its first step. The model does not write <observation>
+// (code injects it), so that cannot be the stop word: without one the model repeated the same
+// tool call until it ran out of output tokens. </thought_action> alone is not enough either:
+// the model can open a new <thought_action> without closing the last one and write out a whole
+// run in one reply. It does close </action>, so that ends the reply at its first call;
+// firstStep handles a reply that got past the stop words anyway.
+var toolLoopStopWords = []string{"</action>", "</thought_action>", "</final_answer>"}
+
+// toolLoopTurn asks the model for the tool loop's next step.
+func (a *WorkflowBuilderAgent) toolLoopTurn(ctx *security.RequestContext, request core.NBAgentRequest, messages []llms.MessageContent, lowReasoning bool) (*llms.ContentResponse, error) {
+	if a.toolLoopModel != nil {
+		return a.toolLoopModel(messages)
+	}
+	thinkingLevel := ""
+	if lowReasoning {
+		thinkingLevel = lowReasoningLevel(core.GetLLMModelName(ctx, request.AccountId, "", a.GetName(), true, request.ConversationId))
+	}
+	// Cap max tokens at 8192 — a single tool call or final answer never needs more.
+	return core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messages, false, llms.WithTemperature(0.0), llms.WithStopWords(toolLoopStopWords), llms.WithMaxTokens(8192), core.WithThinkingLevel(thinkingLevel))
+}
+
+// lowReasoningLevel is the reasoning level to ask of model for a step that needs little
+// reasoning: low where the model's default is higher, and no setting at all otherwise. Asking a
+// model that does not reason by default for "low" would switch reasoning on and make the step
+// slower, not faster.
+func lowReasoningLevel(model string) string {
+	level := core.GetLlmDefaultThinkingLevel(model)
+	// The operator's override replaces the default of a model that has one.
+	if level != "" && config.Config.LlmProviderThinkingLevel != "" {
+		level = config.Config.LlmProviderThinkingLevel
+	}
+	switch strings.ToLower(level) {
+	case core.ThinkingLevelMedium, core.ThinkingLevelHigh:
+		return core.ThinkingLevelLow
+	}
+	return ""
+}
+
+// sizedStepBudget is the step budget of a loop that builds or edits the working automation.
+func (a *WorkflowBuilderAgent) sizedStepBudget() int {
+	return toolLoopStepBudget(a.state.WorkingWorkflow)
+}
+
+// fixedStepBudget is the step budget of a loop that only answers a question: the definition is
+// already in its prompt, so the work does not grow with the automation.
+func fixedStepBudget() int {
+	return toolLoopBaseSteps
+}
+
+// toolLoopOptions is what differs between the tool loop's callers.
+type toolLoopOptions struct {
+	// stepBudget is read again on every step — see toolLoopStepBudget. Unset means the fixed
+	// budget.
+	stepBudget func() int
+
+	// commitOnFinalize ends the loop when finalize succeeds on a definition that has passed
+	// validate as it stands, and returns that definition without asking the model for a closing
+	// answer. That closing answer is the whole definition typed out again — about a minute on a
+	// sixteen-task automation — and a copy that differed would be saved without having passed
+	// validate. A finalize on anything else leaves the loop to run on as it always has.
+	//
+	// Only a build may set it. Every part of a new automation is set through tools — name,
+	// triggers, inputs and settings by init_workflow, tasks by the task tools — but no tool
+	// changes the triggers, inputs, settings or name of an existing one, so an edit still makes
+	// those changes in its closing answer.
+	commitOnFinalize bool
+
+	// lowReasoning asks the model for its low reasoning level on each step — see
+	// lowReasoningLevel. A build carries out a plan the user has already approved, so its steps
+	// are transcription rather than design, and at the default level the model paused before
+	// every one of them — over half a minute before validate.
+	lowReasoning bool
+}
+
 // runToolLoop runs an agentic tool-calling loop where the LLM reasons step-by-step
 // and calls workflow manipulation tools. This follows the same XML format as the ReAct planner.
-func (a *WorkflowBuilderAgent) runToolLoop(ctx *security.RequestContext, request core.NBAgentRequest, systemPrompt string, userMessage string) (string, error) {
+func (a *WorkflowBuilderAgent) runToolLoop(ctx *security.RequestContext, request core.NBAgentRequest, systemPrompt string, userMessage string, opts toolLoopOptions) (string, error) {
+	if opts.stepBudget == nil {
+		opts.stepBudget = fixedStepBudget
+	}
 	// Fresh commit marker for this loop — set only by a finalize tool call.
 	a.loopFinalized = false
 	a.finalizedSnapshot = ""
+	a.validatedSnapshot = ""
 	// Fresh correction budget per loop, so an edit turn is not penalised by a build turn.
 	a.triggerShapeRejections = 0
 
@@ -4857,20 +5340,19 @@ RULES:
 	// Observation history, oldest first — see trimStaleObservations.
 	var observations []loopObservation
 
-	const maxIterations = 20
-	for i := 0; i < maxIterations; i++ {
-		// Use </thought_action> and </final_answer> as stop words so the LLM stops
-		// after producing exactly one tool call or one final answer. The previous stop
-		// word "<observation>" was never generated by the LLM (it's injected by code),
-		// causing the model to repeat the same tool call hundreds of times until hitting
-		// the max output token limit.
-		// Cap max tokens at 8192 — a single tool call or final answer never needs more.
-		result, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messages, false, llms.WithTemperature(0.0), llms.WithStopWords([]string{"</thought_action>", "</final_answer>"}), llms.WithMaxTokens(8192))
+	i := 0
+	for ; i < opts.stepBudget(); i++ {
+		result, err := a.toolLoopTurn(ctx, request, messages, opts.lowReasoning)
 		if err != nil {
 			return "", fmt.Errorf("tool loop LLM call failed (iteration %d): %w", i+1, err)
 		}
 
-		if len(result.Choices) == 0 || result.Choices[0].Content == "" {
+		content := ""
+		if len(result.Choices) > 0 {
+			// Keep the reply's first step only, with the closing tags the stop words consumed.
+			content = firstStep(result.Choices[0].Content)
+		}
+		if strings.TrimSpace(content) == "" {
 			ctx.GetLogger().Warn("workflow_builder: empty LLM response in tool loop", "iteration", i+1)
 			// Retry with a nudge — use non-empty AI text to avoid Google AI CountTokens
 			// crash on empty model parts.
@@ -4879,16 +5361,6 @@ RULES:
 				llms.TextParts(llms.ChatMessageTypeHuman, "Please continue. Use a tool or provide your final answer."),
 			)
 			continue
-		}
-
-		content := result.Choices[0].Content
-
-		// Re-append closing tags consumed by stop words so XML parsing works.
-		if strings.Contains(content, "<thought_action>") && !strings.Contains(content, "</thought_action>") {
-			content += "</thought_action>"
-		}
-		if strings.Contains(content, "<final_answer>") && !strings.Contains(content, "</final_answer>") {
-			content += "</final_answer>"
 		}
 
 		// Check for final answer
@@ -4913,7 +5385,8 @@ RULES:
 		}
 
 		// Parse tool call
-		toolName := common.XmlExtractTagContent(content, "tool_name")
+		// Normalised the way the dispatcher reads it, so the checks below see the same tool.
+		toolName := strings.ToLower(strings.TrimSpace(common.XmlExtractTagContent(content, "tool_name")))
 		toolInput := common.XmlExtractTagContent(content, "tool_input")
 
 		if toolName == "" {
@@ -4943,7 +5416,24 @@ RULES:
 		ctx.GetLogger().Info("workflow_builder: tool call", "tool", toolName, "iteration", i+1)
 		thought := common.XmlExtractTagContent(content, "thought")
 		observation := a.executeWorkflowTool(ctx, toolName, toolInput, cachedTaskTypes)
-		a.persistBuildToolCall(ctx, request, toolName, toolInput, thought, observation)
+		if toolName == "add_tasks" && len(a.batchResults) > 0 {
+			// One history row per task, recorded as add_task: the rows are what the progress
+			// counter and later debugging read, and both are per task.
+			for _, result := range a.batchResults {
+				a.persistBuildToolCall(ctx, request, "add_task", result.input, thought, result.observation)
+			}
+		} else {
+			a.persistBuildToolCall(ctx, request, toolName, toolInput, thought, observation)
+		}
+
+		// A build ends at a finalize call once the definition as it stands has been both
+		// finalized and validated — whichever of the two came first.
+		if opts.commitOnFinalize && toolName == "finalize" && a.loopFinalized &&
+			a.finalizedSnapshot != "" && a.finalizedSnapshot == a.validatedSnapshot {
+			if definition := a.toolFinalize(); isRawWorkflowJSON(definition) {
+				return definition, nil
+			}
+		}
 
 		// Anti-thrash: detect an exact-duplicate call or a long run of read-only inspection with no
 		// progress, and append a decisive nudge so weak models stop exploring and either apply the
@@ -4976,19 +5466,21 @@ RULES:
 			llms.TextParts(llms.ChatMessageTypeAI, trimmedContent),
 			llms.TextParts(llms.ChatMessageTypeHuman, fmt.Sprintf("<observation>%s</observation>%s", observation, nudge)),
 		)
-		observations = append(observations, loopObservation{msgIdx: len(messages) - 1, tool: toolName, body: observation})
+		// A batch result is left out of trimming: its warnings are the only feedback on every
+		// task in the batch, and they have to stay readable until each one has been acted on.
+		if toolName != "add_tasks" {
+			observations = append(observations, loopObservation{msgIdx: len(messages) - 1, tool: toolName, body: observation})
+		}
 		trimStaleObservations(messages, observations)
 	}
 
-	// If we exhausted iterations, try to finalize whatever we have
-	if a.state.WorkingWorkflow != nil {
-		finalJSON := a.toolFinalize()
-		if strings.HasPrefix(strings.TrimSpace(finalJSON), "{") {
-			return finalJSON, nil
-		}
-	}
-
-	return "", fmt.Errorf("agentic tool loop exceeded %d iterations without completing", maxIterations)
+	// Out of steps. The working automation is NOT returned here, however complete it looks:
+	// finalize is the loop's commit point, and returning unfinalized state had the callers save
+	// half-applied edits and unvalidated builds and report them as done. The callers keep a
+	// definition this loop finalized (finalizedAfterFailure) and otherwise surface this error,
+	// which is the user's reply — so it says what happened and what to do.
+	ctx.GetLogger().Warn("workflow_builder: tool loop ran out of steps", "steps", i, "finalized", a.loopFinalized, "mode", a.state.Mode)
+	return "", fmt.Errorf("the builder used all %d of its steps without finishing, so nothing was changed or saved; try a smaller request, or split it into parts", i)
 }
 
 // ==================== EDIT MODE (AGENTIC) ====================
@@ -5104,7 +5596,7 @@ func (a *WorkflowBuilderAgent) runEditToolLoop(ctx *security.RequestContext, req
 	}
 
 	before := a.workflowSnapshot()
-	answer, err := a.runToolLoop(ctx, request, systemPrompt, userMessage)
+	answer, err := a.runToolLoop(ctx, request, systemPrompt, userMessage, toolLoopOptions{stepBudget: a.sizedStepBudget})
 	if err != nil {
 		finalized, ok := a.finalizedAfterFailure(before)
 		if !ok {

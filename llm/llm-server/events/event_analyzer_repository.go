@@ -171,6 +171,79 @@ type EventAnalysisEventVersion struct {
 	Investigation    string    `db:"investigation"`
 	Analysis         string    `db:"analysis"`
 	DetailedResponse string    `db:"detailed_response"`
+	// Trigger and TriggeredBy are how the version's run started and who started
+	// it (see SetAnalysisTrigger); empty when not recorded.
+	Trigger     string `db:"trigger"`
+	TriggeredBy string `db:"triggered_by"`
+	// TriggeredByName is that user's display name; empty when unknown.
+	TriggeredByName string `db:"triggered_by_name"`
+}
+
+// AnalysisTrigger records how an event analysis run started.
+type AnalysisTrigger string
+
+const (
+	// AnalysisTriggerAutomatic: the alert arrived and was queued for analysis.
+	AnalysisTriggerAutomatic AnalysisTrigger = "automatic"
+	// AnalysisTriggerRunbook: a workflow's "Investigate event" step queued it.
+	AnalysisTriggerRunbook AnalysisTrigger = "runbook"
+	// AnalysisTriggerOnView: someone viewed the alert and the app asked for an analysis that did not exist yet.
+	AnalysisTriggerOnView AnalysisTrigger = "on_view"
+	// AnalysisTriggerRerun: someone asked for a fresh analysis (refresh / regenerate).
+	AnalysisTriggerRerun AnalysisTrigger = "rerun"
+	// AnalysisTriggerNotification: the "Ask Nubi to Analyse" button in a Slack / Teams notification.
+	AnalysisTriggerNotification AnalysisTrigger = "notification"
+)
+
+// SetAnalysisTrigger records how a run started on the log-analysis row the run
+// has just claimed for eventId. Every run claims that row (a re-run claims a new
+// one), so it identifies the run; other stage rows are not stamped. Call it only
+// when this caller starts a run: a run redone on the same row (a retry, or an RCA
+// refreshing a stale analysis) then shows who started it this time, and recovery,
+// which never calls it, keeps the label. A row shared from another event is never
+// stamped. An empty triggeredBy is stored as NULL.
+func (r *EventAnalysisRepository) SetAnalysisTrigger(ctx *security.RequestContext, eventId string, trigger AnalysisTrigger, triggeredBy string) error {
+	if eventId == "" || trigger == "" {
+		return nil
+	}
+	var by any
+	if triggeredBy != "" {
+		by = triggeredBy
+	}
+	_, err := r.dbManager.Db.Exec(
+		`UPDATE event_log_analysis a SET trigger = $3, triggered_by = $4
+		 FROM event_analysis_mapping m
+		 WHERE m.event_id = $1 AND m.analysis_type = $2 AND a.id = m.analysis_id AND a.event_id = m.event_id`,
+		eventId, AnalysisTypeLog, string(trigger), by)
+	if err != nil {
+		return fmt.Errorf("SetAnalysisTrigger: %w", err)
+	}
+	return nil
+}
+
+// GetAnalysisTrigger returns how the event's current run started and the display
+// name of the person who started it, from the log-analysis row the event is mapped
+// to. Both are empty when nothing is recorded or the row belongs to another event.
+// The users join casts triggered_by to uuid only when it is one, so it uses the
+// users primary key and a malformed value yields no name instead of an error.
+func (r *EventAnalysisRepository) GetAnalysisTrigger(ctx *security.RequestContext, eventId string) (trigger, triggeredByName string, err error) {
+	var row struct {
+		Trigger string `db:"trigger"`
+		Name    string `db:"triggered_by_name"`
+	}
+	err = r.dbManager.Db.Get(&row, `
+		SELECT COALESCE(a.trigger, '') AS trigger, COALESCE(u.display_name, '') AS triggered_by_name
+		FROM event_analysis_mapping m
+		JOIN event_log_analysis a ON a.id = m.analysis_id AND a.event_id = m.event_id
+		LEFT JOIN users u ON u.id = CASE WHEN a.triggered_by ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN a.triggered_by::uuid END
+		WHERE m.event_id = $1 AND m.analysis_type = $2`, eventId, AnalysisTypeLog)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("GetAnalysisTrigger: %w", err)
+	}
+	return row.Trigger, row.Name, nil
 }
 
 const eventAnalysisHistoryLimit = 5
@@ -179,6 +252,10 @@ const eventAnalysisHistoryLimit = 5
 // the rows already retained in event_log_analysis. Ranking within each
 // (event, analysis type) aligns the four stages from the same generation while
 // leaving event_analysis_mapping free to keep pointing at only the live rows.
+// Rows of every status are ranked, and a version is listed only when all four of
+// its stages are COMPLETED: a re-run has its own row for each stage (see
+// StartFreshStages), so while it is unfinished, or after it fails, its
+// rank holds no complete version and the previous run still lines up as one.
 func (r *EventAnalysisRepository) ListCompletedEventAnalysisVersions(ctx *security.RequestContext, fingerprint, accountID, aggKey string) ([]EventAnalysisEventVersion, error) {
 	var versions []EventAnalysisEventVersion
 	err := r.dbManager.Db.Select(&versions, `
@@ -194,9 +271,9 @@ func (r *EventAnalysisRepository) ListCompletedEventAnalysisVersions(ctx *securi
 			  AND a.cloud_account_id = $2
 			  AND a.event_aggregation_key = $3
 			  AND a.analysis_type IN ($4, $5, $6, $7)
-			  AND a.status = $8
 			  AND a.event_id IS NOT NULL
 		)
+		, versions AS (
 		SELECT
 			a.event_id,
 			a.event_id::text AS related_event_id,
@@ -205,11 +282,17 @@ func (r *EventAnalysisRepository) ListCompletedEventAnalysisVersions(ctx *securi
 			COALESCE(MAX(a.summary) FILTER (WHERE a.analysis_type = $4), '') AS summary,
 			COALESCE(MAX(a.summary) FILTER (WHERE a.analysis_type = $5), '') AS investigation,
 			COALESCE(MAX(a.analysis) FILTER (WHERE a.analysis_type = $6), '') AS analysis,
-			COALESCE(MAX(a.summary) FILTER (WHERE a.analysis_type = $7), '') AS detailed_response
+			COALESCE(MAX(a.summary) FILTER (WHERE a.analysis_type = $7), '') AS detailed_response,
+			COALESCE(MAX(a.trigger) FILTER (WHERE a.analysis_type = $6), '') AS trigger,
+			COALESCE(MAX(a.triggered_by) FILTER (WHERE a.analysis_type = $6), '') AS triggered_by
 		FROM ranked a
 		GROUP BY a.event_id, a.version_rank
-		HAVING COUNT(DISTINCT a.analysis_type) = 4
-		ORDER BY generated_at DESC
+		HAVING COUNT(DISTINCT a.analysis_type) FILTER (WHERE a.status = $8) = 4
+		)
+		SELECT v.*, COALESCE(u.display_name, '') AS triggered_by_name
+		FROM versions v
+		LEFT JOIN users u ON u.id = CASE WHEN v.triggered_by ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN v.triggered_by::uuid END
+		ORDER BY v.generated_at DESC
 		LIMIT $9`, fingerprint, accountID, aggKey,
 		AnalysisTypeSummary, AnalysisTypeInvestigation, AnalysisTypeLog, AnalysisTypeDetailedResponse,
 		AnalysisStatusCompleted, eventAnalysisHistoryLimit)
@@ -478,6 +561,57 @@ func (r *EventAnalysisRepository) UpsertEventAnalysisInProgress(ctx *security.Re
 	}
 
 	return tx.Commit()
+}
+
+// StartFreshStages gives each listed stage of eventId a new IN_PROGRESS row when
+// its mapped row is finished (COMPLETED or FAILED), and points the event's mapping
+// at it, in one transaction. A re-run then writes its results to rows of its own,
+// the way a new event with the same fingerprint does: the previous run's rows are
+// kept as they were, every run has exactly one row per stage, and the history
+// lines runs up correctly. A stage whose mapped row is IN_PROGRESS is a run still
+// going and is left alone (replacing it would leave an orphan for recovery to
+// re-dispatch), as is a stage with no mapping. Call it only for explicit re-runs.
+func (r *EventAnalysisRepository) StartFreshStages(ctx *security.RequestContext, eventId, fingerprint, accountId, aggKey string, stages ...EventAnalysisType) error {
+	if eventId == "" || len(stages) == 0 {
+		return nil
+	}
+	tx, err := r.dbManager.Db.Beginx()
+	if err != nil {
+		return fmt.Errorf("StartFreshStages: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	for _, stage := range stages {
+		var status string
+		err := tx.Get(&status, `
+			SELECT a.status FROM event_analysis_mapping m
+			JOIN event_log_analysis a ON a.id = m.analysis_id
+			WHERE m.event_id = $1 AND m.analysis_type = $2
+			FOR UPDATE OF m`, eventId, stage)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("StartFreshStages: read %s: %w", stage, err)
+		}
+		if status == string(AnalysisStatusInProgress) {
+			continue
+		}
+		var id string
+		if err := tx.QueryRowx(
+			`INSERT INTO event_log_analysis (event_id, event_fingerprint, analysis, summary, status, cloud_account_id, event_aggregation_key, analysis_type) VALUES ($1, $2, '', '', $3, $4, $5, $6) RETURNING id`,
+			eventId, fingerprint, AnalysisStatusInProgress, accountId, aggKey, stage,
+		).Scan(&id); err != nil {
+			return fmt.Errorf("StartFreshStages: insert %s: %w", stage, err)
+		}
+		if _, err := upsertAnalysisMapping(tx, eventId, id, stage, true); err != nil {
+			return fmt.Errorf("StartFreshStages: map %s: %w", stage, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("StartFreshStages: %w", err)
+	}
+	return nil
 }
 
 // ClaimEventAnalysis atomically claims an analysis row for processing.
@@ -834,6 +968,25 @@ func (r *EventAnalysisRepository) UpdateEventAnalysisStatusById(ctx *security.Re
 	return nil
 }
 
+// UpdateEventAnalysisStatusForEvent sets the status of eventId's own row for a
+// stage, found through event_analysis_mapping. Unlike UpdateEventAnalysisStatus
+// it never touches another event's row: a pause or failure belongs to this
+// run, and writing it to the fingerprint's latest row marked an older firing's
+// finished analysis in progress, which the stuck-analysis reaper then re-ran.
+// No mapping means nothing is updated.
+func (r *EventAnalysisRepository) UpdateEventAnalysisStatusForEvent(ctx *security.RequestContext, eventId string, analysisType EventAnalysisType, status, statusReason string) error {
+	_, err := r.dbManager.Db.Exec(
+		`UPDATE event_log_analysis a SET status=$3, status_reason=$4, updated_at=NOW()
+		 FROM event_analysis_mapping m
+		 WHERE m.analysis_id = a.id AND m.event_id = $1 AND m.analysis_type = $2`,
+		eventId, analysisType, status, statusReason,
+	)
+	if err != nil {
+		return fmt.Errorf("update %s status for event %s: %w", analysisType, eventId, err)
+	}
+	return nil
+}
+
 // UpdateEventAnalysisStatus updates the status and status reason for the latest log analysis entry.
 func (r *EventAnalysisRepository) UpdateEventAnalysisStatus(ctx *security.RequestContext, eventFingerprint string, cloudAccountId string, aggregationKey string, status string, statusReason string, analysisType EventAnalysisType) error {
 	ctx.GetLogger().Info("analyzer: updating event analysis entry", "event_fingerprint", eventFingerprint, "account_id", cloudAccountId, "event_aggregation_key", aggregationKey, "analysis_type", analysisType, "status", status)
@@ -889,9 +1042,8 @@ func HasStoredAnalysisContent(analysis string) bool {
 // reachable behind "Raise PR" (#37005 §4). It is reset to a minimal valid result
 // doc ({"source_updates":{}}) rather than "" so the Raise-PR consumer parses it
 // and reports "no proposed code fix is stored" instead of an empty-string parse
-// error. The investigation debug-skip passes false: re-analysing after
-// EVENT_DEBUG_ANALYSIS_DISABLED is turned on (or a Datadog event re-firing
-// without a service label) must not erase a previously stored investigation
+// error. The investigation debug-skip passes false: a Datadog event re-firing
+// without a service label must not erase a previously stored investigation
 // summary, which still feeds finalResponse.Investigation and the RCA input.
 func (r *EventAnalysisRepository) UpsertEventAnalysisStatus(ctx *security.RequestContext, eventId, eventFingerprint, cloudAccountId, aggregationKey, status, statusReason string, analysisType EventAnalysisType, clearPayload bool) error {
 	ctx.GetLogger().Info("analyzer: recording event analysis stage status", "event_fingerprint", eventFingerprint, "account_id", cloudAccountId, "event_aggregation_key", aggregationKey, "analysis_type", analysisType, "status", status)

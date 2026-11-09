@@ -110,7 +110,7 @@ var triageAccessCases = []triageAccessCase{
 		handler: handleEventCreateTriageRule,
 		input: func(accountID string) map[string]any {
 			return map[string]any{
-				"cloud_account_id": accountID, "rule_type": "suppression", "action": "suppress",
+				"cloud_account_id": accountID, "rule_type": "suppression", "action": "suppress", "name": "test-rule",
 				"match_fingerprint": "fp-1", "apply_to_existing": true,
 			}
 		},
@@ -124,7 +124,7 @@ var triageAccessCases = []triageAccessCase{
 		action:  "event_update_triage_rule",
 		handler: handleEventUpdateTriageRule,
 		input: func(accountID string) map[string]any {
-			return map[string]any{"cloud_account_id": accountID, "rule_id": triageRuleID, "rule_type": "suppression", "action": "suppress"}
+			return map[string]any{"cloud_account_id": accountID, "rule_id": triageRuleID, "rule_type": "suppression", "action": "suppress", "name": "test-rule"}
 		},
 		queries: func(mock sqlmock.Sqlmock, accountID string) {
 			mock.ExpectQuery("SELECT id, is_editable, account_id FROM event_triage_rules").

@@ -20,6 +20,10 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
+// mqPublish is common.MqPublish. A variable so tests can read what the package
+// publishes without a broker.
+var mqPublish = common.MqPublish
+
 func Execute() error {
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -157,7 +161,7 @@ func executeSLOConfig(config DBSLOConfig, accountId string, dbms *database.Datab
 			slog.Error("slo: error generating event", "error", err, "configId", config.Id, "accountId", accountId)
 		}
 	} else {
-		closeSLOEventIfRecovered(dbms, config, reports)
+		closeSLOEventIfRecovered(dbms, config, reports, accountName)
 	}
 	return nil
 }
@@ -586,6 +590,9 @@ func triggerNotification(sloConfig DBSLOConfig, sloReport SLOReport, accountName
 		burnRateWindow = br.LongWindow
 		burnRateThreshold = br.Threshold
 	}
+	// finding_id is the SLO event's finding id (see GenerateSLOEvent). The digest
+	// keeps one line per finding, so an hourly repeat and the resolve that follows
+	// it (triggerResolvedNotification) show as one SLO.
 	message := map[string]any{
 		"kind":      "notification",
 		"source":    "slo",
@@ -599,6 +606,7 @@ func triggerNotification(sloConfig DBSLOConfig, sloReport SLOReport, accountName
 			"slo_name":               sloConfig.Name,
 			"slo_type":               sloConfig.Name,
 			"status":                 "FIRING",
+			"finding_id":             sloFingerprint(sloConfig.CloudAccountId, sloConfig.Name, sloConfig.WorkloadName, sloConfig.Namespace),
 			"slo_target":             sloConfig.Goal,
 			"current_value":          currentGap,
 			"firing_since":           failingSince,
@@ -621,13 +629,55 @@ func triggerNotification(sloConfig DBSLOConfig, sloReport SLOReport, accountName
 	}
 	slog.Info(fmt.Sprintf("SLO Notification - %s", string(messageJson)))
 
-	err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message)
+	err = mqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message)
 	if err != nil {
 		slog.Error("slo: error publishing message to queue", "error", err)
 		return err
 	}
 
 	return nil
+}
+
+// triggerResolvedNotification queues a recovered SLO for the SLO digest: the item
+// triggerNotification publishes while the SLO is firing, as RESOLVED and under
+// the same finding_id, so notifications-server lists it once, under "Resolved".
+//
+// It carries every field that digest's model requires, not only the ones a
+// resolved line shows: one item failing validation fails the whole channel's
+// digest, and a notifications-server that predates the Resolved section renders
+// the item as a firing line. firing_since is one of those; nothing here knows
+// when the breach began, so it is this report's hour, triggerNotification's own
+// fallback. ends_at is the recovery.
+func triggerResolvedNotification(sloConfig DBSLOConfig, sloReport SLOReport, accountName string, fingerprint string) error {
+	slog.Info("slo: publishing resolved slo notification", "configId", sloConfig.Id, "finding_id", fingerprint)
+	message := map[string]any{
+		"kind":      "notification",
+		"source":    "slo",
+		"type":      "slo_alert",
+		"tenant_id": sloConfig.TenantId,
+
+		"parameters": map[string]any{
+			"account_id":       sloConfig.CloudAccountId,
+			"namespace":        sloConfig.Namespace,
+			"workload":         sloConfig.WorkloadName,
+			"slo_name":         sloConfig.Name,
+			"slo_type":         sloConfig.Name,
+			"status":           "RESOLVED",
+			"finding_id":       fingerprint,
+			"slo_target":       sloConfig.Goal,
+			"current_value":    fmt.Sprintf("%.2f", sloReport.Gap),
+			"firing_since":     timestampToPostgresFormat(sloReport.EndTime),
+			"ends_at":          time.Now().UTC().Format(time.RFC3339),
+			"account_name":     accountName,
+			"threshold":        sloConfig.ThresholdBucket,
+			"bad_event_count":  sloReport.BadEventsCount,
+			"good_event_count": sloReport.GoodEventsCount,
+		},
+	}
+	// Retried in the background: a firing item is published again every run, but
+	// a recovery is published once, and later runs find no row left to close.
+	return mqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message,
+		common.MqPublishWithBackgroundRetry())
 }
 
 func getPreviousSLOReport(configId string, workload string, namespace string) (DBSLOReport, error) {
@@ -718,7 +768,7 @@ func GenerateSLOEvent(dbms *database.DatabaseManager, sloConfig DBSLOConfig, acc
 		Fingerprint:      fingerprint,
 		Cluster:          accountName,
 	}
-	_, err = event.InsertEvent(eventObj, "")
+	_, err = event.InsertEvent(eventObj, "", event.ScheduledDetection())
 	if err != nil {
 		slog.Error("slo: error inserting event", "error", err)
 		return err
@@ -756,27 +806,41 @@ func sloFingerprint(accountId, configName, workloadName, namespace string) strin
 // which looks identical to "no violation" from here but isn't a real recovery
 // signal — closing on that would false-resolve a violation that's still
 // ongoing during a connectivity blip.
-func closeSLOEventIfRecovered(dbms *database.DatabaseManager, sloConfig DBSLOConfig, reports []SLOReport) {
-	recovered := false
-	for _, report := range reports {
-		if statusForReport(report) == SLOStatusOK {
-			recovered = true
+//
+// The recovery is also announced in the SLO digest (FeatureSLOResolvedDigestEnabled),
+// from here and nowhere else: the other callers of closeSLOEventByFingerprint
+// close the event of an SLO that was disabled or deleted, which did not recover.
+// And only when the close changed a FIRING row — a healthy SLO reports OK on
+// every run, and all but the first of those runs find nothing to close.
+func closeSLOEventIfRecovered(dbms *database.DatabaseManager, sloConfig DBSLOConfig, reports []SLOReport, accountName string) {
+	var recovered *SLOReport
+	for i := range reports {
+		if statusForReport(reports[i]) == SLOStatusOK {
+			recovered = &reports[i]
 			break
 		}
 	}
-	if !recovered {
+	if recovered == nil {
 		return
 	}
 
 	fingerprint := sloFingerprint(sloConfig.CloudAccountId, sloConfig.Name, sloConfig.WorkloadName, sloConfig.Namespace)
-	closeSLOEventByFingerprint(dbms, sloConfig.TenantId, sloConfig.CloudAccountId, fingerprint)
+	if !closeSLOEventByFingerprint(dbms, sloConfig.TenantId, sloConfig.CloudAccountId, fingerprint) {
+		return
+	}
+	if config.Config.FeatureSLOResolvedDigestEnabled {
+		if err := triggerResolvedNotification(sloConfig, *recovered, accountName, fingerprint); err != nil {
+			slog.Error("slo: error triggering resolved notification", "error", err, "configId", sloConfig.Id, "accountId", sloConfig.CloudAccountId)
+		}
+	}
 }
 
 // closeSLOEventByFingerprint resolves the FIRING SLOViolation event matching
 // fingerprint, if any, and delivers the resolved notification the same way
 // webhook-driven resolves do (integrations/core/integration_webhook.go
-// resolveEvent). A no-op when nothing is open for this fingerprint.
-func closeSLOEventByFingerprint(dbms *database.DatabaseManager, tenantId, accountId, fingerprint string) {
+// resolveEvent). A no-op when nothing is open for this fingerprint. Reports
+// whether it closed an event.
+func closeSLOEventByFingerprint(dbms *database.DatabaseManager, tenantId, accountId, fingerprint string) bool {
 	var id string
 	err := dbms.Db.QueryRowx(
 		// events.ends_at is `timestamp` with no timezone (see V175); binding an
@@ -790,19 +854,20 @@ func closeSLOEventByFingerprint(dbms *database.DatabaseManager, tenantId, accoun
 	).Scan(&id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return
+			return false
 		}
 		slog.Error("slo: failed to close recovered slo event", "error", err, "fingerprint", fingerprint)
-		return
+		return false
 	}
 
-	_ = common.MqPublish(
+	_ = mqPublish(
 		config.Config.RabbitMqEventPostProcessExchange,
 		config.Config.RabbitMqEventPostProcessQueue,
 		map[string]any{"event_id": id, "notify_resolved": true},
 		common.MqPublishWithExpiration(1*time.Hour),
 		common.MqPublishWithBackgroundRetry(),
 	)
+	return true
 }
 
 // resolveSubjectType returns the workload's real kind, lower-cased to match the

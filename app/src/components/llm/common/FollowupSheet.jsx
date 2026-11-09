@@ -17,6 +17,7 @@ import MarkDowns from '@shared/viewers/MarkDowns';
 import { getNubiIconUrl, getAssistantName } from '@hooks/useTenantBranding';
 import { ds } from '@utils/colors';
 import { unwrapTypedValueString } from '@utils/common';
+import { getGraphqlErrorMessage } from '@lib/errorMessages';
 
 const ZERO_UUID = '00000000-0000-0000-0000-000000000000';
 
@@ -275,7 +276,11 @@ const FollowupSheet = ({ followup, accountId, conversationId, selectedModel, pop
           };
         }
 
-        await apiAskNudgebee.aiFollowupResponse(requestPayload);
+        const res = await apiAskNudgebee.aiFollowupResponse(requestPayload);
+        const failure = getGraphqlErrorMessage(res, 'Couldn’t submit your response. Please try again.');
+        if (failure) {
+          throw new Error(failure);
+        }
         if (onSubmitted) {
           onSubmitted();
         }
@@ -294,9 +299,8 @@ const FollowupSheet = ({ followup, accountId, conversationId, selectedModel, pop
         setPendingAnswer(null);
         setIsSubmitting(false);
         if (onSubmitError) {
-          onSubmitError();
+          onSubmitError(err?.message);
         }
-        throw err;
       }
     },
     [accountId, conversationId, followup, isSubmitting, onSubmitted, onOptimisticSubmit, onSubmitError, selectedModel]
@@ -304,8 +308,7 @@ const FollowupSheet = ({ followup, accountId, conversationId, selectedModel, pop
 
   // Soft-skips the current question without answering it: writes a dismissal marker
   // and ends the conversation (same terminal outcome as onStop, distinguished only by
-  // that marker). Gated server-side behind FollowupCancelEnabled — a disabled backend
-  // fails the request rather than the UI, so surface that as a toast instead of a crash.
+  // that marker). A failed request is surfaced as a toast instead of a crash.
   const cancelDismiss = useCallback(async () => {
     if (isSubmitting || isCancelling) {
       return;

@@ -97,6 +97,30 @@ var capabilityScopeTable = map[string]CapabilityScope{
 	"shell_execute":   CapabilityScopePassThrough, // tool_shell.go
 	"helm_execute":    CapabilityScopePassThrough, // tool_helm.go: Required: []string{"command"}
 	"rabbit_execute":  CapabilityScopePassThrough, // tool_rabbit.go: Required: []string{"args"}
+	// A sub-agent registered as a tool (agents/agent_remediation.go): input is
+	// free-text investigation context or a request to execute a plan, and it
+	// runs approved commands. Its built-in approval flow does not cap what it
+	// can reach, so it is classified by its ceiling.
+	"remediation": CapabilityScopePassThrough,
+
+	// Sub-agents registered as tools take a natural-language question, so their
+	// input shape says nothing about blast radius. They are classified by the
+	// ceiling of the tools in their GetSupportedTools (verified in source, not
+	// inferred from names). A read-only exemption is deliberately not modelled
+	// yet: it needs a reviewer to consume it and a code-level enforcement point.
+	//   agents/agent_log.go        -> includes shell_execute (pass_through above)
+	//   agents/agent_events.go     -> includes EventsExecuteTool (free-text SQL)
+	//   agents/agent_prometheus.go -> includes PrometheusExecuteTool (free-text PromQL)
+	"logs":       CapabilityScopePassThrough,
+	"events":     CapabilityScopePassThrough,
+	"prometheus": CapabilityScopePassThrough,
+	// tool_prometheus.go: Required: []string{"command"}, an untyped PromQL string.
+	"prometheus_execute": CapabilityScopePassThrough,
+	// agents/agent_promql.go: generate-only (prompt forbids execution) and its
+	// own tools are bounded (MetricsListTool, ListMetricsLabelsTool), but it is
+	// a ReAct agent that does not opt out of default tools, so
+	// FilterAndInjectDefaultTools (agents/core/utils.go) gives it shell_execute.
+	"promql_query": CapabilityScopePassThrough,
 
 	// --- Workflow tasks (runbook-server/internal/tasks/) ---
 	// k8s/cli.go: only "command" (string) is required.
@@ -113,6 +137,286 @@ var capabilityScopeTable = map[string]CapabilityScope{
 	"k8s.workload_restart": CapabilityScopeNarrow,
 	// k8s/horizontal_rightsize.go: multiple required, typed fields.
 	"k8s.horizontal_rightsize": CapabilityScopeNarrow,
+
+	// Database tools: one free-text query/command field over a whole database
+	// (or Redis instance). The SQL tools reject writes in code
+	// (sqlValidateReadOnly), but a read-only exemption is not modelled yet (see
+	// "logs"/"events" above), so they are classified by schema shape like every
+	// other free-text tool. Schemas read in source:
+	//   tool_postgres.go, tool_mysql.go, tool_mssql.go, tool_oracle.go,
+	//   tool_clickhouse.go: command|query (RequiredOneOf), plus database/instance.
+	//   tool_redis.go: command Required, plus instance.
+	"postgres_query_execute":   CapabilityScopePassThrough,
+	"mysql_query_execute":      CapabilityScopePassThrough,
+	"mssql_query_execute":      CapabilityScopePassThrough,
+	"oracle_query_execute":     CapabilityScopePassThrough,
+	"clickhouse_query_execute": CapabilityScopePassThrough,
+	"redis_command_executer":   CapabilityScopePassThrough,
+
+	// Free-text SQL / CLI / query tools (agent tools). Each takes one free-text field that is run
+	// against a whole service surface; schemas and Call() read in source.
+	"anomaly_execute":                   CapabilityScopePassThrough,
+	"argocd_execute":                    CapabilityScopePassThrough,
+	"crawl_execute":                     CapabilityScopePassThrough,
+	"search_execute":                    CapabilityScopePassThrough,
+	"datadog_log_execute":               CapabilityScopePassThrough,
+	"datadog_metrics_execute":           CapabilityScopePassThrough,
+	"datadog_traces_execute":            CapabilityScopePassThrough,
+	"events_execute":                    CapabilityScopePassThrough,
+	"logs_execute_v2":                   CapabilityScopePassThrough,
+	"recommendation_execute":            CapabilityScopePassThrough,
+	"recommendation_resolution_execute": CapabilityScopePassThrough,
+	"remediation_execute":               CapabilityScopePassThrough,
+	"security_execute":                  CapabilityScopePassThrough,
+	"server_command_executor":           CapabilityScopePassThrough,
+	"signoz_log_execute":                CapabilityScopePassThrough,
+	"splunk_metrics_query":              CapabilityScopePassThrough,
+	"ticket_master":                     CapabilityScopePassThrough,
+	"traces_execute":                    CapabilityScopePassThrough,
+	"traces_execute_chronosphere":       CapabilityScopePassThrough,
+	"traces_execute_default":            CapabilityScopePassThrough,
+	"traces_execute_jaeger":             CapabilityScopePassThrough,
+	"traces_execute_v2":                 CapabilityScopePassThrough,
+	"vm_execute":                        CapabilityScopePassThrough,
+	"watch_resource":                    CapabilityScopePassThrough,
+	"es_metrics_query":                  CapabilityScopePassThrough,
+	"recommendation_execute_cli":        CapabilityScopePassThrough,
+	"datadog_hosts_execute":             CapabilityScopeNarrow,
+	"kg_search_nodes":                   CapabilityScopeNarrow,
+	"kg_traverse":                       CapabilityScopeNarrow,
+	"mermaid_validation":                CapabilityScopeNarrow,
+	"metrics_labels_list":               CapabilityScopeNarrow,
+	"metrics_list":                      CapabilityScopeNarrow,
+	"nudgebee_docs_search":              CapabilityScopeNarrow,
+	"remediation_generate":              CapabilityScopeNarrow,
+	"search_docs":                       CapabilityScopeNarrow,
+	"search_metrics":                    CapabilityScopeNarrow,
+	"search_skills":                     CapabilityScopeNarrow,
+	"service_dependency_graph_execute":  CapabilityScopeNarrow,
+	"trigger_cis_scan":                  CapabilityScopeNarrow,
+	"trigger_image_scan":                CapabilityScopeNarrow,
+	"workflow_search":                   CapabilityScopeNarrow,
+
+	// Datadog / New Relic *_execute tools: the free-text field only filters one fixed read
+	// endpoint, so narrow is arguable, but the input shape is a single free-text field and
+	// prometheus_execute (also read-only) is pass_through, so they follow the shape. Flip to
+	// narrow only after the table's owner decides read-only bounded filters qualify.
+	"datadog_apm_entities_execute":               CapabilityScopePassThrough,
+	"datadog_containers_execute":                 CapabilityScopePassThrough,
+	"datadog_events_execute":                     CapabilityScopePassThrough,
+	"datadog_incident_execute":                   CapabilityScopePassThrough,
+	"datadog_services_execute":                   CapabilityScopePassThrough,
+	"datadog_software_catalog_execute":           CapabilityScopePassThrough,
+	"datadog_resource_search_execute":            CapabilityScopePassThrough,
+	"newrelic_apm_services_execute":              CapabilityScopePassThrough,
+	"newrelic_infrastructure_containers_execute": CapabilityScopePassThrough,
+	"newrelic_infrastructure_hosts_execute":      CapabilityScopePassThrough,
+	"newrelic_resource_search_execute":           CapabilityScopePassThrough,
+
+	// Workflow executors: each can create, change or run arbitrary workflows and
+	// tasks, so they are pass_through despite their typed ids and objects.
+	"workflow_create":              CapabilityScopePassThrough,
+	"workflow_update":              CapabilityScopePassThrough,
+	"workflow_dry_run":             CapabilityScopePassThrough,
+	"workflow_execution_retrigger": CapabilityScopePassThrough,
+	"workflow_task_execute":        CapabilityScopePassThrough,
+	"workflow_trigger":             CapabilityScopePassThrough,
+
+	// Typed agent tools: ids, enums and filters only, fixed actions or fixed read queries.
+	"aggregate_events":                        CapabilityScopeNarrow,
+	"cloud_resource_search_execute":           CapabilityScopeNarrow,
+	"dryrun_triage_rule":                      CapabilityScopeNarrow,
+	"get_event_by_id":                         CapabilityScopeNarrow,
+	"get_event_classification":                CapabilityScopeNarrow,
+	"get_event_evidence":                      CapabilityScopeNarrow,
+	"get_event_incident_assembly":             CapabilityScopeNarrow,
+	"get_event_rules":                         CapabilityScopeNarrow,
+	"get_event_triage_explanation":            CapabilityScopeNarrow,
+	"get_triage_rule_events":                  CapabilityScopeNarrow,
+	"get_triage_rules":                        CapabilityScopeNarrow,
+	"kg_get_node":                             CapabilityScopeNarrow,
+	"list_events":                             CapabilityScopeNarrow,
+	"list_threshold_suggestions":              CapabilityScopeNarrow,
+	"load_skills":                             CapabilityScopeNarrow,
+	"metrics_label_values":                    CapabilityScopeNarrow,
+	"metrics_series_match":                    CapabilityScopeNarrow,
+	"mongodb_current_op_get":                  CapabilityScopeNarrow,
+	"mongodb_replset_status_get":              CapabilityScopeNarrow,
+	"mongodb_server_status_get":               CapabilityScopeNarrow,
+	"nudgebee_account_get":                    CapabilityScopeNarrow,
+	"nudgebee_accounts_count":                 CapabilityScopeNarrow,
+	"nudgebee_accounts_list":                  CapabilityScopeNarrow,
+	"nudgebee_agent_health_get":               CapabilityScopeNarrow,
+	"nudgebee_integration_diagnose":           CapabilityScopeNarrow,
+	"nudgebee_integration_get_status":         CapabilityScopeNarrow,
+	"nudgebee_integrations_count":             CapabilityScopeNarrow,
+	"nudgebee_integrations_list":              CapabilityScopeNarrow,
+	"propose_recommendation_apply":            CapabilityScopeNarrow,
+	"recommendation_record_ticket_resolution": CapabilityScopeNarrow,
+	"recommendation_set_dismissal":            CapabilityScopeNarrow,
+	"resource_search_execute":                 CapabilityScopeNarrow,
+	"spend_allocation":                        CapabilityScopeNarrow,
+	"spend_forecast":                          CapabilityScopeNarrow,
+	"spend_summary":                           CapabilityScopeNarrow,
+	"think":                                   CapabilityScopeNarrow,
+	"update_notebook":                         CapabilityScopeNarrow,
+	"vm_list_execute":                         CapabilityScopeNarrow,
+	"watch_cancel":                            CapabilityScopeNarrow,
+	"watch_list":                              CapabilityScopeNarrow,
+	"watch_status":                            CapabilityScopeNarrow,
+	"workflow_config_delete":                  CapabilityScopeNarrow,
+	"workflow_config_get":                     CapabilityScopeNarrow,
+	"workflow_config_list":                    CapabilityScopeNarrow,
+	"workflow_delete":                         CapabilityScopeNarrow,
+	"workflow_delete_version":                 CapabilityScopeNarrow,
+	"workflow_examples":                       CapabilityScopeNarrow,
+	"workflow_execution_cancel":               CapabilityScopeNarrow,
+	"workflow_execution_get":                  CapabilityScopeNarrow,
+	"workflow_executions":                     CapabilityScopeNarrow,
+	"workflow_get":                            CapabilityScopeNarrow,
+	"workflow_get_version":                    CapabilityScopeNarrow,
+	"workflow_list":                           CapabilityScopeNarrow,
+	"workflow_list_versions":                  CapabilityScopeNarrow,
+	"workflow_pause":                          CapabilityScopeNarrow,
+	"workflow_resume":                         CapabilityScopeNarrow,
+	"workflow_state":                          CapabilityScopeNarrow,
+	"workflow_task_list":                      CapabilityScopeNarrow,
+	"workflow_task_schema":                    CapabilityScopeNarrow,
+	"workflow_update_version_metadata":        CapabilityScopeNarrow,
+
+	// Agents and tools exposed as tools, classified by the ceiling of what they can reach. A ReAct
+	// or Orchestrating agent that does not opt out of default tools also gets shell_execute
+	// injected (agents/core/utils.go FilterAndInjectDefaultTools), so it inherits pass_through
+	// even when its own tools are bounded. The narrow ones below are not caught by that: llm,
+	// loganalysis, visualizer and clarification use the custom planner, datadog_containers_query
+	// and datadog_log_query the tools planner (neither gets default tools injected), and
+	// nudgebee and service_dependency_graph are ReAct agents that opt out
+	// (OptOutDefaultTools). Checked against the registered agents, not read off names.
+	"automation":                 CapabilityScopePassThrough,
+	"aws_observability":          CapabilityScopePassThrough,
+	"clickhouse":                 CapabilityScopePassThrough,
+	"code_analyzer":              CapabilityScopePassThrough,
+	"datadog_containers":         CapabilityScopePassThrough,
+	"datadog_events":             CapabilityScopePassThrough,
+	"datadog_hosts":              CapabilityScopePassThrough,
+	"datadog_incident":           CapabilityScopePassThrough,
+	"datadog_logs":               CapabilityScopePassThrough,
+	"datadog_metrics":            CapabilityScopePassThrough,
+	"datadog_metrics_query":      CapabilityScopePassThrough,
+	"datadog_orchestrator":       CapabilityScopePassThrough,
+	"datadog_service":            CapabilityScopePassThrough,
+	"datadog_software_catalog":   CapabilityScopePassThrough,
+	"datadog_traces":             CapabilityScopePassThrough,
+	"delegate_agent":             CapabilityScopePassThrough,
+	"elastic_search_metrics":     CapabilityScopePassThrough,
+	"fetch_logs":                 CapabilityScopePassThrough,
+	"fetch_logs_direct":          CapabilityScopePassThrough,
+	"finops":                     CapabilityScopePassThrough,
+	"github":                     CapabilityScopePassThrough,
+	"gitlab":                     CapabilityScopePassThrough,
+	"metrics":                    CapabilityScopePassThrough,
+	"mssql":                      CapabilityScopePassThrough,
+	"mysql":                      CapabilityScopePassThrough,
+	"oracle":                     CapabilityScopePassThrough,
+	"postgres":                   CapabilityScopePassThrough,
+	"prompt_refinement":          CapabilityScopePassThrough,
+	"security":                   CapabilityScopePassThrough,
+	"server":                     CapabilityScopePassThrough,
+	"signoz_logs":                CapabilityScopePassThrough,
+	"splunk_enterprise_metrics":  CapabilityScopePassThrough,
+	"tickets":                    CapabilityScopePassThrough,
+	"tickets_v2":                 CapabilityScopePassThrough,
+	"traces":                     CapabilityScopePassThrough,
+	"ask_clarification":          CapabilityScopeNarrow,
+	"clarification":              CapabilityScopeNarrow,
+	"datadog_containers_query":   CapabilityScopeNarrow,
+	"datadog_log_query":          CapabilityScopeNarrow,
+	"evidenceinsightstool":       CapabilityScopeNarrow,
+	"llm":                        CapabilityScopeNarrow,
+	"loganalysis":                CapabilityScopeNarrow,
+	"memory_read":                CapabilityScopeNarrow,
+	"memory_write":               CapabilityScopeNarrow,
+	"nudgebee":                   CapabilityScopeNarrow,
+	"service_dependency_graph":   CapabilityScopeNarrow,
+	"signoz_log_query_generator": CapabilityScopeNarrow,
+	"visualizer":                 CapabilityScopeNarrow,
+
+	// Workflow tasks (runbook-server/internal/tasks): CLI/SSH/HTTP/SQL/query tasks, tasks that run
+	// arbitrary nested tasks or workflows, and tasks that run arbitrary code or tool-using LLMs
+	// are pass_through.
+	"aws.cli":                           CapabilityScopePassThrough,
+	"azure.cli":                         CapabilityScopePassThrough,
+	"cicd.argocd.cli":                   CapabilityScopePassThrough,
+	"cloud.aws.cli":                     CapabilityScopePassThrough,
+	"cloud.azure.cli":                   CapabilityScopePassThrough,
+	"cloud.gcp.cli":                     CapabilityScopePassThrough,
+	"cloud.k8s.cli":                     CapabilityScopePassThrough,
+	"core.call-workflow":                CapabilityScopePassThrough,
+	"core.foreach":                      CapabilityScopePassThrough,
+	"core.group":                        CapabilityScopePassThrough,
+	"data.filter":                       CapabilityScopePassThrough,
+	"data.transform":                    CapabilityScopePassThrough,
+	"dbms.query":                        CapabilityScopePassThrough,
+	"dbms.redis.cli":                    CapabilityScopePassThrough,
+	"gcp.cli":                           CapabilityScopePassThrough,
+	"integrations.http":                 CapabilityScopePassThrough,
+	"integrations.ssh":                  CapabilityScopePassThrough,
+	"llm.a2a_call":                      CapabilityScopePassThrough,
+	"llm.investigate":                   CapabilityScopePassThrough,
+	"llm.mcp_call":                      CapabilityScopePassThrough,
+	"llm.nubi":                          CapabilityScopePassThrough,
+	"llm.router":                        CapabilityScopePassThrough,
+	"mq.rabbitmqadmin.cli":              CapabilityScopePassThrough,
+	"network.tcp":                       CapabilityScopePassThrough,
+	"observability.logs":                CapabilityScopePassThrough,
+	"observability.metrics":             CapabilityScopePassThrough,
+	"observability.traces":              CapabilityScopePassThrough,
+	"scm.github.cli":                    CapabilityScopePassThrough,
+	"scm.gitlab.cli":                    CapabilityScopePassThrough,
+	"core.approval":                     CapabilityScopeNarrow,
+	"core.print":                        CapabilityScopeNarrow,
+	"core.switch":                       CapabilityScopeNarrow,
+	"core.wait":                         CapabilityScopeNarrow,
+	"crypto.decode":                     CapabilityScopeNarrow,
+	"crypto.decrypt":                    CapabilityScopeNarrow,
+	"crypto.encode":                     CapabilityScopeNarrow,
+	"crypto.encrypt":                    CapabilityScopeNarrow,
+	"crypto.hash":                       CapabilityScopeNarrow,
+	"events.add_evidence":               CapabilityScopeNarrow,
+	"events.store":                      CapabilityScopeNarrow,
+	"google_chat.join_space":            CapabilityScopeNarrow,
+	"k8s.continuous_rightsize":          CapabilityScopeNarrow,
+	"k8s.node_graceful_shutdown":        CapabilityScopeNarrow,
+	"k8s.pod_delete":                    CapabilityScopeNarrow,
+	"k8s.profile":                       CapabilityScopeNarrow,
+	"k8s.pv_rightsize":                  CapabilityScopeNarrow,
+	"k8s.vertical_rightsize":            CapabilityScopeNarrow,
+	"network.dns":                       CapabilityScopeNarrow,
+	"network.ntp":                       CapabilityScopeNarrow,
+	"network.ping":                      CapabilityScopeNarrow,
+	"network.ssl":                       CapabilityScopeNarrow,
+	"network.traceroute":                CapabilityScopeNarrow,
+	"network.whois":                     CapabilityScopeNarrow,
+	"notifications.add_channel_members": CapabilityScopeNarrow,
+	"notifications.add_reaction":        CapabilityScopeNarrow,
+	"notifications.create_channel":      CapabilityScopeNarrow,
+	"notifications.dm":                  CapabilityScopeNarrow,
+	"notifications.email":               CapabilityScopeNarrow,
+	"notifications.im":                  CapabilityScopeNarrow,
+	"notifications.read_thread":         CapabilityScopeNarrow,
+	"observability.log_groups":          CapabilityScopeNarrow,
+	"slack.join_channel":                CapabilityScopeNarrow,
+	"tickets.acknowledge":               CapabilityScopeNarrow,
+	"tickets.add_comment":               CapabilityScopeNarrow,
+	"tickets.assign":                    CapabilityScopeNarrow,
+	"tickets.create":                    CapabilityScopeNarrow,
+	"tickets.escalate":                  CapabilityScopeNarrow,
+	"tickets.get":                       CapabilityScopeNarrow,
+	"tickets.get_comments":              CapabilityScopeNarrow,
+	"tickets.resolve":                   CapabilityScopeNarrow,
+	"tickets.transition":                CapabilityScopeNarrow,
+	"tickets.update":                    CapabilityScopeNarrow,
+	"vertical_rightsize_generate":       CapabilityScopeNarrow,
 }
 
 // ClassifyCapability returns the checked-in scope for a capability name.

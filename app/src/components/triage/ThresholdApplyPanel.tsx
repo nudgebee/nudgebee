@@ -8,6 +8,7 @@ import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
 import Modal from '@ui/Modal';
 import apiTriage, { type ThresholdSuggestionItem, type ThresholdApplyOptions, type ThresholdApplyResult } from '@api1/triage';
+import { appliedIsCurrent, changesWait, formatWait, recommendationTypeOf } from './thresholdVerdict';
 import apiIntegrations from '@api1/integrations';
 import { buildAuditLogUrl } from '@components/audits/common';
 import { snackbar } from '@shared/snackbarService';
@@ -38,8 +39,9 @@ const NON_ACTIONABLE = new Set(['none', 'review_alert', 'not_eligible']);
 
 // Recommendations that deliberately keep the current threshold ("investigate, don't retune").
 // They can still be applied, but only as an explicit override — the operator has to enter a
-// value different from the current one, otherwise there is nothing to write.
-const NO_ENGINE_CHANGE = new Set(['investigate_signal', 'insufficient_data']);
+// value different from the current one, otherwise there is nothing to write. A row with no
+// recommendation type ('') is treated the same way: it is not a tuning.
+const NO_ENGINE_CHANGE = new Set(['investigate_signal', 'insufficient_data', '']);
 
 // Integrations management lives on the user-management page, integrations tab.
 const INTEGRATIONS_SETTINGS_URL = '/user-management#integrations';
@@ -147,7 +149,7 @@ const RulePreviewBlock: React.FC<{ expr: string; defaultOpen?: boolean }> = ({ e
  * for credentials inline.
  */
 const ThresholdApplyPanel: React.FC<ThresholdApplyPanelProps> = ({ data, onApplied }) => {
-  const recType = data.metric_stats?.recommendation_type || data.recommendation_type || 'tune_threshold';
+  const recType = recommendationTypeOf(data);
   const actionable = !NON_ACTIONABLE.has(recType);
 
   const [options, setOptions] = useState<ThresholdApplyOptions | null>(null);
@@ -165,6 +167,11 @@ const ThresholdApplyPanel: React.FC<ThresholdApplyPanelProps> = ({ data, onAppli
 
   // Editable threshold value applied to the rule (defaults to the suggested value).
   const [acceptValue, setAcceptValue] = useState<string>('');
+  // Editable wait before firing, in minutes (defaults to the suggested wait). A wait-only
+  // suggestion leaves the threshold alone, so it shows this field instead of the threshold's.
+  const [acceptDuration, setAcceptDuration] = useState<string>('');
+  const waitChanges = changesWait(recType);
+  const thresholdEditable = recType !== 'increase_duration';
 
   // PR inputs
   const [gitIntegrationKey, setGitIntegrationKey] = useState('');
@@ -297,6 +304,13 @@ const ThresholdApplyPanel: React.FC<ThresholdApplyPanelProps> = ({ data, onAppli
   const validValue = !Number.isNaN(acceptNum);
   const valueChanged = validValue && suggestedValue != null && acceptNum !== suggestedValue;
 
+  const suggestedWaitMinutes = options?.new_duration_minutes || data.metric_stats?.suggested_duration || 0;
+  const currentWaitSeconds = options?.current_duration_known ? options.current_duration_seconds : data.metric_stats?.current_duration_seconds;
+  const waitMinutes = acceptDuration.trim() === '' ? NaN : Number(acceptDuration);
+  const validWait = Number.isInteger(waitMinutes) && waitMinutes > 0;
+  const waitNotLonger = validWait && currentWaitSeconds != null && waitMinutes * 60 <= currentWaitSeconds;
+  const inputsValid = (!thresholdEditable || validValue) && (!waitChanges || (validWait && !waitNotLonger));
+
   // "Investigate, don't retune" verdicts suggest the current threshold, so applying them
   // unchanged writes nothing (the backend rejects it). Require an actual edit first.
   const currentValue = options?.current_threshold ?? data.current_threshold;
@@ -308,6 +322,7 @@ const ThresholdApplyPanel: React.FC<ThresholdApplyPanelProps> = ({ data, onAppli
     setError('');
     setOverrideRisk(false);
     setAcceptValue(suggestedValue != null ? String(suggestedValue) : '');
+    setAcceptDuration(suggestedWaitMinutes > 0 ? String(suggestedWaitMinutes) : '');
     setConfirmOpen(true);
   };
 
@@ -320,7 +335,8 @@ const ThresholdApplyPanel: React.FC<ThresholdApplyPanelProps> = ({ data, onAppli
         cloud_account_id: data.cloud_account_id,
         method,
         override_risk: overrideRisk,
-        accept_value: validValue ? acceptNum : undefined,
+        accept_value: thresholdEditable && validValue ? acceptNum : undefined,
+        accept_duration: waitChanges && validWait ? waitMinutes : undefined,
         ...(method === 'pr'
           ? {
               git_provider: selectedIntegration?.type || 'github',
@@ -385,9 +401,14 @@ const ThresholdApplyPanel: React.FC<ThresholdApplyPanelProps> = ({ data, onAppli
   const prRepoValid = reposFromIntegration.length > 0 ? !!selectedRepoKey : !!derivedOrg && !!derivedRepo;
   const prInputsValid = method !== 'pr' || (!!selectedIntegration && prRepoValid && !!gitFilePath.trim());
   const confirmDisabled =
-    applying || !selectedAvailable || !validValue || overrideMissing || (requiresOverride && !overrideRisk) || !prInputsValid || noIntegration;
+    applying || !selectedAvailable || !inputsValid || overrideMissing || (requiresOverride && !overrideRisk) || !prInputsValid || noIntegration;
 
   const alreadyApplied = applyStatus === 'applied';
+  // Advice recomputed after the apply is new advice: the earlier change stays revertible, and no
+  // longer blocks applying what the row says now.
+  // (An apply made from this panel is current until the refetched row carries its timestamp.)
+  const appliedHere = !!acted && acted.rowAppliedAt === data.applied_at;
+  const applyBlocked = alreadyApplied && (appliedHere || appliedIsCurrent({ ...data, apply_status: applyStatus }));
 
   const auditLogUrl = buildAuditLogUrl({
     accountId: data.cloud_account_id,
@@ -412,8 +433,8 @@ const ThresholdApplyPanel: React.FC<ThresholdApplyPanelProps> = ({ data, onAppli
       <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], flexWrap: 'wrap' }}>
         <Text value='Apply this suggestion' sx={{ fontSize: ds.text.small, fontWeight: ds.weight.semibold }} />
         {applyStatus && (
-          <Chip variant='tag' size='xs' tone={statusTone(applyStatus)}>
-            {statusLabel(applyStatus)}
+          <Chip variant='tag' size='xs' tone={alreadyApplied && !applyBlocked ? 'neutral' : statusTone(applyStatus)}>
+            {alreadyApplied && !applyBlocked ? 'Changed earlier' : statusLabel(applyStatus)}
           </Chip>
         )}
         {isDangerous && (
@@ -429,7 +450,12 @@ const ThresholdApplyPanel: React.FC<ThresholdApplyPanelProps> = ({ data, onAppli
             ? revertedTo != null && <Text value={`Reverted to ${operator} ${revertedTo}`} sx={{ fontSize: ds.text.caption, color: ds.gray[600] }} />
             : appliedThreshold != null && (
                 <Text
-                  value={`Applied ${operator} ${appliedThreshold}${appliedPrevious != null ? ` (was ${operator} ${appliedPrevious})` : ''}`}
+                  value={
+                    // A wait-only change leaves the threshold as it was; "Applied > 10 (was > 10)" says nothing.
+                    appliedPrevious != null && appliedThreshold === appliedPrevious && !thresholdEditable
+                      ? 'Applied a longer wait before firing'
+                      : `Applied ${operator} ${appliedThreshold}${appliedPrevious != null ? ` (was ${operator} ${appliedPrevious})` : ''}`
+                  }
                   sx={{ fontSize: ds.text.caption, color: ds.gray[600] }}
                 />
               )}
@@ -452,7 +478,7 @@ const ThresholdApplyPanel: React.FC<ThresholdApplyPanelProps> = ({ data, onAppli
               data-testid='threshold-apply-btn'
               size='xs'
               tone='primary'
-              disabled={!directOption?.available || alreadyApplied}
+              disabled={!directOption?.available || applyBlocked}
               tooltip={!directOption?.available ? directOption?.reason : undefined}
               onClick={() => openConfirm('direct')}
             >
@@ -463,7 +489,7 @@ const ThresholdApplyPanel: React.FC<ThresholdApplyPanelProps> = ({ data, onAppli
               data-testid='threshold-apply-pr-btn'
               size='xs'
               tone='secondary'
-              disabled={!prOption?.available || alreadyApplied}
+              disabled={!prOption?.available || applyBlocked}
               tooltip={!prOption?.available ? prOption?.reason : undefined}
               onClick={() => openConfirm('pr')}
             >
@@ -487,7 +513,7 @@ const ThresholdApplyPanel: React.FC<ThresholdApplyPanelProps> = ({ data, onAppli
         open={confirmOpen}
         onClose={() => setConfirmOpen(false)}
         width='sm'
-        title={method === 'pr' ? 'Raise a PR to update this alert' : 'Apply threshold change'}
+        title={method === 'pr' ? 'Raise a PR to update this alert' : thresholdEditable ? 'Apply threshold change' : 'Apply wait-time change'}
         actionButtons={
           <Box sx={{ display: 'flex', gap: ds.space[2], justifyContent: 'flex-end' }}>
             <Button size='sm' tone='ghost' onClick={() => setConfirmOpen(false)}>
@@ -509,32 +535,51 @@ const ThresholdApplyPanel: React.FC<ThresholdApplyPanelProps> = ({ data, onAppli
       >
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[3] }}>
           {/* Editable threshold: prefilled with the suggested value, applied as accept_value. */}
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
-            <Text value='New threshold' sx={{ fontSize: ds.text.caption, color: ds.gray[600] }} />
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], flexWrap: 'wrap' }}>
-              <Text value={`${operator} ${currentThreshold}`} sx={{ color: ds.gray[600] }} />
-              <Text value='→' sx={{ color: ds.gray[600] }} />
-              <Text value={operator} sx={{ fontWeight: ds.weight.semibold }} />
-              <Box sx={{ width: 120 }}>
-                <Input value={acceptValue} onChange={setAcceptValue} size='sm' type='number' inputMode='decimal' placeholder='value' />
+          {thresholdEditable && (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
+              <Text value='New threshold' sx={{ fontSize: ds.text.caption, color: ds.gray[600] }} />
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], flexWrap: 'wrap' }}>
+                <Text value={`${operator} ${currentThreshold}`} sx={{ color: ds.gray[600] }} />
+                <Text value='→' sx={{ color: ds.gray[600] }} />
+                <Text value={operator} sx={{ fontWeight: ds.weight.semibold }} />
+                <Box sx={{ width: 120 }}>
+                  <Input value={acceptValue} onChange={setAcceptValue} size='sm' type='number' inputMode='decimal' placeholder='value' />
+                </Box>
               </Box>
+              {!validValue && <Text value='Enter a numeric threshold.' sx={{ fontSize: ds.text.caption, color: ds.red[700] }} />}
+              {overrideRequired && (
+                <Text
+                  value={`This alert is flagged for investigation, not retuning${
+                    currentValue != null ? ` — the analysis keeps the current threshold (${operator} ${currentValue})` : ''
+                  }. Enter a different value to override it.`}
+                  sx={{ fontSize: ds.text.caption, color: ds.amber[700] }}
+                />
+              )}
+              {valueChanged && (
+                <Text
+                  value={`Suggested ${operator} ${suggestedValue}. The preview below reflects the suggested value; ${acceptValue} will be applied.`}
+                  sx={{ fontSize: ds.text.caption, color: ds.amber[700] }}
+                />
+              )}
             </Box>
-            {!validValue && <Text value='Enter a numeric threshold.' sx={{ fontSize: ds.text.caption, color: ds.red[700] }} />}
-            {overrideRequired && (
-              <Text
-                value={`This alert is flagged for investigation, not retuning${
-                  currentValue != null ? ` — the analysis keeps the current threshold (${operator} ${currentValue})` : ''
-                }. Enter a different value to override it.`}
-                sx={{ fontSize: ds.text.caption, color: ds.amber[700] }}
-              />
-            )}
-            {valueChanged && (
-              <Text
-                value={`Suggested ${operator} ${suggestedValue}. The preview below reflects the suggested value; ${acceptValue} will be applied.`}
-                sx={{ fontSize: ds.text.caption, color: ds.amber[700] }}
-              />
-            )}
-          </Box>
+          )}
+
+          {/* Editable wait: prefilled with the suggested wait, applied as accept_duration. */}
+          {waitChanges && (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
+              <Text value='Wait before firing' sx={{ fontSize: ds.text.caption, color: ds.gray[600] }} />
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], flexWrap: 'wrap' }}>
+                <Text value={currentWaitSeconds != null ? formatWait(currentWaitSeconds) : 'current wait not known'} sx={{ color: ds.gray[600] }} />
+                <Text value='→' sx={{ color: ds.gray[600] }} />
+                <Box sx={{ width: 96 }}>
+                  <Input value={acceptDuration} onChange={setAcceptDuration} size='sm' type='number' inputMode='numeric' placeholder='minutes' />
+                </Box>
+                <Text value='min' sx={{ color: ds.gray[600] }} />
+              </Box>
+              {!validWait && <Text value='Enter a whole number of minutes.' sx={{ fontSize: ds.text.caption, color: ds.red[700] }} />}
+              {waitNotLonger && <Text value='This is not longer than the rule waits today.' sx={{ fontSize: ds.text.caption, color: ds.red[700] }} />}
+            </Box>
+          )}
 
           {options?.preview_expr && <RulePreviewBlock expr={options.preview_expr} />}
 

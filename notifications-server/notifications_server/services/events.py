@@ -39,6 +39,7 @@ from notifications_server.services.bot_messages import (
     get_account_selected_confirmation,
     get_account_already_selected,
     get_account_not_accessible_message,
+    get_account_pick_not_yours,
     get_user_not_found_message,
     get_llm_busy_message,
     get_llm_offline_message,
@@ -567,6 +568,7 @@ class Events:
                 user_display_name = self.common_service.get_slack_user_display_name(team_id, slack_user_id)
 
             blocks, _ = self._get_cluster_confirmation_blocks(valid_accounts, user_display_name)
+            self.cache.update_event_entry(thread_ts, offered_account_ids=[acc["id"] for acc in valid_accounts])
 
             selection_msg_ts = self.common_service.slack_reply_in_thread_as_blocks(
                 channel_id, team_id, thread_ts, blocks
@@ -737,6 +739,14 @@ class Events:
             LOG.warning(f"Failed to validate user access to account {account_id}: {e}")
             return False
 
+    def _get_offered_account(self, cached_entry, account_id):
+        """The picked account, or None unless the picker offered it for this question."""
+        if account_id not in (cached_entry.get("offered_account_ids") or []):
+            LOG.warning(f"Picked account {account_id} was not offered for this question")
+            return None
+        with Session(self.session.get_bind()) as session:
+            return get_account_by_id(session, account_id)
+
     def _get_cluster_confirmation_blocks(self, valid_accounts, user_name=None):
         """Returns (blocks, prompt_message). prompt_message is None when no accounts are available."""
         if valid_accounts:
@@ -774,7 +784,11 @@ class Events:
     def update_account_for_event(self, action_id, channel_id, team_id, slack_user_id, thread_ts):
         try:
             cached_entry = self.cache.get_event_entry(thread_ts)
-            if cached_entry and cached_entry.get("account_id") is not None:
+            if not cached_entry:
+                self.reply(channel_id, team_id, thread_ts, get_session_expired_message())
+                return
+
+            if cached_entry.get("account_id") is not None:
                 self.common_service.slack_reply_in_thread_with_context(
                     channel_id,
                     team_id,
@@ -784,13 +798,26 @@ class Events:
                 )
                 return
 
-            account_id = action_id.split("--")[1]
-            account_name, account_id = self._fetch_and_update_account_details_by_id(
-                account_id, channel_id, team_id, thread_ts
-            )
+            asker = cached_entry.get("slack_user_id")
+            if not slack_user_id or slack_user_id != asker:
+                self.common_service.post_slack_ephemeral_response(
+                    channel_id,
+                    team_id,
+                    slack_user_id,
+                    get_account_pick_not_yours(f"<@{asker}>" if asker else None),
+                    thread_ts=thread_ts,
+                )
+                return
+
+            account = self._get_offered_account(cached_entry, action_id.split("--")[1])
+            if not account:
+                self.common_service.slack_reply_in_thread(channel_id, team_id, thread_ts, CLUSTER_NOT_FOUND)
+                return
+            account_name, account_id = account["account_name"], account["id"]
+            self.cache.update_event_entry(thread_ts, tenant_id=account["tenant"], account_id=account_id)
 
             # Update the selection message instead of sending a new one
-            selection_msg_ts = cached_entry.get("selection_msg_ts") if cached_entry else None
+            selection_msg_ts = cached_entry.get("selection_msg_ts")
             url = f"{settings.base_url}/ask-nudgebee?accountId={account_id}&session_id={channel_id}-{thread_ts}"
 
             confirmation_message = (
@@ -2092,6 +2119,7 @@ class Events:
         valid_accounts = await self._get_valid_accounts_async(user_id, tenants)
 
         if valid_accounts:
+            self.cache.update_event_entry(thread_ts, offered_account_ids=[acc["id"] for acc in valid_accounts])
             card = self.common_service.create_teams_cluster_selection_card(valid_accounts)
             await self.common_service.teams_reply_with_card(activity, card, teams_account_id)
             LOG.debug(f"Sent account selection card with {len(valid_accounts)} options to Teams user")
@@ -2182,10 +2210,15 @@ class Events:
                     await self.common_service.teams_reply(activity, get_account_already_selected(), teams_account_id)
                 return
 
-            # Fetch and update account details
-            with Session(self.session.get_bind()) as session:
-                account = get_account_by_id(session, cluster_id)
+            clicker = activity.from_property.aad_object_id if activity.from_property else None
+            if not clicker or clicker != cached_entry.get("aad_user_id"):
+                asker_name = (cached_entry.get("conversation_reference") or {}).get("user_name")
+                await self.common_service.teams_reply(
+                    activity, get_account_pick_not_yours(asker_name), teams_account_id
+                )
+                return
 
+            account = self._get_offered_account(cached_entry, cluster_id)
             if not account:
                 await self.common_service.teams_reply(activity, CLUSTER_NOT_FOUND, teams_account_id)
                 return
@@ -2516,6 +2549,7 @@ class Events:
                 "text": message_text,
                 "user_id": user_id,
                 "user_email": user_email,
+                "user_display_name": event_data.get("user", {}).get("displayName"),
                 "space_name": space_name,
                 "thread_name": thread_name,
                 "session_id": session_id,
@@ -2556,6 +2590,7 @@ class Events:
             await self._handle_gchat_mapped_account(valid_accounts[0], thread_name, space_name, tenant_id, message_text)
             return
 
+        self.cache.update_event_entry(thread_name, offered_account_ids=[acc["id"] for acc in valid_accounts])
         self._request_gchat_account_confirmation(space_name, thread_name, valid_accounts, tenant_id)
 
     async def _handle_gchat_card_click(self, event_data: dict):
@@ -2576,7 +2611,10 @@ class Events:
             tenant_id = cached_entry["tenant_id"]
 
             if action == "select_account":
-                await self._handle_gchat_account_selection(parameters, space_name, thread_name, tenant_id, cached_entry)
+                clicker_email = (event_data.get("user") or {}).get("email")
+                await self._handle_gchat_account_selection(
+                    parameters, space_name, thread_name, tenant_id, cached_entry, clicker_email
+                )
             elif action == "select_followup":
                 await self._handle_gchat_followup_selection(
                     parameters, space_name, thread_name, tenant_id, cached_entry
@@ -2588,7 +2626,9 @@ class Events:
             LOG.exception("Error handling Google Chat card click: %s", e)
             raise
 
-    async def _handle_gchat_account_selection(self, parameters, space_name, thread_name, tenant_id, cached_entry):
+    async def _handle_gchat_account_selection(
+        self, parameters, space_name, thread_name, tenant_id, cached_entry, clicker_email
+    ):
         """Handle account selection card click in Google Chat."""
         account_id = parameters.get("account_id")
         if not account_id:
@@ -2601,9 +2641,14 @@ class Events:
             )
             return
 
-        with Session(self.session.get_bind()) as session:
-            account = get_account_by_id(session, account_id)
+        asker_email = cached_entry.get("user_email")
+        if not (clicker_email and asker_email and clicker_email.lower() == asker_email.lower()):
+            self.common_service.gchat_reply_in_thread(
+                space_name, thread_name, get_account_pick_not_yours(cached_entry.get("user_display_name")), tenant_id
+            )
+            return
 
+        account = self._get_offered_account(cached_entry, account_id)
         if not account:
             self.common_service.gchat_reply_in_thread(space_name, thread_name, CLUSTER_NOT_FOUND, tenant_id)
             return

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"nudgebee/runbook/internal/logsafe"
 	"nudgebee/runbook/internal/tasks/safehttp"
 	"nudgebee/runbook/internal/tasks/types"
 	"reflect"
@@ -47,13 +48,13 @@ func dereferenceValue(v any) reflect.Value {
 }
 
 func (t *HttpTask) Execute(taskCtx types.TaskContext, params map[string]any) (any, error) {
-	taskCtx.GetLogger().Debug("Executing HttpRequestTask", "params", params)
+	taskCtx.GetLogger().Debug("Executing HttpRequestTask")
 
 	urlVal, ok := params["url"]
 	if !ok {
 		return nil, fmt.Errorf("url is a required parameter")
 	}
-	taskCtx.GetLogger().Info("URL parameter received", "type", fmt.Sprintf("%T", urlVal), "value", urlVal)
+	taskCtx.GetLogger().Info("URL parameter received", "type", fmt.Sprintf("%T", urlVal), "value", logsafe.RedactURL(fmt.Sprint(urlVal)))
 
 	urlStr, ok := urlVal.(string)
 	if !ok {
@@ -63,13 +64,13 @@ func (t *HttpTask) Execute(taskCtx types.TaskContext, params map[string]any) (an
 	// Validate URL format
 	parsedURL, err := url.ParseRequestURI(urlStr)
 	if err != nil {
-		return nil, fmt.Errorf("invalid URL format: %w", err)
+		return nil, fmt.Errorf("invalid URL format: %w", logsafe.RedactURLError(err))
 	}
 
 	// SSRF defense: reject URLs that resolve to internal IPs. DialContext below
 	// also re-validates each dial to close the DNS rebinding TOCTOU window.
 	if err := safehttp.ValidateURL(parsedURL.String()); err != nil {
-		return nil, fmt.Errorf("url failed safety validation: %w", err)
+		return nil, fmt.Errorf("url failed safety validation: %w", logsafe.RedactURLError(err))
 	}
 
 	method, ok := params["method"].(string)
@@ -128,7 +129,7 @@ func (t *HttpTask) Execute(taskCtx types.TaskContext, params map[string]any) (an
 
 	req, err := http.NewRequestWithContext(taskCtx.GetContext(), method, parsedURL.String(), body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", logsafe.RedactURLError(err))
 	}
 
 	// Set headers, including Content-Type
@@ -189,11 +190,11 @@ func (t *HttpTask) Execute(taskCtx types.TaskContext, params map[string]any) (an
 		// an internal IP, the request goes via that internal host. Validate it
 		// the same way as the target URL.
 		if err := safehttp.ValidateURL(proxyURLStr); err != nil {
-			return nil, fmt.Errorf("proxy_url failed safety validation: %w", err)
+			return nil, fmt.Errorf("proxy_url failed safety validation: %w", logsafe.RedactURLError(err))
 		}
 		proxyURL, err := url.Parse(proxyURLStr)
 		if err != nil {
-			return nil, fmt.Errorf("invalid proxy URL: %w", err)
+			return nil, fmt.Errorf("invalid proxy URL: %w", logsafe.RedactURLError(err))
 		}
 		transport.Proxy = http.ProxyURL(proxyURL)
 	}
@@ -201,7 +202,7 @@ func (t *HttpTask) Execute(taskCtx types.TaskContext, params map[string]any) (an
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to execute request: %w", err)
+		return nil, fmt.Errorf("failed to execute request: %w", logsafe.RedactURLError(err))
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {

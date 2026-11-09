@@ -94,12 +94,15 @@ func GetThresholdSuggestion(ctx context.Context, db *sqlx.DB, ev models.Event, t
 		if err != nil {
 			errMsg = err.Error()
 		}
+		ruleWait, waitKnown := lookupRuleWait(ctx, db, source, labels, accountID)
 		return ThresholdSuggestionResponse{
 			Available:      false,
 			Source:         source,
 			FiringAnalysis: firingAnalysis,
 			AlertQuality:   alertQuality,
 			Error:          errMsg,
+			cause:          err,
+			wait:           suggestWait(alertQuality, ruleWait, waitKnown),
 		}
 	}
 
@@ -107,22 +110,44 @@ func GetThresholdSuggestion(ctx context.Context, db *sqlx.DB, ev models.Event, t
 	// Check whether this alert type is eligible for threshold tuning at all,
 	// before doing expensive metric queries and computation.
 	if reason := checkThresholdEligibility(alertDef); reason != "" {
+		notEligible := &ThresholdSuggestion{
+			RecommendationType: "not_eligible",
+			Reason:             reason,
+			SuggestedThreshold: alertDef.CurrentThreshold,
+			Confidence:         "low",
+		}
+		// A rule with no threshold to tune can still be made to wait longer.
+		offerWait(notEligible, alertDef, alertQuality)
+		notEligible.RecommendationLabel = recommendationLabel(notEligible.RecommendationType)
 		return ThresholdSuggestionResponse{
 			Available:       true,
 			Source:          source,
 			AlertDefinition: alertDef,
 			FiringAnalysis:  firingAnalysis,
 			AlertQuality:    alertQuality,
-			Suggestion: &ThresholdSuggestion{
-				RecommendationType: "not_eligible",
-				Reason:             reason,
-				Confidence:         "low",
-			},
+			Suggestion:      notEligible,
 		}
 	}
 
-	// Fetch metric history from source API
-	metricHistory := fetchMetricHistory(ctx, ev, alertDef, tenantID, fetchSeries)
+	// Fetch metric history from source API. A fetch that failed is not "no data": the store did
+	// not answer, so nothing is known about the metric and no verdict is derived this run.
+	metricHistory, fetchErr := fetchMetricHistory(ctx, ev, alertDef, tenantID, fetchSeries)
+	if fetchErr != nil {
+		// The fetcher has logged the technical error (it can carry the store's address); the
+		// response, which reaches the browser, says only what happened. Wait-time advice needs no
+		// metric, so it is still worked out.
+		current, known := currentWait(alertDef)
+		return ThresholdSuggestionResponse{
+			Available:       true,
+			Source:          source,
+			AlertDefinition: alertDef,
+			FiringAnalysis:  firingAnalysis,
+			AlertQuality:    alertQuality,
+			Error:           plainReason(fetchErr),
+			cause:           fetchErr,
+			wait:            suggestWait(alertQuality, current, known),
+		}
+	}
 
 	// Compute suggestion. Prefer the baseline-fidelity path — segment the history into off-alert
 	// vs firing windows and diagnose deterministically — and fall back to the legacy statistical
@@ -139,42 +164,34 @@ func GetThresholdSuggestion(ctx context.Context, db *sqlx.DB, ev models.Event, t
 
 	// If no suggestion could be computed, provide a specific error instead of the generic "no suggestion available"
 	var computeError string
+	var computeCause error
 	if suggestion == nil {
 		noMetricData := metricHistory == nil || len(metricHistory.Values) == 0
 		noFiringData := firingAnalysis == nil || len(firingAnalysis.MetricValuesAtFiring) == 0
 		if noMetricData && noFiringData {
 			computeError = fmt.Sprintf("metric query returned no data for %q (service: %s, account: %s)", alertDef.MetricName, source, accountID)
+			computeCause = errMetricUnavailable
 		} else if noMetricData {
 			computeError = fmt.Sprintf("metric query returned no data for %q but firing analysis available — insufficient data for suggestion", alertDef.MetricName)
+			computeCause = errMetricUnavailable
 		}
 	}
 
-	// Run guardrails for legacy suggestions and for baseline-path retunes (bounded-metric rejection
-	// still applies). Skip for insufficient_data (its MetricP50=0 would trip Gate 4's
-	// divide-by-MetricP50), and for baseline-path diagnoses that don't change the threshold
-	// (chronic / excursion / ambiguous) — their verdict is already final.
-	skipGuardrails := suggestion == nil ||
-		suggestion.RecommendationType == "insufficient_data" ||
-		(suggestion.Diagnosis != "" && suggestion.RecommendationType != "tune_threshold")
-	if !skipGuardrails {
-		risk := ValidateSuggestion(suggestion, alertDef, alertQuality)
-		// Guardrails (e.g. Gate 1) may change the threshold after estimateReduction already ran.
-		// Recompute reduction so the stored/displayed number describes the value we actually keep.
-		if metricHistory != nil && len(metricHistory.Values) > 0 {
-			sortedVals := append([]float64(nil), metricHistory.Values...)
-			sort.Float64s(sortedVals)
-			suggestion.EstimatedReduction = estimateReduction(sortedVals, alertDef.CurrentThreshold,
-				suggestion.SuggestedThreshold, isGreaterThanOperator(alertDef.Operator))
+	// Safety checks, and the rule for what a suggestion may carry (a new value only on a tuning).
+	finalizeSuggestion(suggestion, alertDef, alertQuality, metricHistory)
+	// Wait-time advice stands on firing history, so it is offered wherever the metric-based verdict
+	// changes nothing.
+	offerWait(suggestion, alertDef, alertQuality)
+	var wait *waitAdvice
+	if suggestion != nil {
+		suggestion.RecommendationLabel = recommendationLabel(suggestion.RecommendationType)
+		if metricHistory != nil {
+			suggestion.MeasuredOn = describeSeries(metricHistory.Labels)
+			suggestion.MeasuredOnOther = metricHistory.otherInstance
 		}
-		if risk != nil {
-			suggestion.RiskLevel = risk.Level
-			suggestion.RiskWarnings = risk.Warnings
-			suggestion.Confidence = AdjustConfidenceForRisk(suggestion.Confidence, risk)
-			// Preserve the baseline-diagnosis narrative; only rebuild the terse reason for legacy suggestions.
-			if suggestion.Diagnosis == "" {
-				suggestion.Reason = BuildUserFacingReason(suggestion, alertDef, risk)
-			}
-		}
+	} else {
+		current, known := currentWait(alertDef)
+		wait = suggestWait(alertQuality, current, known)
 	}
 
 	queryMeta := buildQueryMetadata(source, labels, alertDef)
@@ -189,6 +206,8 @@ func GetThresholdSuggestion(ctx context.Context, db *sqlx.DB, ev models.Event, t
 		AlertQuality:    alertQuality,
 		QueryMetadata:   queryMeta,
 		Error:           computeError,
+		cause:           computeCause,
+		wait:            wait,
 	}
 }
 
@@ -213,7 +232,7 @@ func extractAWSAlertDefinition(ctx context.Context, db *sqlx.DB, ev models.Event
 	thresholdStr, _ := labels["aws_event_threshold"].(string)
 	threshold, err := strconv.ParseFloat(thresholdStr, 64)
 	if err != nil {
-		return nil, fmt.Errorf("invalid or missing aws_event_threshold: %q", thresholdStr)
+		return nil, fmt.Errorf("%w: invalid or missing aws_event_threshold: %q", errThresholdUnreadable, thresholdStr)
 	}
 
 	alertDef := &AlertDefinition{
@@ -356,7 +375,7 @@ func extractAzureAlertDefinition(ctx context.Context, db *sqlx.DB, ev models.Eve
 
 	threshold, ok := metricCond["threshold"].(float64)
 	if !ok {
-		return nil, fmt.Errorf("threshold not found or not a number in alert criteria")
+		return nil, fmt.Errorf("%w: threshold not found or not a number in alert criteria", errThresholdUnreadable)
 	}
 
 	operator, _ := metricCond["operator"].(string)
@@ -444,7 +463,7 @@ func extractAzureMetricConditionFromRules(ctx context.Context, db *sqlx.DB, ev m
 		"SELECT expr FROM event_rules WHERE alert = $1 AND account_id = $2 AND enabled = true AND expr IS NOT NULL AND expr != '' ORDER BY (right(source, 8) = '_webhook'), updated_at DESC LIMIT 1",
 		alertName, accountID).Scan(&expr)
 	if err != nil {
-		return nil, fmt.Errorf("no event_rule found for azure alert %q: %w", alertName, err)
+		return nil, ruleLookupError(fmt.Sprintf("azure alert %q", alertName), err)
 	}
 
 	// event_rules.expr for Azure contains criteria JSON similar to azure_alert_criteria
@@ -542,10 +561,10 @@ func buildQueryMetadata(source string, labels map[string]interface{}, alertDef *
 	return nil
 }
 
-func fetchMetricHistory(ctx context.Context, ev models.Event, alertDef *AlertDefinition, tenantID string, fetchSeries PromQLRangeSeries) *MetricHistory {
+func fetchMetricHistory(ctx context.Context, ev models.Event, alertDef *AlertDefinition, tenantID string, fetchSeries PromQLRangeSeries) (*MetricHistory, error) {
 	labels := GetLabelsMap(ev)
 	if labels == nil {
-		return nil
+		return nil, nil
 	}
 
 	source := ""
@@ -575,21 +594,21 @@ func fetchMetricHistory(ctx context.Context, ev models.Event, alertDef *AlertDef
 		return fetchPrometheusMetricHistory(ctx, ev, alertDef, tenantID, fetchSeries, sevenDaysAgo, now)
 	}
 
-	return nil
+	return nil, nil
 }
 
 // fetchAWSMetricHistory fetches metric data from AWS CloudWatch
-func fetchAWSMetricHistory(ctx context.Context, labels map[string]interface{}, alertDef *AlertDefinition, tenantID string, accountID string, startTime, endTime time.Time) *MetricHistory {
+func fetchAWSMetricHistory(ctx context.Context, labels map[string]interface{}, alertDef *AlertDefinition, tenantID string, accountID string, startTime, endTime time.Time) (*MetricHistory, error) {
 	region, _ := labels["aws_region"].(string)
 	serviceName, _ := labels["aws_service_name"].(string)
 
 	if region == "" {
 		slog.WarnContext(ctx, "threshold_suggestion: missing aws_region")
-		return nil
+		return nil, nil
 	}
 	if accountID == "" {
 		slog.WarnContext(ctx, "threshold_suggestion: missing cloud account ID for AWS alert")
-		return nil
+		return nil, nil
 	}
 
 	reqCtx := security.NewRequestContextForTenantAdmin(tenantID, slog.Default(), nil, nil)
@@ -640,10 +659,10 @@ func fetchAWSMetricHistory(ctx context.Context, labels map[string]interface{}, a
 
 	if err != nil {
 		slog.WarnContext(ctx, "threshold_suggestion: failed to query AWS metrics", "error", err)
-		return nil
+		return nil, fmt.Errorf("%w: %w", errMetricQueryFailed, err)
 	}
 
-	return metricsResponseToHistory(metricsResp, startTime, endTime, int(step.Seconds()), alertDef.CurrentThreshold, isGreaterThanOperator(alertDef.Operator))
+	return metricsResponseToHistory(metricsResp, startTime, endTime, int(step.Seconds()), alertDef.CurrentThreshold, isGreaterThanOperator(alertDef.Operator)), nil
 }
 
 // safeCliArg validates that a string only contains safe characters for CLI arguments.
@@ -659,7 +678,7 @@ func sanitizeCliArg(s string) string {
 }
 
 // fetchAWSCustomNamespaceMetrics fetches metrics for custom (non-AWS/) namespaces via CLI
-func fetchAWSCustomNamespaceMetrics(ctx context.Context, reqCtx *security.RequestContext, accountID string, alertDef *AlertDefinition, region string, dimensions []map[string]string, startTime, endTime time.Time) *MetricHistory {
+func fetchAWSCustomNamespaceMetrics(ctx context.Context, reqCtx *security.RequestContext, accountID string, alertDef *AlertDefinition, region string, dimensions []map[string]string, startTime, endTime time.Time) (*MetricHistory, error) {
 	statistic := alertDef.Aggregation
 	if statistic == "" {
 		statistic = "Sum"
@@ -711,22 +730,22 @@ func fetchAWSCustomNamespaceMetrics(ctx context.Context, reqCtx *security.Reques
 	})
 	if err != nil {
 		slog.WarnContext(ctx, "threshold_suggestion: failed to execute AWS CLI for custom metrics", "error", err)
-		return nil
+		return nil, fmt.Errorf("%w: %w", errMetricQueryFailed, err)
 	}
 
 	dataStr, ok := cliResp["data"].(string)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 
 	var awsResp map[string]interface{}
 	if err := json.Unmarshal([]byte(dataStr), &awsResp); err != nil {
-		return nil
+		return nil, nil
 	}
 
 	datapoints, ok := awsResp["Datapoints"].([]interface{})
 	if !ok {
-		return nil
+		return nil, nil
 	}
 
 	type dp struct {
@@ -764,13 +783,13 @@ func fetchAWSCustomNamespaceMetrics(ctx context.Context, reqCtx *security.Reques
 		StartTime:  startTime.Format(time.RFC3339),
 		EndTime:    endTime.Format(time.RFC3339),
 		Step:       periodSeconds,
-	}
+	}, nil
 }
 
 // fetchAzureMetricHistory fetches metric data from Azure Monitor.
 // Handles two label formats: azure_alert_target_resources / azure_alert_criteria (majority)
 // and azure_essentials / azure_alert_context (webhook format).
-func fetchAzureMetricHistory(ctx context.Context, labels map[string]interface{}, alertDef *AlertDefinition, tenantID string, accountID string, startTime, endTime time.Time) *MetricHistory {
+func fetchAzureMetricHistory(ctx context.Context, labels map[string]interface{}, alertDef *AlertDefinition, tenantID string, accountID string, startTime, endTime time.Time) (*MetricHistory, error) {
 	// Region: try azure_region first, then region
 	region := ""
 	for _, key := range []string{"azure_region", "region"} {
@@ -793,12 +812,12 @@ func fetchAzureMetricHistory(ctx context.Context, labels map[string]interface{},
 	resourceIDs := extractAzureResourceIDs(labels)
 	if len(resourceIDs) == 0 {
 		slog.WarnContext(ctx, "threshold_suggestion: no Azure target resource IDs found")
-		return nil
+		return nil, nil
 	}
 
 	if accountID == "" {
 		slog.WarnContext(ctx, "threshold_suggestion: missing cloud account ID for Azure alert")
-		return nil
+		return nil, nil
 	}
 
 	reqCtx := security.NewRequestContextForTenantAdmin(tenantID, slog.Default(), nil, nil)
@@ -854,10 +873,10 @@ func fetchAzureMetricHistory(ctx context.Context, labels map[string]interface{},
 
 	if err != nil {
 		slog.WarnContext(ctx, "threshold_suggestion: failed to query Azure metrics", "error", err)
-		return nil
+		return nil, fmt.Errorf("%w: %w", errMetricQueryFailed, err)
 	}
 
-	return metricsResponseToHistory(metricsResp, startTime, endTime, int(step.Seconds()), alertDef.CurrentThreshold, isGreaterThanOperator(alertDef.Operator))
+	return metricsResponseToHistory(metricsResp, startTime, endTime, int(step.Seconds()), alertDef.CurrentThreshold, isGreaterThanOperator(alertDef.Operator)), nil
 }
 
 // --- GCP support ---
@@ -889,7 +908,7 @@ func extractGCPAlertDefinition(ctx context.Context, db *sqlx.DB, ev models.Event
 		"SELECT expr FROM event_rules WHERE alert = $1 AND account_id = $2 AND enabled = true AND expr IS NOT NULL AND expr != '' ORDER BY (right(source, 8) = '_webhook'), updated_at DESC LIMIT 1",
 		policyName, accountID).Scan(&expr)
 	if err != nil {
-		return nil, fmt.Errorf("no event_rule found for GCP policy %q: %w", policyName, err)
+		return nil, ruleLookupError(fmt.Sprintf("GCP policy %q", policyName), err)
 	}
 
 	// Parse the policy JSON (protojson serialized AlertPolicy)
@@ -910,7 +929,7 @@ func extractGCPAlertDefinition(ctx context.Context, db *sqlx.DB, ev models.Event
 
 	condThreshold, _ := cond["conditionThreshold"].(map[string]interface{})
 	if condThreshold == nil {
-		return nil, fmt.Errorf("no conditionThreshold in GCP policy condition")
+		return nil, fmt.Errorf("%w: no conditionThreshold in GCP policy condition", errThresholdUnreadable)
 	}
 
 	alertDef := &AlertDefinition{
@@ -1019,21 +1038,21 @@ func mapGCPAlignerToStatistic(aligner string) string {
 }
 
 // fetchGCPMetricHistory fetches metric data from GCP Cloud Monitoring
-func fetchGCPMetricHistory(ctx context.Context, labels map[string]interface{}, alertDef *AlertDefinition, tenantID string, accountID string, startTime, endTime time.Time) *MetricHistory {
+func fetchGCPMetricHistory(ctx context.Context, labels map[string]interface{}, alertDef *AlertDefinition, tenantID string, accountID string, startTime, endTime time.Time) (*MetricHistory, error) {
 	serviceName, _ := labels["gcp_service_name"].(string)
 	// Don't pass region — event labels often have truncated values (e.g. "us-central" instead of
 	// "us-central1") that cause empty results. The account ID already scopes to the right project.
 
 	if accountID == "" {
 		slog.WarnContext(ctx, "threshold_suggestion: missing cloud account ID for GCP alert")
-		return nil
+		return nil, nil
 	}
 
 	reqCtx := security.NewRequestContextForTenantAdmin(tenantID, slog.Default(), nil, nil)
 
 	metricName := alertDef.MetricName
 	if metricName == "" {
-		return nil
+		return nil, nil
 	}
 
 	// GCP alert policies use full metric type paths like "cloudsql.googleapis.com/database/cpu/utilization".
@@ -1065,7 +1084,7 @@ func fetchGCPMetricHistory(ctx context.Context, labels map[string]interface{}, a
 	if err != nil {
 		slog.WarnContext(ctx, "threshold_suggestion: failed to query GCP metrics",
 			"error", err, "service", serviceName, "metric", metricName, "account", accountID)
-		return nil
+		return nil, fmt.Errorf("%w: %w", errMetricQueryFailed, err)
 	}
 
 	history := metricsResponseToHistory(metricsResp, startTime, endTime, int(step.Seconds()), alertDef.CurrentThreshold, isGreaterThanOperator(alertDef.Operator))
@@ -1073,7 +1092,7 @@ func fetchGCPMetricHistory(ctx context.Context, labels map[string]interface{}, a
 		slog.WarnContext(ctx, "threshold_suggestion: GCP metric query returned no data",
 			"service", serviceName, "metric", metricName, "account", accountID)
 	}
-	return history
+	return history, nil
 }
 
 // --- PagerDuty support ---
@@ -1105,12 +1124,12 @@ func extractPagerDutyAlertDefinition(ctx context.Context, db *sqlx.DB, ev models
 	}
 
 	// Look up PromQL expression from event_rules (same as prometheus)
-	var expr string
+	var expr, duration string
 	err := db.QueryRowContext(ctx,
-		"SELECT expr FROM event_rules WHERE alert = $1 AND account_id = $2 AND enabled = true AND expr IS NOT NULL AND expr != '' ORDER BY (right(source, 8) = '_webhook'), updated_at DESC LIMIT 1",
-		alertName, accountID).Scan(&expr)
+		"SELECT expr, COALESCE(duration, '') FROM event_rules WHERE alert = $1 AND account_id = $2 AND enabled = true AND expr IS NOT NULL AND expr != '' ORDER BY (right(source, 8) = '_webhook'), updated_at DESC LIMIT 1",
+		alertName, accountID).Scan(&expr, &duration)
 	if err != nil {
-		return nil, fmt.Errorf("no event_rule found for pagerduty alert %q: %w", alertName, err)
+		return nil, ruleLookupError(fmt.Sprintf("pagerduty alert %q", alertName), err)
 	}
 
 	threshold, err := extractPromQLThreshold(expr)
@@ -1123,6 +1142,8 @@ func extractPagerDutyAlertDefinition(ctx context.Context, db *sqlx.DB, ev models
 		Operator:         threshold.Operator,
 		CurrentThreshold: threshold.Value,
 		AlarmName:        alertName,
+		ForSeconds:       parseDurationSeconds(duration),
+		forKnown:         true,
 	}, nil
 }
 
@@ -1145,7 +1166,7 @@ func extractPromQLThreshold(exprStr string) (*promQLThreshold, error) {
 	// Pre-check: absent() / absent_over_time() expressions detect missing metrics, not threshold violations.
 	// There's no static threshold to tune.
 	if strings.Contains(exprLower, "absent(") || strings.Contains(exprLower, "absent_over_time(") {
-		return nil, fmt.Errorf("expression uses absent() — detects missing metrics, not threshold violations")
+		return nil, fmt.Errorf("%w: expression uses absent() — detects missing metrics, not threshold violations", errNotComparison)
 	}
 
 	expr, err := promQLParser.ParseExpr(exprStr)
@@ -1164,7 +1185,7 @@ func extractPromQLThreshold(exprStr string) (*promQLThreshold, error) {
 
 	binExpr, ok := expr.(*parser.BinaryExpr)
 	if !ok {
-		return nil, fmt.Errorf("expression is not a binary comparison (may be a function call like absent() or vector())")
+		return nil, fmt.Errorf("%w: expression is not a binary comparison (may be a function call like absent() or vector())", errNotComparison)
 	}
 
 	// Handle set operators (AND/OR/UNLESS) at top level by decomposing
@@ -1173,7 +1194,7 @@ func extractPromQLThreshold(exprStr string) (*promQLThreshold, error) {
 	}
 
 	if !binExpr.Op.IsComparisonOperator() {
-		return nil, fmt.Errorf("top-level operator %q is not a comparison", binExpr.Op.String())
+		return nil, fmt.Errorf("%w: top-level operator %q is not a comparison", errNotComparison, binExpr.Op.String())
 	}
 
 	// Determine which side is the number literal
@@ -1193,7 +1214,7 @@ func extractPromQLThreshold(exprStr string) (*promQLThreshold, error) {
 			Value:     getPromQLNumberValue(binExpr.LHS),
 		}, nil
 	default:
-		return nil, fmt.Errorf("dynamic threshold — both sides of %q are expressions (e.g. expr > expr*N), not a static threshold comparison", binExpr.Op.String())
+		return nil, fmt.Errorf("%w — both sides of %q are expressions (e.g. expr > expr*N), not a static threshold comparison", errDynamicThreshold, binExpr.Op.String())
 	}
 }
 
@@ -1264,7 +1285,7 @@ func extractFromCompoundExpr(binExpr *parser.BinaryExpr) (*promQLThreshold, erro
 		lhsResult.ExpressionType = exprType
 		return lhsResult, nil
 	default:
-		return nil, fmt.Errorf("compound %s: no extractable threshold in either leg: lhs: %v, rhs: %v",
+		return nil, fmt.Errorf("compound %s: no extractable threshold in either leg: lhs: %w, rhs: %w",
 			binExpr.Op.String(), lhsErr, rhsErr)
 	}
 }
@@ -1369,12 +1390,12 @@ func extractPrometheusAlertDefinition(ctx context.Context, db *sqlx.DB, ev model
 	}
 
 	// Look up PromQL expression from event_rules
-	var expr string
+	var expr, duration string
 	err := db.QueryRowContext(ctx,
-		"SELECT expr FROM event_rules WHERE alert = $1 AND account_id = $2 AND enabled = true AND expr IS NOT NULL AND expr != '' ORDER BY (right(source, 8) = '_webhook'), updated_at DESC LIMIT 1",
-		alertName, accountID).Scan(&expr)
+		"SELECT expr, COALESCE(duration, '') FROM event_rules WHERE alert = $1 AND account_id = $2 AND enabled = true AND expr IS NOT NULL AND expr != '' ORDER BY (right(source, 8) = '_webhook'), updated_at DESC LIMIT 1",
+		alertName, accountID).Scan(&expr, &duration)
 	if err != nil {
-		return nil, fmt.Errorf("no event_rule found for alert %q: %w", alertName, err)
+		return nil, ruleLookupError(fmt.Sprintf("alert %q", alertName), err)
 	}
 
 	threshold, err := extractPromQLThreshold(expr)
@@ -1387,6 +1408,8 @@ func extractPrometheusAlertDefinition(ctx context.Context, db *sqlx.DB, ev model
 		Operator:         threshold.Operator,
 		CurrentThreshold: threshold.Value,
 		AlarmName:        alertName,
+		ForSeconds:       parseDurationSeconds(duration),
+		forKnown:         true,
 	}, nil
 }
 
@@ -1406,31 +1429,31 @@ type PromQLRangeSeries func(sc *security.RequestContext, accountID, query string
 // Prometheus. It used to go through relay-server, which reaches only the cluster
 // agent's Prometheus -- so an account whose Prometheus is connected directly got
 // no threshold suggestions at all.
-func fetchPrometheusMetricHistory(ctx context.Context, ev models.Event, alertDef *AlertDefinition, tenantID string, fetchSeries PromQLRangeSeries, startTime, endTime time.Time) *MetricHistory {
+func fetchPrometheusMetricHistory(ctx context.Context, ev models.Event, alertDef *AlertDefinition, tenantID string, fetchSeries PromQLRangeSeries, startTime, endTime time.Time) (*MetricHistory, error) {
 	accountID := ""
 	if ev.CloudAccountId != nil {
 		accountID = *ev.CloudAccountId
 	}
 	if accountID == "" {
 		slog.WarnContext(ctx, "threshold_suggestion: missing cloud_account_id for prometheus event")
-		return nil
+		return nil, nil
 	}
 
 	queryExpr := alertDef.MetricName
 	if queryExpr == "" {
-		return nil
+		return nil, nil
 	}
 
 	if fetchSeries == nil {
 		slog.WarnContext(ctx, "threshold_suggestion: no metrics fetcher wired for prometheus event")
-		return nil
+		return nil, nil
 	}
 
 	reqCtx := security.NewRequestContextForTenantAdmin(tenantID, slog.Default(), nil, nil)
 	seriesList, err := fetchSeries(reqCtx, accountID, queryExpr, startTime, endTime)
 	if err != nil {
 		slog.WarnContext(ctx, "threshold_suggestion: failed to query Prometheus", "error", err, "query", queryExpr)
-		return nil
+		return nil, fmt.Errorf("%w: %w", errMetricQueryFailed, err)
 	}
 
 	// Phase B — analyze the series that actually fired, not a synthetic cross-series max-envelope
@@ -1440,12 +1463,18 @@ func fetchPrometheusMetricHistory(ctx context.Context, ev models.Event, alertDef
 		series.EndTime = endTime.Format(time.RFC3339)
 	}
 	if len(seriesList) == 0 {
-		return nil
+		return nil, nil
 	}
 	// Analyze the series that actually fired — match on the firing event's labels so the metric
 	// series aligns with the fingerprint's firing intervals; fall back to the top-violating series
-	// when no series' labels match.
-	return selectSeriesForEvent(seriesList, GetLabelsMap(ev), alertDef.CurrentThreshold, isGreaterThanOperator(alertDef.Operator))
+	// when no series' labels match. The fallback is another instance of the rule, so it is
+	// recorded on the history and disclosed with the verdict rather than passed off as the
+	// alert's own.
+	selected, matched := selectSeriesForEvent(seriesList, GetLabelsMap(ev), alertDef.CurrentThreshold, isGreaterThanOperator(alertDef.Operator))
+	if selected != nil {
+		selected.otherInstance = !matched && len(seriesList) > 1
+	}
+	return selected, nil
 }
 
 // parsePrometheusRangeResponse parses the relay ExecutePrometheus response into MetricHistory.
@@ -2169,27 +2198,12 @@ func computeDurationRecommendation(suggestion *ThresholdSuggestion, alertDef *Al
 		return
 	}
 
-	isTransient := alertQuality.TransientRate > 0.7
+	// A longer wait is advised when most firings clear within minutes and the rule's current
+	// wait is known — see suggestWait.
+	current, known := currentWait(alertDef)
+	advice := suggestWait(alertQuality, current, known)
+	isTransient := advice != nil
 	hasThresholdSuggestion := suggestion.EstimatedReduction > 10
-
-	// Compute suggested duration based on P90 of event duration
-	suggestedDurationMin := 0
-	if isTransient && alertQuality.DurationP90 > 0 {
-		durationMinutes := alertQuality.DurationP90 / 60.0
-		suggestedDurationMin = int(math.Ceil(durationMinutes*1.5/5.0)) * 5
-		if suggestedDurationMin < 10 {
-			suggestedDurationMin = 10
-		}
-		if suggestedDurationMin > 30 {
-			suggestedDurationMin = 30
-		}
-
-		// If current evaluation window already covers transient spikes, skip duration suggestion
-		currentWindowMin := (alertDef.Period * alertDef.EvaluationPeriods) / 60
-		if currentWindowMin >= suggestedDurationMin {
-			isTransient = false
-		}
-	}
 
 	switch {
 	// Never resolving is a reason to look at the rule, not evidence that it is safe to turn off.
@@ -2199,17 +2213,11 @@ func computeDurationRecommendation(suggestion *ThresholdSuggestion, alertDef *Al
 
 	case isTransient && hasThresholdSuggestion:
 		suggestion.RecommendationType = "tune_both"
-		suggestion.SuggestedDuration = suggestedDurationMin
-		suggestion.DurationReason = fmt.Sprintf(
-			"%.0f%% of firings resolve within 10 minutes (P90 duration: %.0fs). Increase evaluation window to %d minutes to filter transient spikes.",
-			alertQuality.TransientRate*100, alertQuality.DurationP90, suggestedDurationMin)
+		advice.applyTo(suggestion)
 
 	case isTransient && !hasThresholdSuggestion:
 		suggestion.RecommendationType = "increase_duration"
-		suggestion.SuggestedDuration = suggestedDurationMin
-		suggestion.DurationReason = fmt.Sprintf(
-			"Threshold appears correct, but %.0f%% of firings resolve within 10 minutes. Increase evaluation window to %d minutes.",
-			alertQuality.TransientRate*100, suggestedDurationMin)
+		advice.applyTo(suggestion)
 
 	case hasThresholdSuggestion:
 		suggestion.RecommendationType = "tune_threshold"
@@ -2242,6 +2250,20 @@ func alertRuleWhereClause(source, alertRuleKey string) (whereCondition string, s
 	}
 }
 
+// minResolvedForTransient is how many firings must carry a real duration (a start and a later
+// end) before the share of short ones is used as evidence.
+const minResolvedForTransient = 5
+
+// transientShare is the share of resolved firings that cleared within the transient cutoff. Below
+// minResolvedForTransient it is 0: two short firings out of a hundred that carry no end time would
+// otherwise read as "100% transient" and recommend a longer wait.
+func transientShare(transientCount, resolvedCount int) float64 {
+	if resolvedCount < minResolvedForTransient {
+		return 0
+	}
+	return roundTo(float64(transientCount)/float64(resolvedCount), 4)
+}
+
 // computeAlertQuality classifies alert health based on firing patterns from the events table.
 func computeAlertQuality(ctx context.Context, db *sqlx.DB, source, alertRuleKey, cloudAccountID, tenantID string) *AlertQualityScore {
 	if alertRuleKey == "" || cloudAccountID == "" {
@@ -2261,6 +2283,10 @@ func computeAlertQuality(ctx context.Context, db *sqlx.DB, source, alertRuleKey,
 		EngagedCount   int        `db:"engaged_count"`
 		TransientCount int        `db:"transient_count"`
 		InstantCount   int        `db:"instant_count"`
+		Short60        int        `db:"short_60"`
+		Short120       int        `db:"short_120"`
+		Short180       int        `db:"short_180"`
+		Short330       int        `db:"short_330"`
 		DurationP90    *float64   `db:"duration_p90"`
 		FirstFire      *time.Time `db:"first_fire"`
 		LastFire       *time.Time `db:"last_fire"`
@@ -2278,6 +2304,14 @@ func computeAlertQuality(ctx context.Context, db *sqlx.DB, source, alertRuleKey,
 			COUNT(*) FILTER (WHERE ends_at IS NOT NULL AND ends_at > starts_at
 				AND EXTRACT(EPOCH FROM (ends_at - starts_at)) < 660) as transient_count,
 			COUNT(*) FILTER (WHERE ends_at IS NOT NULL AND ends_at = starts_at) as instant_count,
+			COUNT(*) FILTER (WHERE ends_at IS NOT NULL AND ends_at > starts_at
+				AND EXTRACT(EPOCH FROM (ends_at - starts_at)) < 60) as short_60,
+			COUNT(*) FILTER (WHERE ends_at IS NOT NULL AND ends_at > starts_at
+				AND EXTRACT(EPOCH FROM (ends_at - starts_at)) < 120) as short_120,
+			COUNT(*) FILTER (WHERE ends_at IS NOT NULL AND ends_at > starts_at
+				AND EXTRACT(EPOCH FROM (ends_at - starts_at)) < 180) as short_180,
+			COUNT(*) FILTER (WHERE ends_at IS NOT NULL AND ends_at > starts_at
+				AND EXTRACT(EPOCH FROM (ends_at - starts_at)) < 330) as short_330,
 			PERCENTILE_CONT(0.9) WITHIN GROUP (
 				ORDER BY EXTRACT(EPOCH FROM (ends_at - starts_at))
 			) FILTER (WHERE ends_at IS NOT NULL AND ends_at > starts_at) as duration_p90,
@@ -2305,8 +2339,13 @@ func computeAlertQuality(ctx context.Context, db *sqlx.DB, source, alertRuleKey,
 	// Transient rate = events resolving within 10 min / total resolved (excludes instant events).
 	// The cutoff carries a minute of slack: alert routers deliver resolves on a fixed interval, so a
 	// firing that clears at the 10-minute mark is recorded a few seconds past it.
-	if result.ResolvedCount > 0 {
-		score.TransientRate = roundTo(float64(result.TransientCount)/float64(result.ResolvedCount), 4)
+	score.TransientRate = transientShare(result.TransientCount, result.ResolvedCount)
+	score.TotalCount = result.Total
+	score.ResolvedCount = result.ResolvedCount
+	// One count per waitLadder step, in ladder order; the last is the transient count.
+	shortCounts := []int{result.Short60, result.Short120, result.Short180, result.Short330, result.TransientCount}
+	for i, step := range waitLadder {
+		score.ShortFirings = append(score.ShortFirings, ShortFiringCount{WithinSeconds: step.within, Count: shortCounts[i]})
 	}
 
 	if result.AvgDuration != nil {
@@ -2384,12 +2423,17 @@ func classifyAlertQuality(score *AlertQualityScore) {
 // tune is off the table there, so tune_threshold degrades to review_alert. Firing history
 // alone never maps to disable. An empty return means the verdict is not actionable and the
 // rule keeps today's skipped status.
-func qualityOnlyRecommendation(q *AlertQualityScore) string {
+func qualityOnlyRecommendation(q *AlertQualityScore, wait *waitAdvice) string {
 	if q == nil {
 		return ""
 	}
 	switch q.Recommendation {
 	case "increase_duration":
+		// "Wait longer" is advice only with a wait to set. Without one (the rule's current wait
+		// is unknown, or it already waits as long as advice may ask) the rule goes to review.
+		if wait == nil {
+			return "review_alert"
+		}
 		return "increase_duration"
 	case "investigate", "tune_threshold":
 		return "review_alert"

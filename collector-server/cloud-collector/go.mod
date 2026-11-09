@@ -111,6 +111,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/route53 v1.62.5
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.101.0
 	github.com/aws/aws-sdk-go-v2/service/sagemaker v1.254.0
+	github.com/aws/aws-sdk-go-v2/service/savingsplans v1.35.0
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.41.7
 	github.com/aws/aws-sdk-go-v2/service/securityhub v1.65.0
 	github.com/aws/aws-sdk-go-v2/service/ses v1.36.1

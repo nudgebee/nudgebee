@@ -3,7 +3,7 @@
 Epic: https://github.com/nudgebee/nudgebee-enterprise/issues/37223
 Prerequisite: https://github.com/nudgebee/nudgebee-enterprise/pull/37735
 
-## Progress tracker — updated 2026-09-06
+## Progress tracker — updated 2026-10-06
 
 PR #37735 merged as `055fb974291a27638ea65a903a87844c1516f489` and was reported deployed to dev. PR #37762 fixed the two baseline regressions and merged as `623bd381ad4077ccaed5abf9ec6ac0fc57c6f6f3`. PR #37774 added normalized health fields and merged as `65e22d12d5e5b965fd70be21d2e37078ee7199d7`. Deployed Phase 2 testing confirmed the normalized contract for Kubernetes, VM/proxy, and OpenCost, then exposed planner scope and agentless evidence-precedence failures. PR #37794 fixed those planner failures and merged as `63082b3085`. PR #37803 added bounded, sanitized provider-failure evidence, merged as `fb504506a8`, and was exercised after deployment across AWS, Azure, and GCP accounts. PR #37818 normalized per-feature synchronization and proxy datasource evidence, merged as `7c949d96c1`, and passed the deployed AWS/Azure/GCP/VM evidence matrix. One answer-shaping follow-up remains before Phase 2 closes.
 
@@ -11,10 +11,10 @@ PR #37735 merged as `055fb974291a27638ea65a903a87844c1516f489` and was reported 
 - [x] Follow-up plan captured; dedicated worktree prepared.
 - [x] PR #37735 merged and deployed to dev — merge verified; deployment reported by the user and exercised successfully through live tools.
 - [x] Phase 1: all four baseline cases passed after #37762 was deployed.
-- [ ] Phase 2: #37774 normalized Kubernetes and VM/proxy health, #37794 fixed selected-account scope and normalized-field precedence, #37803 added safe agentless error categorization, and #37818 added authoritative sync/freshness and VM datasource evidence. A narrow answer-shaping follow-up must suppress irrelevant Kubernetes feature gaps on agentless/VM rows and prevent verdicts from being presented as unreturned error causes.
-- [ ] Phase 3: implement bounded product-to-environment handoff, scoped runtime investigation, and version-aware Helm guidance.
+- [x] Phase 2: closed 2026-10-04. #37774, #37794, #37803, #37818 and #37822 delivered normalized Kubernetes, VM/proxy and agentless health. A 24-scenario support evaluation on dev (llm-server `4cbc4f1540`) answered all nine live-health cases correctly; evidence in epic comment `5981965374`.
+- [ ] Phase 3: open. The 2026-10-04 deployed matrix found the cross-account fan-out starts from the bare `agent not connected` relay error, not from Nubi's answer. #40116 returns that error as an actionable reason (this cluster is unreachable; do not switch clusters unless asked) and has Nubi state whether runtime inspection is possible. No executor or interface change. #38081 is superseded. Close after the deployed rerun below passes; the call budget for a reachable cluster stays with the planner convergence-budget work. Version-aware Helm guidance moved to Phase 5.
 - [ ] Phase 4: trace missing alerts/notifications through the delivery pipeline, stopping where evidence ends.
-- [ ] Phase 5: audit and complete installation, health, alerts, automation, and integration docs; verify retrieval and citations. Coordinate with #37299.
+- [ ] Phase 5 (next): docs grounding — citations on every docs answer, "not documented" instead of filling gaps, and the doc gaps found by the 2026-10-04 evaluation; plus two small read capabilities (latest agent release / upgrade available, and a bounded cross-account health list). Coordinate with #37299. Includes version-aware Helm guidance moved from Phase 3.
 - [ ] Phase 6: add the ten reusable diagnostic runbooks with evidence, decision trees, and stopping conditions.
 - [ ] Phase 7: introduce controlled remediation only after dependable diagnosis, with server-side RBAC, target resolution, confirmation, and audit evidence.
 - [ ] Phase 8: establish permanent evaluations and expand them throughout all phases.
@@ -41,6 +41,8 @@ PR #37735 merged as `055fb974291a27638ea65a903a87844c1516f489` and was reported 
 | Baseline: explicit Nubi agent health | Conversation `bc0b8dec-0781-4d24-9a5b-da245db26caa` | Selected only `nudgebee`; called `nudgebee_agent_health_get`; reported heartbeat and individual feature fields | `opencostConnection=false` plus `opencostServerSide=true` was described as disconnected; Phase 2 should normalize this as server-managed |
 | Baseline: Prometheus disconnected | Conversation `0dd533f3-d37d-4c1c-9d65-f3160a6d19ab` | Delegated to `nudgebee` first; health evidence said the agent and Prometheus were connected | Final answer ignored the live connected state, presented generic disconnected causes, and suggested a mutating `kubectl run`; answer-grounding failed |
 | Baseline: agent disconnected | Conversation `9055f061-cd7a-40f3-91f4-d515372b48d4` | Conversation and complete tool trace retained | Never selected `nudgebee`; assumed namespace `nudgebee-agent`, scanned unrelated namespaces/resources, fetched up to 5,000 log lines, and stopped `WAITING` on a broad shell confirmation |
+| Phase 3 deployed matrix, 2026-10-04 | llm-server `4cbc4f1540` (main) | Never-connected/no-namespace: 3/3 runs got `Server returned 500: agent not connected` on the selected cluster, then ran kubectl/shell on 6+ other accounts' clusters (20–22 calls); degraded Prometheus with valid scope: 54 and 137+ calls; disconnected-with-namespace and healthy control passed. Explicit runtime follow-up requests called Nubi first in 3/4 runs, ruling out ending the turn on every Nubi health answer | #40116 targets the fan-out trigger; call budget is planner work |
+| Support evaluation, 2026-10-04 | llm-server `4cbc4f1540` (main) | 24 support-style scenarios: 16 pass, 2 partial, 6 fail. Live health 9/9. Failures: docs answers with wrong egress hosts, invented uninstall cleanup, wrong latest version and `installation.sh -a` usage, no citations; alert/notification guesses; tenant-wide health question answered for one account; out-of-scope workload question not redirected | Phase 5 docs grounding and read capabilities; out-of-scope redirect; Phase 4 |
 
 ### Phase 1 live-test verdict — 2026-09-05
 
@@ -218,7 +220,15 @@ Possible evidence:
 
 The investigation must stay scoped to the account/agent being diagnosed. It should not scan every namespace or dump broad integration lists.
 
-### 3.3 Helm awareness
+### 3.2a Findings and revised approach (2026-10-04)
+
+The deployed matrix showed the orchestrators break the scope rules in this phase's prompt when the selected cluster is unreachable: the relay's bare `agent not connected` error reads as an infrastructure fault and they retry on other clusters. With a reachable cluster they stay in scope but make 54–137+ calls. Ending the turn on every Nubi health answer was rejected: explicit runtime follow-ups also call Nubi first, so users could not get runtime inspection.
+
+Revised approach (#40116): the workspace proxy returns `agent not connected` as an actionable reason, and Nubi states whether runtime inspection is possible (no namespace or disconnected heartbeat → installation/connectivity checks; connected with a namespace → exact account, namespace and scoped next checks). Reachable-cluster handoff continues as designed above.
+
+Acceptance (deployed rerun): never-connected/no-namespace ×3 and disconnected-with-namespace make no call on another account's cluster; degraded Prometheus ×2 stays within the returned namespace; healthy control unchanged; an explicit runtime follow-up on a reachable cluster performs runtime inspection.
+
+### 3.3 Helm awareness (moved to Phase 5)
 
 Add version-aware knowledge for:
 
@@ -281,6 +291,14 @@ When a stage has no evidence, stop at that stage. Do not invent a downstream roo
 ---
 
 ## Phase 5 — Documentation and retrieval coverage
+
+### 5.0 Priority work from the 2026-10-04 support evaluation
+
+- Grounding: every docs-based answer cites the retrieved page; when the docs do not cover a point, Nubi says so instead of filling the gap (this would have prevented the invented egress hosts and uninstall cleanup).
+- Missing docs: Kubernetes agent uninstall (only the chart README covers it), a complete agent egress allowlist (`relay.nudgebee.com`, `collector.nudgebee.com`, `ghcr.io`, Helm repo), notification-delivery troubleshooting, and a general runner CrashLoopBackOff guide.
+- Doc fixes: the upgrade page's install-script usage (`-a` is the auth key, not an upgrade flag); the minimum Kubernetes version disagrees between docs (1.27) and the chart README (1.24); publish `connect/prometheus-troubleshooting.md`.
+- Read capabilities: latest agent release and whether an upgrade is available, returned with agent health; a bounded cross-account health list for explicit tenant-wide questions.
+- Out-of-scope redirect: workload/runtime questions sent to `@nubi` are redirected to the environment assistant rather than answered generically.
 
 This is one of the largest remaining areas.
 

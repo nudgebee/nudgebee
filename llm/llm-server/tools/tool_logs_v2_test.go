@@ -240,3 +240,226 @@ func TestSetRequestIndex(t *testing.T) {
 		assert.Nil(t, req.Request)
 	})
 }
+
+// startLogsStubWindows stands in for api-server's /rpc/logs, answering each
+// request through respond with the window it was asked to read, and records
+// those windows in order.
+func startLogsStubWindows(t *testing.T, windows *[][2]time.Time, respond func(start, end time.Time) string) func() {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Input struct {
+				Request struct {
+					StartTime int64 `json:"start_time"`
+					EndTime   int64 `json:"end_time"`
+				} `json:"request"`
+			} `json:"input"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		start := time.UnixMilli(payload.Input.Request.StartTime).UTC()
+		end := time.UnixMilli(payload.Input.Request.EndTime).UTC()
+		*windows = append(*windows, [2]time.Time{start, end})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(respond(start, end)))
+	}))
+
+	prev := config.Config.ServiceEndpoint
+	config.Config.ServiceEndpoint = srv.URL
+	return func() {
+		config.Config.ServiceEndpoint = prev
+		srv.Close()
+	}
+}
+
+// logsBody is a services-server reply carrying one line per timestamp.
+func logsBody(timestamps ...string) string {
+	logs := make([]map[string]string, 0, len(timestamps))
+	for _, ts := range timestamps {
+		logs = append(logs, map[string]string{"timestamp": ts, "message": "line at " + ts})
+	}
+	body, _ := json.Marshal(map[string]any{"logs": logs, "query": "{}", "provider": "loki"})
+	return string(body)
+}
+
+// A window under five minutes is widened to thirty before it is read, and the
+// read returns the newest lines up to its limit. On a busy workload that can
+// fill the limit from the end of the widened window, so none of the lines come
+// from the minutes asked for (issue #40652).
+func TestNBLogToolV2_Call_NarrowWindowReadsTheRequestedMinutes(t *testing.T) {
+	requestedStart := time.Date(2026, 10, 8, 10, 30, 0, 0, time.UTC)
+	requestedEnd := time.Date(2026, 10, 8, 10, 32, 0, 0, time.UTC)
+	widenedStart := time.Date(2026, 10, 8, 10, 16, 0, 0, time.UTC)
+	widenedEnd := time.Date(2026, 10, 8, 10, 46, 0, 0, time.UTC)
+	narrow := `{"where":{"namespace":{"_eq":"loki"}},"start_time":"2026-10-08T10:30:00Z","end_time":"2026-10-08T10:32:00Z","limit":3}`
+	tool := &NBLogToolV2{accountId: "acc-1", logProvider: services_server.ObservabilityProvider{Provider: "loki"}}
+
+	coverageOf := func(t *testing.T, data string) *core.ObservabilityLogCoverage {
+		t.Helper()
+		var doc core.ObservabilityLogResponse
+		require.NoError(t, json.Unmarshal([]byte(data), &doc))
+		return doc.Coverage
+	}
+
+	t.Run("a widened read that stopped after the window is replaced by a read of the window", func(t *testing.T) {
+		var windows [][2]time.Time
+		cleanup := startLogsStubWindows(t, &windows, func(start, _ time.Time) string {
+			if start.Equal(widenedStart) {
+				return logsBody("2026-10-08T10:45:51Z", "2026-10-08T10:45:55Z", "2026-10-08T10:45:59Z")
+			}
+			return logsBody("2026-10-08T10:30:10Z", "2026-10-08T10:31:00Z")
+		})
+		defer cleanup()
+
+		resp, err := tool.Call(newTriageToolContext("acc-1"), core.NBToolCallRequest{Command: narrow})
+		require.NoError(t, err)
+		require.Equal(t, [][2]time.Time{{widenedStart, widenedEnd}, {requestedStart, requestedEnd}}, windows)
+		assert.Contains(t, resp.Data, "2026-10-08T10:30:10Z")
+		assert.NotContains(t, resp.Data, "10:45:")
+		assert.Nil(t, coverageOf(t, resp.Data), "the read of the window alone did not reach its limit")
+	})
+
+	t.Run("a re-read that also stops at its limit reports the window asked for", func(t *testing.T) {
+		var windows [][2]time.Time
+		cleanup := startLogsStubWindows(t, &windows, func(start, _ time.Time) string {
+			if start.Equal(widenedStart) {
+				return logsBody("2026-10-08T10:45:51Z", "2026-10-08T10:45:55Z", "2026-10-08T10:45:59Z")
+			}
+			return logsBody("2026-10-08T10:31:57Z", "2026-10-08T10:31:58Z", "2026-10-08T10:31:59Z")
+		})
+		defer cleanup()
+
+		resp, err := tool.Call(newTriageToolContext("acc-1"), core.NBToolCallRequest{Command: narrow})
+		require.NoError(t, err)
+		require.Len(t, windows, 2)
+		coverage := coverageOf(t, resp.Data)
+		require.NotNil(t, coverage)
+		assert.Equal(t, "2026-10-08T10:30:00Z", coverage.RequestedStart)
+		assert.Equal(t, "2026-10-08T10:32:00Z", coverage.RequestedEnd)
+		assert.Empty(t, coverage.ReadStart, "the read ran over the window asked for")
+	})
+
+	t.Run("a widened read that holds the whole window is kept and names both windows", func(t *testing.T) {
+		var windows [][2]time.Time
+		cleanup := startLogsStubWindows(t, &windows, func(_, _ time.Time) string {
+			return logsBody("2026-10-08T10:20:00Z", "2026-10-08T10:31:00Z", "2026-10-08T10:45:59Z")
+		})
+		defer cleanup()
+
+		resp, err := tool.Call(newTriageToolContext("acc-1"), core.NBToolCallRequest{Command: narrow})
+		require.NoError(t, err)
+		require.Equal(t, [][2]time.Time{{widenedStart, widenedEnd}}, windows)
+		coverage := coverageOf(t, resp.Data)
+		require.NotNil(t, coverage)
+		assert.Equal(t, "2026-10-08T10:30:00Z", coverage.RequestedStart)
+		assert.Equal(t, "2026-10-08T10:32:00Z", coverage.RequestedEnd)
+		assert.Equal(t, "2026-10-08T10:16:00Z", coverage.ReadStart)
+		assert.Equal(t, "2026-10-08T10:46:00Z", coverage.ReadEnd)
+	})
+
+	t.Run("an empty re-read names the window asked for", func(t *testing.T) {
+		var windows [][2]time.Time
+		cleanup := startLogsStubWindows(t, &windows, func(start, _ time.Time) string {
+			if start.Equal(widenedStart) {
+				return logsBody("2026-10-08T10:45:51Z", "2026-10-08T10:45:55Z", "2026-10-08T10:45:59Z")
+			}
+			return logsBody()
+		})
+		defer cleanup()
+
+		resp, err := tool.Call(newTriageToolContext("acc-1"), core.NBToolCallRequest{Command: narrow})
+		require.NoError(t, err)
+		require.Len(t, windows, 2)
+		assert.Contains(t, resp.Data, NoLogsFoundPrefix)
+		assert.Contains(t, resp.Data, "time range: 2026-10-08T10:30:00Z to 2026-10-08T10:32:00Z")
+	})
+
+	t.Run("a widened read the backend cut short is replaced as well", func(t *testing.T) {
+		var windows [][2]time.Time
+		cleanup := startLogsStubWindows(t, &windows, func(start, _ time.Time) string {
+			if start.Equal(widenedStart) {
+				return `{"logs":[{"timestamp":"2026-10-08T10:45:59Z","message":"late"}],"query":"{}","provider":"loki","partial":true}`
+			}
+			return logsBody("2026-10-08T10:31:00Z")
+		})
+		defer cleanup()
+
+		resp, err := tool.Call(newTriageToolContext("acc-1"), core.NBToolCallRequest{Command: narrow})
+		require.NoError(t, err)
+		require.Equal(t, [][2]time.Time{{widenedStart, widenedEnd}, {requestedStart, requestedEnd}}, windows)
+		assert.Contains(t, resp.Data, "2026-10-08T10:31:00Z")
+	})
+
+	t.Run("a failed re-read fails the call rather than return lines from other minutes", func(t *testing.T) {
+		calls := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			calls++
+			if calls > 1 {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"message":"backend timeout"}`))
+				return
+			}
+			_, _ = w.Write([]byte(logsBody("2026-10-08T10:45:51Z", "2026-10-08T10:45:55Z", "2026-10-08T10:45:59Z")))
+		}))
+		defer srv.Close()
+		prev := config.Config.ServiceEndpoint
+		config.Config.ServiceEndpoint = srv.URL
+		defer func() { config.Config.ServiceEndpoint = prev }()
+
+		resp, err := tool.Call(newTriageToolContext("acc-1"), core.NBToolCallRequest{Command: narrow})
+		require.Error(t, err)
+		assert.Equal(t, 2, calls)
+		assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
+		assert.NotContains(t, resp.Data, "10:45:")
+	})
+
+	t.Run("a widened read under its limit is kept as it is", func(t *testing.T) {
+		var windows [][2]time.Time
+		cleanup := startLogsStubWindows(t, &windows, func(_, _ time.Time) string {
+			return logsBody("2026-10-08T10:25:00Z", "2026-10-08T10:45:59Z")
+		})
+		defer cleanup()
+
+		resp, err := tool.Call(newTriageToolContext("acc-1"), core.NBToolCallRequest{Command: narrow})
+		require.NoError(t, err)
+		require.Equal(t, [][2]time.Time{{widenedStart, widenedEnd}}, windows)
+		assert.Nil(t, coverageOf(t, resp.Data))
+	})
+
+	t.Run("a window that was not widened is read once", func(t *testing.T) {
+		var windows [][2]time.Time
+		cleanup := startLogsStubWindows(t, &windows, func(_, _ time.Time) string {
+			return logsBody("2026-10-08T10:39:57Z", "2026-10-08T10:39:58Z", "2026-10-08T10:39:59Z")
+		})
+		defer cleanup()
+
+		_, err := tool.Call(newTriageToolContext("acc-1"), core.NBToolCallRequest{
+			Command: `{"where":{"namespace":{"_eq":"loki"}},"start_time":"2026-10-08T10:30:00Z","end_time":"2026-10-08T10:40:00Z","limit":3}`,
+		})
+		require.NoError(t, err)
+		assert.Len(t, windows, 1)
+	})
+}
+
+func TestCoverageSpans(t *testing.T) {
+	start := time.Date(2026, 10, 8, 10, 30, 0, 0, time.UTC)
+	end := time.Date(2026, 10, 8, 10, 32, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name           string
+		oldest, newest string
+		want           bool
+	}{
+		{"lines on both sides of the window", "2026-10-08T10:20:00Z", "2026-10-08T10:45:00Z", true},
+		{"oldest line a second before the start", "2026-10-08T10:29:59Z", "2026-10-08T10:32:00Z", true},
+		// 10:30:00Z stands for any line up to 10:30:00.999, which may be after a start of 10:30:00.
+		{"oldest line in the start's second", "2026-10-08T10:30:00Z", "2026-10-08T10:45:00Z", false},
+		{"all lines after the window", "2026-10-08T10:45:51Z", "2026-10-08T10:45:59Z", false},
+		{"lines start inside the window", "2026-10-08T10:31:00Z", "2026-10-08T10:45:00Z", false},
+		{"lines end inside the window", "2026-10-08T10:20:00Z", "2026-10-08T10:31:00Z", false},
+		{"span unknown", "", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := coverageSpans(&core.ObservabilityLogCoverage{Oldest: tc.oldest, Newest: tc.newest}, start, end)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}

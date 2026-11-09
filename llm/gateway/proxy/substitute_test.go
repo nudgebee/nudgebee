@@ -13,6 +13,7 @@ import (
 	"nudgebee/llm-gateway/routing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -182,4 +183,20 @@ func TestSubstitute_MetersOnFailureToTarget(t *testing.T) {
 	assert.NotEqual(t, 200, ev.StatusCode)
 	// The swap is signalled to operator-facing layers.
 	assert.Equal(t, "anthropic->bogus-unconfigured-provider", rec.Header().Get("x-nb-llm-substituted"))
+}
+
+// The translate path (substitution and failover for Anthropic and Gemini clients) must not
+// carry a client's "fallbacks" into the engine either.
+func TestParseToResponses_DropsClientFallbacks(t *testing.T) {
+	bctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	body := []byte(`{"model":"claude-haiku-4-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}],"fallbacks":["openai/gpt-5"]}`)
+
+	var raw anthropic.AnthropicMessageRequest
+	require.NoError(t, json.Unmarshal(body, &raw))
+	require.NotEmpty(t, raw.ToBifrostResponsesRequest(bctx).Fallbacks, "the converter alone keeps them")
+
+	breq, ok := parseToResponses(schemas.Anthropic, body, bctx)
+	require.True(t, ok)
+	assert.Empty(t, breq.Fallbacks)
 }

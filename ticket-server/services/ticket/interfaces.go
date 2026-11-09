@@ -2,6 +2,7 @@ package ticket
 
 import (
 	"errors"
+	"io"
 	"nudgebee/tickets-server/models"
 
 	"github.com/gin-gonic/gin"
@@ -33,6 +34,12 @@ type TicketManager interface {
 
 	// GetComments retrieves all comments from an existing ticket.
 	GetComments(ctx *gin.Context, config models.TicketConfigurations, ticketID string) ([]models.Comments, error)
+
+	// GetAttachment streams the bytes of an attachment previously surfaced via
+	// GetComments (models.CommentAttachment.ID). Returns ErrNotSupported on
+	// platforms with no attachment concept (PagerDuty, ZenDuty) or not yet wired
+	// up (GitHub, GitLab, Freshdesk). Callers must close the returned ReadCloser.
+	GetAttachment(ctx *gin.Context, config models.TicketConfigurations, ticketID, attachmentID string) (contentType string, data io.ReadCloser, err error)
 
 	// Get retrieves a ticket by its ID from the external system.
 	Get(ctx *gin.Context, config models.TicketConfigurations, ticketID string) (*models.Ticket, error)

@@ -11,6 +11,7 @@ import { Card } from '@ui/Card';
 import TimeSeriesChart from '@components/common/charts/TimeSeriesChart';
 import { useBriefingWindow } from '@components/troubleshoot/briefing/useBriefingData';
 import { resolveTimeSaved } from '@components/troubleshoot/analytics/timeSaved';
+import { appliedIsCurrent, offersNumber, recommendationTypeOf } from '@components/triage/thresholdVerdict';
 import { useRouter } from 'next/router';
 import { ds } from 'src/utils/colors';
 
@@ -49,7 +50,6 @@ interface Row {
   created_at?: string;
   count_analysed_issues?: number;
   minutes_to_first_analysis?: number;
-  computed_priority?: string;
   latest_computed_priority?: string;
   count_subject_name?: number;
   distinct_subject_name?: string;
@@ -256,38 +256,24 @@ export default function TroubleshootAnalytics({ onDrillDown, filters }: Props) {
 
   useEffect(() => {
     let cancelled = false;
-    // account_id is a single value on this endpoint, and an EMPTY string means
-    // tenant-wide — which is exactly the default state of this page, so bailing
-    // out on "no account selected" left the whole Overview blank. Three cases:
-    // none selected -> tenant-wide; one -> that account; several -> fetch each
-    // and sum, because passing only the first silently under-reports and passing
-    // '' would pull in accounts the reader has filtered out.
-    const targets = accountIds.length === 0 ? [''] : accountIds;
+    // Empty accountIds means tenant-wide here, not "no results".
     const startDate = new Date(window.startMs).toISOString();
     const endDate = new Date(window.endMs).toISOString();
 
-    Promise.all(
-      targets.map((accountId) =>
-        apiAskNudgebee
-          .getConversationTimeAggregates({ accountId, startDate, endDate, sources: ['Investigation'], eventScoped: true })
-          .catch(() => null)
-      )
-    )
-      .then((results: any[]) => {
+    apiAskNudgebee
+      .getConversationTimeAggregates({ accountIds, startDate, endDate, sources: ['Investigation'], eventScoped: true })
+      .then((row: any) => {
         if (cancelled) return;
-        const rows = results.filter(Boolean);
-        if (rows.length === 0) {
+        if (!row) {
           setEffort(null);
           return;
         }
         setEffort({
-          completed_count: rows.reduce((total, row) => total + num(row.completed_count), 0),
-          total_count: rows.reduce((total, row) => total + num(row.total_count), 0),
-          total_agent_active_time_seconds: rows.reduce((total, row) => total + num(row.total_agent_active_time_seconds), 0),
-          // Baseline and rate are tenant config, identical across accounts —
-          // take the first rather than summing them into nonsense.
-          manual_baseline_minutes: num(rows[0].manual_baseline_minutes),
-          engineer_hourly_rate_usd: num(rows[0].engineer_hourly_rate_usd),
+          completed_count: num(row.completed_count),
+          total_count: num(row.total_count),
+          total_agent_active_time_seconds: num(row.total_agent_active_time_seconds),
+          manual_baseline_minutes: num(row.manual_baseline_minutes),
+          engineer_hourly_rate_usd: num(row.engineer_hourly_rate_usd),
         });
       })
       .catch(() => {
@@ -394,7 +380,7 @@ export default function TroubleshootAnalytics({ onDrillDown, filters }: Props) {
 
     const sumRanks = (block: any, ranks: string[]) =>
       rowsOf(block)
-        .filter((row) => ranks.includes((row.computed_priority || '').toUpperCase()))
+        .filter((row) => ranks.includes((row.latest_computed_priority || '').toUpperCase()))
         .reduce((total, row) => total + num(row.event_count), 0);
 
     const issues = first(data.window_issues);
@@ -454,8 +440,11 @@ export default function TroubleshootAnalytics({ onDrillDown, filters }: Props) {
     // Rules are ordered by how much of the reader's week they would give back,
     // and each carries exactly one action, because a finding the reader cannot
     // act on is a statistic.
+    // Only a row that carries a new threshold value counts: the list also returns rules that are
+    // to be investigated or reviewed, and "we already have a threshold for it" is false for those.
     const suggestionByKey = new Map<string, any>();
     (state.suggestions || []).forEach((suggestion: any) => {
+      if (!offersNumber(recommendationTypeOf(suggestion)) || appliedIsCurrent(suggestion)) return;
       const key = suggestion?.event_aggregation_key || suggestion?.alert_name;
       if (key && !suggestionByKey.has(key)) suggestionByKey.set(key, suggestion);
     });
@@ -531,7 +520,8 @@ export default function TroubleshootAnalytics({ onDrillDown, filters }: Props) {
         headline: `Urgent issues rose from ${prevUrgent} to ${urgent}`,
         evidence: 'Compared against the previous window of the same length.',
         actionText: 'See urgent issues',
-        action: () => onDrillDown({ status: 'ALL', ...scope, eventComputedPriority: 'P1' }),
+        // An issue count, so it opens the issue ("Unique") list, not the event list.
+        action: () => onDrillDown({ status: 'ALL', ...scope, eventComputedPriority: 'P1', eventsView: 'unique' }),
       });
     }
 
@@ -724,7 +714,7 @@ export default function TroubleshootAnalytics({ onDrillDown, filters }: Props) {
             label='Problems we rated urgent'
             value={urgent}
             previous={prevUrgent}
-            onClick={() => onDrillDown({ status: 'ALL', ...scope, eventComputedPriority: 'P1' })}
+            onClick={() => onDrillDown({ status: 'ALL', ...scope, eventComputedPriority: 'P1', eventsView: 'unique' })}
           />
           {/* No previous-period comparison, so no delta — but it sits in a row with
               two that do, so the same Card + Stat keeps its sizing aligned. */}

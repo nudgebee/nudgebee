@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -76,6 +77,9 @@ func (f *fakeManager) AddComment(_ *gin.Context, _ models.TicketConfigurations, 
 }
 func (f *fakeManager) GetComments(_ *gin.Context, _ models.TicketConfigurations, _ string) ([]models.Comments, error) {
 	return nil, nil
+}
+func (f *fakeManager) GetAttachment(_ *gin.Context, _ models.TicketConfigurations, _ string, _ string) (string, io.ReadCloser, error) {
+	return "", nil, nil
 }
 func (f *fakeManager) Get(_ *gin.Context, _ models.TicketConfigurations, _ string) (*models.Ticket, error) {
 	return nil, nil

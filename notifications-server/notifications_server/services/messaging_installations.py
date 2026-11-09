@@ -26,6 +26,7 @@ from notifications_server.models.models import (
     MessagingPlatform,
 )
 from notifications_server.security.secrets import decrypt, encrypt
+from notifications_server.services.cache import Cache
 from notifications_server.utils.datetime_utils import utc_now
 
 LOG = logging.getLogger(__name__)
@@ -427,7 +428,11 @@ def ms_teams_aad_tenant_owner(session, aad_tenant_id, enabled_only: bool = False
     """The NudgeBee tenant whose ms_teams install (integration, or legacy row) is
     linked to this Microsoft tenant, or None. One Microsoft tenant links to one
     NudgeBee tenant. Connect counts disabled integrations too, so a disabled
-    connection can't be claimed by another workspace."""
+    connection can't be claimed by another workspace.
+
+    Data from before that rule can hold several claims for one Microsoft tenant.
+    The oldest claim wins, so the answer doesn't change when a row is touched or
+    when the database returns rows in a different order."""
     if not aad_tenant_id:
         return None
     suffix = f".{aad_tenant_id}"
@@ -437,7 +442,7 @@ def ms_teams_aad_tenant_owner(session, aad_tenant_id, enabled_only: bool = False
     )
     if enabled_only:
         query = query.filter(Integration.status != "disabled")
-    integ = query.order_by(Integration.updated_at.desc().nulls_last(), Integration.id).first()
+    integ = query.order_by(Integration.created_at.asc().nulls_last(), Integration.id).first()
     if integ:
         return str(integ[0])
     legacy = (
@@ -448,6 +453,7 @@ def ms_teams_aad_tenant_owner(session, aad_tenant_id, enabled_only: bool = False
                 MessagingPlatform.team_id == aad_tenant_id, MessagingPlatform.team_id.endswith(suffix, autoescape=True)
             ),
         )
+        .order_by(MessagingPlatform.created_at.asc().nulls_last(), MessagingPlatform.id)
         .first()
     )
     return str(legacy[0]) if legacy else None
@@ -602,6 +608,12 @@ def upsert_messaging_integration(session, tenant_id, platform: str, name: str, c
         integ.updated_by = created_by
     _write_config_values(session, integ.id, config)
     session.commit()
+    # Sends read the tenant's installs from a cache; without this a new connection
+    # is invisible to them until the cached list expires.
+    try:
+        Cache().delete_cached_installations(tenant_id)
+    except Exception as e:
+        LOG.warning("Clearing cached installations for tenant %s failed: %s", tenant_id, e)
     return integ
 
 

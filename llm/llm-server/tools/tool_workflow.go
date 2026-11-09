@@ -27,7 +27,7 @@ func init() {
 		return WorkflowGetTool{}, nil
 	})
 	core.RegisterNBToolFactory(ToolWorkflowTrigger, func(accountId string) (core.NBTool, error) {
-		return WorkflowTriggerTool{}, nil
+		return WorkflowTriggerTool{accountId: accountId}, nil
 	})
 	core.RegisterNBToolFactory(ToolWorkflowCreate, func(accountId string) (core.NBTool, error) {
 		return WorkflowCreateTool{}, nil
@@ -231,7 +231,7 @@ func DoRunbookRequestWithContext(reqCtx context.Context, method, path string, bo
 
 // --- Workflow List Tool ---
 
-type WorkflowListTool struct{}
+type WorkflowListTool struct{ core.ReadOnlyTool }
 
 func (t WorkflowListTool) Name() string             { return ToolWorkflowList }
 func (t WorkflowListTool) GetType() core.NBToolType { return core.NBToolTypeTool }
@@ -373,7 +373,7 @@ func truncateRunes(s string, maxRunes int) string {
 
 // --- Workflow Get Tool ---
 
-type WorkflowGetTool struct{}
+type WorkflowGetTool struct{ core.ReadOnlyTool }
 
 func (t WorkflowGetTool) Name() string             { return ToolWorkflowGet }
 func (t WorkflowGetTool) GetType() core.NBToolType { return core.NBToolTypeTool }
@@ -537,9 +537,29 @@ func compactWorkflowResponse(resp []byte, link string) string {
 
 // --- Workflow Trigger Tool ---
 
-type WorkflowTriggerTool struct{}
+type WorkflowTriggerTool struct {
+	// accountId is only for naming the automation on the approval card; Call
+	// runs against the account in its context.
+	accountId string
+}
 
 func (t WorkflowTriggerTool) Name() string { return ToolWorkflowTrigger }
+
+// ConfirmationQuestion names the automation behind the id on the approval
+// card. An id that is not among the account's AI-invocable automations (or
+// whose list could not be loaded) is shown as the id, in the same plain words.
+func (t WorkflowTriggerTool) ConfirmationQuestion(toolInput string) string {
+	args := confirmationArgs(toolInput)
+	id, _ := args["id"].(string)
+	if id = strings.TrimSpace(id); id == "" {
+		return ""
+	}
+	inputs, _ := args["inputs"].(map[string]any)
+	if automation, ok := automationForConfirmation(t.accountId, id); ok {
+		return automationRunQuestion(automation.name, id, automation.description, inputs, "")
+	}
+	return automationRunQuestion("", id, "", inputs, "")
+}
 
 // InferToolRequestType classifies triggering a live run as create so the executor
 // gates it behind user confirmation + RBAC (it has real effects).
@@ -647,6 +667,17 @@ func (t WorkflowCreateTool) InputSchema() core.ToolSchema {
 		Required: []string{"definition"},
 	}
 }
+
+// Creating an automation changes the account, so a person approves it, and
+// the approval covers only this exact definition.
+func (t WorkflowCreateTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
+	return core.ToolRequestTypeCreate, nil
+}
+
+func (t WorkflowCreateTool) ConfirmationKey(toolInput string) string {
+	return perActionConfirmationKey(t.Name(), toolInput)
+}
+
 func (t WorkflowCreateTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
 	// The input args might contain the whole definition mixed in or nested.
 	// Expecting the agent to pass the workflow object directly or under a key.
@@ -673,7 +704,7 @@ func (t WorkflowCreateTool) Call(ctx core.NbToolContext, input core.NBToolCallRe
 
 // --- Workflow Validate Tool ---
 
-type WorkflowValidateTool struct{}
+type WorkflowValidateTool struct{ core.ReadOnlyTool }
 
 func (t WorkflowValidateTool) Name() string             { return ToolWorkflowValidate }
 func (t WorkflowValidateTool) GetType() core.NBToolType { return core.NBToolTypeTool }
@@ -704,7 +735,7 @@ func (t WorkflowValidateTool) Call(ctx core.NbToolContext, input core.NBToolCall
 
 // --- Task List Tool ---
 
-type TaskListTool struct{}
+type TaskListTool struct{ core.ReadOnlyTool }
 
 func (t TaskListTool) Name() string             { return ToolWorkflowTaskList }
 func (t TaskListTool) GetType() core.NBToolType { return core.NBToolTypeTool }
@@ -727,7 +758,7 @@ func (t TaskListTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest)
 
 // --- Workflow Examples Tool ---
 
-type WorkflowExamplesTool struct{}
+type WorkflowExamplesTool struct{ core.ReadOnlyTool }
 
 func (t WorkflowExamplesTool) Name() string             { return ToolWorkflowExamples }
 func (t WorkflowExamplesTool) GetType() core.NBToolType { return core.NBToolTypeTool }
@@ -1111,7 +1142,7 @@ func (t WorkflowExamplesTool) Call(ctx core.NbToolContext, input core.NBToolCall
 
 // --- Task Schema Lookup Tool ---
 
-type TaskSchemaLookupTool struct{}
+type TaskSchemaLookupTool struct{ core.ReadOnlyTool }
 
 func (t TaskSchemaLookupTool) Name() string             { return ToolWorkflowTaskSchema }
 func (t TaskSchemaLookupTool) GetType() core.NBToolType { return core.NBToolTypeTool }
@@ -1352,7 +1383,7 @@ func fetchWorkflowName(ctx core.NbToolContext, id string) (string, error) {
 
 // --- Workflow Executions Tool ---
 
-type WorkflowExecutionsTool struct{}
+type WorkflowExecutionsTool struct{ core.ReadOnlyTool }
 
 func (t WorkflowExecutionsTool) Name() string             { return ToolWorkflowExecutions }
 func (t WorkflowExecutionsTool) GetType() core.NBToolType { return core.NBToolTypeTool }
@@ -1398,7 +1429,7 @@ func (t WorkflowExecutionsTool) Call(ctx core.NbToolContext, input core.NBToolCa
 
 // --- Workflow Execution Get Tool ---
 
-type WorkflowExecutionGetTool struct{}
+type WorkflowExecutionGetTool struct{ core.ReadOnlyTool }
 
 func (t WorkflowExecutionGetTool) Name() string             { return ToolWorkflowExecutionGet }
 func (t WorkflowExecutionGetTool) GetType() core.NBToolType { return core.NBToolTypeTool }
@@ -1483,7 +1514,7 @@ func (t WorkflowExecutionRetriggerTool) Call(ctx core.NbToolContext, input core.
 
 // --- Workflow State Tool ---
 
-type WorkflowStateTool struct{}
+type WorkflowStateTool struct{ core.ReadOnlyTool }
 
 func (t WorkflowStateTool) Name() string             { return ToolWorkflowState }
 func (t WorkflowStateTool) GetType() core.NBToolType { return core.NBToolTypeTool }
@@ -1514,7 +1545,7 @@ func (t WorkflowStateTool) Call(ctx core.NbToolContext, input core.NBToolCallReq
 
 // --- Workflow Config List Tool ---
 
-type WorkflowConfigListTool struct{}
+type WorkflowConfigListTool struct{ core.ReadOnlyTool }
 
 func (t WorkflowConfigListTool) Name() string             { return ToolWorkflowConfigList }
 func (t WorkflowConfigListTool) GetType() core.NBToolType { return core.NBToolTypeTool }
@@ -1549,7 +1580,7 @@ func (t WorkflowConfigListTool) Call(ctx core.NbToolContext, input core.NBToolCa
 
 // --- Workflow Config Get Tool ---
 
-type WorkflowConfigGetTool struct{}
+type WorkflowConfigGetTool struct{ core.ReadOnlyTool }
 
 func (t WorkflowConfigGetTool) Name() string             { return ToolWorkflowConfigGet }
 func (t WorkflowConfigGetTool) GetType() core.NBToolType { return core.NBToolTypeTool }
@@ -1785,7 +1816,7 @@ func requireWorkflowID(args map[string]any) (string, error) {
 }
 
 // WorkflowListVersionsTool — list published versions of an automation (read).
-type WorkflowListVersionsTool struct{}
+type WorkflowListVersionsTool struct{ core.ReadOnlyTool }
 
 func (t WorkflowListVersionsTool) Name() string             { return ToolWorkflowListVersions }
 func (t WorkflowListVersionsTool) GetType() core.NBToolType { return core.NBToolTypeTool }
@@ -1812,7 +1843,7 @@ func (t WorkflowListVersionsTool) Call(ctx core.NbToolContext, input core.NBTool
 }
 
 // WorkflowGetVersionTool — get a specific published version's definition (read).
-type WorkflowGetVersionTool struct{}
+type WorkflowGetVersionTool struct{ core.ReadOnlyTool }
 
 func (t WorkflowGetVersionTool) Name() string             { return ToolWorkflowGetVersion }
 func (t WorkflowGetVersionTool) GetType() core.NBToolType { return core.NBToolTypeTool }

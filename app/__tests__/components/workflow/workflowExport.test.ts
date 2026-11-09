@@ -1,4 +1,9 @@
-import { buildWorkflowExportJson, buildWorkflowShareUrl, sanitizeWorkflowDefinitionForExport } from '@components/workflow/workflowExport';
+import {
+  buildWorkflowExportJson,
+  buildWorkflowRequestFromCode,
+  buildWorkflowShareUrl,
+  sanitizeWorkflowDefinitionForExport,
+} from '@components/workflow/workflowExport';
 
 describe('buildWorkflowShareUrl', () => {
   it('builds an absolute automation URL carrying the account id', () => {
@@ -86,5 +91,49 @@ describe('buildWorkflowExportJson', () => {
   it('falls back to an empty tag map when the workflow has no tags', () => {
     const parsed = JSON.parse(buildWorkflowExportJson({ ...workflow, tags: null }));
     expect(parsed.tags).toEqual({});
+  });
+
+  it('carries the description when the automation has one', () => {
+    const parsed = JSON.parse(buildWorkflowExportJson({ ...workflow, description: 'Restarts the pod' }));
+    expect(Object.keys(parsed)).toEqual(['name', 'description', 'definition', 'tags', 'status']);
+    expect(parsed.description).toBe('Restarts the pod');
+  });
+});
+
+describe('buildWorkflowRequestFromCode', () => {
+  const definition = { version: 'v1', tasks: [], triggers: [{ type: 'manual', params: {} }] };
+
+  it('sends the pasted description with the create request', () => {
+    const request = buildWorkflowRequestFromCode({ name: 'From code', description: 'This description is in the pasted JSON', definition });
+    expect(request).toEqual({
+      name: 'From code',
+      description: 'This description is in the pasted JSON',
+      definition,
+      tags: {},
+      status: undefined,
+    });
+  });
+
+  it('leaves the description out when the pasted code has none', () => {
+    expect(buildWorkflowRequestFromCode({ name: 'From code', definition }).description).toBeUndefined();
+  });
+
+  it('keeps the description of an automation copied with Copy JSON', () => {
+    const copied = buildWorkflowExportJson({
+      name: 'My automation',
+      description: 'Restarts the pod',
+      status: 'ACTIVE',
+      tags: { env: 'prod' },
+      definition,
+    });
+    const request = buildWorkflowRequestFromCode(JSON.parse(copied));
+    expect(request.description).toBe('Restarts the pod');
+    expect(request.tags).toEqual({ env: 'prod' });
+    expect(request.status).toBe('ACTIVE');
+  });
+
+  it('accepts tags as a list of key:value strings', () => {
+    const request = buildWorkflowRequestFromCode({ name: 'From code', definition, tags: ['env:prod', 'critical', '', 7] });
+    expect(request.tags).toEqual({ env: 'prod', critical: '' });
   });
 });

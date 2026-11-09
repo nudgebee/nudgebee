@@ -56,6 +56,7 @@ Fetcher = Callable[[], Awaitable[OverrideMap]]
 # services-server on write (branding.validateEmail).
 _EMAIL_STRING_FIELDS = {
     "logoUrl": "branding_logo_url",
+    "fromName": "branding_from_name",
     "supportEmail": "branding_support_email",
     "primaryColor": "branding_primary_color",
     "headerBgColor": "branding_header_bg_color",
@@ -64,12 +65,20 @@ _EMAIL_STRING_FIELDS = {
     "address": "branding_address",
 }
 
+# Top-level row field -> URLSettings attribute: links to the partner's own legal
+# pages, shown in the email footer.
+_LEGAL_LINK_FIELDS = {
+    "privacyUrl": "branding_privacy_url",
+    "termsUrl": "branding_terms_url",
+}
+
 
 @dataclass(frozen=True)
 class Branding:
     branding_name: str
     assistant_name: str
     branding_logo_url: str
+    branding_from_name: str
     branding_support_email: str
     branding_primary_color: str
     branding_header_bg_color: str
@@ -77,6 +86,8 @@ class Branding:
     branding_footer_link_color: str
     branding_address: str
     branding_copyright_start_year: int
+    branding_privacy_url: str
+    branding_terms_url: str
 
     @classmethod
     def from_urls(cls, urls: URLSettings) -> "Branding":
@@ -85,6 +96,19 @@ class Branding:
     def apply_to(self, urls: URLSettings) -> None:
         for f in fields(self):
             setattr(urls, f.name, getattr(self, f.name))
+
+
+def _is_https_link(value: Any) -> bool:
+    """A link safe to write into an href. services-server refuses anything else on
+    write; a row edited by hand must not get a different scheme through."""
+    return (
+        isinstance(value, str)
+        and value.startswith("https://")
+        and len(value) > len("https://")
+        and value.isascii()
+        and value.isprintable()
+        and not any(c in value for c in " <>\"'`\\")
+    )
 
 
 def normalize_host(host: Optional[str]) -> str:
@@ -114,7 +138,10 @@ def deployment_host(base_url: str) -> str:
 
 def resolve_branding(baseline: Branding, override: Optional[Dict[str, Any]], base_url: str) -> Branding:
     """Merge a row over the startup baseline. Anything absent or malformed in the
-    row keeps the baseline value, so a bad field can never blank the brand."""
+    row keeps the baseline value, so a bad field can never blank the brand.
+
+    The logo is the one exception: a row that renames the product without
+    supplying `email.logoUrl` gets no logo rather than the baseline one."""
     # A hand-edited row can hold any JSON, not just an object.
     if not isinstance(override, dict) or not override:
         return baseline
@@ -124,26 +151,51 @@ def resolve_branding(baseline: Branding, override: Optional[Dict[str, Any]], bas
     if isinstance(title, str) and title.strip():
         values["branding_name"] = title
 
+    # The baseline legal links lead to the baseline brand's own pages, so they
+    # follow the name: a row that renames the product gets the links it supplies,
+    # and none where it supplies none.
+    renamed = values["branding_name"] != baseline.branding_name
+    for key, attr in _LEGAL_LINK_FIELDS.items():
+        link = override.get(key)
+        if _is_https_link(link):
+            values[attr] = link
+        elif renamed:
+            values[attr] = ""
+
     assistant_name = override.get("assistantName")
     if isinstance(assistant_name, str) and assistant_name.strip():
         values["assistant_name"] = assistant_name
 
+    row_has_logo = False
     email = override.get("email")
     if isinstance(email, dict):
         for key, attr in _EMAIL_STRING_FIELDS.items():
             value = email.get(key)
             if not isinstance(value, str):
                 continue
+            if key == "fromName":
+                # Goes into a mail header, where a line break starts a new one. The
+                # write path refuses it; a row edited by hand must not get it through.
+                if not value.isprintable():
+                    continue
+                value = value.strip()
             if key == "logoUrl":
                 if not value:
                     continue
                 # Email clients need an absolute URL; the row stores a root-relative
                 # path, same as every other asset.
                 value = f"{base_url.rstrip('/')}{value}" if value.startswith("/") else value
+                row_has_logo = True
             values[attr] = value
         year = email.get("copyrightStartYear")
         if isinstance(year, (int, float)) and not isinstance(year, bool) and int(year) == year:
             values["branding_copyright_start_year"] = int(year)
+
+    # The baseline logo belongs to the baseline name. Beside a partner's name it
+    # is the house mark in a partner's email and chat cards, so it is dropped;
+    # every consumer treats an empty logo as "show none".
+    if values["branding_name"] != baseline.branding_name and not row_has_logo:
+        values["branding_logo_url"] = ""
 
     return Branding(**values)
 

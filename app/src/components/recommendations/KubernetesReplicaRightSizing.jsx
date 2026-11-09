@@ -215,6 +215,8 @@ const KubernetesReplicaRightSizing = ({ isOptimisePage, enabledSummary = true, e
   const [resourceIds, setResourceIds] = useState([]);
   const [rowsPerPage, setRowsPerPage] = useState(apiUser.getUserPreferencesTablePageSize());
   const [selectedNamespace, setSelectedNamespace] = useState(router?.query?.namespace || '');
+  const [workloadNames, setWorkloadNames] = useState([]);
+  const [selectedWorkloadName, setSelectedWorkloadName] = useState(enabledFilters ? router?.query?.workloadName || '' : '');
   const [recommendationStatus, setRecommendationStatus] = useState('InProgress');
   const [loading, setLoading] = useState(false);
   const [namespaces, setNamespaces] = useState([]);
@@ -253,6 +255,7 @@ const KubernetesReplicaRightSizing = ({ isOptimisePage, enabledSummary = true, e
     category: 'RightSizing',
     ruleName: 'replica_right_sizing',
     namespace: selectedNamespace,
+    workloadName: selectedWorkloadName,
     status: recommendationStatus,
   });
 
@@ -271,6 +274,28 @@ const KubernetesReplicaRightSizing = ({ isOptimisePage, enabledSummary = true, e
       setSelectedNamespace('');
     }
   }, [router.isReady, router.query.namespace, namespaces]);
+
+  useEffect(() => {
+    if (!router.isReady || !enabledFilters) {
+      return;
+    }
+    setSelectedWorkloadName(router.query.workloadName || '');
+  }, [router.isReady, router.query.workloadName, enabledFilters]);
+
+  useEffect(() => {
+    if (!selectedAccountId || !enabledFilters) {
+      return;
+    }
+    let cancelled = false;
+    k8sApi.getK8sWorkloadNames({ accountId: selectedAccountId, namespace: selectedNamespace || undefined }).then((res) => {
+      if (!cancelled) {
+        setWorkloadNames(res?.data?.workloadNames || []);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedAccountId, enabledFilters, selectedNamespace]);
 
   useEffect(() => {
     if (!selectedAccountId && !isOptimisePage) {
@@ -671,6 +696,7 @@ const KubernetesReplicaRightSizing = ({ isOptimisePage, enabledSummary = true, e
         ruleName: 'replica_right_sizing',
         status: recommendationStatus ? [recommendationStatus] : [],
         resourceNamespace: selectedNamespace,
+        resourceWorkloadName: selectedWorkloadName || undefined,
         limit: rowsPerPage,
         offset: page * rowsPerPage,
         fetchTicket: true,
@@ -690,7 +716,7 @@ const KubernetesReplicaRightSizing = ({ isOptimisePage, enabledSummary = true, e
   };
   useEffect(() => {
     listRecommendations();
-  }, [selectedAccountId, page, recommendationStatus, selectedNamespace, rowsPerPage, listAutoPilots?.length, accounts.length]);
+  }, [selectedAccountId, page, recommendationStatus, selectedNamespace, selectedWorkloadName, rowsPerPage, listAutoPilots?.length, accounts.length]);
 
   useEffect(() => {
     if (!selectedAccountId && !isOptimisePage) {
@@ -952,7 +978,20 @@ const KubernetesReplicaRightSizing = ({ isOptimisePage, enabledSummary = true, e
                 onSelect={(_e, item) => {
                   const next = item?.value || '';
                   setSelectedNamespace(next);
-                  applyFiltersOnRouter(router, { namespace: next });
+                  setSelectedWorkloadName('');
+                  applyFiltersOnRouter(router, { namespace: next, workloadName: '' });
+                  setPage(0);
+                }}
+              />
+              <FilterDropdown
+                id='rrs-filter-workload'
+                label='Workload'
+                options={(workloadNames || []).map((n) => ({ label: n, value: n }))}
+                value={selectedWorkloadName ? { label: selectedWorkloadName, value: selectedWorkloadName } : null}
+                onSelect={(_e, item) => {
+                  const next = item?.value || '';
+                  setSelectedWorkloadName(next);
+                  applyFiltersOnRouter(router, { workloadName: next });
                   setPage(0);
                 }}
               />

@@ -170,6 +170,178 @@ def test_batch_send_without_credentials_skips_login(email_config, smtp_mocks):
     assert conn.sendmail.call_count == 2
 
 
+def test_send_raises_when_smtp_login_fails(email_config, smtp_mocks):
+    """Regression test for #41711: a failed SMTP send must raise, not be
+    swallowed and reported to the caller as a successful send."""
+    email_config(server_port=587, server_tls="auto", server_user="bot@example.com", server_password="wrong")
+    plain, _ = smtp_mocks
+    # Real smtplib.SMTP.__exit__ doesn't suppress exceptions; MagicMock's
+    # auto-generated __exit__ does by default (returns a truthy Mock), so make
+    # it behave like the real object for this test.
+    plain.return_value.__exit__.return_value = False
+    plain.return_value.login.side_effect = smtplib.SMTPAuthenticationError(535, b"Authentication failed")
+
+    with pytest.raises(smtplib.SMTPAuthenticationError):
+        sender.send_email(_message(), envelope_recipients=["user@example.com"])
+
+
+def test_batch_raises_when_a_recipient_fails(email_config, smtp_mocks):
+    """A partial batch failure must raise instead of logging 'Batch sent successfully'."""
+    email_config()
+    plain, _ = smtp_mocks
+    plain.return_value.sendmail.side_effect = [None, Exception("boom")]
+
+    with pytest.raises(RuntimeError, match=r"Failed to send 1/2"):
+        sender.send_email_batch([_message(), _message()])
+
+
+def test_batch_reconnects_once_on_disconnect_then_succeeds(email_config, smtp_mocks):
+    """A mid-batch SMTPServerDisconnected gets one reconnect instead of failing the rest of the batch."""
+    email_config()
+    plain, _ = smtp_mocks
+    plain.return_value.sendmail.side_effect = [smtplib.SMTPServerDisconnected("dropped"), None, None]
+
+    sender.send_email_batch([_message(), _message()])
+
+    assert plain.call_count == 2  # initial connection + the one reconnect
+
+
+def test_batch_fast_fails_rest_of_batch_once_connection_is_unrecoverable(email_config, smtp_mocks):
+    """If the reconnect attempt itself fails, the connection is dead — the rest of the
+    batch must be reported as failed without blocking on a doomed sendmail() per message."""
+    email_config()
+    plain, _ = smtp_mocks
+    plain.return_value.sendmail.side_effect = [
+        smtplib.SMTPServerDisconnected("dropped"),
+        smtplib.SMTPServerDisconnected("still dropped"),
+    ]
+    messages = [_message(), _message(), _message()]
+    for i, msg in enumerate(messages):
+        del msg["To"]
+        msg["To"] = f"user{i}@example.com"
+
+    with pytest.raises(RuntimeError, match=r"Failed to send 3/3"):
+        sender.send_email_batch(messages)
+
+    # Only the original attempt + the one reconnect attempt hit the network;
+    # the 3rd message was never attempted once the connection was known dead.
+    assert plain.return_value.sendmail.call_count == 2
+
+
+def test_batch_keeps_sending_when_a_message_is_refused_after_a_reconnect(email_config, smtp_mocks):
+    email_config()
+    plain, _ = smtp_mocks
+    plain.return_value.sendmail.side_effect = [
+        smtplib.SMTPServerDisconnected("dropped"),
+        smtplib.SMTPDataError(552, b"too big"),
+        None,
+    ]
+    messages = [_message(), _message()]
+    del messages[1]["To"]
+    messages[1]["To"] = "other@example.com"
+
+    with pytest.raises(sender.EmailBatchError) as exc_info:
+        sender.send_email_batch(messages)
+
+    assert list(exc_info.value.failures) == ["user@example.com"]
+    assert plain.return_value.sendmail.call_count == 3
+
+
+def test_batch_skips_the_rest_once_the_reconnect_itself_fails(email_config, smtp_mocks):
+    email_config()
+    plain, _ = smtp_mocks
+    plain.side_effect = [plain.return_value, ConnectionRefusedError("refused")]
+    plain.return_value.sendmail.side_effect = [smtplib.SMTPServerDisconnected("dropped")]
+    messages = [_message(), _message()]
+    del messages[1]["To"]
+    messages[1]["To"] = "other@example.com"
+
+    with pytest.raises(sender.EmailBatchError) as exc_info:
+        sender.send_email_batch(messages)
+
+    assert sorted(exc_info.value.failures) == ["other@example.com", "user@example.com"]
+    assert plain.return_value.sendmail.call_count == 1
+
+
+@pytest.fixture
+def sleeps(monkeypatch):
+    waited = []
+    monkeypatch.setattr(sender.time, "sleep", waited.append)
+    return waited
+
+
+def _throttled():
+    return smtplib.SMTPDataError(454, b"Throttling failure: Maximum sending rate exceeded.")
+
+
+def _recipients(count):
+    messages = [_message() for _ in range(count)]
+    for i, msg in enumerate(messages):
+        del msg["To"]
+        msg["To"] = f"user{i}@example.com"
+    return messages
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        _throttled(),
+        smtplib.SMTPSenderRefused(451, b"try again later", "alerts@example.com"),
+        smtplib.SMTPRecipientsRefused({"user0@example.com": (450, b"receiving mail too fast")}),
+    ],
+)
+def test_batch_sends_a_temporarily_refused_message_again_after_a_wait(email_config, smtp_mocks, sleeps, refusal):
+    email_config()
+    plain, _ = smtp_mocks
+    plain.return_value.sendmail.side_effect = [refusal, refusal, None, None]
+
+    sender.send_email_batch(_recipients(2))
+
+    assert sleeps == [1, 2]
+    assert plain.return_value.rset.call_count == 2
+    assert [c.args[1] for c in plain.return_value.sendmail.call_args_list] == [
+        "user0@example.com",
+        "user0@example.com",
+        "user0@example.com",
+        "user1@example.com",
+    ]
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        smtplib.SMTPDataError(552, b"too big"),
+        smtplib.SMTPDataError(421, b"closing connection"),
+        smtplib.SMTPRecipientsRefused({"user0@example.com": (550, b"no such user")}),
+    ],
+)
+def test_batch_does_not_wait_on_a_refusal_sending_again_cannot_fix(email_config, smtp_mocks, sleeps, refusal):
+    email_config()
+    plain, _ = smtp_mocks
+    plain.return_value.sendmail.side_effect = [refusal, None]
+
+    with pytest.raises(sender.EmailBatchError) as exc_info:
+        sender.send_email_batch(_recipients(2))
+
+    assert list(exc_info.value.failures) == ["user0@example.com"]
+    assert sleeps == []
+    assert plain.return_value.sendmail.call_count == 2
+
+
+def test_batch_stops_waiting_once_a_message_is_still_throttled_after_every_wait(email_config, smtp_mocks, sleeps):
+    email_config()
+    plain, _ = smtp_mocks
+    plain.return_value.sendmail.side_effect = _throttled()
+
+    with pytest.raises(sender.EmailBatchError) as exc_info:
+        sender.send_email_batch(_recipients(3))
+
+    assert sorted(exc_info.value.failures) == ["user0@example.com", "user1@example.com", "user2@example.com"]
+    assert sleeps == list(sender.TRANSIENT_RETRY_DELAYS_SECONDS)
+    # The first message is tried once per wait plus once more; the rest once each.
+    assert plain.return_value.sendmail.call_count == len(sender.TRANSIENT_RETRY_DELAYS_SECONDS) + 1 + 2
+
+
 def test_envelope_sender_is_bare_address_when_from_has_display_name(email_config, smtp_mocks):
     email_config(from_address="Alerts <alerts@example.com>")
     plain, _ = smtp_mocks
@@ -222,3 +394,29 @@ def test_generated_email_carries_display_name(monkeypatch):
         frm="alerts@example.com",
     )
     assert msg["From"] == "Nudgebee Alerts <alerts@example.com>"
+
+
+def test_from_header_prefers_the_branding_row_name(monkeypatch):
+    # A partner's row must win over the deployment-wide name, or the house name stays on their mail.
+    monkeypatch.setattr(settings.email, "from_name", "Nudgebee Alerts")
+    monkeypatch.setattr(settings.urls, "branding_from_name", "Contoso Ops")
+    assert format_from_header("alerts@example.com") == "Contoso Ops <alerts@example.com>"
+    assert format_from_header("Nudgebee <alerts@example.com>") == "Contoso Ops <alerts@example.com>"
+
+
+def test_from_header_uses_the_branding_row_name_without_a_configured_one(monkeypatch):
+    monkeypatch.setattr(settings.email, "from_name", "")
+    monkeypatch.setattr(settings.urls, "branding_from_name", "Contoso Ops")
+    assert format_from_header("alerts@example.com") == "Contoso Ops <alerts@example.com>"
+
+
+def test_generated_email_carries_the_branding_row_name(monkeypatch):
+    monkeypatch.setattr(settings.urls, "branding_from_name", "Contoso Ops")
+    msg = generate_email(
+        to=["user@example.com"],
+        subject="hello",
+        template_params={"message": "body"},
+        template_type="generic",
+        frm="alerts@example.com",
+    )
+    assert msg["From"] == "Contoso Ops <alerts@example.com>"

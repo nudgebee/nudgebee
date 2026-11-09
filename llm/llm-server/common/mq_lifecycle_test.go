@@ -28,6 +28,7 @@ type fakeConsumer struct {
 	stopped    chan struct{}
 	stopOnce   sync.Once
 	returnNil  chan struct{}
+	opts       rabbitmq.ConsumerOptions
 	closeHang  chan struct{} // non-nil: CloseWithContext blocks until closed, ignoring ctx
 	closeCalls atomic.Int32
 }
@@ -93,8 +94,13 @@ type fakeFleet struct {
 	connDown  atomic.Bool // what the fake conn's IsClosed reports
 }
 
-func (f *fakeFleet) newConsumer(_ *rabbitmq.Conn, _ string, _ ...func(*rabbitmq.ConsumerOptions)) (mqConsumer, error) {
+func (f *fakeFleet) newConsumer(_ *rabbitmq.Conn, _ string, optFuncs ...func(*rabbitmq.ConsumerOptions)) (mqConsumer, error) {
+	var opts rabbitmq.ConsumerOptions
+	for _, apply := range optFuncs {
+		apply(&opts)
+	}
 	c := &fakeConsumer{
+		opts:       opts,
 		fleet:      f,
 		deliveries: make(chan rabbitmq.Delivery),
 		actions:    make(chan rabbitmq.Action, 16),
@@ -277,7 +283,7 @@ func TestMqConsume_BrokerUnavailableAtStartup_AttachesWhenBrokerReturns(t *testi
 		return &rabbitmq.Conn{}, nil
 	})
 
-	require.NoError(t, MqConsume("ex", "rk", "q-startup", noopProcessor))
+	require.NoError(t, MqConsume("ex", "rk", "q-startup", 1, noopProcessor))
 
 	waitState(t, "q-startup", MqConsumerConnecting)
 	require.Eventually(t, func() bool { return dials.Load() >= 3 }, 2*time.Second, 5*time.Millisecond)
@@ -293,6 +299,28 @@ func TestMqConsume_BrokerUnavailableAtStartup_AttachesWhenBrokerReturns(t *testi
 	healthy, _ = MqConsumersHealthy(0)
 	assert.True(t, healthy)
 	assert.Equal(t, rabbitmq.Ack, deliver(t, c))
+}
+
+// The consumer runs as many handlers as asked, and prefetches no more than it can run, so every
+// delivered message is being processed (and is only acked once its processor returns).
+func TestMqConsume_ConcurrencySetsHandlersAndPrefetch(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		concurrency int
+		want        int
+	}{
+		{"configured", 3, 3},
+		{"zero means one", 0, 1},
+		{"negative means one", -2, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fleet := useFakeMq(t, nil)
+			require.NoError(t, MqConsume("ex", "rk", "q-concurrency", tc.concurrency, noopProcessor))
+			c := waitConsumer(t, fleet)
+			assert.Equal(t, tc.want, c.opts.Concurrency)
+			assert.Equal(t, tc.want, c.opts.QOSPrefetch)
+		})
+	}
 }
 
 // Invariant 3, the OSS incident: completion publish finds its channel closed. Old code -> MqClose ->
@@ -314,7 +342,7 @@ func TestMqPublish_ClosedChannelInsideHandler_DoesNotStopConsumersOrDeadlock(t *
 	}
 
 	var publishErr atomic.Value
-	require.NoError(t, MqConsume("ex", "rk", "q-investigate", func(ctx context.Context, _ []byte) error {
+	require.NoError(t, MqConsume("ex", "rk", "q-investigate", 1, func(ctx context.Context, _ []byte) error {
 		err := MqPublishWithContext(ctx, "completed_ex", "completed", map[string]string{"status": "COMPLETED"})
 		if err != nil {
 			publishErr.Store(err)
@@ -345,7 +373,7 @@ func TestMqPublish_ClosedChannelInsideHandler_DoesNotStopConsumersOrDeadlock(t *
 // never with two consumers attached.
 func TestMqConsume_UnexpectedStopIsRearmedWithoutDuplicates(t *testing.T) {
 	fleet := useFakeMq(t, nil)
-	require.NoError(t, MqConsume("ex", "rk", "q-rearm", noopProcessor))
+	require.NoError(t, MqConsume("ex", "rk", "q-rearm", 1, noopProcessor))
 
 	first := waitConsumer(t, fleet)
 	waitState(t, "q-rearm", MqConsumerRunning)
@@ -368,7 +396,7 @@ func TestMqConsume_RunSetupErrorIsRetried(t *testing.T) {
 			c.runErr = errors.New("declare queue failed: Exception (504)")
 		}
 	}
-	require.NoError(t, MqConsume("ex", "rk", "q-setup", noopProcessor))
+	require.NoError(t, MqConsume("ex", "rk", "q-setup", 1, noopProcessor))
 
 	failed1, failed2 := waitConsumer(t, fleet), waitConsumer(t, fleet)
 	ok := waitConsumer(t, fleet)
@@ -382,7 +410,7 @@ func TestMqConsume_RunSetupErrorIsRetried(t *testing.T) {
 // Invariant 4: shutdown stops supervisors for good; nothing is rebuilt.
 func TestMqClose_StopsConsumersWithoutRearm(t *testing.T) {
 	fleet := useFakeMq(t, nil)
-	require.NoError(t, MqConsume("ex", "rk", "q-close", noopProcessor))
+	require.NoError(t, MqConsume("ex", "rk", "q-close", 1, noopProcessor))
 	c := waitConsumer(t, fleet)
 	waitState(t, "q-close", MqConsumerRunning)
 
@@ -403,7 +431,7 @@ func TestMqClose_StopsConsumersWithoutRearm(t *testing.T) {
 	assert.Equal(t, 1, fleet.count(), "no consumer may be built after shutdown")
 
 	// Registration works again after shutdown (used by tests and restarts).
-	require.NoError(t, MqConsume("ex", "rk", "q-close", noopProcessor))
+	require.NoError(t, MqConsume("ex", "rk", "q-close", 1, noopProcessor))
 	waitConsumer(t, fleet)
 }
 
@@ -412,7 +440,7 @@ func TestMqClose_BoundedWithStuckHandler(t *testing.T) {
 	fleet := useFakeMq(t, nil)
 	release := make(chan struct{})
 	entered := make(chan struct{})
-	require.NoError(t, MqConsume("ex", "rk", "q-stuck", func(context.Context, []byte) error {
+	require.NoError(t, MqConsume("ex", "rk", "q-stuck", 1, func(context.Context, []byte) error {
 		close(entered)
 		<-release
 		return nil
@@ -430,7 +458,7 @@ func TestMqClose_BoundedWithStuckHandler(t *testing.T) {
 	// MqClose from inside a handler returns instead of waiting on itself.
 	fleet2 := useFakeMq(t, nil)
 	closed := make(chan struct{})
-	require.NoError(t, MqConsume("ex", "rk", "q-self", func(context.Context, []byte) error {
+	require.NoError(t, MqConsume("ex", "rk", "q-self", 1, func(context.Context, []byte) error {
 		MqClose()
 		close(closed)
 		return nil
@@ -448,9 +476,9 @@ func TestMqClose_BoundedWithStuckHandler(t *testing.T) {
 // Invariant 5: a queue has one supervisor.
 func TestMqConsume_DuplicateQueueRejected(t *testing.T) {
 	fleet := useFakeMq(t, nil)
-	require.NoError(t, MqConsume("ex", "rk", "q-dup", noopProcessor))
+	require.NoError(t, MqConsume("ex", "rk", "q-dup", 1, noopProcessor))
 	waitConsumer(t, fleet)
-	err := MqConsume("ex", "rk", "q-dup", noopProcessor)
+	err := MqConsume("ex", "rk", "q-dup", 1, noopProcessor)
 	assert.ErrorIs(t, err, ErrMqConsumerAlreadyRegistered)
 	time.Sleep(50 * time.Millisecond)
 	assert.Equal(t, 1, fleet.count())
@@ -460,7 +488,7 @@ func TestMqConsume_DuplicateQueueRejected(t *testing.T) {
 func TestMqConsume_AckSemanticsUnchanged(t *testing.T) {
 	fleet := useFakeMq(t, nil)
 	var fail atomic.Bool
-	require.NoError(t, MqConsume("ex", "rk", "q-ack", func(context.Context, []byte) error {
+	require.NoError(t, MqConsume("ex", "rk", "q-ack", 1, func(context.Context, []byte) error {
 		if fail.Load() {
 			return errors.New("processing failed")
 		}
@@ -478,7 +506,7 @@ func TestMqConsumerStatus_ReportsInFlight(t *testing.T) {
 	fleet := useFakeMq(t, nil)
 	release := make(chan struct{})
 	entered := make(chan struct{})
-	require.NoError(t, MqConsume("ex", "rk", "q-inflight", func(context.Context, []byte) error {
+	require.NoError(t, MqConsume("ex", "rk", "q-inflight", 1, func(context.Context, []byte) error {
 		close(entered)
 		<-release
 		return nil
@@ -510,7 +538,7 @@ func TestMqRearmDelay_IsBounded(t *testing.T) {
 // /health/mq stayed 200. A consumer detached for 3× grace must be unhealthy.
 func TestMqConsumersHealthy_OutageLongerThanGraceIsUnhealthy(t *testing.T) {
 	useFakeMq(t, func(string) (*rabbitmq.Conn, error) { return nil, errors.New("dial tcp: connection refused") })
-	require.NoError(t, MqConsume("ex", "rk", "q-outage", noopProcessor))
+	require.NoError(t, MqConsume("ex", "rk", "q-outage", 1, noopProcessor))
 
 	grace := 150 * time.Millisecond
 	time.Sleep(3 * grace)
@@ -586,7 +614,7 @@ func TestMqConsume_WaitsForInFlightDial(t *testing.T) {
 		getConnection()
 	}()
 	<-started
-	require.NoError(t, MqConsume("ex", "rk", "q-wait", noopProcessor))
+	require.NoError(t, MqConsume("ex", "rk", "q-wait", 1, noopProcessor))
 	time.Sleep(50 * time.Millisecond)
 	close(release)
 
@@ -639,7 +667,7 @@ func TestMqDial_StalledHandshakeTimesOut(t *testing.T) {
 // best-effort and logged; see event_analyzer_mq.go).
 func TestMqPublish_PermanentFailureReturnsErrorAndLeavesConsumers(t *testing.T) {
 	fleet := useFakeMq(t, nil)
-	require.NoError(t, MqConsume("ex", "rk", "q-perm", noopProcessor))
+	require.NoError(t, MqConsume("ex", "rk", "q-perm", 1, noopProcessor))
 	c := waitConsumer(t, fleet)
 	waitState(t, "q-perm", MqConsumerRunning)
 
@@ -685,7 +713,7 @@ func TestMqClose_BoundedWhenAmqpCloseHangs(t *testing.T) {
 	hang := make(chan struct{})
 	t.Cleanup(func() { close(hang) })
 	fleet.configure = func(_ int, c *fakeConsumer) { c.closeHang = hang }
-	require.NoError(t, MqConsume("ex", "rk", "q-hang", noopProcessor))
+	require.NoError(t, MqConsume("ex", "rk", "q-hang", 1, noopProcessor))
 	waitConsumer(t, fleet)
 	waitState(t, "q-hang", MqConsumerRunning)
 	getConnection()
@@ -705,7 +733,7 @@ func TestMqClose_BoundedWhenAmqpCloseHangs(t *testing.T) {
 // surface it as "reconnecting" -> unhealthy after grace, then healthy again on recovery.
 func TestMqConsumersHealthy_BrokerOutageWhileRunningIsUnhealthy(t *testing.T) {
 	fleet := useFakeMq(t, nil)
-	require.NoError(t, MqConsume("ex", "rk", "q-conn", noopProcessor))
+	require.NoError(t, MqConsume("ex", "rk", "q-conn", 1, noopProcessor))
 	waitConsumer(t, fleet)
 	waitState(t, "q-conn", MqConsumerRunning)
 
@@ -749,7 +777,7 @@ func TestMqConnWatcher_StopsAfterMqClose(t *testing.T) {
 // The supervisor must rebuild the consumer instead of waiting on it.
 func TestMqConsume_RebuiltAfterBrokerReconnect(t *testing.T) {
 	fleet := useFakeMq(t, nil)
-	require.NoError(t, MqConsume("ex", "rk", "q_reconnect", noopProcessor))
+	require.NoError(t, MqConsume("ex", "rk", "q_reconnect", 1, noopProcessor))
 	first := waitConsumer(t, fleet)
 	waitState(t, "q_reconnect", MqConsumerRunning)
 
@@ -780,7 +808,7 @@ func TestMqConnWatcher_ReDialsAConnectionClosedTooLong(t *testing.T) {
 	mqConnResetAfter = 50 * time.Millisecond
 	t.Cleanup(func() { mqConnResetAfter = savedResetAfter })
 
-	require.NoError(t, MqConsume("ex", "rk", "q_reset", noopProcessor))
+	require.NoError(t, MqConsume("ex", "rk", "q_reset", 1, noopProcessor))
 	first := waitConsumer(t, fleet)
 	waitState(t, "q_reset", MqConsumerRunning)
 
@@ -794,4 +822,28 @@ func TestMqConnWatcher_ReDialsAConnectionClosedTooLong(t *testing.T) {
 	assert.GreaterOrEqual(t, dials.Load(), int32(2), "a new connection is dialed")
 	assert.EqualValues(t, 1, first.closeCalls.Load())
 	assert.LessOrEqual(t, fleet.maxActive.Load(), int32(1), "never two live consumers for one queue")
+}
+
+// RabbitMQ refuses to redeclare a fanout exchange as direct (406
+// PRECONDITION_FAILED), which silently dropped every organisation
+// knowledge-base cache invalidation (#40313): fanout publishes must declare
+// the exchange as fanout, and must not share a publisher with direct ones.
+func TestMqPublishFanout_DeclaresTheExchangeAsFanout(t *testing.T) {
+	useFakeMq(t, nil)
+	var kinds []string
+	mqNewPublisher = func(_ *rabbitmq.Conn, opts ...func(*rabbitmq.PublisherOptions)) (mqPublisher, error) {
+		var o rabbitmq.PublisherOptions
+		for _, opt := range opts {
+			opt(&o)
+		}
+		kinds = append(kinds, o.ExchangeOptions.Kind)
+		return &fakePublisher{}, nil
+	}
+
+	require.NoError(t, MqPublishFanout("llm_cache_invalidation", map[string]bool{"knowledge_bases": true}))
+	require.NoError(t, MqPublish("completed_ex", "completed", "m"))
+
+	require.Len(t, kinds, 2)
+	assert.Equal(t, "fanout", kinds[0])
+	assert.NotEqual(t, "fanout", kinds[1], "direct publishes keep the default kind")
 }

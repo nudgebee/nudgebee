@@ -40,8 +40,8 @@ query ListTicketConfigsForCreate {
 `;
 
 export const CREATE_TICKET = `
-mutation CreateTicket($assignee: String, $integration_id: String, $reference_id: String, $ticket_type: String, $project_key: String, $description: String, $title: String, $source: String, $severity: String, $account_id: String, $additional_fields: jsonb) {
-  tickets_create(object: {assignee: $assignee, integration_id: $integration_id, reference_id: $reference_id, ticket_type: $ticket_type, project_key: $project_key, description: $description, title: $title, source: $source, severity: $severity, account_id: $account_id, additional_fields: $additional_fields}) {
+mutation CreateTicket($assignee: String, $reporter: String, $integration_id: String, $reference_id: String, $ticket_type: String, $project_key: String, $description: String, $title: String, $source: String, $severity: String, $account_id: String, $additional_fields: jsonb) {
+  tickets_create(object: {assignee: $assignee, reporter: $reporter, integration_id: $integration_id, reference_id: $reference_id, ticket_type: $ticket_type, project_key: $project_key, description: $description, title: $title, source: $source, severity: $severity, account_id: $account_id, additional_fields: $additional_fields}) {
     data {
       insert_tickets_one {
         id
@@ -182,6 +182,12 @@ query GetCommentsQuery($account_id: String!, $integration_id: String!, $source: 
       comment
       created_at
       updated_at
+      attachments {
+        id
+        name
+        content_type
+        url
+      }
     }
   }
 }
@@ -204,6 +210,12 @@ mutation UpdateCommentsQuery($account_id: String!, $integration_id: String!, $so
       comment
       created_at
       updated_at
+      attachments {
+        id
+        name
+        content_type
+        url
+      }
     }
   }
 }

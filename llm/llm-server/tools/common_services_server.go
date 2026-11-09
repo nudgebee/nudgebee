@@ -416,6 +416,56 @@ func tracePayloadForResponse(resp core.ObservabilityTraceResponse) core.Observab
 	return resp
 }
 
+// maxTraceQueryLimit is the ceiling on how many traces one query asks the backend for. A model's
+// own larger limit is lowered to it; the result then says it stopped at this cap.
+const maxTraceQueryLimit = 1000
+
+// effectiveTraceLimit is the limit a trace query is sent with. A limit the model put in the query
+// itself counts when no limit came in config (before, the default silently replaced it); either
+// way the backend is asked for at most maxTraceQueryLimit traces.
+func effectiveTraceLimit(configLimit int, configHasLimit bool, builderLimit int) int {
+	limit := configLimit
+	if !configHasLimit && builderLimit > 0 {
+		limit = builderLimit
+	}
+	if limit <= 0 || limit > maxTraceQueryLimit {
+		limit = maxTraceQueryLimit
+	}
+	return limit
+}
+
+// capTraceResponse keeps at most max traces and says so when a cap cut the result: either the
+// tool kept fewer than the backend returned, or the backend returned exactly the query's limit
+// (so the window may hold more). The note is what the agent repeats instead of reading a sample
+// as the whole window.
+func capTraceResponse(resp core.ObservabilityTraceResponse, max int) core.ObservabilityTraceResponse {
+	received := len(resp.Traces)
+	limit := resp.Metadata.Limit
+	switch {
+	case max > 0 && received > max:
+		resp.Traces = resp.Traces[:max]
+		resp.Coverage = &core.ObservabilityTraceCoverage{
+			Limit: max, Received: received, Returned: max,
+			Note: fmt.Sprintf("sample: the backend returned %d traces and only the first %d are shown%s; the window may hold more — report counts and rates as from this sample, not the whole window, or narrow the query (service, operation, status, shorter window)", received, max, traceWindowPhrase(resp.Metadata)),
+		}
+	case limit > 0 && received >= limit:
+		resp.Coverage = &core.ObservabilityTraceCoverage{
+			Limit: limit, Received: received, Returned: received,
+			Note: fmt.Sprintf("sample: the query stopped at its limit of %d traces%s; the window may hold more — report counts and rates as from this sample, not the whole window, or narrow the query", limit, traceWindowPhrase(resp.Metadata)),
+		}
+	}
+	return resp
+}
+
+// traceWindowPhrase names the window a trace query asked for, so a default window the model never
+// chose (one hour when none is given) is visible in the note.
+func traceWindowPhrase(meta core.ObservabilityTraceMetadata) string {
+	if meta.StartTime <= 0 || meta.EndTime <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (window %s to %s)", time.UnixMilli(meta.StartTime).UTC().Format(time.RFC3339), time.UnixMilli(meta.EndTime).UTC().Format(time.RFC3339))
+}
+
 // traceValidateRequestEnabled reads the trace-validation flag from package scope.
 // executeFetchTrace takes a parameter named `config`, which shadows the config package inside it.
 func traceValidateRequestEnabled() bool {
@@ -423,7 +473,7 @@ func traceValidateRequestEnabled() bool {
 }
 
 func executeFetchTrace(ctx core.NbToolContext, traceProvider string, traceProviderSource string, query string, queryBuilder core.TraceQueryBuilder, config map[string]any) (core.ObservabilityTraceResponse, error) {
-	limit := 1000
+	limit := maxTraceQueryLimit
 	if val, ok := config["limit"]; ok {
 		switch limitValue := val.(type) {
 		case string:
@@ -481,6 +531,8 @@ func executeFetchTrace(ctx core.NbToolContext, traceProvider string, traceProvid
 			return core.ObservabilityTraceResponse{}, fmt.Errorf("invalid offset value - %v", val)
 		}
 	}
+	_, configHasLimit := config["limit"]
+	limit = effectiveTraceLimit(limit, configHasLimit, queryBuilder.Limit)
 	queryBuilder.Offset = offset
 	queryBuilder.Limit = limit
 	queryAccountId := ctx.AccountId

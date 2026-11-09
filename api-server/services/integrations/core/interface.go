@@ -148,6 +148,32 @@ type IntegrationSchemaProperty struct {
 	Advanced bool `json:"advanced,omitempty"`
 }
 
+// WebhookLabelSource is one row of an incident webhook's label help: a label name
+// account mapping can match on, and the payload field it is read from. A Label
+// written with angle brackets (`<alert label>`, `tag_<name>`) stands for a family of
+// names rather than one literal name.
+type WebhookLabelSource struct {
+	Label  string `json:"label"`
+	Source string `json:"source"`
+}
+
+// WebhookLabelHelp tells the integration form which label names an incident webhook
+// produces, so account mapping and webhook label mapping are not configured blind.
+// Labels lists the common names, not every name the parser can set. Notes carry what
+// a user would otherwise get wrong, such as a field that looks like a label and is not.
+type WebhookLabelHelp struct {
+	Summary string               `json:"summary"`
+	Labels  []WebhookLabelSource `json:"labels,omitempty"`
+	Notes   []string             `json:"notes,omitempty"`
+}
+
+// WebhookLabelDescriber is implemented by every incident webhook integration, next
+// to the parser that builds its labels. Keep it in step with that parser: it is the
+// only place a user learns which names to type.
+type WebhookLabelDescriber interface {
+	WebhookLabelHelp() WebhookLabelHelp
+}
+
 type IntegrationSchema struct {
 	Type IntegrationSchemaType `json:"type"`
 	// Category mirrors the owning integration's Category(). Surfaced to the
@@ -157,6 +183,9 @@ type IntegrationSchema struct {
 	// must exclude cloud accounts. Populated in IntegrationConfigs, not by each
 	// ConfigSchema().
 	Category IntegrationCategory `json:"category,omitempty"`
+	// WebhookLabelHelp is set for incident webhooks only. Populated in
+	// IntegrationConfigs from the integration's WebhookLabelDescriber.
+	WebhookLabelHelp *WebhookLabelHelp `json:"webhook_label_help,omitempty"`
 	// Description is an optional schema-level notice rendered as a banner
 	// above the form. Useful for integration-specific prerequisites the user
 	// must satisfy (e.g. "the source table must be time-partitioned").

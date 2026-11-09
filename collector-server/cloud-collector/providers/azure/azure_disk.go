@@ -485,6 +485,8 @@ func (s *diskService) GetRecommendations(ctx providers.CloudProviderContext, acc
 			allRecommendations = append(allRecommendations, rec)
 		}
 	}
+	allRecommendations = append(allRecommendations, s.diskPerformanceRecommendations(ctx, account, filter, existingResources)...)
+
 	return allRecommendations, nil
 }
 

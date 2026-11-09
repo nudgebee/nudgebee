@@ -24,7 +24,13 @@ type Request struct {
 	StartDate   time.Time
 	EndDate     time.Time
 	Granularity string // "day" (default) | "hour"
+	UserID      string // optional; "" = every user in the tenant
 }
+
+// aggWindow scopes every aggregate query to the tenant, the window and, when set, one user ($4).
+const aggWindow = "tenant_id = $1 AND created_at >= $2 AND created_at < $3 AND ($4::text = '' OR user_id = $4::text)"
+
+func (r Request) aggArgs() []any { return []any{r.TenantID, r.StartDate, r.EndDate, r.UserID} }
 
 // Totals are the top-line KPIs. JSON tags match llm-server's UsageTotals.
 type Totals struct {
@@ -229,10 +235,10 @@ func Aggregate(ctx context.Context, db *common.DatabaseManager, req Request) (*M
 		       COALESCE(sum(latency_ms),0) AS latency_ms_sum,
 		       COALESCE(sum(cost_usd),0) AS cost_usd
 		FROM llm_gateway_usage
-		WHERE tenant_id = $1 AND created_at >= $2 AND created_at < $3
+		WHERE ` + aggWindow + `
 		GROUP BY provider, model`
 	var pm []pmRow
-	if err := db.QueryAndScan(&pm, pmQuery, req.TenantID, req.StartDate, req.EndDate); err != nil {
+	if err := db.QueryAndScan(&pm, pmQuery, req.aggArgs()...); err != nil {
 		return nil, fmt.Errorf("usage: provider/model aggregation: %w", err)
 	}
 
@@ -321,12 +327,12 @@ func byUser(db *common.DatabaseManager, req Request) ([]GroupRow, error) {
 			       COALESCE(sum(latency_ms),0) AS latency_ms_sum,
 			       COALESCE(sum(cost_usd),0) AS cost_usd
 			FROM llm_gateway_usage
-			WHERE tenant_id = $1 AND created_at >= $2 AND created_at < $3 AND user_id <> ''
+			WHERE ` + aggWindow + ` AND user_id <> ''
 			GROUP BY user_id, model
 		) g
 		LEFT JOIN users u ON u.id::text = g.user_id`
 	var rows []userRow
-	if err := db.QueryAndScan(&rows, q, req.TenantID, req.StartDate, req.EndDate); err != nil {
+	if err := db.QueryAndScan(&rows, q, req.aggArgs()...); err != nil {
 		return nil, fmt.Errorf("usage: by-user aggregation: %w", err)
 	}
 	byUID := map[string]*GroupRow{}
@@ -387,7 +393,7 @@ func byTool(db *common.DatabaseManager, req Request) ([]ToolRow, error) {
 		WITH base AS (
 			SELECT NULLIF(attributes,'')::jsonb AS a, latency_ms, model
 			FROM llm_gateway_usage
-			WHERE tenant_id = $1 AND created_at >= $2 AND created_at < $3
+			WHERE ` + aggWindow + `
 			  AND attributes LIKE '%tool%'
 		),
 		offered AS (
@@ -416,7 +422,7 @@ func byTool(db *common.DatabaseManager, req Request) ([]ToolRow, error) {
 		LEFT JOIN failed f ON f.tool = o.tool
 		ORDER BY o.requests DESC`
 	var rows []toolScan
-	if err := db.QueryAndScan(&rows, q, req.TenantID, req.StartDate, req.EndDate); err != nil {
+	if err := db.QueryAndScan(&rows, q, req.aggArgs()...); err != nil {
 		return nil, fmt.Errorf("usage: by-tool aggregation: %w", err)
 	}
 	out := make([]ToolRow, 0, len(rows))
@@ -495,8 +501,8 @@ func governance(db *common.DatabaseManager, req Request) (*Governance, error) {
 		Rejects: []LabelCount{}, RoutingReasons: []LabelCount{},
 		OutcomesByProvider: []ProviderOutcome{}, OutcomeSeries: []OutcomeBucket{}, SubstitutionRoutes: []RouteCount{},
 	}
-	args := []any{req.TenantID, req.StartDate, req.EndDate}
-	const win = "tenant_id = $1 AND created_at >= $2 AND created_at < $3"
+	args := req.aggArgs()
+	const win = aggWindow
 
 	// Outcomes per provider — rolled up to the overall Outcomes in one pass (which
 	// upstream is failing, plus the top-line success/error mix).
@@ -618,7 +624,7 @@ type ListRequest struct {
 	Dlp           bool     // filter to requests that tripped the egress filter (drill-in from Governance DLP)
 	SessionID     string   // filter to one session/conversation (drill-in from a request's session)
 	CallerUserID  string   // the requesting user (x-user-id); a row's body is viewable by its own user
-	CallerIsAdmin bool     // caller is a tenant admin → may view ANY user's body within the tenant
+	CallerIsAdmin bool     // caller is a tenant viewer → may view ANY user's body within the tenant
 	Limit         int
 	Offset        int
 }
@@ -844,7 +850,7 @@ func ListRequests(ctx context.Context, db *common.DatabaseManager, req ListReque
 			SessionID: r.SessionID, SessionSource: r.SessionSource,
 			Dlp: parseDLP(r.DlpJSON),
 			// Viewable when body-logging is on AND (the row is the caller's own request
-			// OR the caller is a tenant admin — admins may view any user's body within
+			// OR the caller is a tenant viewer — admins may view any user's body within
 			// the tenant; the query is already tenant-scoped, so never cross-tenant).
 			CanViewBody: bodyEnabled && (req.CallerIsAdmin || (req.CallerUserID != "" && r.UserID == req.CallerUserID)),
 		})
@@ -866,11 +872,11 @@ func timeSeries(db *common.DatabaseManager, req Request) (*TimeSeries, error) {
 		       COALESCE(sum(output_tokens),0) AS output_tokens,
 		       COALESCE(sum(cost_usd),0) AS cost_usd
 		FROM llm_gateway_usage
-		WHERE tenant_id = $1 AND created_at >= $2 AND created_at < $3
+		WHERE `+aggWindow+`
 		GROUP BY bucket
 		ORDER BY bucket`, trunc)
 	var rows []tsRow
-	if err := db.QueryAndScan(&rows, q, req.TenantID, req.StartDate, req.EndDate); err != nil {
+	if err := db.QueryAndScan(&rows, q, req.aggArgs()...); err != nil {
 		return nil, fmt.Errorf("usage: time-series aggregation: %w", err)
 	}
 	byBucket := map[time.Time]*TimeSeriesRow{}

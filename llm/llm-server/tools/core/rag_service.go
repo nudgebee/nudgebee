@@ -257,6 +257,14 @@ func QueryRAGReranked(userId, accountId, query, module string, numberOfResults i
 
 // QueryRAGRerankedContext cancels the HTTP request when automatic discovery expires.
 func QueryRAGRerankedContext(ctx context.Context, userId, accountId, query, module string, numberOfResults int, conversationID string, messageId string, agentId string, trackTokenUsage bool) RAGSearchResults {
+	return QueryRAGRerankedFilteredContext(ctx, userId, accountId, query, module, numberOfResults, conversationID, messageId, agentId, trackTokenUsage, nil)
+}
+
+// QueryRAGRerankedFilteredContext is QueryRAGRerankedContext with a
+// metadata_filter. Exclusions use rag-server's structured form, e.g.
+// {"must_not": [{"field": "source", "value": "nudgebee_docs"}]}; a rag-server
+// without structured-filter support returns no documents for that form.
+func QueryRAGRerankedFilteredContext(ctx context.Context, userId, accountId, query, module string, numberOfResults int, conversationID string, messageId string, agentId string, trackTokenUsage bool, metadataFilter map[string]any) RAGSearchResults {
 	yes := true
 	payload := ragQueryRequest{
 		AccountID:       accountId,
@@ -269,6 +277,7 @@ func QueryRAGRerankedContext(ctx context.Context, userId, accountId, query, modu
 		TrackTokenUsage: &trackTokenUsage,
 		UserID:          userId,
 		UseReranking:    &yes,
+		MetadataFilter:  metadataFilter,
 	}
 	response, err := executeRAGCall(ctx, payload)
 	if err != nil {
@@ -355,6 +364,36 @@ func QueryRAGCollectionErr(ctx context.Context, userId, accountId, tenantId, que
 	response, err := executeRAGCall(ctx, payload)
 	if err != nil {
 		return RAGSearchResults{}, err
+	}
+	return response, nil
+}
+
+// QueryRAGByDocumentID matches IDs exactly and skips reranking, because an ID never appears in the embedded text.
+func QueryRAGByDocumentID(ctx context.Context, userId, accountId, id, query, module string, numberOfResults int, conversationID, messageId string) (RAGSearchResults, error) {
+	ids := []string{id}
+	// ServiceNow stores KB numbers uppercase.
+	if upper := strings.ToUpper(id); upper != id {
+		ids = append(ids, upper)
+	}
+	var should []any
+	for _, key := range documentSourceIDKeys {
+		should = append(should, map[string]any{"field": key, "values": ids})
+	}
+	noRerank, noTracking := false, false
+	response, err := executeRAGCall(ctx, ragQueryRequest{
+		AccountID:       accountId,
+		Query:           query,
+		Module:          module,
+		NumberOfResults: numberOfResults,
+		ConversationID:  conversationID,
+		MessageID:       messageId,
+		UserID:          userId,
+		TrackTokenUsage: &noTracking,
+		UseReranking:    &noRerank,
+		MetadataFilter:  map[string]any{"should": should},
+	})
+	if err != nil {
+		return RAGSearchResults{}, fmt.Errorf("QueryRAGByDocumentID: %w", err)
 	}
 	return response, nil
 }

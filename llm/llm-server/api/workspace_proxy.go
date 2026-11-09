@@ -196,8 +196,14 @@ func authorizeWorkspaceRequest(c *gin.Context, requestedAccountId string, tracer
 	if !ok || !token.Valid {
 		return nil, fmt.Errorf("invalid token claims")
 	}
-	if _, found := common.CacheGet(workspace.CacheNamespaceWorkspaceTokens, tokenString); found {
-		return nil, fmt.Errorf("token has been revoked")
+	if !slices.Contains(claims.Audience, workspace.AudienceWorkspaceExecute) {
+		// A pod's own token (a JWT on pods created before it became random
+		// bytes). It never authorizes anything here: requests must carry the
+		// execution token issued for the user's command or analysis. Checked
+		// before the account match so every use of it is counted.
+		recordWorkspaceAuth(c.Request.Context(), c.FullPath(), workspace.AudienceWorkspacePod)
+		slog.Warn("workspace: refused the pod token", "route", c.FullPath(), "account_id", requestedAccountId)
+		return nil, fmt.Errorf("workspace pod tokens are not accepted; use the execution token issued for this command")
 	}
 	if claims.AccountId != requestedAccountId {
 		return nil, fmt.Errorf("token does not match account")
@@ -206,17 +212,10 @@ func authorizeWorkspaceRequest(c *gin.Context, requestedAccountId string, tracer
 		return nil, fmt.Errorf("token does not match tenant")
 	}
 
-	isExecutionToken := slices.Contains(claims.Audience, workspace.AudienceWorkspaceExecute)
-	if isExecutionToken != (claims.Grants != nil) {
+	if claims.Grants == nil {
 		return nil, fmt.Errorf("invalid token claims")
 	}
-	if !isExecutionToken {
-		// The pod's own token (or one issued before audiences existed).
-		c.Set("workspace_allowed_target", claims.AccountId)
-		c.Set(workspaceTokenAudienceKey, workspace.AudienceWorkspacePod)
-		return security.NewRequestContextForTenantAdmin(tenantId), nil
-	}
-	c.Set(workspaceTokenAudienceKey, workspace.AudienceWorkspaceExecute)
+	recordWorkspaceAuth(c.Request.Context(), c.FullPath(), workspace.AudienceWorkspaceExecute)
 	if claims.TenantId == "" {
 		return nil, fmt.Errorf("token does not match tenant")
 	}
@@ -231,34 +230,6 @@ func authorizeWorkspaceRequest(c *gin.Context, requestedAccountId string, tracer
 		c.Set("workspace_allowed_target", claims.TargetAccountId)
 	}
 	return security.NewRequestContext(c.Request.Context(), sc, slog.Default(), tracer, meter), nil
-}
-
-// workspaceTokenAudienceKey records which kind of workspace token
-// authenticated the request (set only on the workspace-token path).
-const workspaceTokenAudienceKey = "workspace_token_audience"
-
-// requireExecutionToken enforces, and counts, that tool execution through the
-// workspace token path uses a per-command execution token rather than the
-// pod's own token. Requests authenticated another way (action gateway, global
-// token) carry no workspace token and are not affected. It reports whether the
-// request may continue.
-func requireExecutionToken(c *gin.Context, ctx *security.RequestContext, accountId string) bool {
-	value, viaWorkspaceToken := c.Get(workspaceTokenAudienceKey)
-	if !viaWorkspaceToken {
-		return true
-	}
-	audience, _ := value.(string)
-	enforced := config.Config.LlmServerWorkspaceExecuteRequireScopedToken
-	allowed := audience == workspace.AudienceWorkspaceExecute || !enforced
-	recordWorkspaceExecuteAuth(c.Request.Context(), audience, enforced, allowed)
-	if audience == workspace.AudienceWorkspaceExecute {
-		return true
-	}
-	ctx.GetLogger().Warn("workspace: execute called with the pod token", "account_id", accountId, "enforced", enforced)
-	if !allowed {
-		c.JSON(http.StatusUnauthorized, common.ErrorActionBadRequest("workspace execution requires a per-command execution token; run the command through a Nudgebee tool"))
-	}
-	return allowed
 }
 
 func handleWorkspaceListFilesWithPayload(c *gin.Context, payload map[string]any, ctx *security.RequestContext) {
@@ -396,9 +367,6 @@ func handleWorkspaceExecute(c *gin.Context, tracer trace.Tracer, meter metric.Me
 
 	var req WorkspaceExecuteRequest
 	_ = common.DecodeMapToStruct(payload, &req)
-	if !requireExecutionToken(c, ctx, req.AccountId) {
-		return
-	}
 
 	var relayJob tools.RelayJob
 	var registeredToolName string
@@ -838,6 +806,12 @@ func trailingNewline(values []string) string {
 	return "\n"
 }
 
+// workspaceAgentNotConnectedReply serves every agent type the relay gates on
+// (Kubernetes cluster, VM and database proxies), so it names the target, not a cluster.
+const workspaceAgentNotConnectedReply = "agent not connected: the Nudgebee agent that serves this target is not connected, so no command can run on it. " +
+	"Report that this target is unavailable for inspection. " +
+	"Do not switch to another cluster, account, or integration unless the user asked about it.\n"
+
 // workspaceExecuteReply maps a relay execution result to the shim's HTTP reply.
 // The shim prints `result`, then exits 1 when `error` is set; a non-200 makes it
 // print the raw body instead of the output.
@@ -850,6 +824,10 @@ func trailingNewline(values []string) string {
 // would reach the model inside the shim's "Server returned 500" wrapper, which
 // reads as an infrastructure fault; the agent's own reason (a read-only
 // allowlist, an unregistered action) is what it needs to see.
+//
+// A cluster whose agent is not connected is answered the same way. Read as an
+// infrastructure fault, the bare relay error led investigations to retry on
+// every other cluster the workspace could reach (#37223).
 func workspaceExecuteReply(result any, err error) (int, gin.H) {
 	var exitErr *tools.RelayCommandExitError
 	if errors.As(err, &exitErr) {
@@ -858,6 +836,9 @@ func workspaceExecuteReply(result any, err error) (int, gin.H) {
 	var refusedErr *tools.RelayCommandRefusedError
 	if errors.As(err, &refusedErr) {
 		return http.StatusOK, gin.H{"result": result, "error": refusedErr.Error()}
+	}
+	if err != nil && strings.Contains(err.Error(), "agent not connected") {
+		return http.StatusOK, gin.H{"result": workspaceAgentNotConnectedReply, "error": err.Error()}
 	}
 	if err != nil {
 		return http.StatusInternalServerError, gin.H{"error": err.Error(), "result": result}

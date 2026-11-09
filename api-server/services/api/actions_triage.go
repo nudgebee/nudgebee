@@ -194,7 +194,7 @@ func handleEventGetTriage(h *ActionRequest, c *gin.Context, ctx *security.Reques
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		ctx.GetLogger().Error("Failed to get database manager", "error", err)
-		c.JSON(400, common.ErrorActionBadRequest("database connection failed"))
+		c.JSON(500, common.ErrorActionInternal("database connection failed"))
 		return
 	}
 
@@ -268,7 +268,7 @@ func handleEventGetDuplicates(h *ActionRequest, c *gin.Context, ctx *security.Re
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		ctx.GetLogger().Error("Failed to get database manager", "error", err)
-		c.JSON(400, common.ErrorActionBadRequest("database connection failed"))
+		c.JSON(500, common.ErrorActionInternal("database connection failed"))
 		return
 	}
 
@@ -278,7 +278,7 @@ func handleEventGetDuplicates(h *ActionRequest, c *gin.Context, ctx *security.Re
 	duplicates, err := triage.GetDuplicateChain(ctx.GetContext(), dbms.Db, eventID, tenantID)
 	if err != nil {
 		ctx.GetLogger().Error("Failed to get duplicate chain", "error", err, "event_id", eventID)
-		c.JSON(400, common.ErrorActionBadRequest("failed to retrieve duplicates"))
+		c.JSON(500, common.ErrorActionInternal("failed to retrieve duplicates"))
 		return
 	}
 
@@ -308,7 +308,7 @@ func handleEventGetTimeline(h *ActionRequest, c *gin.Context, ctx *security.Requ
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		ctx.GetLogger().Error("Failed to get database manager", "error", err)
-		c.JSON(400, common.ErrorActionBadRequest("database connection failed"))
+		c.JSON(500, common.ErrorActionInternal("database connection failed"))
 		return
 	}
 
@@ -338,7 +338,7 @@ func handleEventBackfillTriage(h *ActionRequest, c *gin.Context, ctx *security.R
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		ctx.GetLogger().Error("Failed to get database manager", "error", err)
-		c.JSON(400, common.ErrorActionBadRequest("database connection failed"))
+		c.JSON(500, common.ErrorActionInternal("database connection failed"))
 		return
 	}
 
@@ -429,7 +429,7 @@ func handleEventDeduplicateCorrelations(h *ActionRequest, c *gin.Context, ctx *s
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		ctx.GetLogger().Error("Failed to get database manager", "error", err)
-		c.JSON(400, common.ErrorActionBadRequest("database connection failed"))
+		c.JSON(500, common.ErrorActionInternal("database connection failed"))
 		return
 	}
 
@@ -821,6 +821,12 @@ func handleEventCreateTriageRule(h *ActionRequest, c *gin.Context, ctx *security
 		return
 	}
 
+	name, ok := h.Input["name"].(string)
+	if !ok || strings.TrimSpace(name) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Rule name is required"})
+		return
+	}
+
 	if !requireTriageAccountAccess(c, ctx, cloudAccountID, "events", security.SecurityAccessTypeUpdate) {
 		return
 	}
@@ -1148,6 +1154,12 @@ func handleEventUpdateTriageRule(h *ActionRequest, c *gin.Context, ctx *security
 		return
 	}
 
+	name, ok := h.Input["name"].(string)
+	if !ok || strings.TrimSpace(name) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Rule name is required"})
+		return
+	}
+
 	if !requireTriageAccountAccess(c, ctx, cloudAccountID, "events", security.SecurityAccessTypeUpdate) {
 		return
 	}
@@ -1201,6 +1213,9 @@ func handleEventUpdateTriageRule(h *ActionRequest, c *gin.Context, ctx *security
 	}
 	if v, ok := h.Input["apply_to_existing"].(bool); ok {
 		req.ApplyToExisting = v
+	}
+	if v, ok := h.Input["enabled"].(bool); ok {
+		req.Enabled = &v
 	}
 
 	dbms, err := database.GetDatabaseManager(database.Metastore)
@@ -1460,24 +1475,25 @@ func handleEventGetThresholdSuggestion(h *ActionRequest, c *gin.Context, ctx *se
 		labels := triage.GetLabelsMap(ev)
 		alertRuleKey := triage.ExtractAlertRuleKey(source, labels)
 		if alertRuleKey != "" {
-			cached, cacheErr := triage.GetCachedSuggestion(ctx.GetContext(), dbms.Db, alertRuleKey, *ev.CloudAccountId)
+			eventFingerprint := ""
+			if ev.Fingerprint != nil {
+				eventFingerprint = *ev.Fingerprint
+			}
+			cached, cacheErr := triage.GetCachedSuggestion(ctx.GetContext(), dbms.Db, alertRuleKey, *ev.CloudAccountId, eventFingerprint)
 			if cacheErr == nil && cached != nil {
 				c.JSON(http.StatusOK, cached)
 				return
 			}
 
 			// Check for a skipped/error cached row — surface it so the card shows with a reason
-			if skippedSource, skippedReason, err := triage.GetCachedSkippedReason(ctx.GetContext(), dbms.Db, alertRuleKey, *ev.CloudAccountId); err == nil {
+			if skippedSource, skippedStatus, skippedReason, err := triage.GetCachedSkippedReason(ctx.GetContext(), dbms.Db, alertRuleKey, *ev.CloudAccountId); err == nil {
 				c.JSON(http.StatusOK, triage.ThresholdSuggestionResponse{
 					Available: true,
 					Source:    skippedSource,
 					AlertDefinition: &triage.AlertDefinition{
 						AlarmName: alertRuleKey,
 					},
-					Suggestion: &triage.ThresholdSuggestion{
-						RecommendationType: "not_eligible",
-						Reason:             skippedReason,
-					},
+					Suggestion: triage.UnavailableSuggestion(skippedStatus, skippedReason),
 				})
 				return
 			}

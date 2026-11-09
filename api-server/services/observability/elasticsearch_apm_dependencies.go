@@ -450,7 +450,7 @@ func parseElasticAPMServicePods(buckets []json.RawMessage) []ElasticAPMServicePo
 
 // esSearchURL is the _search endpoint for an index pattern.
 func esSearchURL(cfg *ElasticsearchConfig, index string) string {
-	return fmt.Sprintf("%s/%s/_search", cfg.Url, index)
+	return esIndexURL(cfg.Url, index, "_search")
 }
 
 // esPostJSON POSTs a search body bound to the request's context and returns the

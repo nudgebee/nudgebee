@@ -17,6 +17,9 @@ type TaskWrapper struct {
 	TemporalClient client.Client
 	Store          model.WorkflowStore
 	Converter      converter.DataConverter
+	// Secrets loads the run account's secret values, which are masked in the
+	// step's logs and in the error it returns. Nil masks nothing.
+	Secrets SecretLoader
 }
 
 const (
@@ -49,8 +52,11 @@ func (tw *TaskWrapper) Execute(ctx context.Context, params map[string]any) (any,
 	workflowName, _ := params[ParamWorkflowName].(string)
 	userDisplayName, _ := params[ParamUserDisplayName].(string)
 
-	// Build TaskContext (includes logger, metadata, etc.)
-	taskCtx := types.NewTemporalTaskContextFromActivity(ctx, tenantID, accountID, workflowID, eventID, userID, workflowName, userDisplayName, tw.TemporalClient, tw.Converter, tw.Store, isDryRun)
+	// Build TaskContext (includes logger, metadata, etc.).
+	// Its logger masks the account's secret values, as does every error below.
+	secrets := newStepSecrets(ctx, tw.Secrets, tenantID, accountID, activity.GetLogger(ctx))
+	logger := newScrubbingLogger(activity.GetLogger(ctx), secrets)
+	taskCtx := types.NewTemporalTaskContextFromActivity(ctx, tenantID, accountID, workflowID, eventID, userID, workflowName, userDisplayName, tw.TemporalClient, tw.Converter, tw.Store, logger, isDryRun)
 
 	// Remove internal metadata keys from params before passing to real task
 	delete(params, ParamTenantID)
@@ -65,9 +71,10 @@ func (tw *TaskWrapper) Execute(ctx context.Context, params map[string]any) (any,
 
 	if schema := tw.Task.InputSchema(); schema != nil {
 		if err := schema.Process(params); err != nil {
-			return nil, err
+			return nil, scrubError(err, secrets)
 		}
 	}
 
-	return tw.Task.Execute(taskCtx, params)
+	result, err := tw.Task.Execute(taskCtx, params)
+	return result, scrubError(err, secrets)
 }

@@ -20,6 +20,7 @@ from rag.core.documents import collection as document_collection
 from rag.core.documents import (
     embedding_migration,
     kb_capability_backfill,
+    kb_document_seed,
     module_retag_migration,
     platform_capability_sync,
 )
@@ -70,6 +71,20 @@ def _start_kb_capability_backfill():
         logger.info("KB capability backfill started in the background")
     except Exception as backfill_exc:  # defensive: migration must never block startup
         logger.exception(f"Could not start KB capability backfill (non-fatal): {backfill_exc}")
+
+
+def _start_kb_document_seed():
+    """Copy the per-page labels already on Qdrant chunks into Postgres, which owns
+    them (docs/kb-label-ownership-spec.md). No LLM calls; on by default, set
+    RAG_KB_DOCUMENT_SEED_ENABLED=false to turn it off.
+    """
+    if not kb_document_seed.is_enabled():
+        return
+    try:
+        kb_document_seed.start_background()
+        logger.info("KB document label seed started in the background")
+    except Exception as seed_exc:  # defensive: must never block startup
+        logger.exception(f"Could not start KB document label seed (non-fatal): {seed_exc}")
 
 
 def post_startup_task():
@@ -153,6 +168,7 @@ def post_startup_task():
             platform_capability_sync.sync_platform_capability_catalog()
 
             _start_kb_capability_backfill()
+            _start_kb_document_seed()
         except (
             ConnectionError,
             ResponseHandlingException,

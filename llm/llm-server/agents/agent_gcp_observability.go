@@ -29,6 +29,12 @@ type GcpMetricsAgent struct {
 	accountId string
 }
 
+// GcpMetricsAgent runs its gcp CLI on the account it is handed, and only on a
+// gcp account (core.ProviderBoundAgent).
+func (GcpMetricsAgent) AcceptsExecutionTarget() {}
+
+func (GcpMetricsAgent) TargetProvider() string { return "gcp" }
+
 func (a GcpMetricsAgent) GetName() string { return GcpMetricsAgentName }
 
 func (a GcpMetricsAgent) GetNameAliases() []string {
@@ -154,6 +160,12 @@ type GcpLogsAgent struct {
 	accountId string
 }
 
+// GcpLogsAgent runs its gcp CLI on the account it is handed, and only on a
+// gcp account (core.ProviderBoundAgent).
+func (GcpLogsAgent) AcceptsExecutionTarget() {}
+
+func (GcpLogsAgent) TargetProvider() string { return "gcp" }
+
 func (a GcpLogsAgent) GetName() string { return GcpLogsAgentName }
 
 func (a GcpLogsAgent) GetNameAliases() []string {
@@ -278,6 +290,12 @@ func newGcpTracesAgent(accountId string) core.NBAgent {
 type GcpTracesAgent struct {
 	accountId string
 }
+
+// GcpTracesAgent runs its gcp CLI on the account it is handed, and only on a
+// gcp account (core.ProviderBoundAgent).
+func (GcpTracesAgent) AcceptsExecutionTarget() {}
+
+func (GcpTracesAgent) TargetProvider() string { return "gcp" }
 
 func (a GcpTracesAgent) GetName() string { return GcpTracesAgentName }
 

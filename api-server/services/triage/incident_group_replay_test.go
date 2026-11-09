@@ -93,6 +93,12 @@ type replayVariant struct {
 	shuffleBucket time.Duration
 	// dropPath removes one ingest path's copy of every alert that arrived on two.
 	dropPath string
+	// cloudOpen replays a cloud run with its alarms stored the way an alarm a
+	// poll can end is stored: firing from arrival until the next firing of the
+	// same alarm begins, and the last firing of each never ending. That is the
+	// longest each alarm can have been open, so it is the hardest case for the
+	// rule that reaches back to alerts still firing.
+	cloudOpen bool
 }
 
 var replayVariants = []replayVariant{
@@ -102,6 +108,8 @@ var replayVariants = []replayVariant{
 	{name: "triage 3 min late, order shuffled (2)", triageDelay: 3 * time.Minute, shuffleSeed: 2, shuffleBucket: time.Minute},
 	{name: "one path only (webhook)", dropPath: "agent"},
 	{name: "one path only (webhook), order shuffled", triageDelay: 3 * time.Minute, shuffleSeed: 3, shuffleBucket: time.Minute, dropPath: "agent"},
+	{name: "alarms left open", cloudOpen: true},
+	{name: "alarms left open, triage 3 min late, order shuffled", triageDelay: 3 * time.Minute, shuffleSeed: 4, shuffleBucket: time.Minute, cloudOpen: true},
 }
 
 type replayOutcome struct {
@@ -256,6 +264,9 @@ func TestGroupingReplay_RealRuns(t *testing.T) {
 				if fx.Shape == replayShapeCloud && v.dropPath != "" {
 					continue // one ingest path only: these would repeat the variants above
 				}
+				if v.cloudOpen && fx.Shape != replayShapeCloud {
+					continue
+				}
 				fx, v, salt := fx, v, fi*100+vi
 				slot := (fi*len(replayVariants) + vi) % len(accounts)
 				t.Run(label, func(t *testing.T) {
@@ -288,6 +299,31 @@ func TestGroupingReplay_RealRuns(t *testing.T) {
 			}
 		}
 	})
+}
+
+// openUntilNextFiring ends each alert when the next firing of the same alert
+// begins and leaves the last firing of each without an end.
+func openUntilNextFiring(events []replayEvent) []replayEvent {
+	starts := map[string][]int{}
+	for _, e := range events {
+		starts[e.Fingerprint] = append(starts[e.Fingerprint], e.StartsS)
+	}
+	for _, s := range starts {
+		sort.Ints(s)
+	}
+	out := make([]replayEvent, 0, len(events))
+	for _, e := range events {
+		e.EndsS = nil
+		for _, s := range starts[e.Fingerprint] {
+			if s > e.StartsS {
+				end := s
+				e.EndsS = &end
+				break
+			}
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 func replayRun(t *testing.T, ctx context.Context, dbConn *sqlx.DB, tenant, account string, fx replayFixture, v replayVariant, salt int) replayOutcome {
@@ -331,12 +367,17 @@ func replayRun(t *testing.T, ctx context.Context, dbConn *sqlx.DB, tenant, accou
 		}
 	}
 
+	if v.cloudOpen {
+		events = openUntilNextFiring(events)
+	}
+
 	actions := make([]replayAction, 0, len(events)*3)
 	for _, e := range events {
 		arrive := time.Duration(e.ArrivesS) * time.Second
 		actions = append(actions, replayAction{at: arrive, order: 0, ev: e, kind: "insert"})
 		if e.EndsS != nil && *e.EndsS > e.StartsS {
-			actions = append(actions, replayAction{at: time.Duration(*e.EndsS) * time.Second, order: 1, ev: e, kind: "resolve"})
+			// An alert that ended before it arrived is resolved as it arrives.
+			actions = append(actions, replayAction{at: max(time.Duration(*e.EndsS)*time.Second, arrive), order: 1, ev: e, kind: "resolve"})
 		}
 		actions = append(actions, replayAction{at: arrive + v.triageDelay, order: 2, ev: e, kind: "triage"})
 	}
@@ -638,8 +679,10 @@ func insertReplayEvent(t *testing.T, ctx context.Context, tx *sqlx.Tx, tenant, a
 		serviceKey = "/" + e.Subject
 	}
 	// A cloud alarm as the cloud collector stores it: the provider service in the
-	// namespace, no owner, a resource identifier for the service key, and — today
-	// — closed on arrival with no duration.
+	// namespace, no owner, a resource identifier for the service key, and closed
+	// on arrival with no duration when its end equals its start. That is how an
+	// alarm is stored when no poll can end it; the cloudOpen variants replace
+	// those ends, so the same alarms are stored firing.
 	status, endsAt := "FIRING", (*time.Time)(nil)
 	if e.Path == "cloud" {
 		source = "AWS_CloudWatch_Alarm"

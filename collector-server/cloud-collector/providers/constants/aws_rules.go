@@ -29,6 +29,7 @@ const (
 	AwsEC2EBSEncrypt                            = "aws_ec2_ebs_encrypt"
 	AwsEC2EBSGenerationUpgrade                  = "aws_ec2_ebs_generation_upgrade"
 	AwsEC2OrphanedVolume                        = "orphaned_volume"
+	AwsEC2EBSPerformanceOverprovisioned         = "disk_performance_overprovisioned"
 	AwsEC2StoppedInstanceIncurringStorageCost   = "vm_stopped"
 	AwsEC2InstanceIMDSTokenOptional             = "aws_ec2_instance_imds_token_optional" // AWS-Exclusive: IMDSv2
 	AwsEC2InstancePublicIP                      = "aws_ec2_instance_public_ip"

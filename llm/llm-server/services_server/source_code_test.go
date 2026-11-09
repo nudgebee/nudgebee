@@ -235,3 +235,41 @@ func TestGetSourceCodeFromArgoCD_Integration(t *testing.T) {
 		t.Logf("Sync Status: %s", result.SyncStatus)
 	})
 }
+
+func TestArgoCDAppGetCommand(t *testing.T) {
+	tests := []struct {
+		name    string
+		appName string
+		host    string
+		want    string
+		wantErr bool
+	}{
+		{name: "plain app and host", appName: "my-app", host: "argocd.example.com", want: "argocd app get my-app --server argocd.example.com --insecure --grpc-web --output json"},
+		{name: "namespaced app and host with port", appName: "team-a/my_app.v2", host: "argocd.example.com:8443", want: "argocd app get team-a/my_app.v2 --server argocd.example.com:8443 --insecure --grpc-web --output json"},
+		{name: "app name with command separator", appName: "app;id", host: "argocd.example.com", wantErr: true},
+		{name: "app name with command substitution", appName: "$(id)", host: "argocd.example.com", wantErr: true},
+		{name: "app name with spaces", appName: "app --config x", host: "argocd.example.com", wantErr: true},
+		{name: "app name read as a flag", appName: "--insecure", host: "argocd.example.com", wantErr: true},
+		{name: "empty app name", appName: "", host: "argocd.example.com", wantErr: true},
+		{name: "host with backticks", appName: "my-app", host: "`id`.example.com", wantErr: true},
+		{name: "host with a path", appName: "my-app", host: "argocd.example.com/x", wantErr: true},
+		{name: "host read as a flag", appName: "my-app", host: "-x.example.com", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := argoCDAppGetCommand(tt.appName, tt.host)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("argoCDAppGetCommand() = %q, want an error", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("argoCDAppGetCommand() unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("argoCDAppGetCommand() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

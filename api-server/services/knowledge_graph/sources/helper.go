@@ -1,6 +1,8 @@
 package sources
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 	"nudgebee/services/internal/database"
@@ -161,7 +163,8 @@ func GetAccountIDFromARN(arn string) string {
 //   - k8s_provider: The Kubernetes provider (e.g., eks, aks, gke)
 //   - k8s_provider_account_number: The cloud provider account number
 //   - k8s_provider_cluster_name: The cluster name
-//   - cloud_account_id: The internal cloud account ID (added if account_number exists)
+//   - cloud_account_id: The internal cloud account ID (added only if an active account with that
+//     account_number exists in the same tenant)
 func GetCloudAccountAttributes(ctx *security.RequestContext, accountID string) (map[string]string, error) {
 	databaseManager, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -204,11 +207,22 @@ func GetCloudAccountAttributes(ctx *security.RequestContext, accountID string) (
 	}
 
 	if accountNumber, exists := attributes["k8s_provider_account_number"]; exists && accountNumber != "" {
-		cloudAccountQuery := `select id from cloud_accounts where account_number = $1`
+		// account_number is not unique across tenants; pin the lookup to the
+		// tenant that owns the k8s account being enriched.
+		cloudAccountQuery := `select id from cloud_accounts where account_number = $1
+			and status = 'active'
+			and tenant = (select tenant from cloud_accounts where id = $2::uuid)
+			order by created_at
+			limit 1`
 
 		var cloudAccountID string
-		err := databaseManager.Db.QueryRowx(cloudAccountQuery, accountNumber).Scan(&cloudAccountID)
-		if err != nil {
+		err := databaseManager.Db.QueryRowx(cloudAccountQuery, accountNumber, accountID).Scan(&cloudAccountID)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			// The AWS account isn't connected for this tenant: keep the other
+			// attributes and just omit cloud_account_id.
+			return attributes, nil
+		case err != nil:
 			return nil, fmt.Errorf("failed to query cloud account ID for account_number %s: %w", accountNumber, err)
 		}
 

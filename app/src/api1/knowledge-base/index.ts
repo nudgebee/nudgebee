@@ -10,8 +10,13 @@ interface CapabilityDetail {
 interface KnowledgeBaseOutput {
   id: string;
   tenant_id: string;
+  // Empty for an organisation KB (owned by the tenant).
   account_id: string;
   account_name?: string;
+  // account | organisation | selected_accounts
+  visibility?: string;
+  // An organisation KB the listed account switched off for itself.
+  switched_off?: boolean;
   name: string;
   description?: string;
   data: string;
@@ -54,6 +59,10 @@ interface CreateKnowledgeBasePayload {
   fileName?: string;
   noteCategory?: string;
   contextTags?: string[];
+  // Tenant admins only: 'organisation' or 'selected_accounts' creates an
+  // organisation KB; accountIds lists the accounts for 'selected_accounts'.
+  visibility?: string;
+  accountIds?: string[];
 }
 
 interface UpdateKnowledgeBasePayload {
@@ -100,6 +109,8 @@ const apiKnowledgeBase = {
             tenant_id
             account_id
             account_name
+            visibility
+            switched_off
             name
             description
             data
@@ -160,6 +171,8 @@ const apiKnowledgeBase = {
           integration_id: kb.integration_id,
           account_id: kb.account_id,
           account_name: kb.account_name,
+          visibility: kb.visibility,
+          switched_off: kb.switched_off,
           created_at: kb.created_at,
           updated_at: kb.updated_at,
           created_by: kb.created_by ? { display_name: kb.created_by } : null,
@@ -200,6 +213,7 @@ const apiKnowledgeBase = {
             id
             tenant_id
             account_id
+            visibility
             name
             description
             data
@@ -242,6 +256,8 @@ const apiKnowledgeBase = {
             format: kb.data_format,
             fileName: kb.data_filename,
             status: kb.status,
+            account_id: kb.account_id,
+            visibility: kb.visibility,
             created_at: kb.created_at,
             updated_at: kb.updated_at,
             created_by: kb.created_by ? { display_name: kb.created_by } : null,
@@ -309,6 +325,8 @@ const apiKnowledgeBase = {
             file_name: payload.fileName || `${payload.name}.txt`,
             note_category: payload.noteCategory || '',
             context_tags: payload.contextTags || [],
+            ...(payload.visibility ? { visibility: payload.visibility } : {}),
+            ...(payload.accountIds?.length ? { account_ids: payload.accountIds } : {}),
           },
         },
       });
@@ -749,6 +767,10 @@ const apiKnowledgeBase = {
               url
               document_key
               note_category
+              account_marks
+              kind
+              shape
+              capabilities
             }
             next_offset
             indexed
@@ -981,6 +1003,119 @@ const apiKnowledgeBase = {
     } catch (error) {
       console.error('Error retriggering KB:', error);
       return { data: null, errors: [{ message: 'An error occurred while retriggering' }] };
+    }
+  },
+
+  /**
+   * Change the scope of a knowledge base (tenant admins only): widen it to the
+   * organisation, restrict it to selected accounts, or move it back to one
+   * account (visibility 'account' with targetAccountId).
+   */
+  updateKnowledgeBaseVisibility: async (kbId: string, visibility: string, accountIds: string[] = [], targetAccountId = '') => {
+    const UPDATE_KB_VISIBILITY = `
+      mutation UpdateKBVisibility($request: UpdateKBVisibilityRequest!) {
+        ai_update_kb_visibility(request: $request) {
+          data {
+            id
+            account_id
+            visibility
+          }
+          errors {
+            message
+          }
+        }
+      }
+    `;
+    try {
+      const response = await queryGraphQL(UPDATE_KB_VISIBILITY, 'UpdateKBVisibility', {
+        request: { kb_id: kbId, visibility, account_ids: accountIds, target_account_id: targetAccountId },
+      });
+      if (response?.data?.errors && response.data.errors.length > 0) {
+        return { data: null, errors: [{ message: extractErrorMessage(response, 'Failed to change who can use it') }] };
+      }
+      const result = response?.data?.data?.ai_update_kb_visibility;
+      if (result) {
+        if (result.errors && result.errors.length > 0) {
+          return { data: null, errors: result.errors };
+        }
+        return { data: result.data, errors: [] };
+      }
+      return { data: null, errors: [{ message: 'Failed to change who can use it' }] };
+    } catch (error) {
+      console.error('Error updating knowledge base visibility:', error);
+      return { data: null, errors: [{ message: 'An error occurred while changing who can use it' }] };
+    }
+  },
+
+  /**
+   * Switch an organisation knowledge base off or on for one account only.
+   */
+  setKnowledgeBaseAccountOverride: async (accountId: string, kbId: string, enabled: boolean) => {
+    const SET_KB_ACCOUNT_OVERRIDE = `
+      mutation SetKBAccountOverride($request: UpdateKBAccountOverrideRequest!) {
+        ai_update_kb_account_override(request: $request) {
+          data
+          errors {
+            message
+          }
+        }
+      }
+    `;
+    try {
+      if (accountId === 'demo') {
+        return { data: null, errors: [{ message: 'Demo account does not have access.' }] };
+      }
+      const response = await queryGraphQL(SET_KB_ACCOUNT_OVERRIDE, 'SetKBAccountOverride', {
+        request: { account_id: accountId, kb_id: kbId, enabled },
+      });
+      if (response?.data?.errors && response.data.errors.length > 0) {
+        return { data: null, errors: [{ message: extractErrorMessage(response, 'Failed to update knowledge base') }] };
+      }
+      const result = response?.data?.data?.ai_update_kb_account_override;
+      if (result) {
+        if (result.errors && result.errors.length > 0) {
+          return { data: null, errors: result.errors };
+        }
+        return { data: result.data, errors: [] };
+      }
+      return { data: null, errors: [{ message: 'Failed to update knowledge base' }] };
+    } catch (error) {
+      console.error('Error updating knowledge base account switch:', error);
+      return { data: null, errors: [{ message: 'An error occurred while updating the knowledge base' }] };
+    }
+  },
+
+  /**
+   * The per-account switches of an organisation knowledge base (tenant admins).
+   * For a selected-accounts KB, the accounts switched on are the selection.
+   */
+  listKnowledgeBaseAccountOverrides: async (kbId: string) => {
+    const LIST_KB_ACCOUNT_OVERRIDES = `
+      query ListKBAccountOverrides($request: ListKBAccountOverridesRequest!) {
+        ai_list_kb_account_overrides(request: $request) {
+          data {
+            account_id
+            account_name
+            enabled
+          }
+          errors {
+            message
+          }
+        }
+      }
+    `;
+    try {
+      const response = await queryGraphQL(LIST_KB_ACCOUNT_OVERRIDES, 'ListKBAccountOverrides', {
+        request: { kb_id: kbId },
+      });
+      const result = response?.data?.data?.ai_list_kb_account_overrides;
+      if (result) {
+        return { data: result.data || [], errors: result.errors || [] };
+      }
+      return { data: [], errors: [{ message: extractErrorMessage(response, 'Failed to load account switches') }] };
+    } catch (error) {
+      console.error('Error listing knowledge base account switches:', error);
+      return { data: [], errors: [{ message: 'An error occurred while loading account switches' }] };
     }
   },
 };

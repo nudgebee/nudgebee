@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"nudgebee/services/config"
 	"nudgebee/services/query"
 	"nudgebee/services/security"
 	"sort"
@@ -372,7 +373,18 @@ func (e *ElasticSaasMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 		requested, _ = req.Request["metric_name"].(string)
 	}
 	index := resolveESMetricsIndex(requested, cfg)
+	return runESMetricsQueries(cfg, index, req)
+}
 
+// runESMetricsQueries runs req's queries against index. Split from FetchMetricsQuery,
+// which only resolves the account's config, so it can run against a real cluster in
+// tests.
+func runESMetricsQueries(cfg *ElasticsearchConfig, index string, req FetchMetricsRequest) (OutputMetricQuery, error) {
+	// Discovery describes the data instead of querying it (agent tool only).
+	if mode, _ := req.Request[esDiscoverRequestKey].(string); mode != "" {
+		dataset, _ := req.Request["dataset"].(string)
+		return OutputMetricQuery{Results: []QueryResult{esDiscover(cfg, index, mode, dataset, req.StartTime, req.EndTime)}}, nil
+	}
 	var results []QueryResult
 	queryType, _ := req.Request["query_type"].(string)
 	// Batch callers (rightsizing, and any other non-interactive consumer) skip the
@@ -380,12 +392,26 @@ func (e *ElasticSaasMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 	// note, which costs a full _mapping fetch per request, and the rendered-body log
 	// line, which for those callers can carry a thousand pod names per query.
 	batch, _ := req.Request["batch"].(bool)
+	// Only the agent's query tool asks for zero-match samples. Pages, dashboard panels
+	// and playbook actions send the same request and have no reader for one, so for
+	// them a miss must not cost extra searches.
+	wantSample, _ := req.Request[esZeroMatchSampleRequestKey].(bool)
 
 	// Resolved at most once per request and shared by every query in it: the mapping
 	// lookup is a network round trip, and req.Queries can hold several entries.
 	var indexFields []OutputMetricLabels
 	var indexFieldsErr error
 	var fetchedIndexFields bool
+	indexFieldList := func() ([]OutputMetricLabels, error) {
+		if !fetchedIndexFields {
+			indexFields, indexFieldsErr = esFetchMetricFields(cfg, index)
+			fetchedIndexFields = true
+		}
+		return indexFields, indexFieldsErr
+	}
+	// Zero-match samples cost extra searches; a request with many empty queries reads
+	// samples for the first few only.
+	samplesRun := 0
 
 	for queryKey, queryDSL := range req.Queries {
 		queryBody, buildErr := buildESMetricsQueryBody(queryType, queryDSL, req.StartTime, req.EndTime)
@@ -407,7 +433,7 @@ func (e *ElasticSaasMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 		// Mirrors the "ES log query" line so both paths are greppable the same way:
 		// resolved index, full URL, the window, and the rendered body — enough to
 		// replay the exact request by hand against the cluster.
-		esURL := fmt.Sprintf("%s/%s/_search", cfg.Url, index)
+		esURL := esIndexURL(cfg.Url, index, "_search")
 		if !batch {
 			slog.Info("ES metrics query", "index", index, "url", esURL,
 				"query_key", queryKey, "query_type", queryType,
@@ -467,6 +493,19 @@ func (e *ElasticSaasMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 		if len(payload) == 0 && stats.DocsMatched > 0 {
 			qr.Note = esNoSeriesNote(stats)
 		}
+		// Nothing matched: show the agent real documents rather than leave it to guess
+		// whether the filter or the data is wrong.
+		if wantSample && !batch && stats.DocsMatched == 0 && config.Config.ESMetricsZeroMatchSampleEnabled {
+			if samplesRun < esSampleMaxPerRequest {
+				samplesRun++
+				sample := esZeroMatchSample(cfg, index, queryBody["query"], req.StartTime, req.EndTime, indexFieldList)
+				qr.Sample = sample.Sample
+				qr.Note = sample.Note
+			} else {
+				qr.Note = "The query matched no documents. No sample documents were read for it: earlier queries in " +
+					"this request already returned them for this index."
+			}
+		}
 		// A capped result must say it is capped. Reported alongside a non-empty
 		// payload, unlike the note above: the caller is holding real series and has
 		// no other way to know they are a subset.
@@ -485,10 +524,7 @@ func (e *ElasticSaasMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 		// matches inside a filter, nothing is excluded inside a must_not. The second
 		// returns a plausible row count from a query that filtered on nothing at all,
 		// so it is reported even when the payload is non-empty.
-		if !fetchedIndexFields {
-			indexFields, indexFieldsErr = esFetchMetricFields(cfg, index)
-			fetchedIndexFields = true
-		}
+		indexFields, indexFieldsErr = indexFieldList()
 		if indexFieldsErr != nil {
 			// Say the check did not run. Skipping it quietly reads as "every field in
 			// this query exists", which is the one thing we cannot tell.
@@ -504,8 +540,9 @@ func (e *ElasticSaasMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 				"The query references fields that do not exist in %s: %s. "+
 					"Elasticsearch does not error on these — inside a filter they match nothing, and inside a "+
 					"must_not they exclude nothing, so the result may look filtered when it was not. "+
-					"Note that `__name__` is never a queryable field: it is this backend's label for a numeric "+
-					"field path, so select that metric with {\"exists\":{\"field\":\"<path>\"}} instead.",
+					"Note that `__name__` is never a queryable field: it is a label this backend builds, either "+
+					"a numeric field's path (select it with {\"exists\":{\"field\":\"<path>\"}}) or the value of "+
+					"a metric-name field (filter that field).",
 				index, strings.Join(unknown, ", "))
 		}
 		results = append(results, qr)
@@ -617,8 +654,17 @@ func esFetchLabelValues(cfg *ElasticsearchConfig, index, reqLabel string) ([]Out
 			"query": map[string]any{
 				"bool": map[string]any{
 					"filter": []any{
-						map[string]any{"range": map[string]any{
-							esLabelValuesTimeField: map[string]any{"gte": esLabelValuesWindow},
+						// `@timestamp` or `time`, the two time fields metric queries accept:
+						// a filter on `@timestamp` alone returned nothing for indexes that
+						// carry only `time`.
+						map[string]any{"bool": map[string]any{
+							"minimum_should_match": 1,
+							"should": []any{
+								map[string]any{"range": map[string]any{esLabelValuesTimeField: map[string]any{"gte": esLabelValuesWindow}}},
+								// Plain epoch millis, not date math: an index that maps `time` as a
+								// number would reject "now-24h" and fail the whole aggregation.
+								map[string]any{"range": map[string]any{"time": map[string]any{"gte": time.Now().Add(-24 * time.Hour).UnixMilli()}}},
+							},
 						}},
 					},
 				},
@@ -650,7 +696,7 @@ func esFetchLabelValues(cfg *ElasticsearchConfig, index, reqLabel string) ([]Out
 	// `name.keyword` works. So: try the suffixed field, then fall back on either an
 	// error OR an empty result.
 	queryLabelValues := func(field string) ([]OutputMetricsLabelValues, error) {
-		resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, index), buildDSL(field), cfg) //nolint:bodyclose
+		resp, err := esRequestJSON("POST", esIndexURL(cfg.Url, index, "_search"), buildDSL(field), cfg) //nolint:bodyclose
 		if err != nil {
 			return nil, fmt.Errorf("failed to query metric label values: %w", err)
 		}
@@ -739,7 +785,7 @@ func esFetchMetricFields(cfg *ElasticsearchConfig, index string) ([]OutputMetric
 	}
 
 	// Fetch field names from the index mapping.
-	resp, err := esRequest("GET", fmt.Sprintf("%s/%s/_mapping", cfg.Url, index), "", cfg) //nolint:bodyclose
+	resp, err := esRequest("GET", esIndexURL(cfg.Url, index, "_mapping"), "", cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("failed to query metrics labels: %w", err)
 	}
@@ -2219,7 +2265,7 @@ func fetchESMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTr
 
 			renderedQuery := group.rendered
 
-			esURL := fmt.Sprintf("%s/%s/_search", cfg.Url, index)
+			esURL := esIndexURL(cfg.Url, index, "_search")
 			slog.Info("ES utilisation query", "index", index, "url", esURL,
 				"metric", metricKey, "scope", scope, "sources", len(plan.Sources), "step_sec", stepSec,
 				"start_ms", req.StartTime, "end_ms", req.EndTime)

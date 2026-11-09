@@ -27,6 +27,7 @@ query list_k8_recommendation_summary($limit:Int, $offset:Int) {
       severity
       category
       rule_name
+      status
       recommendation
       estimated_savings
       finops_score
@@ -50,9 +51,16 @@ export interface RecommendationFacetFilters {
   savingsLt?: number;
   updatedAtGte?: string;
   updatedAtLt?: string;
+  /** First-raised bounds. Unlike updated_at, which the finops-score cron bumps
+   *  every ~6h, created_at is a finding's real age. */
+  createdAtGte?: string;
+  createdAtLt?: string;
 }
 
-export function applyFacetFilters(gqlQuery: any, { safetyBand, savingsGte, savingsLt, updatedAtGte, updatedAtLt }: RecommendationFacetFilters) {
+export function applyFacetFilters(
+  gqlQuery: any,
+  { safetyBand, savingsGte, savingsLt, updatedAtGte, updatedAtLt, createdAtGte, createdAtLt }: RecommendationFacetFilters
+) {
   if (safetyBand && safetyBand.length > 0) {
     if (safetyBand.includes('unknown')) {
       // Rows never assessed carry no safety_band key in the breakdown JSONB;
@@ -70,6 +78,10 @@ export function applyFacetFilters(gqlQuery: any, { safetyBand, savingsGte, savin
   if (updatedAtGte) updatedAt['_gte'] = updatedAtGte;
   if (updatedAtLt) updatedAt['_lt'] = updatedAtLt;
   if (Object.keys(updatedAt).length > 0) gqlQuery['updated_at'] = updatedAt;
+  const createdAt: any = {};
+  if (createdAtGte) createdAt['_gte'] = createdAtGte;
+  if (createdAtLt) createdAt['_lt'] = createdAtLt;
+  if (Object.keys(createdAt).length > 0) gqlQuery['created_at'] = createdAt;
 }
 
 export function invalidateOptimisationSummaryRecommendations() {
@@ -262,6 +274,19 @@ export const ETL_APPLY_EVENT_RECOMMENDATION = `
 mutation ApplyRecommendation($account_id: String!, $event_id: String!, $data: jsonb, $provider: String, $provider_config: ProviderConfig) {
   events_update_resolution(object: {account_id: $account_id, event_id: $event_id, data: $data, provider: $provider, provider_config: $provider_config }) {
     data
+  }
+}
+`;
+
+export type RollbackCheck = { allowed: boolean; reason: string };
+export const ROLLBACK_CHECK_SHARED_MS = 30000;
+const rollbackChecks = new Map<string, { at: number; answer: Promise<RollbackCheck | null> }>();
+
+export const EVENTS_CHECK_ROLLBACK = `
+query EventsCheckRollback($account_id: String!, $event_id: String!, $change_event_id: String) {
+  events_check_rollback(account_id: $account_id, event_id: $event_id, change_event_id: $change_event_id) {
+    allowed
+    reason
   }
 }
 `;
@@ -754,8 +779,10 @@ const apiRecommendations = {
     savingsLt,
     updatedAtGte,
     updatedAtLt,
+    createdAtGte,
+    createdAtLt,
   }: {
-    accountId?: string;
+    accountId?: string | string[];
     category?: string;
     ruleName?: string | string[];
     excludeRuleName?: string[];
@@ -880,7 +907,7 @@ const apiRecommendations = {
       if (resource_ids) {
         gqlQuery['resource_id'] = { _in: resource_ids };
       }
-      applyFacetFilters(gqlQuery, { safetyBand, savingsGte, savingsLt, updatedAtGte, updatedAtLt });
+      applyFacetFilters(gqlQuery, { safetyBand, savingsGte, savingsLt, updatedAtGte, updatedAtLt, createdAtGte, createdAtLt });
       let query = LIST_k8_RECOMMENDATIONS;
       if (typeof orderBy === 'string') {
         query = query.replaceAll('__ORDER_BY__', `{column: "${orderBy}", order: ${orderAsc ? 'asc' : 'desc_nulls_last'} }`);
@@ -1189,6 +1216,8 @@ const apiRecommendations = {
     savingsLt,
     updatedAtGte,
     updatedAtLt,
+    createdAtGte,
+    createdAtLt,
   }: {
     accountId: string | string[];
     accountObjectId?: string;
@@ -1290,7 +1319,7 @@ const apiRecommendations = {
           },
         ];
       }
-      applyFacetFilters(gqlQuery, { safetyBand, savingsGte, savingsLt, updatedAtGte, updatedAtLt });
+      applyFacetFilters(gqlQuery, { safetyBand, savingsGte, savingsLt, updatedAtGte, updatedAtLt, createdAtGte, createdAtLt });
       const query = LIST_k8_RECOMMENDATION_SUMMARY_BY_RULENAME.replace('__WHERE__', gqlStringify(gqlQuery));
 
       const response = await queryGraphQL(query, 'k8s_recommendation_summary', {});
@@ -1363,6 +1392,8 @@ const apiRecommendations = {
     savingsLt,
     updatedAtGte,
     updatedAtLt,
+    createdAtGte,
+    createdAtLt,
   }: {
     accountId: string | string[];
     accountObjectId?: string;
@@ -1413,7 +1444,7 @@ const apiRecommendations = {
       if (status && status.length > 0) {
         gqlQuery['status'] = { _in: status };
       }
-      applyFacetFilters(gqlQuery, { savingsGte, savingsLt, updatedAtGte, updatedAtLt });
+      applyFacetFilters(gqlQuery, { savingsGte, savingsLt, updatedAtGte, updatedAtLt, createdAtGte, createdAtLt });
       const query = LIST_k8_RECOMMENDATION_SAFETY_GROUPS.replace('__WHERE__', gqlStringify(gqlQuery));
       const response = await queryGraphQL(query, 'k8s_recommendation_safety_groups', {});
       return response?.data?.data?.recommendation_aggregate?.rows || [];
@@ -1786,6 +1817,8 @@ const apiRecommendations = {
         provider_config: provider_config,
       });
       invalidateOptimisationSummaryRecommendations();
+      // Whatever was just applied changed what is live, so no answer shared before it still holds.
+      [...rollbackChecks.keys()].filter((key) => key.startsWith(`${accountId}|${recommendationId}|`)).forEach((key) => rollbackChecks.delete(key));
       return {
         data: response?.data?.data?.events_update_resolution?.data,
         errors: response?.data?.errors,
@@ -1803,6 +1836,48 @@ const apiRecommendations = {
       data: response?.data?.data?.recommendations_apply?.data,
       errors: response?.data?.errors,
     };
+  },
+
+  // Asks the server whether rolling back a recorded change would be refused right now — the same
+  // steps the apply runs before it dispatches anything. Returns null when the question could not
+  // be answered (a transport failure, or a server that predates the action); the apply still
+  // refuses on the click, so "unknown" must never read as "blocked".
+  //
+  // The Remediation row, each history row and the dialog opened right after all ask about the same
+  // change, and the server reads every later change to answer, so one answer is shared for
+  // ROLLBACK_CHECK_SHARED_MS. Seconds, not the page's lifetime: the question is whether the workload
+  // changed since, and a dialog opened later has to ask again.
+  async checkEventRollback(accountId: string, eventId: string, changeEventId?: string): Promise<RollbackCheck | null> {
+    if (!accountId || !eventId || accountId === 'demo') return null;
+    // '' and the event's own id both mean the change attached to the event itself.
+    const change = changeEventId && changeEventId !== eventId ? changeEventId : '';
+    const key = `${accountId}|${eventId}|${change}`;
+    const now = Date.now();
+    const shared = rollbackChecks.get(key);
+    if (shared && now - shared.at < ROLLBACK_CHECK_SHARED_MS) return shared.answer;
+    // Answers past the window are dropped whenever a new one is kept, so a long session holds only
+    // the changes asked about in the last window, not every one it ever looked at.
+    rollbackChecks.forEach((entry, entryKey) => {
+      if (now - entry.at >= ROLLBACK_CHECK_SHARED_MS) rollbackChecks.delete(entryKey);
+    });
+
+    const answer: Promise<RollbackCheck | null> = queryGraphQL(EVENTS_CHECK_ROLLBACK, 'EventsCheckRollback', {
+      account_id: accountId,
+      event_id: eventId,
+      change_event_id: change,
+    })
+      .then((response: any) => {
+        const check = response?.data?.data?.events_check_rollback;
+        return typeof check?.allowed === 'boolean' ? { allowed: check.allowed, reason: check.reason || '' } : null;
+      })
+      .catch(() => null)
+      .then((result: RollbackCheck | null) => {
+        // An unanswered question is not an answer worth sharing: the next asker tries again.
+        if (!result && rollbackChecks.get(key)?.answer === answer) rollbackChecks.delete(key);
+        return result;
+      });
+    rollbackChecks.set(key, { at: now, answer });
+    return answer;
   },
 
   async createTicketResolution(accountId: string, recommendationId: string, ticketId: string, ticketKey?: string) {
@@ -2769,6 +2844,14 @@ const apiRecommendations = {
       where.recommendation_id = { _eq: data.recommendationId };
       whereAgg.recommendation_id = { _eq: data.recommendationId };
     }
+    // Severity scopes the listing and its aggregate alike — mirrors
+    // getRecommendationResolutionStatusCounts, which already filters the cards
+    // by rec_severity. Without this the Severity chip updated the cards but
+    // never the list.
+    if (data.severity?.length) {
+      where.rec_severity = { _in: data.severity };
+      whereAgg.rec_severity = { _in: data.severity };
+    }
     const response = await queryGraphQL(GET_RECOMMENDATION_RESOLUTION, 'RecommendationResolution', {
       where,
       whereAgg,
@@ -2875,6 +2958,52 @@ const apiRecommendations = {
       return counts;
     }, {});
   },
+  /**
+   * Resolution counts per status, each paired with the monthly savings of the
+   * recommendations behind them, for the Optimise Summary's tiles. Kept apart
+   * from getRecommendationResolutionStatusCounts so the Resolutions tab doesn't
+   * pay for the savings roll-up it never shows. Same account scoping, including
+   * an empty array meaning every account, so callers wanting "none" must
+   * short-circuit first.
+   */
+  async getRecommendationResolutionStatusTotals({ accountId }: { accountId?: string | string[] } = {}): Promise<
+    Record<string, { count: number; savings: number }>
+  > {
+    if (accountId === 'demo') {
+      return {};
+    }
+    const query = `
+    query RecommendationResolutionStatusTotals($where: RecommendationResolutionGroupingsWhereRequest) {
+      recommendation_resolution: recommendation_resolution_groupings_v2(where: $where, group_by: ["status"]) {
+        rows {
+          status
+          count
+          sum_rec_estimated_savings
+        }
+      }
+    }
+    `;
+    const where: any = {};
+    if (Array.isArray(accountId)) {
+      if (accountId.length > 0) {
+        where.account_id = { _in: accountId };
+      }
+    } else if (accountId) {
+      where.account_id = { _eq: accountId };
+    }
+    const response = await queryGraphQL(query, 'RecommendationResolutionStatusTotals', { where });
+    const rows = response?.data?.data?.recommendation_resolution?.rows || [];
+    return rows.reduce((totals: Record<string, { count: number; savings: number }>, row: any) => {
+      if (row?.status) {
+        const prev = totals[row.status] || { count: 0, savings: 0 };
+        totals[row.status] = {
+          count: prev.count + (Number(row.count) || 0),
+          savings: prev.savings + (Number(row.sum_rec_estimated_savings) || 0),
+        };
+      }
+      return totals;
+    }, {});
+  },
   async getDistinctResolverTypes(filter = 'resolver_type') {
     const query = `
     query getDistinctResolverTypes($where: RecommendationResolutionGroupingsWhereRequest) {
@@ -2900,10 +3029,15 @@ const apiRecommendations = {
   // tenant's optimization recommendation data. Used to populate filter dropdowns
   // (e.g. the Optimization Trigger config) directly from real data instead of a
   // hardcoded list that silently drifts as new rules are added on the backend.
-  async getDistinctOptimizationRules(): Promise<{ category: string; rule_name: string }[]> {
+  // `accountIds` narrows the rules to those seen on these accounts; empty = whole tenant.
+  async getDistinctOptimizationRules(accountIds: string[] = []): Promise<{ category: string; rule_name: string }[]> {
+    const where: Record<string, any> = { category: { _in: ['RightSizing', 'InfraUpgrade', 'Configuration', 'K8sSpotRecommendation'] } };
+    if (accountIds.length > 0) {
+      where.account_id = { _in: accountIds };
+    }
     const query = `
     query GetDistinctOptimizationRules {
-      recommendation_groupings_v2(where: {category: {_in: ["RightSizing", "InfraUpgrade", "Configuration", "K8sSpotRecommendation"]}}, group_by: ["category", "rule_name"]) {
+      recommendation_groupings_v2(where: ${gqlStringify(where)}, group_by: ["category", "rule_name"]) {
         rows {
           category
           rule_name

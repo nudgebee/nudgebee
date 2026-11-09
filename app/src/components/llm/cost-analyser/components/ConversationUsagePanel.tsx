@@ -43,10 +43,10 @@ export function ConversationUsagePanel({ usage }: ConversationUsagePanelProps) {
 
   const headers = [
     { name: 'Model', width: '32%' },
-    { name: 'Requests', width: '14%' },
-    { name: 'Tokens', width: '22%', secondryText: '(in/out)' },
-    { name: 'Cache hit', width: '16%' },
-    { name: 'Success', width: '16%' },
+    { name: 'Requests', width: '14%', align: 'right' as const },
+    { name: 'Tokens', width: '22%', secondryText: '(in/out)', align: 'right' as const },
+    { name: 'Cache hit', width: '16%', align: 'right' as const },
+    { name: 'Success', width: '16%', align: 'right' as const },
   ];
   const tableData = models.map((m) => [
     {

@@ -8,8 +8,13 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import ErrorBoundary from '@shared/ErrorBoundary';
 import { User1, NotificationIcon1, IntegrationsIcon, AgentIcon, SettingsIcon } from '@assets';
 import apiNotifications from '@api1/notification';
+import apiAccount from '@api1/account';
 import { getAdminOverviewCounts } from '@api1/admin-overview';
 import { isOSSDeploymentMode } from '@hooks/useBCortexEnabled';
+import { getFeatures } from '@lib/UserService';
+import { fetchFeatureFlagsForTenant } from '@lib/auth';
+import { countFeaturesOn } from '@lib/featureFlags';
+import { countConnectedProviders } from '@lib/integrationsSummary';
 
 // The "Overview" sub-view of the admin landing tab — one card per existing admin
 // tab. Each card carries a short description, an at-a-glance count line, and
@@ -33,17 +38,34 @@ import { isOSSDeploymentMode } from '@hooks/useBCortexEnabled';
 //   null      → load failed / unavailable
 //   number    → the real count (0 is a valid count, preserved)
 //
-// Nine of the ten counts come from ONE batched GraphQL document
+// Seven of the ten counts come from ONE batched GraphQL document
 // (getAdminOverviewCounts) — the gateway fans its root fields out in parallel
-// and merges by alias, so it is a single HTTP call, not nine. `channels` stays
-// separate because its accurate value needs getInstalledTools' messaging-
-// platform + integration merge, which a raw aggregate can't reproduce.
+// and merges by alias, so it is a single HTTP call, not seven. `channels`,
+// `flags` and `connected` stay separate because each needs a merge a raw
+// aggregate can't reproduce:
+//   - channels  — getInstalledTools' messaging-platform + integration merge.
+//   - flags     — each feature's catalog polarity + stored_value_inverted, to
+//                 resolve default-on and inverted flags (status="enabled" alone
+//                 under-counts both — see countFeaturesOn).
+//   - connected — the Integrations page's "Connected N": distinct provider tiles
+//                 with an active account, merged across accounts + legacy
+//                 messaging_platforms + integrations (a single-table
+//                 integrations_aggregate misses the first two — see
+//                 countConnectedProviders, which shares the page's normalizer).
 const FETCHERS = [
   {
-    keys: ['users', 'groups', 'rules', 'accounts', 'providers', 'mcps', 'connected', 'flags', 'roles'],
+    keys: ['users', 'groups', 'rules', 'accounts', 'providers', 'mcps', 'roles'],
     run: async () => await getAdminOverviewCounts(),
   },
   { keys: ['channels'], run: async () => ({ channels: (await apiNotifications.getInstalledTools())?.messaging_platforms?.length ?? null }) },
+  {
+    keys: ['flags'],
+    run: async () => {
+      const [catalog, overrides] = await Promise.all([getFeatures(), fetchFeatureFlagsForTenant()]);
+      return { flags: countFeaturesOn(catalog, overrides) };
+    },
+  },
+  { keys: ['connected'], run: async () => ({ connected: countConnectedProviders((await apiAccount.getAllAccount())?.data) }) },
 ];
 
 // A quick-action link deep-links into a tab (`hash`) or, for the Integrations
@@ -116,7 +138,7 @@ const CARDS = [
     description: 'Choose the models, tools and agents that power the assistant.',
     stats: [
       { key: 'providers', one: 'provider', many: 'providers', target: { hash: 'ai-tools/providers' } },
-      { key: 'mcps', one: 'MCP', many: 'MCPs', target: { hash: 'ai-tools/tools-mcp' } },
+      { key: 'mcps', one: 'MCP', many: 'MCPs', target: { hash: 'ai-tools/tools-mcp', action: 'tools-mcp-servers' } },
     ],
     // Most links navigate to the relevant AI & Tools sub-tab, but two point
     // elsewhere because the admin sub-tab is a read-only mirror, not where the

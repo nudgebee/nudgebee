@@ -44,6 +44,19 @@ var resolveManualKnowledgeFn = toolcore.ResolveManualKnowledge
 var resolveDocumentCategoriesFn = toolcore.ResolveDocumentCategories
 
 var queryAccountKnowledgeFn = toolcore.QueryRAGRerankedContext
+
+// queryEventKindKnowledgeFn runs the event-kind search. It leaves out the
+// product documentation: those pages match short event labels generically and
+// crowd out the account's own procedures, while the question-based search
+// still offers them.
+var queryEventKindKnowledgeFn = func(ctx context.Context, userId, accountId, query, module string, numberOfResults int, conversationID, messageId, agentId string, trackTokenUsage bool) toolcore.RAGSearchResults {
+	return toolcore.QueryRAGRerankedFilteredContext(ctx, userId, accountId, query, module, numberOfResults, conversationID, messageId, agentId, trackTokenUsage,
+		map[string]any{"must_not": []any{map[string]any{"field": "source", "value": productDocsSource}}})
+}
+
+// productDocsSource is the metadata source of NudgeBee's own product documentation.
+const productDocsSource = "nudgebee_docs"
+
 var queryCollectionKnowledgeFn = toolcore.QueryRAGCollectionReranked
 var judgeKBResultsFn = toolcore.JudgeKBResults
 
@@ -368,19 +381,19 @@ func retrieveKnowledgeDocs(ctx context.Context, request NBAgentRequest, query st
 	}
 	// One slot per producer allows late completions to exit after timeout.
 	results := make(chan result, slots)
-	accountQuery, collectionQuery := queryAccountKnowledgeFn, queryCollectionKnowledgeFn
-	searchAccount := func(index int, q string) {
+	accountQuery, eventKindQuery, collectionQuery := queryAccountKnowledgeFn, queryEventKindKnowledgeFn, queryCollectionKnowledgeFn
+	searchAccount := func(search func(context.Context, string, string, string, string, int, string, string, string, bool) toolcore.RAGSearchResults, index int, q string) {
 		// One trace id per search, derived inside the goroutine: these run
 		// concurrently, and a shared id would collapse four rows into one.
 		searchCtx, traceID := toolcore.WithRetrievalTraceID(ctx)
-		docs := accountQuery(searchCtx, request.UserId, request.AccountId, q, "knowledge_base",
+		docs := search(searchCtx, request.UserId, request.AccountId, q, "knowledge_base",
 			kbPrestepTopK, request.ConversationId, request.MessageId, request.AgentId, true)
 		results <- result{index: index, docs: docs, traceID: traceID}
 	}
-	go searchAccount(slots-1, query)
+	go searchAccount(accountQuery, slots-1, query)
 	launched := 1
 	if eventQuery != "" {
-		go searchAccount(len(selectedIDs), eventQuery)
+		go searchAccount(eventKindQuery, len(selectedIDs), eventQuery)
 		launched++
 	}
 	for i, id := range selectedIDs {
@@ -915,11 +928,13 @@ func fetchKBData(ctx *security.RequestContext, accountId string, docs toolcore.R
 	if !needsLegacyFallback {
 		return out
 	}
+	// Resolved once: the KBs come from one list, so one visibility lookup covers them.
+	orgIDs := toolcore.VisibleOrgKnowledgebaseIDs(ctx.GetContext(), accountId)
 	for _, kb := range kbs {
 		if kb.Id == "" || !kb.UsableForAgents() || kb.KBType == "integration" {
 			continue
 		}
-		full, err := toolcore.GetKnowledgebase(ctx, accountId, kb.Id)
+		full, err := toolcore.GetKnowledgebaseScoped(ctx, accountId, kb.Id, orgIDs)
 		if err != nil {
 			ctx.GetLogger().Debug("kb_prestep: could not load KB data for attribution", "error", err, "kb_id", kb.Id)
 			continue
@@ -998,7 +1013,13 @@ func DiscoverKnowledgeCandidates(ctx *security.RequestContext, request NBAgentRe
 	if !AutomaticKnowledgeAllowed(request) || agent == nil {
 		return nil
 	}
-	names := append([]string{agent.GetName()}, agent.GetNameAliases()...)
-	kbs := fetchAgentKBs(ctx, request.AccountId, names, request.InheritSkillsFromAgents, request.SelectedSkillIds)
+	kbs := fetchAgentKBs(ctx, request.AccountId, discoveryAgentNames(agent), request.InheritSkillsFromAgents, request.SelectedSkillIds)
 	return retrieveRelevantKB(ctx, request, kbs).candidates
+}
+
+// discoveryAgentNames is the agent's canonical name, its aliases and the
+// all-agents wildcard, which carries KBs mapped to "All agents" and every
+// organisation KB the account can see (the executor's own lookup adds it too).
+func discoveryAgentNames(agent NBAgent) []string {
+	return toolcore.WithKBAgentWildcard(append([]string{agent.GetName()}, agent.GetNameAliases()...))
 }

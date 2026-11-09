@@ -95,6 +95,9 @@ const QueryModeSwitcher = ({
   onAiLoadingChange,
   deleteDataOnQueryBlockDeletion = (_query_key) => {},
   providerType = '',
+  // The field line filters target, resolved from the provider's advertised vocabulary
+  // and threaded from KubernetesLogs (#39573). Defaults to the legacy spelling.
+  logTextField = 'content',
   initialQuery = '',
   initialEsIndex = '',
   limit,
@@ -456,7 +459,7 @@ const QueryModeSwitcher = ({
         if (apiOperator) {
           operationClauses.push({
             _binary: {
-              content: {
+              [logTextField]: {
                 [apiOperator]: op.value,
               },
             },
@@ -893,6 +896,7 @@ const QueryModeSwitcher = ({
           logProvider={logProvider}
           providerOverride={providerOverride}
           operatorDescriptors={operatorDescriptors}
+          logTextField={logTextField}
           queryItems={queryItems}
           params={params}
           onQueryChange={(e) => {
@@ -1133,6 +1137,9 @@ QueryModeSwitcher.propTypes = {
   onAiLoadingChange: PropTypes.func,
   deleteDataOnQueryBlockDeletion: PropTypes.func,
   providerType: PropTypes.string,
+  // The field line filters target, resolved from the provider's advertised
+  // vocabulary and threaded from KubernetesLogs (#39573).
+  logTextField: PropTypes.string,
   initialQuery: PropTypes.string,
 };
 

@@ -3,12 +3,16 @@ import { render, screen } from '@testing-library/react';
 import ExecutionSummaryCards from '@components/workflow/execution-dashboard/ExecutionSummaryCards';
 import type { ExecutionAggregateResponse } from '@api1/workflow/types';
 
+// `failed` on the wire is every run that did not succeed (14 FAILED + 12 timed
+// out + 2 terminated); the headline is the 14 FAILED alone.
 const aggregate: ExecutionAggregateResponse = {
   total: 412,
-  succeeded: 380,
+  succeeded: 370,
   failed: 28,
   running: 4,
   timed_out: 12,
+  terminated: 2,
+  canceled: 10,
   counts_are_approximate: true,
   top_failed: [],
   top_failed_is_approximate: false,
@@ -20,22 +24,59 @@ describe('ExecutionSummaryCards', () => {
   // overstate what the dashboard actually knows.
   it('prefixes counts with ≈ when the server reports them as approximate', () => {
     render(<ExecutionSummaryCards aggregate={aggregate} loading={false} retentionDays={10} />);
-    expect(screen.getByText('≈ 28')).toBeInTheDocument();
+    expect(screen.getByText('≈ 14')).toBeInTheDocument();
     expect(screen.getByText('of ≈ 412 total · last 10 days')).toBeInTheDocument();
   });
 
   it('renders exact counts when the server does not flag them', () => {
     render(<ExecutionSummaryCards aggregate={{ ...aggregate, counts_are_approximate: false }} loading={false} retentionDays={10} />);
-    expect(screen.getByText('28')).toBeInTheDocument();
+    expect(screen.getByText('14')).toBeInTheDocument();
     expect(screen.getByText('of 412 total · last 10 days')).toBeInTheDocument();
   });
 
-  // Failures are the headline; success and timeouts are the context under it.
+  // Failures are the headline; every other outcome is a line under it.
   it('leads with the failed count and breaks the window down beneath it', () => {
     render(<ExecutionSummaryCards aggregate={aggregate} loading={false} retentionDays={10} />);
     expect(screen.getByText('Failed executions')).toBeInTheDocument();
-    expect(screen.getByTestId('execution-dashboard-share-succeeded')).toHaveTextContent('≈ 380 · 92.2%');
+    expect(screen.getByTestId('execution-dashboard-share-succeeded')).toHaveTextContent('≈ 370 · 89.8%');
     expect(screen.getByTestId('execution-dashboard-share-timed-out')).toHaveTextContent('≈ 12 · 2.9%');
+    expect(screen.getByTestId('execution-dashboard-share-terminated')).toHaveTextContent('≈ 2 · 0.5%');
+    expect(screen.getByTestId('execution-dashboard-share-canceled')).toHaveTextContent('≈ 10 · 2.4%');
+  });
+
+  // #39874: 17 runs — 9 completed, 4 failed, 1 timed out, 3 cancelled. The
+  // headline must match the 4 rows Status = Failed lists, the timed-out run must
+  // be counted once, and the cancelled runs must have a line.
+  it('counts each run on exactly one line, so the headline matches the Failed filter', () => {
+    const window: ExecutionAggregateResponse = {
+      ...aggregate,
+      total: 17,
+      succeeded: 9,
+      failed: 5,
+      running: 0,
+      timed_out: 1,
+      terminated: 0,
+      canceled: 3,
+    };
+    render(<ExecutionSummaryCards aggregate={window} loading={false} retentionDays={10} />);
+    expect(screen.getByText('≈ 4')).toBeInTheDocument();
+    expect(screen.getByTestId('execution-dashboard-share-succeeded')).toHaveTextContent('≈ 9 ·');
+    expect(screen.getByTestId('execution-dashboard-share-timed-out')).toHaveTextContent('≈ 1 ·');
+    expect(screen.getByTestId('execution-dashboard-share-terminated')).toHaveTextContent('≈ 0 ·');
+    expect(screen.getByTestId('execution-dashboard-share-canceled')).toHaveTextContent('≈ 3 ·');
+    // 4 + 9 + 1 + 0 + 3 = 17
+  });
+
+  // A server that predates the terminated / canceled counts omits them. Their
+  // lines are left out rather than reading as zero, and the timed-out runs are
+  // still taken out of the headline.
+  it('drops the lines an older server does not report', () => {
+    const older = { ...aggregate, terminated: undefined, canceled: undefined };
+    render(<ExecutionSummaryCards aggregate={older} loading={false} retentionDays={10} />);
+    expect(screen.getByText('≈ 16')).toBeInTheDocument();
+    expect(screen.queryByTestId('execution-dashboard-share-terminated')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('execution-dashboard-share-canceled')).not.toBeInTheDocument();
+    expect(screen.getByTestId('execution-dashboard-share-timed-out')).toBeInTheDocument();
   });
 
   // Running is a point-in-time number and reads wrong beside retention-window
@@ -72,7 +113,7 @@ describe('ExecutionSummaryCards', () => {
 
   // A percentage of zero executions is 0%, not NaN%.
   it('survives an empty window', () => {
-    const empty: ExecutionAggregateResponse = { ...aggregate, total: 0, succeeded: 0, failed: 0, timed_out: 0 };
+    const empty: ExecutionAggregateResponse = { ...aggregate, total: 0, succeeded: 0, failed: 0, timed_out: 0, terminated: 0, canceled: 0 };
     render(<ExecutionSummaryCards aggregate={empty} loading={false} retentionDays={10} />);
     expect(screen.getByTestId('execution-dashboard-share-succeeded')).toHaveTextContent('≈ 0 · 0.0%');
   });

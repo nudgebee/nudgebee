@@ -33,6 +33,7 @@ export const RULE_LABELS: Record<string, string> = {
   vm_stopped: 'VM Stopped',
   missing_tags: 'Missing Tags',
   orphaned_volume: 'Orphaned Volume',
+  disk_performance_overprovisioned: 'Disk Performance Overprovisioned',
   storage_public_access: 'Storage Public Access',
   storage_versioning_disabled: 'Storage Versioning Disabled',
   storage_no_lifecycle: 'Storage No Lifecycle',

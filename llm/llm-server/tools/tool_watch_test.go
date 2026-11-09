@@ -12,6 +12,7 @@ import (
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/watch"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -365,4 +366,30 @@ func TestWatchResourceTool_PrimingDisabled_SkipsTheProbe(t *testing.T) {
 		"probe must not run when priming is disabled")
 	assert.Contains(t, resp.Data, "failed to register watch",
 		"the call should have proceeded past priming to Create")
+}
+
+// watch_status and watch_cancel look a watch up by tenant, so the watch's
+// account decides who may see or cancel it: the same rule as the UI's cancel
+// (api/watches.go). An admin of one account gets nothing of another's.
+func TestWatchLifecycle_AccessFollowsTheWatchesAccount(t *testing.T) {
+	own, other := uuid.New(), uuid.New()
+	nbCtx := core.NbToolContext{Ctx: security.NewRequestContextForTenantAccountAdmin(uuid.NewString(), "user", []string{own.String()})}
+
+	mine := &watch.Watch{AccountID: own}
+	assert.True(t, canAccessWatchAccount(nbCtx, mine, security.SecurityAccessTypeRead))
+	assert.True(t, canAccessWatchAccount(nbCtx, mine, security.SecurityAccessTypeUpdate))
+
+	theirs := &watch.Watch{AccountID: other}
+	assert.False(t, canAccessWatchAccount(nbCtx, theirs, security.SecurityAccessTypeRead), "another account's watch is not visible")
+	assert.False(t, canAccessWatchAccount(nbCtx, theirs, security.SecurityAccessTypeUpdate), "another account's watch cannot be cancelled")
+
+	assert.False(t, canAccessWatchAccount(core.NbToolContext{}, mine, security.SecurityAccessTypeRead), "no caller, no access")
+
+	// A custom-role user with the ai_misc grant keeps what the UI gives them.
+	var custom security.SecurityContext
+	require.NoError(t, json.Unmarshal([]byte(`{"TenantId":"`+uuid.NewString()+`","UserId":"user-2","AccountIds":["`+own.String()+`"],"Roles":[],"CustomPermissions":{"ai_misc:Execute":true}}`), &custom))
+	require.False(t, custom.HasAccountAccess(own.String(), security.SecurityAccessTypeUpdate), "no built-in role: only the grant can let it through")
+	customCtx := core.NbToolContext{Ctx: security.NewRequestContext(context.Background(), &custom, nil, nil, nil)}
+	assert.True(t, canAccessWatchAccount(customCtx, mine, security.SecurityAccessTypeUpdate), "custom role with ai_misc Execute may cancel")
+	assert.False(t, canAccessWatchAccount(customCtx, theirs, security.SecurityAccessTypeUpdate), "but not on an account outside its tenant scope")
 }

@@ -5,6 +5,8 @@ import (
 	"nudgebee/runbook/internal/tasks/types"
 	"nudgebee/runbook/services/llm"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 // sessionScopeParamFieldName is the schema key for the optional LLM session
@@ -39,12 +41,26 @@ const (
 //
 // WorkflowId / ExecutionId / Labels are always per-run regardless of scope —
 // only the conversation identity changes.
+//
+// An isolated "Run Task" execution (Task Runner) has neither a workflow id nor
+// a run id, so both formats above collapse to one constant (`wf____` / `wf__`)
+// and every Task Runner run in the account lands in the same llm-server
+// conversation, carrying earlier runs' text into the next one (#39834). Such a
+// run gets `wf__runtask__<uuid>` whatever the scope: there is no workflow to
+// share a conversation across. A random id is safe here and only here —
+// ExecuteTask is a direct synchronous call, so nothing re-rolls it; inside an
+// activity it would change on every Temporal retry. For the same reason the
+// workflow scope applies only when there is a workflow id; without one it
+// falls back to the per-run id instead of the constant `wf__`.
 func workflowTraceFields(taskCtx types.TaskContext, sessionScope string) (sessionId string, workflowId string, executionId string, labels map[string]any) {
 	workflowId = taskCtx.GetWorkflowID()
 	executionId = taskCtx.GetWorkflowRunID()
-	if sessionScope == sessionScopeWorkflow {
+	switch {
+	case workflowId == "" && executionId == "":
+		sessionId = "wf__runtask__" + uuid.NewString()
+	case sessionScope == sessionScopeWorkflow && workflowId != "":
 		sessionId = fmt.Sprintf("wf__%s", workflowId)
-	} else {
+	default:
 		sessionId = fmt.Sprintf("wf__%s__%s", workflowId, executionId)
 	}
 
@@ -119,6 +135,7 @@ func sessionScopeInputSchemaProperty(order int) types.Property {
 		Help: "With scope 'workflow' the conversation session id is `wf__<workflow-id>` instead of `wf__<workflow-id>__<execution-id>`, " +
 			"so successive executions resume the same conversation on the LLM server. " +
 			"Useful for recurring workflows that should remember earlier findings. " +
+			"A Task Runner run is not part of a workflow, so it always starts a fresh conversation. " +
 			"Caveats: the shared history grows with every run (older context may eventually be truncated by the model's context window), " +
 			"and concurrent executions of the same workflow will interleave their messages in the one conversation.",
 		Required: false,

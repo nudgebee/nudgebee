@@ -691,11 +691,42 @@ func TestMakeFetchResponse_ReadCoverage(t *testing.T) {
 		assert.Empty(t, logReadCoverageNote(`{"stdout":"line"}`))
 	})
 
+	t.Run("a backend that stopped before the window's end: counts are a lower bound", func(t *testing.T) {
+		note := logReadCoverageNote(`{"logs":[],"coverage":{"limit":2000,"returned":85,"partial":true}}`)
+		assert.True(t, strings.HasPrefix(note, "partial read: the log backend stopped before reading the whole window, "+
+			`so the 85 lines returned are a lower bound — report counts as "at least 85", not as the total`), note)
+	})
+
+	t.Run("the backend's own count is named", func(t *testing.T) {
+		note := logReadCoverageNote(`{"logs":[],"coverage":{"limit":1000,"returned":1000,"total":72612,"total_relation":"eq"}}`)
+		assert.Contains(t, note, "partial read: the read stopped at its limit of 1000 lines")
+		assert.Contains(t, note, "the backend counts 72612 matching lines in the window")
+
+		note = logReadCoverageNote(`{"logs":[],"coverage":{"limit":1000,"returned":1000,"total":10000,"total_relation":"gte"}}`)
+		assert.Contains(t, note, "the backend counts at least 10000 matching lines in the window")
+	})
+
+	t.Run("fewer lines than the limit although more matched", func(t *testing.T) {
+		note := logReadCoverageNote(`{"logs":[],"coverage":{"limit":50,"returned":2,"total":10000,"total_relation":"gte"}}`)
+		assert.True(t, strings.HasPrefix(note, "partial read: the log backend returned 2 lines, fewer than the limit of 50, although more lines matched"), note)
+	})
+
 	t.Run("a span that could not be read is left out of the note", func(t *testing.T) {
 		note := logReadCoverageNote(`{"logs":[],"coverage":{"limit":5000,"returned":5000}}`)
 		assert.Equal(t, "partial read: the read stopped at its limit of 5000 lines, so the window may hold more lines than were read; "+
 			"lines in the window outside the returned span were not read, and nothing can be concluded about them; "+
 			"reading them takes a narrower window or filter", note)
+	})
+
+	t.Run("a widened read names the window asked for and the window read", func(t *testing.T) {
+		note := logReadCoverageNote(`{"logs":[],"coverage":{"limit":500,"returned":500,` +
+			`"oldest":"2026-10-08T10:20:00Z","newest":"2026-10-08T10:45:59Z",` +
+			`"requested_start":"2026-10-08T10:30:00Z","requested_end":"2026-10-08T10:32:00Z",` +
+			`"read_start":"2026-10-08T10:16:00Z","read_end":"2026-10-08T10:46:00Z"}}`)
+		assert.True(t, strings.HasSuffix(note, "; the window asked for was 2026-10-08T10:30:00Z to 2026-10-08T10:32:00Z; "+
+			"the read ran over the wider window 2026-10-08T10:16:00Z to 2026-10-08T10:46:00Z, and every line of the window asked for was read; "+
+			"only lines of the wider window outside the returned span were not read"), note)
+		assert.NotContains(t, note, "nothing can be concluded")
 	})
 }
 
@@ -1445,4 +1476,103 @@ func TestAutoBundleQueryRE(t *testing.T) {
 		assert.Equalf(t, tc.want, autoBundleQueryRE.MatchString(tc.q),
 			"autoBundleQueryRE.MatchString(%q)", tc.q)
 	}
+}
+
+// The file's shape is measured once at save time into the reference's
+// description; the envelope carries the same text so the logs agent can filter
+// the file without first reading its head.
+func TestMakeFetchResponse_CarriesLogsShapeFromFileRef(t *testing.T) {
+	logs := `{"logs":[{"timestamp":"2026-01-15T05:30:48Z","message":"a"}]}`
+	refs := []toolcore.NBToolResponseReference{
+		{Type: "link", Url: "https://example.com", Description: "not the file"},
+		{Type: "file", Url: "logs_loki_9.txt", Description: "Raw log data from loki: 1 lines"},
+	}
+	resp := makeFetchResponse("fetch_logs", "q", logs, flattenLogsToTabSeparated(logs), "logs_loki_9.txt", "", refs)
+	var env map[string]any
+	if err := json.Unmarshal([]byte(resp.Response[0]), &env); err != nil {
+		t.Fatalf("envelope is not JSON: %v", err)
+	}
+	assert.Equal(t, "Raw log data from loki: 1 lines", env["logs_shape"])
+
+	noFile := makeFetchResponse("fetch_logs", "q", logs, "", "", "", refs)
+	var env2 map[string]any
+	if err := json.Unmarshal([]byte(noFile.Response[0]), &env2); err != nil {
+		t.Fatalf("envelope is not JSON: %v", err)
+	}
+	assert.NotContains(t, env2, "logs_shape")
+}
+
+// Shaped like a flattened Loki file from a real investigation: an init
+// container's plain-text line first, then the app's JSON lines newest first.
+const lokiFlattened = "2026-10-10T04:23:29.697273824Z\tdb.example.com:5432 - accepting connections\n" +
+	"2026-10-10T05:04:35.907815126Z\t{\"time\":\"2026-10-10T05:04:35Z\",\"level\":\"INFO\",\"msg\":\"refreshed event triggers\",\"count\":8}\n" +
+	"2026-10-10T05:04:05.903927097Z\t{\"time\":\"2026-10-10T05:04:05Z\",\"level\":\"INFO\",\"msg\":\"Workflow execution completed\"}\n" +
+	"2026-10-10T04:24:09.214670387Z\t{\"time\":\"2026-10-10T04:24:09Z\",\"level\":\"ERROR\",\"msg\":\"Workflow failed\",\"error\":\"status 400\"}\n" +
+	"2026-10-10T04:23:35.899211649Z\t{\"time\":\"2026-10-10T04:23:35Z\",\"level\":\"WARN\",\"msg\":\"connection closed\"}\n"
+
+func TestDescribeLogLines_FlattenedLoki(t *testing.T) {
+	s := DescribeLogLines(lokiFlattened)
+
+	assert.Equal(t, 5, s.Lines)
+	assert.Equal(t, 5, s.Timestamped)
+	assert.Equal(t, "2026-10-10T04:23:29.697273824Z", s.First)
+	assert.Equal(t, "2026-10-10T05:04:35.907815126Z", s.Last)
+	assert.Equal(t, "not in time order", s.Order)
+	assert.Equal(t, 4, s.JSONMessages)
+	assert.Equal(t, 1, s.TextMessages)
+	assert.Equal(t, []string{"level", "msg", "time", "count", "error"}, s.TopKeys)
+	assert.Equal(t, map[string]int{"INFO": 2, "ERROR": 1, "WARN": 1}, s.Levels)
+
+	assert.Equal(t,
+		"5 lines, each <RFC 3339 timestamp><TAB><message>; "+
+			"timestamps 2026-10-10T04:23:29.697273824Z to 2026-10-10T05:04:35.907815126Z, not in time order (filter by comparing timestamps, not by line position); "+
+			"4 JSON messages with keys level, msg, time, count, error (INFO 2, ERROR 1, WARN 1); "+
+			"1 plain-text messages; no pod, container or other stream label is on the line.",
+		s.Describe(true))
+}
+
+func TestDescribeLogLines_Order(t *testing.T) {
+	line := func(ts string) string { return ts + "\tmsg\n" }
+	newest := line("2026-10-10T05:00:00Z") + line("2026-10-10T04:00:00Z") + line("2026-10-10T03:00:00Z")
+	assert.Equal(t, "newest first", DescribeLogLines(newest).Order)
+	assert.NotContains(t, DescribeLogLines(newest).Describe(false), "not by line position")
+
+	oldest := line("2026-10-10T03:00:00Z") + line("2026-10-10T04:00:00Z")
+	assert.Equal(t, "oldest first", DescribeLogLines(oldest).Order)
+
+	var mostly strings.Builder
+	for h := 23; h >= 0; h-- {
+		mostly.WriteString(line("2026-10-10T" + twoDigits(h) + ":00:00Z"))
+	}
+	mostly.WriteString(line("2026-10-10T12:30:00Z"))
+	assert.Equal(t, "mostly newest first", DescribeLogLines(mostly.String()).Order)
+}
+
+func twoDigits(n int) string {
+	return string(rune('0'+n/10)) + string(rune('0'+n%10))
+}
+
+// kubectl output passes through unchanged: no timestamps, no labels claim.
+func TestDescribeLogLines_PlainText(t *testing.T) {
+	s := DescribeLogLines("starting server\nlistening on :8080\n\n")
+	assert.Equal(t, 2, s.Lines)
+	assert.Equal(t, 0, s.Timestamped)
+	assert.Equal(t, "", s.Order)
+	assert.Equal(t, "2 lines (0 start with <RFC 3339 timestamp><TAB>); 2 plain-text messages.", s.Describe(false))
+	assert.Equal(t, "empty", DescribeLogLines("").Describe(false))
+}
+
+// Fractional seconds of different lengths must order by time, not by string:
+// "…:35Z" sorts after "…:35.1Z" lexically but is earlier.
+func TestDescribeLogLines_MixedFractionalSeconds(t *testing.T) {
+	body := "2026-10-10T05:04:35.1Z\tb\n2026-10-10T05:04:35Z\ta\n2026-10-10T05:04:34.999999999Z\tz\n"
+	s := DescribeLogLines(body)
+	assert.Equal(t, "2026-10-10T05:04:34.999999999Z", s.First)
+	assert.Equal(t, "2026-10-10T05:04:35.1Z", s.Last)
+	assert.Equal(t, "newest first", s.Order)
+}
+
+func TestDescribeLogLines_NumericLevels(t *testing.T) {
+	body := "2026-10-10T05:00:00Z\t{\"level\":30,\"msg\":\"ok\"}\n2026-10-10T04:59:00Z\t{\"level\":50,\"msg\":\"boom\"}\n"
+	assert.Equal(t, map[string]int{"30": 1, "50": 1}, DescribeLogLines(body).Levels)
 }

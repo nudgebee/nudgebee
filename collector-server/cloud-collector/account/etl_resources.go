@@ -19,9 +19,16 @@ import (
 
 // notYetArchived keeps the archive UPDATEs off rows already at their target: an
 // UPDATE writes a new row version and fires the updated_at trigger even when
-// nothing changed. Both columns are nullable, so `status != 'Deleted'` would
-// skip (Deleted, NULL) rows and `is_active = false` would skip NULL.
-const notYetArchived = `(is_active IS DISTINCT FROM false OR status IS DISTINCT FROM 'Deleted')`
+// nothing changed. It selects the rows that are still live; is_active is
+// nullable and NULL counts as live, so `is_active = true` would skip those.
+//
+// It must stay the same expression as the predicate of
+// idx_cloud_resourses_live_account_service (migration V1002): Postgres uses a
+// partial index only when the query implies its predicate. Most of an
+// account's rows are already archived, and without that index every archive
+// UPDATE reads all of them to find the few still live. A row that is already
+// inactive keeps whatever status it has.
+const notYetArchived = `(is_active IS NOT FALSE)`
 
 // gcpRegionShape matches a real GCP regional value (geo-direction-number, e.g.
 // us-central1, asia-south1). It deliberately rejects "global" and multi-region

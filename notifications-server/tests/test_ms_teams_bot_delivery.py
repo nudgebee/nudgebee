@@ -238,7 +238,8 @@ def test_a_template_goes_to_the_mapped_channel_as_the_bot():
 def test_a_team_without_the_app_fails_visibly():
     with mock.patch.object(message_module, "load_team_async", mock.AsyncMock(return_value=None)):
         response = asyncio.run(_message_service().send_teams_template_notification(_ip(), lambda _: {}, {}, None, "t"))
-    assert response["status"] == "failed" and response["reason"] == bs.APP_NOT_IN_TEAM
+    assert response["status"] == "failed" and response["reason"] == "not_in_channel"
+    assert response["retryable"] is False
 
 
 def test_a_403_is_reported_and_the_team_is_left_alone():
@@ -249,7 +250,8 @@ def test_a_403_is_reported_and_the_team_is_left_alone():
         mock.patch.object(message_module, "get_sender", return_value=sender),
     ):
         response = asyncio.run(_message_service().send_teams_template_notification(_ip(), lambda _: {}, {}, None, "t"))
-    assert response["status"] == "failed" and "403" in response["reason"]
+    assert response["status"] == "failed" and response["reason"] == "permission_denied"
+    assert response["error_code"] == "403" and response["retryable"] is False
 
 
 def test_only_the_first_mapped_channel_gets_the_card():
@@ -287,7 +289,7 @@ def test_a_finding_without_a_mapped_channel_is_not_sent():
     ip = SimpleNamespace(tenant_id="nb-tenant", to_channel={"team_id": "group-1", "channels": []}, team_id="t")
     with mock.patch.object(message_module, "get_ms_teams_finding_message_template", return_value={}):
         response, sent = asyncio.run(_message_service()._send_finding_to_teams(None, "nb-tenant", ip, {}, None))
-    assert response["status"] == "failed" and response["reason"] == "No Microsoft Teams channel is mapped"
+    assert response["status"] == "failed" and response["reason"] == "not_configured"
     assert sent is None
 
 
@@ -375,6 +377,49 @@ def test_connect_stores_no_graph_token():
     config = upsert.call_args.kwargs["config"]
     assert not {"access_token", "refresh_token", "token_expires_at"} & set(config), "earlier tokens are left alone"
     assert upsert.call_args.kwargs["name"] == "tenant-a"
+
+
+def test_saving_a_messaging_connection_clears_the_cached_installs_after_commit():
+    import uuid
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from notifications_server.models.models import Base, Integration, IntegrationConfigValue
+    from notifications_server.services import messaging_installations as mi
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine, tables=[Integration.__table__, IntegrationConfigValue.__table__])
+    tenant = uuid.UUID("aaaaaaaa-1111-4111-8111-111111111111")
+    seen_in_db = []
+
+    def cleared(tenant_id):
+        # Another session must already see the row, or a reader could re-cache the old list.
+        with Session(engine) as other:
+            seen_in_db.append(other.query(Integration).filter(Integration.tenant_id == tenant).count())
+
+    with Session(engine) as session, mock.patch.object(mi, "Cache") as cache:
+        cache.return_value.delete_cached_installations.side_effect = cleared
+        mi.upsert_messaging_integration(session, tenant, "ms_teams", "tenant-a", {"client_id": "object-1"})
+    cache.return_value.delete_cached_installations.assert_called_once_with(tenant)
+    assert seen_in_db == [1]
+
+
+def test_a_cache_failure_doesnt_fail_saving_the_connection():
+    import uuid
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from notifications_server.models.models import Base, Integration, IntegrationConfigValue
+    from notifications_server.services import messaging_installations as mi
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine, tables=[Integration.__table__, IntegrationConfigValue.__table__])
+    tenant = uuid.UUID("aaaaaaaa-1111-4111-8111-111111111111")
+    with Session(engine) as session, mock.patch.object(mi, "Cache", side_effect=RuntimeError("redis down")):
+        integ = mi.upsert_messaging_integration(session, tenant, "ms_teams", "tenant-a", {"client_id": "object-1"})
+        assert integ.name == "tenant-a"
 
 
 def test_load_teams_returns_only_enabled_teams_of_the_tenant():
@@ -496,19 +541,19 @@ def test_a_channel_outside_the_team_is_refused():
 
 def test_an_alert_to_a_channel_outside_the_team_is_not_sent():
     sender = mock.Mock()
-    sender.check_channel.side_effect = bs.TeamsBotError(bs.CHANNEL_NOT_IN_TEAM)
+    sender.check_channel.side_effect = bs.ChannelNotInTeamError()
     with (
         mock.patch.object(message_module, "load_team_async", mock.AsyncMock(return_value=TEAM)),
         mock.patch.object(message_module, "get_sender", return_value=sender),
     ):
         response = asyncio.run(_message_service().send_teams_template_notification(_ip(), lambda _: {}, {}, None, "t"))
-    assert response["status"] == "failed" and bs.CHANNEL_NOT_IN_TEAM in response["reason"]
+    assert response["status"] == "failed" and response["reason"] == "channel_not_found"
     sender.send.assert_not_called()
 
 
 def test_a_test_send_to_a_channel_outside_the_team_is_not_sent(svc):
     sender = mock.Mock()
-    sender.check_channel.side_effect = bs.TeamsBotError(bs.CHANNEL_NOT_IN_TEAM)
+    sender.check_channel.side_effect = bs.ChannelNotInTeamError()
     with (
         mock.patch.object(common_module, "load_teams", return_value=[TEAM]),
         mock.patch.object(common_module, "get_sender", return_value=sender),
@@ -526,7 +571,7 @@ def test_a_failed_alert_keeps_its_reason():
         mock.patch.object(message_module, "get_ms_teams_finding_message_template", return_value={}),
     ):
         response, _ = asyncio.run(_message_service()._send_finding_to_teams(None, "nb-tenant", _ip(), {}, None))
-    assert response["status"] == "failed" and response["reason"] == bs.APP_NOT_IN_TEAM
+    assert response["status"] == "failed" and response["reason"] == "not_in_channel"
 
 
 class _CountingServer:

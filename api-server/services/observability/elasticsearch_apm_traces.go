@@ -392,7 +392,7 @@ func (e *ElasticAPMTraceSource) QueryTraces(ctx *security.RequestContext, req Tr
 
 	dsl := buildAPMTraceQuery(req, elasticAPMTraceLabelMapping)
 
-	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esAPMTraceIndexFor(cfg, traceIndexOverride(req.Request))), dsl, cfg) //nolint:bodyclose
+	resp, err := esRequestJSON("POST", esIndexURL(cfg.Url, esAPMTraceIndexFor(cfg, traceIndexOverride(req.Request)), "_search"), dsl, cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("failed to query traces: %w", err)
 	}
@@ -435,7 +435,7 @@ func (e *ElasticAPMTraceSource) CountTraces(ctx *security.RequestContext, req Tr
 	delete(dsl, "sort")
 	delete(dsl, "from")
 
-	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esAPMTraceIndexFor(cfg, traceIndexOverride(req.Request))), dsl, cfg) //nolint:bodyclose
+	resp, err := esRequestJSON("POST", esIndexURL(cfg.Url, esAPMTraceIndexFor(cfg, traceIndexOverride(req.Request)), "_search"), dsl, cfg) //nolint:bodyclose
 	if err != nil {
 		return common.OpenTelemetryTraceCount{}, fmt.Errorf("failed to count traces: %w", err)
 	}
@@ -486,7 +486,7 @@ func (e *ElasticAPMTraceSource) GetLabelValues(ctx *security.RequestContext, req
 		dsl["query"] = map[string]any{"bool": map[string]any{"filter": boolFilters}}
 	}
 
-	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esAPMTraceIndexFor(cfg, traceIndexOverride(req.Request))), dsl, cfg) //nolint:bodyclose
+	resp, err := esRequestJSON("POST", esIndexURL(cfg.Url, esAPMTraceIndexFor(cfg, traceIndexOverride(req.Request)), "_search"), dsl, cfg) //nolint:bodyclose
 	if err != nil {
 		return common.OpenTelemetryTraceLabelValues{}, fmt.Errorf("failed to query label values: %w", err)
 	}
@@ -584,7 +584,7 @@ func (e *ElasticAPMTraceSource) QueryGroupedTraces(ctx *security.RequestContext,
 		boolFilters = append(boolFilters, whereFilters...)
 	}
 
-	searchURL := fmt.Sprintf("%s/%s/_search", cfg.Url, esAPMTraceIndexFor(cfg, traceIndexOverride(req.Request)))
+	searchURL := esIndexURL(cfg.Url, esAPMTraceIndexFor(cfg, traceIndexOverride(req.Request)), "_search")
 	buckets, err := fetchAllCompositeTraceBuckets(
 		ctx, cfg, searchURL, boolFilters,
 		esCompositeSources(elasticAPMTraceGroupDims),
@@ -637,7 +637,7 @@ func (e *ElasticAPMTraceSource) QueryGroupedTracesCount(ctx *security.RequestCon
 		},
 	}
 
-	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esAPMTraceIndexFor(cfg, traceIndexOverride(req.Request))), dsl, cfg) //nolint:bodyclose
+	resp, err := esRequestJSON("POST", esIndexURL(cfg.Url, esAPMTraceIndexFor(cfg, traceIndexOverride(req.Request)), "_search"), dsl, cfg) //nolint:bodyclose
 	if err != nil {
 		return common.OpenTelemetryTraceGroupCount{}, fmt.Errorf("failed to query grouped traces count: %w", err)
 	}
@@ -677,7 +677,7 @@ func (e *ElasticAPMTraceSource) QueryTracesHeatmap(ctx *security.RequestContext,
 		"sort":  []map[string]any{{"@timestamp": map[string]any{"order": "asc"}}},
 	}
 
-	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esAPMTraceIndexFor(cfg, traceIndexOverride(req.Request))), dsl, cfg) //nolint:bodyclose
+	resp, err := esRequestJSON("POST", esIndexURL(cfg.Url, esAPMTraceIndexFor(cfg, traceIndexOverride(req.Request)), "_search"), dsl, cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("failed to query traces heatmap: %w", err)
 	}

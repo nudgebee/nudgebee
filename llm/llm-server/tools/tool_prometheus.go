@@ -96,6 +96,7 @@ func init() {
 }
 
 type PrometheusExecuteTool struct {
+	core.ReadOnlyTool
 }
 
 func (m PrometheusExecuteTool) Name() string {
@@ -117,6 +118,7 @@ func (m PrometheusExecuteTool) Description() string {
 		Important Notes:
 		* Ensure the PromQL query is syntactically correct and adheres to the PromQL specification.
 		* The output may contain a large volume of data points. You should process and summarize the data appropriately before presenting it to the user.
+		* For a large result (many series or many points), the full data is saved to a workspace file and the response carries only stats (min/max/avg/p99) for the most significant series. A "__data_note" key, present only then, gives the file name and totals. If you have shell_execute, read that file with jq/python for per-point detail or for series not shown inline instead of re-running the query; if you do not, narrow the label selector or add aggregation (e.g. sum by(...)) to get detail on specific series.
 	`
 }
 
@@ -226,6 +228,22 @@ func (m PrometheusExecuteTool) cleanupQuery(query string) string {
 	return query
 }
 
+// uniqueCleanedQueries cleans each ';'-separated query and drops repeats, so a
+// duplicate in a batch is run once and cannot collide on seriesByQuery/finalData.
+func (m PrometheusExecuteTool) uniqueCleanedQueries(queries []string) []string {
+	seen := make(map[string]struct{}, len(queries))
+	out := make([]string, 0, len(queries))
+	for _, q := range queries {
+		q = m.cleanupQuery(q)
+		if _, dup := seen[q]; dup {
+			continue
+		}
+		seen[q] = struct{}{}
+		out = append(out, q)
+	}
+	return out
+}
+
 // extractPromQLFromCommand checks whether the command string is a JSON object
 // containing a "query" or "command" key (common when the LLM wraps the PromQL
 // inside a structured payload instead of providing a raw expression). If so it
@@ -288,8 +306,13 @@ func (m PrometheusExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 	query = strings.ReplaceAll(query, "`", "")
 
 	// split query by ;
-	queries := strings.Split(query, ";")
+	queries := m.uniqueCleanedQueries(strings.Split(query, ";"))
 	finalData := make(map[string]any)
+	// seriesByQuery holds every matched series (stats + raw timestamps/values)
+	// per ';'-separated query, so an oversized result can be saved whole to the
+	// workspace instead of being cut down.
+	seriesByQuery := make(map[string][]any, len(queries))
+	var totalSeries, totalPoints int
 	endTime := time.Now()
 	startTime := endTime.Add(-24 * time.Hour)
 
@@ -301,7 +324,6 @@ func (m PrometheusExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 	}
 
 	for _, q := range queries {
-		q = m.cleanupQuery(q)
 
 		// Validate PromQL syntax locally before hitting the relay server.
 		// This catches issues like comma-separated queries, missing brackets,
@@ -416,8 +438,58 @@ func (m PrometheusExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 			}
 		}
 
-		// Sanitize any remaining +Inf/NaN float64 values before marshaling
 		sanitizeFloats(apiData)
+		seriesByQuery[q] = apiData
+		totalSeries += len(apiData)
+		totalPoints += countSeriesPoints(apiData)
+	}
+
+	// Every series already has stats (min/max/avg/p99). When the raw
+	// timestamps/values are too large to hand the planner inline, they are
+	// saved in full to a workspace file and only the stats go inline, so no
+	// data is lost.
+	var (
+		fileRef    string
+		saveFailed bool
+		refs       []core.NBToolResponseReference
+	)
+	oversized := totalPoints > maxInlinePoints || totalSeries > maxInlineSeries
+	// Bytes too, not only counts: a node-CPU query returns one series per core and
+	// mode, and under the count limits its 50–100 KB went inline whole, growing the
+	// Prometheus agent's context 15–27k tokens per step (58–69 s to first token by step
+	// 4 on dev, #39201). es_metrics_query bounds the same way.
+	if !oversized {
+		if b, err := common.MarshalJson(seriesByQuery); err == nil && len(b) > promInlineBytes {
+			oversized = true
+		}
+	}
+	if oversized {
+		// Save before statsOnlySeries below: it strips timestamps/values from these same maps in place.
+		fileRef, refs, err = saveSeriesToWorkspace(nbRequestContext, seriesByQuery)
+		saveFailed = err != nil
+		if saveFailed {
+			nbRequestContext.Ctx.GetLogger().Warn("prometheus: failed to save metrics to workspace", "error", err.Error())
+		}
+	}
+	shown, used := 0, 0
+	for _, q := range queries {
+		apiData, ok := seriesByQuery[q]
+		if !ok {
+			continue
+		}
+		if oversized {
+			n := len(apiData)
+			apiData, shown, used = statsOnlySeriesWithin(apiData, shown, used)
+			if n > 0 && len(apiData) == 0 {
+				// Not "[]": that reads as no data when the series are only in the saved file.
+				where := "see the saved file"
+				if saveFailed {
+					where = "narrow this query to see them"
+				}
+				finalData[q] = fmt.Sprintf("%d series, not shown inline (inline limit reached); %s", n, where)
+				continue
+			}
+		}
 		data, err := common.MarshalJson(apiData)
 		if err != nil {
 			nbRequestContext.Ctx.GetLogger().Error("prometheus: unable to marshal data", "error", err.Error())
@@ -445,6 +517,10 @@ func (m PrometheusExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 		}, nil
 	}
 
+	if oversized {
+		finalData["__data_note"] = seriesFileNote(fileRef, saveFailed, totalSeries, totalPoints, shown)
+	}
+
 	dataResponse, err := common.MarshalJson(finalData)
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("prometheus: unable to marshal final data", "error", err.Error())
@@ -457,7 +533,7 @@ func (m PrometheusExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 		Data:       string(dataResponse),
 		Type:       core.NBToolResponseTypeJson,
 		Status:     core.NBToolResponseStatusSuccess,
-		References: []core.NBToolResponseReference{core.GetNudgebeeUIReferenceForClusterDetails(nbRequestContext, []string{"monitoring", "query"}, "Query Prometheus", map[string]string{"tab": "4", "subtab": "2"}, input.Command)},
+		References: append(refs, core.GetNudgebeeUIReferenceForClusterDetails(nbRequestContext, []string{"monitoring", "query"}, "Query Prometheus", map[string]string{"tab": "4", "subtab": "2"}, input.Command)),
 	}, nil
 }
 
@@ -577,7 +653,102 @@ func sanitizeFloats(v any) any {
 	return v
 }
 
+// maxInlinePoints and maxInlineSeries bound how much raw series data
+// prometheus_execute puts inline; past either, the full result is saved to a
+// workspace file and only per-series stats go inline. Grounded in a 30-day
+// sample of real calls: p99 total points/call was 3,407 and p99 series/call
+// was 51, so typical queries stay inline.
+const (
+	maxInlinePoints = 2000
+	maxInlineSeries = 150
+)
+
+// countSeriesPoints sums the raw timestamps across series.
+func countSeriesPoints(apiData []any) int {
+	points := 0
+	for _, s := range apiData {
+		if ss, ok := s.(map[string]any); ok {
+			if ts, ok := ss["timestamps"].([]any); ok {
+				points += len(ts)
+			}
+		}
+	}
+	return points
+}
+
+// seriesSignificance ranks a series by the magnitude of its stats.max, for
+// choosing which series' stats go inline. Series without stats sort last.
+func seriesSignificance(s any) float64 {
+	ss, ok := s.(map[string]any)
+	if !ok {
+		return math.Inf(-1)
+	}
+	stats, ok := ss["stats"].(map[string]any)
+	if !ok {
+		return math.Inf(-1)
+	}
+	max, ok := stats["max"].(float64)
+	if !ok || math.IsNaN(max) {
+		// NaN would break the strict weak ordering sort.SliceStable requires.
+		return math.Inf(-1)
+	}
+	return math.Abs(max)
+}
+
+// statsOnlySeries returns apiData ranked by descending significance
+// (deterministic, so retried calls see the same subset) with timestamps/values
+// removed, stopping once shown reaches maxInlineSeries. shown is the running
+// count across a ';'-batch so the cap bounds the whole call.
+func statsOnlySeries(apiData []any, shown int) ([]any, int) {
+	sort.SliceStable(apiData, func(i, j int) bool {
+		return seriesSignificance(apiData[i]) > seriesSignificance(apiData[j])
+	})
+	kept := make([]any, 0, len(apiData))
+	for _, s := range apiData {
+		if shown >= maxInlineSeries {
+			break
+		}
+		if ss, ok := s.(map[string]any); ok {
+			delete(ss, "values")
+			delete(ss, "timestamps")
+		}
+		kept = append(kept, s)
+		shown++
+	}
+	return kept, shown
+}
+
+// saveSeriesToWorkspace writes the full per-query series (stats, timestamps,
+// values) as JSON to the conversation workspace so shell_execute/jq can read it.
+func saveSeriesToWorkspace(nbRequestContext core.NbToolContext, seriesByQuery map[string][]any) (string, []core.NBToolResponseReference, error) {
+	body, err := common.MarshalJson(seriesByQuery)
+	if err != nil {
+		return "", nil, err
+	}
+	filename := fmt.Sprintf("metrics_prometheus_%d.json", time.Now().UnixNano())
+	if err := wm.SaveFile(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, filename, string(body)); err != nil {
+		return "", nil, err
+	}
+	return filename, []core.NBToolResponseReference{{
+		Text:        filename,
+		Url:         filename,
+		Type:        "file",
+		Description: "Full Prometheus query results",
+	}}, nil
+}
+
+// seriesFileNote tells the planner where the complete data went and what is
+// (and is not) inline.
+func seriesFileNote(fileRef string, saveFailed bool, totalSeries, totalPoints, shown int) string {
+	inline := fmt.Sprintf("Inline results carry only stats (min/max/avg/p99) for the %d of %d matched series with the largest |max|.", shown, totalSeries)
+	if saveFailed {
+		return inline + " The full data could not be saved to the workspace; narrow the label selector or add aggregation (e.g. sum by(...)) for detail."
+	}
+	return fmt.Sprintf("%s The complete results (%d series, %d points, with timestamps and values) are saved to file_ref %q as JSON {query: [{labels..., timestamps, values, stats}]}. If you have shell_execute, use jq/python on that file for per-point detail instead of re-running the query; if you do not, narrow the label selector or add aggregation (e.g. sum by(...)) to get detail on specific series.", inline, totalSeries, totalPoints, fileRef)
+}
+
 type MetricsListTool struct {
+	core.ReadOnlyTool
 	Provider     string
 	DefaultIndex string
 }
@@ -1205,6 +1376,7 @@ func parseMetricNamesFromLLMResponse(content string) []string {
 }
 
 type ListMetricsLabelsTool struct {
+	core.ReadOnlyTool
 	Provider     string
 	DefaultIndex string
 }
@@ -1220,10 +1392,11 @@ func (m ListMetricsLabelsTool) GetType() core.NBToolType {
 func (m ListMetricsLabelsTool) Description() string {
 	return `Returns List of Available labels for a given metric.
 		Usage:
-		* Input: (required) Metric Name.
+		* Input: (required) Metric Name (on Elasticsearch: the index pattern).
+		* Optional "filter": part of a field name; only fields whose path contains it are returned (e.g. "DBInstanceIdentifier" finds "aws.dimensions.DBInstanceIdentifier").
 		* Output: The tool will return available labels for the given metric.
 
-		Purpose: Use this tool to list the labels available for a given metric name.
+		Purpose: Use this tool to list the labels available for a given metric name, or to find the full path of a field you know by name.
 		`
 }
 
@@ -1235,9 +1408,30 @@ func (m ListMetricsLabelsTool) InputSchema() core.ToolSchema {
 				Type:        core.ToolSchemaTypeString,
 				Description: "metrics name to fetch labels",
 			},
+			"filter": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Optional part of a field name; only fields whose path contains it are returned (case-insensitive).",
+			},
 		},
 		Required: []string{"command"},
 	}
+}
+
+// filterLabelsByName keeps the labels whose name contains fragment, case-insensitively.
+// On Elasticsearch a field list can run to thousands of paths; this is how the agent
+// finds where a field it knows by name actually lives in this index.
+func filterLabelsByName(labels []core.ObservabilityMetricsSeriesLabel, fragment string) []core.ObservabilityMetricsSeriesLabel {
+	f := strings.ToLower(strings.TrimSpace(fragment))
+	if f == "" {
+		return labels
+	}
+	out := make([]core.ObservabilityMetricsSeriesLabel, 0)
+	for _, l := range labels {
+		if strings.Contains(strings.ToLower(l.Label), f) {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 func (m ListMetricsLabelsTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
@@ -1290,6 +1484,17 @@ func (m ListMetricsLabelsTool) Call(nbRequestContext core.NbToolContext, input c
 		}, err
 	}
 
+	if fragment := sanitizeMetricsArg(argString(input, "filter")); fragment != "" {
+		total := len(labelsResponse.Labels)
+		labelsResponse.Labels = filterLabelsByName(labelsResponse.Labels, fragment)
+		note := fmt.Sprintf("%d of %d fields contain %q.", len(labelsResponse.Labels), total, fragment)
+		if fallbackNote != "" {
+			fallbackNote += " " + note
+		} else {
+			fallbackNote = note
+		}
+	}
+
 	var payload any = labelsResponse
 	if fallbackNote != "" {
 		payload = map[string]any{"note": fallbackNote, "labels": labelsResponse.Labels}
@@ -1330,6 +1535,7 @@ func (m ListMetricsLabelsTool) Call(nbRequestContext core.NbToolContext, input c
 // the iteration budget runs out and the run reports "no data" for a resource that is
 // in fact fully instrumented. Enumerating the values ends the loop in one call.
 type ListMetricsLabelValuesTool struct {
+	core.ReadOnlyTool
 	Provider     string
 	DefaultIndex string
 }
@@ -1459,15 +1665,17 @@ func (m ListMetricsLabelValuesTool) Call(nbRequestContext core.NbToolContext, in
 
 	if err := validateLabelArg(label); err != nil {
 		return core.NBToolResponse{
-			Data:   "Error: " + err.Error(),
-			Status: core.NBToolResponseStatusError,
+			Data:       "Error: " + err.Error(),
+			Status:     core.NBToolResponseStatusError,
+			IsBadInput: true,
 		}, nil
 	}
 
 	if label == "" {
 		return core.NBToolResponse{
-			Data:   "Error: 'label' is required. Provide the label name whose values you want (e.g. 'instance', 'node', 'pod'). Use metrics_labels_list first if you do not know the label names for a metric.",
-			Status: core.NBToolResponseStatusError,
+			Data:       "Error: 'label' is required. Provide the label name whose values you want (e.g. 'instance', 'node', 'pod'). Use metrics_labels_list first if you do not know the label names for a metric.",
+			Status:     core.NBToolResponseStatusError,
+			IsBadInput: true,
 		}, nil
 	}
 
@@ -1535,7 +1743,8 @@ func (m ListMetricsLabelValuesTool) Call(nbRequestContext core.NbToolContext, in
 				"Call %s to list the labels that do exist before retrying. "+
 				"Check also that %q is a single field name and not a query string.",
 				label, ToolMetricsLabelsList, label),
-			Status: core.NBToolResponseStatusError,
+			Status:     core.NBToolResponseStatusError,
+			IsBadInput: true,
 		}, nil
 	}
 
@@ -1579,6 +1788,7 @@ func (m ListMetricsLabelValuesTool) Call(nbRequestContext core.NbToolContext, in
 // against the account-specific prometheus collection in Qdrant, returning the most
 // semantically relevant metrics with example PromQL queries.
 type SearchMetricsTool struct {
+	core.ReadOnlyTool
 	Provider string
 }
 
@@ -1739,4 +1949,32 @@ func MetricsDiscoveryProviderFor(provider services_server.ObservabilityProvider)
 		return strings.TrimSpace(provider.Provider)
 	}
 	return "prometheus"
+}
+
+// promInlineBytes bounds the inline series JSON; past it the full result is saved to
+// the workspace and only per-series stats go inline, as for the count limits.
+const promInlineBytes = 24 * 1024
+
+// statsOnlySeriesWithin is statsOnlySeries that also stops at promInlineBytes, so a
+// result with many wide series still fits; the rest stay in the saved file.
+func statsOnlySeriesWithin(apiData []any, shown, used int) ([]any, int, int) {
+	ranked, _ := statsOnlySeries(apiData, 0)
+	kept := make([]any, 0, len(ranked))
+	for _, s := range ranked {
+		if shown >= maxInlineSeries {
+			break
+		}
+		b, err := common.MarshalJson(s)
+		if err != nil {
+			// One bad series must not fail the whole query's marshal below.
+			continue
+		}
+		if used+len(b)+1 > promInlineBytes {
+			break
+		}
+		used += len(b) + 1
+		kept = append(kept, s)
+		shown++
+	}
+	return kept, shown, used
 }

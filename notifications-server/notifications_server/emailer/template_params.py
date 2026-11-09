@@ -71,6 +71,8 @@ def get_default_template():
             "branding_url": settings.urls.base_url,
             "base_url": settings.urls.base_url,
             "calendly_url": settings.urls.calendly_url,
+            "privacy_url": settings.urls.branding_privacy_url,
+            "terms_url": settings.urls.branding_terms_url,
         },
         "branding": {
             "name": settings.urls.branding_name,

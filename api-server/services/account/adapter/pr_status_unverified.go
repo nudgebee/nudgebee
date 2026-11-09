@@ -39,3 +39,8 @@ func PRStatusCheckExpired(lastChecked *time.Time, now time.Time) bool {
 func PRStatusGaveUpMessage(lastError string) string {
 	return truncateForStatus("Could not check the pull request for 7 days, so the recommendation is handed back. " + lastError)
 }
+
+// CloudStatusGaveUpMessage is PRStatusGaveUpMessage for a change in a cloud account.
+func CloudStatusGaveUpMessage(lastError string) string {
+	return truncateForStatus("Could not check the change in the cloud account for 7 days, so the recommendation is handed back. " + lastError)
+}

@@ -5,6 +5,7 @@ import KeyboardDoubleArrowLeftIcon from '@mui/icons-material/KeyboardDoubleArrow
 import KeyboardDoubleArrowRightIcon from '@mui/icons-material/KeyboardDoubleArrowRight';
 import { useRouter } from 'next/router';
 import OwnerBadge from '@components/ownership/OwnerBadge';
+import AssignOwnerModal from '@components/ownership/AssignOwnerModal';
 import useResourceOwner, { sourceText } from '@hooks/useResourceOwner';
 import PropTypes from 'prop-types';
 import { ds } from 'src/utils/colors';
@@ -19,10 +20,11 @@ import NBStatusBadge from '@shared/widgets/NBStatusBadge';
 import TriageScore from '@shared/widgets/TriageScore';
 import InvestigateDropdown from '@components/k8s/investigate/InvestigateDropdown';
 import { EventOccurrenceRows, EventStateRows, useEventOccurrence } from '@components/k8s/investigate/EventStateRows';
+import { eventWhen } from '@components/k8s/investigate/eventState';
 import k8sApi from '@api1/kubernetes';
 import { SOURCE_SEVERITY_INFO } from '@api1/triage';
 import { describeContainerMemory } from '@components/k8s/investigate/podFacts';
-import { hasWriteAccess, getUserSession } from '@lib/auth';
+import { hasWriteAccess, getUserSession, isTenantAdmin } from '@lib/auth';
 import { snackbar } from '@shared/snackbarService';
 import { exitCodeMapping, snakeToTitleCase } from 'src/utils/common';
 import { hasEventSubjectLink } from 'src/utils/eventSubjectLink';
@@ -70,6 +72,20 @@ const rowSx = {
 const valueTextSx = { color: ds.gray[700], lineHeight: '1.4' };
 
 // `info` puts an icon after the value whose hover says what the row means.
+// assignableOwnerRung returns the rung an owner can be assigned to from the sidebar:
+// the investigated resource itself, and only when the resolver holds it as active.
+//
+// Never a namespace or account rung. An event that does not identify its resource
+// still resolves a chain from those, but an owner set there is inherited by everything
+// under it — too wide an action to hang off one alert. And never a resource the
+// resolver has no active record of: an owner assigned to it is saved and then hidden,
+// so the row would go on saying "Unassigned".
+export function assignableOwnerRung(levels) {
+  const first = levels?.[0];
+  if (!first || first.noActiveResource) return null;
+  return first.resourceType === 'workload' || first.resourceType === 'cloud_resource' ? first : null;
+}
+
 const Row = ({ label, children, testId, info }) => (
   <Box sx={rowSx} data-testid={testId}>
     <Text value={label} secondaryText />
@@ -145,6 +161,12 @@ function InvestigateSidebar({
   const [showLabels, setShowLabels] = useState(false);
   const occurrence = useEventOccurrence(row);
   const [showChain, setShowChain] = useState(false);
+  // What the assign dialog was opened on. The target itself rather than an open flag:
+  // the chain behind `assignRung` moves when the sidebar is handed another event, and
+  // an open dialog must go on naming — and writing to — the resource it was opened on.
+  const [assignTarget, setAssignTarget] = useState(null);
+  // Bumped after an owner is assigned, so the chain re-resolves and the row shows it.
+  const [ownerReload, setOwnerReload] = useState(0);
 
   const {
     effective: owner,
@@ -163,11 +185,14 @@ function InvestigateSidebar({
           cloudAccountId: row?.cloud_account_id,
           namespace: row?.subject_namespace,
         })
-      : []
+      : [],
+    ownerReload
   );
   // Nothing to resolve (no account), the source isn't known yet, or the resolve failed
   // — drop the section rather than claim the resource is unowned.
   const showOwner = sourceKnown && !ownerUnresolvable && !!row?.cloud_account_id;
+  // Assigning is tenant-admin only — the backend refuses anyone else.
+  const assignRung = showOwner && isTenantAdmin() ? assignableOwnerRung(ownerLevels) : null;
   const [incidentMembers, setIncidentMembers] = useState([]);
 
   // Members of this event's incident group (#34655) — fetched only when the
@@ -250,6 +275,7 @@ function InvestigateSidebar({
   };
 
   const detailsPathPrefix = isCloud ? '/cloud-account/details' : '/kubernetes/details';
+  const when = eventWhen(row);
 
   const fitCustomLabelStyles = useMemo(
     () => ({
@@ -429,7 +455,8 @@ function InvestigateSidebar({
               <Text value={row.subject_namespace} secondaryText showAutoEllipsis sx={valueTextSx} />
             </Row>
           )}
-          {row?.subject_node && (
+          {/* A node alert's subject is the node, which the first row already names. */}
+          {row?.subject_node && row.subject_node !== row.subject_name && (
             <Row label={isCloud ? 'Region' : 'Node'}>
               <Text value={row.subject_node} copyableTooltip showAutoEllipsis sx={{ fontSize: ds.text.small, ...valueTextSx }} />
             </Row>
@@ -446,7 +473,27 @@ function InvestigateSidebar({
               ) : owner ? (
                 <OwnerBadge owner={owner} hideHint />
               ) : (
-                <Text value={'Unassigned'} secondaryText sx={valueTextSx} />
+                <>
+                  <Text value={'Unassigned'} secondaryText sx={valueTextSx} />
+                  {assignRung && (
+                    <Button
+                      tone='link'
+                      size='xs'
+                      onClick={() =>
+                        setAssignTarget({
+                          resourceType: assignRung.resourceType,
+                          resourceKey: assignRung.resourceKey,
+                          cloudAccountId: row?.cloud_account_id,
+                          label: row?.subject_owner || row?.subject_name,
+                        })
+                      }
+                      id='investigate-assign-owner'
+                      data-testid='investigate-assign-owner'
+                    >
+                      Assign owner
+                    </Button>
+                  )}
+                </>
               )}
             </Row>
           )}
@@ -454,17 +501,11 @@ function InvestigateSidebar({
           <Row label='When'>
             {/* Relative answers "is this fresh", the clock time "which moment"; the
                 full form with timezone and year is the hover. */}
-            {row?.starts_at && (
-              <Datetime value={row?.starts_at} sx={{ fontSize: ds.text.small }} sxSuffix={{ color: ds.gray[700], fontSize: ds.text.small }} />
-            )}
-            {formatClockCompact(row?.starts_at) && (
-              <Tooltip title={formatClock(row.starts_at)} arrow placement='bottom'>
+            {when && <Datetime value={when} sx={{ fontSize: ds.text.small }} sxSuffix={{ color: ds.gray[700], fontSize: ds.text.small }} />}
+            {formatClockCompact(when) && (
+              <Tooltip title={formatClock(when)} arrow placement='bottom'>
                 <Box component='span' sx={{ display: 'inline-flex' }}>
-                  <Text
-                    value={`· ${formatClockCompact(row.starts_at)}`}
-                    secondaryText
-                    sx={{ ...valueTextSx, whiteSpace: 'nowrap', cursor: 'default' }}
-                  />
+                  <Text value={`· ${formatClockCompact(when)}`} secondaryText sx={{ ...valueTextSx, whiteSpace: 'nowrap', cursor: 'default' }} />
                 </Box>
               </Tooltip>
             )}
@@ -688,8 +729,12 @@ function InvestigateSidebar({
                 openInNew={true}
                 id='rule-automation-link'
               >
+                {/* An automation's name is what its author typed: shown as stored, so it can be
+                    searched for. The aggregation_key fallback is an identifier and keeps Label's
+                    default capitalisation, like the rule names below. */}
                 <Label
                   text={row.labels.automation_name || row?.aggregation_key || '-'}
+                  textTransform={row.labels.automation_name ? 'none' : undefined}
                   margin='0'
                   height='auto'
                   wordBreak='break-word'
@@ -900,6 +945,17 @@ function InvestigateSidebar({
           {showInternal && <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: ds.space[1] }}>{internalLabelChips}</Box>}
         </Section>
       </Box>
+      {assignTarget && (
+        <AssignOwnerModal
+          open
+          onClose={() => setAssignTarget(null)}
+          resourceType={assignTarget.resourceType}
+          resourceKey={assignTarget.resourceKey}
+          cloudAccountId={assignTarget.cloudAccountId}
+          resourceLabel={assignTarget.label}
+          onChange={() => setOwnerReload((n) => n + 1)}
+        />
+      )}
     </Box>
   );
 }

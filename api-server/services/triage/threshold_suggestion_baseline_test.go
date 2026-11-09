@@ -25,6 +25,17 @@ func idxInterval(h *MetricHistory, i0, i1 int) firingInterval {
 	return firingInterval{start: h.Timestamps[i0], end: h.Timestamps[i1]}
 }
 
+// shortFirings builds the wait-ladder counts (firings that cleared within 1, 2, 3, 5 and 10
+// minutes) the way computeAlertQuality stores them.
+func shortFirings(within1m, within2m, within3m, within5m, within10m int) []ShortFiringCount {
+	counts := []int{within1m, within2m, within3m, within5m, within10m}
+	out := make([]ShortFiringCount, len(waitLadder))
+	for i, step := range waitLadder {
+		out[i] = ShortFiringCount{WithinSeconds: step.within, Count: counts[i]}
+	}
+	return out
+}
+
 func concat(parts ...[]float64) []float64 {
 	var out []float64
 	for _, p := range parts {
@@ -70,11 +81,11 @@ func TestDiagnose_MistunedGT(t *testing.T) {
 	}
 }
 
-func TestDiagnose_ChronicWithHeadroomNamesValueOutsideBand(t *testing.T) {
-	// Metric sits at ~150 against θ=100 with no natural ceiling: the off-alert baseline itself
-	// crosses θ, so this is chronic — but unlike a metric pinned at its failure bound there IS a
-	// value clear of the normal band, and #38804 is that the tuner used to return none. Stays
-	// investigate_signal (not auto-appliable) while naming the number.
+func TestDiagnose_ChronicTightBandOffersNoValue(t *testing.T) {
+	// Metric sits at ~150 against θ=100 and never leaves a ±4 band: the off-alert baseline itself
+	// crosses θ, so this is chronic. The nearest value clear of the band (156) is above everything
+	// the metric did all week, so a rule set there would not have fired once — it is "switch the
+	// alert off" stated as a number, and no value is offered.
 	h := mkHistory(60, concat(band(25, 150, 4), band(75, 150, 4)))
 	iv := idxInterval(h, 25, 99)
 	ad := &AlertDefinition{Operator: ">", CurrentThreshold: 100}
@@ -85,8 +96,8 @@ func TestDiagnose_ChronicWithHeadroomNamesValueOutsideBand(t *testing.T) {
 	if s.Diagnosis != "chronic" || s.RecommendationType != "investigate_signal" {
 		t.Fatalf("got diagnosis=%q type=%q coverage=%.2f", s.Diagnosis, s.RecommendationType, s.BaselineCoverage)
 	}
-	if s.SuggestedThreshold <= 100 {
-		t.Errorf("chronic with headroom must name a value outside the normal band, got %.2f", s.SuggestedThreshold)
+	if s.SuggestedThreshold != 100 {
+		t.Errorf("a value the metric never reached must not be offered, got %.2f", s.SuggestedThreshold)
 	}
 }
 
@@ -131,14 +142,35 @@ func TestDiagnose_ExcursionTransientIncreaseDuration(t *testing.T) {
 	// Same excursion shape but transient (self-resolving) ⇒ increase the evaluation window.
 	h := mkHistory(60, concat(band(50, 20, 6), band(10, 150, 5)))
 	iv := idxInterval(h, 50, 59)
-	ad := &AlertDefinition{Operator: ">", CurrentThreshold: 100}
-	aq := &AlertQualityScore{TransientRate: 0.85, DurationP90: 120}
+	// The rule waits 30s today; 34 of its 40 firings cleared within two minutes.
+	ad := &AlertDefinition{Operator: ">", CurrentThreshold: 100, ForSeconds: 30, forKnown: true}
+	aq := &AlertQualityScore{TransientRate: 0.85, TotalCount: 40, ResolvedCount: 40, ShortFirings: shortFirings(20, 34, 34, 34, 34)}
 	s, ok := diagnoseWithBaseline(ad, h, []firingInterval{iv}, aq)
 	if !ok {
 		t.Fatal("expected baseline path to handle")
 	}
 	if s.Diagnosis != "excursion" || s.RecommendationType != "increase_duration" {
 		t.Fatalf("got diagnosis=%q type=%q", s.Diagnosis, s.RecommendationType)
+	}
+	// 30s + 2m, written as whole minutes.
+	if s.SuggestedDuration != 3 || s.CurrentDurationSeconds != 30 {
+		t.Errorf("wait = %ds -> %dm, want 30s -> 3m (%s)", s.CurrentDurationSeconds, s.SuggestedDuration, s.DurationReason)
+	}
+}
+
+func TestDiagnose_ExcursionTransientWithoutAKnownWaitInvestigates(t *testing.T) {
+	// The same short firings, but the rule's current wait is not known: "wait longer" cannot name
+	// a wait to set, so the rule is investigated rather than given advice with no number.
+	h := mkHistory(60, concat(band(50, 20, 6), band(10, 150, 5)))
+	iv := idxInterval(h, 50, 59)
+	ad := &AlertDefinition{Operator: ">", CurrentThreshold: 100}
+	aq := &AlertQualityScore{TransientRate: 0.85, TotalCount: 40, ResolvedCount: 40, ShortFirings: shortFirings(20, 34, 34, 34, 34)}
+	s, ok := diagnoseWithBaseline(ad, h, []firingInterval{iv}, aq)
+	if !ok {
+		t.Fatal("expected baseline path to handle")
+	}
+	if s.RecommendationType != "investigate_signal" || s.SuggestedDuration != 0 {
+		t.Fatalf("got type=%q duration=%d reason=%s", s.RecommendationType, s.SuggestedDuration, s.Reason)
 	}
 }
 
@@ -197,13 +229,14 @@ func TestSelectSeriesForEvent_MatchesLabels(t *testing.T) {
 	tv := &MetricHistory{Labels: map[string]string{"datname": "temporal_visibility"}, Values: []float64{0.97, 0.96}}
 	event := map[string]interface{}{"datname": "temporal_visibility", "alertname": "PostgreSQLCacheHitRatio", "severity": "warning"}
 	// The event fired for temporal_visibility — analyze that series, not the healthier postgres one.
-	if got := selectSeriesForEvent([]*MetricHistory{pg, tv}, event, 0.98, false); got != tv {
+	if got, matched := selectSeriesForEvent([]*MetricHistory{pg, tv}, event, 0.98, false); got != tv || !matched {
 		t.Error("expected the series whose labels match the event (temporal_visibility)")
 	}
-	// No labels on the series → fall back to top-violating (LT ⇒ lowest value).
+	// No labels on the series → fall back to top-violating (LT ⇒ lowest value), and say it is not
+	// the event's own series.
 	noLabels := []*MetricHistory{{Values: []float64{0.99}}, {Values: []float64{0.95}}}
-	if got := selectSeriesForEvent(noLabels, event, 0.98, false); got != noLabels[1] {
-		t.Error("expected fallback to the top-violating series when no labels are present")
+	if got, matched := selectSeriesForEvent(noLabels, event, 0.98, false); got != noLabels[1] || matched {
+		t.Error("expected fallback to the top-violating series, reported as not matched, when no labels are present")
 	}
 }
 
@@ -213,13 +246,14 @@ func TestSelectSeriesForEvent_PodAlertUsesTheKeptPod(t *testing.T) {
 	noisy := &MetricHistory{Labels: map[string]string{"namespace": "shop", "pod": "cart-5d9f7c6b8-abcde"}, Values: []float64{5, 6, 7}}
 	fired := &MetricHistory{Labels: map[string]string{"namespace": "shop", "pod": "orders-86c5cc649d-xbdz4"}, Values: []float64{1, 2, 1}}
 	event := map[string]interface{}{"namespace": "shop", "pod": "orders", "kind": "Deployment", "nb_alert_pod": "orders-86c5cc649d-xbdz4"}
-	if got := selectSeriesForEvent([]*MetricHistory{noisy, fired}, event, 0.5, true); got != fired {
+	if got, matched := selectSeriesForEvent([]*MetricHistory{noisy, fired}, event, 0.5, true); got != fired || !matched {
 		t.Error("expected the series of the pod the alert named")
 	}
-	// Without the kept pod nothing matches and the top-violating series is the fallback.
+	// Without the kept pod nothing matches and the top-violating series is the fallback — another
+	// pod, which the verdict then has to name.
 	delete(event, "nb_alert_pod")
-	if got := selectSeriesForEvent([]*MetricHistory{noisy, fired}, event, 0.5, true); got != noisy {
-		t.Error("expected fallback to the top-violating series when the pod label is the workload name")
+	if got, matched := selectSeriesForEvent([]*MetricHistory{noisy, fired}, event, 0.5, true); got != noisy || matched {
+		t.Error("expected fallback to the top-violating series, reported as not matched, when the pod label is the workload name")
 	}
 }
 
@@ -335,8 +369,9 @@ func TestDiagnose_MistunedWrongDirectionFlagged(t *testing.T) {
 func TestDiagnose_BaselineAboveThresholdNamesValueOutsideBand(t *testing.T) {
 	// >40% of off-alert samples cross θ (unbounded, not pinned). The firings themselves are
 	// corroborated, so the segmentation is sound — the threshold is simply set below the metric's
-	// normal band. Name the value clear of that band rather than abstaining; a genuine series
-	// mismatch is caught earlier now, by the per-interval self-check.
+	// normal band. Name the value clear of that band rather than abstaining (#38804); a genuine
+	// series mismatch is caught earlier, by the per-interval self-check. The value is one the
+	// metric still reached, so it is offered — as something to review, never as clean advice.
 	h := mkHistory(60, concat(band(50, 120, 60), band(10, 300, 20)))
 	iv := idxInterval(h, 50, 59)
 	ad := &AlertDefinition{Operator: ">", CurrentThreshold: 100}
@@ -344,11 +379,15 @@ func TestDiagnose_BaselineAboveThresholdNamesValueOutsideBand(t *testing.T) {
 	if !ok {
 		t.Fatal("expected baseline path to handle")
 	}
-	if s.Diagnosis != "chronic" || s.RecommendationType != "investigate_signal" {
-		t.Fatalf("expected chronic/investigate, got %q (diag=%q)", s.RecommendationType, s.Diagnosis)
+	finalizeSuggestion(s, ad, nil, h)
+	if s.Diagnosis != "chronic" || s.RecommendationType != "tune_threshold" {
+		t.Fatalf("expected a chronic tuning, got %q (diag=%q reason=%s)", s.RecommendationType, s.Diagnosis, s.Reason)
 	}
 	if s.SuggestedThreshold <= 100 {
 		t.Errorf("must name a value above the normal band, got %.2f", s.SuggestedThreshold)
+	}
+	if s.RiskLevel != "review" || s.Confidence != "low" || len(s.RiskWarnings) == 0 {
+		t.Errorf("a chronic value needs a person's judgement: risk=%q confidence=%q warnings=%v", s.RiskLevel, s.Confidence, s.RiskWarnings)
 	}
 }
 
@@ -462,18 +501,19 @@ func TestDiagnose_InsufficientBaseline(t *testing.T) {
 
 func TestDiagnose_PostgreSQLCacheHitRatioShape(t *testing.T) {
 	// The alert #38804 was filed on, at its measured dev distribution: cache hit ratio sitting at
-	// 0.96–0.99 against a "< 0.98" threshold, in alarm ~96% of the window, 1,250 firings a week.
-	// The tuner used to return "persistent signal, not noise — investigate the root cause; do not
-	// retune" and no number at all.
-	h := mkHistory(60, concat(band(25, 0.98, 0.01), band(650, 0.96, 0.02)))
+	// 0.96–0.98 against a "< 0.98" threshold with occasional dips to ~0.90, in alarm ~96% of the
+	// window, 1,250 firings a week. The tuner used to return "persistent signal, not noise —
+	// investigate the root cause; do not retune" and no number at all.
+	h := mkHistory(60, concat(band(25, 0.98, 0.01), band(600, 0.97, 0.01), band(50, 0.92, 0.02)))
 	iv := idxInterval(h, 25, 674)
 	ad := &AlertDefinition{Operator: "<", CurrentThreshold: 0.98, MetricName: "pg_cache_hit_ratio"}
 	s, ok := diagnoseWithBaseline(ad, h, []firingInterval{iv}, nil)
 	if !ok {
 		t.Fatal("expected baseline path to handle")
 	}
-	if s.RecommendationType == "insufficient_data" {
-		t.Fatalf("must not abstain on a corroborated, tunable alert: %s", s.Reason)
+	finalizeSuggestion(s, ad, nil, h)
+	if s.RecommendationType != "tune_threshold" {
+		t.Fatalf("must offer a value on a corroborated, tunable alert: type=%q reason=%s", s.RecommendationType, s.Reason)
 	}
 	if s.SuggestedThreshold >= 0.98 {
 		t.Fatalf("must name a threshold below the normal band, got %.4g (type=%q diag=%q reason=%s)",

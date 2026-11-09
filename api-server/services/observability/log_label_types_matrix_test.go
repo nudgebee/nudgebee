@@ -10,7 +10,7 @@ import (
 )
 
 // This file exhaustively crosses every operator a provider advertises with every
-// normalized data type, for Pinot and Loki. It exists because the ES PPL formatter was
+// normalized data type, for Pinot, Loki and SolarWinds. It exists because the ES PPL formatter was
 // found quoting int64 only after Pinot and Hive had already been fixed — a gap that a
 // per-case test could not surface but a full cross-product does.
 //
@@ -49,27 +49,50 @@ func operatorFixture(op string, scalar string, list []any) any {
 	}
 }
 
+// matrixProvider pairs a provider name with its own query builder.
+type matrixProvider struct {
+	name string
+	// field is the column the cells filter on ("col" when empty). SolarWinds uses
+	// "program": on a field its log rows do not carry, it refuses the case-sensitive and
+	// anchored patterns it cannot check, by design.
+	field string
+	// render turns a validated where clause into the provider's own query, so a
+	// renderer that mishandles a coerced value shows up as an error or a quoted
+	// literal rather than passing silently.
+	render func(query.QueryWhereClause) (string, error)
+}
+
+// matrixProviders are the log sources whose builders the operator tests exercise.
+var matrixProviders = []matrixProvider{
+	{
+		name:   "pinot",
+		render: buildPinotWhereClause,
+	},
+	{
+		name: "loki",
+		render: func(w query.QueryWhereClause) (string, error) {
+			s := &LokiSource{}
+			return s.BuildLokiQuery(LogsQueryBuilderRequest{Where: w})
+		},
+	},
+	{
+		name:  "solarwinds",
+		field: "program",
+		render: func(w query.QueryWhereClause) (string, error) {
+			rendered, err := buildSWFilterClause(w)
+			if err == nil && rendered == "" && hasWhereConditions(w) {
+				// No search narrowing, but the filter is applied to every returned row
+				// (filterSWRows), so nothing is dropped.
+				rendered = "(applied to rows)"
+			}
+			return rendered, err
+		},
+	},
+}
+
 // TestOperatorDataTypeMatrix crosses provider × operator × data type.
 func TestOperatorDataTypeMatrix(t *testing.T) {
-	providers := []struct {
-		name string
-		// render turns a validated where clause into the provider's own query, so a
-		// renderer that mishandles a coerced value shows up as an error or a quoted
-		// literal rather than passing silently.
-		render func(query.QueryWhereClause) (string, error)
-	}{
-		{
-			name:   "pinot",
-			render: buildPinotWhereClause,
-		},
-		{
-			name: "loki",
-			render: func(w query.QueryWhereClause) (string, error) {
-				s := &LokiSource{}
-				return s.BuildLokiQuery(LogsQueryBuilderRequest{Where: w})
-			},
-		},
-	}
+	providers := matrixProviders
 
 	// Built once: constructing a request context costs ~880ms, while the code under
 	// test takes ~250µs. Per-cell construction made this test 100s instead of <1s.
@@ -81,7 +104,7 @@ func TestOperatorDataTypeMatrix(t *testing.T) {
 			for _, fixture := range typeFixtures {
 				name := fmt.Sprintf("%s/%s/%s", provider.name, strings.TrimPrefix(op, "_"), fixture.dataType)
 				t.Run(name, func(t *testing.T) {
-					assertMatrixCell(t, ctx, provider.name, provider.render, source, op, fixture.dataType, fixture.attributes,
+					assertMatrixCell(t, ctx, provider.name, provider.field, provider.render, source, op, fixture.dataType, fixture.attributes,
 						operatorFixture(op, fixture.value, fixture.listValue))
 				})
 			}
@@ -98,6 +121,8 @@ func providerSourceFor(t *testing.T, name string) LogSource {
 		return &PinotSource{}
 	case "loki":
 		return &LokiSource{}
+	case "solarwinds":
+		return &SolarWindsLogSource{}
 	default:
 		t.Fatalf("unknown provider %q", name)
 		return nil
@@ -108,6 +133,7 @@ func assertMatrixCell(
 	t *testing.T,
 	ctx *security.RequestContext,
 	providerName string,
+	field string,
 	render func(query.QueryWhereClause) (string, error),
 	source LogSource,
 	op string,
@@ -117,7 +143,9 @@ func assertMatrixCell(
 ) {
 	t.Helper()
 
-	const field = "col"
+	if field == "" {
+		field = "col"
+	}
 	stub := &stubLogSource{
 		labels:    []OutputLogLabel{{Label: field, Attributes: attributes}},
 		operators: source.GetSupportedOperators(),
@@ -191,6 +219,35 @@ func assertValueRendering(t *testing.T, providerName, rendered, dataType, op str
 	case query.LabelTypeString, query.LabelTypeUnknown:
 		if !strings.Contains(rendered, "'") {
 			t.Errorf("string/unknown column must stay quoted, got: %s", rendered)
+		}
+	}
+}
+
+// TestOperatorMatrixUnadvertisedNeverRendersEmpty is the other half of the matrix: an
+// operator a provider does NOT advertise still arrives from saved URLs, code mode and
+// the LLM agent. The builder must refuse it or render it, never drop it silently.
+// SolarWinds dropped _regex this way, so a regex filter returned every log line.
+func TestOperatorMatrixUnadvertisedNeverRendersEmpty(t *testing.T) {
+	for _, provider := range matrixProviders {
+		source := providerSourceFor(t, provider.name)
+		advertised := map[string]bool{}
+		for _, op := range source.GetSupportedOperators() {
+			advertised[op] = true
+		}
+		for token := range query.OperatorCatalog {
+			if advertised[token] {
+				continue
+			}
+			t.Run(fmt.Sprintf("%s/%s", provider.name, strings.TrimPrefix(token, "_")), func(t *testing.T) {
+				value := operatorFixture(token, "api-xyz", []any{"a", "b"})
+				where := query.QueryWhereClause{
+					Binary: query.BinaryWhereClause{"col": {query.BinaryWhereClauseType(token): value}},
+				}
+				rendered, err := provider.render(where)
+				if err == nil && strings.TrimSpace(rendered) == "" {
+					t.Fatalf("%s renders unadvertised operator %s as an empty filter; refuse it with an error", provider.name, token)
+				}
+			})
 		}
 	}
 }

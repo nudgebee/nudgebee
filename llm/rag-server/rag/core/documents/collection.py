@@ -226,12 +226,43 @@ def query_collection(collection_name: str, query: str, limit=10) -> List[str] | 
 
 
 def _forget_classification(collection_name: str) -> None:
-    """Drop the classification rollup of a collection that was just deleted, so a
-    collection recreated under the same name (an integration KB's is stable) does
-    not show the labels of the one it replaced."""
+    """Drop the classification rollup and the per-page label rows of a collection that
+    was just deleted, so a collection recreated under the same name (an integration
+    KB's is stable) does not show the labels of the one it replaced."""
     from rag.core.utils.db_query import delete_kb_capabilities
 
     delete_kb_capabilities(collection_name)
+
+
+def set_collection_scope(collection_name: str, account_id: str | None, tenant_id: str | None) -> bool:
+    """Re-scope a knowledge-base collection in place: to one account, or to a tenant.
+
+    Only the collection's metadata changes, so nothing is re-embedded. Search
+    admits a collection by its ``account`` or ``tenant_id`` metadata; the other
+    key is removed (Qdrant deletes a metadata key set to None). Both caches that
+    hold collection metadata are cleared so search sees the new scope at once.
+
+    Returns False, changing nothing, when the collection does not exist: a
+    knowledge base whose upload failed or has not run has no collection, and
+    its next upload creates one with the scope of its row.
+    """
+    if bool(account_id) == bool(tenant_id):
+        raise ValueError("exactly one of account_id or tenant_id is required")
+    client = get_qdrant_client()
+    if not client.collection_exists(collection_name):
+        logger.info(f"Collection {collection_name} does not exist; nothing to re-scope")
+        return False
+    metadata = {"account": account_id, "tenant_id": None} if account_id else {"account": None, "tenant_id": tenant_id}
+    client.update_collection(collection_name, metadata=metadata)
+    scope = f"account {account_id}" if account_id else f"tenant {tenant_id}"
+    logger.info(f"Re-scoped collection {collection_name} to {scope}")
+
+    from rag.core.cache import get_collection_list_cache
+    from rag.core.metadata_cache import get_metadata_cache
+
+    get_collection_list_cache().invalidate()
+    get_metadata_cache().invalidate(collection_name)
+    return True
 
 
 def delete_collection(collection_name: str):
@@ -557,8 +588,9 @@ def list_collection_documents(collection_name: str, limit: int = 50, offset: str
 # document on that same id, so this is the join between an indexed point and its stored
 # source. A new scrape adds its key here. Public because search results must carry the
 # same keys (controllers/knowledge_document.py): llm-server keys a document's Fact/SOP
-# mark on them.
-SOURCE_ID_KEYS = ("source_id", "page_id", "sys_id")
+# mark on them. kb_number comes before sys_id because ServiceNow gives every new article
+# version a new sys_id.
+SOURCE_ID_KEYS = ("source_id", "page_id", "kb_number", "sys_id")
 
 
 def _source_identifier(metadata: dict) -> str | None:
@@ -570,6 +602,24 @@ def _source_identifier(metadata: dict) -> str | None:
         if value is None or value == "":
             continue
         return str(value)
+    return None
+
+
+def stored_source_for(collection_name: str, metadata: dict) -> dict | None:
+    """The newest stored source of the page a chunk belongs to, found by the id its
+    points carry; None when the scrape kept none or it holds no content. One lookup for
+    everything that reads a page's source, so the Docs page and the agent's read agree."""
+    if not isinstance(metadata, dict):
+        return None
+    # Every id the page carries, not just the first: a ServiceNow article synced before
+    # kb_number joined SOURCE_ID_KEYS has its source stored under its sys_id.
+    for key in SOURCE_ID_KEYS:
+        value = metadata.get(key)
+        if value is None or value == "":
+            continue
+        stored = source_store.get_by_source_id(collection_name, str(value))
+        if stored and stored.get("content"):
+            return stored
     return None
 
 
@@ -599,9 +649,8 @@ def get_collection_document(collection_name: str, point_id: str) -> dict | None:
     content_type = "text/markdown"
 
     if metadata.get("parent_id") and not metadata.get("parent_content"):
-        source_id = _source_identifier(metadata)
-        stored = source_store.get_by_source_id(collection_name, source_id) if source_id else None
-        if stored and stored.get("content"):
+        stored = stored_source_for(collection_name, metadata)
+        if stored:
             content = stored["content"]
             content_source = "source"
             content_type = stored.get("content_type") or "text/html"

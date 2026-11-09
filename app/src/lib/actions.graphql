@@ -369,6 +369,8 @@ type Mutation {
     command: String!
     config_name: String
     slot: String
+    execute_command: String
+    action: String
   ): AIResponse
 }
 
@@ -406,6 +408,12 @@ type Query {
   ai_list_kb(
     request: ListKBRequest!
   ): ListKBResponse
+}
+
+type Query {
+  ai_list_kb_account_overrides(
+    request: ListKBAccountOverridesRequest!
+  ): ListKBAccountOverridesResponse
 }
 
 type Query {
@@ -448,6 +456,10 @@ type Query {
   ai_list_models(
     request: AIListModelsRequest!
   ): AIListModelsResponse
+}
+
+type Query {
+  ai_list_tenant_models: AIListModelsResponse
 }
 
 type Query {
@@ -551,6 +563,18 @@ type Mutation {
 type Mutation {
   ai_update_kb_enabled(
     request: UpdateKBEnabledRequest!
+  ): UpdateKBEnabledResponse
+}
+
+type Mutation {
+  ai_update_kb_visibility(
+    request: UpdateKBVisibilityRequest!
+  ): UpdateKBVisibilityResponse
+}
+
+type Mutation {
+  ai_update_kb_account_override(
+    request: UpdateKBAccountOverrideRequest!
   ): UpdateKBEnabledResponse
 }
 
@@ -1290,6 +1314,14 @@ type Mutation {
 }
 
 type Query {
+  events_check_rollback(
+    account_id: String!
+    event_id: String!
+    change_event_id: String
+  ): EventRollbackCheckResponse
+}
+
+type Query {
   event_rules_groupings_v2(
     where: EventRulesGroupingsWhereRequest
     limit: Int
@@ -1368,6 +1400,7 @@ type Mutation {
     name: String
     description: String
     apply_to_existing: Boolean
+    enabled: Boolean
   ): UpdateTriageRuleResponse
 }
 
@@ -1502,6 +1535,12 @@ type Mutation {
   integrations_create_config(
     request: CreateIntegrationConfigRequest!
   ): CreateIntegrationConfigResponse
+}
+
+type Query {
+  integrations_check_llm_defaults(
+    request: CheckLLMDefaultsRequest!
+  ): CheckLLMDefaultsResponse
 }
 
 type Mutation {
@@ -2508,6 +2547,18 @@ type Query {
   users_list_token: UserAuthTokenResponse
 }
 
+type Query {
+  users_list_tenant_tokens(
+    user: TenantTokenListRequest
+  ): TenantTokenListResponse
+}
+
+type Mutation {
+  users_delete_tenant_token(
+    user: TenantTokenDeleteRequest!
+  ): TenantTokenDeleteResponse
+}
+
 type Mutation {
   cloud_check_credentials(
     object: ValidateCloudCredentialsInput!
@@ -2800,6 +2851,7 @@ input tickets_insert_one_input {
   status: String
   ticket_id: String
   assignee: String
+  reporter: String
   project_key: String
   title: String
   description: String
@@ -3201,6 +3253,8 @@ input EventGroupingsWhereRequest {
   fingerprint: QueryWhereStringRequest
   id: QueryWhereStringRequest
   computed_priority: QueryWhereStringRequest
+  latest_computed_priority: QueryWhereStringRequest
+  latest_priority: QueryWhereStringRequest
   nb_status: QueryWhereStringRequest
   is_new_issue: QueryWhereBooleanRequest
   fingerprint_first_seen_at: QueryWhereDatetimeRequest
@@ -4544,6 +4598,16 @@ input CreateIntegrationConfigRequest {
   tags: jsonb
   skip_validation: Boolean
   source: String
+  llm_tenant_default: Boolean
+  llm_account_default: Boolean
+}
+
+input CheckLLMDefaultsRequest {
+  op: String!
+  integration_id: String
+  account_ids: [String]
+  llm_tenant_default: Boolean
+  llm_account_default: Boolean
 }
 
 input IntegrationConfigValueInput {
@@ -4896,6 +4960,7 @@ input UserTokenCreateRequest {
   expires_at: String
   limits: [TokenLimitInput!]
   scopes: [String!]
+  gateway_policy: GatewayPolicyInput
 }
 
 input UserTokenDeleteRequest {
@@ -4903,10 +4968,33 @@ input UserTokenDeleteRequest {
   name: String
 }
 
+input TenantTokenListRequest {
+  user_id: String
+  kind: String
+  limit: Int
+  offset: Int
+}
+
+input TenantTokenDeleteRequest {
+  id: String!
+}
+
 input UserTokenUpdateRequest {
   id: String!
   expires_at: String
   limits: [TokenLimitInput!]
+  """
+  AI Gateway keys only. Omit to keep the key's current restrictions. When sent, it replaces
+  all three lists together: a list left out is cleared (unrestricted), not kept, so send the
+  whole policy. {} clears every restriction.
+  """
+  gateway_policy: GatewayPolicyInput
+}
+
+input GatewayPolicyInput {
+  providers: [String!]
+  models: [String!]
+  endpoints: [String!]
 }
 
 input TokenLimitInput {
@@ -4956,7 +5044,7 @@ input AIGetConversationUsageMetricsRequest {
 }
 
 input AIGetConversationTimeAggregatesRequest {
-  account_id: String!
+  account_ids: [String!]
   user_id: String
   start_date: String!
   end_date: String!
@@ -5571,6 +5659,8 @@ input KnowledgebaseInput {
   file_name: String!
   note_category: String
   context_tags: [String!]
+  visibility: String
+  account_ids: [String!]
 }
 
 input KnowledgebaseUpdateInput {
@@ -5607,6 +5697,40 @@ input UpdateKBEnabledRequest {
   account_id: String!
   kb_id: String!
   enabled: Boolean!
+}
+
+input UpdateKBVisibilityRequest {
+  kb_id: String!
+  visibility: String!
+  account_ids: [String!]
+  target_account_id: String
+}
+
+input UpdateKBAccountOverrideRequest {
+  account_id: String!
+  kb_id: String!
+  enabled: Boolean!
+}
+
+input ListKBAccountOverridesRequest {
+  kb_id: String!
+}
+
+type KBAccountOverride {
+  account_id: String
+  account_name: String
+  enabled: Boolean
+  updated_at: String
+}
+
+type ListKBAccountOverridesResponse {
+  data: [KBAccountOverride]
+  errors: [Error]
+}
+
+type UpdateKBVisibilityResponse {
+  data: KnowledgebaseOutput
+  errors: [Error]
 }
 
 input DeleteKBRequest {
@@ -6812,6 +6936,7 @@ type EventGroupingsRowResponse {
   latest_score_factors: Json
   latest_score_confidence: Float
   latest_computed_priority: String
+  latest_priority: String
   latest_nb_status: String
   latest_title: String
   latest_snoozed_until: Datetime
@@ -7851,6 +7976,11 @@ type event_resolve_output {
   data: [jsonb]!
 }
 
+type EventRollbackCheckResponse {
+  allowed: Boolean!
+  reason: String
+}
+
 type auto_optimize_update_status_response {
   status: String!
 }
@@ -8196,6 +8326,16 @@ type AlertAction {
   actions: jsonb!
 }
 
+type CheckLLMDefaultsResponse {
+  env_configured: Boolean
+  tenant_default: jsonb
+  replaces_tenant_default: jsonb
+  becomes_tenant_wide: Boolean
+  affected: jsonb
+  replaced_account_defaults: jsonb
+  blocked: jsonb
+}
+
 type IntegrationSchemaResponse {
   data: jsonb!
 }
@@ -8451,6 +8591,17 @@ type Comment {
   comment: String!
   created_at: String!
   updated_at: String
+  attachments: [CommentAttachment]
+}
+
+# Exactly one of id or url is set: id is an opaque token the backend resolves to
+# bytes via ticket_get_attachment (ServiceNow, Jira - their files need the stored
+# platform credentials to fetch); url is already directly fetchable (Freshdesk).
+type CommentAttachment {
+  id: String
+  name: String!
+  content_type: String
+  url: String
 }
 
 type CreateAgentRagOutput {
@@ -8546,6 +8697,13 @@ type UserTokenCreateResponse {
   kind: String
   expires_at: String
   scopes: [String]
+  gateway_policy: GatewayPolicy
+}
+
+type GatewayPolicy {
+  providers: [String]
+  models: [String]
+  endpoints: [String]
 }
 
 type UserTokenDeleteResponse {
@@ -8562,6 +8720,18 @@ type UserAuthTokenResponse {
   tokens: [UserAuthToken]
 }
 
+type TenantTokenListResponse {
+  tokens: [UserAuthToken]
+  total: Int
+}
+
+type TenantTokenDeleteResponse {
+  id: String
+  name: String
+  owner_id: String
+  status: String
+}
+
 type UserAuthToken {
   id: String
   name: String
@@ -8572,6 +8742,12 @@ type UserAuthToken {
   accessed_at: timestamp
   expires_at: timestamp
   scopes: [String]
+  token_suffix: String
+  owner_id: String
+  owner_name: String
+  last_provider: String
+  last_model: String
+  gateway_policy: GatewayPolicy
   limits: [TokenLimit]
   usage: TokenUsage
 }
@@ -8698,6 +8874,9 @@ type ProviderCapabilities {
   supported_operators: [String]
   supported_operator_descriptors: [OperatorDescriptor!]
   label_mappings: jsonb
+  # The provider-independent log vocabulary a caller may filter on, minus anything
+  # this provider cannot resolve. Logs only. See #39573.
+  canonical_fields: [String]
   default_index: String
 }
 
@@ -9737,6 +9916,8 @@ type KnowledgebaseOutput {
   id: String!
   tenant_id: String!
   account_id: String!
+  visibility: String
+  switched_off: Boolean
   name: String!
   description: String
   data: String!
@@ -9880,6 +10061,10 @@ type KBDocument {
   content_type: String
   document_key: String
   note_category: String
+  account_marks: Int
+  kind: String
+  shape: String
+  capabilities: [String!]
 }
 
 input UpsertKBDocumentCategoryRequest {
@@ -10215,6 +10400,11 @@ type ThresholdSuggestionDetail {
   estimated_reduction: Float!
   method: String
   recommendation_type: String
+  recommendation_label: String
+  current_duration_seconds: Int
+  measured_on: String
+  measured_on_other: Boolean
+  fetch_failed_at: String
   suggested_duration: Int
   duration_reason: String
   risk_level: String
@@ -10243,6 +10433,7 @@ type ThresholdSuggestionListItem {
   estimated_reduction: Float
   method: String
   recommendation_type: String
+  recommendation_label: String
   computed_at: String
   event_aggregation_key: String
   firing_analysis: jsonb
@@ -10252,6 +10443,9 @@ type ThresholdSuggestionListItem {
   apply_status: String
   apply_method: String
   applied_at: String
+  pr_url: String
+  resolution_status: String
+  resolution_message: String
 }
 
 type ThresholdApplyOption {
@@ -10269,6 +10463,9 @@ type ThresholdApplyOptionsOutput {
   current_threshold: Float
   new_threshold: Float
   operator: String
+  current_duration_seconds: Int
+  current_duration_known: Boolean
+  new_duration_minutes: Int
 }
 
 type ThresholdApplyResultOutput {
@@ -11906,6 +12103,7 @@ type RecommendationResolutionGroupingsResponse {
 
 type RecommendationResolutionGroupingsRowResponse {
   count: Int
+  sum_rec_estimated_savings: Float
   resolver_type: String
   type: String
   recommendation_id: String

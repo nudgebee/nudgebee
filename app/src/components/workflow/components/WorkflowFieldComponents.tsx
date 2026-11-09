@@ -183,8 +183,12 @@ export const JsonEditor: React.FC<JsonEditorProps> = ({ value, onChange, error, 
  */
 interface ArrayItemSchema {
   type: string;
+  sub_type?: string;
   description?: string;
   required?: boolean;
+  order?: number;
+  visible_when?: { field: string; value: string[] };
+  required_when?: { field: string; value: string[] };
   default?: any;
   options?: string[];
   enum?: string[];
@@ -241,7 +245,7 @@ export const ArrayEditor: React.FC<ArrayEditorProps> = ({
       // Create new item with defaults from schema
       const newItem: Record<string, any> = {};
       Object.entries(itemSchema).forEach(([key, schema]) => {
-        if (schema.default !== undefined) {
+        if (schema.default !== undefined && schema.default !== null) {
           newItem[key] = schema.default;
         }
       });
@@ -289,6 +293,18 @@ export const ArrayEditor: React.FC<ArrayEditorProps> = ({
     newItems[index] = newValue;
     onChange(newItems);
   };
+
+  // Changing a field (e.g. an evidence `type`) drops sibling fields its new value hides.
+  const updateSchemaItemField = (index: number, item: Record<string, any>, fieldName: string, val: any) => {
+    const next = { ...item, [fieldName]: val };
+    Object.entries(itemSchema || {}).forEach(([key, schema]) => {
+      if (schema.visible_when?.field === fieldName && !schema.visible_when.value.includes(String(val ?? ''))) delete next[key];
+    });
+    updateSchemaItem(index, next);
+  };
+
+  const matchesItemRule = (item: Record<string, any>, rule?: { field: string; value: string[] }) =>
+    !!rule && rule.value.includes(String(item?.[rule.field] ?? ''));
 
   const updateSimpleValue = (newItems: string[]) => {
     const parsedItems = newItems.map((item) => {
@@ -410,20 +426,25 @@ export const ArrayEditor: React.FC<ArrayEditorProps> = ({
         {/* Item Content */}
         {isExpanded && itemSchema && (
           <Box sx={{ p: 1.5 }}>
-            {Object.entries(itemSchema).map(([fieldName, fieldSchema]) => (
-              <Box key={fieldName} sx={{ mb: 1.5 }}>
-                <Typography
-                  sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)', color: 'var(--ds-brand-500)', mb: 0.5 }}
-                >
-                  {fieldSchema.title || fieldName}
-                  {fieldSchema.required && <span style={{ color: ds.red[500] }}> *</span>}
-                </Typography>
-                {fieldSchema.description && (
-                  <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)', mb: 0.5 }}>{fieldSchema.description}</Typography>
-                )}
-                {renderItemField(fieldName, fieldSchema, item, (val) => updateSchemaItem(index, { ...item, [fieldName]: val }))}
-              </Box>
-            ))}
+            {Object.entries(itemSchema)
+              .filter(([, fieldSchema]) => !fieldSchema.visible_when || matchesItemRule(item, fieldSchema.visible_when))
+              .sort(([, a], [, b]) => (a.order ?? 0) - (b.order ?? 0))
+              .map(([fieldName, fieldSchema]) => (
+                <Box key={fieldName} sx={{ mb: 1.5 }}>
+                  <Typography
+                    sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)', color: 'var(--ds-brand-500)', mb: 0.5 }}
+                  >
+                    {fieldSchema.title || fieldName}
+                    {(fieldSchema.required || matchesItemRule(item, fieldSchema.required_when)) && <span style={{ color: ds.red[500] }}> *</span>}
+                  </Typography>
+                  {fieldSchema.description && (
+                    <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)', mb: 0.5 }}>
+                      {fieldSchema.description}
+                    </Typography>
+                  )}
+                  {renderItemField(fieldName, fieldSchema, item, (val) => updateSchemaItemField(index, item, fieldName, val))}
+                </Box>
+              ))}
           </Box>
         )}
       </Box>
@@ -452,9 +473,18 @@ export const ArrayEditor: React.FC<ArrayEditorProps> = ({
       );
     }
 
-    // Object type
-    if (fieldSchema.type === 'object') {
-      return <JsonEditor value={fieldValue ?? {}} onChange={onFieldChange} />;
+    // Object type, or JSON text (evidence json_data / rows)
+    if (fieldSchema.type === 'object' || fieldSchema.sub_type === 'json') {
+      return <JsonEditor value={fieldValue ?? (fieldSchema.type === 'object' ? {} : '')} onChange={onFieldChange} />;
+    }
+
+    if (fieldSchema.sub_type === 'textarea') {
+      return <TemplateTextField value={fieldValue ?? ''} onChange={onFieldChange} multiline rows={4} fullWidth />;
+    }
+
+    // List of strings (evidence table headers)
+    if (fieldSchema.type === 'array') {
+      return <ArrayEditor value={Array.isArray(fieldValue) ? fieldValue : []} onChange={onFieldChange} />;
     }
 
     // Number type
@@ -1181,6 +1211,7 @@ interface NestedSchemaProperty {
   sub_type?: string;
   description?: string;
   required?: boolean;
+  order?: number;
   required_when?: { field: string; value: string[] };
   visible_when?: { field: string; value: string[] };
   default?: any;
@@ -1199,6 +1230,8 @@ interface NestedSchemaEditorProps {
   error?: string;
   disabled?: boolean;
   title?: string;
+  // Render the fields directly instead of inside a collapsible card
+  flat?: boolean;
   cloudAccounts?: { label: string; value: string; cloud_provider?: string; account_type?: string }[];
   ticketConfigurations?: { label: string; value: string; tool?: string; projects?: { name?: string; key?: string }[]; icon?: any }[];
 }
@@ -1210,6 +1243,7 @@ export const NestedSchemaEditor: React.FC<NestedSchemaEditorProps> = ({
   error,
   disabled = false,
   title = 'Configuration',
+  flat = false,
   cloudAccounts,
   ticketConfigurations,
 }) => {
@@ -1370,7 +1404,7 @@ export const NestedSchemaEditor: React.FC<NestedSchemaEditorProps> = ({
         <ArrayEditor
           value={Array.isArray(fieldValue) ? fieldValue : []}
           onChange={(val) => handleFieldChange(fieldName, val)}
-          itemSchema={fieldSchema.schema?.properties}
+          itemSchema={fieldSchema.schema?.properties || (fieldSchema.schema as Record<string, ArrayItemSchema> | undefined)}
         />
       );
     }
@@ -1403,50 +1437,56 @@ export const NestedSchemaEditor: React.FC<NestedSchemaEditorProps> = ({
     );
   };
 
+  const fields = Object.entries(schema)
+    .sort(([, a], [, b]) => (a.order ?? 0) - (b.order ?? 0))
+    .map(([fieldName, fieldSchema]) => {
+      const matchesRule = (rule?: { field: string; value: string[] }) => {
+        if (!rule) return null;
+        const sibling = value?.[rule.field];
+        const siblingStr = typeof sibling === 'boolean' ? String(sibling) : (sibling ?? '').toString();
+        return rule.value.includes(siblingStr);
+      };
+      const visible = matchesRule(fieldSchema.visible_when);
+      if (visible === false) return null;
+      // sub_type 'github_repository' is sourced from the sibling
+      // integration_id's projects — hide it until that's picked so
+      // we don't show an unusable repository field with no options.
+      if (fieldSchema.sub_type === 'github_repository' && !value?.integration_id) return null;
+      const required = !!fieldSchema.required || matchesRule(fieldSchema.required_when) === true;
+      return (
+        <Box key={fieldName} sx={{ mb: 1.5 }}>
+          <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)', color: 'var(--ds-brand-500)', mb: 0.5 }}>
+            {fieldSchema.title || fieldName}
+            {required && <span style={{ color: ds.red[500] }}> *</span>}
+          </Typography>
+          {fieldSchema.description && (
+            <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)', mb: 0.5 }}>{fieldSchema.description}</Typography>
+          )}
+          {renderField(fieldName, fieldSchema)}
+        </Box>
+      );
+    });
+
   return (
     <Box>
-      <CollapsableCard
-        composition='header+meta+body'
-        elevation='flat'
-        defaultOpen={false}
-        header={
-          <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-medium)', color: 'var(--ds-brand-500)' }}>
-            {title}
-          </Typography>
-        }
-        meta={configuredCount > 0 ? <Chip tone='info'>{`${configuredCount} configured`}</Chip> : undefined}
-        sx={error ? { border: '1px solid var(--ds-red-500)' } : undefined}
-      >
-        {Object.entries(schema).map(([fieldName, fieldSchema]) => {
-          const matchesRule = (rule?: { field: string; value: string[] }) => {
-            if (!rule) return null;
-            const sibling = value?.[rule.field];
-            const siblingStr = typeof sibling === 'boolean' ? String(sibling) : (sibling ?? '').toString();
-            return rule.value.includes(siblingStr);
-          };
-          const visible = matchesRule(fieldSchema.visible_when);
-          if (visible === false) return null;
-          // sub_type 'github_repository' is sourced from the sibling
-          // integration_id's projects — hide it until that's picked so
-          // we don't show an unusable repository field with no options.
-          if (fieldSchema.sub_type === 'github_repository' && !value?.integration_id) return null;
-          const required = !!fieldSchema.required || matchesRule(fieldSchema.required_when) === true;
-          return (
-            <Box key={fieldName} sx={{ mb: 1.5 }}>
-              <Typography
-                sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)', color: 'var(--ds-brand-500)', mb: 0.5 }}
-              >
-                {fieldSchema.title || fieldName}
-                {required && <span style={{ color: ds.red[500] }}> *</span>}
-              </Typography>
-              {fieldSchema.description && (
-                <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)', mb: 0.5 }}>{fieldSchema.description}</Typography>
-              )}
-              {renderField(fieldName, fieldSchema)}
-            </Box>
-          );
-        })}
-      </CollapsableCard>
+      {flat ? (
+        <Box>{fields}</Box>
+      ) : (
+        <CollapsableCard
+          composition='header+meta+body'
+          elevation='flat'
+          defaultOpen={false}
+          header={
+            <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-medium)', color: 'var(--ds-brand-500)' }}>
+              {title}
+            </Typography>
+          }
+          meta={configuredCount > 0 ? <Chip tone='info'>{`${configuredCount} configured`}</Chip> : undefined}
+          sx={error ? { border: '1px solid var(--ds-red-500)' } : undefined}
+        >
+          {fields}
+        </CollapsableCard>
+      )}
       {error && (
         <Typography variant='body2' sx={{ color: 'var(--ds-red-500)', fontSize: 'var(--ds-text-small)', mt: 0.5 }}>
           {error}

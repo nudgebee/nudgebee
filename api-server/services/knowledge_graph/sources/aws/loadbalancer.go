@@ -18,11 +18,11 @@ var loadBalancerSchemaProps = []core.PropertyDef{
 	{Name: "scheme", Indexed: true},
 	{Name: "dns_name", Indexed: true},
 	{Name: "vpc_id", Indexed: true},
-	{Name: "availability_zone", Indexed: true},
+	{Name: "availability_zone", Indexed: true, Shape: core.PropertyShapeRecords},
 	{Name: "is_public_entry"},
-	{Name: "subnets"},
-	{Name: "instances"},
-	{Name: "security_groups"},
+	{Name: "subnets", Shape: core.PropertyShapeList},
+	{Name: "instances", Shape: core.PropertyShapeRecords},
+	{Name: "security_groups", Shape: core.PropertyShapeList},
 }
 
 // elbClassicParityProps — Additional provider fields (not yet emitted by our extractor)

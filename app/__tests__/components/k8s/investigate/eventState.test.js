@@ -1,4 +1,4 @@
-import { describeEventState, describeOccurrence, formatDuration } from '@components/k8s/investigate/eventState';
+import { describeEventState, describeOccurrence, eventWhen, formatDuration } from '@components/k8s/investigate/eventState';
 
 const MIN = 60 * 1000;
 const HOUR = 60 * MIN;
@@ -13,6 +13,22 @@ describe('formatDuration', () => {
     [(24 * 3 + 4) * HOUR, '3d 4h'],
   ])('%d ms → %s', (ms, text) => {
     expect(formatDuration(ms)).toBe(text);
+  });
+});
+
+describe('eventWhen', () => {
+  it('is the start time when the source gave one', () => {
+    expect(eventWhen({ starts_at: '2026-09-14T06:37:13Z', created_at: '2026-09-14T06:39:00Z' })).toBe('2026-09-14T06:37:13Z');
+  });
+
+  // An automation's Store Event step with Starts At left empty stores starts_at as null.
+  it('falls back to when the event was recorded', () => {
+    expect(eventWhen({ starts_at: null, created_at: '2026-10-01T10:15:00Z' })).toBe('2026-10-01T10:15:00Z');
+  });
+
+  it('is null when the event has neither, or has not loaded', () => {
+    expect(eventWhen({})).toBeNull();
+    expect(eventWhen(undefined)).toBeNull();
   });
 });
 

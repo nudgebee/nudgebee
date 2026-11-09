@@ -439,6 +439,9 @@ export async function forwardAction(opts: ForwardOptions): Promise<ForwardResult
     // The caller's effective role, so a service (e.g. the AI Gateway) can grant a
     // tenant admin tenant-wide reads — viewing another user's captured request body.
     'x-user-role': opts.sessionVariables?.role || '',
+    // Every role the caller holds in this tenant; "-" = none, so a proxy dropping an empty
+    // header can't push the gateway onto the x-user-role label fallback.
+    'x-user-roles': (opts.sessionVariables?.allowed_roles || []).join(',') || '-',
   };
   // Apply per-action headers declared in actions.yaml's `headers:` block.
   // The yaml is authoritative — every action must explicitly declare which
@@ -714,6 +717,7 @@ export async function tryBypassGraphQL(opts: {
     )
   );
 
+  const traceId = traceIdFromTraceparent(opts.traceparent);
   const data: Record<string, unknown> = {};
   const errors: Array<{ message: string; path?: string[] }> = [];
   parsed.fields.forEach((f, i) => {
@@ -735,6 +739,9 @@ export async function tryBypassGraphQL(opts: {
       } else if (r.error.kind === 'upstream_error') {
         err.extensions = { upstream: { status: r.error.status, body: r.error.payload } };
       }
+      // The upstream stamps this trace_id on its log lines, so a generic message
+      // ("database connection failed") can be matched to the logged cause.
+      if (traceId) err.extensions = { ...err.extensions, trace_id: traceId };
       errors.push(err);
     }
   });
@@ -811,6 +818,12 @@ export function bypassGraphQLAsServer(opts: {
   });
 }
 
+// Trace id field of a W3C traceparent (`00-<trace_id>-<span_id>-<flags>`); '' when malformed.
+export function traceIdFromTraceparent(traceparent: string | undefined): string {
+  const traceId = traceparent?.split('-')[1] ?? '';
+  return /^[0-9a-f]{32}$/.test(traceId) ? traceId : '';
+}
+
 function forwardErrorMessage(err: ForwardError): string {
   switch (err.kind) {
     case 'method_not_found':
@@ -852,18 +865,20 @@ function genericMessageForStatus(status: number): string {
   return 'Request failed. Please retry.';
 }
 
-// Handles `{message}`, `{errors:[{message}]}`, and `[{message}]` (api-server's
-// common.Error shape) envelopes our Go services emit; degenerate JSON
-// (`{}` / `[]` / `null`) is treated as no-detail so the caller falls through
-// to a per-status generic.
+// Handles `{message}`, `{error}`, `{errors:[{message}]}`, and `[{message}]`
+// (api-server's common.Error shape, plus the `{error}` shape some handlers
+// use for structured success/error responses) envelopes our Go services
+// emit; degenerate JSON (`{}` / `[]` / `null`) is treated as no-detail so
+// the caller falls through to a per-status generic.
 function extractUpstreamErrorDetail(payload: unknown): string {
   if (Array.isArray(payload) && payload.length > 0) {
     const first = (payload[0] as { message?: unknown } | undefined)?.message;
     if (typeof first === 'string' && first.length > 0) return first;
   }
   if (payload && typeof payload === 'object') {
-    const obj = payload as { message?: unknown; errors?: Array<{ message?: unknown } | undefined> };
+    const obj = payload as { message?: unknown; error?: unknown; errors?: Array<{ message?: unknown } | undefined> };
     if (typeof obj.message === 'string' && obj.message.length > 0) return obj.message;
+    if (typeof obj.error === 'string' && obj.error.length > 0) return obj.error;
     if (Array.isArray(obj.errors) && obj.errors.length > 0) {
       const first = obj.errors[0]?.message;
       if (typeof first === 'string' && first.length > 0) return first;

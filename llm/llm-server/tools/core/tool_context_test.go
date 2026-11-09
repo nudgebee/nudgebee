@@ -182,6 +182,19 @@ func TestIsEmpty_SkipHistoryOnlyConfigIsNotEmpty(t *testing.T) {
 	}
 }
 
+func TestMergeFrom_ReadOnlyRunInheritsWithinTurn(t *testing.T) {
+	// Sub-agent and resume merges of the same turn's stored config keep the
+	// flag, or a resumed alert investigation could raise approval prompts.
+	q := NBQueryConfig{Namespace: "nudgebee"}
+	q.MergeFrom(NBQueryConfig{ReadOnlyRun: true})
+	if !q.ReadOnlyRun {
+		t.Fatal("read-only flag lost on merge")
+	}
+	if (NBQueryConfig{ReadOnlyRun: true}).IsEmpty() {
+		t.Fatal("a read-only-only config must not read as empty")
+	}
+}
+
 func TestNBQueryConfig_DiscoveredTools(t *testing.T) {
 	// IsEmpty checks DiscoveredTools
 	if (NBQueryConfig{DiscoveredTools: []string{"postgres_query_execute"}}).IsEmpty() {

@@ -8,31 +8,20 @@ import DownloadButton from '@shared/buttons/DownloadButton';
 import { Label } from '@ui/Label';
 import { Banner } from '@ui/Banner';
 import { SeverityIcon } from '@ui/SeverityIcon';
-
-// Cloud-alert severity values come from the API as 'Critical' / 'High' /
-// 'Medium' / 'Low' / 'Info' (titlecased). ds/SeverityIcon's level enum is
-// the lowercase 5-tier. Normalize.
-const SEVERITY_TO_DS_LEVEL: Record<string, 'critical' | 'high' | 'medium' | 'low' | 'info'> = {
-  critical: 'critical',
-  high: 'high',
-  medium: 'medium',
-  low: 'low',
-  info: 'info',
-};
-const toDsSeverityLevel = (s: string | undefined) => SEVERITY_TO_DS_LEVEL[String(s || '').toLowerCase()] || 'info';
 import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
 import { Modal } from '@ui/Modal';
 import KubernetesCreateAlert from '@components/k8s/details/KubernetesCreateAlert';
 import { hasWriteAccess } from '@lib/auth';
 import NDialog from '@shared/modal/NDialog';
 import { titleCase } from '@lib/formatter';
+import { cloudCategoryLabel } from '@utils/common';
 import { action } from 'src/utils/actionStyles';
 import Text from '@shared/format/Text';
 import apiUser from '@api1/user';
 import CustomTable from '@shared/tables/CustomTable2';
 import { useRouter } from 'next/router';
 import { toast as snackbar } from '@ui/Toast';
-import { isValidSeverity, snakeToTitleCase } from 'src/utils/common';
+import { isValidSeverity, snakeToTitleCase, toSeverityLevel } from 'src/utils/common';
 import {
   ALERT_RULE_MENU,
   AlertRuleItem,
@@ -118,7 +107,12 @@ const CloudAccountAlertManager: React.FC<CloudAccountAlertManagerProps> = ({ acc
       .getDistinctData(accountId)
       .then((res: any) => {
         if (res?.data?.distinct_category) {
-          setCategoryList(res?.data?.distinct_category.map((c: any) => c.category));
+          setCategoryList(
+            res?.data?.distinct_category.map((c: any) => ({
+              label: cloudCategoryLabel(c.category),
+              value: c.category,
+            }))
+          );
         }
         if (res?.data?.distinct_source) {
           setSourceList(
@@ -210,9 +204,12 @@ const CloudAccountAlertManager: React.FC<CloudAccountAlertManagerProps> = ({ acc
           alertNames.push(item.alert);
           return [
             { component: <Text value={item.alert} />, drilldownQuery: { name: item.alert } },
-            { component: <Text value={item.category} /> },
-            { component: <Text value={item?.source || '-'} /> },
-            { component: <SeverityIcon level={toDsSeverityLevel(item?.severity)} />, data: item?.severity },
+            { component: <Text value={cloudCategoryLabel(item.category)} /> },
+            { component: <Text value={item?.source ? titleCase(item.source) : '-'} /> },
+            {
+              component: <SeverityIcon level={toSeverityLevel(item?.severity)} aria-label={item?.severity ? titleCase(item.severity) : undefined} />,
+              data: item?.severity,
+            },
             statusCell(item),
             {
               text: '--',

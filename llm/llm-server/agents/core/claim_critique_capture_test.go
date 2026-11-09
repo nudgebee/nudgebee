@@ -187,6 +187,7 @@ func TestClaimCaptureNoVerdictDecision(t *testing.T) {
 		{"generation_error", claimDecisionNoVerdict},
 		{"input_limit", claimDecisionNoVerdict},
 		{"budget_exhausted", "skipped"},
+		{"fallback_summary", "skipped"},
 	} {
 		record := &ClaimCritiqueAuditRecord{ID: uuid.NewString(), TokenUsageID: uuid.NewString(), Status: c.status, Completed: true}
 		mock.ExpectExec("INSERT INTO llm_conversation_agent_critiques").WithArgs(record.ID, record.TokenUsageID, "", "", "", "", "", "", claimShadowCritiqueType, c.want, "", claimMetadataArgument{status: c.status, completed: true}).WillReturnResult(sqlmock.NewResult(0, 1))

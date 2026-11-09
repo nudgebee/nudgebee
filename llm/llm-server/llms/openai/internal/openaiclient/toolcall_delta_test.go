@@ -1,6 +1,9 @@
 package openaiclient
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func idx(i int) *int { return &i }
 
@@ -201,5 +204,80 @@ func TestUpdateToolCalls_TrailingWhitespaceStillCountsAsComplete(t *testing.T) {
 	}
 	if got := tools[0].Function.Arguments; got != want {
 		t.Errorf("trailing whitespace defeated the completeness gate:\n got %q\nwant %q", got, want)
+	}
+}
+
+// Recorded from Vertex Qwen #39704: the final "}" arrived twice in ONE delta -> replay 400 "Extra data".
+func TestUpdateToolCalls_DuplicateCloserInOneDeltaIsTrimmed(t *testing.T) {
+	want := `{"command": "High latency metrics for checkout service", "_memory_refs": []}`
+	var tools []ToolCall
+	_, tools = updateToolCalls(tools, []*ToolCall{{
+		ID: "call_1", Type: "function", Index: idx(5),
+		Function: ToolFunction{Name: "metrics"},
+	}})
+	for _, frag := range []string{`{"command": `, `"High latency`, ` metrics for checkout service`, ``, `"`, `, "_memory_refs": `, `[]`, `}}`} {
+		_, tools = updateToolCalls(tools, []*ToolCall{{Index: idx(5), Function: ToolFunction{Arguments: frag}}})
+	}
+
+	if len(tools) != 1 {
+		t.Fatalf("want 1 tool call, got %d", len(tools))
+	}
+	if got := tools[0].Function.Arguments; got != want {
+		t.Errorf("arguments = %q, want %q", got, want)
+	}
+}
+
+// A nested object legitimately ends in "}}" and must be kept whole, and "}}"
+// inside a still-open string must not cut the arguments short.
+func TestUpdateToolCalls_LegitimateClosingBracesAreKept(t *testing.T) {
+	for name, frags := range map[string][]string{
+		"nested object":    {`{"filter": {"ns": "demo"`, `}}`},
+		"braces in string": {`{"q": "a}}`, ` b"}`},
+		"escaped quote":    {`{"q": "say \"}}`, `\" ok"}`},
+		"nested arrays":    {`{"a": [[{"b": 1}]`, `]}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var tools []ToolCall
+			_, tools = updateToolCalls(tools, []*ToolCall{{ID: "c", Type: "function", Index: idx(0), Function: ToolFunction{Name: "logs"}}})
+			want := ""
+			for _, frag := range frags {
+				want += frag
+				_, tools = updateToolCalls(tools, []*ToolCall{{Index: idx(0), Function: ToolFunction{Arguments: frag}}})
+			}
+			if got := tools[0].Function.Arguments; got != want {
+				t.Errorf("arguments = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// Only one extra closer is repaired; other malformations stay as streamed (invalid) -> the planner
+// refuses the call rather than running a guess.
+func TestUpdateToolCalls_OtherMalformedArgumentsAreLeftAsStreamed(t *testing.T) {
+	for name, frags := range map[string][]string{
+		"truncated":            {`{"command": "kubectl get`, ` pods`},
+		"lost value":           {`{"command": "x", "_memory_refs": `, `}`},
+		"two extra closers":    {`{"command": "x"`, `}}}`},
+		"non-brace suffix":     {`{"command": "x"`, `}]`},
+		"garbage after closer": {`{"command": "x"`, `}}x`},
+		"broken escape":        {`{"q": "a\q"`, `}}`},
+		"unterminated string":  {`{"q": "a}`, `}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var tools []ToolCall
+			_, tools = updateToolCalls(tools, []*ToolCall{{ID: "c", Type: "function", Index: idx(0), Function: ToolFunction{Name: "logs"}}})
+			want := ""
+			for _, frag := range frags {
+				want += frag
+				_, tools = updateToolCalls(tools, []*ToolCall{{Index: idx(0), Function: ToolFunction{Arguments: frag}}})
+			}
+			got := tools[0].Function.Arguments
+			if got != want {
+				t.Errorf("arguments = %q, want them left as streamed %q", got, want)
+			}
+			if json.Valid([]byte(got)) {
+				t.Errorf("arguments %q became valid JSON", got)
+			}
+		})
 	}
 }

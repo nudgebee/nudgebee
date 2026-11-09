@@ -25,7 +25,7 @@ func writeOffRequest() NBAgentRequest {
 // line would panic and fail the test.
 func TestGate_ExtractLongTermMemorySkipsWhenWriteDisabled(t *testing.T) {
 	ctx := security.NewRequestContext(context.TODO(), nil, nil, nil, nil)
-	stats := extractLongTermMemory(ctx, nil, writeOffRequest(), "a response", "notebook", 3)
+	stats := extractLongTermMemory(ctx, nil, writeOffRequest(), "a response", "notebook", 3, false)
 	assert.Zero(t, stats, "no extraction may run, so no stats")
 }
 

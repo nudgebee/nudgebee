@@ -11,8 +11,17 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from notifications_server.configs.settings import public_ip
+from notifications_server.message_templates.discord.grouped_anomaly import RESOLVED_COLOR
 from notifications_server.message_templates.slack.slo import SLOAlertParams
-from notifications_server.message_templates.slack.grouped_slo_notification import SLOAlertSummaryParams
+from notifications_server.message_templates.slack.grouped_anomaly_notification import (
+    MAX_RESOLVED_ITEMS,
+    counts_phrase,
+    split_resolved,
+)
+from notifications_server.message_templates.slack.grouped_slo_notification import (
+    SLOAlertSummaryParams,
+    resolved_slo_line,
+)
 
 LOG = logging.getLogger(__name__)
 
@@ -66,13 +75,16 @@ def get_discord_slo_alert_template(params: SLOAlertParams) -> Dict[str, Any]:
 def get_discord_grouped_slo_alert_template(input_data: SLOAlertSummaryParams) -> Dict[str, Any]:
     alerts: List[SLOAlertParams] = input_data.events if hasattr(input_data, "events") else input_data
 
+    firing, resolved = split_resolved(alerts)
     grouped: Dict[str, List[SLOAlertParams]] = defaultdict(list)
-    for alert in alerts:
+    for alert in firing:
         grouped[alert.account_name or alert.account_id].append(alert)
 
+    # The Resolved embed takes one of the message's embed slots.
+    max_account_embeds = MAX_EMBEDS - 1 if resolved else MAX_EMBEDS
     embeds: List[Dict[str, Any]] = []
     for account_name, acct_alerts in grouped.items():
-        if len(embeds) >= MAX_EMBEDS:
+        if len(embeds) >= max_account_embeds:
             break
         lines = [
             f"• **{_v(a.slo_name)}** (`{_v(a.workload)}`) — {_v(a.status)}, "
@@ -90,5 +102,19 @@ def get_discord_grouped_slo_alert_template(input_data: SLOAlertSummaryParams) ->
             }
         )
 
-    content = f"🚨 {len(alerts)} SLO alerts across {len(grouped)} account(s)"
+    if resolved:
+        lines = [f"• {resolved_slo_line(a, '**')}" for a in resolved[:MAX_RESOLVED_ITEMS]]
+        if len(resolved) > MAX_RESOLVED_ITEMS:
+            lines.append(f"…and {len(resolved) - MAX_RESOLVED_ITEMS} more resolved.")
+        embeds.append({"title": "Resolved", "description": "\n".join(lines)[:4000], "color": RESOLVED_COLOR})
+
+    emoji = "✅" if resolved and not firing else "🚨"
+    counts = counts_phrase(len(firing), len(resolved), "SLO alerts", "")
+    total_accounts = len({alert.account_name or alert.account_id for alert in alerts})
+    content = f"{emoji} {counts} across {total_accounts} account(s)"
+    # The Resolved embed can push out an account that would otherwise be shown,
+    # so say how many accounts have no embed.
+    hidden_accounts = len(grouped) - max_account_embeds
+    if resolved and hidden_accounts > 0:
+        content += f", {hidden_accounts} account(s) not shown"
     return {"content": content, "embeds": embeds}

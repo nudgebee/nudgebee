@@ -11,6 +11,7 @@ import (
 	"nudgebee/llm/config"
 	"nudgebee/llm/events"
 	"nudgebee/llm/security"
+	"nudgebee/llm/security/egressfilter"
 	"runtime/debug"
 	"strings"
 	"testing"
@@ -100,10 +101,12 @@ func init() {
 	}
 	// MqConsume only registers a supervisor; connecting and consuming happen
 	// in the background ("rbmq: consumer running" / GET /health/mq).
+	concurrency := max(config.Config.EventMqConcurrency, 1)
 	slog.Info("eventasync: registering rabbitmq consumer",
 		"exchange", config.Config.RabbitMqTroubleshootExchange,
-		"queue", config.Config.RabbitMqTroubleshootQueue)
-	err := common.MqConsume(config.Config.RabbitMqTroubleshootExchange, config.Config.RabbitMqTroubleshootQueue, config.Config.RabbitMqTroubleshootQueue, processTroubleshootingEventFromMq)
+		"queue", config.Config.RabbitMqTroubleshootQueue,
+		"concurrency", concurrency)
+	err := common.MqConsume(config.Config.RabbitMqTroubleshootExchange, config.Config.RabbitMqTroubleshootQueue, config.Config.RabbitMqTroubleshootQueue, concurrency, processTroubleshootingEventFromMq)
 	if err != nil {
 		slog.Error("eventasync: unable to register consumer", "error", err)
 		return
@@ -130,12 +133,18 @@ func processTroubleshootingEventFromMqWithRegister(msgCtx context.Context, data 
 		taskToken    string
 		publishState investigationCompletedEnvelope
 		skipPublish  bool
+		// The message body with credentials masked, computed once for every
+		// log line below (and by the panic handler if it fires first).
+		loggedData string
 	)
 
 	defer func() {
 		if r := recover(); r != nil {
 			panicErr := fmt.Errorf("recovered from panic: %v", r)
-			slog.Error("eventasync: unable to process event, recovering", "error", panicErr, "data", string(data), "stack", string(debug.Stack()))
+			if loggedData == "" {
+				loggedData = egressfilter.RedactForLog(string(data))
+			}
+			slog.Error("eventasync: unable to process event, recovering", "error", panicErr, "data", loggedData, "stack", string(debug.Stack()))
 
 			// A panic is retryable unless a terminal state was already persisted.
 			// Do not ACK or publish an unconfirmed failure, even before context setup.
@@ -200,22 +209,27 @@ func processTroubleshootingEventFromMqWithRegister(msgCtx context.Context, data 
 
 	common.MetricsApiRequestsTotal("event_analyzer_mq")
 
-	slog.Info("eventasync: processing mq request", "data", string(data))
+	loggedData = egressfilter.RedactForLog(string(data))
+	slog.Info("eventasync: processing mq request", "data", loggedData)
 
 	eventAnalysisRequest := EventAnalysisRequest{}
 	err := common.UnmarshalJson(data, &eventAnalysisRequest)
 	if err != nil {
-		slog.Error("eventasync: unable to get serialize request", "error", err, "data", string(data))
+		slog.Error("eventasync: unable to get serialize request", "error", err, "data", loggedData)
 		// No token available — request body itself is unreadable.
 		skipPublish = true
 		return nil
 	}
 	taskToken = eventAnalysisRequest.TaskToken
+	eventAnalysisRequest.Trigger = events.AnalysisTriggerAutomatic
+	if taskToken != "" {
+		eventAnalysisRequest.Trigger = events.AnalysisTriggerRunbook
+	}
 	publishState.EventID = eventAnalysisRequest.EventId
 	publishState.AccountID = eventAnalysisRequest.AccountId
 
 	if eventAnalysisRequest.AccountId == "" || eventAnalysisRequest.EventId == "" {
-		slog.Error("eventasync: unable to process request as accountId/eventId is empty", "data", string(data))
+		slog.Error("eventasync: unable to process request as accountId/eventId is empty", "data", loggedData)
 		publishState.Status = string(events.AnalysisStatusFailed)
 		publishState.Error = "account_id or event_id is empty"
 		return nil

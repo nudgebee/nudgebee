@@ -68,8 +68,8 @@ Central orchestrator for workspace pod lifecycle.
 
 | Method | Purpose |
 |--------|---------|
-| `CreateWorkspace` | Creates K8s pod with JWT token, LLM credentials, resource limits |
-| `TerminateWorkspace` | Deletes pod, revokes JWT token |
+| `CreateWorkspace` | Creates K8s pod with a random pod token, LLM credentials, resource limits |
+| `TerminateWorkspace` | Deletes pod (its token dies with it) |
 | `WaitForReady` | Polls pod readiness (2s interval, 5min timeout) |
 | `ExecuteCommand` | Sends command to pod via direct IP or K8s proxy |
 | `ExecuteOrLazyCreate` | Optimistic execution with auto-recovery on infrastructure errors |
@@ -100,14 +100,14 @@ REST API exposing workspace operations to the frontend (via RPC actions through 
 - `POST /api/v1/workspace/files` — Unified file operations (list, get, save, delete, batch-read)
 - `POST /api/v1/workspace/execute` — Tool execution (kubectl, helm, psql, mysql, redis, argocd, clickhouse, rabbitmq, mssql, oracle, ssh)
 
-**Auth:** JWT workspace token (`X-Workspace-Token`) or global action token (`X-ACTION-TOKEN`)
+**Auth:** a per-command or per-analysis execution token (`X-Workspace-Token`) or global action token (`X-ACTION-TOKEN`). The pod's own token is refused.
 
 ### 4. Shim Binary (`llm/code-analysis/cmd/shim/main.go`)
 
 Lightweight proxy binary symlinked as `kubectl`, `helm`, `psql`, etc. inside workspace pods. When an LLM agent or code-analysis tool runs `kubectl get pods`, the shim:
 1. Detects it was invoked as `kubectl`
 2. Constructs the full command with proper shell quoting
-3. POSTs to llm-server's `/api/v1/workspace/execute` with the JWT token
+3. POSTs to llm-server's `/api/v1/workspace/execute` with the command's execution token
 4. llm-server routes to relay-server, which dispatches to the customer's K8s agent
 
 This pattern ensures the workspace pod never holds database/infrastructure credentials directly.
@@ -165,9 +165,10 @@ Code-analysis agent runs "kubectl get pods"
 ## Security Model
 
 ### Authentication
-- **Workspace JWT**: HS256-signed, contains `account_id` and `tenant_id`
-- **Validation**: Signature, expiry, revocation cache, account match
-- **Two auth paths**: Workspace token (`X-Workspace-Token`) or global server token
+- **Execution token** (pod → llm-server): HS256 JWT minted per command (`ExecuteCommand`) or per code-agent analysis, audience `workspace-execute`, carrying the requesting user's grants (system user for background runs). Short-lived; never written to the pod's own environment for analyses.
+- **Pod token** (llm-server → pod only): 32 random bytes in the pod env, compared by the pod's server. llm-server refuses it on every route, so a copy read inside the pod grants nothing elsewhere; it dies with the pod.
+- **Validation**: signature, expiry, audience, account and tenant match, grants
+- **Two auth paths**: execution token (`X-Workspace-Token`) or global server token
 
 ### Pod Isolation
 - **Per-account pods**: Each account gets a dedicated pod
@@ -210,13 +211,12 @@ Compose deployments use `LLM_SERVER_WORKSPACE_RUNTIME=docker`. The host Docker s
 | `LLM_SERVER_SHELL_TOOL_ENABLED` | bool | Enable shell tool for agents |
 | `LLM_SERVER_JWT_SECRET` | string | JWT signing key for workspace tokens |
 
-**Helm values (NetworkPolicy):** the workspace pod `NetworkPolicy` is configured in `deploy/kubernetes/llm-server/values.yaml` under `workspaceNetworkPolicy.*` — see that file for `enabled`, `workspacePort`, `llmServerPort`, `relayServerName`/`Port`, `allowExternalEgress`, `externalEgressExcept`, `dnsNamespaceSelector`/`dnsPodSelector`, and `extraEgress`.
+**Helm values (NetworkPolicy):** the workspace pod `NetworkPolicy` is configured in `deploy/kubernetes/llm-server/values.yaml` under `workspaceNetworkPolicy.*` — see that file for `enabled`, `workspacePort`, `llmServerPort`, `allowExternalEgress`, `externalEgressExcept`, `dnsNamespaceSelector`/`dnsPodSelector`, and `extraEgress`.
 
 ## Known Limitations & Tracked Issues
 
 ### Security
 - [#27731](https://github.com/nudgebee/nudgebee/issues/27731) — Command validation blocklist is bypassable
-- [#27733](https://github.com/nudgebee/nudgebee/issues/27733) — JWT token lifetime (365d) and in-memory-only revocation
 - [#27734](https://github.com/nudgebee/nudgebee/issues/27734) — Missing seccomp, capability drops, read-only rootfs
 - [#27735](https://github.com/nudgebee/nudgebee-enterprise/issues/27735) — Credential exposure via env vars (automatic `.nb_profile` sourcing removed)
 - [#27736](https://github.com/nudgebee/nudgebee/issues/27736) — Auth bypass when workspace token env var is empty

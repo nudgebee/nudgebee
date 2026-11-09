@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"nudgebee/llm/llms/googleai"
+	"nudgebee/llm/llms/googleai/vertex"
 	"nudgebee/llm/security/egressfilter"
 )
 
@@ -57,4 +59,14 @@ func TestIsRetryableError_EgressFilterIsTerminal(t *testing.T) {
 	doubled := errors.Join(errLlmUnableToGenerate, wrapped)
 	assert.False(t, isRetryableError(doubled),
 		"deeply wrapped egressfilter blocks must still classify as non-retryable")
+}
+
+// TestIsRetryableError_IncompleteGeminiStream: a Gemini stream cut off without
+// a finish reason must go through retry and model fallback, not be saved as a
+// finished answer (2026-10-01 provider outage).
+func TestIsRetryableError_IncompleteGeminiStream(t *testing.T) {
+	for _, err := range []error{googleai.ErrStreamIncomplete, vertex.ErrStreamIncomplete} {
+		assert.True(t, isTransientError(err))
+		assert.True(t, isRetryableError(ErrLlmUnableToGenerate(err)))
+	}
 }

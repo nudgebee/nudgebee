@@ -61,9 +61,9 @@ func TestHandleConversationTimeAggregatesApi_ForbiddenAccount_LegacyCoverage(t *
 	}
 
 	request := ConversationTimeAggregatesRequest{
-		AccountId: deniedAccount,
-		StartDate: "2026-05-01T00:00:00Z",
-		EndDate:   "2026-05-02T00:00:00Z",
+		AccountIds: []string{deniedAccount},
+		StartDate:  "2026-05-01T00:00:00Z",
+		EndDate:    "2026-05-02T00:00:00Z",
 	}
 	_, err := HandleConversationTimeAggregatesApi(ctx, request)
 

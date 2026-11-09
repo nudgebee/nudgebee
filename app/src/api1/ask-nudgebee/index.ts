@@ -1175,22 +1175,24 @@ const api = {
 
     return response?.data?.data?.ai_get_conversation_usage_metrics?.data;
   },
-  // accountId is optional — pass an empty string to roll up across every
-  // account the caller's session is permitted to read (the troubleshoot
-  // dashboard widget uses this multi-account mode). Pass an explicit
-  // accountId to scope to one. The action input field is non-null on the
-  // GraphQL side, so we send '' rather than omitting it.
-  async getConversationTimeAggregates(data: { accountId?: string; startDate: string; endDate: string; sources?: string[]; eventScoped?: boolean }) {
-    if (data.accountId === 'demo') return null;
+  // accountIds omitted or empty rolls up across every account the caller can read.
+  async getConversationTimeAggregates(data: {
+    accountIds?: string[];
+    startDate: string;
+    endDate: string;
+    sources?: string[];
+    eventScoped?: boolean;
+  }) {
+    if (data.accountIds?.includes('demo')) return null;
     const query = `mutation GetConversationTimeAggregates(
-      $accountId: String!
+      $accountIds: [String!]
       $startDate: String!
       $endDate: String!
       $sources: [String!]
       $eventScoped: Boolean
     ) {
       ai_get_conversation_time_aggregates(request: {
-        account_id: $accountId,
+        account_ids: $accountIds,
         start_date: $startDate,
         end_date: $endDate,
         sources: $sources,
@@ -1201,7 +1203,7 @@ const api = {
     }
     `;
     const response = await queryGraphQL(query, 'GetConversationTimeAggregates', {
-      accountId: data.accountId ?? '',
+      accountIds: data.accountIds ?? null,
       startDate: data.startDate,
       endDate: data.endDate,
       sources: data.sources ?? null,
@@ -1755,6 +1757,28 @@ const api = {
       };
     } catch (error) {
       console.error('failed to delete memory-', error);
+      return { data: null, errors: [error] };
+    }
+  },
+  // Models of the tenant's organisation-wide LLM configs and its tenant default:
+  // the existing-model fallbacks a config saved with no accounts may use.
+  async listTenantModels() {
+    const LIST_TENANT_MODELS = `
+    query ListTenantModels {
+      ai_list_tenant_models {
+        data
+        errors
+      }
+    }
+    `;
+    try {
+      const response = await queryGraphQL(LIST_TENANT_MODELS, 'ListTenantModels', {});
+      return {
+        data: response?.data?.data?.ai_list_tenant_models?.data,
+        errors: response?.data?.data?.ai_list_tenant_models?.errors || response?.data?.errors || [],
+      };
+    } catch (error) {
+      console.error('failed to list tenant models-', error);
       return { data: null, errors: [error] };
     }
   },

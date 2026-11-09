@@ -1986,7 +1986,7 @@ func esScopeNeedsPodJoin(plans []esUtilMetric, meta RequestMetadata, scope esUti
 // esSearchInto posts one _search and decodes it, so the two queries above do not each
 // repeat the request/read/unmarshal dance.
 func esSearchInto(ctx *security.RequestContext, cfg *ElasticsearchConfig, index string, body map[string]any, into any) error {
-	url := fmt.Sprintf("%s/%s/_search", cfg.Url, index)
+	url := esIndexURL(cfg.Url, index, "_search")
 	resp, err := esRequestJSON("POST", url, body, cfg) //nolint:bodyclose
 	if err != nil {
 		return err

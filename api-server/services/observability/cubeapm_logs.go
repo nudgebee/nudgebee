@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	neturl "net/url"
 	"nudgebee/services/common"
 	"nudgebee/services/integrations"
@@ -213,6 +214,11 @@ func isSafeCubeAPMField(field string) bool {
 	return true
 }
 
+// cubeAPMRangeOps maps a range operator onto its LogsQL comparison filter.
+var cubeAPMRangeOps = map[query.BinaryWhereClauseType]string{
+	query.Gt: ">", query.Gte: ">=", query.Lt: "<", query.Lte: "<=",
+}
+
 // renderCubeAPMMatch renders the POSITIVE match of one operator on one field;
 // the caller applies negation for _neq.
 func renderCubeAPMMatch(col string, op query.BinaryWhereClauseType, value string) (string, error) {
@@ -230,6 +236,19 @@ func renderCubeAPMMatch(col string, op query.BinaryWhereClauseType, value string
 		return fmt.Sprintf("%s:~%s", col, cubeAPMQuote("(?i)"+regexp.QuoteMeta(value))), nil
 	case query.Regex:
 		return fmt.Sprintf("%s:~%s", col, cubeAPMQuote(value)), nil
+	case query.Gt, query.Gte, query.Lt, query.Lte:
+		// A range bound must be bare: quoted, LogsQL compares it as a string
+		// (verified live: duration:>="500000000" counted 2055 spans against 2021
+		// for the numeric bound). Bare also means it is not escaped, so anything
+		// that is not a finite number is rejected rather than spliced into the
+		// query — ParseFloat alone accepts NaN and the infinities — and the bound is
+		// rendered as the plain decimal it parsed to, so a hex or exponent spelling
+		// never reaches CubeAPM.
+		f, err := strconv.ParseFloat(value, 64)
+		if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+			return "", fmt.Errorf("CubeAPM range filter on %q needs a finite numeric value, got %q", col, value)
+		}
+		return fmt.Sprintf("%s:%s%s", col, cubeAPMRangeOps[op], strconv.FormatFloat(f, 'f', -1, 64)), nil
 	default:
 		return "", fmt.Errorf("unsupported operator for CubeAPM logs: %s", op)
 	}
@@ -253,7 +272,7 @@ func buildCubeAPMBinaryClause(binary query.BinaryWhereClause, mapping map[string
 		}
 
 		for op, val := range ops {
-			strVal := fmt.Sprintf("%v", val)
+			strVal := filterValueString(val)
 
 			var clause string
 			if primary != "" {

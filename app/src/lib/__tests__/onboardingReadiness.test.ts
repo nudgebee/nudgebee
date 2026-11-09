@@ -154,10 +154,85 @@ describe('panel state resolution', () => {
     });
   });
 
+  // #41114: a webhook URL existing — even one GCP creates with zero user
+  // action — is not the same as anything having actually arrived on it.
+  describe('alerts reads the webhook-events lookup, not just the integration row', () => {
+    it('reads done once connected, while the webhook lookup has not resolved', () => {
+      const r = evaluateOnboarding({ integrations: [integration('datadog_webhook')] });
+      expect(itemOf(r, 'triggers', 'alerts')?.state).toBe('done');
+    });
+
+    it('downgrades to partial once the lookup confirms nothing has arrived yet', () => {
+      const r = evaluateOnboarding({ integrations: [integration('datadog_webhook')], hasReceivedAlert: false });
+      expect(itemOf(r, 'triggers', 'alerts')?.state).toBe('partial');
+      // Still shown connected — this is "waiting", not "broken" or "not set up".
+      expect(itemOf(r, 'triggers', 'alerts')?.connectedBy).toEqual(['Datadog']);
+    });
+
+    it('reads done once the lookup confirms at least one event arrived', () => {
+      const r = evaluateOnboarding({ integrations: [integration('datadog_webhook')], hasReceivedAlert: true });
+      expect(itemOf(r, 'triggers', 'alerts')?.state).toBe('done');
+    });
+
+    it('never downgrades a state that was not already done — blank and error pass through unchanged', () => {
+      expect(itemOf(evaluateOnboarding({ hasReceivedAlert: false }), 'triggers', 'alerts')?.state).toBe('blank');
+      const r = evaluateOnboarding({ integrations: [integration('datadog_webhook', 'error')], hasReceivedAlert: false });
+      expect(itemOf(r, 'triggers', 'alerts')?.state).toBe('error');
+    });
+  });
+
+  // An installed chat app with no default channel has nowhere to post a
+  // finding no rule routes — Setup must not check it off as done.
+  describe('chat waits on a default channel, not just the install', () => {
+    it('reads done while the default-channel lookup has not resolved', () => {
+      const r = evaluateOnboarding({ integrations: [integration('slack')] });
+      expect(itemOf(r, 'delivery', 'chat')?.state).toBe('done');
+      expect(itemOf(r, 'delivery', 'chat')?.missingDefaultChannel).toBeUndefined();
+    });
+
+    it('downgrades to partial and names the app when no default channel is set', () => {
+      const r = evaluateOnboarding({
+        integrations: [integration('slack'), integration('discord')],
+        chatDefaultChannel: { slack: true, discord: false },
+      });
+      const chat = itemOf(r, 'delivery', 'chat');
+      expect(chat?.state).toBe('partial');
+      expect(chat?.connectedBy).toEqual(['Slack', 'Discord']);
+      expect(chat?.connectedByState).toEqual({ Slack: 'done', Discord: 'partial' });
+      expect(chat?.missingDefaultChannel).toEqual(['Discord']);
+      expect(panelOf(r, 'delivery')?.state).toBe('partial');
+    });
+
+    it('reads done once every connected app has a default channel', () => {
+      const r = evaluateOnboarding({ integrations: [integration('slack')], chatDefaultChannel: { slack: true } });
+      expect(itemOf(r, 'delivery', 'chat')?.state).toBe('done');
+    });
+
+    it('never touches a broken install, or an app the lookup said nothing about', () => {
+      const broken = evaluateOnboarding({ integrations: [integration('slack', 'error')], chatDefaultChannel: { slack: false } });
+      expect(itemOf(broken, 'delivery', 'chat')?.state).toBe('error');
+      expect(itemOf(broken, 'delivery', 'chat')?.missingDefaultChannel).toBeUndefined();
+      const unknown = evaluateOnboarding({ integrations: [integration('ms_teams')], chatDefaultChannel: {} });
+      expect(itemOf(unknown, 'delivery', 'chat')?.state).toBe('done');
+    });
+  });
+
   it('lets a gateway satisfy model access on its own', () => {
     const r = evaluateOnboarding({ integrations: [integration('llm_gateway')] });
     expect(panelOf(r, 'ai')?.state).toBe('done');
     expect(itemOf(r, 'ai', 'llm')?.state).toBe('blank');
+    // Review finding (Mayank Pande): the gateway's own `need` matrix never
+    // hits 'req', so without crediting its alt sibling the global "X of N"
+    // counter stayed stuck on the LLM provider slot forever even though the
+    // panel itself already read done.
+    expect(r.outstandingRequired.some((i) => i.id === 'llm')).toBe(false);
+    expect(r.done).toBe(1);
+  });
+
+  it('does not double-count the AI slot when both the gateway and the provider are connected', () => {
+    const r = evaluateOnboarding({ integrations: [integration('llm_gateway'), integration('llm')] });
+    expect(r.done).toBe(1);
+    expect(r.outstandingRequired.some((i) => i.id === 'llm' || i.id === 'gateway')).toBe(false);
   });
 
   // Worst state wins, so one failing connection is never hidden by a healthy sibling.
@@ -183,50 +258,77 @@ describe('panel state resolution', () => {
   });
 });
 
-describe('telemetry auto-detection', () => {
-  // An agent-discovered Prometheus has no integration row, so a fully
-  // instrumented Kubernetes tenant read as "not connected" before this.
-  it('counts an agent-detected signal as done and flags it as auto-detected', () => {
-    const r = evaluateOnboarding({ accounts: [account('K8s')], detectedSignals: { metrics: 'prometheus' } });
+describe('telemetry sources: agent-created vs. added by hand', () => {
+  const row = (type: string, extra: Record<string, unknown> = {}) => ({ type, status: 'enabled', name: type, ...extra });
+  const link = (flags: Record<string, boolean> = {}) => [{ cloud_account_id: 'k8s-1', cloud_account_name: 'k8s-1', ...flags }];
+
+  it('flags a source the agent created as auto-detected', () => {
+    const r = evaluateOnboarding({ accounts: [account('K8s')], integrations: [row('prometheus', { source: 'agent' })] });
     const metrics = itemOf(r, 'telemetry', 'metrics');
     expect(metrics?.state).toBe('done');
     expect(metrics?.autoDetected).toBe(true);
-    expect(metrics?.connectedBy).toEqual(['prometheus']);
+    expect(metrics?.connectedBy).toEqual(['Prometheus']);
   });
 
-  // Auto-detected is not a fifth state. It is `done` carrying a chip.
+  // #41113: the account's resolved default also reports a person's own source,
+  // so only the row's `source` may decide "auto-detected".
+  it('lists a source added by hand and does not call it auto-detected', () => {
+    const r = evaluateOnboarding({
+      accounts: [account('K8s')],
+      integrations: [row('prometheus', { source: 'user' }), row('loki', { source: 'user' })],
+    });
+    const metrics = itemOf(r, 'telemetry', 'metrics');
+    const logs = itemOf(r, 'telemetry', 'logs');
+    expect(metrics?.autoDetected).toBe(false);
+    expect(metrics?.connectedBy).toEqual(['Prometheus']);
+    expect(logs?.autoDetected).toBe(false);
+    expect(logs?.connectedBy).toEqual(['Loki']);
+  });
+
+  it('treats a row with no source as added by hand', () => {
+    const r = evaluateOnboarding({ integrations: [row('prometheus')] });
+    expect(itemOf(r, 'telemetry', 'metrics')?.autoDetected).toBe(false);
+  });
+
+  it('keeps the agent source and a manual one both visible, and not auto-detected', () => {
+    const r = evaluateOnboarding({ integrations: [row('prometheus', { source: 'agent' }), row('datadog', { source: 'user' })] });
+    const metrics = itemOf(r, 'telemetry', 'metrics');
+    expect(metrics?.autoDetected).toBe(false);
+    expect(metrics?.connectedBy).toEqual(expect.arrayContaining(['Prometheus', 'Datadog']));
+  });
+
   it('keeps auto-detected inside the four states', () => {
-    const r = evaluateOnboarding({ detectedSignals: { logs: 'loki' } });
+    const r = evaluateOnboarding({ integrations: [row('loki', { source: 'agent' })] });
     expect(['done', 'partial', 'error', 'blank']).toContain(itemOf(r, 'telemetry', 'logs')?.state);
   });
 
-  it('ignores a detection payload that names no provider', () => {
-    const r = evaluateOnboarding({ detectedSignals: { metrics: undefined } });
-    expect(itemOf(r, 'telemetry', 'metrics')?.state).toBe('blank');
-  });
-
-  // Known issue #20: a broken manually-added integration must not vanish
-  // behind a healthy auto-detected signal just because they share an item.
-  it('does not let an auto-detected signal mask a broken manual sibling', () => {
-    const r = evaluateOnboarding({
-      integrations: [integration('datadog', 'error')],
-      detectedSignals: { metrics: 'prometheus' },
-    });
+  // Known issue #20: a broken manual integration must not vanish behind a
+  // healthy agent-created sibling just because they share an item.
+  it('does not let an agent-created source mask a broken manual sibling', () => {
+    const r = evaluateOnboarding({ integrations: [row('prometheus', { source: 'agent' }), row('datadog', { status: 'error', source: 'user' })] });
     const metrics = itemOf(r, 'telemetry', 'metrics');
     expect(metrics?.state).toBe('error');
     expect(metrics?.autoDetected).toBe(false);
-    expect(metrics?.connectedBy).toEqual(expect.arrayContaining(['Datadog', 'prometheus']));
   });
 
-  it('keeps the auto-detected badge when a matched sibling is healthy too', () => {
+  it('marks the provider flagged default for each signal', () => {
     const r = evaluateOnboarding({
-      integrations: [integration('datadog')],
-      detectedSignals: { metrics: 'prometheus' },
+      integrations: [
+        row('datadog', {
+          source: 'user',
+          integrations_cloud_accounts: link({ default_metrics_provider: true, default_log_provider: true, default_traces_provider: true }),
+        }),
+        row('prometheus', { source: 'user', integrations_cloud_accounts: link() }),
+      ],
     });
-    const metrics = itemOf(r, 'telemetry', 'metrics');
-    expect(metrics?.state).toBe('done');
-    expect(metrics?.autoDetected).toBe(true);
-    expect(metrics?.connectedBy).toEqual(['prometheus']);
+    expect(itemOf(r, 'telemetry', 'metrics')?.defaultBy).toEqual(['Datadog']);
+    expect(itemOf(r, 'telemetry', 'logs')?.defaultBy).toEqual(['Datadog']);
+    expect(itemOf(r, 'telemetry', 'traces')?.defaultBy).toEqual(['Datadog']);
+  });
+
+  it('marks no default when no link carries the flag', () => {
+    const r = evaluateOnboarding({ integrations: [row('prometheus', { source: 'user', integrations_cloud_accounts: link() })] });
+    expect(itemOf(r, 'telemetry', 'metrics')?.defaultBy).toEqual([]);
   });
 });
 
@@ -296,6 +398,83 @@ describe('accounts item state answers "was one actually connected", not "was one
       k8sAgentConnected: { 'k8s-1': false, 'k8s-2': false, 'k8s-3': false },
     });
     expect(itemOf(r, 'accounts', 'account')?.state).toBe('partial');
+  });
+
+  // #41115: a self-hosted account used to read `done` (and unlock the whole
+  // gate) the instant it was created, with no forager ever started. Same
+  // check as K8s, same shared `agentConnected` map (#41115 widened it from
+  // K8s-only; the key name is unchanged, see accountRowState's doc comment).
+  it('does not mark a self-hosted account done while its forager has not reported connected', () => {
+    const r = evaluateOnboarding({ accounts: [account('SelfHosted', 'vm-1')], k8sAgentConnected: { 'vm-1': false } });
+    expect(itemOf(r, 'accounts', 'account')?.state).toBe('partial');
+    expect(itemOf(r, 'accounts', 'account')?.accounts?.[0]?.state).toBe('partial');
+  });
+
+  it('marks a self-hosted account done once its forager reports connected', () => {
+    const r = evaluateOnboarding({ accounts: [account('SelfHosted', 'vm-1')], k8sAgentConnected: { 'vm-1': true } });
+    expect(itemOf(r, 'accounts', 'account')?.state).toBe('done');
+  });
+
+  it('falls back to status alone for a self-hosted account when the health lookup never resolved', () => {
+    const r = evaluateOnboarding({ accounts: [account('SelfHosted', 'vm-1')] });
+    expect(itemOf(r, 'accounts', 'account')?.state).toBe('done');
+  });
+
+  // The health map is shared across both kinds in one lookup — a K8s id must
+  // not accidentally answer for a self-hosted one, or vice versa.
+  it('keeps a connected K8s cluster and a still-waiting self-hosted fleet from being confused for each other', () => {
+    const r = evaluateOnboarding({
+      accounts: [account('K8s', 'k8s-1'), account('SelfHosted', 'vm-1')],
+      k8sAgentConnected: { 'k8s-1': true, 'vm-1': false },
+    });
+    const accounts = itemOf(r, 'accounts', 'account')?.accounts;
+    expect(accounts?.find((a) => a.id === 'k8s-1')?.state).toBe('done');
+    expect(accounts?.find((a) => a.id === 'vm-1')?.state).toBe('partial');
+    // One real connection is enough for the item/panel milestone.
+    expect(itemOf(r, 'accounts', 'account')?.state).toBe('done');
+  });
+});
+
+// An AWS/GCP/Azure account's `status` goes active the instant the account is
+// created, same gap #41115 closed for K8s/self-hosted — just on a background
+// cost-sync job instead of an agent. `cloudSyncState` is deliberately NOT
+// threaded into `SetupGateContext`'s own lock (see `accountRowState`'s own
+// comment), so this only covers the checklist's state, never the gate.
+describe('accounts item state also waits on an AWS/GCP/Azure account’s first cost sync', () => {
+  it('does not mark an AWS account done while its first sync has not reported', () => {
+    const r = evaluateOnboarding({ accounts: [account('AWS', 'aws-1')], cloudSyncState: { 'aws-1': 'waiting' } });
+    expect(itemOf(r, 'accounts', 'account')?.state).toBe('partial');
+    expect(itemOf(r, 'accounts', 'account')?.accounts?.[0]?.state).toBe('partial');
+  });
+
+  it('marks an AWS account done once its first sync reports clean', () => {
+    const r = evaluateOnboarding({ accounts: [account('AWS', 'aws-1')], cloudSyncState: { 'aws-1': 'done' } });
+    expect(itemOf(r, 'accounts', 'account')?.state).toBe('done');
+  });
+
+  it('marks an AWS account in error when its first sync reports a failure', () => {
+    const r = evaluateOnboarding({ accounts: [account('AWS', 'aws-1')], cloudSyncState: { 'aws-1': 'failed' } });
+    expect(itemOf(r, 'accounts', 'account')?.accounts?.[0]?.state).toBe('error');
+  });
+
+  it('falls back to status alone when the sync lookup never resolved, same as before this existed', () => {
+    const r = evaluateOnboarding({ accounts: [account('AWS', 'aws-1')] });
+    expect(itemOf(r, 'accounts', 'account')?.state).toBe('done');
+  });
+
+  it('never applies cloud-sync state to a K8s or self-hosted account', () => {
+    const r = evaluateOnboarding({ accounts: [account('K8s', 'k8s-1')], cloudSyncState: { 'k8s-1': 'waiting' } });
+    expect(itemOf(r, 'accounts', 'account')?.accounts?.[0]?.state).toBe('done');
+  });
+
+  it('covers GCP and Azure the same way as AWS', () => {
+    const r = evaluateOnboarding({
+      accounts: [account('GCP', 'gcp-1'), account('Azure', 'az-1')],
+      cloudSyncState: { 'gcp-1': 'waiting', 'az-1': 'failed' },
+    });
+    const accounts = itemOf(r, 'accounts', 'account')?.accounts;
+    expect(accounts?.find((a) => a.id === 'gcp-1')?.state).toBe('partial');
+    expect(accounts?.find((a) => a.id === 'az-1')?.state).toBe('error');
   });
 });
 
@@ -368,6 +547,14 @@ describe('integration matching', () => {
     expect(itemOf(viaIntegration, 'delivery', 'chat')?.connectedBy).toEqual(['Microsoft Teams']);
   });
 
+  // Review finding: Slack/Teams come from a list with no `source` field, so
+  // the chat item always read "Auto-detected" — even for an app a person
+  // deliberately installed — since nothing ever proved a person did it.
+  it('never reads an installed messaging app as auto-detected', () => {
+    const r = evaluateOnboarding({ messagingPlatforms: [{ platform: 'slack' }] });
+    expect(itemOf(r, 'delivery', 'chat')?.autoDetected).toBe(false);
+  });
+
   it('lets one integration satisfy two different panels', () => {
     const r = evaluateOnboarding({ integrations: [integration('github')] });
     expect(itemOf(r, 'delivery', 'ticket')?.connectedBy).toEqual(['GitHub Issues']);
@@ -400,7 +587,6 @@ describe('integration matching', () => {
     const r = evaluateOnboarding({
       accounts: [null, undefined, {}] as never,
       integrations: [null, { type: null }] as never,
-      detectedSignals: null,
     });
     expect(r.done).toBe(0);
   });

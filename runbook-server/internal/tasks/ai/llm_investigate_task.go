@@ -58,10 +58,15 @@ func (t *LLMInvestigateTask) Execute(taskCtx types.TaskContext, params map[strin
 		msg += "\n\nIMPORTANT: Your final answer MUST be a valid JSON object only — no markdown prose, no code fences, no text outside the JSON."
 	}
 
+	accountID, err := resolveTaskAccount(taskCtx, params)
+	if err != nil {
+		return nil, err
+	}
+
 	requestContext := taskCtx.GetNewRequestContext()
 	resp, err := llm.ProcessRequest(requestContext, applyWorkflowTrace(taskCtx, sessionScope, llm.LLMRequest{
 		Message:      msg,
-		AccountId:    taskCtx.GetAccountID(),
+		AccountId:    accountID,
 		Tools:        tools,
 		LlmProvider:  modelProvider,
 		LlmModelName: modelName,
@@ -75,6 +80,7 @@ func (t *LLMInvestigateTask) Execute(taskCtx types.TaskContext, params map[strin
 		"data":            resp.Message,
 		"conversation_id": resp.ConversationId,
 		"session_id":      resp.SessionId,
+		"account_id":      accountID,
 	}
 
 	if responseFormat == "json" {
@@ -200,6 +206,7 @@ func (t *LLMInvestigateTask) InputSchema() *types.Schema {
 			},
 			modelParamFieldName:        modelInputSchemaProperty(4),
 			sessionScopeParamFieldName: sessionScopeInputSchemaProperty(5),
+			accountParamFieldName:      accountInputSchemaProperty(0, "investigate"),
 		},
 	}
 }
@@ -211,6 +218,7 @@ func (t *LLMInvestigateTask) RuntimeNotes() []string {
 		"If JSON extraction fails with response_format='json', 'data' is an object of the form {\"raw_text\": \"<raw response>\"} and 'parse_error' explains the failure. Referencing other fields on 'data' (e.g. data.summary) will resolve empty in that case — guard downstream tasks accordingly.",
 		"Setting 'tools' restricts the investigation to that allow-list — the auto-selected agent's other tools, shell_execute, and load_skills (knowledge bases) are all hidden unless explicitly listed. Leave empty for the default tool set.",
 		"session_scope='workflow' makes every run of this workflow append to one shared AI conversation (the AI remembers previous runs). The default 'execution' starts a fresh conversation per run.",
+		"account_id points the investigation at another account of the tenant (e.g. {{ event.cloud_account_id }}); leave it out to use the workflow's own account. The account used is returned as 'account_id'. Conversations are per account, so steps targeting different accounts do not share one.",
 	}
 }
 
@@ -231,6 +239,11 @@ func (t *LLMInvestigateTask) OutputSchema() *types.Schema {
 			"session_id": {
 				Type:        "string",
 				Description: "NuBi Session Id",
+				Required:    true,
+			},
+			"account_id": {
+				Type:        "string",
+				Description: "Account the investigation ran against.",
 				Required:    true,
 			},
 			"parse_error": {

@@ -1,11 +1,15 @@
 package proxy
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseBody(t *testing.T) {
@@ -14,19 +18,110 @@ func TestParseBody(t *testing.T) {
 		body       string
 		wantModel  string
 		wantStream bool
+		wantOK     bool
 	}{
-		{"anthropic non-stream", `{"model":"claude-haiku-4-5","max_tokens":8}`, "claude-haiku-4-5", false},
-		{"anthropic stream", `{"model":"claude-sonnet-4-6","stream":true}`, "claude-sonnet-4-6", true},
-		{"no model", `{"max_tokens":8}`, "", false},
-		{"empty body", ``, "", false},
-		{"garbage json", `not json`, "", false},
+		{"anthropic non-stream", `{"model":"claude-haiku-4-5","max_tokens":8}`, "claude-haiku-4-5", false, true},
+		{"anthropic stream", `{"model":"claude-sonnet-4-6","stream":true}`, "claude-sonnet-4-6", true, true},
+		{"no model", `{"max_tokens":8}`, "", false, true},
+		{"empty body", ``, "", false, true},
+		{"not json", `not json`, "", false, true},
+		{"not an object", `["model"]`, "", false, true},
+		{"empty object", ` { } `, "", false, true},
+		{"nested model is not the model", `{"metadata":{"model":"x"},"model":"gpt-5"}`, "gpt-5", false, true},
+		{"strings holding brackets and quotes", `{"a":"}{\"model\":\"x\"","b":[{"c":"]"}],"model":"gpt-5","n":-1.5e3,"t":true,"z":null}`, "gpt-5", false, true},
+		{"escaped key is the same key", `{"mod\u0065l":"gpt-5"}`, "gpt-5", false, true},
+		// encoding/json would read "gpt-4o-mini" here while a provider reads "model": the
+		// policy would judge one model and the provider serve another.
+		{"case variant after model", `{"model":"gpt-5","MODEL":"gpt-4o-mini"}`, "gpt-5", false, false},
+		{"case variant before model", `{"Model":"gpt-4o-mini","model":"gpt-5"}`, "gpt-5", false, false},
+		{"case variant alone", `{"MODEL":"gpt-5"}`, "", false, false},
+		{"escaped case variant", `{"model":"gpt-5","\u004dodel":"gpt-4o-mini"}`, "gpt-5", false, false},
+		{"model twice", `{"model":"gpt-4o-mini","model":"gpt-5"}`, "gpt-5", false, false},
+		{"case variant of stream is not stream", `{"model":"gpt-5","Stream":true}`, "gpt-5", false, true},
+		// Invalid JSON: Python's json reads past NaN and takes the last "model".
+		{"NaN hides a second model", `{"model":"gpt-4o-mini","x":NaN,"model":"gpt-5"}`, "", false, false},
+		{"second object", `{"model":"gpt-4o-mini"} {"model":"gpt-5"}`, "", false, false},
+		{"unterminated", `{"model":"gpt-4o-mini"`, "", false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			model, stream := parseBody([]byte(tc.body))
+			model, stream, ok := parseBody([]byte(tc.body))
 			assert.Equal(t, tc.wantModel, model)
 			assert.Equal(t, tc.wantStream, stream)
+			assert.Equal(t, tc.wantOK, ok)
 		})
+	}
+}
+
+// FuzzParseBody checks the in-place member scan against encoding/json's own tokenizer on
+// any valid JSON object: both must see the same top-level "model" and "stream".
+func FuzzParseBody(f *testing.F) {
+	for _, seed := range []string{
+		`{"model":"gpt-5","stream":true}`,
+		`{"a":{"b":["}",{"model":"x"}]},"model":"m","c":"\\\""}`,
+		`{ "x" : 1e-3 , "model" : "y" , "stream" : false }`,
+		`{"model":"a","Model":"b"}`,
+		`{}`,
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, body []byte) {
+		model, stream, ok := parseBody(body)
+		obj := bytes.TrimLeft(body, " \t\r\n")
+		if len(obj) == 0 || obj[0] != '{' || !json.Valid(obj) {
+			return
+		}
+		dec := json.NewDecoder(bytes.NewReader(obj))
+		_, _ = dec.Token()
+		wantModel, wantStream, exact, variant := "", false, 0, false
+		for dec.More() {
+			tok, err := dec.Token()
+			require.NoError(t, err)
+			key := tok.(string)
+			var value json.RawMessage
+			require.NoError(t, dec.Decode(&value))
+			switch {
+			case key == "model":
+				exact++
+				_ = json.Unmarshal(value, &wantModel)
+			case strings.EqualFold(key, "model"):
+				variant = true
+			case key == "stream":
+				_ = json.Unmarshal(value, &wantStream)
+			}
+		}
+		assert.Equal(t, exact <= 1 && !variant, ok)
+		assert.Equal(t, wantModel, model)
+		assert.Equal(t, wantStream, stream)
+	})
+}
+
+func TestCleanPath(t *testing.T) {
+	cases := []struct {
+		in, want string
+		ok       bool
+	}{
+		{"/v1/messages", "/v1/messages", true},
+		{"/v1/models/", "/v1/models/", true}, // a trailing slash is kept
+		{"", "", true},
+		// Resolved the way Bifrost's HTTP client would resolve them when sending.
+		{"/v1/models/../messages", "/v1/messages", true},
+		{"/v1/responses/../files", "/v1/files", true},
+		{"//v1/messages", "/v1/messages", true},
+		{"/v1/./messages", "/v1/messages", true},
+		{"/models/../../v1alpha/files", "/v1alpha/files", true}, // cannot climb above the mount
+		// The client would decode or split these again, so no cleaning settles them.
+		{"/v1/models/%2e%2e/messages", "", false},
+		{"/v1/models/x?/../../messages", "", false},
+		{"/v1/models#/../messages", "", false},
+		{`/v1/models\..\messages`, "", false},
+		{"/v1/mess\x00ages", "", false},
+		{"x/models", "", false}, // a version segment the mount did not strip whole
+	}
+	for _, tc := range cases {
+		got, ok := cleanPath(tc.in)
+		assert.Equal(t, tc.ok, ok, tc.in)
+		assert.Equal(t, tc.want, got, tc.in)
 	}
 }
 

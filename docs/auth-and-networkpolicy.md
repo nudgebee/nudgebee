@@ -126,8 +126,11 @@ the provider's signature before doing anything with the payload:
 - **GitHub** (`webhooks/github/*`): HMAC-SHA256 with
   `GITHUB_WEBHOOK_SECRET`.
 - **Marketplace** (Azure: `marketplace/azure/webhook.ts`; AWS:
-  `marketplace/aws/subscribe.ts`): Azure verifies the JWT against
-  Microsoft's JWKS; AWS uses a signed subscription token.
+  `marketplace/aws/subscribe.ts`): Azure verifies the JWT against our
+  tenant's JWKS and pins `aud` (`AZURE_MARKETPLACE_APP_ID`), `iss`
+  (`AZURE_MARKETPLACE_TENANT_ID`, v1 or v2 form) and the calling app
+  (`azp`/`appid` = Microsoft's Marketplace API app), answering 503 when
+  either env var is unset; AWS uses a signed subscription token.
 - **Jira / PagerDuty / NewRelic** (`webhooks/{jira,pagerduty,newrelic}/`):
   currently stub endpoints; signature verification is required before
   wiring forwarding logic — tracked in #31250.

@@ -1,8 +1,10 @@
 package egressfilter
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"regexp"
 	"strings"
 	"testing"
@@ -50,6 +52,13 @@ func TestRedactToolOutput(t *testing.T) {
 			"secretName: app-tls\nLLM_SERVER_TOKEN_HEADER=Authorization\ntokenUrl: https://auth.example.com/token"},
 		{"references and placeholders kept", "PGPASSWORD=$DB_PASS\nAPI_KEY=${API_KEY}\npassword: <your-password>\ntoken: true",
 			"PGPASSWORD=$DB_PASS\nAPI_KEY=${API_KEY}\npassword: <your-password>\ntoken: true"},
+		{"erlang cookie in env", "RABBITMQ_ERL_COOKIE=FAKEcookie0123456789abcdefABCDEF\nRABBITMQ_USERNAME=user",
+			"RABBITMQ_ERL_COOKIE=[REDACTED]\nRABBITMQ_USERNAME=user"},
+		{"erlang cookie in kubectl describe", "      RABBITMQ_ERL_COOKIE:        FAKEcookie0123456789abcdefABCDEF\n      RABBITMQ_LOAD_DEFINITIONS:  no",
+			"      RABBITMQ_ERL_COOKIE:        [REDACTED]\n      RABBITMQ_LOAD_DEFINITIONS:  no"},
+		{"cookie k8s env entry", "- name: SESSION_COOKIE\n  value: fakeSessionCookie42",
+			"- name: SESSION_COOKIE\n  value: [REDACTED]"},
+		{"passphrase in env", "SSH_KEY_PASSPHRASE=fake-Pass-Phrase-9", "SSH_KEY_PASSPHRASE=[REDACTED]"},
 		{"aws key", "found AKIAABCDEFGHIJKLMNOP in config", "found [REDACTED] in config"},
 		{"google oauth secret", "x GOCSPX-Abcdefghijklmnopqrstuvw y", "x [REDACTED] y"},
 		{"bearer header", "Authorization: Bearer abc.def.ghi-123456", "Authorization: Bearer [REDACTED]"},
@@ -123,6 +132,8 @@ func TestRedactToolOutputKeepsNonSecrets(t *testing.T) {
 		"api_key=secrets[name]",
 		"GOOGLE_APPLICATION_CREDENTIALS: /var/run/secrets/gcp/key.json",
 		"token: GITHUB_TOKEN_KEY",
+		"COOKIE_DOMAIN=.example.com\nSESSION_COOKIE_SECURE=true",
+		"cookie_name: app_session",
 	} {
 		assert.Equal(t, in, redactToolOutput(context.Background(), "t", in), in)
 	}
@@ -247,5 +258,77 @@ func BenchmarkRedactToolOutput1MB(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		redactToolOutput(context.Background(), "t", input)
+	}
+}
+
+// Log masking follows the tool-output redaction switches: off leaves the
+// logged value as it was.
+func TestRedactForLogFollowsTheSwitch(t *testing.T) {
+	in := `PGPASSWORD=s3cr3tValue9 psql -h db`
+	c := &config.Config
+	saved := [3]bool{c.LlmServerEgressFilterEnabled, c.LlmServerEgressFilterSecretsEnabled, c.LlmServerEgressFilterToolOutputRedactEnabled}
+	t.Cleanup(func() {
+		c.LlmServerEgressFilterEnabled, c.LlmServerEgressFilterSecretsEnabled, c.LlmServerEgressFilterToolOutputRedactEnabled = saved[0], saved[1], saved[2]
+	})
+
+	config.Config.LlmServerEgressFilterEnabled = true
+	config.Config.LlmServerEgressFilterSecretsEnabled = true
+	config.Config.LlmServerEgressFilterToolOutputRedactEnabled = true
+	if got := RedactForLog(in); got == in {
+		t.Errorf("switch on: not redacted: %s", got)
+	}
+	config.Config.LlmServerEgressFilterToolOutputRedactEnabled = false
+	if got := RedactForLog(in); got != in {
+		t.Errorf("switch off: redacted anyway: %s", got)
+	}
+}
+
+// A credential that crosses the cut is masked whole, and text past the window
+// is never scanned.
+func TestRedactForLogPrefix(t *testing.T) {
+	c := &config.Config
+	saved := [3]bool{c.LlmServerEgressFilterEnabled, c.LlmServerEgressFilterSecretsEnabled, c.LlmServerEgressFilterToolOutputRedactEnabled}
+	t.Cleanup(func() {
+		c.LlmServerEgressFilterEnabled, c.LlmServerEgressFilterSecretsEnabled, c.LlmServerEgressFilterToolOutputRedactEnabled = saved[0], saved[1], saved[2]
+	})
+	c.LlmServerEgressFilterEnabled, c.LlmServerEgressFilterSecretsEnabled, c.LlmServerEgressFilterToolOutputRedactEnabled = true, true, true
+
+	in := strings.Repeat("a", 60) + ` psql "postgresql://postgres:s3cr3tValue9@10.0.0.1:5432/app"` + strings.Repeat(" x", 50000)
+	got := RedactForLogPrefix(in, 100)
+	if len(got) > 100 {
+		t.Fatalf("longer than keep: %d", len(got))
+	}
+	if strings.Contains(got, "s3cr") {
+		t.Errorf("password prefix left in the log: %q", got)
+	}
+	if got := RedactForLogPrefix("kubectl get pods", 100); got != "kubectl get pods" {
+		t.Errorf("short input changed: %q", got)
+	}
+	short := `PGPASSWORD=s3cr3tValue9 psql -h db -c 'select 1' --set ON_ERROR_STOP=1 -q -A -t`
+	if got := RedactForLogPrefix(short, 100); strings.Contains(got, "s3cr3t") || !strings.HasSuffix(got, "-q -A -t") {
+		t.Errorf("short input masked but cut: %q", got)
+	}
+}
+
+// LazyRedact masks when the record is written, and not at all for a level that
+// is off.
+func TestLazyRedact(t *testing.T) {
+	c := &config.Config
+	saved := [3]bool{c.LlmServerEgressFilterEnabled, c.LlmServerEgressFilterSecretsEnabled, c.LlmServerEgressFilterToolOutputRedactEnabled}
+	t.Cleanup(func() {
+		c.LlmServerEgressFilterEnabled, c.LlmServerEgressFilterSecretsEnabled, c.LlmServerEgressFilterToolOutputRedactEnabled = saved[0], saved[1], saved[2]
+	})
+	c.LlmServerEgressFilterEnabled, c.LlmServerEgressFilterSecretsEnabled, c.LlmServerEgressFilterToolOutputRedactEnabled = true, true, true
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logger.Info("m", "request", LazyRedact(`PGPASSWORD=s3cr3tValue9 psql`))
+	if strings.Contains(buf.String(), "s3cr3t") || !strings.Contains(buf.String(), "[REDACTED:") {
+		t.Errorf("not masked: %s", buf.String())
+	}
+	buf.Reset()
+	logger.Debug("m", "request", LazyRedact(`PGPASSWORD=s3cr3tValue9 psql`))
+	if buf.Len() != 0 {
+		t.Errorf("debug written at info level: %s", buf.String())
 	}
 }

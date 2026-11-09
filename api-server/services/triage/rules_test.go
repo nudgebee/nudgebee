@@ -125,6 +125,34 @@ func TestMatchesRule(t *testing.T) {
 	}
 }
 
+// NB-40110: a rule's Source filter (kubernetes/prometheus/pagerduty/datadog, the
+// TriageRuleModal.tsx dropdown values) must match the raw vendor-specific values
+// nudgebee writes to events.source, not just the group name itself.
+func TestMatchesRule_SourceGroups(t *testing.T) {
+	testCases := []struct {
+		name        string
+		matchSource string
+		eventSource string
+		expectMatch bool
+	}{
+		{"kubernetes rule matches kubernetes_api_server event", "kubernetes", "kubernetes_api_server", true},
+		{"kubernetes rule does not match a differently-sourced event", "kubernetes", "pagerduty_webhook", false},
+		{"pagerduty rule matches pagerduty_webhook event", "pagerduty", "pagerduty_webhook", true},
+		{"datadog rule matches datadog_webhook event", "datadog", "datadog_webhook", true},
+		{"prometheus rule matches the agent's prometheus event", "prometheus", "prometheus", true},
+		{"prometheus rule matches the alertmanager webhook event", "prometheus", "prometheus_alertmanager_webhook", true},
+		{"an unmapped literal source still matches itself", "AWS_CloudWatch_Alarm", "AWS_CloudWatch_Alarm", true},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			event := &models.Event{Source: &tc.eventSource}
+			rule := &TriageRule{MatchSource: &tc.matchSource}
+			assert.Equal(t, tc.expectMatch, MatchesRule(event, rule))
+		})
+	}
+}
+
 func TestMatchesLabels(t *testing.T) {
 	testCases := []struct {
 		name        string
@@ -330,6 +358,11 @@ func TestCreateAndDeleteTriageRule(t *testing.T) {
 		require.NoError(t, err)
 		assert.False(t, enabled, "Rule should be disabled after soft delete")
 	})
+
+	// Re-enabling a disabled rule, and whether a plain edit preserves it, are
+	// covered by TestUpdateTriageRuleEnabledField_DB — this test's rule depends
+	// on the account lookup above finding real seeded data, so it isn't a
+	// hermetic place for that coverage (#40111).
 
 	// Cleanup - hard delete
 	t.Cleanup(func() {

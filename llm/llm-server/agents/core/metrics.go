@@ -27,7 +27,17 @@ var (
 	metricsClaimCritiqueShadow        metric.Int64Counter
 	metricsClaimCritiqueShadowLatency metric.Float64Histogram
 
+	// Common classification API decisions.
+	metricsClassificationDecision        metric.Int64Counter
+	metricsClassificationDecisionLatency metric.Float64Histogram
+
 	initCoreMetricsOnce sync.Once
+)
+
+// classificationDecisionLatencyBuckets spans a fast decision-model answer through a
+// slow LLM call with retries (production p95 for workflow intent was ~7 s).
+var classificationDecisionLatencyBuckets = metric.WithExplicitBucketBoundaries(
+	0.1, 0.25, 0.5, 1, 2, 3, 5, 8, 13, 20,
 )
 
 // scratchpadSummarizationLatencyBuckets covers the expected range for a lite-model call.
@@ -108,6 +118,23 @@ func InitMetrics() {
 		if err != nil {
 			slog.Error("metrics: failed to create claim critique latency", "error", err)
 		}
+		metricsClassificationDecision, err = coreMeter.Int64Counter(
+			"nb_llm_classification_decisions",
+			metric.WithDescription("Classification decisions, labeled by task, backend, valid and ok"),
+		)
+		if err != nil {
+			slog.Error("metrics: failed to create nb_llm_classification_decisions metric", "error", err)
+		}
+		metricsClassificationDecisionLatency, err = coreMeter.Float64Histogram(
+			"nb_llm_classification_decision_latency",
+			metric.WithDescription("Classification decision latency, labeled by task and backend"),
+			metric.WithUnit("s"),
+			classificationDecisionLatencyBuckets,
+		)
+		if err != nil {
+			slog.Error("metrics: failed to create nb_llm_classification_decision_latency metric", "error", err)
+		}
+
 		metricsCritiqueDecision, err = coreMeter.Int64Counter(
 			"nb_llm_critique_decision",
 			metric.WithDescription("Number of ReAct3 answer-critique decisions, labeled by agent, decision, and refinement attempt"),
@@ -140,6 +167,25 @@ func MetricsScratchpadSummarizationFallback(toolName, reason string) {
 		metricsScratchpadSummarizationFallback.Add(context.Background(), 1, metric.WithAttributes(
 			attribute.String("tool", toolName),
 			attribute.String("reason", reason),
+		))
+	}
+}
+
+// MetricsClassificationDecision records one Classify outcome.
+func MetricsClassificationDecision(task, backend string, valid, ok bool, seconds float64) {
+	InitMetrics()
+	if metricsClassificationDecision != nil {
+		metricsClassificationDecision.Add(context.Background(), 1, metric.WithAttributes(
+			attribute.String("task", task),
+			attribute.String("backend", backend),
+			attribute.Bool("valid", valid),
+			attribute.Bool("ok", ok),
+		))
+	}
+	if metricsClassificationDecisionLatency != nil {
+		metricsClassificationDecisionLatency.Record(context.Background(), seconds, metric.WithAttributes(
+			attribute.String("task", task),
+			attribute.String("backend", backend),
 		))
 	}
 }

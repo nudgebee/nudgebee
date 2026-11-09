@@ -33,10 +33,22 @@ import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import CelebrationOutlinedIcon from '@mui/icons-material/CelebrationOutlined';
 import apiIntegrations from '@api1/integrations';
 import { parseIntegrationItem } from '@api1/integrations/helpers';
+import { ALERT_PROVIDERS } from '@lib/onboarding/setupRegistry';
 import apiKnowledgeBase from '@api1/knowledge-base';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import IntegrationDynamicFormModal from '@components/integrations/modal/IntegrationDynamicFormModal';
 import K8sAccountModal from '@components/integrations/modal/K8sAccountModal';
+import K8sAgentInstallDialog from '@components/integrations/modal/K8sAgentInstallDialog';
+import JiraAccountModal from '@components/integrations/modal/JiraAccountModal';
+import ServiceNowAccountModal from '@components/integrations/modal/ServiceNowAccountModal';
+import FreshdeskAccountModal from '@components/integrations/modal/FreshdeskAccountModal';
+import PagerDutyAccountModal from '@components/integrations/modal/PagerDutyAccountModal';
+import ZenDutyAccountModal from '@components/integrations/modal/ZenDutyAccountModal';
+import GithubAccountModal from '@components/integrations/modal/GithubAccountModal';
+import GitlabAccountModal from '@components/integrations/modal/GitlabAccountModal';
+import DiscordInstallModal from '@components/integrations/modal/DiscordInstallModal';
+import { openChatOAuthInstall } from '@components/integrations/chatOAuthInstall';
+import GoogleChatPermissionStatus from '@components/integrations/GoogleChatPermissionStatus';
 import AddLLMConfigModal from '@components/llm/AddLLMConfigModal';
 import AddAwsAccountModal from '@pages/accounts/AddAwsAccountModal';
 import AddGcpAccountModal from '@pages/accounts/AddGcpAccountModal';
@@ -45,6 +57,7 @@ import AddSelfHostedAccountModal from '@pages/accounts/AddSelfHostedAccountModal
 import KnowledgeBaseFormModal from '@components/llm/KnowledgeBaseFormModal';
 import useKnowledgeBaseForm from '@components/llm/useKnowledgeBaseForm';
 import { getIntegrationDescription } from '@lib/integrationDescriptions';
+import { snakeToTitleCase } from '@utils/common';
 import { Card } from '@ui/Card';
 import { Button } from '@ui/Button';
 import { Chip } from '@ui/Chip';
@@ -65,6 +78,7 @@ import {
   type OnboardingItemStatus,
   type OnboardingPanelStatus,
   type OnboardingState,
+  type ItemAccountRow,
 } from '@lib/onboardingReadiness';
 
 /**
@@ -151,6 +165,25 @@ const describeConnectedIntegration = (row: ConnectedAiIntegration): string => {
  * `ListIntegrations.jsx`'s own "Edit" menu item already does this exact
  * flatten for this exact modal; mirrored here rather than invented fresh.
  */
+/**
+ * Fetches every connected integration of the given types and groups the rows
+ * by their own `type` — shared by the AI panel's fetch and the alerts panel's
+ * (below), since both just want "what's really connected, by type" rather
+ * than the readiness model's plain `connectedBy` labels.
+ */
+const fetchIntegrationsByType = async (types: string[]): Promise<Record<string, ConnectedAiIntegration[]>> => {
+  const res = await apiIntegrations.listIntegrations({ type: types, limit: 50 }).catch(() => undefined);
+  const rows = (res as { data?: { data?: { integrations_list?: { rows?: unknown[] } } } })?.data?.data?.integrations_list?.rows;
+  if (!Array.isArray(rows)) return {};
+  const byType: Record<string, ConnectedAiIntegration[]> = {};
+  rows.forEach((row) => {
+    const parsed = parseIntegrationItem(row as Record<string, unknown>) as unknown as ConnectedAiIntegration;
+    if (typeof parsed?.type !== 'string') return;
+    (byType[parsed.type] ||= []).push(parsed);
+  });
+  return byType;
+};
+
 const toDynamicFormEditData = (row: ConnectedAiIntegration): Record<string, unknown> => ({
   ...row,
   integration_config_values: {
@@ -162,6 +195,54 @@ const toDynamicFormEditData = (row: ConnectedAiIntegration): Record<string, unkn
     integration_config_name: row.name,
   },
 });
+
+/**
+ * Webhook types take the Integrations page's own title ("Add Datadog Webhook
+ * Account", from `ListIntegrations.jsx`'s `getDisplayName`) — the registry
+ * label alone ("Datadog") reads the same as the Telemetry panel's Datadog
+ * source. Every other type keeps its registry label.
+ */
+const integrationModalTitle = ({ type, label, editData }: { type: string; label: string; editData: Record<string, unknown> | null }): string => {
+  // Same test as the modal's own `hasEditData` — `{}` is Add, not Edit.
+  const verb = editData && Object.keys(editData).length > 0 ? 'Edit' : 'Add';
+  return type.endsWith('_webhook') ? `${verb} ${snakeToTitleCase(type)} Account` : `${verb} ${label}`;
+};
+
+/**
+ * Types that need a real, dedicated "Add" modal instead of the generic
+ * schema-driven form every other route falls through to
+ * (`IntegrationDynamicFormModal`) — the 7 ticketing types because their
+ * backend schema has no user-facing name field at all (every save failed
+ * with "name is required"), Discord because connecting one needs a bot-token
+ * input the generic form has no field for. `account-form.jsx`'s own switch
+ * never routes any of these through that generic form either — it opens one
+ * of these same dedicated modals, which is what their real "Add" button on
+ * the Integrations page actually mounts (#41112). Keyed by the registry's own
+ * `types[0]` value, the same string `openIntegration` resolves a route to.
+ * `DiscordInstallModal` ignores the `tool`/`editConfig` props the ticketing
+ * ones use — same call site, ignored rather than branched around.
+ */
+const DEDICATED_ACCOUNT_MODALS: Record<string, React.ComponentType<any>> = {
+  jira: JiraAccountModal,
+  servicenow: ServiceNowAccountModal,
+  freshdesk: FreshdeskAccountModal,
+  pagerduty: PagerDutyAccountModal,
+  zenduty: ZenDutyAccountModal,
+  github: GithubAccountModal,
+  gitlab: GitlabAccountModal,
+  discord: DiscordInstallModal,
+};
+
+/**
+ * Slack and Microsoft Teams connect via a single "open this OAuth URL"
+ * action (`account-form.jsx`'s own `installUrl` for each) — no form, so no
+ * modal to show at all. `openIntegration` special-cases these two routes
+ * before ever touching `integrationModal` state; see its own comment.
+ */
+const CHAT_OAUTH_INSTALL_URLS: Record<string, string> = {
+  SLACK: '/api/integrations/slack/install',
+  MSTEAMS: '/api/integrations/ms-teams/install',
+};
 
 /**
  * A knowledge base row, as `apiKnowledgeBase.getKnowledgeBases('')` (the same
@@ -271,6 +352,21 @@ const GLYPH_LABEL: Record<OnboardingState, string> = {
 };
 
 /**
+ * True exactly when `alertsEvaluator` downgraded an otherwise-healthy Alerts
+ * row to `partial` for the one reason it ever does: a webhook exists and
+ * every provider on it is itself connected, but nothing has posted to it
+ * yet. Shared by the caption below and the per-chip tone, so a provider
+ * chip's own checkmark never contradicts the sentence sitting right under
+ * it — a real customer finding, not a hypothetical (the chips show
+ * "connected" while the row says "waiting", which reads as the chips lying).
+ */
+const isWaitingForFirstAlert = (item: OnboardingItemStatus): boolean => {
+  if (item.id !== 'alerts' || item.state !== 'partial' || !item.connectedByState) return false;
+  const states = Object.values(item.connectedByState);
+  return states.length > 0 && states.every((s) => s === 'done');
+};
+
+/**
  * Known issue #34. `accountEvaluator`'s aggregate reads done the moment any
  * one account works (issue #30); `providerMatchEvaluator`'s reads the worst
  * across every match (issue #20). Both rules are individually correct for
@@ -283,6 +379,19 @@ const GLYPH_LABEL: Record<OnboardingState, string> = {
  * color, which specific connection is which.
  */
 const mixedStateNote = (item: OnboardingItemStatus): string | undefined => {
+  // `chatEvaluator`'s own downgrade: installed, but no default channel to post to.
+  if (item.missingDefaultChannel?.length) {
+    const names = item.missingDefaultChannel.join(' and ');
+    return `${names} ${
+      item.missingDefaultChannel.length > 1 ? 'have' : 'has'
+    } no default channel yet, so notifications that don't match a rule have nowhere to go.`;
+  }
+  // `alertsEvaluator`'s own downgrade: every matched provider is itself
+  // `done`, yet the item reads `partial` — that combination only happens
+  // when a webhook URL exists but nothing has posted to it yet.
+  if (isWaitingForFirstAlert(item)) {
+    return 'Connected — waiting for the first alert to arrive.';
+  }
   if (item.accounts) {
     return item.state === 'done' && item.accounts.some((a) => a.state !== 'done')
       ? 'Marked connected once any one account works — chips above show which are still pending.'
@@ -302,7 +411,7 @@ const mixedStateNote = (item: OnboardingItemStatus): string | undefined => {
  * read as one family at 18px, and the amber ring has to be able to spin while
  * something is genuinely mid-flight.
  */
-const StatusGlyph = ({ state, size = 20, spin = false }: { state: OnboardingState; size?: number; spin?: boolean }) => {
+const StatusGlyph = ({ state, size = 20, spin = false, fraction }: { state: OnboardingState; size?: number; spin?: boolean; fraction?: number }) => {
   const common = { width: size, height: size, viewBox: '0 0 24 24', 'aria-hidden': true as const, style: { flexShrink: 0 } };
   if (state === 'done') {
     return (
@@ -320,6 +429,27 @@ const StatusGlyph = ({ state, size = 20, spin = false }: { state: OnboardingStat
     );
   }
   if (state === 'partial') {
+    if (!spin && fraction !== undefined) {
+      const r = 9.4;
+      const circumference = 2 * Math.PI * r;
+      const filled = Math.max(0, Math.min(1, fraction)) * circumference;
+      return (
+        <svg {...common}>
+          <circle cx='12' cy='12' r={r} fill='none' stroke='var(--ds-amber-200)' strokeWidth='2.3' />
+          <circle
+            cx='12'
+            cy='12'
+            r={r}
+            fill='none'
+            stroke='var(--ds-amber-500)'
+            strokeWidth='2.3'
+            strokeLinecap='round'
+            strokeDasharray={`${filled} ${circumference}`}
+            transform='rotate(-90 12 12)'
+          />
+        </svg>
+      );
+    }
     return (
       <svg {...common}>
         <circle cx='12' cy='12' r='9.4' fill='none' stroke='var(--ds-amber-200)' strokeWidth='2.3' />
@@ -496,10 +626,13 @@ const ItemRow = ({
   connectedProviders,
   connectedIntegrations,
   onOpenConnectedIntegration,
+  alertIntegrationsByType,
   connectedKnowledgeBases,
   onOpenKnowledgeBase,
   pendingKnowledgeBaseId,
   selectedModules,
+  onReopenAgentInstall,
+  onSetDefaultChannel,
 }: {
   item: OnboardingItemStatus;
   first: boolean;
@@ -522,6 +655,11 @@ const ItemRow = ({
    * for every other item, which keeps showing its plain provider-label chips. */
   connectedIntegrations?: ConnectedAiIntegration[];
   onOpenConnectedIntegration?: (row: ConnectedAiIntegration) => void;
+  /** Full dict (not one item's slice, unlike `connectedIntegrations` above) —
+   * the alerts item has 13 providers, not one, so its chip loop below looks
+   * up each provider's own row by type itself rather than taking a
+   * pre-sliced list the way the AI panel's single-provider items do. */
+  alertIntegrationsByType?: Record<string, ConnectedAiIntegration[]>;
   /** Same idea as the pair above, for Skills specifically — see
    * `ConnectedKnowledgeBase`'s own doc comment for why it's a separate pair
    * rather than reusing `connectedIntegrations`. */
@@ -534,6 +672,12 @@ const ItemRow = ({
   /** The card's own module filter, for naming which of them an `na` item's
    *  "Not needed" tag refers to. See `notNeededFor`. */
   selectedModules: string[];
+  /** Reopens the install command for a K8s/self-hosted account row stuck
+   *  `partial` on its agent — see the account-chip `onClick` below for why. */
+  onReopenAgentInstall?: (account: ItemAccountRow) => void;
+  /** Opens where a chat app's default channel is picked — see
+   *  `openDefaultChannelSetup`. Takes the provider's registry `route`. */
+  onSetDefaultChannel?: (route: string) => void;
 }) => {
   const connected = item.connectedBy.length > 0;
   // A row with no alternatives to choose between opens its form directly — the
@@ -580,15 +724,22 @@ const ItemRow = ({
           loading: kb.id === pendingKnowledgeBaseId,
         }))
       : item.accounts && item.accounts.length > 0
-      ? // Non-clickable: unlike an AI integration or a knowledge base, an
-        // account row has no in-card form to reopen — it's managed from the
-        // Accounts page. Omitting `onClick` is what makes the chip a static
-        // tag rather than an action (see `Chip`'s own variant derivation).
+      ? // Mostly static tags — an account row has no in-card form to reopen,
+        // it's managed from the Accounts page. The one exception: a K8s/
+        // self-hosted row stuck `partial` on its agent gets a click target
+        // that reopens the install command, since that's the one thing a
+        // locked-to-/setup first-time user has no other way to reach (the
+        // app-wide reminder banner for exactly this is suppressed on this
+        // route — see `PendingAgentInstallBanner`'s own comment for why).
         item.accounts.map((a) => ({
           key: a.id,
           label: a.label,
           icon: <CloudProviderIcon cloud_provider={a.cloudProvider} width='12px' height='12px' />,
           tone: STATE_TONE[a.state],
+          onClick:
+            a.state === 'partial' && ['k8s', 'selfhosted'].includes((a.cloudProvider || '').toLowerCase())
+              ? () => onReopenAgentInstall?.(a)
+              : undefined,
         }))
       : [];
 
@@ -704,7 +855,27 @@ const ItemRow = ({
                   // (`connectedByState` is undefined for evaluators — Skills,
                   // Accounts — that only ever have one state to give).
                   const labelState = item.connectedByState?.[label];
-                  const tone = labelState ? STATE_TONE[labelState] : item.state === 'error' ? 'critical' : 'success';
+                  // Every provider here is individually `done` — Alertmanager
+                  // and PagerDuty are both wired up and healthy — but showing
+                  // that as a green check reads as "working" when nothing has
+                  // actually arrived yet. Match the item's own amber "In
+                  // progress" signal instead of contradicting it.
+                  const tone = isWaitingForFirstAlert(item)
+                    ? 'warning'
+                    : labelState
+                    ? STATE_TONE[labelState]
+                    : item.state === 'error'
+                    ? 'critical'
+                    : 'success';
+                  // Alerts only, today: its webhook URL is the one thing on
+                  // this item a user might reasonably need to see again (a
+                  // locked first-time user has no other way back to it — see
+                  // the account-chip comment above for the same shape of
+                  // problem). Not every provider here has a fetched row
+                  // (`alertIntegrationsByType` is empty for anything that
+                  // isn't a webhook type), so this is a no-op, inert chip for
+                  // everything else — same as before this existed.
+                  const alertRow = alertIntegrationsByType?.[provider?.types?.[0] || '']?.[0];
                   return (
                     <Chip
                       key={`${item.id}-${label}`}
@@ -713,8 +884,13 @@ const ItemRow = ({
                       shape='rect'
                       icon={provider && <CloudProviderIcon cloud_provider={provider.route} width='12px' height='12px' />}
                       trailingIcon={<ChipStatusGlyph tone={tone} />}
+                      onClick={alertRow ? () => onOpenConnectedIntegration?.(alertRow) : undefined}
                     >
-                      {label}
+                      {item.missingDefaultChannel?.includes(label)
+                        ? `${label} · No default channel`
+                        : item.defaultBy?.includes(label)
+                        ? `${label} · Default`
+                        : label}
                     </Chip>
                   );
                 })}
@@ -734,6 +910,26 @@ const ItemRow = ({
             {note}
           </Typography>
         )}
+
+        {canWrite && onSetDefaultChannel && item.missingDefaultChannel?.length ? (
+          <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)', flexWrap: 'wrap', mt: 'var(--ds-space-2)' }}>
+            {item.missingDefaultChannel.map((label) => {
+              const provider = providerByLabel.get(label);
+              if (!provider) return null;
+              return (
+                <Button
+                  key={`${item.id}-default-channel-${provider.route}`}
+                  tone='secondary'
+                  size='xs'
+                  data-testid={`setup-default-channel-${provider.route.toLowerCase()}`}
+                  onClick={() => onSetDefaultChannel(provider.route)}
+                >
+                  Set {label} default channel
+                </Button>
+              );
+            })}
+          </Box>
+        ) : null}
 
         {/* Compact (accounts) has no name row to carry the Add action, so it
             keeps its own inline button here instead. */}
@@ -938,10 +1134,13 @@ const PanelBody = ({
   connectedProviders,
   connectedIntegrationsByType,
   onOpenConnectedIntegration,
+  alertIntegrationsByType,
   connectedKnowledgeBases,
   onOpenKnowledgeBase,
   pendingKnowledgeBaseId,
   selectedModules,
+  onReopenAgentInstall,
+  onSetDefaultChannel,
 }: {
   panel: OnboardingPanelStatus;
   /** Single-open accordion: only the expanded panel renders its items. */
@@ -959,11 +1158,18 @@ const PanelBody = ({
    * doc comment. Only the AI panel's and Skills' items actually use either. */
   connectedIntegrationsByType?: Record<string, ConnectedAiIntegration[]>;
   onOpenConnectedIntegration?: (row: ConnectedAiIntegration) => void;
+  /** Passed straight through to `ItemRow` — see its own doc comment. Only the
+   * alerts item actually uses it. */
+  alertIntegrationsByType?: Record<string, ConnectedAiIntegration[]>;
   connectedKnowledgeBases?: ConnectedKnowledgeBase[];
   onOpenKnowledgeBase?: (kb: ConnectedKnowledgeBase) => void;
   pendingKnowledgeBaseId?: string | null;
   /** Passed straight through to `ItemRow` — see its own doc comment. */
   selectedModules: string[];
+  /** Passed straight through to `ItemRow` — see its own doc comment. */
+  onReopenAgentInstall?: (account: ItemAccountRow) => void;
+  /** Passed straight through to `ItemRow` — see its own doc comment. */
+  onSetDefaultChannel?: (route: string) => void;
 }) => {
   // Accounts is the one panel where the item *is* the panel — its own name
   // would just repeat "Accounts and clusters" a second time. An explicit
@@ -986,6 +1192,7 @@ const PanelBody = ({
       : undefined;
 
   const scorable = panel.items.filter((i) => !i.planned);
+  const anyItemPending = panel.items.some((i) => i.state === 'partial');
   // `connectedBy` names every provider with a real, non-disabled account row —
   // a K8s cluster still waiting on its agent is in there too. The badge says
   // "connected", so it only counts once the item's own state agrees: a row
@@ -1021,7 +1228,12 @@ const PanelBody = ({
           cursor: 'pointer',
         }}
       >
-        <StatusGlyph state={panel.state} size={22} spin={panel.state === 'partial'} />
+        <StatusGlyph
+          state={panel.state}
+          size={22}
+          spin={anyItemPending}
+          fraction={!anyItemPending && panel.requiredTotal > 0 ? panel.requiredDone / panel.requiredTotal : undefined}
+        />
         <Box sx={{ flexGrow: 1, minWidth: 0 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)', flexWrap: 'wrap' }}>
             <Typography
@@ -1091,10 +1303,13 @@ const PanelBody = ({
                 connectedProviders={connectedProviders}
                 connectedIntegrations={connectedIntegrationsByType?.[item.providers[0]?.types?.[0] || '']}
                 onOpenConnectedIntegration={onOpenConnectedIntegration}
+                alertIntegrationsByType={item.id === 'alerts' ? alertIntegrationsByType : undefined}
                 connectedKnowledgeBases={item.id === 'skills' ? connectedKnowledgeBases : undefined}
                 onOpenKnowledgeBase={onOpenKnowledgeBase}
                 pendingKnowledgeBaseId={item.id === 'skills' ? pendingKnowledgeBaseId : undefined}
                 selectedModules={selectedModules}
+                onReopenAgentInstall={onReopenAgentInstall}
+                onSetDefaultChannel={item.id === 'chat' ? onSetDefaultChannel : undefined}
               />
             ))}
           </Box>
@@ -1183,6 +1398,11 @@ const SetupCenter = () => {
   // through /accounts/account-form's own listing page, which is what
   // rendered when a tile only deep-linked there.
   const [accountModal, setAccountModal] = React.useState<string | null>(null);
+  // The K8s account whose install command is being re-shown — see
+  // `reopenAgentInstall` below. Self-hosted's equivalent reuses
+  // `integrationModal` (the same `vm_agent` form Setup already opens right
+  // after creating the account), so it needs no state of its own here.
+  const [k8sAgentInstallAccount, setK8sAgentInstallAccount] = React.useState<ItemAccountRow | null>(null);
   // Single-open accordion across all six panels. Accounts starts open since
   // it is the one panel every fresh tenant has to act on first.
   const [expandedPanel, setExpandedPanel] = React.useState('accounts');
@@ -1218,22 +1438,29 @@ const SetupCenter = () => {
   const aiIntegrationsRequestId = React.useRef(0);
   const fetchAiIntegrations = React.useCallback(async () => {
     const requestId = (aiIntegrationsRequestId.current += 1);
-    const res = await apiIntegrations.listIntegrations({ type: ['llm', 'llm_gateway', 'mcp'], limit: 50 }).catch(() => undefined);
+    const byType = await fetchIntegrationsByType(['llm', 'llm_gateway', 'mcp']);
     if (requestId !== aiIntegrationsRequestId.current) return;
-    const rows = (res as { data?: { data?: { integrations_list?: { rows?: unknown[] } } } })?.data?.data?.integrations_list?.rows;
-    if (!Array.isArray(rows)) return;
-    const byType: Record<string, ConnectedAiIntegration[]> = {};
-    rows.forEach((row) => {
-      const parsed = parseIntegrationItem(row as Record<string, unknown>) as unknown as ConnectedAiIntegration;
-      if (typeof parsed?.type !== 'string') return;
-      (byType[parsed.type] ||= []).push(parsed);
-    });
     setAiIntegrations(byType);
+  }, []);
+
+  // Same idea, for the alerts panel's 13 webhook providers: lets a connected
+  // provider's chip reopen its own edit form (see `onReopenAlertIntegration`
+  // below) instead of just naming it. Separate from `aiIntegrations` rather
+  // than merged into one fetch — different domain, and merging would mean a
+  // misleadingly-named `aiIntegrations` dict carrying alert rows too.
+  const [alertIntegrations, setAlertIntegrations] = React.useState<Record<string, ConnectedAiIntegration[]>>({});
+  const alertIntegrationsRequestId = React.useRef(0);
+  const fetchAlertIntegrations = React.useCallback(async () => {
+    const requestId = (alertIntegrationsRequestId.current += 1);
+    const byType = await fetchIntegrationsByType(ALERT_PROVIDERS.flatMap((p) => p.types || []));
+    if (requestId !== alertIntegrationsRequestId.current) return;
+    setAlertIntegrations(byType);
   }, []);
 
   React.useEffect(() => {
     fetchAiIntegrations();
-  }, [fetchAiIntegrations]);
+    fetchAlertIntegrations();
+  }, [fetchAiIntegrations, fetchAlertIntegrations]);
 
   // The real, named knowledge bases behind the Skills chip — same reasoning
   // as `aiIntegrations` above, parallel rather than shared because Skills
@@ -1259,10 +1486,10 @@ const SetupCenter = () => {
     setAccountModal(route);
   }, []);
 
-  // A chip click on an already-connected AI integration — same modal as
-  // "Add", pre-filled. The label still comes from the registry (via
-  // `providerIndex`, matched on the row's own `type`) rather than a second
-  // hardcoded copy of it.
+  // A chip click on an already-connected integration — originally just the AI
+  // panel's three items, now also an alerts provider — same modal as "Add",
+  // pre-filled. The label still comes from the registry (via `providerIndex`,
+  // matched on the row's own `type`) rather than a second hardcoded copy of it.
   const openConnectedIntegration = React.useCallback(
     (row: ConnectedAiIntegration) => {
       const label = Object.values(providerIndex).find((p) => p.types?.includes(row.type))?.label || row.type;
@@ -1356,10 +1583,70 @@ const SetupCenter = () => {
     setSelectedModules((prev) => (prev.includes(id) ? prev.filter((m) => m !== id) : [...prev, id]));
   }, []);
 
-  const closeAccountModal = React.useCallback(() => {
-    setAccountModal(null);
-    refreshReadiness();
-  }, [refreshReadiness]);
+  const closeAccountModal = React.useCallback(
+    (saved?: boolean) => {
+      setAccountModal(null);
+      if (saved) {
+        refreshReadiness();
+      }
+    },
+    [refreshReadiness]
+  );
+
+  // #41115: a self-hosted account alone collects nothing — it needs a VM
+  // Agent integration before any forager exists, and that step lives on a
+  // different route entirely (not a registry-resolvable `openIntegration`
+  // target), easy to leave for later and forget. Opens the same generic,
+  // schema-driven form the real Integrations page uses for `vm_agent` (its
+  // own account picker handles scoping to the one just created), mirroring
+  // how Kubernetes's own wizard shows its install step right after step 1 —
+  // just as a second modal rather than a second step of the same one, since
+  // AddSelfHostedAccountModal is shared with pages outside Setup and isn't
+  // built as an inline two-step wizard.
+  const closeSelfHostedAccountModal = React.useCallback(
+    (saved?: boolean) => {
+      closeAccountModal(saved);
+      if (saved) setIntegrationModal({ type: 'vm_agent', label: 'Proxy Agent', editData: null });
+    },
+    [closeAccountModal]
+  );
+
+  // The install step for a K8s/self-hosted account that's still `partial` on
+  // its agent — reached by clicking that account's own chip. A locked-to-
+  // /setup first-time user has no other way back to it: the credentials are
+  // shown once at creation and never stored, and the app-wide reminder that
+  // would normally point this out (`PendingAgentInstallBanner`) is
+  // deliberately suppressed on this exact route (see its own comment) to
+  // avoid duplicating this row's state. Self-hosted reuses the same `vm_agent`
+  // form the account-create flow already opens — safe to reopen even if a
+  // Proxy Agent integration exists from an earlier, abandoned attempt, since
+  // the generic form's own account picker just lets the user pick this
+  // account again. K8s has no such form to reopen, so it gets its own small
+  // dialog that fetches a fresh install command on demand.
+  const reopenAgentInstall = React.useCallback((account: ItemAccountRow) => {
+    if (account.cloudProvider?.toLowerCase() === 'selfhosted') {
+      setIntegrationModal({ type: 'vm_agent', label: 'Proxy Agent', editData: null });
+    } else {
+      setK8sAgentInstallAccount(account);
+    }
+  }, []);
+
+  const closeIntegrationModal = React.useCallback(
+    (saved?: boolean) => {
+      setIntegrationModal(null);
+      if (saved) {
+        refreshReadinessInputs();
+        // The AI/alerts panels' chip labels are a separate fetch from
+        // readiness (see `fetchAiIntegrations`/`fetchAlertIntegrations`), so a
+        // just-saved name/token change needs its own refresh too —
+        // `refreshReadinessInputs` alone would leave the chip showing the
+        // pre-edit detail until the next full reload.
+        fetchAiIntegrations();
+        fetchAlertIntegrations();
+      }
+    },
+    [refreshReadinessInputs, fetchAiIntegrations, fetchAlertIntegrations]
+  );
 
   const openIntegration = React.useCallback(
     (route: string) => {
@@ -1371,25 +1658,50 @@ const SetupCenter = () => {
         handleAddKnowledgeBase();
         return;
       }
+      // Slack and Teams have no form of their own to show — connecting is a
+      // single "open this OAuth URL, wait for the popup to close" action
+      // (see chatOAuthInstall.ts's own doc comment for why only these two).
+      // There's nothing to put in the modal slot; just start it, and refresh
+      // once the popup closes the same way the real Integrations page does —
+      // it has no success/failure signal either, only the close itself.
+      const chatInstallUrl = CHAT_OAUTH_INSTALL_URLS[route];
+      if (chatInstallUrl) {
+        openChatOAuthInstall(route.toLowerCase(), chatInstallUrl, () => closeIntegrationModal(true));
+        return;
+      }
       const info = providerIndex[route];
       setIntegrationModal({ type: info?.types?.[0] || route.toLowerCase(), label: info?.label || route, editData: null });
     },
-    [providerIndex, handleAddKnowledgeBase]
+    [providerIndex, handleAddKnowledgeBase, closeIntegrationModal]
   );
 
-  const closeIntegrationModal = React.useCallback(
-    (saved?: boolean) => {
-      setIntegrationModal(null);
-      if (saved) {
-        refreshReadinessInputs();
-        // The AI panel's chip labels are a separate fetch from readiness (see
-        // `fetchAiIntegrations`), so a just-saved name/model change needs its
-        // own refresh too — `refreshReadinessInputs` alone would leave the
-        // chip showing the pre-edit detail until the next full reload.
-        fetchAiIntegrations();
-      }
+  // A chat app's default channel is picked on its own Integrations page
+  // ("Map Channel", or Google Chat's "Set default") — the channel lists and
+  // team pickers live there, not in a form Setup can open. New tab for the
+  // same reason as the Google Chat hand-off below; readiness refreshes when
+  // this tab regains focus, so the step clears without a reload. Each
+  // registry route is already that page's `?cloudProvider=` value.
+  // One pending listener at most, and none left behind after unmount — a
+  // second click before refocusing must not queue a second refetch.
+  const refocusRefreshRef = React.useRef<(() => void) | null>(null);
+  React.useEffect(
+    () => () => {
+      if (refocusRefreshRef.current) window.removeEventListener('focus', refocusRefreshRef.current);
     },
-    [refreshReadinessInputs, fetchAiIntegrations]
+    []
+  );
+  const openDefaultChannelSetup = React.useCallback(
+    (route: string) => {
+      window.open(`/accounts/account-form?cloudProvider=${route.toLowerCase()}`, '_blank', 'noopener');
+      if (refocusRefreshRef.current) return;
+      const onFocus = () => {
+        refocusRefreshRef.current = null;
+        refreshReadinessInputs();
+      };
+      refocusRefreshRef.current = onFocus;
+      window.addEventListener('focus', onFocus, { once: true });
+    },
+    [refreshReadinessInputs]
   );
 
   const togglePanel = React.useCallback((id: string) => setExpandedPanel((prev) => (prev === id ? '' : id)), []);
@@ -1483,6 +1795,8 @@ const SetupCenter = () => {
     );
   }
 
+  const DedicatedAccountModal = integrationModal ? DEDICATED_ACCOUNT_MODALS[integrationModal.type] : undefined;
+
   return (
     <Box
       data-testid={CARD_ID}
@@ -1554,7 +1868,7 @@ const SetupCenter = () => {
             id={`${CARD_ID}-progress`}
             value={percent}
             size='md'
-            tone={essentialsLeft === 0 ? 'success' : 'neutral'}
+            tone={essentialsLeft === 0 ? 'success' : 'info'}
             // ProgressBar reserves a fixed 80px label column with no overflow
             // handling, so anything longer than about 'N of N' wraps to a second
             // line and knocks the bar out of alignment — the unit can't be
@@ -1649,6 +1963,7 @@ const SetupCenter = () => {
               onSelect={openAccountModal}
               connectedProviders={connectedProviders}
               selectedModules={selectedModules}
+              onReopenAgentInstall={reopenAgentInstall}
             />
 
             {followUps.length > 0 && (
@@ -1695,10 +2010,12 @@ const SetupCenter = () => {
                 connectedProviders={connectedProviders}
                 connectedIntegrationsByType={aiIntegrations}
                 onOpenConnectedIntegration={openConnectedIntegration}
+                alertIntegrationsByType={alertIntegrations}
                 connectedKnowledgeBases={knowledgeBases}
                 onOpenKnowledgeBase={handleOpenKnowledgeBase}
                 pendingKnowledgeBaseId={pendingKnowledgeBaseId}
                 selectedModules={selectedModules}
+                onSetDefaultChannel={openDefaultChannelSetup}
               />
             </Card>
           ))}
@@ -1780,15 +2097,68 @@ const SetupCenter = () => {
             editData={integrationModal.editData}
             onSaved={() => closeIntegrationModal(true)}
           />
+        ) : integrationModal.type === 'google_chat_space' ? (
+          // Google Chat has no in-app "start" action at all, unlike every
+          // other chat/ticket provider here — connecting begins on Google's
+          // side (an admin adds the bot to a space) and only finishes on
+          // /accounts/account-form, the one place that reads the resulting
+          // Connect-card deep-link (`space_id`/`display_name` query params —
+          // see GoogleChatSpacesPanel.jsx's own doc comment). There is
+          // nothing to open here; showing instructions instead of a fake
+          // "Add" form is the honest version of this fix, not a stand-in for
+          // a real one (#41112). New tab, never the current one: a tenant
+          // still locked onto /setup would just get bounced straight back —
+          // harmless either way, but only the new tab pays for it.
+          <Modal
+            open
+            handleClose={() => closeIntegrationModal(false)}
+            title='Connect Google Chat'
+            subtitle={`Connects through the ${brandTitle} bot — nothing to sign into here.`}
+            actionButtons={
+              <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--ds-space-3)', p: `var(--ds-space-3) var(--ds-space-5)` }}>
+                <Button tone='secondary' size='md' onClick={() => closeIntegrationModal(false)}>
+                  Close
+                </Button>
+                <Button
+                  tone='primary'
+                  size='md'
+                  onClick={() => window.open('/accounts/account-form?cloudProvider=google_chat', '_blank', 'noopener')}
+                >
+                  Open Google Chat setup
+                </Button>
+              </Box>
+            }
+          >
+            <Typography sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-700)', lineHeight: 1.5, p: 'var(--ds-space-5)', pt: 0 }}>
+              Add the {brandTitle} bot to a Google Chat space. It posts a Connect card there — open that page, and the card's link binds the space to
+              this tenant.
+            </Typography>
+            {/* The one part of the real page's own flow that works without
+                leaving Setup Center — see GoogleChatPermissionStatus.jsx's
+                own doc comment for why it's a duplicate, not a shared import. */}
+            <Box sx={{ px: 'var(--ds-space-5)', pb: 'var(--ds-space-5)' }}>
+              <GoogleChatPermissionStatus />
+            </Box>
+          </Modal>
+        ) : DedicatedAccountModal ? (
+          <DedicatedAccountModal
+            openModal
+            handleClose={(saved?: boolean) => closeIntegrationModal(saved)}
+            tool={integrationModal.type}
+            editConfig={integrationModal.editData}
+          />
         ) : (
           <IntegrationDynamicFormModal
             openModal
             handleClose={(saved?: boolean) => closeIntegrationModal(saved)}
             integrationName={integrationModal.type}
-            title={`${integrationModal.editData ? 'Edit' : 'Add'} ${integrationModal.label}`}
+            title={integrationModalTitle(integrationModal)}
             subtitle={getIntegrationDescription(integrationModal.type)}
             integrationData={[]}
-            editData={integrationModal.editData}
+            // `{}` for Add, as ListIntegrations passes it: the modal reads a
+            // bare `null` differently on save (it adds an empty webhook
+            // `token` value the Integrations page never sends).
+            editData={integrationModal.editData ?? {}}
           />
         ))}
 
@@ -1796,10 +2166,11 @@ const SetupCenter = () => {
           /accounts/account-form?cloudProvider=X mounts, reached here directly
           instead of through that page's own listing view. */}
       {accountModal === 'K8S' && <K8sAccountModal openModal handleClose={closeAccountModal} handleOnAccountCreate={refreshReadiness} />}
-      {accountModal === 'AWS' && <AddAwsAccountModal open onClose={closeAccountModal} />}
-      {accountModal === 'GCP' && <AddGcpAccountModal open onClose={closeAccountModal} />}
-      {accountModal === 'AZURE' && <AddAzureAccountModal open onClose={closeAccountModal} />}
-      {accountModal === 'SELFHOSTED' && <AddSelfHostedAccountModal open onClose={closeAccountModal} />}
+      {accountModal === 'AWS' && <AddAwsAccountModal open onClose={closeAccountModal} onAccountCreated={refreshReadiness} />}
+      {accountModal === 'GCP' && <AddGcpAccountModal open onClose={closeAccountModal} onAccountCreated={refreshReadiness} />}
+      {accountModal === 'AZURE' && <AddAzureAccountModal open onClose={closeAccountModal} onAccountCreated={refreshReadiness} />}
+      {accountModal === 'SELFHOSTED' && <AddSelfHostedAccountModal open onClose={closeSelfHostedAccountModal} />}
+      <K8sAgentInstallDialog open={!!k8sAgentInstallAccount} onClose={() => setK8sAgentInstallAccount(null)} account={k8sAgentInstallAccount} />
 
       {/* Only shown when Add on Skills has more than one account to choose
           from — a single eligible account skips straight to the create form. */}

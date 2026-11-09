@@ -8,6 +8,7 @@ import (
 	"nudgebee/llm/config"
 	"nudgebee/llm/relay"
 	"nudgebee/llm/security"
+	"regexp"
 	"strings"
 	"time"
 
@@ -604,6 +605,25 @@ func fetchArgoCDIntegrationConfig(accountId string) (secretName, serverURL, auth
 	return secretName, serverURL, authTokenKeyInSecret, nil
 }
 
+// The app name comes from a workload annotation and the host from integration
+// config; both are interpolated into a shell command, so only plain names are
+// accepted. A leading alphanumeric keeps either from being read as a CLI flag.
+var (
+	argoCDAppNamePattern    = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*(/[a-zA-Z0-9][a-zA-Z0-9._-]*)?$`)
+	argoCDServerHostPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9.-]*(:[0-9]+)?$`)
+)
+
+// argoCDAppGetCommand builds the app lookup command.
+func argoCDAppGetCommand(appName, serverHost string) (string, error) {
+	if !argoCDAppNamePattern.MatchString(appName) {
+		return "", fmt.Errorf("invalid argocd app name %q", appName)
+	}
+	if !argoCDServerHostPattern.MatchString(serverHost) {
+		return "", fmt.Errorf("invalid argocd server host %q: must be hostname[:port]", serverHost)
+	}
+	return fmt.Sprintf(`argocd app get %s --server %s --insecure --grpc-web --output json`, appName, serverHost), nil
+}
+
 // GetSourceCodeFromArgoCD queries ArgoCD API to get source code information
 func GetSourceCodeFromArgoCD(ctx *security.RequestContext, accountId, appName string) (GetSourceCodeRepoResponse, error) {
 	if appName == "" {
@@ -625,11 +645,11 @@ func GetSourceCodeFromArgoCD(ctx *security.RequestContext, accountId, appName st
 
 	// Build the argocd CLI command
 	// ArgoCD CLI automatically uses ARGOCD_AUTH_TOKEN environment variable
-	argoCDCmd := fmt.Sprintf(
-		`argocd app get %s --server %s --insecure --grpc-web --output json`,
-		appName,
-		serverHost,
-	)
+	argoCDCmd, err := argoCDAppGetCommand(appName, serverHost)
+	if err != nil {
+		ctx.GetLogger().Warn("refusing ArgoCD lookup", "error", err)
+		return GetSourceCodeRepoResponse{}, fmt.Errorf("GetSourceCodeFromArgoCD: %w", err)
+	}
 
 	ctx.GetLogger().Debug("executing ArgoCD command", "command", argoCDCmd, "server", serverHost)
 

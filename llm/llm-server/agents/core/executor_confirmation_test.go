@@ -2,12 +2,14 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -233,4 +235,77 @@ func TestConfirmationQuestionForAction_UsesRepairedInput(t *testing.T) {
 
 	// Tools without a custom question keep the default rendering.
 	assert.Empty(t, confirmationQuestionForAction(confirmStubTool{name: "plain_tool"}, asString))
+}
+
+// Running an automation is not "creating cluster resources": both tools that
+// run one supply their own card, so the default sentence, the internal tool
+// name and the raw arguments never reach the user.
+func TestConfirmationQuestionForAction_AutomationRunIsNotTheGenericCard(t *testing.T) {
+	action := NBAgentPlannerToolAction{Tool: tools.ToolWorkflowTrigger, ToolInput: `{"id":"wf-1"}`}
+	override := confirmationQuestionForAction(tools.WorkflowTriggerTool{}, action)
+	require.NotEmpty(t, override)
+
+	fr, err := FollowupRequestForToolOperationConfirmation(llmOverrideContext(),
+		NBAgentRequest{AgentId: uuid.New().String()}, LLMAgent{}, action, toolcore.ToolRequestTypeCreate, action.Tool, override)
+	require.NoError(t, err)
+	assert.Equal(t, "Run the automation with ID wf-1?", fr.Question)
+	assert.Equal(t, []string{"yes", "no"}, fr.FollowupOptions, "the card keeps its yes / no buttons")
+	assert.Equal(t, FollowupTypeToolConfirmation, fr.FollowupType)
+}
+
+const approvalTestAccount = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+
+// approvedWriteExecutor returns an executor whose request carries a "yes" for
+// write_tool, running under ctx (the request that answered the approval).
+func approvedWriteExecutor(ctx *security.RequestContext) (*plannerExecutor, map[string]toolcore.NBTool, NBAgentPlannerToolAction) {
+	tool := &MockClassifiedTool{
+		MockContextCapturingTool: MockContextCapturingTool{NameVal: "write_tool"},
+		RequestType:              toolcore.ToolRequestTypeCreate,
+	}
+	request := NBAgentRequest{
+		AccountId:   approvalTestAccount,
+		QueryConfig: toolcore.NBQueryConfig{ToolConfirmations: map[string]string{"write_tool": "yes"}},
+	}
+	executor := newPlannerExecutor(ctx, &mockNBAgentPlanner{}, &MockAgent{SupportedTools: []toolcore.NBTool{tool}}, request, 3)
+	action := NBAgentPlannerToolAction{ToolID: "approved-write", Tool: "write_tool", ToolInput: "touch /tmp/probe"}
+	return executor, getNameToTool([]toolcore.NBTool{tool}), action
+}
+
+// An approval answered by a request with no person behind it (the system user,
+// or no user at all) is not used: the write is refused as a step.
+func TestApprovalWithoutAPersonIsNotUsed(t *testing.T) {
+	for name, user := range map[string]string{"system user": security.GetSystemUserId(), "no user": ""} {
+		t.Run(name, func(t *testing.T) {
+			ctx := security.NewRequestContextForTenantAccountAdmin("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", user, []string{approvalTestAccount})
+			executor, nameToTool, action := approvedWriteExecutor(ctx)
+			step, finish, err := executor.doAction(nameToTool, action, "")
+			require.NoError(t, err)
+			assert.Nil(t, finish)
+			assert.Equal(t, ToolStatusFailure, step.Status)
+			assert.Contains(t, step.Observation, "without a signed-in user")
+			assert.Contains(t, step.Observation, "not executed")
+		})
+	}
+}
+
+// A person whose role cannot write to the account cannot make a write run by
+// approving it: the gate checks the approving request's own access.
+func TestApprovalFromReadOnlyPersonDoesNotRunWrite(t *testing.T) {
+	sc := &security.SecurityContext{}
+	require.NoError(t, json.Unmarshal([]byte(`{"TenantId":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","UserId":"dddddddd-dddd-dddd-dddd-dddddddddddd","AccountIds":["`+approvalTestAccount+`"],"Roles":["`+security.AUTH_TENANT_READ_ADMIN_ROLE+`"]}`), sc))
+	require.False(t, sc.HasAccountAccess(approvalTestAccount, security.SecurityAccessTypeCreate))
+	executor, nameToTool, action := approvedWriteExecutor(security.NewRequestContext(context.Background(), sc, nil, nil, nil))
+	_, finish, err := executor.doAction(nameToTool, action, "")
+	require.NoError(t, err)
+	require.NotNil(t, finish)
+	assert.Contains(t, finish.Data, "doesnt have access to update")
+}
+
+func TestApprovedByPerson(t *testing.T) {
+	person := security.NewRequestContextForTenantAccountAdmin("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "dddddddd-dddd-dddd-dddd-dddddddddddd", []string{approvalTestAccount})
+	system := security.NewRequestContextForTenantAccountAdmin("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", security.GetSystemUserId(), []string{approvalTestAccount})
+	assert.True(t, approvedByPerson(person))
+	assert.False(t, approvedByPerson(system))
+	assert.False(t, approvedByPerson(security.NewRequestContextForSuperAdmin()))
+	assert.False(t, approvedByPerson(nil))
 }

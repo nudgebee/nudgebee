@@ -216,7 +216,7 @@ Configure the Google Cloud project's OAuth redirect to `${BASE_URL}/api/integrat
 | `EMAIL_SERVER_USER` | SMTP username (optional; leave empty for relays that don't require auth) |
 | `EMAIL_SERVER_PASSWORD` | SMTP password (optional) |
 | `EMAIL_FROM` | Default From address |
-| `EMAIL_FROM_NAME` | Optional display name for the From header |
+| `EMAIL_FROM_NAME` | Optional display name for the From header; the branding row's `email.fromName` takes precedence |
 | `EMAIL_MAX_CONCURRENT_SENDS` | Concurrency limit (default 10) |
 
 ### Upstream service URLs
@@ -233,13 +233,17 @@ Configure the Google Cloud project's OAuth redirect to `${BASE_URL}/api/integrat
 Branding is configured in the database, in the same `tenant_branding_override` table the web app uses. This service has no request host, so it applies the row whose host matches its **`BASE_URL`** hostname, fetched from services-server (`GET /v1/branding/overrides`, using `SERVICE_API_SERVER_URL` and `ACTION_API_SERVER_TOKEN`) at startup and every 60 seconds ([`configs/branding_overrides.py`](notifications_server/configs/branding_overrides.py)).
 
 - The row's `title` names the product in every notification (email subject and footer, Slack, Teams, Discord, Google Chat).
+- The row's optional `email.fromName` is the display name on the From line of every email, e.g. `Acme Ops <alerts@example.com>`. The address itself stays `EMAIL_FROM`. Unset or `""` falls back to `EMAIL_FROM_NAME`.
 - The row's optional `email` block (`logoUrl`, `supportEmail`, `primaryColor`, `headerBgColor`, `footerBgColor`, `footerLinkColor`, `address`, `copyrightStartYear`) restyles email. `logoUrl` is root-relative and made absolute with `BASE_URL`.
+- A row whose `title` renames the product and sets no `email.logoUrl` sends **no logo**: the email footer and the Microsoft Teams and Google Chat welcome/connect cards drop the image rather than show the bundled one beside the partner's name.
 
-The bundled [`branding/default/theme.json`](notifications_server/branding/default/theme.json) is the fallback for anything the row doesn't set, for a missing `BASE_URL`, and for messages sent before the first successful fetch. A failed refresh keeps the last values it applied. `TENANT_BRANDING_FILE` is no longer read.
+The bundled [`branding/default/theme.json`](notifications_server/branding/default/theme.json) is the fallback for anything else the row doesn't set, for a missing `BASE_URL`, and for messages sent before the first successful fetch. A failed refresh keeps the last values it applied. `TENANT_BRANDING_FILE` is no longer read.
+
+The email footer links to the Privacy and Terms pages only when the host's row sets them, in its top-level `privacyUrl` and `termsUrl`. With no row there are none: the web app's bundled pages name one company's legal entity, which is not who runs a self-hosted install. Our own hosts set the links on their row the same way a partner does. A row that renames the product and leaves one out sends no link for it.
 
 ## RabbitMQ Message Format
 
-The consumer reads JSON messages from the `notifications` queue. Failed messages are sent to a delayed queue (`notifications_delayed`) and retried via the `dlx` dead-letter exchange after `RABBITMQ_DEAD_LETTER_DELAY_MS` ms.
+The consumer reads JSON messages from the `notifications` queue. Failed messages are sent to a delayed queue (`notifications_delayed_v2`) and dead-lettered back onto `notifications` after `RABBITMQ_DEAD_LETTER_DELAY_MS` ms. After `TASK_RETRY_COUNT` attempts, a message is parked in `notifications_dlq` instead of being retried again.
 
 Message envelope (see `notifications_server/schemas/message.py` for the full Pydantic model):
 
@@ -315,7 +319,7 @@ The Next.js frontend handles the user-facing callback paths and proxies to notif
 
 **Google Chat events not arriving** — Chat-app event URL is configured per-project in the Google Cloud console; verifying it requires returning a `200 OK` to Google's verification ping at the URL. Confirm the consumer is running (RabbitMQ + DB up) before the URL verification.
 
-**Notifications stuck in the queue** — Check the consumer is running (`docker logs notifications-server` or the pod logs). Failed messages go to `notifications_delayed` and retry after `RABBITMQ_DEAD_LETTER_DELAY_MS`; if they keep landing there, the message body is malformed or the platform credentials are wrong.
+**Notifications stuck in the queue** — Check the consumer is running (`docker logs notifications-server` or the pod logs). Failed messages go to `notifications_delayed_v2` and retry after `RABBITMQ_DEAD_LETTER_DELAY_MS`, up to `TASK_RETRY_COUNT` times; after that they land in `notifications_dlq` and stop retrying. Inspect `notifications_dlq` for messages that are permanently failing due to a malformed body or bad platform credentials.
 
 **Emails not sent** — `EMAIL_SERVER_PASSWORD` cleartext leaks happen via misconfigured SMTP debug logging. Verify `EMAIL_SERVER_HOST` resolves, port `EMAIL_SERVER_PORT` is open from the pod (`kubectl exec -- nc -zv host port`), and the SMTP server accepts `EMAIL_FROM` as a sender (some relays reject unverified domains).
 

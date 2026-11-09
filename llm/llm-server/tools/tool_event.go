@@ -144,6 +144,7 @@ func resolveEventsViewPlaceholders(view, accountId string, skipDateFilter bool) 
 }
 
 type EventsExecuteTool struct {
+	core.ReadOnlyTool
 	// FullEvidence preserves the complete collected log body on the processed
 	// row instead of gutting it to mined error lines / a 500-byte tail. Set by
 	// programmatic single-event consumers (the event analyzer, the evidence
@@ -161,7 +162,7 @@ func (m EventsExecuteTool) GetType() core.NBToolType {
 }
 
 func (m EventsExecuteTool) Description() string {
-	return "Run a read-only SQL SELECT against the `events` table (columns: id, title, priority, computed_priority, urgency, subject_name/type/namespace, status, starts_at, evidences, …). Only SELECT/WITH/DESC/SHOW allowed; results limited to the last 30 days unless filtering by id."
+	return "Run a read-only SQL SELECT against the `events` table (columns: id, title, priority, computed_priority, urgency, subject_name/type/namespace, status, starts_at, evidences, …). Only a single SELECT on events (no joins, subqueries or CTEs); results limited to the last 30 days unless filtering by id."
 }
 
 func (m EventsExecuteTool) InputSchema() core.ToolSchema {
@@ -241,6 +242,19 @@ func formatErrorLogLine(entry map[string]any, message string) (string, bool) {
 	return strings.TrimSpace(ts) + "\t" + sev + "\t" + message, true
 }
 
+// anomalyCurrentLabel reads the event's anomaly_current label; labels arrive as a
+// JSON string from SQL or as a decoded map.
+func anomalyCurrentLabel(labels any) string {
+	m, ok := labels.(map[string]any)
+	if !ok {
+		if str, isStr := labels.(string); isStr && str != "" {
+			_ = json.Unmarshal([]byte(str), &m)
+		}
+	}
+	v, _ := m["anomaly_current"].(string)
+	return v
+}
+
 func (m EventsExecuteTool) processRowWithMessages(data map[string]any, i, c int, messagesMap map[string][]map[string]string) map[string]any {
 	investigateData := events.InvestigateData{}
 	if data["evidences"] != nil {
@@ -255,6 +269,16 @@ func (m EventsExecuteTool) processRowWithMessages(data map[string]any, i, c int,
 			}
 		}
 		for _, evidence := range evidences {
+
+			if events.IsAnomalyRecord(evidence) {
+				if summary, ok := events.SummarizeAnomalyRecord(evidence); ok {
+					summary.SetLabelValue(anomalyCurrentLabel(data["labels"]))
+					investigateData.AnomalyDetection = &summary
+				} else {
+					slog.Warn("evidence: unreadable anomaly reference_value, skipping", "event_id", data["id"])
+				}
+				continue
+			}
 
 			if evidence.Type == "diff" {
 				evidenceData, ok := evidence.Data.(map[string]any)
@@ -754,6 +778,10 @@ func (m EventsExecuteTool) processRowWithMessages(data map[string]any, i, c int,
 			}
 		}
 
+		if investigateData.AnomalyDetection != nil {
+			investigateData.AnomalyDetection.NoteWindowCard(investigateData.MetricsData)
+		}
+
 		// Per-entry severity extraction (formatErrorLogLine) already filled
 		// ErrorLogData when the evidence carried structured severities; only
 		// fall back to mining the raw text when it did not.
@@ -918,7 +946,7 @@ func (m EventsExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 
 	if !isValidSQL(input.Command) {
 		return core.NBToolResponse{
-			Data:   "Error: Invalid SQL query. Please provide a valid SQL SELECT statement. Example: 'SELECT * FROM events WHERE priority = 'high'' or 'DESC events'",
+			Data:   "Error: Invalid SQL query. Please provide a valid SQL SELECT statement. Example: 'SELECT * FROM events WHERE priority = 'high''",
 			Status: core.NBToolResponseStatusError,
 		}, nil
 	}

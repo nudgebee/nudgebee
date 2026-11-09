@@ -249,7 +249,9 @@ def score_documents(query: str, docs: List) -> Tuple[List[float], bool]:
         admitted_at = time.monotonic()
         with _inference_slots:
             waited = time.monotonic() - admitted_at
-            scored = _to_unit_scale(model.predict(pairs, batch_size=Config.reranker_batch_size))
+            scored = _to_unit_scale(
+                model.predict(pairs, batch_size=Config.reranker_batch_size, show_progress_bar=False)
+            )
     except Exception as e:
         logger.warning(f"Reranker failed to score documents: {e}", exc_info=True)
         return [], False
@@ -299,7 +301,9 @@ def rerank(query: str, docs: List, threshold: float | None = None) -> Tuple[List
             # batch_size bounds peak activation memory: without it
             # sentence-transformers scores every pair in one batch, so the
             # footprint scaled with whatever retrieval happened to return.
-            scored = _to_unit_scale(model.predict(pairs, batch_size=Config.reranker_batch_size))
+            scored = _to_unit_scale(
+                model.predict(pairs, batch_size=Config.reranker_batch_size, show_progress_bar=False)
+            )
     except Exception as e:
         # exc_info: this path discards the whole batch, so the traceback is the
         # only way to tell a model-load failure from a scoring one.

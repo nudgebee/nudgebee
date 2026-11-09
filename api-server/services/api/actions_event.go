@@ -67,6 +67,32 @@ func handleEventAction(actionPayload *ActionRequest, c *gin.Context, tracer *tra
 		}
 		return
 
+	case "events_check_rollback":
+		var request event.EventRollbackCheckRequest
+		if err := common.UnmarshalMapToStruct(actionRequest, &request); err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		if request.AccountId == "" || request.EventId == "" {
+			c.JSON(400, common.ErrorActionBadRequest("account_id and event_id are required"))
+			return
+		}
+
+		ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		// A read: nothing is attempted, so unlike the apply above it leaves no audit record.
+		resp, err := event.CheckEventRollback(ctx, request)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		c.JSON(200, resp)
+		return
+
 	case "refresh_investigation":
 		var eventId string
 		if actionRequest["event_id"] != nil {

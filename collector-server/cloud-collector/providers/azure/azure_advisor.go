@@ -1,6 +1,7 @@
 package azure
 
 import (
+	"errors"
 	"fmt"
 	"nudgebee/collector/cloud/providers"
 	"strconv"
@@ -258,7 +259,7 @@ func sanitizeAdvisorCategory(category *armadvisor.Category) string {
 }
 
 func (s *advisorService) ApplyRecommendation(ctx providers.CloudProviderContext, account providers.Account, recommendation providers.Recommendation) error {
-	return nil
+	return errors.ErrUnsupported
 }
 
 func (s *advisorService) ApplyCommand(ctx providers.CloudProviderContext, account providers.Account, command providers.ApplyCommandRequest) (providers.ApplyCommandResponse, error) {

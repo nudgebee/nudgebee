@@ -61,7 +61,7 @@ func RegisterSourceFactory(name string, factory SourceFactory, description strin
 		Description: description,
 	}
 
-	slog.Info("registered knowledge graph source factory", "source", name, "description", description)
+	slog.Debug("registered knowledge graph source factory", "source", name, "description", description)
 }
 
 // GetSourceFactory retrieves a source factory by name
@@ -204,7 +204,7 @@ func RegisterCrossSourceEnricherFactory(name string, factory CrossSourceEnricher
 		Description: description,
 	}
 
-	slog.Info("registered cross-source enricher factory", "enricher", name, "description", description)
+	slog.Debug("registered cross-source enricher factory", "enricher", name, "description", description)
 }
 
 // GetCrossSourceEnricherFactory retrieves an enricher factory by name

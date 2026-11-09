@@ -33,7 +33,11 @@ import {
   getCodeLanguage,
   getDropdownOptionsForField,
   getExamplePlaceholder,
+  isWebhookProvider,
+  notConnectedHint,
+  notConnectedLabel,
   parseJsonExample,
+  PROVIDER_LABELS,
   resolveFieldType,
   normalizeStoredObjectValue,
   resolveObjectFieldValue,
@@ -44,8 +48,10 @@ import { parseDurationToSeconds, sanitizeTaskId } from './utils/taskUtils';
 import { EVENT_ACCOUNT_TEMPLATE, listensToSeveralAccounts } from './utils/listenAccounts';
 import { triggerInputFields } from './utils/triggerPayloadMock';
 import { describeScriptRunLocation, executorSupportsAccount, scriptLogin, ScriptAccountProvider } from './utils/scriptRunLocation';
+import type { RunTaskOutcome } from './utils/runTaskResult';
 import apiWorkflow from '@api1/workflow';
 import apiAccount from '@api1/account';
+import apiIntegrations from '@api1/integrations';
 import { isTenantAdmin } from '@lib/auth';
 import { useBrandingConfig } from '@hooks/useTenantBranding';
 import { isUrlFieldName, urlFieldStatus } from 'src/utils/url';
@@ -185,7 +191,9 @@ interface ActionDetailsSidebarProps {
   accountId?: string;
   onRunPreviousSteps?: (taskId: string) => Promise<Record<string, any>>;
   onDryRunToTask?: (taskId: string, unsavedConfig?: any) => Promise<any>;
-  onRunTask?: (taskType: string, params: any) => Promise<any>;
+  onRunTask?: (taskType: string, params: any) => Promise<RunTaskOutcome>;
+  // Title label when there is no canvas node (Task Runner); mirrors the builder's node label.
+  actionLabel?: string;
   workflowInputs?: Array<{ id: string; type: string; description?: string; default?: any }>;
   workflowTimeout?: string;
   onToggleDisable?: (disable: boolean) => void;
@@ -295,6 +303,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
   onRunPreviousSteps: _onRunPreviousSteps,
   onDryRunToTask,
   onRunTask,
+  actionLabel,
   workflowInputs = [],
   workflowTimeout,
   onToggleDisable,
@@ -386,6 +395,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
   const [imChannelOptions, setImChannelOptions] = useState<{ label: string; value: string }[]>([]);
   const [imTeamOptions, setImTeamOptions] = useState<{ label: string; value: string; channels?: { label: string; value: string }[] }[]>([]);
   const [imChannelLoading, setImChannelLoading] = useState(false);
+  const [imNotConnected, setImNotConnected] = useState(false);
 
   // State for DM notification user dropdown (notifications.dm task)
   const [dmUserOptions, setDmUserOptions] = useState<{ label: string; value: string }[]>([]);
@@ -402,6 +412,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
   // State for Approval task IM channel dropdown (core.approval task)
   const [approvalChannelOptions, setApprovalChannelOptions] = useState<{ label: string; value: string }[]>([]);
   const [approvalChannelLoading, setApprovalChannelLoading] = useState(false);
+  const [approvalNotConnected, setApprovalNotConnected] = useState(false);
   const [approvalTeamOptions, setApprovalTeamOptions] = useState<{ label: string; value: string; channels?: { label: string; value: string }[] }[]>(
     []
   );
@@ -903,6 +914,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
     selectedActionType === 'notifications.read_thread';
 
   useEffect(() => {
+    setImNotConnected(false);
     if (!isImNotificationTask) {
       setImChannelOptions([]);
       setImTeamOptions([]);
@@ -918,11 +930,19 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
 
     let cancelled = false;
     setImChannelLoading(true);
-    apiAccount
-      .getNotificationChannelList(provider)
+    // A webhook provider's "channels" are its webhook integrations, picked by name.
+    const request = isWebhookProvider(provider)
+      ? apiIntegrations.listIntegrations({ type: provider, limit: 200 }).then((res: any) => ({
+          data: {
+            data: (res?.data?.data?.integrations_list?.rows || []).filter((row: any) => row.status !== 'disabled'),
+          },
+        }))
+      : apiAccount.getNotificationChannelList(provider);
+    request
       .then((res: any) => {
         if (cancelled) return;
         const response = res?.data?.data || [];
+        setImNotConnected(res?.data?.hint === 'not_connected');
 
         if (provider === 'ms_teams') {
           // MS Teams has nested team/channel structure
@@ -1091,6 +1111,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
 
   // Fetch channels for Approval task IM notification
   useEffect(() => {
+    setApprovalNotConnected(false);
     if (!isApprovalTask) {
       setApprovalChannelOptions([]);
       setApprovalTeamOptions([]);
@@ -1111,6 +1132,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
       .then((res: any) => {
         if (cancelled) return;
         const response = res?.data?.data || [];
+        setApprovalNotConnected(res?.data?.hint === 'not_connected');
         if (provider === 'ms_teams') {
           // Teams lists teams, each with its channels; channels follow the picked team.
           setApprovalTeamOptions(response.map((item: any) => ({ label: item.name, value: item.id, channels: mapMsTeamsChannels(item.channels) })));
@@ -1359,24 +1381,19 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
       // Use localData which contains the current task configuration
       const result = await onRunTask(selectedActionType, localData);
 
-      if (result?.output !== undefined) {
+      // The status is the run's, set by the caller (see toRunTaskOutcome);
+      // never guess it from the shape of the task's output.
+      if ('status' in result) {
         setRunTaskResult({
-          status: result.status || 'COMPLETED',
+          status: result.status,
           output: result.output,
           error: result.error,
         });
-      } else if (result?.error) {
+      } else {
         setRunTaskResult({
           status: 'FAILED',
           output: null,
           error: result.error,
-        });
-      } else {
-        // Successful execution with the full result
-        setRunTaskResult({
-          status: 'COMPLETED',
-          output: result,
-          error: undefined,
         });
       }
     } catch (error: any) {
@@ -2240,14 +2257,26 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
         if (fieldName === 'channel' || fieldName === 'channel_id') {
           const provider = localData?.provider;
           const isTeamsWithoutTeam = provider === 'ms_teams' && !localData?.team_id;
+          const isWebhook = isWebhookProvider(provider);
 
           const getChannelPlaceholder = () => {
             if (!provider) return 'Select a provider first';
             if (isTeamsWithoutTeam) return 'Select a team first';
+            if (isWebhook) {
+              if (imChannelLoading) return 'Loading webhooks...';
+              if (imChannelOptions.length === 0) return `No ${PROVIDER_LABELS[provider]} integrations`;
+              return 'Select webhook';
+            }
             if (imChannelLoading) return 'Loading channels...';
+            if (imNotConnected) return notConnectedLabel(provider);
             if (imChannelOptions.length === 0) return 'No channels available';
             return 'Select channel';
           };
+          const channelHint = isWebhook
+            ? `Your ${PROVIDER_LABELS[provider]} integrations. Add one in Integrations.`
+            : imNotConnected && !isTeamsWithoutTeam
+            ? notConnectedHint(selectedActionType, provider)
+            : fieldSchema.description;
 
           return (
             <Box key={fieldName} sx={{ mb: ds.space[4], display: 'flex', alignItems: 'flex-start', gap: ds.space[4], flexWrap: 'wrap' }}>
@@ -2261,7 +2290,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                   pt: ds.space[2],
                 }}
               >
-                {fieldSchema.title || formatFieldLabel(fieldName)}
+                {isWebhook ? 'Webhook' : fieldSchema.title || formatFieldLabel(fieldName)}
                 {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
               </Typography>
               <Box sx={{ flex: '1 1 300px', minWidth: '200px' }}>
@@ -2283,14 +2312,19 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                   onDragLeave={viewOnlyMode ? undefined : handleDragLeave}
                   isDropTarget={isDraggingOver === fieldName}
                 />
-                {fieldSchema.description && (
+                {channelHint && (
                   <Typography variant='caption' color='text.secondary' sx={{ mt: ds.space[1], display: 'block' }}>
-                    {fieldSchema.description}
+                    {channelHint}
                   </Typography>
                 )}
               </Box>
             </Box>
           );
+        }
+
+        // A webhook can't reply in a thread.
+        if (fieldName === 'message_thread_id' && isWebhookProvider(localData?.provider)) {
+          return null;
         }
 
         // Handle team_id field for MS Teams (only show when provider is ms_teams)
@@ -2302,6 +2336,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
 
           const getTeamPlaceholder = () => {
             if (imChannelLoading) return 'Loading teams...';
+            if (imNotConnected) return notConnectedLabel(provider);
             if (imTeamOptions.length === 0) return 'No teams available';
             return 'Select team';
           };
@@ -2345,7 +2380,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                   isDropTarget={isDraggingOver === fieldName}
                 />
                 <Typography variant='caption' color='text.secondary' sx={{ mt: ds.space[1], display: 'block' }}>
-                  MS Teams Team
+                  {imNotConnected ? notConnectedHint(selectedActionType, provider) : 'MS Teams Team'}
                 </Typography>
               </Box>
             </Box>
@@ -2390,6 +2425,8 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                     // Batch update: clear team_id, channel and set provider in single state update
 
                     const updatedData = { ...localDataRef.current, team_id: '', channel: '', [fieldName]: newProvider };
+                    // The thread field is hidden for a webhook; a leftover thread id would fail the run.
+                    if (isWebhookProvider(newProvider)) updatedData.message_thread_id = '';
                     setLocalData(updatedData);
                   }}
                   placeholder={`Select ${fieldName.replace(/_/g, ' ')}`}
@@ -2545,6 +2582,9 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
             if (approvalChannelLoading) {
               return 'Loading channels...';
             }
+            if (approvalNotConnected) {
+              return notConnectedLabel(provider);
+            }
             if (approvalChannelOptions.length === 0) {
               return 'No channels available';
             }
@@ -2585,10 +2625,16 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                   onDragLeave={viewOnlyMode ? undefined : handleDragLeave}
                   isDropTarget={isDraggingOver === fieldName}
                 />
-                {fieldSchema.description && (
+                {approvalNotConnected && !needsTeam ? (
                   <Typography variant='caption' color='text.secondary' sx={{ mt: ds.space[1], display: 'block' }}>
-                    {fieldSchema.description}
+                    {notConnectedHint(selectedActionType, provider)}
                   </Typography>
+                ) : (
+                  fieldSchema.description && (
+                    <Typography variant='caption' color='text.secondary' sx={{ mt: ds.space[1], display: 'block' }}>
+                      {fieldSchema.description}
+                    </Typography>
+                  )
                 )}
               </Box>
             </Box>
@@ -2604,6 +2650,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
 
           const getApprovalTeamPlaceholder = () => {
             if (approvalChannelLoading) return 'Loading teams...';
+            if (approvalNotConnected) return notConnectedLabel(provider);
             if (approvalTeamOptions.length === 0) return 'No teams available';
             return 'Select team';
           };
@@ -2645,10 +2692,16 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                   onDragLeave={viewOnlyMode ? undefined : handleDragLeave}
                   isDropTarget={isDraggingOver === fieldName}
                 />
-                {fieldSchema.description && (
+                {approvalNotConnected ? (
                   <Typography variant='caption' color='text.secondary' sx={{ mt: ds.space[1], display: 'block' }}>
-                    {fieldSchema.description}
+                    {notConnectedHint(selectedActionType, provider)}
                   </Typography>
+                ) : (
+                  fieldSchema.description && (
+                    <Typography variant='caption' color='text.secondary' sx={{ mt: ds.space[1], display: 'block' }}>
+                      {fieldSchema.description}
+                    </Typography>
+                  )
                 )}
               </Box>
             </Box>
@@ -3170,8 +3223,8 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                     id={`action-sidebar-options-source-${fieldName}-input`}
                     size='small'
                     placeholder={placeholder}
-                    error={!!validationErrors[fieldName] || !!sourceData?.error}
-                    helperText={validationErrors[fieldName] || sourceData?.error || ''}
+                    error={!!validationErrors[fieldName]}
+                    helperText={validationErrors[fieldName] || ''}
                   />
                 )}
                 size='small'
@@ -3463,6 +3516,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 error={validationErrors[fieldName]}
                 disabled={isReadOnly || viewOnlyMode}
                 title={formatFieldLabel(fieldName)}
+                flat={selectedActionType === 'events.store'}
                 cloudAccounts={cloudAccounts}
                 ticketConfigurations={ticketConfigurations}
               />
@@ -4008,6 +4062,15 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
             ? EMAIL_BUILTIN_VARIABLES
             : undefined;
 
+        // A tool-list fetch that failed for this URL (MCP direct mode) is shown here, not on the dropdown it feeds.
+        const urlFetchError =
+          fieldName === 'url'
+            ? Object.entries(inputSchema)
+                .filter(([, def]) => Object.values((def as SchemaProperty).options_source?.dependency_mapping ?? {}).includes('url'))
+                .map(([name]) => optionsSourceData[name]?.error)
+                .find(Boolean)
+            : undefined;
+
         // Don't use DroppableWrapper here - it causes component remounting and focus loss
         // Instead, apply drop handlers directly to the outer Box
         const dropHandlers = !viewOnlyMode
@@ -4052,7 +4115,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                   onChange={(newValue: string) => handleDataChange(fieldName, newValue)}
                   placeholder={fieldSchema.description || `Enter ${fieldName.replace(/_/g, ' ')}`}
                   disabled={isReadOnly || viewOnlyMode}
-                  error={validationErrors[fieldName] || ''}
+                  error={validationErrors[fieldName] || urlFetchError || ''}
                   required={isRequired}
                   previousTasks={prevTasks}
                   workflowInputs={workflowInputs}
@@ -4965,7 +5028,9 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
       >
         <Box>
           <Typography sx={{ fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-foreground)' }}>
-            {`Action Details - ${selectedNode?.data?.label || currentTaskDefinition?.display_name || currentTaskDescription || selectedActionType}`}
+            {`Action Details - ${
+              selectedNode?.data?.label || actionLabel || currentTaskDefinition?.display_name || currentTaskDescription || selectedActionType
+            }`}
           </Typography>
           <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', mt: ds.space[0] }}>
             {'Configure and test this automation action'}

@@ -406,6 +406,19 @@ type ChatUsage struct {
 	} `json:"completion_tokens_details"`
 }
 
+// OutputTokens is CompletionTokens without the reasoning share. OpenAI's
+// completion_tokens INCLUDES completion_tokens_details.reasoning_tokens, but
+// callers price output and thinking separately and add them (the Gemini
+// convention), so passing the raw count bills reasoning twice. A reasoning
+// count outside (0, completion] is not trusted and leaves the count as is.
+func (u ChatUsage) OutputTokens() int {
+	reasoning := u.CompletionTokensDetails.ReasoningTokens
+	if reasoning <= 0 || reasoning > u.CompletionTokens {
+		return u.CompletionTokens
+	}
+	return u.CompletionTokens - reasoning
+}
+
 // ChatCompletionResponse is a response to a chat request.
 type ChatCompletionResponse struct {
 	ID                string                  `json:"id,omitempty"`
@@ -746,7 +759,26 @@ func appendArgumentsFragment(tc *ToolCall, fragment string) {
 	if trimmed != `` && strings.HasSuffix(trimmed, `}`) && json.Valid([]byte(args)) {
 		return
 	}
-	tc.Function.Arguments += fragment
+	tc.Function.Arguments = trimDuplicateClosers(tc.Function.Arguments + fragment)
+}
+
+// trimDuplicateClosers drops ONE "}" after a closed top-level JSON value.
+// NUDGEBEE: Vertex Qwen (qwen3_xml + MTP) can send the final "}" twice in one delta ("[]}}") ->
+// replay 400s "Extra data" #39704. Text after a closed value is never valid, so this can't cut real args.
+func trimDuplicateClosers(args string) string {
+	if !strings.HasSuffix(strings.TrimRight(args, " \t\r\n"), `}}`) || json.Valid([]byte(args)) {
+		return args
+	}
+	dec := json.NewDecoder(strings.NewReader(args))
+	var v json.RawMessage
+	if dec.Decode(&v) != nil {
+		return args
+	}
+	end := int(dec.InputOffset())
+	if strings.TrimSpace(args[end:]) != `}` {
+		return args
+	}
+	return args[:end]
 }
 
 func updateToolCalls(tools []ToolCall, delta []*ToolCall) ([]byte, []ToolCall) {

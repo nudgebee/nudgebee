@@ -1,4 +1,13 @@
 FROM ghcr.io/nudgebee/alpine:3.23
+ARG IMAGE_VERSION=0.0.0
+ARG IMAGE_RELEASE=1
+LABEL name="nudgebee-services-sidecar" \
+      maintainer="nudgebee" \
+      vendor="nudgebee" \
+      version="${IMAGE_VERSION}" \
+      release="${IMAGE_RELEASE}" \
+      summary="Nudgebee services sidecar" \
+      description="Sidecar container that runs alongside the Nudgebee services API server."
 
 # Install curl for making HTTP requests and bc for floating point math.
 # OS-package cache-bust: bumping OS_PKG_EPOCH (ISO week) changes this layer's

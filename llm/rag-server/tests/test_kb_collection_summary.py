@@ -34,7 +34,7 @@ from rag.core.documents import processing
 from rag.core.utils import db_query
 
 COLLECTION = "kb_11111111-1111-1111-1111-111111111111"
-LABEL_SELECTOR = ["metadata.kind", "metadata.shape", "metadata.capabilities"]
+LABEL_SELECTOR = ["metadata.kind", "metadata.shape", "metadata.capabilities", "metadata.capabilities_extracted"]
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +158,7 @@ def summary_writes(monkeypatch):
 def dropped(monkeypatch):
     """Records every delete_kb_capabilities call (the summary row's removal)."""
     calls = []
-    monkeypatch.setattr(db_query, "delete_kb_capabilities", lambda name: calls.append(name))
+    monkeypatch.setattr(db_query, "delete_kb_capabilities", lambda name, keep_documents=False: calls.append(name))
     return calls
 
 
@@ -302,11 +302,35 @@ def test_delete_kb_capabilities_removes_only_that_collections_rollup_row(monkeyp
     sql, params = executed[0]
     assert sql.startswith("DELETE FROM llm_kb_capability_entries")
     # platform_capability rows are global and must never be touched by a KB delete.
-    assert "entry_type = 'kb_collection'" in sql
+    assert "entry_type = ANY(:entry_types)" in sql
     assert "collection_name = :collection_name" in sql
     assert "kb_chunk" not in sql
-    assert params == {"collection_name": COLLECTION}
+    # A real delete takes the roll-up and the per-page label rows; never the global catalog.
+    assert params == {"collection_name": COLLECTION, "entry_types": ["kb_collection", "kb_document"]}
     assert events == ["begin", "execute", "commit"]
+
+
+def test_delete_kb_capabilities_keeps_the_page_labels_when_asked(monkeypatch):
+    executed = []
+    monkeypatch.setattr(db_query, "engine", _fake_engine(executed=executed, events=[]))
+
+    db_query.delete_kb_capabilities(COLLECTION, keep_documents=True)
+
+    assert executed[0][1] == {"collection_name": COLLECTION, "entry_types": ["kb_collection"]}
+
+
+def test_a_recreate_keeps_page_labels_and_a_real_delete_does_not(monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        db_query,
+        "delete_kb_capabilities",
+        lambda name, keep_documents=False: seen.append(("kept" if keep_documents else "deleted")),
+    )
+
+    processing._forget_kb_collection_summary(COLLECTION)  # _setup_collection recreate
+    collection_module._forget_classification(COLLECTION)  # delete_collection
+
+    assert seen == ["kept", "deleted"]
 
 
 def test_delete_kb_capabilities_swallows_a_database_error(monkeypatch, caplog):
@@ -511,7 +535,9 @@ class _QdrantDeleting:
 def _wire_delete(monkeypatch, error=None):
     calls = []
     monkeypatch.setattr(collection_module, "get_qdrant_client", lambda: _QdrantDeleting(error, calls))
-    monkeypatch.setattr(db_query, "delete_kb_capabilities", lambda name: calls.append(("summary", name)))
+    monkeypatch.setattr(
+        db_query, "delete_kb_capabilities", lambda name, keep_documents=False: calls.append(("summary", name))
+    )
     return calls
 
 
@@ -731,7 +757,9 @@ def setup_collection(monkeypatch):
         monkeypatch.setattr(processing, "get_qdrant_client", lambda: client)
         monkeypatch.setattr("rag.qdrant.client.list_collections_optimized", lambda: [])
         monkeypatch.setattr("rag.core.metadata_cache.get_metadata_cache", lambda: _FakeMetadataCache(entry))
-        monkeypatch.setattr(db_query, "delete_kb_capabilities", lambda name: calls.append(("summary", name)))
+        monkeypatch.setattr(
+            db_query, "delete_kb_capabilities", lambda name, keep_documents=False: calls.append(("summary", name))
+        )
         result = processing._setup_collection("acct-1", "knowledge_base", COLLECTION)
         return result, calls
 

@@ -805,9 +805,6 @@ func handleKnowledgeGraphAction(actionPayload *ActionRequest, c *gin.Context, tr
 	case "kg_delete_manual_dependency":
 		handleKgDeleteManualDependency(actionPayload, c, tracer, meter, logger)
 		return
-	case "kg_import_manual_dependencies":
-		handleKgImportManualDependencies(actionPayload, c, tracer, meter, logger)
-		return
 	case "kg_resolve_manual_dependency":
 		handleKgResolveManualDependency(actionPayload, c, tracer, meter, logger)
 		return
@@ -819,6 +816,31 @@ func handleKnowledgeGraphAction(actionPayload *ActionRequest, c *gin.Context, tr
 		return
 	case "kg_delete_all_manual_dependencies":
 		handleKgDeleteAllManualDependencies(actionPayload, c, tracer, meter, logger)
+		return
+
+	case "kg_get_manual_node_schema":
+		handleKgGetManualNodeSchema(actionPayload, c, tracer, meter, logger)
+		return
+	case "kg_list_manual_nodes":
+		handleKgListManualNodes(actionPayload, c, tracer, meter, logger)
+		return
+	case "kg_create_manual_node":
+		handleKgCreateManualNode(actionPayload, c, tracer, meter, logger)
+		return
+	case "kg_update_manual_node":
+		handleKgUpdateManualNode(actionPayload, c, tracer, meter, logger)
+		return
+	case "kg_delete_manual_node":
+		handleKgDeleteManualNode(actionPayload, c, tracer, meter, logger)
+		return
+	case "kg_apply_manual_node_merge":
+		handleKgApplyManualNodeMerge(actionPayload, c, tracer, meter, logger)
+		return
+	case "kg_create_manual_declarations":
+		handleKgCreateManualDeclarations(actionPayload, c, tracer, meter, logger)
+		return
+	case "kg_delete_all_manual_nodes":
+		handleKgDeleteAllManualNodes(actionPayload, c, tracer, meter, logger)
 		return
 
 	default:

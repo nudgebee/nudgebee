@@ -79,6 +79,9 @@ func TestLeanOrchestratorParity_ReducedCoreShape(t *testing.T) {
 		SearchToolsToolName,
 		WebSearchAgentName,
 		NudgebeeAgentName,
+		// Preloaded, not on-demand: when only reachable via search_tools the
+		// planner browsed repos one file per shell call instead.
+		AgentCodeAnalyzer,
 		toolcore.ToolExecuteShellCommand,
 	}
 
@@ -133,8 +136,10 @@ func TestLeanOrchestratorParity_ReducedCoreShape(t *testing.T) {
 		t.Run(tt.name+"_bounded_size", func(t *testing.T) {
 			// 8 shared + memory (conditional but usually 1) + followup (conditional).
 			// Allow generous ceiling to avoid brittle test on every optional add.
-			assert.LessOrEqual(t, len(tt.names), 16,
-				"%s reduced core has %d tools; lean should stay ≤16 preloaded — otherwise the reach-on-demand pattern isn't being preserved",
+			// 17 since code_analyzer joined the shared core (raised from 16
+			// deliberately — see trimmedK8sCoreToolNames for why it is preloaded).
+			assert.LessOrEqual(t, len(tt.names), 17,
+				"%s reduced core has %d tools; lean should stay ≤17 preloaded — otherwise the reach-on-demand pattern isn't being preserved",
 				tt.name, len(tt.names))
 		})
 	}

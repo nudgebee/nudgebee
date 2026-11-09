@@ -31,6 +31,28 @@ func (m NewRelicWebhook) Category() core.IntegrationCategory {
 	return core.IntegrationCategoryIncidentWebhook
 }
 
+// WebhookLabelHelp describes the labels the workflow and legacy channel paths build. Update it with the parser.
+func (m NewRelicWebhook) WebhookLabelHelp() core.WebhookLabelHelp {
+	return core.WebhookLabelHelp{
+		Summary: "A fixed set of fields from the issue, plus entity tags under a prefix.",
+		Labels: []core.WebhookLabelSource{
+			{Label: "policy_name", Source: "alertPolicyNames"},
+			{Label: "condition_name", Source: "alertConditionNames"},
+			{Label: "workflow_name", Source: "workflowName"},
+			{Label: "service", Source: "the first impacted entity"},
+			{Label: "entity_names", Source: "impactedEntities, joined with commas"},
+			{Label: "tag_<name>", Source: "accumulations.tag.<name>"},
+			{Label: "sources", Source: "sources"},
+		},
+		Notes: []string{
+			"policy_name, condition_name and entity_names are joined with commas when an issue spans several, and then match only as the whole text.",
+			"Entity tags are labels only when the workflow payload includes accumulations.tag.",
+			"Legacy notification channels send target_<name> from the first target's labels in place of tag_<name>.",
+			"priority, state and title are not labels.",
+		},
+	}
+}
+
 func (m NewRelicWebhook) ConfigSchema() core.IntegrationSchema {
 	return core.IntegrationSchema{
 		Type:     core.ToolSchemaTypeObject,

@@ -1,5 +1,5 @@
 import { Box } from '@mui/material';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/router';
 import { applyFiltersOnRouter } from '@lib/router';
 import apiCloudAccount from '@api1/cloud-account';
@@ -23,12 +23,13 @@ import Datetime from '@shared/format/Datetime';
 import { useEventCloudFilter } from '@hooks/useCloudFilters';
 import { syncFilterFromQuery, toSeverityLevel } from '@utils/common';
 import { FiArrowRight } from 'react-icons/fi';
+import { MdOutlineCategory } from 'react-icons/md';
 import NBStatusBadge from '@shared/widgets/NBStatusBadge';
 import AlertStatusBadge from '@shared/widgets/AlertStatusBadge';
 import k8sApi from '@api1/kubernetes';
 import { usePagination } from '@hooks/usePagination';
-import { hasReadAccess, hasWriteAccess, getUserSession } from '@lib/auth';
-import { TicketsIcon, dashboardIcon1 as ClassifyIcon, infoIcon } from '@assets';
+import { canCreateTicket, hasWriteAccess, getUserSession } from '@lib/auth';
+import { TicketsIcon, infoIcon } from '@assets';
 import ticketsApi from '@api1/tickets';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import EventClassifyModal, { type ClassifyUpdate } from '@components/events/EventClassifyModal';
@@ -305,12 +306,12 @@ const CloudAccountEvents = (props: {
 
   const getMenuItems = (item: any, disableTicket: boolean) => {
     const accountId = item.account_id || props.accountId;
-    const MENU_ITEMS: Array<{ icon: any; label: string; id: number; disabled?: boolean }> = [];
-    // Create Ticket is allowed for read-only roles too: the backend `tickets_create`
-    // action authorizes *_readonly roles, so gate this affordance on read access, not
-    // write (mirrors the k8s events table). Classify / Create Automation are genuine
+    const MENU_ITEMS: Array<{ icon?: any; reactIcon?: ReactNode; label: string; id: number; disabled?: boolean }> = [];
+    // Create Ticket is allowed for read-only roles too — the backend `tickets_create`
+    // action authorizes *_readonly roles, so this is gated on read access, not write
+    // (@lib/auth#canCreateTicket, #40211). Classify / Create Automation are genuine
     // mutations and stay write-gated.
-    if (hasReadAccess(accountId)) {
+    if (canCreateTicket(accountId)) {
       MENU_ITEMS.push({
         icon: TicketsIcon,
         label: 'Create Ticket',
@@ -321,7 +322,7 @@ const CloudAccountEvents = (props: {
     if (hasWriteAccess(accountId)) {
       MENU_ITEMS.push(
         {
-          icon: ClassifyIcon,
+          reactIcon: <MdOutlineCategory color={ds.gray[600]} size={14} />,
           label: 'Classify',
           id: 1,
         },
@@ -515,7 +516,7 @@ const CloudAccountEvents = (props: {
               items={menuItemsConfig.map((m) => ({
                 id: `events-action-${item.id}-${m.id}`,
                 label: m.label,
-                icon: m.icon ? <SafeIcon src={m.icon} alt='' width={14} height={14} /> : undefined,
+                icon: m.reactIcon ?? (m.icon ? <SafeIcon src={m.icon} alt='' width={14} height={14} /> : undefined),
                 disabled: m.disabled,
                 onSelect: () => onMenuClick({ id: m.id }, item),
               }))}

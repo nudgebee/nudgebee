@@ -432,7 +432,11 @@ export function Select(props: SelectProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filteredOptions, props.multiple, props.multiple ? props.value : null]);
 
-  const allFilteredSelected = !!props.multiple && filteredOptions.length > 0 && filteredOptions.every((o) => isSelected(o.value));
+  // Select All / Clear All act on enabled options only — a disabled option
+  // can't be toggled by hand, so the bulk actions leave it alone too.
+  const selectableFiltered = filteredOptions.filter((o) => !o.disabled);
+  const allFilteredSelected = !!props.multiple && selectableFiltered.length > 0 && selectableFiltered.every((o) => isSelected(o.value));
+  const hasSelectableSelection = selectedOpts.some((o) => !o.disabled);
 
   // Multi mode renders a checkbox per option (+ select-all) unless the caller
   // opts out for an add-only picker.
@@ -453,16 +457,16 @@ export function Select(props: SelectProps) {
 
   const handleSelectAll = () => {
     if (!props.multiple) return;
-    const filteredVals = filteredOptions.filter((o) => !o.disabled).map((o) => o.value);
-    const merged = Array.from(new Set([...props.value, ...filteredVals]));
-    props.onChange(merged);
+    const valuesToAdd = Array.from(new Set(selectableFiltered.map((o) => o.value))).filter((v) => !isSelected(v));
+    if (valuesToAdd.length === 0) return;
+    props.onChange([...props.value, ...valuesToAdd]);
   };
 
   const handleClearAll = () => {
     if (!props.multiple) return;
     // Only clear visible (filtered) values — matches FilterDropdown
-    const filteredVals = new Set(filteredOptions.map((o) => o.value));
-    props.onChange(props.value.filter((v) => !filteredVals.has(v)));
+    const selectableValues = new Set(selectableFiltered.map((o) => o.value));
+    props.onChange(props.value.filter((v) => !selectableValues.has(v)));
   };
 
   const handleOpen = (e: React.MouseEvent<HTMLButtonElement>) => {
@@ -707,11 +711,11 @@ export function Select(props: SelectProps) {
             </OverlayItem>
           )}
           {/* Select-all / Clear-all row — multi mode only, hidden while loading */}
-          {!loading && showOptionCheckbox && filteredOptions.length > 0 && (
+          {!loading && showOptionCheckbox && selectableFiltered.length > 0 && (
             <OverlaySelectAll
               checked={allFilteredSelected}
-              onToggle={allFilteredSelected ? handleClearAll : handleSelectAll}
-              showClear={clearable && selectedOpts.length > 0}
+              onToggle={handleSelectAll}
+              showClear={clearable && hasSelectableSelection}
               onClear={handleClearAll}
             />
           )}

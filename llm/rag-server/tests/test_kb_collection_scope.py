@@ -182,7 +182,15 @@ def test_non_uuid_scope_short_circuits_before_the_query(account_id, tenant_id):
 
 
 def _row(kb_id=None, integration_id=None, account_id=ACCOUNT, enabled=True):
-    return SimpleNamespace(id=kb_id, integration_id=integration_id, account_id=account_id, enabled=enabled)
+    return SimpleNamespace(
+        id=kb_id,
+        integration_id=integration_id,
+        account_id=account_id,
+        enabled=enabled,
+        name=f"kb {kb_id or integration_id}",
+        visibility="account",
+        override_enabled=None,
+    )
 
 
 def test_disabled_manual_kb_contributes_no_collection():
@@ -194,22 +202,23 @@ def test_enabled_row_is_kept():
     assert _live_kb_names_from_rows([_row(kb_id=LIVE_KB)], ACCOUNT) == {f"kb_{LIVE_KB}"}
 
 
-def test_disabling_this_accounts_row_beats_a_sibling_account_that_left_it_on():
-    # One collection per integration, shared across the tenant's accounts. The
-    # sibling row would otherwise re-add the name via the tenant scope clause.
-    rows = [
-        _row(integration_id=LIVE_INTEGRATION, account_id=OTHER_ACCOUNT, enabled=True),
-        _row(integration_id=LIVE_INTEGRATION, account_id=ACCOUNT, enabled=False),
-    ]
-    assert _live_kb_names_from_rows(rows, ACCOUNT) == set()
+def test_an_integrations_organisation_row_is_switched_off_per_account():
+    # An integration has one knowledge base, its organisation row (#40605); the
+    # account's override decides whether it searches the shared collection.
+    org = dict(integration_id=LIVE_INTEGRATION, account_id=None)
+    on = SimpleNamespace(**{**vars(_row(**org)), "visibility": "organisation"})
+    off = SimpleNamespace(**{**vars(on), "override_enabled": False})
+    assert _live_kb_names_from_rows([on], ACCOUNT) == {f"{LIVE_INTEGRATION}_knowledge_base"}
+    assert _live_kb_names_from_rows([off], ACCOUNT) == set()
 
 
-def test_another_accounts_disabled_row_does_not_subtract():
+def test_a_per_account_integration_row_is_ignored():
+    # The pre-#40605 shape; only an llm-server on older code re-creates one.
     rows = [
         _row(integration_id=LIVE_INTEGRATION, account_id=ACCOUNT, enabled=True),
-        _row(integration_id=LIVE_INTEGRATION, account_id=OTHER_ACCOUNT, enabled=False),
+        _row(integration_id=LIVE_INTEGRATION, account_id=OTHER_ACCOUNT, enabled=True),
     ]
-    assert _live_kb_names_from_rows(rows, ACCOUNT) == {f"{LIVE_INTEGRATION}_knowledge_base"}
+    assert _live_kb_names_from_rows(rows, ACCOUNT) == set()
 
 
 def test_tenant_only_scope_still_drops_disabled_rows():

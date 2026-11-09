@@ -3,6 +3,7 @@ package tools
 import (
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strconv"
@@ -194,27 +195,6 @@ func buildManifestOnlyEvidence(data []map[string]any) {
 	}
 }
 
-func mergeEvidenceManifests(data, evidenceData []map[string]any) {
-	manifestsByID := make(map[string]any, len(evidenceData))
-	for _, row := range evidenceData {
-		id, ok := row["id"].(string)
-		if !ok || row["evidences"] == nil {
-			continue
-		}
-		manifestsByID[id] = row["evidences"]
-	}
-
-	for _, row := range data {
-		id, ok := row["id"].(string)
-		if !ok {
-			continue
-		}
-		if manifest, found := manifestsByID[id]; found {
-			row["evidences"] = manifest
-		}
-	}
-}
-
 func eventReferences(nbCtx core.NbToolContext, dataAccountID string, data []map[string]any) []core.NBToolResponseReference {
 	references := []core.NBToolResponseReference{}
 	for _, e := range data {
@@ -274,7 +254,13 @@ func (t GetEventByIdTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRe
 	if _, err := uuid.Parse(eventID); err != nil {
 		return structuredEventsErrorResponse(fmt.Errorf("event_id must be a valid UUID: %w", err)), nil
 	}
+	return onEventAccount(nbCtx, eventID, func(c core.NbToolContext) (core.NBToolResponse, error) {
+		return t.byID(c, eventID)
+	})
+}
 
+// byID reads one event, on the account onEventAccount picked.
+func (t GetEventByIdTool) byID(nbCtx core.NbToolContext, eventID string) (core.NBToolResponse, error) {
 	query := fmt.Sprintf(
 		"SELECT id, title, description, starts_at, updated_at, ends_at, status, priority, source, "+
 			"aggregation_key, finding_type, subject_type, subject_name, subject_namespace, subject_node, "+
@@ -288,7 +274,7 @@ func (t GetEventByIdTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRe
 	// conversation's workspace.
 	dataCtx := nbCtx.ForTarget()
 	dataAccountID := dataCtx.AccountId
-	view := resolveEventsViewPlaceholders(eventsViewWithId, dataAccountID, true)
+	view := byIDView(dataAccountID, query)
 	resp, data, err := sqlToolCall(dataCtx, query, "events", view, 1, nil)
 	if err != nil {
 		return resp, err
@@ -320,6 +306,15 @@ func (t GetEventByIdTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRe
 	resp.Data = string(bytesData)
 	resp.References = append(eventReferences(nbCtx, dataAccountID, data), overflowRefs...)
 	return resp, nil
+}
+
+// byIDView is the events view with the id filter inside it, on the uuid
+// column. The view returns id::text, so the outer "WHERE id = '<uuid>'"
+// compares text and cannot use the primary key: on the largest dev account it
+// read 52k buffers (89k rows) per lookup instead of 4, and calls took up to
+// 10s when those pages were not cached.
+func byIDView(accountID, query string) string {
+	return injectIdPredicate(resolveEventsViewPlaceholders(eventsViewWithId, accountID, true), query)
 }
 
 // EventEvidenceFileName is the workspace file holding one event's structured
@@ -359,6 +354,9 @@ func offloadEventEvidence(ctx *security.RequestContext, wm workspace.WorkspaceMa
 		// Small enough to return whole: nothing to cap, nothing to save.
 		return investigateData, nil
 	}
+	// Built before capping: capInvestigateDataEvidence rewrites slices in
+	// place, and the section sizes in the preview must be the file's sizes.
+	preview := buildEventEvidencePreview(investigateData)
 	capInvestigateDataEvidence(&investigateData)
 
 	outputFile := EventEvidenceFileName(eventID)
@@ -367,20 +365,20 @@ func offloadEventEvidence(ctx *security.RequestContext, wm workspace.WorkspaceMa
 		return investigateData, nil
 	}
 
-	cappedBytes, err := common.MarshalJson(investigateData)
-	if err != nil {
-		ctx.GetLogger().Error("get_event_by_id: failed to marshal capped evidence preview", "error", err, "event_id", eventID)
-		cappedBytes = nil
-	}
-	inline := fmt.Sprintf("Output large (%d bytes). Evidence saved to %s with every section complete — read and parse that file. "+
-		"Logs are reduced here: error lines are in error_log_data, and log_data is empty or a short tail; use get_event_evidence with evidence_type=logs for the full log body. "+
-		"Fields ending in \"... (truncated)\" in the preview below are shortened and are not valid JSON on their own.\nPreview: %s",
-		len(fullBytes), outputFile, truncateUTF8Safe(string(cappedBytes), evidencePreviewBytes))
+	inline := fmt.Sprintf("Output large (%d bytes). Evidence saved to %s with every section complete — use the key facts below. "+
+		"To fetch another section call get_event_evidence with evidence_type set to the section name, or to the name in [evidence_type=...] when one is shown; "+
+		"sections marked [file only] cannot be fetched. query_mode=summary only shrinks metrics, traces and logs (other types come back in full); "+
+		"to page a list use query_mode=filter with offset and limit. "+
+		"Logs are reduced in the file: error lines are in error_log_data, and log_data is empty or a short tail; use get_event_evidence with evidence_type=logs for the full log body.\n%s",
+		len(fullBytes), outputFile, preview)
+	// The description carries only the shape's first line: it is repeated for
+	// every saved file in the evidence index on later turns, so the full shape
+	// stays in the preview above.
 	return inline, []core.NBToolResponseReference{{
 		Text:        "Full event evidence saved to workspace",
 		Url:         outputFile,
 		Type:        "file",
-		Description: "Full event evidence collected by system",
+		Description: "Full event evidence collected by system. " + strings.SplitN(EventEvidenceShape(investigateData), "\n", 2)[0],
 	}}
 }
 
@@ -652,8 +650,10 @@ func (t ListEventsTool) Name() string             { return ToolListEvents }
 func (t ListEventsTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 
 func (t ListEventsTool) Description() string {
-	return "List/search events with typed filters: subject_name, subject_namespace, subject_type, " +
-		"finding_type (issue/configuration_change/SLO/Anomaly), aggregation_key, priority, and a time " +
+	return "List/search events with typed filters: subject_name, subject_namespace, subject_type, subject_owner, " +
+		"subject_node, cluster, finding_type (issue/configuration_change/SLO/Anomaly), aggregation_key, priority, " +
+		"source (alert source, e.g. datadog, pagerduty, prometheus), status (FIRING/RESOLVED/CLOSED), nb_status " +
+		"(OPEN/RESOLVED/SUPPRESSED/DUPLICATE), fingerprint, text (search in title and description), and a time " +
 		"range (start_time/end_time ISO8601, or relative_range like '24h'/'7d'). Returns a compact " +
 		"evidence manifest per event (available evidence types + key insights), not full raw evidence — " +
 		"use get_event_by_id or get_event_evidence to drill into a specific event afterward. Use this for " +
@@ -661,33 +661,137 @@ func (t ListEventsTool) Description() string {
 }
 
 func (t ListEventsTool) InputSchema() core.ToolSchema {
-	return core.ToolSchema{
-		Type: core.ToolSchemaTypeObject,
-		Properties: map[string]core.ToolSchemaProperty{
-			"subject_name": {Type: core.ToolSchemaTypeString, Description: "ILIKE (substring) match on subject_name."},
-			"subject_namespace": {
-				Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
-				Description: "One or more exact namespace values, e.g. a question spanning several namespaces at once.",
-			},
-			"subject_type": {Type: core.ToolSchemaTypeString, Description: "ILIKE match on subject_type (pod, deployment, node, etc. — not a fixed set)."},
-			"finding_type": {
-				Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
-				Description: "One or more of: issue, configuration_change, SLO, Anomaly.",
-			},
-			"aggregation_key": {
-				Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
-				Description: "One or more exact aggregation_key values — e.g. an 'OOM or restart' question needs both pod_oom_killer_enricher and report_crash_loop. Values drift as new alert types are added, don't assume a fixed set.",
-			},
-			"priority": {
-				Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
-				Description: "One or more of: DEBUG, INFO, LOW, MEDIUM, HIGH.",
-			},
-			"start_time":     {Type: core.ToolSchemaTypeString, Description: "ISO8601. Alternative to relative_range."},
-			"end_time":       {Type: core.ToolSchemaTypeString, Description: "ISO8601. Defaults to now."},
-			"relative_range": {Type: core.ToolSchemaTypeString, Description: "Shorthand duration, e.g. '24h', '7d'. Alternative to start_time."},
-			"limit":          {Type: core.ToolSchemaTypeInteger, Default: 10, Description: "Max rows, default 10."},
+	props := eventFilterSchema()
+	props["limit"] = core.ToolSchemaProperty{Type: core.ToolSchemaTypeInteger, Default: 10, Description: "Max rows, default 10."}
+	return core.ToolSchema{Type: core.ToolSchemaTypeObject, Properties: props}
+}
+
+// eventFilterSchema is the filter set list_events and aggregate_events share,
+// so a filter added for one is there for the other.
+func eventFilterSchema() map[string]core.ToolSchemaProperty {
+	return map[string]core.ToolSchemaProperty{
+		"subject_name": {Type: core.ToolSchemaTypeString, Description: "ILIKE (substring) match on subject_name."},
+		"subject_namespace": {
+			Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
+			Description: "One or more exact namespace values, e.g. a question spanning several namespaces at once.",
 		},
+		"subject_type":  {Type: core.ToolSchemaTypeString, Description: "ILIKE match on subject_type (pod, deployment, node, etc. — not a fixed set)."},
+		"subject_owner": {Type: core.ToolSchemaTypeString, Description: "ILIKE (substring) match on subject_owner, the owning workload (e.g. a Deployment's name)."},
+		"subject_node":  {Type: core.ToolSchemaTypeString, Description: "ILIKE (substring) match on subject_node, the node the subject ran on."},
+		"cluster":       {Type: core.ToolSchemaTypeString, Description: "ILIKE (substring) match on cluster."},
+		"finding_type": {
+			Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
+			Description: "One or more of: issue, configuration_change, SLO, Anomaly.",
+		},
+		"aggregation_key": {
+			Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
+			Description: "One or more exact aggregation_key values — e.g. an 'OOM or restart' question needs both pod_oom_killer_enricher and report_crash_loop. Values drift as new alert types are added, don't assume a fixed set.",
+		},
+		"priority": {
+			Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
+			Description: "One or more of: DEBUG, INFO, LOW, MEDIUM, HIGH.",
+		},
+		"source": {
+			Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
+			Description: "One or more alert sources, each a case-insensitive substring of the stored source (e.g. datadog, pagerduty, prometheus, elasticsearch, kubernetes_api_server, AWS, GCP, Azure, anomaly, slo, automation).",
+		},
+		"status": {
+			Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
+			Description: "Alert state from the source, one or more of: FIRING, RESOLVED, CLOSED.",
+		},
+		"nb_status": {
+			Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
+			Description: "Nudgebee triage state, one or more of: OPEN, RESOLVED, SUPPRESSED, DUPLICATE.",
+		},
+		"fingerprint": {Type: core.ToolSchemaTypeString, Description: "Exact fingerprint: every occurrence of one recurring alert."},
+		"text": {
+			Type:        core.ToolSchemaTypeString,
+			Description: fmt.Sprintf("Case-insensitive substring searched in title and description (max %d chars), e.g. 'timeout'.", maxEventTextFilterChars),
+		},
+		"start_time":     {Type: core.ToolSchemaTypeString, Description: "ISO8601. Alternative to relative_range."},
+		"end_time":       {Type: core.ToolSchemaTypeString, Description: "ISO8601. Defaults to now."},
+		"relative_range": {Type: core.ToolSchemaTypeString, Description: "Shorthand duration, e.g. '24h', '7d'. Alternative to start_time."},
 	}
+}
+
+// maxEventTextFilterChars bounds the text filter: it is an unindexed ILIKE
+// over title and description, so it stays a short search term.
+const maxEventTextFilterChars = 200
+
+// eventFilterClauses turns the shared filter arguments into WHERE clauses,
+// including the time range (and the 30-day default when no start is given).
+// Every value is quoted with pq.QuoteLiteral; no argument names a column.
+func eventFilterClauses(input core.NBToolCallRequest, now time.Time) ([]string, error) {
+	var where []string
+	ilike := func(column, v string) string {
+		return fmt.Sprintf("%s ILIKE %s", column, pq.QuoteLiteral("%"+v+"%"))
+	}
+	for _, f := range []struct{ arg, column string }{
+		{"subject_name", "subject_name"},
+		{"subject_owner", "subject_owner"},
+		{"subject_node", "subject_node"},
+		{"cluster", "cluster"},
+	} {
+		if v := stringArg(input, f.arg); v != "" {
+			where = append(where, ilike(f.column, v))
+		}
+	}
+	if v := stringArg(input, "subject_type"); v != "" {
+		where = append(where, fmt.Sprintf("subject_type ILIKE %s", pq.QuoteLiteral(v)))
+	}
+	for _, f := range []struct {
+		arg   string
+		upper bool
+	}{
+		{"subject_namespace", false},
+		{"finding_type", false},
+		{"aggregation_key", false},
+		{"priority", false},
+		// Stored upper-case; the model often writes them lower-case.
+		{"status", true},
+		{"nb_status", true},
+	} {
+		vs := stringArrayArg(input, f.arg)
+		if len(vs) == 0 {
+			continue
+		}
+		if f.upper {
+			for i := range vs {
+				vs[i] = strings.ToUpper(vs[i])
+			}
+		}
+		where = append(where, f.arg+" IN ("+quotedList(vs)+")")
+	}
+	// Stored sources mix case and suffixes (datadog_webhook, AWS_EventBridge),
+	// so each value is a case-insensitive substring.
+	if vs := stringArrayArg(input, "source"); len(vs) > 0 {
+		ors := make([]string, len(vs))
+		for i, v := range vs {
+			ors[i] = ilike("source", v)
+		}
+		where = append(where, "("+strings.Join(ors, " OR ")+")")
+	}
+	if v := stringArg(input, "fingerprint"); v != "" {
+		where = append(where, "fingerprint = "+pq.QuoteLiteral(v))
+	}
+	if v := strings.TrimSpace(stringArg(input, "text")); v != "" {
+		if utf8.RuneCountInString(v) > maxEventTextFilterChars {
+			return nil, fmt.Errorf("text must be at most %d characters; search for a shorter phrase", maxEventTextFilterChars)
+		}
+		where = append(where, "("+ilike("title", v)+" OR "+ilike("description", v)+")")
+	}
+
+	startTime, endTime, err := resolveTimeRange(input)
+	if err != nil {
+		return nil, err
+	}
+	if startTime != "" {
+		where = append(where, fmt.Sprintf("starts_at >= %s", pq.QuoteLiteral(startTime)))
+	}
+	if endTime != "" {
+		where = append(where, fmt.Sprintf("starts_at <= %s", pq.QuoteLiteral(endTime)))
+	}
+	return appendDefaultEventStart(where, startTime, now), nil
 }
 
 func (t ListEventsTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
@@ -695,38 +799,10 @@ func (t ListEventsTool) InferToolRequestType(_ *security.RequestContext, _, _ st
 }
 
 func (t ListEventsTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
-	var whereClauses []string
-
-	if v := stringArg(input, "subject_name"); v != "" {
-		whereClauses = append(whereClauses, fmt.Sprintf("subject_name ILIKE %s", pq.QuoteLiteral("%"+v+"%")))
-	}
-	if vs := stringArrayArg(input, "subject_namespace"); len(vs) > 0 {
-		whereClauses = append(whereClauses, "subject_namespace IN ("+quotedList(vs)+")")
-	}
-	if v := stringArg(input, "subject_type"); v != "" {
-		whereClauses = append(whereClauses, fmt.Sprintf("subject_type ILIKE %s", pq.QuoteLiteral(v)))
-	}
-	if vs := stringArrayArg(input, "finding_type"); len(vs) > 0 {
-		whereClauses = append(whereClauses, "finding_type IN ("+quotedList(vs)+")")
-	}
-	if vs := stringArrayArg(input, "aggregation_key"); len(vs) > 0 {
-		whereClauses = append(whereClauses, "aggregation_key IN ("+quotedList(vs)+")")
-	}
-	if vs := stringArrayArg(input, "priority"); len(vs) > 0 {
-		whereClauses = append(whereClauses, "priority IN ("+quotedList(vs)+")")
-	}
-
-	startTime, endTime, err := resolveTimeRange(input)
+	whereClauses, err := eventFilterClauses(input, time.Now())
 	if err != nil {
 		return structuredEventsErrorResponse(err), nil
 	}
-	if startTime != "" {
-		whereClauses = append(whereClauses, fmt.Sprintf("starts_at >= %s", pq.QuoteLiteral(startTime)))
-	}
-	if endTime != "" {
-		whereClauses = append(whereClauses, fmt.Sprintf("starts_at <= %s", pq.QuoteLiteral(endTime)))
-	}
-	whereClauses = appendDefaultEventStart(whereClauses, startTime, time.Now())
 
 	limit := intArg(input, "limit", 10)
 
@@ -734,27 +810,15 @@ func (t ListEventsTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequ
 	// conversation's workspace.
 	dataCtx := nbCtx.ForTarget()
 	dataAccountID := dataCtx.AccountId
-	metadataView := buildListEventsMetadataView(dataAccountID, whereClauses)
-	metadataQuery := "SELECT id, title, starts_at, priority, source, aggregation_key, finding_type, subject_type, " +
-		"subject_name, subject_namespace, nb_status, computed_priority, computed_score, event_count " +
+	view := buildListEventsView(dataAccountID, whereClauses, limit)
+	query := "SELECT id, title, starts_at, priority, source, aggregation_key, finding_type, subject_type, " +
+		"subject_name, subject_namespace, nb_status, computed_priority, computed_score, event_count, evidences " +
 		"FROM events ORDER BY starts_at DESC"
-	resp, data, err := sqlToolCall(dataCtx, metadataQuery, "events", metadataView, limit, nil)
+	resp, data, err := sqlToolCall(dataCtx, query, "events", view, limit, nil)
 	if err != nil {
 		return resp, err
 	}
-
-	if len(data) > 0 {
-		evidenceView := buildListEventsEvidenceView(dataAccountID, data)
-		if evidenceView != "" {
-			evidenceQuery := "SELECT id, evidences FROM events"
-			_, evidenceData, evidenceErr := sqlToolCall(dataCtx, evidenceQuery, "events", evidenceView, len(data), nil)
-			if evidenceErr != nil {
-				return core.NBToolResponse{}, evidenceErr
-			}
-			buildManifestOnlyEvidence(evidenceData)
-			mergeEvidenceManifests(data, evidenceData)
-		}
-	}
+	buildManifestOnlyEvidence(data)
 
 	bytesData, marshalErr := common.MarshalJson(data)
 	if marshalErr != nil {
@@ -765,37 +829,58 @@ func (t ListEventsTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequ
 	return resp, nil
 }
 
-func buildListEventsMetadataView(accountID string, whereClauses []string) string {
-	where := append([]string{
+// buildListEventsView returns the newest event of each recurring alert
+// (same aggregation_key, subject and fingerprint) with how many times it
+// occurred, newest first, at most limit of them.
+//
+// The groups are found with a hash aggregate over the matching rows, and
+// only the limit rows returned are then read in full. Ranking every row with
+// a window instead sorted all of them first: 0.73s against 0.19s for the
+// largest dev account's 68k events in 30 days.
+//
+// evidences is cut down in SQL to the fields buildEvidenceManifest reads.
+// Evidence is most of the table's size (median 29 KB, p99 2 MB per event),
+// and loading it whole for a 10-row list moved up to 28 MB per call. Items
+// that are not objects are dropped: Go cannot decode them as an Evidence, and
+// one used to lose the whole event's manifest.
+func buildListEventsView(accountID string, whereClauses []string, limit int) string {
+	where := strings.Join(append([]string{
 		fmt.Sprintf("cloud_account_id = %s::uuid", pq.QuoteLiteral(accountID)),
-	}, whereClauses...)
+	}, whereClauses...), " AND ")
+	groupKey := []string{"aggregation_key", "subject_name", "subject_type", "subject_namespace", "fingerprint"}
+	sameGroup := make([]string, len(groupKey))
+	for i, k := range groupKey {
+		sameGroup[i] = fmt.Sprintf("e.%[1]s IS NOT DISTINCT FROM g.%[1]s", k)
+	}
+	keys := strings.Join(groupKey, ", ")
 
-	return `SELECT id::text, title, starts_at, priority, source, aggregation_key, finding_type, ` +
-		`subject_type, subject_name, subject_namespace, nb_status, computed_priority, computed_score, event_count ` +
-		`FROM (` +
-		`SELECT id, title, starts_at, priority, source, aggregation_key, finding_type, subject_type, ` +
-		`subject_name, subject_namespace, nb_status, computed_priority, computed_score, ` +
-		`COUNT(*) OVER (PARTITION BY aggregation_key, subject_name, subject_type, subject_namespace, fingerprint) AS event_count, ` +
-		`ROW_NUMBER() OVER (PARTITION BY aggregation_key, subject_name, subject_type, subject_namespace, fingerprint ORDER BY starts_at DESC) AS rn ` +
-		`FROM events WHERE ` + strings.Join(where, " AND ") +
-		`) ranked_events WHERE rn = 1`
+	// The filters are repeated in the LATERAL so the row it picks matches
+	// them too; their unqualified columns resolve to e, the nearest scope.
+	return `WITH g AS (` +
+		`SELECT ` + keys + `, max(starts_at) AS last_starts_at, count(*) AS event_count ` +
+		`FROM events WHERE ` + where + ` GROUP BY ` + keys + ` ORDER BY last_starts_at DESC LIMIT ` + strconv.Itoa(limit) +
+		`) SELECT r.id, r.title, r.starts_at, r.priority, r.source, r.aggregation_key, r.finding_type, ` +
+		`r.subject_type, r.subject_name, r.subject_namespace, r.nb_status, r.computed_priority, r.computed_score, ` +
+		`g.event_count, r.evidences FROM g CROSS JOIN LATERAL (` +
+		`SELECT e.id::text AS id, e.title, e.starts_at, e.priority, e.source, e.aggregation_key, e.finding_type, ` +
+		`e.subject_type, e.subject_name, e.subject_namespace, e.nb_status, e.computed_priority, e.computed_score, ` +
+		manifestEvidenceExpr + ` AS evidences FROM events e WHERE ` + where +
+		` AND e.starts_at = g.last_starts_at AND ` + strings.Join(sameGroup, " AND ") +
+		` LIMIT 1) r`
 }
 
-func buildListEventsEvidenceView(accountID string, data []map[string]any) string {
-	ids := make([]string, 0, len(data))
-	for _, row := range data {
-		if id, ok := row["id"].(string); ok {
-			if _, err := uuid.Parse(id); err == nil {
-				ids = append(ids, pq.QuoteLiteral(id)+"::uuid")
-			}
-		}
-	}
-	if len(ids) == 0 {
-		return ""
-	}
-	return "SELECT id::text, evidences::text FROM events WHERE cloud_account_id = " +
-		pq.QuoteLiteral(accountID) + "::uuid AND id IN (" + strings.Join(ids, ", ") + ")"
-}
+// manifestEvidenceExpr projects e.evidences down to what
+// buildEvidenceManifest reads: type, insight, filename, additional_info's
+// action_name and title, a table's table_name, and the data of a log-pattern
+// breakdown card (isLogPatternBreakdownCard decodes it).
+var manifestEvidenceExpr = `COALESCE((SELECT jsonb_agg(jsonb_strip_nulls(jsonb_build_object(` +
+	`'type', ev->'type', 'insight', ev->'insight', 'filename', ev->'filename', ` +
+	`'additional_info', CASE WHEN jsonb_typeof(ev->'additional_info') = 'object' THEN ` +
+	`jsonb_build_object('action_name', ev->'additional_info'->'action_name', 'title', ev->'additional_info'->'title') END, ` +
+	`'data', CASE WHEN ev->>'type' = 'table' AND jsonb_typeof(ev->'data') = 'object' THEN jsonb_build_object('table_name', ev->'data'->'table_name') ` +
+	`WHEN ev->'additional_info'->>'action_name' = ` + pq.QuoteLiteral(events.LogPatternBreakdownAction) + ` THEN ev->'data' END))) ` +
+	`FROM jsonb_array_elements(CASE WHEN jsonb_typeof(e.evidences) = 'array' THEN e.evidences ELSE '[]'::jsonb END) ev ` +
+	`WHERE jsonb_typeof(ev) = 'object'), '[]'::jsonb)::text`
 
 // ---------------------------------------------------------------------------
 // aggregate_events — covers GROUP BY/COUNT traffic (~4-5% of real
@@ -805,7 +890,12 @@ func buildListEventsEvidenceView(accountID string, data []map[string]any) string
 
 var allowedGroupByColumns = []string{
 	"aggregation_key", "subject_namespace", "subject_type", "finding_type", "priority", "source", "nb_status",
+	"status", "title", "subject_name", "subject_owner", "cluster",
 }
+
+// maxAggregateGroupByColumns bounds group_by: real queries group by up to
+// four columns, and more than three makes one row per event.
+const maxAggregateGroupByColumns = 3
 
 func isAllowedGroupByColumn(col string) bool {
 	for _, c := range allowedGroupByColumns {
@@ -822,88 +912,51 @@ func (t AggregateEventsTool) Name() string             { return ToolAggregateEve
 func (t AggregateEventsTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 
 func (t AggregateEventsTool) Description() string {
-	return "Count or group events by a single column (aggregation_key, subject_namespace, subject_type, " +
-		"finding_type, priority, source, or nb_status), optionally scoped by subject_namespace/finding_type/priority/" +
-		"time range. Set count_distinct_fingerprint=true to count unique event patterns (dedup) instead of " +
-		"raw occurrences. Use this for 'how many X' / 'top N by Y' / alert-noise questions instead of " +
-		"writing raw SQL with GROUP BY/COUNT."
+	return "Count or group events by up to three columns (aggregation_key, subject_namespace, subject_type, " +
+		"finding_type, priority, source, nb_status, status, title, subject_name, subject_owner, cluster), with the same " +
+		"filters as list_events. Each row also carries first_seen, last_seen and total_event_groups (the number of groups before " +
+		"limit; when it exceeds the rows returned, say 'top N of total_event_groups'). Set count_distinct_fingerprint=true " +
+		"to count unique event patterns (dedup) instead of raw occurrences. Use this for 'how many X' / 'top N by Y' / " +
+		"'when did X start' / alert-noise questions instead of writing raw SQL with GROUP BY/COUNT."
 }
 
 func (t AggregateEventsTool) InputSchema() core.ToolSchema {
-	return core.ToolSchema{
-		Type: core.ToolSchemaTypeObject,
-		Properties: map[string]core.ToolSchemaProperty{
-			"group_by": {
-				Type:        core.ToolSchemaTypeString,
-				Enum:        []any{"aggregation_key", "subject_namespace", "subject_type", "finding_type", "priority", "source", "nb_status"},
-				Description: "Column to group by.",
-			},
-			"count_distinct_fingerprint": {Type: core.ToolSchemaTypeBoolean, Description: "Count unique event patterns (dedup) instead of raw occurrences."},
-			"subject_namespace": {
-				Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
-				Description: "Optional: scope to one or more namespaces.",
-			},
-			"finding_type": {
-				Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
-				Description: "Optional: one or more of issue, configuration_change, SLO, Anomaly.",
-			},
-			"priority": {
-				Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
-				Description: "Optional: one or more of DEBUG, INFO, LOW, MEDIUM, HIGH.",
-			},
-			"start_time":     {Type: core.ToolSchemaTypeString, Description: "ISO8601. Alternative to relative_range."},
-			"end_time":       {Type: core.ToolSchemaTypeString, Description: "ISO8601. Defaults to now."},
-			"relative_range": {Type: core.ToolSchemaTypeString, Description: "Shorthand duration, e.g. '24h', '7d'. Alternative to start_time."},
-		},
-		Required: []string{"group_by"},
+	props := eventFilterSchema()
+	groupBy := make([]any, len(allowedGroupByColumns))
+	for i, c := range allowedGroupByColumns {
+		groupBy[i] = c
 	}
+	props["group_by"] = core.ToolSchemaProperty{
+		Type:        core.ToolSchemaTypeArray,
+		Items:       map[string]any{"type": "string", "enum": groupBy},
+		Description: fmt.Sprintf("One to %d columns to group by, e.g. [\"aggregation_key\"] or [\"subject_namespace\", \"priority\"].", maxAggregateGroupByColumns),
+	}
+	props["count_distinct_fingerprint"] = core.ToolSchemaProperty{Type: core.ToolSchemaTypeBoolean, Description: "Count unique event patterns (dedup) instead of raw occurrences."}
+	props["limit"] = core.ToolSchemaProperty{Type: core.ToolSchemaTypeInteger, Default: 50, Description: fmt.Sprintf("Max groups, largest first; default 50, at most %d.", maxAggregateEventsRows)}
+	return core.ToolSchema{Type: core.ToolSchemaTypeObject, Properties: props, Required: []string{"group_by"}}
 }
+
+// maxAggregateEventsRows caps the groups returned: grouping by title or
+// subject_name can make thousands.
+const maxAggregateEventsRows = 200
 
 func (t AggregateEventsTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
 	return core.ToolRequestTypeRead, nil
 }
 
 func (t AggregateEventsTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
-	groupBy := stringArg(input, "group_by")
-	if !isAllowedGroupByColumn(groupBy) {
-		return structuredEventsErrorResponse(fmt.Errorf("group_by must be one of: %s", strings.Join(allowedGroupByColumns, ", "))), nil
-	}
-
-	countExpr := "count(*)"
-	if boolArg(input, "count_distinct_fingerprint") {
-		countExpr = "count(DISTINCT fingerprint)"
-	}
-
-	var whereClauses []string
-	if vs := stringArrayArg(input, "subject_namespace"); len(vs) > 0 {
-		whereClauses = append(whereClauses, "subject_namespace IN ("+quotedList(vs)+")")
-	}
-	if vs := stringArrayArg(input, "finding_type"); len(vs) > 0 {
-		whereClauses = append(whereClauses, "finding_type IN ("+quotedList(vs)+")")
-	}
-	if vs := stringArrayArg(input, "priority"); len(vs) > 0 {
-		whereClauses = append(whereClauses, "priority IN ("+quotedList(vs)+")")
-	}
-	startTime, endTime, err := resolveTimeRange(input)
+	// stringArrayArg also takes a bare string, the shape group_by had before
+	// it became a list.
+	groupBy := stringArrayArg(input, "group_by")
+	whereClauses, err := eventFilterClauses(input, time.Now())
 	if err != nil {
 		return structuredEventsErrorResponse(err), nil
 	}
-	if startTime != "" {
-		whereClauses = append(whereClauses, fmt.Sprintf("starts_at >= %s", pq.QuoteLiteral(startTime)))
+	limit := min(intArg(input, "limit", 50), maxAggregateEventsRows)
+	query, err := buildAggregateEventsQuery(groupBy, boolArg(input, "count_distinct_fingerprint"), whereClauses, limit)
+	if err != nil {
+		return structuredEventsErrorResponse(err), nil
 	}
-	if endTime != "" {
-		whereClauses = append(whereClauses, fmt.Sprintf("starts_at <= %s", pq.QuoteLiteral(endTime)))
-	}
-	whereClauses = appendDefaultEventStart(whereClauses, startTime, time.Now())
-
-	// group_by is enum-validated above against a fixed allowlist, so it's safe
-	// to interpolate directly — this is the one column name these tools let
-	// caller input drive, and it can only ever be one of those seven values.
-	query := fmt.Sprintf("SELECT %s, %s AS count FROM events", groupBy, countExpr)
-	if len(whereClauses) > 0 {
-		query += " WHERE " + strings.Join(whereClauses, " AND ")
-	}
-	query += fmt.Sprintf(" GROUP BY %s ORDER BY count DESC", groupBy)
 
 	// The typed time predicates above are authoritative. Do not reapply the
 	// legacy view's fixed 30-day lower bound: explicit older ranges must remain
@@ -913,9 +966,545 @@ func (t AggregateEventsTool) Call(nbCtx core.NbToolContext, input core.NBToolCal
 	dataCtx := nbCtx.ForTarget()
 	dataAccountID := dataCtx.AccountId
 	view := resolveEventsViewPlaceholders(eventsViewWithId, dataAccountID, true)
-	resp, _, err := sqlToolCall(dataCtx, query, "events", view, 0, nil)
+	resp, _, err := sqlToolCall(dataCtx, query, "events", view, limit, nil)
 	if err != nil {
 		return resp, err
 	}
 	return resp, nil
+}
+
+// buildAggregateEventsQuery builds the GROUP BY query. Column names come only
+// from allowedGroupByColumns; filter values are already quoted. The LIMIT is
+// written here: buildLimitedQuery skips its own when it sees the word LIMIT
+// anywhere, a filter value like 'rate limit' included.
+func buildAggregateEventsQuery(groupBy []string, distinctFingerprint bool, whereClauses []string, limit int) (string, error) {
+	if len(groupBy) == 0 || len(groupBy) > maxAggregateGroupByColumns {
+		return "", fmt.Errorf("group_by must list 1 to %d of: %s", maxAggregateGroupByColumns, strings.Join(allowedGroupByColumns, ", "))
+	}
+	seen := map[string]bool{}
+	for _, col := range groupBy {
+		if !isAllowedGroupByColumn(col) {
+			return "", fmt.Errorf("group_by must list 1 to %d of: %s", maxAggregateGroupByColumns, strings.Join(allowedGroupByColumns, ", "))
+		}
+		if seen[col] {
+			return "", fmt.Errorf("group_by lists %s twice", col)
+		}
+		seen[col] = true
+	}
+	cols := strings.Join(groupBy, ", ")
+
+	countExpr := "count(*)"
+	if distinctFingerprint {
+		countExpr = "count(DISTINCT fingerprint)"
+	}
+	// total_event_groups is counted before the LIMIT, so a cut list says how many
+	// groups there were.
+	query := fmt.Sprintf("SELECT %s, %s AS count, min(starts_at) AS first_seen, max(starts_at) AS last_seen, count(*) OVER () AS total_event_groups FROM events", cols, countExpr)
+	if len(whereClauses) > 0 {
+		query += " WHERE " + strings.Join(whereClauses, " AND ")
+	}
+	return query + fmt.Sprintf(" GROUP BY %s ORDER BY count DESC LIMIT %d", cols, limit), nil
+}
+
+const (
+	// eventEvidencePreviewBytes bounds the inline summary get_event_by_id
+	// returns once evidence is offloaded to the workspace file. The file is
+	// the source of truth; this only orients the model. It is deliberately not
+	// evidencePreviewBytes, which is sized to the whole scratchpad observation
+	// and let one event's log lines fill it.
+	eventEvidencePreviewBytes = 7500
+	previewErrorLines         = 10
+	previewErrorLineChars     = 300
+	previewFieldChars         = 1200
+	// previewRootCauseChars caps the pod_events / pod_data slices: for crash
+	// loops and OOMs they hold the restart reason and last state.
+	previewRootCauseChars = 1000
+	// previewInsightBytes / previewInsightChars bound the one-line insight
+	// messages inlined from every section (deployment correlation, trace
+	// errors, ...). They are already written as summaries, so they carry the
+	// lead even when the section's raw data stays in the file.
+	previewInsightBytes = 1500
+	previewInsightChars = 240
+)
+
+// buildEventEvidencePreview summarises offloaded evidence: log summary, the
+// first error lines, alert labels/data, then every other non-empty section
+// with its size so the model knows what to read from the file.
+func buildEventEvidencePreview(id events.InvestigateData) string {
+	sections := evidenceSections(id)
+
+	var b strings.Builder
+	b.WriteString("Key facts:\n")
+
+	if id.AnomalyDetection != nil {
+		b.WriteString("anomaly_detection:\n")
+		for line := range strings.SplitSeq(strings.TrimSpace(id.AnomalyDetection.Render()), "\n") {
+			b.WriteString("  " + line + "\n")
+		}
+	}
+	if id.LogSummary != nil {
+		if raw, err := common.MarshalJson(id.LogSummary); err == nil {
+			fmt.Fprintf(&b, "log_summary: %s\n", truncateUTF8Safe(string(raw), previewFieldChars))
+		}
+	}
+	if h := insightHighlights(sections, previewInsightBytes); h != "" {
+		b.WriteString("insights (from sections whose data stays in the file):\n" + h)
+	}
+	if n := len(id.ErrorLogData); n > 0 {
+		distinct, patterns := distinctErrorLines(id.ErrorLogData, previewErrorLines)
+		fmt.Fprintf(&b, "error_log_data (%d lines, %d distinct patterns, first %d of them):\n", n, patterns, len(distinct))
+		for _, line := range distinct {
+			b.WriteString("  " + truncateUTF8Safe(line, previewErrorLineChars) + "\n")
+		}
+	}
+	if len(id.PodEvents) > 0 {
+		fmt.Fprintf(&b, "pod_events: %s\n", rootCauseSlice(id.PodEvents, previewRootCauseChars))
+	}
+	if id.PodData.Data != nil || len(id.PodData.Insight) > 0 {
+		fmt.Fprintf(&b, "pod_data: %s\n", rootCauseSlice([]events.InvestigateDataInsight{id.PodData}, previewRootCauseChars))
+	}
+	for _, f := range []struct {
+		name    string
+		insight events.InvestigateDataInsight
+	}{{"alert_labels", id.AlertLabels}, {"alert_data", id.AlertData}} {
+		if f.insight.Data == nil {
+			continue
+		}
+		if raw, err := common.MarshalJson(f.insight.Data); err == nil {
+			fmt.Fprintf(&b, "%s: %s\n", f.name, truncateUTF8Safe(string(raw), previewFieldChars))
+		}
+	}
+	b.WriteString(previewMetricCards(id.MetricsData))
+	b.WriteString(previewTraces(id.Traces))
+
+	sort.Slice(sections, func(i, j int) bool { return sections[i].size > sections[j].size })
+	var tail strings.Builder
+	tail.WriteString("Sections in the file (bytes):")
+	for _, s := range sections {
+		if s.size <= 0 {
+			continue
+		}
+		switch s.evType {
+		case "":
+			fmt.Fprintf(&tail, " %s[file only]=%d", s.name, s.size)
+		case s.name:
+			fmt.Fprintf(&tail, " %s=%d", s.name, s.size)
+		default:
+			fmt.Fprintf(&tail, " %s[evidence_type=%s]=%d", s.name, s.evType, s.size)
+		}
+	}
+	tail.WriteString("\n")
+
+	// The section list is what tells the model what else it can fetch, so
+	// it is reserved first and only the facts above it are trimmed.
+	return truncateUTF8Safe(b.String(), max(0, eventEvidencePreviewBytes-tail.Len())) + tail.String()
+}
+
+// previewSection is one evidence section as the preview sees it. items is nil
+// for log_data, whose size is its string length.
+type previewSection struct {
+	name   string
+	evType string
+	items  []events.InvestigateDataInsight
+	size   int
+}
+
+// evidenceSections lists the evidence file's sections with their sizes. evType is
+// the get_event_evidence evidence_type for the section; "" means the tool cannot
+// return it and it is only in the file.
+func evidenceSections(id events.InvestigateData) []previewSection {
+	sections := []previewSection{
+		{"log_data", "logs", nil, len(id.LogData)},
+		{"pod_metrics", "pod_metrics", id.PodMetrics, 0},
+		{"node_metrics", "node_metrics", id.NodeMetrics, 0},
+		{"metrics_queries_data", "metrics_data", id.MetricsData, 0},
+		{"pod_events", "pod_events", id.PodEvents, 0},
+		{"node_events", "node_events", id.NodeEvents, 0},
+		{"noisy_neighbours", "noisy_neighbours", id.NoisyNeighbours, 0},
+		{"api_failures", "api_failures", id.ApiFailures, 0},
+		{"user_actions", "user_actions", id.UserActions, 0},
+		{"rdbms_query_data", "rdbms_query_response", id.RDBMSQueryData, 0},
+		{"markdown_data", "markdowns", id.Markdowns, 0},
+		{"others", "", id.Others, 0},
+		{"pod_data", "pod_data", []events.InvestigateDataInsight{id.PodData}, 0},
+		{"node_data", "", []events.InvestigateDataInsight{id.NodeData}, 0},
+		{"deployment", "deployment", []events.InvestigateDataInsight{id.Deployment}, 0},
+		{"job_information", "job_information", []events.InvestigateDataInsight{id.JobInformation}, 0},
+		{"job_events", "job_events", []events.InvestigateDataInsight{id.JobEvents}, 0},
+		{"job_pod_events", "", []events.InvestigateDataInsight{id.JobPodEvents}, 0},
+		{"related_events", "related_events", []events.InvestigateDataInsight{id.RelatedEvents}, 0},
+		{"container_metrics", "container_metrics", []events.InvestigateDataInsight{id.ContainerMetrics}, 0},
+		{"traces", "traces", []events.InvestigateDataInsight{id.Traces}, 0},
+		{"service_map_data", "", []events.InvestigateDataInsight{id.ServiceMap}, 0},
+		{"alert_labels", "alert_labels", []events.InvestigateDataInsight{id.AlertLabels}, 0},
+		{"alert_data", "alert_data", []events.InvestigateDataInsight{id.AlertData}, 0},
+	}
+	for i := range sections {
+		if sections[i].items != nil {
+			sections[i].size = insightSliceSize(sections[i].items)
+		}
+	}
+	return sections
+}
+
+// EventEvidenceShape describes the event evidence file so it can be read without
+// first exploring it: which top-level keys hold data and in what form, the metric
+// cards by name, and the traces' unit. Agents told only "parse it (jq 'keys')"
+// spent their first turns listing keys, printing sections that turned out empty
+// and working out which "prometheus" card was which.
+func EventEvidenceShape(id events.InvestigateData) string {
+	var b strings.Builder
+	b.WriteString("Top-level keys with data: ")
+	var withData, empty []string
+	for _, s := range evidenceSections(id) {
+		if s.size <= 0 {
+			empty = append(empty, s.name)
+			continue
+		}
+		desc := fmt.Sprintf("%s (%d bytes", s.name, s.size)
+		switch {
+		case s.items == nil:
+			desc += ", text"
+		case len(s.items) > 1:
+			desc += fmt.Sprintf(", list of %d entries", len(s.items))
+		}
+		if sectionDataIsString(s.items) {
+			desc += ", each entry's .data is a JSON document stored as a string: decode it a second time"
+		}
+		withData = append(withData, desc+")")
+	}
+	if id.AnomalyDetection != nil {
+		withData = append([]string{"anomaly_detection (the anomaly detector's result, already decoded)"}, withData...)
+	}
+	if len(withData) == 0 {
+		b.WriteString("none")
+	} else {
+		b.WriteString(strings.Join(withData, "; "))
+	}
+	b.WriteString(".\n")
+	if len(empty) > 0 {
+		b.WriteString("Empty, do not read: " + strings.Join(empty, ", ") + ".\n")
+	}
+	b.WriteString(previewOthers(id.Others))
+	b.WriteString(previewMetricCards(id.MetricsData))
+	b.WriteString(previewTraces(id.Traces))
+	return b.String()
+}
+
+const (
+	previewOthersBytes     = 1500
+	previewOthersDescChars = 90
+	previewOthersHeaders   = 6
+)
+
+// previewOthers names each entry of others. Every entry's own title is just its
+// format ("json", "table"), so agents opened each one to learn what it held:
+// a Kubernetes change object, a table of pod events, the pods on a node.
+func previewOthers(items []events.InvestigateDataInsight) string {
+	if len(items) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("others entries (.others[i].data):\n")
+	for i, it := range items {
+		name, _ := it.AdditionalInfo["title"].(string)
+		var detail string
+		m := (GetEventEvidenceTool{}).toMap(it.Data)
+		switch {
+		case m["rows"] != nil || m["headers"] != nil:
+			if name == "" {
+				name, _ = m["table_name"].(string)
+			}
+			rows, _ := m["rows"].([]any)
+			headers, _ := m["headers"].([]any)
+			cols := make([]string, 0, previewOthersHeaders)
+			for _, h := range headers {
+				if len(cols) == previewOthersHeaders {
+					cols = append(cols, "…")
+					break
+				}
+				if hs, ok := h.(string); ok {
+					cols = append(cols, hs)
+				}
+			}
+			detail = fmt.Sprintf("table, %d rows, columns %s", len(rows), strings.Join(cols, ", "))
+		case m != nil:
+			kind, _ := m["kind"].(string)
+			desc, _ := m["description"].(string)
+			if kind != "" || desc != "" {
+				detail = strings.TrimSpace(kind + " change: " + truncateUTF8Safe(strings.Join(strings.Fields(desc), " "), previewOthersDescChars))
+			} else {
+				keys := make([]string, 0, len(m))
+				for k := range m {
+					keys = append(keys, k)
+				}
+				sort.Strings(keys)
+				detail = "object with keys " + strings.Join(keys, ", ")
+			}
+		default:
+			detail = it.Title
+		}
+		line := fmt.Sprintf("  [%d] ", i)
+		if name != "" {
+			line += name + ": "
+		}
+		line += detail + "\n"
+		if b.Len()+len(line) > previewOthersBytes {
+			fmt.Fprintf(&b, "  … %d more entries\n", len(items)-i)
+			break
+		}
+		b.WriteString(line)
+	}
+	return b.String()
+}
+
+// sectionDataIsString reports whether every entry of a section that has data
+// carries it as a string rather than a decoded object.
+func sectionDataIsString(items []events.InvestigateDataInsight) bool {
+	seen := false
+	for _, it := range items {
+		if it.Data == nil {
+			continue
+		}
+		if _, ok := it.Data.(string); !ok {
+			return false
+		}
+		seen = true
+	}
+	return seen
+}
+
+const (
+	previewQueryChars   = 160
+	previewSlowestSpans = 3
+	previewSpanChars    = 100
+)
+
+// previewMetricCards lists the metric cards by the name the file keys them on,
+// with how many series hold data. Every card's own title is just "prometheus",
+// so without this the model reads each card to find which one is which, and
+// cannot tell an empty card (all NaN) from a quiet one.
+func previewMetricCards(cards []events.InvestigateDataInsight) string {
+	if len(cards) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("metrics_queries_data cards (name in .additional_info.title, series in .data.series_list_result[].values):\n")
+	for i, card := range cards {
+		name, _ := card.AdditionalInfo["title"].(string)
+		if name == "" {
+			name = card.Title
+		}
+		withData, total := 0, 0
+		if m := (GetEventEvidenceTool{}).toMap(card.Data); m != nil {
+			series, _ := m["series_list_result"].([]any)
+			for _, s := range series {
+				sm, _ := s.(map[string]any)
+				values, _ := sm["values"].([]any)
+				total++
+				for _, v := range values {
+					if !math.IsNaN(toFloat64(v)) {
+						withData++
+						break
+					}
+				}
+			}
+		}
+		fmt.Fprintf(&b, "  [%d] %s: ", i, name)
+		if withData == 0 {
+			b.WriteString("no data")
+		} else {
+			fmt.Fprintf(&b, "%d of %d series with data", withData, total)
+		}
+		if card.Unit != "" {
+			fmt.Fprintf(&b, ", unit %s", card.Unit)
+		}
+		if card.Query != "" {
+			fmt.Fprintf(&b, ", query %s", truncateUTF8Safe(card.Query, previewQueryChars))
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// previewTraces states the span count and Duration's unit, and names the slowest
+// spans. Durations are nanoseconds; read as microseconds, a 0.4 ms query looks
+// like 0.4 s.
+func previewTraces(traces events.InvestigateDataInsight) string {
+	m, _ := traces.Data.(map[string]any)
+	spans, _ := m["data"].([]any)
+	if len(spans) == 0 {
+		return ""
+	}
+	type span struct {
+		ns   float64
+		desc string
+	}
+	var all []span
+	for _, s := range spans {
+		sm, _ := s.(map[string]any)
+		ns := toFloat64(sm["Duration"])
+		if math.IsNaN(ns) {
+			continue
+		}
+		attrs, _ := sm["SpanAttributes"].(map[string]any)
+		str := func(k string) string { v, _ := attrs[k].(string); return strings.TrimSpace(v) }
+		parts := []string{}
+		if name, _ := sm["SpanName"].(string); name != "" && name != str("http.method") {
+			parts = append(parts, name)
+		}
+		if dest := str("destination.workload_name"); dest != "" {
+			parts = append(parts, "to "+dest)
+		}
+		if method, path := str("http.method"), str("http.path"); method != "" || path != "" {
+			parts = append(parts, strings.TrimSpace(method+" "+path))
+		} else if stmt := strings.Join(strings.Fields(str("db.statement")), " "); stmt != "" {
+			parts = append(parts, stmt)
+		}
+		all = append(all, span{ns, truncateUTF8Safe(strings.Join(parts, " "), previewSpanChars)})
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].ns > all[j].ns })
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "traces: %d spans in .traces.data.data[]; Duration is in nanoseconds", len(spans))
+	// An agent sorting on it hit a TypeError: the values arrive as strings.
+	if first, _ := spans[0].(map[string]any); first != nil {
+		if _, isStr := first["Duration"].(string); isStr {
+			b.WriteString(", stored as strings (convert before sorting)")
+		}
+	}
+	if len(all) > 0 {
+		b.WriteString("; slowest:")
+		for i, s := range all {
+			if i == previewSlowestSpans {
+				break
+			}
+			fmt.Fprintf(&b, " %.1f ms %s;", s.ns/1e6, s.desc)
+		}
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
+// errTemplateNoise matches what differs between otherwise identical log
+// lines: UUIDs, long hex ids (trace/span ids) and numbers.
+var errTemplateNoise = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{16,}|\d+`)
+
+// distinctErrorLines returns up to limit error lines, one per distinct
+// pattern in first-seen order, and how many distinct patterns there are. The
+// first N raw lines are usually one message repeated, which hides that other
+// collections, hosts or pods are failing too.
+func distinctErrorLines(lines []string, limit int) ([]string, int) {
+	seen := make(map[string]struct{}, len(lines))
+	var out []string
+	for _, line := range lines {
+		key := errTemplateNoise.ReplaceAllString(line, "#")
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		if len(out) < limit {
+			out = append(out, line)
+		}
+	}
+	return out, len(seen)
+}
+
+// insightHighlights inlines the one-line insight messages of every section
+// except pod_events/pod_data (rootCauseSlice already carries theirs) and the
+// alert sections (printed whole in the key facts). Critical
+// and warning messages come first, duplicates are dropped, and the result
+// stays within maxBytes.
+func insightHighlights(sections []previewSection, maxBytes int) string {
+	type entry struct {
+		rank int
+		line string
+	}
+	rank := func(sev string) int {
+		switch strings.ToLower(sev) {
+		case "critical", "error":
+			return 0
+		case "warning", "warn":
+			return 1
+		}
+		return 2
+	}
+	seen := map[string]struct{}{}
+	var entries []entry
+	for _, sec := range sections {
+		if sec.name == "pod_events" || sec.name == "pod_data" || sec.name == "alert_labels" || sec.name == "alert_data" {
+			continue
+		}
+		for _, item := range sec.items {
+			for _, in := range item.Insight {
+				msg := strings.TrimSpace(in.Message)
+				if msg == "" {
+					continue
+				}
+				if _, dup := seen[msg]; dup {
+					continue
+				}
+				seen[msg] = struct{}{}
+				entries = append(entries, entry{rank(in.Severity), "  [" + sec.name + "] " + truncateUTF8Safe(msg, previewInsightChars) + "\n"})
+			}
+		}
+	}
+	sort.SliceStable(entries, func(i, j int) bool { return entries[i].rank < entries[j].rank })
+
+	var b strings.Builder
+	for _, e := range entries {
+		if b.Len()+len(e.line) > maxBytes {
+			break
+		}
+		b.WriteString(e.line)
+	}
+	return b.String()
+}
+
+// oomKilledTitle is the block tool_event.go appends to PodEvents for OOM
+// events; it is appended last, so a cut from the front would drop it.
+const oomKilledTitle = "*Pod and Node OOMKilled data*"
+
+// rootCauseSlice fits the part of pod_events / pod_data that explains a crash
+// into maxBytes. Each block's title and insight come first (the OOMKilled
+// block before the others), because the summary is what names the cause; raw
+// table rows only fill whatever budget is left. InvestigateDataInsight
+// marshals data first, so cutting its JSON from the front keeps the rows and
+// drops the summary.
+func rootCauseSlice(insights []events.InvestigateDataInsight, maxBytes int) string {
+	ordered := make([]events.InvestigateDataInsight, 0, len(insights))
+	for _, in := range insights {
+		if in.Title == oomKilledTitle {
+			ordered = append(ordered, in)
+		}
+	}
+	for _, in := range insights {
+		if in.Title != oomKilledTitle {
+			ordered = append(ordered, in)
+		}
+	}
+
+	var b strings.Builder
+	for _, in := range ordered {
+		if in.Title != "" {
+			b.WriteString(in.Title + " ")
+		}
+		if len(in.Insight) > 0 {
+			if raw, err := common.MarshalJson(in.Insight); err == nil {
+				b.WriteString(string(raw))
+			}
+		}
+		b.WriteString("; ")
+	}
+	out := truncateUTF8Safe(b.String(), maxBytes)
+	for _, in := range ordered {
+		left := maxBytes - len(out)
+		if left <= len("data:  ") || in.Data == nil {
+			continue
+		}
+		if raw, err := common.MarshalJson(in.Data); err == nil {
+			out += "data: " + truncateUTF8Safe(string(raw), left-len("data:  ")) + " "
+		}
+	}
+	return strings.TrimSpace(out)
 }

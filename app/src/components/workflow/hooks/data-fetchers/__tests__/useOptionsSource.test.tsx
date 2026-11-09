@@ -202,7 +202,7 @@ describe('useOptionsSource', () => {
     expect(mockGetCloudResource).toHaveBeenCalledWith({ account_id: 'acc-1', status: 'Active' }, 1000);
   });
 
-  it('failed direct-mode fetch -> toast + error on the field', async () => {
+  it('failed direct-mode fetch -> inline error on the field, no toast', async () => {
     mockListMCPTools.mockResolvedValue({
       errors: [{ message: 'Connection refused' }],
     });
@@ -215,12 +215,57 @@ describe('useOptionsSource', () => {
       await Promise.resolve();
     });
 
-    expect(mockToastError).toHaveBeenCalledWith(
-      'Unable to fetch MCP tools from the provided URL. Please verify the URL and try again. (Connection refused)'
-    );
+    expect(mockToastError).not.toHaveBeenCalled();
     expect(result.current.tool_name?.error).toBe(
       'Unable to fetch MCP tools from the provided URL. Please verify the URL and try again. (Connection refused)'
     );
     expect(result.current.tool_name?.loading).toBe(false);
+  });
+
+  describe('mcp_tools in integration mode', () => {
+    const integrationTaskDef = {
+      name: 'llm.mcp_call',
+      input_schema: {
+        connection_mode: { type: 'string', enum: ['integration', 'direct'] },
+        account_id: { type: 'account' },
+        integration_id: { type: 'integration', options: [] },
+        tool_name: {
+          type: 'string',
+          options_source: {
+            type: 'mcp_tools',
+            dependency_mapping: { connection_mode: 'connection_mode', account_id: 'account_id', integration_id: 'integration_id' },
+          },
+        },
+      },
+    };
+
+    const listToolsFor = async (formValues: Record<string, any>) => {
+      mockListMCPTools.mockResolvedValue({ data: { workflow_list_mcp_tools: { tools: [{ name: 'tool_a' }] } } });
+      renderHook(() => useOptionsSource(integrationTaskDef, formValues));
+      await act(async () => {
+        jest.advanceTimersByTime(500);
+        await Promise.resolve();
+      });
+    };
+
+    it("lists tools through the step's account when one is picked", async () => {
+      await listToolsFor({ connection_mode: 'integration', integration_id: 'int-1', account_id: 'acc-2', _accountId: 'acc-1' });
+      expect(mockListMCPTools).toHaveBeenCalledWith('acc-2', { integration_id: 'int-1' });
+    });
+
+    it("lists tools through the automation's account when the step has none", async () => {
+      await listToolsFor({ connection_mode: 'integration', integration_id: 'int-1', _accountId: 'acc-1' });
+      expect(mockListMCPTools).toHaveBeenCalledWith('acc-1', { integration_id: 'int-1' });
+    });
+
+    it("lists tools through the automation's account when the step's account is an expression", async () => {
+      await listToolsFor({
+        connection_mode: 'integration',
+        integration_id: 'int-1',
+        account_id: '{{ event.cloud_account_id }}',
+        _accountId: 'acc-1',
+      });
+      expect(mockListMCPTools).toHaveBeenCalledWith('acc-1', { integration_id: 'int-1' });
+    });
   });
 });

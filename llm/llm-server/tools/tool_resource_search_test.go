@@ -36,6 +36,28 @@ func TestBuildResourceSearchDBQuery_ScopesToRequestedNamespace(t *testing.T) {
 	require.Len(t, argsUnscoped, 2)
 }
 
+// TestBuildResourceSearchDBQuery_FiltersBeforeOrdering guards the plan shape:
+// every predicate, the namespace one included, must sit inside the MATERIALIZED
+// CTE, and ORDER BY/LIMIT must apply to its result. Put back in one query
+// block, Postgres walks the (account, name) index in name order through every
+// row of the account to find the first 20 matches.
+func TestBuildResourceSearchDBQuery_FiltersBeforeOrdering(t *testing.T) {
+	query, _ := buildResourceSearchDBQuery("acct-1", "team-alpha", []string{"%relay-server%"})
+
+	cteStart := strings.Index(query, "AS MATERIALIZED (")
+	cteEnd := strings.Index(query, "FROM matches")
+	require.GreaterOrEqual(t, cteStart, 0, "filter must run in a MATERIALIZED CTE")
+	require.Greater(t, cteEnd, cteStart)
+
+	for _, predicate := range []string{"account = $1", "is_active = true", "ILIKE ANY($2)", "meta->>'namespace' = $3"} {
+		at := strings.Index(query, predicate)
+		assert.Greater(t, at, cteStart, "%s must be inside the CTE", predicate)
+		assert.Less(t, at, cteEnd, "%s must be inside the CTE", predicate)
+	}
+	assert.Greater(t, strings.Index(query, "ORDER BY name"), cteEnd, "ORDER BY must apply to the CTE result")
+	assert.Greater(t, strings.Index(query, "LIMIT 20"), cteEnd, "LIMIT must apply to the CTE result")
+}
+
 // grepNoMatchWorkspaceManager stubs ExecuteOrLazyCreate to fail exactly the
 // way a grep with no matches does — every other WorkspaceManager method is
 // picked up as a nil-valued no-op via the embedded interface, since this test
@@ -1122,7 +1144,7 @@ func TestCloudResourceMatchesTerms(t *testing.T) {
 	})
 }
 
-// normalizeK8sType must collapse both cloud_resourses Kind names ("Pod") and
+// NormalizeK8sType must collapse both cloud_resourses Kind names ("Pod") and
 // kubectl short/plural forms ("pods", "po") to the same canonical singular,
 // since searchDbForResources now returns Kind-cased types from cloud_resourses.
 func TestNormalizeK8sType(t *testing.T) {
@@ -1148,7 +1170,7 @@ func TestNormalizeK8sType(t *testing.T) {
 		"CustomResourceDefinition": "customresourcedefinition", "customresourcedefinitions": "customresourcedefinition", "crd": "customresourcedefinition", "crds": "customresourcedefinition",
 	}
 	for in, want := range cases {
-		assert.Equalf(t, want, normalizeK8sType(in), "normalizeK8sType(%q)", in)
+		assert.Equalf(t, want, NormalizeK8sType(in), "NormalizeK8sType(%q)", in)
 	}
 }
 
@@ -1167,7 +1189,7 @@ func TestFilterResourcesByType_CrossSourceNaming(t *testing.T) {
 	pods := tool.filterResourcesByType(resources, "pods")
 	assert.Len(t, pods, 2, "both Kind-cased 'Pod' and kubectl 'pods' must match a pods request")
 	for _, r := range pods {
-		assert.Equal(t, "pod", normalizeK8sType(r.Type))
+		assert.Equal(t, "pod", NormalizeK8sType(r.Type))
 	}
 
 	deploys := tool.filterResourcesByType(resources, "deployment")

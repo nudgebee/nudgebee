@@ -336,6 +336,15 @@ export function hasDeleteAccess(accountId?: string): boolean {
   return false;
 }
 
+// Per-user AI Gateway access and usage (#38963): tenant admins manage, read-only tenant admins view.
+export function canManageGatewayUserAccess(): boolean {
+  return isTenantAdmin() || isSuperAdmin();
+}
+
+export function canViewGatewayUserAccess(): boolean {
+  return canManageGatewayUserAccess() || !!userData?.roles?.includes('tenant_admin_readonly');
+}
+
 export function isTenantAdmin(): boolean {
   if (userData?.roles?.includes('tenant_admin')) {
     return true;
@@ -356,6 +365,15 @@ export function hasPermission(module: string, permissionClass: 'Read' | 'Write' 
     return false;
   }
   return userData?.permissions?.includes(`${module}:${permissionClass}`) ?? false;
+}
+
+// Backend `tickets_create` (app/src/lib/actions.yaml) authorizes every *_readonly
+// role, not just write roles — so gate the Create Ticket affordance on read access
+// to the row's account, not write. A tickets:Write custom-role grant still covers
+// holders who lack even read access to that account. One rule for every listing
+// that offers Create Ticket (#40211) — don't re-derive this per component.
+export function canCreateTicket(accountId?: string): boolean {
+  return hasReadAccess(accountId) || hasPermission('tickets', 'Write');
 }
 
 // Dynamic-RBAC: may the current user READ the tenant's custom roles? Mirrors

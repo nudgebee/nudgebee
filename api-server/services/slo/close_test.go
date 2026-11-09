@@ -71,7 +71,7 @@ func TestCloseSLOEventIfRecovered_ClosesOnlyTheMatchingFingerprint(t *testing.T)
 	sameAccountDifferentNamespace := insertFiringSLOEvent(t, dbms, tenant, account, "latency", "checkout", "staging")
 
 	targetConfig := DBSLOConfig{CloudAccountId: account, TenantId: tenant, Name: "latency", WorkloadName: "checkout", Namespace: "prod"}
-	closeSLOEventIfRecovered(dbms, targetConfig, []SLOReport{okReport("checkout", "prod")})
+	closeSLOEventIfRecovered(dbms, targetConfig, []SLOReport{okReport("checkout", "prod")}, "")
 
 	if got := sloEventStatus(t, dbms, target); got != "RESOLVED" {
 		t.Errorf("target event: status = %q, want RESOLVED", got)
@@ -99,7 +99,7 @@ func TestCloseSLOEventIfRecovered_NoOpWithoutExplicitOK(t *testing.T) {
 
 	t.Run("empty report set", func(t *testing.T) {
 		id := insertFiringSLOEvent(t, dbms, tenant, account, "latency", "checkout", "prod")
-		closeSLOEventIfRecovered(dbms, config, nil)
+		closeSLOEventIfRecovered(dbms, config, nil, "")
 		if got := sloEventStatus(t, dbms, id); got != "FIRING" {
 			t.Errorf("status = %q, want FIRING (empty report set carries no recovery information)", got)
 		}
@@ -107,7 +107,7 @@ func TestCloseSLOEventIfRecovered_NoOpWithoutExplicitOK(t *testing.T) {
 
 	t.Run("NO_DATA-only report set", func(t *testing.T) {
 		id := insertFiringSLOEvent(t, dbms, tenant, account, "latency", "checkout", "prod")
-		closeSLOEventIfRecovered(dbms, config, []SLOReport{{Workload: "checkout", Namespace: "prod", Valid: false}})
+		closeSLOEventIfRecovered(dbms, config, []SLOReport{{Workload: "checkout", Namespace: "prod", Valid: false}}, "")
 		if got := sloEventStatus(t, dbms, id); got != "FIRING" {
 			t.Errorf("status = %q, want FIRING (NO_DATA is not a recovery signal)", got)
 		}
@@ -122,7 +122,7 @@ func TestCloseSLOEventIfRecovered_ClosesOnExplicitOK(t *testing.T) {
 	config := DBSLOConfig{CloudAccountId: account, TenantId: tenant, Name: "latency", WorkloadName: "checkout", Namespace: "prod"}
 
 	id := insertFiringSLOEvent(t, dbms, tenant, account, "latency", "checkout", "prod")
-	closeSLOEventIfRecovered(dbms, config, []SLOReport{okReport("checkout", "prod")})
+	closeSLOEventIfRecovered(dbms, config, []SLOReport{okReport("checkout", "prod")}, "")
 	if got := sloEventStatus(t, dbms, id); got != "RESOLVED" {
 		t.Errorf("status = %q, want RESOLVED", got)
 	}

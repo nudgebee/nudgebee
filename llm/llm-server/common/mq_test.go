@@ -65,7 +65,7 @@ func TestPublishClose(t *testing.T) {
 func TestConsumerClose(t *testing.T) {
 	requireRabbitMQ(t)
 
-	err := MqConsume("test", "test", "test", func(_ context.Context, data []byte) error {
+	err := MqConsume("test", "test", "test", 1, func(_ context.Context, data []byte) error {
 		slog.Info("consumed message", "data", string(data))
 		return nil
 	})

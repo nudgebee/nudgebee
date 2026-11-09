@@ -39,6 +39,9 @@ const (
 	// body — a PHI-sensitive read, audited for accountability.
 	EventBodyView EventType = "GATEWAY_BODY_VIEW"
 
+	// EventUserAccessUpdate is a tenant admin changing one user's gateway limits or suspension.
+	EventUserAccessUpdate EventType = "GATEWAY_USER_ACCESS_UPDATE"
+
 	ActionUpdate EventAction = "UPDATE"
 	ActionView   EventAction = "VIEW"
 

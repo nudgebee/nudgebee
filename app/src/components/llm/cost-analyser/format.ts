@@ -552,3 +552,23 @@ export function downloadFile(filename: string, content: string, mime = 'text/csv
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
+
+const TITLE_MAX = 140;
+
+/**
+ * Short display title for a conversation. Some conversations (event triage) are
+ * titled with their whole multi-paragraph markdown summary; show the embedded
+ * "Title:" value, else the first non-empty line, with markdown syntax stripped.
+ * Plain one-line titles pass through untouched.
+ */
+export function cleanConversationTitle(raw: string | null | undefined): string {
+  const t = typeof raw === 'string' ? raw.trim() : '';
+  if (!t || !(t.includes('\n') || /^(#|\*\*|__)/.test(t))) return t;
+  const embedded = t.match(/[*_]{0,2}Title:[*_]{0,2}\s*([^\n]+)/i)?.[1];
+  const line = embedded ?? t.split('\n').find((l) => l.replace(/[#*_`>\s-]/g, '') !== '') ?? t;
+  const clean = line
+    .replace(/[#*_`>]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return clean.length > TITLE_MAX ? `${clean.slice(0, TITLE_MAX - 1)}…` : clean;
+}

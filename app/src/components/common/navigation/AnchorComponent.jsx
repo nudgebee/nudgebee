@@ -365,6 +365,7 @@ const AnchorComponent = ({
             boxShadow,
             mt: marginTop,
             position: 'absolute',
+            top: 0,
             left: 0,
             right: 0,
             // Higher than the plain "2" a page's own Tabs.jsx active-tab underline

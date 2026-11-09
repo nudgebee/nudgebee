@@ -4,6 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	"nudgebee/llm/agents/core"
+	"nudgebee/llm/audit"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -58,4 +61,12 @@ func TestTruncateQueryForAudit(t *testing.T) {
 		assert.True(t, strings.HasSuffix(got, "…[truncated]"))
 		assert.Equal(t, strings.Repeat("🚀", maxAuditQueryPreviewRunes), strings.TrimSuffix(got, "…[truncated]"))
 	})
+}
+
+func TestChatAuditApplies(t *testing.T) {
+	assert.True(t, chatAuditApplies(audit.EventTypeChatClarificationRespond, core.ConversationSourceUserInvestigation))
+	assert.False(t, chatAuditApplies(audit.EventTypeChatClarificationRespond, core.ConversationSourceInvestigation))
+	for _, source := range []core.ConversationSource{core.ConversationSourceUserInvestigation, core.ConversationSourceInvestigation, core.ConversationSourceAutomation} {
+		assert.True(t, chatAuditApplies(audit.EventTypeChatToolConfirmationRespond, source), source)
+	}
 }

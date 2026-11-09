@@ -35,7 +35,7 @@ var ec2InstanceSchema = core.SpecificTypeSchema{
 		{Name: "monitoring_state"},
 		{Name: "boot_mode"},
 		{Name: "instance_lifecycle"},
-		{Name: "security_groups"},
+		{Name: "security_groups", Shape: core.PropertyShapeRecords},
 		{Name: "dns_name"},
 		{Name: "kms_key_id"},
 		{Name: "encrypted"},
@@ -88,7 +88,7 @@ var ssmManagedInstanceSchema = core.SpecificTypeSchema{
 		{Name: "monitoring_state"},
 		{Name: "boot_mode"},
 		{Name: "instance_lifecycle"},
-		{Name: "security_groups"},
+		{Name: "security_groups", Shape: core.PropertyShapeRecords},
 		{Name: "dns_name"},
 		// Additional provider fields (not yet emitted by our extractor):
 		{Name: "ping_status"},

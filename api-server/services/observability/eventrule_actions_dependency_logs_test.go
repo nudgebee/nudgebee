@@ -58,10 +58,17 @@ func TestParseServiceListLabel(t *testing.T) {
 
 func TestImagePullBackoffDoesNotGetWorkloadLogs(t *testing.T) {
 	// The failing pod never started a container, so a workload-scoped query can
-	// only return the healthy replicas still serving the old image: 130 of 133
-	// such payloads on dev contained no reference to the failing pod.
-	assert.True(t, noWorkloadLogAggKeys["image_pull_backoff_reporter"])
-	assert.False(t, noWorkloadLogAggKeys["report_crash_loop"])
+	// only return the healthy replicas still serving the old image. Decided from
+	// the event class alone, before any log source is looked up.
+	ctx := playbooks.NewPlaybookActionContext("t", "a", slog.Default(), playbooks.PlaybookEvent{
+		AggregationKey:   "image_pull_backoff_reporter",
+		SubjectType:      "pod",
+		SubjectName:      "web-7d4b9c5f6-x2x7q",
+		SubjectNamespace: "shop",
+		Labels:           map[string]string{},
+	})
+	assert.False(t, (&observabilityLogAction{}).CanAutoExecute(ctx))
+	assert.False(t, playbooks.IsNeverStartedContainerAggKey("report_crash_loop"))
 }
 
 func TestFetchCalleeLogsViaKubectlRefusesNonK8sTargets(t *testing.T) {

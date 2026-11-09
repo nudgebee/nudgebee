@@ -32,6 +32,14 @@ func (m WorkflowWebhook) Category() core.IntegrationCategory {
 	return core.IntegrationCategoryIncidentWebhook
 }
 
+// WebhookLabelHelp states that this webhook produces no labels: it forwards the
+// body to the workflow server instead of building an event.
+func (m WorkflowWebhook) WebhookLabelHelp() core.WebhookLabelHelp {
+	return core.WebhookLabelHelp{
+		Summary: "This webhook starts workflows and produces no labels, so account mapping does not apply.",
+	}
+}
+
 func (m WorkflowWebhook) ConfigSchema() core.IntegrationSchema {
 	return core.IntegrationSchema{
 		Type:     core.ToolSchemaTypeObject,

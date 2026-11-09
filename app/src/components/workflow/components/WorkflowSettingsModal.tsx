@@ -5,6 +5,7 @@ import { Button } from '@ui/Button';
 import { Close, Add, DragIndicator } from '@mui/icons-material';
 import { DurationField } from './advanced-config';
 import { Modal } from '@ui/Modal';
+import { toast as snackbar } from '@ui/Toast';
 import { FormCard, FormField } from '@shared/forms/FormComponents';
 import { Label } from '@ui/Label';
 import { ds } from 'src/utils/colors';
@@ -512,6 +513,8 @@ const WorkflowSettingsModal: React.FC<WorkflowSettingsModalProps> = ({
       // outputs is already in the correct format (Record<string, string>)
     };
     onSave(cleanedSettings);
+    // Apply only updates the canvas; the settings persist with the next save.
+    snackbar.success('Automation settings updated successfully', { description: 'Save the automation to keep these changes.' });
     onClose();
   };
 

@@ -330,6 +330,36 @@ const apiIntegrations = {
     }
   },
 
+  // Tenant-wide "has anything ever arrived" check for the Setup Center's
+  // alerts item — whether ANY of the given alert-webhook integrations has
+  // received at least one event. One aggregate call across every id, not a
+  // per-row Activity Log fetch. Unlike listWebhookEvents, a failed lookup
+  // must stay distinguishable from a real zero (`undefined` vs `false`), so
+  // Setup never downgrades a connected signal to "waiting" on a query that
+  // simply errored.
+  hasReceivedWebhookEvents: async function (integrationIds) {
+    if (!Array.isArray(integrationIds) || integrationIds.length === 0) return undefined;
+    const where = gqlStringify({ integration_id: { _in: integrationIds } });
+    const HAS_RECEIVED_WEBHOOK_EVENTS = `
+    query HasReceivedWebhookEvents {
+      total: integrations_aggregate_webhook_events(where: ${where}) {
+        rows {
+          count
+        }
+      }
+    }
+    `;
+    try {
+      const response = await queryGraphQL(HAS_RECEIVED_WEBHOOK_EVENTS, 'HasReceivedWebhookEvents', {});
+      if (response?.data?.errors?.length) return undefined;
+      const count = response?.data?.data?.total?.rows?.[0]?.count;
+      return typeof count === 'number' ? count > 0 : undefined;
+    } catch (err) {
+      console.log('failed to check webhook events-', err);
+      return undefined;
+    }
+  },
+
   addIntegrations: async function (data) {
     const ADD_INTEGRATION = `
     mutation AddIntegrations($data: CreateIntegrationConfigRequest!) {
@@ -353,6 +383,31 @@ const apiIntegrations = {
       console.log('failed to add integrations-', err);
       return err;
     }
+  },
+
+  // What an LLM save, delete, disable or enable would do to each account: who
+  // moves, who would be left with no model, which defaults it replaces.
+  // Read-only; the LLM modal and list build their confirmations from it.
+  checkLLMDefaults: async function (data) {
+    const CHECK_LLM_DEFAULTS = `
+    query CheckLLMDefaults($data: CheckLLMDefaultsRequest!) {
+      integrations_check_llm_defaults(request: $data) {
+        env_configured
+        tenant_default
+        replaces_tenant_default
+        becomes_tenant_wide
+        affected
+        replaced_account_defaults
+        blocked
+      }
+    }
+    `;
+    const response = await queryGraphQL(CHECK_LLM_DEFAULTS, 'CheckLLMDefaults', { data });
+    const errors = response?.data?.errors;
+    if (Array.isArray(errors) && errors.length > 0) {
+      throw new Error(errors[0]?.message || 'Could not check the LLM defaults');
+    }
+    return response?.data?.data?.integrations_check_llm_defaults;
   },
 
   deleteIntegrations: async function (data) {

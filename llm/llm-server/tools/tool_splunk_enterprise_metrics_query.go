@@ -206,13 +206,15 @@ func (m SplunkMetricsQueryTool) Call(nbRequestContext core.NbToolContext, input 
 		}, nil
 	}
 
-	data, err := common.MarshalJson(summarizeESMetricsResponse(response))
+	summarized, refs := inlineESResponse(nbRequestContext, response, "splunk_metrics_query", "Splunk")
+	data, err := common.MarshalJson(summarized)
 	if err != nil {
 		return core.NBToolResponse{Status: core.NBToolResponseStatusError}, fmt.Errorf("splunk_metrics_query: marshal response: %w", err)
 	}
 	return core.NBToolResponse{
-		Data:   string(data),
-		Type:   core.NBToolResponseTypeJson,
-		Status: core.NBToolResponseStatusSuccess,
+		Data:       string(data),
+		Type:       core.NBToolResponseTypeJson,
+		Status:     core.NBToolResponseStatusSuccess,
+		References: refs,
 	}, nil
 }

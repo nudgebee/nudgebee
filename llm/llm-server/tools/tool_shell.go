@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"nudgebee/llm/common"
+	"nudgebee/llm/security/egressfilter"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
 	"path/filepath"
@@ -63,6 +64,8 @@ func (m ShellTool) Description() string {
 	**Large Data Redirection:** Identify large output by command intent (log dumps, metric time-series, multi-resource JSON, or queries expecting >50 records). Redirect stdout to a relative workspace file (` + "`command > data.json`" + `). Then inspect using ` + "`jq`, `grep`, `awk`, or `head` (`jq .key data.json | head -n 50`)" + ` to keep context usage bounded.
 
 	**Collection and analysis:** Invoke infrastructure CLIs directly in shell commands; use local tools to analyze the saved output. Prefer jq for JSON selection and aggregation, and grep/head for bounded text inspection. Use Python when the analysis needs more complex parsing or joins; keep it focused on local files, with standard-library modules. Reuse existing captures when they cover the requested scope and time range.
+
+	**Fetch once, analyze the file:** When you will look at a remote resource more than once or in more than one way (a CI or job log, an API response, a listing, a file from a remote repository), save it to a workspace file in one call (` + "`<fetch command> > run.log`" + `) and run every later grep/sed/jq/python against that file. Do not re-run the fetch with a different filter: each re-run downloads the whole resource again and costs a call. Put several extractions from the same file into one call (` + "`grep -n ERROR run.log | head -n 20; echo ---; sed -n 120,160p run.log`" + `). When you need more than a couple of files from one remote source, bring the source into the workspace once (a shallow clone or an archive) and search it locally instead of fetching one file per call. For questions about code, use ` + "`code_analyzer`" + ` when it is available.
 
 	**Python quoting:** For multiline Python, use a quoted heredoc (python3 - <<'PY', followed by the script and a closing PY on its own line). Avoid packing multiline logic or nested shell quotes into python3 -c. Pass file paths as arguments instead of interpolating them into source code.
 
@@ -196,9 +199,9 @@ func (m ShellTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCa
 	originalCommand := command
 
 	// Size-limited logging to avoid excessive output in logs
-	cmdLog := command
-	if len(cmdLog) > 100 {
-		cmdLog = cmdLog[:100] + "..."
+	cmdLog := egressfilter.RedactForLogPrefix(command, 100)
+	if len(command) > 100 {
+		cmdLog += "..."
 	}
 	nbRequestContext.Ctx.GetLogger().Info("shell: executing shell command", "command_preview", cmdLog)
 

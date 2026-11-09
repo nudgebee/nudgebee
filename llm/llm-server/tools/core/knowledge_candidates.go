@@ -16,6 +16,9 @@ const MaxKnowledgeCandidateBytes = 32 * 1024
 const KnowledgeExcerptBytes = 4096
 const MaxKnowledgeDocumentBytes = 32 * 1024 * 1024
 
+// MaxKnowledgeReferenceBytes bounds the page text kept on a loaded document's Additional Contexts reference.
+const MaxKnowledgeReferenceBytes = 64 * 1024
+
 // KnowledgeCandidate retains a bounded excerpt and an exact document handle.
 type KnowledgeCandidate struct {
 	Purpose     KnowledgeContentPurpose `json:"purpose,omitempty"`

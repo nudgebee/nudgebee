@@ -29,6 +29,12 @@ type AzureMetricsAgent struct {
 	accountId string
 }
 
+// AzureMetricsAgent runs its azure CLI on the account it is handed, and only on a
+// azure account (core.ProviderBoundAgent).
+func (AzureMetricsAgent) AcceptsExecutionTarget() {}
+
+func (AzureMetricsAgent) TargetProvider() string { return "azure" }
+
 func (a AzureMetricsAgent) GetName() string { return AzureMetricsAgentName }
 
 func (a AzureMetricsAgent) GetNameAliases() []string {
@@ -153,6 +159,12 @@ type AzureLogsAgent struct {
 	accountId string
 }
 
+// AzureLogsAgent runs its azure CLI on the account it is handed, and only on a
+// azure account (core.ProviderBoundAgent).
+func (AzureLogsAgent) AcceptsExecutionTarget() {}
+
+func (AzureLogsAgent) TargetProvider() string { return "azure" }
+
 func (a AzureLogsAgent) GetName() string { return AzureLogsAgentName }
 
 func (a AzureLogsAgent) GetNameAliases() []string { return []string{"Azure Logs Reader", "AzureLogs"} }
@@ -266,6 +278,12 @@ func newAzureTracesAgent(accountId string) core.NBAgent {
 type AzureTracesAgent struct {
 	accountId string
 }
+
+// AzureTracesAgent runs its azure CLI on the account it is handed, and only on a
+// azure account (core.ProviderBoundAgent).
+func (AzureTracesAgent) AcceptsExecutionTarget() {}
+
+func (AzureTracesAgent) TargetProvider() string { return "azure" }
 
 func (a AzureTracesAgent) GetName() string { return AzureTracesAgentName }
 

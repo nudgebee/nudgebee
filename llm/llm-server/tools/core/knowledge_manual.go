@@ -34,7 +34,8 @@ func ResolveManualKnowledge(ctx *security.RequestContext, accountID string, docs
 	var rows []manual
 	db, err := knowledgeDatabase(common.Metastore)
 	if err == nil {
-		err = db.Db.SelectContext(ctx.GetContext(), &rows, `SELECT id, name, CASE WHEN data_format = 'pdf' THEN '' ELSE LEFT(data, 4097) END AS data, COALESCE(data_format, '') AS data_format, COALESCE(note_category, '') AS note_category FROM llm_knowledgebases WHERE account_id = $1 AND id::text = ANY($2::text[]) AND status = 'active' AND enabled AND COALESCE(kb_type, 'manual') = 'manual'`, accountID, pq.Array(ids))
+		scope, scopeArgs := KBAccountScope("", 1, 3, VisibleOrgKnowledgebaseIDs(ctx.GetContext(), accountID))
+		err = db.Db.SelectContext(ctx.GetContext(), &rows, `SELECT id, name, CASE WHEN data_format = 'pdf' THEN '' ELSE LEFT(data, 4097) END AS data, COALESCE(data_format, '') AS data_format, COALESCE(note_category, '') AS note_category FROM llm_knowledgebases WHERE `+scope+` AND id::text = ANY($2::text[]) AND status = 'active' AND enabled AND COALESCE(kb_type, 'manual') = 'manual'`, append([]any{accountID, pq.Array(ids)}, scopeArgs...)...)
 	}
 	if err != nil {
 		ctx.GetLogger().Warn("knowledge: unable to resolve manual identities", "error", err)
@@ -81,7 +82,20 @@ func ResolveManualKnowledge(ctx *security.RequestContext, accountID string, docs
 			}
 			seen[id] = true
 			doc.Document = row.Data
-			doc.Metadata = map[string]any{"collection": collection, "kb_id": id, "kb_name": row.Name, "title": row.Name, "source": "manual", "note_category": row.Category}
+			// Overlay onto the existing metadata rather than replacing it outright:
+			// Overlay, not replace: the Qdrant payload's kind/capabilities must
+			// survive for consumers such as KnowledgeDocumentPurpose.
+			metadata := make(map[string]any, len(doc.Metadata)+6)
+			for k, v := range doc.Metadata {
+				metadata[k] = v
+			}
+			metadata["collection"] = collection
+			metadata["kb_id"] = id
+			metadata["kb_name"] = row.Name
+			metadata["title"] = row.Name
+			metadata["source"] = "manual"
+			metadata["note_category"] = row.Category
+			doc.Metadata = metadata
 		}
 		out = append(out, doc)
 	}

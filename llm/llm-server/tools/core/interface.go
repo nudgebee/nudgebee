@@ -254,6 +254,10 @@ type NBToolResponse struct {
 	// (the planner's investigation-abort counter, tool-call metrics) treat
 	// this distinctly from a genuine tool failure.
 	IsCircuitOpen bool `json:"is_circuit_open,omitempty"`
+	// IsBadInput marks an error caused by the caller's own arguments (a label
+	// that does not exist), not by the tool failing. The planner counts it as
+	// fail_validation so it stays out of tool-failure alerts.
+	IsBadInput bool `json:"is_bad_input,omitempty"`
 }
 
 // NBToolResponseMetadata is the typed seam for tool-execution metadata. New
@@ -274,6 +278,11 @@ type NBToolResponseMetadata struct {
 	// callers can tell the planner how much was dropped.
 	Truncated   bool `json:"truncated,omitempty"`
 	OriginalLen int  `json:"original_len,omitempty"`
+	// SavedOutputNote names the workspace file that holds a cut output in full
+	// (or says why none was saved). It is added to the observation only when
+	// the prompt is built, so Data, the stored response and the UI keep the
+	// tool's own output shape.
+	SavedOutputNote string `json:"saved_output_note,omitempty"`
 	// DBQueries/DBMs and RelayCalls/RelayMs split a tool's wall-clock time by
 	// where it went. ExecutionDurationMs alone can't answer the question that
 	// actually matters for resource lookups — "did this hit the inventory DB or
@@ -341,6 +350,36 @@ const (
 
 type ToolRequestInference interface {
 	InferToolRequestType(ctx *security.RequestContext, toolName, input string) (ToolRequestType, error)
+}
+
+// ReadOnlyTool is embedded by tools that only ever read (observability
+// queries, searches, read-only views, skills, the notebook). It classifies every
+// call as a read, so the approval check does not log it as unchecked (#39880
+// C7). Embed it only if no input can make the tool change anything outside the
+// workspace.
+type ReadOnlyTool struct{}
+
+func (ReadOnlyTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (ToolRequestType, error) {
+	return ToolRequestTypeRead, nil
+}
+
+// ResultCanChangeTool is implemented by tools whose result for the same input
+// can differ between two calls in one turn: a browser page re-read after a
+// click, a job status checked while it runs (#39635). The planner runs every
+// call of such a tool for real instead of reusing an earlier identical call's
+// result. All MCP tools report true: an MCP server gives no reliable signal
+// that a result is stable; custom container tools report true too.
+type ResultCanChangeTool interface {
+	ResultCanChange() bool
+}
+
+// ResultCanChange reports whether tool's result for the same input can differ
+// between calls. False for nil and for tools that do not say.
+func ResultCanChange(tool NBTool) bool {
+	if t, ok := tool.(ResultCanChangeTool); ok {
+		return t.ResultCanChange()
+	}
+	return false
 }
 
 type ToolRequestInferencePrompt interface {

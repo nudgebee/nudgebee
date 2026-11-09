@@ -10,16 +10,6 @@ type CloudExecuteCliCommandRequest struct {
 	Command   string `json:"command" validate:"required"`
 }
 
-type StoreUsageRequest struct {
-	AccountId string     `json:"account_id" validate:"required"`
-	Month     time.Month `json:"month" validate:"required"`
-	Year      int        `json:"year" validate:"required"`
-	// Backfill also ingests the historical billing periods the provider already
-	// has, rather than just the requested month. Set when an account is first
-	// connected.
-	Backfill bool `json:"backfill"`
-}
-
 type QueryMetricsRequest struct {
 	AccountId string       `json:"account_id" validate:"required"`
 	Query     MetricsQuery `json:"query" validate:"required"`
@@ -40,6 +30,34 @@ type MetricsQuery struct {
 	Statistics      []string            `json:"statistics"`
 	MetricNamespace string              `json:"metric_namespace"`
 	Query           string              `json:"query"`
+	// MetricQueries is an exact CloudWatch query set, each entry naming its own
+	// namespace, metric, dimensions and statistic. The collector runs it as given
+	// and ignores the selector fields above.
+	MetricQueries []CloudWatchMetricEntry `json:"metric_queries,omitempty"`
+}
+
+// CloudWatchMetricEntry mirrors one entry of a CloudWatch alarm's
+// configuration.metrics array, as the collector's QueryMetricsRequest accepts it:
+// a raw metric (MetricStat set) or a math expression over other entries' ids.
+type CloudWatchMetricEntry struct {
+	Id         string                     `json:"id"`
+	ReturnData bool                       `json:"returnData"`
+	Label      string                     `json:"label,omitempty"`
+	Expression string                     `json:"expression,omitempty"`
+	MetricStat *CloudWatchMetricEntryStat `json:"metricStat,omitempty"`
+	Period     int                        `json:"period,omitempty"`
+}
+
+type CloudWatchMetricEntryStat struct {
+	Stat   string                   `json:"stat"`
+	Period int                      `json:"period"`
+	Metric CloudWatchMetricEntryRef `json:"metric"`
+}
+
+type CloudWatchMetricEntryRef struct {
+	Namespace  string            `json:"namespace"`
+	Name       string            `json:"name"`
+	Dimensions map[string]string `json:"dimensions"`
 }
 
 type QueryMetricsResponse struct {

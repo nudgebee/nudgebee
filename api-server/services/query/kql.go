@@ -132,6 +132,10 @@ func (m KqlGenerator) generateKqlWhereClause(where QueryWhereClause, tableDef Ta
 			case Gt:
 				parts = append(parts, fmt.Sprintf("%s > %s", col, kqlCast(dialect.QuoteLiteral(val), colType)))
 			case Like, ILike:
+				// Like values carry SQL % wildcards; KQL contains is already a substring match.
+				if str, ok := val.(string); ok {
+					val = strings.Trim(str, "%")
+				}
 				parts = append(parts, fmt.Sprintf("%s contains %s", col, dialect.QuoteLiteral(val)))
 			case In, NotIn:
 				var strValues []string

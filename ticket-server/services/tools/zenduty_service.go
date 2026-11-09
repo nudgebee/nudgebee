@@ -3,6 +3,7 @@ package tools
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"nudgebee/tickets-server/clients"
@@ -38,6 +39,12 @@ func (s *ZenDutyService) AddComment(ctx *gin.Context, config models.TicketConfig
 
 func (s *ZenDutyService) GetComments(ctx *gin.Context, config models.TicketConfigurations, ticketID string) ([]models.Comments, error) {
 	return GetZenDutyIncidentComments(ctx, config, ticketID)
+}
+
+// GetAttachment is unimplemented: ZenDuty incident notes have no attachment field
+// (ZenDutyIncidentNote carries only unique_id/note/creation_date/user).
+func (s *ZenDutyService) GetAttachment(ctx *gin.Context, config models.TicketConfigurations, ticketID, attachmentID string) (string, io.ReadCloser, error) {
+	return "", nil, ticket.ErrNotSupported
 }
 
 // zenDutyIsNotFound reports whether err means the incident does not exist
@@ -78,6 +85,7 @@ func (s *ZenDutyService) Get(ctx *gin.Context, config models.TicketConfiguration
 		Title:       incident.Title,
 		Description: incident.Summary,
 		Status:      clients.MapStatusToString(incident.Status),
+		Severity:    clients.MapUrgencyToString(incident.Urgency),
 		Assignee:    assignee,
 		Assignees:   assignees,
 		Platform:    "zenduty",
@@ -255,6 +263,7 @@ func (s *ZenDutyService) List(ctx *gin.Context, config models.TicketConfiguratio
 			TicketID:  incident.UniqueID,
 			Title:     incident.Title,
 			Status:    clients.MapStatusToString(incident.Status),
+			Severity:  clients.MapUrgencyToString(incident.Urgency),
 			Platform:  "zenduty",
 			URL:       incident.HTMLURL,
 			CreatedAt: &createdAt,
@@ -298,7 +307,7 @@ func CreateZenDutyIncident(ctx *gin.Context, configuration models.TicketConfigur
 
 	ticket.TicketID = createdIncident.UniqueID
 	ticket.Status = "triggered"
-	ticket.Severity = "NA"
+	ticket.Severity = clients.MapUrgencyToString(createdIncident.Urgency)
 	ticket.URL = createdIncident.HTMLURL
 	if ticket.URL == "" {
 		ticket.URL = fmt.Sprintf("https://www.zenduty.com/dashboard/incidents/%s", createdIncident.UniqueID)
@@ -452,8 +461,12 @@ func GetZenDutyIncidentComments(ctx *gin.Context, configuration models.TicketCon
 
 	comments := make([]models.Comments, len(notes))
 	for i, note := range notes {
+		author := note.UserName
+		if author == "" {
+			author = note.User
+		}
 		comments[i] = models.Comments{
-			Author:  note.User,
+			Author:  author,
 			Comment: note.Note,
 			Created: note.CreatedAt,
 			Updated: note.CreatedAt,

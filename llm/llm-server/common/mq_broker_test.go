@@ -29,6 +29,27 @@ func waitStateWithin(t *testing.T, queue string, want MqConsumerState, within ti
 	}, within, 50*time.Millisecond, "queue %s never reached state %s", queue, want)
 }
 
+// waitConsuming waits until the broker itself reports a consumer on queue. MqConsumerRunning is
+// set before the library declares and binds the queue, so a publish right after it can still be
+// dropped as unroutable; a consumer on the queue means the binding is in place.
+func waitConsuming(t *testing.T, queue string, within time.Duration) {
+	t.Helper()
+	conn, err := amqp.Dial(brokerURL())
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+	require.Eventually(t, func() bool {
+		// A passive declare of a queue that does not exist yet closes the channel, so use a
+		// fresh one per attempt.
+		ch, err := conn.Channel()
+		if err != nil {
+			return false
+		}
+		defer func() { _ = ch.Close() }()
+		q, err := ch.QueueDeclarePassive(queue, false, false, false, false, nil)
+		return err == nil && q.Consumers > 0
+	}, within, 50*time.Millisecond, "broker never reported a consumer on queue %s", queue)
+}
+
 func brokerURL() string {
 	return fmt.Sprintf("amqp://%s:%s@%s:%d", config.Config.RabbitMqUsername, config.Config.RabbitMqPassword, config.Config.RabbitMqHost, config.Config.RabbitMqPort)
 }
@@ -44,11 +65,12 @@ func TestBroker_ClosedPublisherChannelInHandler_ConsumerKeepsConsuming(t *testin
 	inExchange, inQueue, outExchange := "nbtest_in_"+suffix, "nbtest_in_"+suffix, "nbtest_out_"+suffix
 
 	handled := make(chan error, 4)
-	require.NoError(t, MqConsume(inExchange, inQueue, inQueue, func(ctx context.Context, _ []byte) error {
+	require.NoError(t, MqConsume(inExchange, inQueue, inQueue, 1, func(ctx context.Context, _ []byte) error {
 		handled <- MqPublishWithContext(ctx, outExchange, "rk", "completion")
 		return nil
 	}))
 	waitStateWithin(t, inQueue, MqConsumerRunning, 15*time.Second)
+	waitConsuming(t, inQueue, 15*time.Second)
 
 	require.NoError(t, MqPublish(outExchange, "rk", "warm"))
 	outKey := outExchange + ":rk"
@@ -112,7 +134,7 @@ func TestBroker_ConsumerAttachesAfterBrokerBecomesReachable(t *testing.T) {
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
 	exchange, queue := "nbtest_late_"+suffix, "nbtest_late_"+suffix
 	got := make(chan struct{}, 1)
-	require.NoError(t, MqConsume(exchange, queue, queue, func(context.Context, []byte) error {
+	require.NoError(t, MqConsume(exchange, queue, queue, 1, func(context.Context, []byte) error {
 		got <- struct{}{}
 		return nil
 	}))
@@ -122,6 +144,7 @@ func TestBroker_ConsumerAttachesAfterBrokerBecomesReachable(t *testing.T) {
 
 	reachable.Store(true)
 	waitStateWithin(t, queue, MqConsumerRunning, 30*time.Second)
+	waitConsuming(t, queue, 30*time.Second)
 	require.NoError(t, MqPublish(exchange, queue, "hello"))
 	select {
 	case <-got:

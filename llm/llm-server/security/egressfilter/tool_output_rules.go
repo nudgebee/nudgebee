@@ -240,7 +240,7 @@ func containsAny(s string, words []string) bool {
 }
 
 // secretNameSuffix matches a setting name that ends in a secret word.
-const secretNameSuffix = `(?:password|passwd|[_-]pwd|secret|token|api[_-]?key|apikey|access[_-]?key|secret[_-]?key|private[_-]?key|client[_-]?secret|credentials?|auth[_-]?key|encryption[_-]?key|signing[_-]?key|erlang[_-]?cookie|license)`
+const secretNameSuffix = `(?:password|passwd|[_-]pwd|secret|token|api[_-]?key|apikey|access[_-]?key|secret[_-]?key|private[_-]?key|client[_-]?secret|credentials?|auth[_-]?key|encryption[_-]?key|signing[_-]?key|passphrase|cookie|license)`
 
 // secretAssignmentRules match `NAME=value`, `NAME: value` and `"name": "value"`
 // where NAME ends in a secret word. Group "v" is the value. The patterns start

@@ -168,7 +168,7 @@ const TroubleshootSummary = ({ tab = 'auto', range }) => {
         extractEventIdsFromTitle: eventScoped,
       }),
       apiAskNudgebee.getConversationTimeAggregates({
-        // No accountId — backend rolls up across every account this
+        // No accountIds — backend rolls up across every account this
         // session can read (matches the legacy widget's RPC RLS).
         startDate,
         endDate,

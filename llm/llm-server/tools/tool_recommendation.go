@@ -341,6 +341,7 @@ func (m RecommendationExecuteTool) ToolPrompt() []string {
 const ToolRecommendationExecuteSql = "recommendation_execute"
 
 type RecommendationExecuteTool struct {
+	core.ReadOnlyTool
 }
 
 func (m RecommendationExecuteTool) Name() string {

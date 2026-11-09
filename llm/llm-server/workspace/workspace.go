@@ -14,6 +14,7 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
+	"nudgebee/llm/security/egressfilter"
 	"os"
 	"regexp"
 	"strconv"
@@ -43,8 +44,6 @@ const workspaceSpecVersion = "workspace-readonly-rootfs-v3"
 
 const workspaceSpecUpgradeBatchSize = 5
 
-const CacheNamespaceWorkspaceTokens = "workspace_tokens"
-
 // ErrWorkspaceRunLost marks a workspace API failure that CONFIRMS — not merely
 // suspects — that whatever the caller previously dispatched against this pod
 // (an async analysis, a followup run) is gone: either the pod is in a terminal
@@ -60,13 +59,6 @@ const ENV_NB_ACCOUNT_ID = "NB_ACCOUNT_ID"
 const ENV_NB_CONVERSATION_ID = "NB_CONVERSATION_ID"
 const ENV_NB_TOOL_CONFIG_NAME = "NB_TOOL_CONFIG_NAME"
 const ENV_NB_WORKSPACE_TOKEN = "NB_WORKSPACE_TOKEN"
-const ENV_NB_RELAY_SERVER_ENDPOINT = "RELAY_SERVER_ENDPOINT"
-
-const workspaceTokenLifetime = 365 * 24 * time.Hour
-
-func init() {
-	common.CacheCreateNamespace(CacheNamespaceWorkspaceTokens, common.CacheNamespaceWithExpiration(workspaceTokenLifetime))
-}
 
 type WorkspaceTokenClaims struct {
 	AccountId       string `json:"account_id"`
@@ -77,6 +69,12 @@ type WorkspaceTokenClaims struct {
 	Grants *security.WorkspaceGrants `json:"grants,omitempty"`
 	jwt.RegisteredClaims
 }
+
+// workspaceTokenLifetime bounds the token of a Docker workspace, which reuses
+// its container's token while it stays valid. llm-server refuses this audience
+// on every route, so the token only proves to the container that a call comes
+// from llm-server.
+const workspaceTokenLifetime = 365 * 24 * time.Hour
 
 func signWorkspaceToken(accountID, tenantID string) (string, error) {
 	claims := WorkspaceTokenClaims{
@@ -452,16 +450,14 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 		return fmt.Errorf("failed to check existing workspace pod: %w", err)
 	}
 
-	tenantId := ""
-	if ctx.GetSecurityContext() != nil {
-		tenantId = ctx.GetSecurityContext().GetTenantId()
-	}
-
-	// Generate JWT workspace token
-	workspaceToken, err := signWorkspaceToken(accountId, tenantId)
+	// The pod's token only proves to the pod that a call comes from
+	// llm-server. It is random, not a JWT: llm-server accepts no credential
+	// from the pod, so a copy read inside the pod grants nothing elsewhere,
+	// and it dies with the pod.
+	workspaceToken, err := newPodToken()
 	if err != nil {
-		logger.Error("workspace: failed to sign workspace token", "error", err)
-		return fmt.Errorf("failed to sign workspace token: %w", err)
+		logger.Error("workspace: failed to generate workspace token", "error", err)
+		return fmt.Errorf("failed to generate workspace token: %w", err)
 	}
 
 	// Command to start server (no arguments usually starts server, based on main.go)
@@ -537,10 +533,6 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 						{
 							Name:  ENV_NB_WORKSPACE_TOKEN,
 							Value: workspaceToken,
-						},
-						{
-							Name:  ENV_NB_RELAY_SERVER_ENDPOINT,
-							Value: config.Config.RelayServerEndpoint,
 						},
 						{
 							// Raises the in-pod command execution deadline (see
@@ -911,11 +903,6 @@ func (w *workspaceManager) TerminateWorkspace(ctx *security.RequestContext, acco
 		if err := validateDockerWorkspaceOwnership(container, accountId); err != nil {
 			return err
 		}
-		if token := dockerEnvValue(container.Config.Env, ENV_NB_WORKSPACE_TOKEN); token != "" {
-			if err := common.CacheSet(CacheNamespaceWorkspaceTokens, token, []byte("revoked"), common.CacheSetWithExpiration(workspaceTokenLifetime)); err != nil {
-				ctx.GetLogger().Warn("workspace: failed to revoke token", "error", err)
-			}
-		}
 		return runtime.delete(ctx.GetContext(), accountId)
 	}
 
@@ -926,20 +913,6 @@ func (w *workspaceManager) TerminateWorkspace(ctx *security.RequestContext, acco
 
 	namespace := config.Config.LlmServerCodeAgentNamespace
 	podName := fmt.Sprintf("workspace-%s", strings.ToLower(accountId))
-
-	// Try to find the pod to get the token for revocation
-	pod, err := clientset.CoreV1().Pods(namespace).Get(ctx.GetContext(), podName, metav1.GetOptions{})
-	if err == nil {
-		for _, env := range pod.Spec.Containers[0].Env {
-			if env.Name == ENV_NB_WORKSPACE_TOKEN {
-				// Revoke token by adding to blacklist cache
-				if err := common.CacheSet(CacheNamespaceWorkspaceTokens, env.Value, []byte("revoked"), common.CacheSetWithExpiration(workspaceTokenLifetime)); err != nil {
-					ctx.GetLogger().Warn("workspace: failed to revoke token", "error", err)
-				}
-				break
-			}
-		}
-	}
 
 	gracePeriod := int64(0)
 	err = clientset.CoreV1().Pods(namespace).Delete(ctx.GetContext(), podName, metav1.DeleteOptions{
@@ -1163,9 +1136,9 @@ func (w *workspaceManager) ExecuteCommand(ctx *security.RequestContext, accountI
 	}
 
 	logger := ctx.GetLogger()
-	cmdLog := command
-	if len(cmdLog) > 100 {
-		cmdLog = cmdLog[:100] + "..."
+	cmdLog := egressfilter.RedactForLogPrefix(command, 100)
+	if len(command) > 100 {
+		cmdLog += "..."
 	}
 	logger.Info("workspace: executing command", "command_preview", cmdLog, "account_id", accountId, "conversation_id", conversationId)
 
@@ -1287,31 +1260,44 @@ func (w *workspaceManager) ExecuteCommand(ctx *security.RequestContext, accountI
 		return "", fmt.Errorf("failed to execute command via proxy: %w", err)
 	}
 
+	return handleProxyResult(resultRaw, logger, podName)
+}
+
+// handleProxyResult decodes & classifies a k8s-proxy /execute payload; split
+// out so tests can feed raw bytes (the proxy RESTClient can't target httptest).
+func handleProxyResult(resultRaw []byte, logger *slog.Logger, podName string) (string, error) {
 	var result executeResponse
 	if err := json.Unmarshal(resultRaw, &result); err != nil {
 		return string(resultRaw), fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	if cmdErr := classifyExecuteResponse(result); cmdErr != nil {
-		// Info for routine failures (LLM typos), Warn only for agent
-		// contract violations. result.Response is intentionally not logged
-		// — it can carry creds / log lines / SELECT rows; tool layer scrubs.
-		logFn := logger.Info
-		msg := "workspace: command reported failure via proxy"
-		if isAgentContractViolation(result) {
-			logFn = logger.Warn
-			msg = "workspace: command reported success but with error via proxy (agent contract violation)"
-		}
-		logFn(msg,
-			"pod_name", podName,
-			"command_status", result.CommandStatus,
-			"command_error", result.Error,
-		)
-		return result.Response, cmdErr
+	resp, err := classifyAndLogResult(result, logger, podName, "proxy")
+	if err == nil {
+		logger.Info("workspace: command execution successful via proxy", "pod_name", podName)
 	}
+	return resp, err
+}
 
-	logger.Info("workspace: command execution successful via proxy", "pod_name", podName)
-	return result.Response, nil
+// classifyAndLogResult is the post-decode step shared by direct IP & proxy.
+// Info for routine failures, Warn only on agent contract violations.
+// result.Response is never logged: may carry creds / SELECT rows; tool layer scrubs.
+func classifyAndLogResult(result executeResponse, logger *slog.Logger, podName string, route string) (string, error) {
+	cmdErr := classifyExecuteResponse(result)
+	if cmdErr == nil {
+		return result.Response, nil
+	}
+	logFn := logger.Info
+	msg := "workspace: command reported failure via " + route
+	if isAgentContractViolation(result) {
+		logFn = logger.Warn
+		msg = "workspace: command reported success but with error via " + route + " (agent contract violation)"
+	}
+	logFn(msg,
+		"pod_name", podName,
+		"command_status", result.CommandStatus,
+		"command_error", result.Error,
+	)
+	return result.Response, cmdErr
 }
 
 func (w *workspaceManager) callWorkspaceAPI(ctx *security.RequestContext, accountId string, method string, endpoint string, queryParams map[string]string, body any) ([]byte, error) {
@@ -1911,24 +1897,7 @@ func (w *workspaceManager) executeDirect(ctx *security.RequestContext, url strin
 		return "", err
 	}
 
-	if cmdErr := classifyExecuteResponse(result); cmdErr != nil {
-		// Info for routine failures, Warn only for contract violations
-		// — see proxy-path counterpart for the full reasoning.
-		logFn := ctx.GetLogger().Info
-		msg := "workspace: command reported failure via direct IP"
-		if isAgentContractViolation(result) {
-			logFn = ctx.GetLogger().Warn
-			msg = "workspace: command reported success but with error via direct IP (agent contract violation)"
-		}
-		logFn(msg,
-			"pod_name", podName,
-			"command_status", result.CommandStatus,
-			"command_error", result.Error,
-		)
-		return result.Response, cmdErr
-	}
-
-	return result.Response, nil
+	return classifyAndLogResult(result, ctx.GetLogger(), podName, "direct IP")
 }
 
 // Helpers

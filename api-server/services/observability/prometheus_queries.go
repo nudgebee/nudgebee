@@ -667,10 +667,21 @@ func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[
 		// meta.Step is that bucket, which a caller sets explicitly; the default
 		// derived from the range would make each point cover a different span than
 		// the one being charted.
+		//
+		// Source is node-exporter's node_network_*_bytes_total, NOT the per-pod
+		// container_network_* counters. These keys carry no pod/namespace filter --
+		// they are always cluster-wide -- so the container form selects every pod's
+		// veth series over the whole picker window, and a month of pod churn pushes
+		// that past vmselect's 300k-series index limit: the query 422s and the tile
+		// shows "No data". node_network_* is node-scoped (same cardinality class as
+		// the CPU/mem cluster tiles, which do render), so it stays well under the
+		// limit. The device filter drops loopback and the virtual/CNI interfaces so
+		// only real NIC traffic is summed -- identical to the node_network packet
+		// queries in the node-detail builder above.
 		case KeyNetworkReceiveBytesIncrease:
-			queries[metricKey] = fmt.Sprintf(`sum(increase(container_network_receive_bytes_total{__CLUSTER__}[%s]))`, stepW)
+			queries[metricKey] = fmt.Sprintf(`sum(increase(node_network_receive_bytes_total{__CLUSTER__ device!~"lo|veth.*|docker.*|flannel.*|cali.*|cbr.*"}[%s]))`, stepW)
 		case KeyNetworkTransmitBytesIncrease:
-			queries[metricKey] = fmt.Sprintf(`sum(increase(container_network_transmit_bytes_total{__CLUSTER__}[%s]))`, stepW)
+			queries[metricKey] = fmt.Sprintf(`sum(increase(node_network_transmit_bytes_total{__CLUSTER__ device!~"lo|veth.*|docker.*|flannel.*|cali.*|cbr.*"}[%s]))`, stepW)
 
 		// cpu_usage_trend / mem_usage_trend feed the utilisation sparkline: fetched as a RANGE
 		// query so the relay evaluates them at each step across the picker window. CPU uses a

@@ -1,4 +1,4 @@
-import { gqlStringify, queryGraphQL } from '@lib/HttpService';
+import { escapeLikePattern, gqlStringify, queryGraphQL } from '@lib/HttpService';
 import getMockData from '@api1/mock';
 import cache from '@lib/cache';
 import observability from '@api1/observability';
@@ -254,6 +254,22 @@ query AccountAgentHealth {
       k8s_version
       version
       status
+    }
+  }
+}
+`;
+
+// A cloud account's agent row is written by cloud-collector, not by an installed
+// agent. connection_status is needed to tell whether the cost sync has reported
+// yet — see listCloudAccountFirstSync.
+export const LIST_CLOUD_ACC_FIRST_SYNC = `
+query CloudAccountFirstSync {
+  agent: agents_list_health(where: __WHERE__) {
+    rows {
+      cloud_account_id
+      status
+      status_message
+      connection_status
     }
   }
 }
@@ -605,7 +621,9 @@ const apiKubernetes1 = {
         filterParams['enabled'] = { _eq: query.status == 'Enabled' };
       }
       if (query?.searchByName) {
-        filterParams['alert'] = { _ilike: '%' + query.searchByName + '%' };
+        // Match the typed name literally — escape %, _ and \ so a search like "%" does
+        // not become the ILIKE wildcard that matches every alert (#40558).
+        filterParams['alert'] = { _ilike: '%' + escapeLikePattern(query.searchByName) + '%' };
       }
       const response = await queryGraphQL(GET_EVENT_RULES.replaceAll('__WHERE__', gqlStringify(filterParams)), 'GetEventRules', {
         limit: limit,
@@ -835,6 +853,25 @@ const apiKubernetes1 = {
       return response;
     } catch (error) {
       return error;
+    }
+  },
+  /**
+   * The cloud-collector's view of freshly created cloud accounts. `provider` is
+   * the agent type it writes: 'AWS', 'Azure' or 'GCP'. Returns [] on any failure
+   * so a poller simply tries again.
+   */
+  async listCloudAccountFirstSync(cloudAccountIds: string[], provider: string) {
+    try {
+      const where = { type: { _eq: provider }, cloud_account_id: { _in: cloudAccountIds } };
+      const queryStr = LIST_CLOUD_ACC_FIRST_SYNC.replace('__WHERE__', gqlStringify(where));
+      const response = await queryGraphQL(queryStr, 'CloudAccountFirstSync');
+      if (response?.data?.errors?.length) {
+        console.error('listCloudAccountFirstSync failed', { cloudAccountIds, errors: response.data.errors });
+      }
+      return response?.data?.data?.agent?.rows || [];
+    } catch (error) {
+      console.error('listCloudAccountFirstSync failed', { cloudAccountIds, error });
+      return [];
     }
   },
   async getAWSCloudFormationURL(query: any) {
@@ -2152,20 +2189,13 @@ const apiKubernetes1 = {
         }
       }
 
-      by_rank: event_groupings_v2(
-        where: __WHERE__, group_by: ["computed_priority"], column_transformations: ${DISTINCT_ISSUES}, columns: ["computed_priority", "event_count"]
-      ) {
-        rows {
-          computed_priority
-          event_count
-        }
-      }
-
       # P0-only on purpose. The briefing reads exactly one number off this block
       # (the P0 trailing count); grouping the whole 30-day band by rank made the
       # engine sort every issue in the band to disk to produce four rows we throw
       # away, and it was the slowest query in the briefing by an order of
-      # magnitude. Keeping group_by means the shape still matches by_rank.
+      # magnitude. It counts issues that had a P0 event in the band, whatever
+      # they are ranked now: a history figure, deliberately not the newest-event
+      # rank the tiles use.
       by_rank_30d: event_groupings_v2(
         where: __WHERE_BAND__, group_by: ["computed_priority"], column_transformations: ${DISTINCT_ISSUES}, columns: ["computed_priority", "event_count"]
       ) {
@@ -2175,12 +2205,19 @@ const apiKubernetes1 = {
         }
       }
 
+      # Issues by the source severity and the rank of their NEWEST event. Triage
+      # re-scores an issue while it keeps firing, so its events carry several
+      # ranks (and severities); grouping by the events' own values counted the
+      # issue once under each, and the ranks added up to more issues than exist.
+      # Grouping by the latest_* aggregates puts every issue in exactly one row.
+      # The rank tiles are the per-rank sums of these same rows (see
+      # useBriefingData), so the tiles and the comparison count the same issues.
       disagreement: event_groupings_v2(
-        where: __WHERE__, group_by: ["priority", "computed_priority"], column_transformations: ${DISTINCT_ISSUES}, columns: ["priority", "computed_priority", "event_count"]
+        where: __WHERE__, group_by: ["latest_priority", "latest_computed_priority"], column_transformations: ${DISTINCT_ISSUES}, columns: ["latest_priority", "latest_computed_priority", "event_count"]
       ) {
         rows {
-          priority
-          computed_priority
+          latest_priority
+          latest_computed_priority
           event_count
         }
       }
@@ -2272,6 +2309,10 @@ const apiKubernetes1 = {
     // different labels. Priority comes from latest_computed_priority (the most
     // recent verdict) and the workload count from count_subject_name.
     //
+    // by_rank and prev_by_rank follow the same rule: an issue is counted under
+    // the rank of its newest event in the window, once, not under every rank its
+    // events carried.
+    //
     // chains is capped: it feeds the "what keeps coming back" list, which only
     // ever shows the worst offenders, and an uncapped per-fingerprint scan on a
     // large tenant is a very different query. The cap is deliberately larger
@@ -2306,19 +2347,19 @@ const apiKubernetes1 = {
       }
 
       by_rank: event_groupings_v2(
-        where: __WHERE__, group_by: ["computed_priority"], column_transformations: ${DISTINCT_ISSUES}, columns: ["computed_priority", "event_count"]
+        where: __WHERE__, group_by: ["latest_computed_priority"], column_transformations: ${DISTINCT_ISSUES}, columns: ["latest_computed_priority", "event_count"]
       ) {
         rows {
-          computed_priority
+          latest_computed_priority
           event_count
         }
       }
 
       prev_by_rank: event_groupings_v2(
-        where: __WHERE_PREV__, group_by: ["computed_priority"], column_transformations: ${DISTINCT_ISSUES}, columns: ["computed_priority", "event_count"]
+        where: __WHERE_PREV__, group_by: ["latest_computed_priority"], column_transformations: ${DISTINCT_ISSUES}, columns: ["latest_computed_priority", "event_count"]
       ) {
         rows {
-          computed_priority
+          latest_computed_priority
           event_count
         }
       }

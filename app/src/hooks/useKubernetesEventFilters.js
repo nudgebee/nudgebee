@@ -3,7 +3,7 @@ import k8sApi from '@api1/kubernetes';
 import apiHome from '@api1/home';
 import { useData } from '@context/DataContext';
 import { NB_STATUS_OPTIONS } from '@api1/triage';
-import { snakeToTitleCase, titleCaseForAggregationKey } from 'src/utils/common';
+import { snakeToTitleCase, titleCaseForAggregationKey, EXCLUDED_TRIAGE_AGGREGATION_KEYS } from 'src/utils/common';
 
 // Helper to transform values into label/value objects
 const toLabelValuePairs = (values, labelTransform = (v) => v) => values.map((v) => ({ label: labelTransform(v), value: v }));
@@ -68,24 +68,35 @@ const useKubernetesEventFilters = ({
   const resourceIdsStr = JSON.stringify(resource_ids);
 
   // Process filter response to reduce nesting in useEffect
-  const processFilterResponse = useCallback((filters) => {
-    const filterHandlers = {
-      namespace: (values) => setNamespaceFilter(values),
-      workload: (values) => setWorkloadFilter(values),
-      subject_type: (values) => setSubjectTypeFilter(toLabelValuePairs(values)),
-      aggregation_key: (values) => setAggregationKeyFilter(toLabelValuePairs(values, titleCaseForAggregationKey)),
-      source: (values) => setSourceFilter(toLabelValuePairs(values, snakeToTitleCase)),
-      nb_status: (values) => setNbStatusFilter(toNbStatusOptions(values)),
-    };
+  const processFilterResponse = useCallback(
+    (filters) => {
+      const filterHandlers = {
+        namespace: (values) => setNamespaceFilter(values),
+        workload: (values) => setWorkloadFilter(values),
+        subject_type: (values) => setSubjectTypeFilter(toLabelValuePairs(values)),
+        aggregation_key: (values) => {
+          // Mirrors the aggregation_key_nin applied to the event list itself
+          // (KubernetesEvents.jsx, KubernetesGroupedEventsTable.tsx) — only on the
+          // troubleshoot page are these keys excluded, so only there should the
+          // filter stop offering them. Elsewhere the rows are still shown, so the
+          // option must stay.
+          const filterValues = isTroubleshootPage ? values.filter((v) => !EXCLUDED_TRIAGE_AGGREGATION_KEYS.includes(v)) : values;
+          setAggregationKeyFilter(toLabelValuePairs(filterValues, titleCaseForAggregationKey));
+        },
+        source: (values) => setSourceFilter(toLabelValuePairs(values, snakeToTitleCase)),
+        nb_status: (values) => setNbStatusFilter(toNbStatusOptions(values)),
+      };
 
-    for (const filter of filters) {
-      const values = (filter.values || []).map((v) => v.value).filter(Boolean);
-      const handler = filterHandlers[filter.filter_type];
-      if (handler) {
-        handler(values);
+      for (const filter of filters) {
+        const values = (filter.values || []).map((v) => v.value).filter(Boolean);
+        const handler = filterHandlers[filter.filter_type];
+        if (handler) {
+          handler(values);
+        }
       }
-    }
-  }, []);
+    },
+    [isTroubleshootPage]
+  );
 
   // --- 1. Account Logic ---
   useEffect(() => {

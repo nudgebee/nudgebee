@@ -540,12 +540,38 @@ func (m MetricsAgentTool) Call(nbRequestContext toolcore.NbToolContext, input to
 		// this the `metrics` sub-agent drops its evidence at the tool boundary.
 		subAgentEvidence := core.BuildSubAgentEvidenceForTool(nbRequestContext.Ctx, MetricsAgentName, resp.AgentStepResponse)
 
+		// Return the backend agent's answer (inline, or the saved-file note above that
+		// carries it), not its newest raw tool step. The raw step dropped the agent's
+		// conclusion and the query it ran, so the caller could not tell whether its
+		// question was answered and asked again: 4–8 metrics calls per question on
+		// Elasticsearch, 1.8 per conversation on Prometheus (#39201).
+		if strings.TrimSpace(resp.Response[0]) != "" {
+			data, status, lastRaw := metricsAnswer(resp, metricData)
+			if lastRaw != "" {
+				name := fmt.Sprintf("metrics_raw_%d.json", time.Now().UnixNano())
+				if err := workspace.NewWorkspaceManager().SaveFile(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, name, lastRaw); err != nil {
+					nbRequestContext.Ctx.GetLogger().Warn("metrics: failed to save the last raw query result", "error", err)
+				} else {
+					references = append(references, toolcore.NBToolResponseReference{Text: "Raw result of the last successful metrics query", Url: name, Type: "file", Description: "Raw result of the last successful metrics query"})
+					data += "\nRaw result of the last successful query: file_ref " + name
+				}
+			}
+			return toolcore.NBToolResponse{
+				Data:              data,
+				Type:              toolcore.NBToolResponseTypeText,
+				Status:            status,
+				References:        append(references, core.FileReferences(resp.References)...),
+				SubAgentEvidence:  subAgentEvidence,
+				AdditionalDetails: additionalDetails,
+			}, nil
+		}
+
 		if _, ok := agent.(core.NBAgentReActPlannerSummaryToolProvider); ok {
 			return toolcore.NBToolResponse{
 				Data:              metricData,
 				Type:              toolcore.NBToolResponseTypeText,
 				Status:            toolcore.NBToolResponseStatusSuccess,
-				References:        references,
+				References:        append(references, core.FileReferences(resp.References)...),
 				SubAgentEvidence:  subAgentEvidence,
 				AdditionalDetails: additionalDetails,
 			}, nil
@@ -562,7 +588,7 @@ func (m MetricsAgentTool) Call(nbRequestContext toolcore.NbToolContext, input to
 				Data:              content,
 				Type:              respType,
 				Status:            status,
-				References:        references,
+				References:        append(references, core.FileReferences(resp.References)...),
 				SubAgentEvidence:  subAgentEvidence,
 				AdditionalDetails: additionalDetails,
 			}, nil
@@ -571,7 +597,7 @@ func (m MetricsAgentTool) Call(nbRequestContext toolcore.NbToolContext, input to
 			Data:              metricData,
 			Type:              toolcore.NBToolResponseTypeText,
 			Status:            toolcore.NBToolResponseStatusSuccess,
-			References:        references,
+			References:        append(references, core.FileReferences(resp.References)...),
 			SubAgentEvidence:  subAgentEvidence,
 			AdditionalDetails: additionalDetails,
 		}, nil
@@ -593,4 +619,93 @@ func newestMetricsStep(steps []core.ToolInvocation) (string, toolcore.NBToolResp
 		return steps[i].Response.Content, toolcore.NBToolResponseStatusSuccess, true
 	}
 	return "", "", false
+}
+
+// metricsDataTools are the tools that run a backend's actual metric queries; the
+// "queries used" note names only these, not field listings, charts or shell reads.
+var metricsDataTools = map[string]bool{
+	tools.ToolESMetricsQuery: true, "prometheus_execute": true, "splunk_metrics_query": true,
+	"datadog_metrics_execute": true, "aws_execute": true, "gcloud_execute": true, "azure_execute": true,
+}
+
+// metricsAnswer builds the metrics tool's result from the backend agent's answer: the
+// answer, any chart the agent drew that the answer does not carry, and the last two
+// data queries it ran (tool, status, arguments, saved-data note). It also returns the
+// newest successful query's raw output when that output was not already saved to a
+// file, so the caller can keep it for follow-up work. The status is Error when the
+// agent failed, or when it ran data queries and none of them succeeded (#36633).
+func metricsAnswer(resp core.NBAgentResponse, answer string) (string, toolcore.NBToolResponseStatus, string) {
+	data := answer
+	agentAnswer := ""
+	if len(resp.Response) > 0 {
+		agentAnswer = resp.Response[0]
+	}
+	if chart := metricsChart(resp.AgentStepResponse, agentAnswer); chart != "" {
+		data += "\n\n" + chart
+	}
+	var used []string
+	lastRaw := ""
+	ran, succeeded, sawOK := false, false, false
+	for i := len(resp.AgentStepResponse) - 1; i >= 0; i-- {
+		st := resp.AgentStepResponse[i]
+		if st.Call.FunctionCall == nil || !metricsDataTools[st.Call.FunctionCall.Name] {
+			continue
+		}
+		ran = true
+		succeeded = succeeded || !st.Failed
+		j := strings.Index(st.Response.Content, "file_ref")
+		// Only the newest successful query's output, even when it is older than the
+		// listed queries: a later success's output would be mislabelled.
+		if !st.Failed && !sawOK {
+			sawOK = true
+			if j < 0 && strings.TrimSpace(st.Response.Content) != "" {
+				lastRaw = st.Response.Content
+			}
+		}
+		if len(used) == 2 {
+			continue
+		}
+		state := "ok"
+		if st.Failed {
+			state = "failed"
+		}
+		line := st.Call.FunctionCall.Name + " (" + state + ") " + truncateRunes(st.Call.FunctionCall.Arguments, 500)
+		if j >= 0 {
+			line += " — " + truncateRunes(st.Response.Content[j:], 120)
+		}
+		used = append(used, line)
+	}
+	if len(used) > 0 {
+		data += "\n\nQueries used (newest first):\n- " + strings.Join(used, "\n- ")
+	}
+	status := toolcore.NBToolResponseStatusSuccess
+	if resp.Status == core.ConversationStatusFailed || (ran && !succeeded) {
+		status = toolcore.NBToolResponseStatusError
+	}
+	return data, status, lastRaw
+}
+
+// metricsChart returns the newest visualizer output when the answer does not already
+// carry it, so a chart the agent drew still reaches the user.
+func metricsChart(steps []core.ToolInvocation, answer string) string {
+	for i := len(steps) - 1; i >= 0; i-- {
+		st := steps[i]
+		if st.Call.FunctionCall == nil || st.Call.FunctionCall.Name != "visualizer" || st.Failed {
+			continue
+		}
+		c := strings.TrimSpace(st.Response.Content)
+		if c == "" || strings.Contains(answer, c) {
+			return ""
+		}
+		return c
+	}
+	return ""
+}
+
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }

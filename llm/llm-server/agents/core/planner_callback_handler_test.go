@@ -371,8 +371,21 @@ func TestSkillReferenceMetadata_NoSnippetLeavesContentUnset(t *testing.T) {
 // The snippet is capped so one long chunk cannot bloat every reference row.
 func TestSkillReferenceMetadata_SnippetTruncated(t *testing.T) {
 	long := strings.Repeat("x", kbRefSnippetMaxChars+500)
-	got := skillReferenceMetadata(AgentReferenceKindKBDocument, "load_skills",
+	got := skillReferenceMetadata(AgentReferenceKindSkill, "load_skills",
 		toolcore.NBToolResponseReference{Text: "big", Url: "kb-3", Snippet: long})
 
 	assert.LessOrEqual(t, len(got["content"].(string)), kbRefSnippetMaxChars)
+}
+
+// A loaded document keeps its page so the panel can show more than the first 700 characters.
+func TestSkillReferenceMetadata_DocumentKeepsPage(t *testing.T) {
+	page := strings.Repeat("x", 9000)
+	got := skillReferenceMetadata(AgentReferenceKindKBDocument, "load_skills",
+		toolcore.NBToolResponseReference{Text: "runbook", Url: "https://kb/1", Snippet: page})
+	assert.Equal(t, page, got["content"])
+
+	huge := strings.Repeat("x", toolcore.MaxKnowledgeReferenceBytes+500)
+	got = skillReferenceMetadata(AgentReferenceKindKBDocument, "load_skills",
+		toolcore.NBToolResponseReference{Text: "runbook", Url: "https://kb/1", Snippet: huge})
+	assert.LessOrEqual(t, len(got["content"].(string)), toolcore.MaxKnowledgeReferenceBytes)
 }

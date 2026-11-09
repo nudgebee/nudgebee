@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"nudgebee/tickets-server/common"
 	"nudgebee/tickets-server/database"
@@ -541,7 +542,7 @@ func lookupStoredProjectKey(ticket models.Ticket, tenant string) string {
 }
 
 func FetchTicketComments(ctx *gin.Context, ticket models.Ticket) (models.CommentsResponse, error) {
-	configuration, err := fetchToolConfiguration(ticket.IntegrationID)
+	configuration, err := fetchToolConfigurationForTenant(ticket.IntegrationID, ticket.Tenant)
 	if err != nil {
 		slog.Error("Error fetching tool configuration:", "integrationID", ticket.IntegrationID, "tenant", ticket.Tenant, "error", slog.AnyValue(err))
 		return GetErrorCommentResponse(fmt.Sprintf("unable to fetch configuration for integration %s", ticket.IntegrationID)), err
@@ -590,6 +591,47 @@ func FetchTicketComments(ctx *gin.Context, ticket models.Ticket) (models.Comment
 		TicketID: ticket.TicketID,
 		Comments: comments,
 	}, nil
+}
+
+// FetchTicketAttachment streams a comment attachment's bytes for the platforms
+// that need an authenticated proxy (ServiceNow, Jira) - the browser can't fetch
+// those URLs directly since doing so requires credentials only ticket-server
+// holds. Caller must close the returned ReadCloser when non-nil.
+func FetchTicketAttachment(ctx *gin.Context, ticket models.Ticket) (contentType string, data io.ReadCloser, err error) {
+	if ticket.AttachmentID == "" {
+		return "", nil, fmt.Errorf("attachment_id is required")
+	}
+
+	configuration, err := fetchToolConfigurationForTenant(ticket.IntegrationID, ticket.Tenant)
+	if err != nil {
+		return "", nil, fmt.Errorf("unable to fetch configuration for integration %s: %w", ticket.IntegrationID, err)
+	}
+
+	// Mirrors the Projects[0] override in FetchTicketComments above - an integration
+	// can have multiple repos, and the attachment isn't necessarily in the first one.
+	tool := strings.ToLower(configuration.Tool)
+	if ticket.ProjectKey == "" && (tool == "github" || tool == "gitlab") {
+		ticket.ProjectKey = lookupStoredProjectKey(ticket, configuration.Tenant)
+	}
+	if ticket.ProjectKey != "" {
+		projects := make([]models.Project, len(configuration.Projects))
+		copy(projects, configuration.Projects)
+		configuration.Projects = projects
+		if len(configuration.Projects) > 0 {
+			configuration.Projects[0].Key = ticket.ProjectKey
+		} else {
+			configuration.Projects = []models.Project{{Key: ticket.ProjectKey}}
+		}
+	} else if tool == "github" || tool == "gitlab" {
+		return "", nil, fmt.Errorf("project_key (owner/repo) is required for %s — set it in the request or configure it in the integration", configuration.Tool)
+	}
+
+	manager, ok := ticketmgr.GetTicketManager(configuration.Tool)
+	if !ok {
+		return "", nil, fmt.Errorf("unsupported platform %s", configuration.Tool)
+	}
+
+	return manager.GetAttachment(ctx, configuration, ticket.TicketID, ticket.AttachmentID)
 }
 
 func AddCommentToTicket(ctx *gin.Context, ticket models.Ticket) (models.CommentsResponse, error) {

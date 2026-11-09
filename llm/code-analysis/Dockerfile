@@ -68,6 +68,15 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 # Final stage
 FROM ghcr.io/nudgebee/alpine:3.23
+ARG IMAGE_VERSION=0.0.0
+ARG IMAGE_RELEASE=1
+LABEL name="nudgebee-code-analysis" \
+      maintainer="nudgebee" \
+      vendor="nudgebee" \
+      version="${IMAGE_VERSION}" \
+      release="${IMAGE_RELEASE}" \
+      summary="Nudgebee code analysis agent" \
+      description="Code analysis agent used by Nudgebee to investigate and fix issues in source repositories."
 
 
 WORKDIR /app
@@ -195,10 +204,38 @@ RUN mkdir -p /opt/azure-cli-extensions && \
 # Go is copied from the builder stage instead of `apk add go` because Alpine
 # ships an older Go than the builder, which fails on target repos whose go.mod
 # requires a newer toolchain (e.g. nudgebee/api-server/services requires >= 1.26.1).
+#
+# gcc + musl-dev: `go test -race` needs cgo and a C compiler; without them a
+# race-enabled test target stops at "-race requires cgo". cgo stays off by
+# default (see go.env below), so a race run opts in with CGO_ENABLED=1.
+# yamllint: lets the agent confirm that a YAML file it edited (Helm values, plain
+# manifests) still parses. The stock config also reports style findings and exits
+# non-zero on a line over 80 characters, which reads as "I broke this" on a file
+# that was already like that. /usr/local/bin/yamllint therefore defaults to a
+# config that reports only syntax errors and duplicate keys. It is a wrapper
+# rather than an ENV so the default also holds on the /execute path, which builds
+# its own environment. A repository's own .yamllint, or a YAMLLINT_CONFIG_FILE set
+# by the caller, still wins. Helm chart templates are Go templates, not YAML, and
+# report a syntax error either way.
+# The last three lines fail the build if that default stops working: a valid
+# document must pass, a duplicate key and a broken indent must not.
 RUN apk add --no-cache \
     make \
     nodejs \
-    npm
+    npm \
+    gcc \
+    musl-dev \
+    yamllint \
+    && mkdir -p /etc/yamllint \
+    && printf 'rules:\n  key-duplicates: enable\n' > /etc/yamllint/syntax-only.yaml \
+    && printf '%s\n' \
+        '#!/bin/sh' \
+        'export YAMLLINT_CONFIG_FILE="${YAMLLINT_CONFIG_FILE:-/etc/yamllint/syntax-only.yaml}"' \
+        'exec /usr/bin/yamllint "$@"' > /usr/local/bin/yamllint \
+    && chmod 755 /usr/local/bin/yamllint \
+    && printf 'a: 1\nb: [x, y]\n' | yamllint - \
+    && ! printf 'a: 1\na: 2\n' | yamllint - > /dev/null \
+    && ! printf 'a: 1\n b: 2\n' | yamllint - > /dev/null
 
 # Install common linters and package managers
 # Python tools are installed in a venv to avoid polluting system site-packages
@@ -263,6 +300,13 @@ RUN npm install --no-save --prefix /tmp/undicifix "undici@${UNDICI_VERSION}" \
 # against modules that pin go >= 1.26.
 COPY --from=builder /usr/local/go /usr/local/go
 ENV PATH=/usr/local/go/bin:$PATH
+# gcc is installed above for race tests, and a C compiler on PATH flips Go's
+# default to CGO_ENABLED=1 for every build. Keep cgo off by default so the agent's
+# builds and the automatic build check compile exactly as they did without gcc.
+# Set in GOROOT/go.env rather than ENV so it also applies on the /execute path,
+# which builds its own environment. CGO_ENABLED=1 on a command still overrides it.
+RUN echo 'CGO_ENABLED=0' >> /usr/local/go/go.env \
+    && test "$(go env CGO_ENABLED)" = "0"
 COPY --from=builder /usr/local/bin/golangci-lint /usr/local/bin/golangci-lint
 COPY --from=glab-builder /usr/local/bin/glab /usr/local/bin/glab
 COPY --from=glab-builder /usr/local/bin/gh /usr/bin/gh
