@@ -106,32 +106,38 @@ func validateGitDetails(gitDetails gitDetailFromDeployment) error {
 	return nil
 }
 
-func checkoutCodeRepo(ctx AccountAdapterContext, request ApplyRecommendationRequest, gitDetails gitDetailFromDeployment) (string, error) {
+func checkoutCodeRepo(ctx AccountAdapterContext, request ApplyRecommendationRequest, gitDetails gitDetailFromDeployment) (dir string, err error) {
 	if err := validateGitDetails(gitDetails); err != nil {
 		return "", err
 	}
 
-	dir, err := os.MkdirTemp("", "checkout")
+	dir, err = os.MkdirTemp("", "checkout")
 	if err != nil {
 		ctx.GetLogger().Error("Error creating temp dir", "error", err)
 		return "", err
 	}
-	var gitUrl string
-	if gitDetails.Token == "" {
-		gitUrl = fmt.Sprintf("https://github.com/%s/%s.git", gitDetails.Org, gitDetails.Repo)
-	} else {
-		gitUrl = fmt.Sprintf("https://oauth2:%s@github.com/%s/%s.git", gitDetails.Token, gitDetails.Org, gitDetails.Repo)
-	}
+	// The caller only owns dir on success; a failed checkout removes it. A
+	// failing return has already set dir to "", so remove the saved path.
+	tmpDir := dir
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(tmpDir)
+		}
+	}()
+	// The token goes in the environment, not the URL: see gitHTTPAuthEnv.
+	gitUrl := fmt.Sprintf("https://github.com/%s/%s.git", gitDetails.Org, gitDetails.Repo)
 	cmd := exec.Command("git", "clone", "--depth", "1", "-b", gitDetails.BaseBranch, gitUrl, dir)
+	cmd.Env = githubGitEnv(gitDetails.Token)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		ctx.GetLogger().Error("Error cloning repo", "error", err, "output", redactGitCredentials(string(output)))
+		ctx.GetLogger().Error("Error cloning repo", "error", err, "output", redactGitOutput(string(output), gitDetails.Token))
 		return "", err
 	}
 	if gitDetails.Sha1 != "" {
 		cmdFetch := exec.Command("git", "-C", dir, "fetch", "--depth=1", "origin", gitDetails.Sha1)
+		cmdFetch.Env = githubGitEnv(gitDetails.Token)
 		if output, err := cmdFetch.CombinedOutput(); err != nil {
-			return "", fmt.Errorf("fetch specific commit failed: %s, %v", redactGitCredentials(string(output)), err)
+			return "", fmt.Errorf("fetch specific commit failed: %s, %v", redactGitOutput(string(output), gitDetails.Token), err)
 		}
 		cmdCheckout := exec.Command("git", "-C", dir, "checkout", gitDetails.Sha1)
 		if output, err := cmdCheckout.CombinedOutput(); err != nil {
@@ -522,9 +528,10 @@ func commitCode(ctx AccountAdapterContext, dir string, request ApplyRecommendati
 		}
 		cmd1 := exec.Command("git", "fetch")
 		cmd1.Dir = dir
+		cmd1.Env = githubGitEnv(gitDetails.Token)
 		output1, err1 := cmd1.Output()
 		if err1 != nil {
-			ctx.GetLogger().Error("Error fetching remote branch", "error", err1, "output", redactGitCredentials(string(output1)), "branch", branchName)
+			ctx.GetLogger().Error("Error fetching remote branch", "error", err1, "output", redactGitOutput(string(output1), gitDetails.Token), "branch", branchName)
 			return "", err1
 		}
 		cmd2 := exec.Command("git", "checkout", "-b", branchName, "origin/"+branchName)
@@ -662,10 +669,12 @@ func raisePrForCodeRepo(ctx AccountAdapterContext, dir string, branchName string
 	// captured, not just the exit code — a plain .Output() drops it.
 	cmd := exec.Command("git", "push", "origin", branchName, "-f")
 	cmd.Dir = dir
+	cmd.Env = githubGitEnv(gitDetail.Token)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		ctx.GetLogger().Error("Error pushing branch", "error", err, "output", redactGitCredentials(string(output)))
-		return "", fmt.Errorf("git push failed: %s", strings.TrimSpace(redactGitCredentials(string(output))))
+		redacted := redactGitOutput(string(output), gitDetail.Token)
+		ctx.GetLogger().Error("Error pushing branch", "error", err, "output", redacted)
+		return "", fmt.Errorf("git push failed: %s", strings.TrimSpace(redacted))
 	}
 
 	// raise PR

@@ -171,11 +171,11 @@ func (gc *GitClient) CloneRepository(ctx context.Context, repoURL string, creds 
 		if output, err := cmd.CombinedOutput(); err != nil {
 			gc.logger.Log(common.EventStepFailure, "Failed to set authenticated remote URL", map[string]any{
 				"error":  err.Error(),
-				"output": string(output),
+				"output": RedactURLCredentials(string(output)),
 			})
 			return "", fmt.Errorf("failed to set authenticated remote URL: %w", err)
 		}
-		gc.logger.Log(common.EventStepComplete, "Configured HTTPS remote with token for push", map[string]any{"remote_url": authRepoURL})
+		gc.logger.Log(common.EventStepComplete, "Configured HTTPS remote with token for push", map[string]any{"remote_url": StripURLUserinfo(authRepoURL)})
 
 	}
 	return repoDir, nil
@@ -1059,7 +1059,7 @@ func (gc *GitClient) CloneOrReuseRepositoryAtCommit(ctx context.Context, repoURL
 		gc.logger.Log(common.EventStepStart, "Reusing existing clone, ensuring branch is fetched", map[string]any{"base_dir": baseDir, "branch": branch})
 		setURL := exec.CommandContext(ctx, "git", "-C", baseDir, "remote", "set-url", "origin", authURL)
 		if out, err := setURL.CombinedOutput(); err != nil {
-			gc.logger.Log(common.EventStepFailure, "Failed to update remote URL", map[string]any{"error": err.Error(), "output": string(out)})
+			gc.logger.Log(common.EventStepFailure, "Failed to update remote URL", map[string]any{"error": err.Error(), "output": RedactURLCredentials(string(out))})
 		}
 		gc.clearStoredRefspecs(baseDir)
 		if branch != "" {
@@ -1102,7 +1102,7 @@ func (gc *GitClient) CloneOrReuseRepositoryAtCommit(ctx context.Context, repoURL
 		cmd := exec.CommandContext(cloneCtx, "git", cloneArgs...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			_ = os.RemoveAll(baseDir)
-			return fmt.Errorf("bare clone failed: %s: %w", string(out), err)
+			return fmt.Errorf("bare clone failed: %s: %w", RedactURLCredentials(string(out)), err)
 		}
 		gc.logger.Log(common.EventStepComplete, "Bare clone completed", map[string]any{"base_dir": baseDir})
 
