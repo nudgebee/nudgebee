@@ -166,9 +166,13 @@ func (s *AWSSource) ensureRouteTableNodes(reqCtx *security.RequestContext, nodes
 			}
 		}
 
-		// Build labels map from tags
+		// Build labels map from tags, minus AWS-generated identifier keys
+		// (see isAWSUniqueIDTagKey).
 		labels := make(map[string]interface{})
 		for _, tag := range rt.Tags {
+			if isAWSUniqueIDTagKey(tag.Key) {
+				continue
+			}
 			labels[tag.Key] = tag.Value
 		}
 
