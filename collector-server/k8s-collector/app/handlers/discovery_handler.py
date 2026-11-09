@@ -17,6 +17,7 @@ from handlers.alert_rules_handler import handle_alert_rules
 from handlers.kg_update import deletion_scope, record_deleted_nodes, record_deleted_workloads
 from psycopg2 import extras
 from utils.datetime_utils import utc_from_epoch_millis
+from utils.k8s_config_redaction import redact_k8s_config
 
 # Resource version condition: update only if incoming version >= existing version.
 # Used as a WHERE clause on DO UPDATE so the condition is evaluated once per row,
@@ -536,7 +537,7 @@ def process_service_discovery(
         "external_resource_id": _id,
     }
     meta = {
-        "config": k8s_data["config"],
+        "config": redact_k8s_config(k8s_data["config"]),
         "controllerKind": k8s_data["type"],
         "namespace": k8s_data["namespace"],
         "status": k8s_data.get("status", "UNKNOWN"),

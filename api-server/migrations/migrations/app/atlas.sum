@@ -1,4 +1,4 @@
-h1:XeoOhQP50AwxjRhzzM0uLjjSt9q31iTPziZgEPCUjh4=
+h1:Xzvrp1eoReQmdYJJvXEITwS6aUxJlj5KQdUiqSij6YM=
 1665080411172_V0.up.sql h1:u69osJjPb3FctiXmgk+fpiFMTDQTnGpqDRH45K0pUdc=
 1665211266851_V1.up.sql h1:AGUExFXk9BDw9lpD7Cu1Bu5wn3mQA/Ul+5/jny32xYc=
 1665218608952_V2.up.sql h1:dWrFXuJESbVByq7iXDF7tFbOc1bgbwgCc0Fd8QETHwo=
@@ -1231,3 +1231,4 @@ h1:XeoOhQP50AwxjRhzzM0uLjjSt9q31iTPziZgEPCUjh4=
 1794076650908_V1107_forbid_tenant_scoped_super_admin.up.sql h1:ELk23Ao3Md0Jd1x0bT0bfGWvsOx9igJaPWzeOZEbfZk=
 1794112941794_V1108_kg_strip_secret_material_from_annotations.up.sql h1:YClQk3ymMoSNUIAJv2zPYayYH2w7YlFaFnHg55fXJC4=
 1794124661521_V1110_purge_onboarding_error_config_secrets.up.sql h1:ijKEz86TMoezyfuGimp1daO+FyMRNIeqZekLVrQYnuQ=
+1794128560545_V1111_k8s_meta_strip_secret_material.up.sql h1:yIzKksqsgc7V1NCt1s8j2gwZ+Ro7A5GSv46btIWmb4c=
