@@ -2594,6 +2594,15 @@ func CleanUpAgentTask(ctx *security.RequestContext) error {
 	return nil
 }
 
+func canWriteAccountAttrs(sc *security.SecurityContext, accountId string) bool {
+	if accountId == "" {
+		return false
+	}
+	// HasAccountAccess also accepts namespace roles; this action is account-admin/tenant-admin only.
+	return sc.HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) &&
+		(sc.IsSuperAdmin() || sc.IsTenantAdmin() || sc.HasScopedRole(security.AUTH_ACCOUNT_ADMIN_ROLE, accountId))
+}
+
 // UpsertAccountAttrs inserts or updates cloud account attributes, scoped to tenant
 func UpsertAccountAttrs(context *security.RequestContext, request AccountAttrUpsertRequest) (AccountAttrUpsertResponse, error) {
 	err := common.ValidateStruct(request)
@@ -2601,16 +2610,20 @@ func UpsertAccountAttrs(context *security.RequestContext, request AccountAttrUps
 		return AccountAttrUpsertResponse{}, err
 	}
 
-	tenantId := context.GetSecurityContext().GetTenantId()
+	sc := context.GetSecurityContext()
+	tenantId := sc.GetTenantId()
 	if tenantId == "" {
 		return AccountAttrUpsertResponse{}, fmt.Errorf("unauthorized: missing tenant")
 	}
 
 	for _, attr := range request.Objects {
-		if err := validateKnowledgePolicyAttribute(context.GetSecurityContext(), attr); err != nil {
+		if !canWriteAccountAttrs(sc, attr.CloudAccountId) {
+			return AccountAttrUpsertResponse{}, common.ErrorUnauthorized("Not Allowed")
+		}
+		if err := validateKnowledgePolicyAttribute(sc, attr); err != nil {
 			return AccountAttrUpsertResponse{}, err
 		}
-		if err := validateEventAnalysisAttribute(context.GetSecurityContext(), attr); err != nil {
+		if err := validateEventAnalysisAttribute(sc, attr); err != nil {
 			return AccountAttrUpsertResponse{}, err
 		}
 	}
