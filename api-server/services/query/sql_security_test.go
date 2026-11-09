@@ -2,6 +2,7 @@ package query
 
 import (
 	"nudgebee/services/internal/database"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -300,4 +301,89 @@ func TestGenerateWhereClause_NilDialect(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "dialect not found")
 	assert.Empty(t, sql)
+}
+
+func TestDateUnit_RejectsUnsafeInput(t *testing.T) {
+	payloads := []string{
+		"day', created_at), (select count(*)::text from llm_conversation_tool_calls where parameters::text like '%akia%'), date_trunc('day",
+		"day') || (select credential from user_auths limit 1) || ('",
+		"DAY, created_at) UNION SELECT 1 --",
+		"day'; select pg_sleep(5); --",
+	}
+	dialectsUnderTest := map[string]sqlDialect{
+		"postgres":   &postgresDialect{},
+		"clickhouse": &clickhouseDialect{},
+		"bigquery":   &bigQueryDialect{},
+	}
+	for name, d := range dialectsUnderTest {
+		for _, p := range payloads {
+			out := d.FuncDateTruncate(p, "created_at")
+			assert.NotContains(t, out, "select", "%s rendered payload: %s", name, out)
+			assert.NotContains(t, out, "SELECT", "%s rendered payload: %s", name, out)
+			assert.NotContains(t, out, ";", "%s rendered payload: %s", name, out)
+			assert.Contains(t, strings.ToLower(out), "day", "%s should fall back to day: %s", name, out)
+		}
+	}
+
+	assert.Equal(t, "DATE_TRUNC('month', created_at)", (&postgresDialect{}).FuncDateTruncate("Month", "created_at"))
+	assert.Equal(t, "DATE_TRUNC('hour', created_at)", (&clickhouseDialect{}).FuncDateTruncate("hour", "created_at"))
+	assert.Equal(t, "DATE_TRUNC(created_at, WEEK)", (&bigQueryDialect{}).FuncDateTruncate("week", "created_at"))
+}
+
+func TestGenerateSelectColumnsClause_RejectsInjectedDateUnit(t *testing.T) {
+	tableDef := TableDefinition{
+		Type:   Normal,
+		Source: database.Metastore,
+		Name:   "knowledge_base",
+		Columns: map[string]ColumnDefinition{
+			"created_at": {Type: ColumnDefinitionTypeDatetime},
+		},
+	}
+	bad := QueryRequest{Table: "knowledge_base", Columns: []QueryColumn{{
+		Name: "created_at", Expr: "date_unit",
+		Args: []string{"day', created_at), (select count(*)::text from user_auths), date_trunc('day"},
+	}}}
+	_, err := generateSelectColumnsClause(bad, tableDef, "", nil)
+	assert.Error(t, err)
+
+	empty := QueryRequest{Table: "knowledge_base", Columns: []QueryColumn{{Name: "created_at", Expr: "date_unit"}}}
+	_, err = generateSelectColumnsClause(empty, tableDef, "", nil)
+	assert.Error(t, err)
+
+	for _, unit := range []string{"second", "minute", "hour", "day", "week", "month", "quarter", "year", "DAY"} {
+		ok := QueryRequest{Table: "knowledge_base", Columns: []QueryColumn{{Name: "created_at", Expr: "date_unit", Args: []string{unit}}}}
+		sql, err := generateSelectColumnsClause(ok, tableDef, "", nil)
+		assert.NoError(t, err, unit)
+		assert.Equal(t, "DATE_TRUNC('"+strings.ToLower(unit)+"', created_at) AS created_at", sql)
+	}
+}
+
+func TestGenerateWhereClause_RejectsNonScalarValues(t *testing.T) {
+	payload := []any{"0] OR 1=1 OR [0"}
+	for _, src := range []database.DatabaseManagerType{database.Metastore, database.AgentWarehouse, database.AgentWarehouseBigQuery} {
+		tableDef := TableDefinition{Type: Normal, Source: src, Name: "t", Columns: map[string]ColumnDefinition{
+			"count": {Type: ColumnDefinitionTypeInt},
+			"score": {Type: ColumnDefinitionTypeFloat},
+		}}
+		for _, tc := range []struct {
+			col string
+			op  BinaryWhereClauseType
+			val any
+		}{
+			{"count", "_eq", payload},
+			{"count", "_gt", payload},
+			{"score", "_lte", map[string]any{"x": "1 OR 1=1"}},
+			{"count", "_in", []any{payload}},
+		} {
+			w := QueryWhereClause{Binary: map[string]map[BinaryWhereClauseType]any{tc.col: {tc.op: tc.val}}}
+			sql, err := generateWhereClause(w, tableDef)
+			assert.Error(t, err, "%v %s %s produced %q", src, tc.col, tc.op, sql)
+			assert.NotContains(t, sql, "1=1")
+		}
+
+		w := QueryWhereClause{Binary: map[string]map[BinaryWhereClauseType]any{"count": {"_in": []any{float64(1), float64(2)}}}}
+		sql, err := generateWhereClause(w, tableDef)
+		assert.NoError(t, err)
+		assert.Equal(t, "(count IN (1,2))", sql)
+	}
 }
