@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"nudgebee/services/common"
 	"nudgebee/services/config"
@@ -129,6 +130,9 @@ func TestBackfillSecretEncryptionStopsAtShutdown(t *testing.T) {
 	// must not be attempted (an unexpected Exec would fail the mock).
 	pkgMock.ExpectExec(regexp.QuoteMeta(`UPDATE integration_config_values SET value = $1, is_encrypted = true`)).
 		WithArgs(cancelOnMatch{decryptsTo{"plain-1"}, cancel}, "s1", "plain-1").
+		// The delay makes sqlmock wait on the context, so the cancel always wins
+		// over the result instead of racing it.
+		WillDelayFor(time.Minute).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	got, err := BackfillSecretEncryption(ctx, slog.New(slog.DiscardHandler))
