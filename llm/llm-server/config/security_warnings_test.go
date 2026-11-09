@@ -1,87 +1,41 @@
 package config
 
 import (
-	"bytes"
-	"log/slog"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
-func captureLogs(fn func()) string {
-	var buf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
-	defer slog.SetDefault(prev)
-	fn()
-	return buf.String()
-}
-
-func TestLogSecurityWarnings(t *testing.T) {
+// llm-server must not start on a missing or publicly known JWT or relay
+// secret outside local mode.
+func TestCheckSecuritySecrets(t *testing.T) {
 	cases := []struct {
-		name         string
-		jwt          string
-		relay        string
-		mode         string
-		wantWarns    int
-		wantContains []string
+		name, jwt, relay, mode string
+		wantErr                []string
 	}{
-		{
-			name: "jwt default in local mode", jwt: insecureJWTSecret, relay: "strong", mode: "local",
-			wantWarns:    1,
-			wantContains: []string{"llm_server_jwt_secret is set to the insecure default"},
-		},
-		{
-			name: "jwt default outside local mode", jwt: insecureJWTSecret, relay: "strong", mode: "",
-			wantWarns:    1,
-			wantContains: []string{"llm_server_jwt_secret is set to the publicly known default"},
-		},
-		{
-			name: "relay default outside local mode", jwt: "strong", relay: insecureRelaySecret, mode: "",
-			wantWarns:    1,
-			wantContains: []string{"relay_server_secret_key is set to the publicly known default"},
-		},
-		{
-			name: "relay default in local mode", jwt: "strong", relay: insecureRelaySecret, mode: "local",
-			wantWarns:    1,
-			wantContains: []string{"relay_server_secret_key is set to the insecure default"},
-		},
-		{
-			name: "both defaults outside local mode", jwt: insecureJWTSecret, relay: insecureRelaySecret, mode: "",
-			wantWarns: 2,
-			wantContains: []string{
-				"llm_server_jwt_secret is set to the publicly known default",
-				"relay_server_secret_key is set to the publicly known default",
-			},
-		},
-		{
-			name: "non-default values", jwt: "strong-jwt", relay: "strong-relay", mode: "",
-			wantWarns: 0,
-		},
+		{name: "jwt default", jwt: insecureJWTSecret, relay: "strong", wantErr: []string{"LLM_SERVER_JWT_SECRET"}},
+		{name: "jwt empty", jwt: "", relay: "strong", wantErr: []string{"LLM_SERVER_JWT_SECRET"}},
+		{name: "relay default", jwt: "strong", relay: insecureRelaySecret, wantErr: []string{"RELAY_SERVER_SECRET_KEY"}},
+		{name: "relay empty", jwt: "strong", relay: "", wantErr: []string{"RELAY_SERVER_SECRET_KEY"}},
+		{name: "both default", jwt: insecureJWTSecret, relay: insecureRelaySecret, wantErr: []string{"LLM_SERVER_JWT_SECRET", "RELAY_SERVER_SECRET_KEY"}},
+		{name: "both default in local mode", jwt: insecureJWTSecret, relay: insecureRelaySecret, mode: "local"},
+		{name: "strong values", jwt: "strong-jwt", relay: "strong-relay"},
 	}
-
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			prevJwt := Config.LlmServerJwtSecret
-			prevRelay := Config.RelayServerSecretKey
-			prevMode := Config.LlmServerSecurityMode
-			defer func() {
-				Config.LlmServerJwtSecret = prevJwt
-				Config.RelayServerSecretKey = prevRelay
-				Config.LlmServerSecurityMode = prevMode
-			}()
-			Config.LlmServerJwtSecret = tc.jwt
-			Config.RelayServerSecretKey = tc.relay
-			Config.LlmServerSecurityMode = tc.mode
+			prevJwt, prevRelay, prevMode := Config.LlmServerJwtSecret, Config.RelayServerSecretKey, Config.LlmServerSecurityMode
+			t.Cleanup(func() {
+				Config.LlmServerJwtSecret, Config.RelayServerSecretKey, Config.LlmServerSecurityMode = prevJwt, prevRelay, prevMode
+			})
+			Config.LlmServerJwtSecret, Config.RelayServerSecretKey, Config.LlmServerSecurityMode = tc.jwt, tc.relay, tc.mode
 
-			out := captureLogs(LogSecurityWarnings)
-
-			if got := strings.Count(out, "level=WARN"); got != tc.wantWarns {
-				t.Errorf("expected %d warnings, got %d; logs: %s", tc.wantWarns, got, out)
+			err := CheckSecuritySecrets()
+			if len(tc.wantErr) == 0 {
+				assert.NoError(t, err)
+				return
 			}
-			for _, want := range tc.wantContains {
-				if !strings.Contains(out, want) {
-					t.Errorf("expected logs to contain %q; logs: %s", want, out)
-				}
+			for _, want := range tc.wantErr {
+				assert.ErrorContains(t, err, want)
 			}
 		})
 	}

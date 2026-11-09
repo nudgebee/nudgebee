@@ -92,7 +92,9 @@ func authHandlerMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// Workspace endpoints handle their own internal authentication (JWT or RPC)
+		// Workspace endpoints authenticate themselves: an RPC action must carry
+		// the service token (checked in extractWorkspacePayloadAndContext, which
+		// fails closed when none is set), anything else a workspace execution JWT.
 		if strings.HasPrefix(c.Request.URL.Path, "/api/v1/workspace/") {
 			c.Set(CTX_IS_PUBLIC, true)
 			c.Next()
@@ -107,7 +109,7 @@ func authHandlerMiddleware() gin.HandlerFunc {
 		// chose to enforce it.
 		if config.Config.LlmServerToken != "" {
 			authHeader := c.Request.Header.Get(config.Config.LlmServerTokenHeader)
-			if authHeader != config.Config.LlmServerToken {
+			if !api.ServiceTokenMatches(authHeader) {
 				logger.Error("main: invalid service token", "path", c.Request.URL.Path, "method", c.Request.Method)
 				c.AbortWithStatusJSON(401, gin.H{"message": "invalid " + config.Config.LlmServerTokenHeader})
 				return
@@ -198,7 +200,11 @@ func main() {
 	}()
 
 	slog.SetDefault(logger)
-	config.LogSecurityWarnings()
+	if err := config.CheckSecuritySecrets(); err != nil {
+		logger.Error("main: refusing to start", "error", err)
+		fmt.Fprintf(os.Stderr, "BOOT: refusing to start: %v\n", err)
+		os.Exit(1)
+	}
 	tp, mp, err := initOtel()
 	if err != nil {
 		slog.Error(err.Error())

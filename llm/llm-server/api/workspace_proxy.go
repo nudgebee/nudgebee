@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -103,34 +105,44 @@ func handleWorkspaceFiles(c *gin.Context, tracer trace.Tracer, meter metric.Mete
 	}
 }
 
+// workspaceServiceToken reports whether the request carries the service token
+// (LLM_SERVER_TOKEN) and whether it matches. The middleware lets every
+// /api/v1/workspace/ request through and workspace pods can reach this port,
+// so this is the only service-token check these routes get. With no token
+// configured nothing matches: fail closed.
+func workspaceServiceToken(c *gin.Context) (presented, valid bool) {
+	header := c.Request.Header.Get(config.Config.LlmServerTokenHeader)
+	if header == "" {
+		return false, false
+	}
+	return true, ServiceTokenMatches(header)
+}
+
+// ServiceTokenMatches compares a presented token to LLM_SERVER_TOKEN in
+// constant time. SHA-256 digests keep both sides 32 bytes so the compare
+// can't reveal the token's length. False when no token is configured.
+func ServiceTokenMatches(presented string) bool {
+	token := config.Config.LlmServerToken
+	if token == "" {
+		return false
+	}
+	got, want := sha256.Sum256([]byte(presented)), sha256.Sum256([]byte(token))
+	return subtle.ConstantTimeCompare(got[:], want[:]) == 1
+}
+
+// extractWorkspacePayloadAndContext authenticates a workspace request:
+//   - An RPC action (body has action.name, sent by the app gateway) must carry
+//     the service token; its identity then comes from the gateway's headers
+//     and session_variables. Those are caller-supplied, so they are trusted
+//     only after the token check.
+//   - Any other request with the service token runs as the server.
+//   - Everything else must carry a workspace execution JWT.
 func extractWorkspacePayloadAndContext(c *gin.Context, tracer trace.Tracer, meter metric.Meter) (map[string]any, *security.RequestContext, string, error) {
-	// 1. Try Global Token Auth (X-ACTION-TOKEN)
-	authHeader := c.Request.Header.Get(config.Config.LlmServerTokenHeader)
-	if authHeader != "" && authHeader == config.Config.LlmServerToken {
-		requestMap := make(map[string]any)
-		if err := c.ShouldBindJSON(&requestMap); err != nil {
-			return nil, nil, "", err
-		}
-
-		var actionRequest ActionRequest
-		_ = common.DecodeMapToStruct(requestMap, &actionRequest)
-
-		payload := requestMap
-		actionName := actionRequest.Action.Name
-		if actionName != "" {
-			payload = actionRequest.Input
-			if rawRequest, ok := payload["request"]; ok {
-				if castedRequest, castOk := rawRequest.(map[string]any); castOk {
-					payload = castedRequest
-				}
-			}
-		}
-
-		ctx := security.NewRequestContext(c.Request.Context(), security.NewSecurityContextForSuperAdmin(), slog.Default(), tracer, meter)
-		return payload, ctx, actionName, nil
+	presented, valid := workspaceServiceToken(c)
+	if presented && !valid {
+		return nil, nil, "", errors.New("invalid " + config.Config.LlmServerTokenHeader)
 	}
 
-	// 2. Standard Auth Flow
 	requestMap := make(map[string]any)
 	if err := c.ShouldBindJSON(&requestMap); err != nil {
 		return nil, nil, "", err
@@ -144,7 +156,15 @@ func extractWorkspacePayloadAndContext(c *gin.Context, tracer trace.Tracer, mete
 	payload := requestMap
 	actionName := actionRequest.Action.Name
 
-	if actionName != "" {
+	switch {
+	case actionName != "":
+		if !valid {
+			slog.Warn("workspace: refused an RPC action without the service token", "route", c.FullPath(), "action", actionName)
+			if config.Config.LlmServerToken == "" {
+				return nil, nil, "", errors.New("workspace actions are disabled until LLM_SERVER_TOKEN is configured")
+			}
+			return nil, nil, "", errors.New("missing " + config.Config.LlmServerTokenHeader)
+		}
 		ctx, err = buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
 		payload = actionRequest.Input
 		if rawRequest, ok := payload["request"]; ok {
@@ -152,7 +172,9 @@ func extractWorkspacePayloadAndContext(c *gin.Context, tracer trace.Tracer, mete
 				payload = castedRequest
 			}
 		}
-	} else {
+	case valid:
+		ctx = security.NewRequestContext(c.Request.Context(), security.NewSecurityContextForSuperAdmin(), slog.Default(), tracer, meter)
+	default:
 		accountId, _ := requestMap["account_id"].(string)
 		ctx, err = authorizeWorkspaceRequest(c, accountId, tracer, meter)
 	}

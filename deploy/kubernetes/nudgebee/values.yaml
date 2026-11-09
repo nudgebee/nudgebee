@@ -59,6 +59,11 @@ nudgebee_secret:
   NUDGEBEE_ENCRYPTION_KEY: '__REPLACE__'
   NUDGEBEE_LICENSE: ''
   RELAY_SERVER_SECRET_KEY: ''
+  # Signs llm-server's workspace execution JWTs. Generated on first install and
+  # reused on upgrade when empty. With existingSecretName, add it to your secret
+  # (openssl rand -hex 32): llm-server refuses to start without it.
+  # Set explicitly for GitOps offline render (lookup returns empty there).
+  LLM_SERVER_JWT_SECRET: ''
   AWS_TEMPLATE_URL: 'https://nudgebee-prod-documents.s3.amazonaws.com/nudgebee-aws-cloud-formation.json'
   NUDGEBEE_INSTANCE_ROLE: ''
   AWS_ORG_TEMPLATE_URL: ''
