@@ -476,7 +476,7 @@ func dispatchQueuedMessage(parent *security.RequestContext, conversation core.Co
 			fail(err)
 			return
 		}
-		if sc == nil || (!sc.HasAccountAccess(msg.AccountID.String(), security.SecurityAccessTypeRead) && !grantedRun(sc, msg.AccountID.String(), moduleAiMisc)) {
+		if sc == nil || !sc.CanRunAI(msg.AccountID.String()) {
 			fail(errors.New(errorUserAccessMessage))
 			return
 		}
@@ -3437,7 +3437,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		// Resume agent execution
 		handleRequestExecution(c, agentContext, request.Async, agentContext.GetSecurityContext().GetUserId(), "chains_client_tool_result", logger, func(ctx *security.RequestContext) (core.NBAgentResponse, error) {
-			return core.HandleConversationMessageRequest(request.AccountId, request.ConversationId, request.MessageId, request.AgentId)
+			return core.HandleConversationMessageRequest(ctx, request.AccountId, request.ConversationId, request.MessageId, request.AgentId)
 		}, map[string]string{"status": "in_progress"})
 	})
 

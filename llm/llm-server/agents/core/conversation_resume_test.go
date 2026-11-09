@@ -4,6 +4,7 @@ import (
 	"sync"
 	"testing"
 
+	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/google/uuid"
@@ -155,7 +156,7 @@ func TestHandleConversationMessageRequest_InProgressConversationNotFlippedToFail
 
 	// Function returns through the agent-not-found path (no agents registered);
 	// we don't care about the response here, only the side-effect record.
-	_, _ = HandleConversationMessageRequest(accountID.String(), convID.String(), msgID.String())
+	_, _ = HandleConversationMessageRequest(security.NewRequestContextForSuperAdmin(), accountID.String(), convID.String(), msgID.String())
 
 	failedFlips := 0
 	for _, s := range dao.statusUpdates {
@@ -201,7 +202,7 @@ func TestHandleConversationMessageRequest_TerminalConversationReturnsEarly(t *te
 	}
 	SetConversationDao(dao)
 
-	resp, err := HandleConversationMessageRequest(accountID.String(), convID.String(), msgID.String())
+	resp, err := HandleConversationMessageRequest(security.NewRequestContextForSuperAdmin(), accountID.String(), convID.String(), msgID.String())
 	require.NoError(t, err)
 	assert.Equal(t, ConversationStatusCompleted, resp.Status, "early-return must echo conversation status")
 	assert.Equal(t, convID.String(), resp.ConversationId)

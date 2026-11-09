@@ -1878,7 +1878,10 @@ func evalLLMFunction(ctx *security.RequestContext, request NBAgentRequest) (NBAg
 	return request, nil
 }
 
-func HandleConversationMessageRequest(accountId, conversationId, messageId string, resumeAgentId ...string) (NBAgentResponse, error) {
+// HandleConversationMessageRequest resumes or restarts a stored message. ctx is
+// who the run acts as: the signed-in caller for a client-tool result, or
+// RecoveryContext for a restarted message.
+func HandleConversationMessageRequest(ctx *security.RequestContext, accountId, conversationId, messageId string, resumeAgentId ...string) (NBAgentResponse, error) {
 	history := GetConversationDao()
 	conversationMessage, err := history.GetConversationMessage(messageId, accountId, conversationId)
 	if err != nil {
@@ -1892,7 +1895,6 @@ func HandleConversationMessageRequest(accountId, conversationId, messageId strin
 		return NBAgentResponse{}, err
 	}
 
-	ctx := security.NewRequestContextForTenantAccountAdmin(conversation.TenantID.String(), conversationMessage.UserID.String(), []string{conversation.AccountID.String()})
 	// A recovered alert investigation still has no person to approve changes.
 	if messageRanReadOnly(conversationMessage) {
 		ctx = WithReadOnlyRun(ctx)

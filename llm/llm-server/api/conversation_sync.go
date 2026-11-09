@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/budget"
@@ -89,9 +90,12 @@ func init() {
 	}
 }
 
-// checkBudgetAndRestartMessage checks budget limits and conversation state before restarting a message.
-// Returns true if message should be restarted, false if the conversation is terminal, budget exceeded, or error occurred.
-func checkBudgetAndRestartMessage(dao core.IConversationDao, message core.ConversationMessage) bool {
+// checkBudgetAndRestartMessage checks conversation state, budget limits and the
+// sender's access before restarting a message. It returns the context the restart
+// runs as, and false if the message must not be restarted now: the conversation is
+// terminal, the budget is exceeded, the sender lost access (all three fail the
+// message), or the sender's access could not be checked (left for the next sweep).
+func checkBudgetAndRestartMessage(dao core.IConversationDao, message core.ConversationMessage) (*security.RequestContext, bool) {
 	logger := slog.With("message", message.ID.String(), "conversation", message.ConversationID.String(), "account", message.AccountID.String())
 
 	// Get conversation to check status and budget
@@ -100,7 +104,7 @@ func checkBudgetAndRestartMessage(dao core.IConversationDao, message core.Conver
 		logger.Error("sync: unable to get conversation for budget check", "error", err)
 		// Mark as failed - can't proceed without conversation details
 		_ = dao.UpdateConversationMessage(message.ID.String(), "Failed to restart: unable to get conversation details", core.ConversationStatusFailed)
-		return false
+		return nil, false
 	}
 
 	// Skip messages whose conversation already reached a terminal state.
@@ -111,7 +115,7 @@ func checkBudgetAndRestartMessage(dao core.IConversationDao, message core.Conver
 		logger.Info("sync: skipping message for terminal conversation, fixing orphaned message status",
 			"conversation_status", conversation.Status)
 		_ = dao.UpdateConversationMessage(message.ID.String(), message.Response, conversation.Status)
-		return false
+		return nil, false
 	}
 
 	// Determine module based on session_id
@@ -127,12 +131,29 @@ func checkBudgetAndRestartMessage(dao core.IConversationDao, message core.Conver
 		// Mark message and conversation as failed due to budget limit - prevent infinite retry
 		_ = dao.UpdateConversationMessage(message.ID.String(), budgetErrorMsg, core.ConversationStatusFailed)
 		_ = dao.UpdateConversationStatus(conversation.ID.String(), core.ConversationStatusFailed)
-		return false
+		return nil, false
+	}
+
+	// Run as the person who sent the message, checked before the message is
+	// claimed: if services-server cannot be reached the row stays with the dead
+	// worker and the next sweep tries again.
+	ctx, err := core.RecoveryContext(message, conversation)
+	if errors.Is(err, core.ErrRecoveryAccessDenied) {
+		logger.Warn("sync: sender no longer has access, marking conversation as failed instead of restarting", "error", err)
+		_ = dao.UpdateConversationMessage(message.ID.String(), recoveryAccessDeniedNote, core.ConversationStatusFailed)
+		_ = dao.UpdateConversationStatus(conversation.ID.String(), core.ConversationStatusFailed)
+		return nil, false
+	}
+	if err != nil {
+		logger.Warn("sync: could not check the sender's access, leaving the message for the next sweep", "error", err)
+		return nil, false
 	}
 
 	logger.Info("sync: budget check passed, restarting conversation message")
-	return true
+	return ctx, true
 }
+
+const recoveryAccessDeniedNote = "Could not confirm your access to this account, so this answer was not resumed."
 
 func syncDeadWorkerMessages() error {
 	dao := core.GetConversationDao()
@@ -255,7 +276,8 @@ func isOwnOrphanRecoverable(message core.ConversationMessage, bootCutoff time.Ti
 func restartMessages(dao core.IConversationDao, messages []core.ConversationMessage) {
 	for _, message := range messages {
 		// Check budget before restarting
-		if !checkBudgetAndRestartMessage(dao, message) {
+		runCtx, ok := checkBudgetAndRestartMessage(dao, message)
+		if !ok {
 			continue
 		}
 
@@ -273,7 +295,7 @@ func restartMessages(dao core.IConversationDao, messages []core.ConversationMess
 		// No defer cancel here as it's in a loop; the worker will call it
 		currentErr := workerPool.Submit(submissionCtx, func() {
 			defer cancel()
-			_, err = core.HandleConversationMessageRequest(message.AccountID.String(), message.ConversationID.String(), message.ID.String())
+			_, err = core.HandleConversationMessageRequest(runCtx, message.AccountID.String(), message.ConversationID.String(), message.ID.String())
 			if err != nil {
 				logger.Error("sync: unable to restart conversation messages", "error", err)
 			}

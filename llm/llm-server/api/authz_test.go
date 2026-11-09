@@ -98,3 +98,31 @@ func TestGrantHelpers(t *testing.T) {
 		}
 	}
 }
+
+// CanRunAI replaced the queued-dispatch check (read access or an ai_misc run
+// grant); it must agree with that check for every kind of caller.
+func TestCanRunAIMatchesReadOrAiMiscRun(t *testing.T) {
+	callers := map[string]string{
+		"tenant admin":     `{"TenantId":"t1","UserId":"u1","Roles":["tenant_admin"],"AccountIds":["` + authzAcctA + `"]}`,
+		"read admin":       `{"TenantId":"t1","UserId":"u2","Roles":["tenant_admin_readonly"],"AccountIds":["` + authzAcctA + `"]}`,
+		"ai_misc runner":   `{"TenantId":"t1","UserId":"u3","Roles":[],"AccountIds":["` + authzAcctA + `"],"CustomPermissions":{"ai_misc:Execute":true}}`,
+		"ai_misc writer":   `{"TenantId":"t1","UserId":"u4","Roles":[],"AccountIds":["` + authzAcctA + `"],"CustomPermissions":{"ai_misc:Write":true}}`,
+		"kb writer only":   `{"TenantId":"t1","UserId":"u5","Roles":[],"AccountIds":["` + authzAcctA + `"],"CustomPermissions":{"ai_kbs:Write":true}}`,
+		"no roles, no acc": `{"TenantId":"t1","UserId":"u6","Roles":[],"AccountIds":[]}`,
+	}
+	for name, wire := range callers {
+		sc := authzContext(t, wire)
+		for _, acct := range []string{authzAcctA, authzForeign} {
+			want := sc.HasAccountAccess(acct, security.SecurityAccessTypeRead) || grantedRun(sc, acct, moduleAiMisc)
+			if got := sc.CanRunAI(acct); got != want {
+				t.Errorf("%s on %s: CanRunAI = %v, read-or-ai_misc-run = %v", name, acct, got, want)
+			}
+		}
+	}
+	if !authzContext(t, callers["ai_misc runner"]).CanRunAI(authzAcctA) {
+		t.Error("an ai_misc:Execute grant should allow running Nubi")
+	}
+	if authzContext(t, callers["kb writer only"]).CanRunAI(authzAcctA) {
+		t.Error("an ai_kbs grant alone must not allow running Nubi")
+	}
+}

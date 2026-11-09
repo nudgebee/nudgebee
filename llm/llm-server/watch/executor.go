@@ -2,6 +2,7 @@ package watch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -39,6 +40,32 @@ func getSecurityContextBuilder() SecurityContextBuilder {
 	securityContextBuilderMu.RLock()
 	defer securityContextBuilderMu.RUnlock()
 	return securityContextBuilder
+}
+
+// OwnerAccessChecker reports whether the person who set up a watch may still
+// run it. It returns ErrOwnerAccessRevoked when they may not, and any other
+// error when access could not be checked. Wired in like SecurityContextBuilder.
+type OwnerAccessChecker func(w Watch) error
+
+// ErrOwnerAccessRevoked ends a watch whose owner lost access to its account.
+var ErrOwnerAccessRevoked = errors.New("watch: owner no longer has access to this account")
+
+var (
+	ownerAccessCheckerMu sync.RWMutex
+	ownerAccessChecker   OwnerAccessChecker
+)
+
+// SetOwnerAccessChecker installs the per-poll owner access check.
+func SetOwnerAccessChecker(c OwnerAccessChecker) {
+	ownerAccessCheckerMu.Lock()
+	defer ownerAccessCheckerMu.Unlock()
+	ownerAccessChecker = c
+}
+
+func getOwnerAccessChecker() OwnerAccessChecker {
+	ownerAccessCheckerMu.RLock()
+	defer ownerAccessCheckerMu.RUnlock()
+	return ownerAccessChecker
 }
 
 // managerWriteTimeout bounds each metastore write the executor performs
@@ -131,6 +158,19 @@ func (e *Executor) RunOnePoll(parent context.Context, w Watch) {
 		slog.String("source_kind", string(w.SourceKind)),
 		slog.String("predicate_kind", string(w.PredicateKind)),
 	)
+
+	// The poll runs with the watch's stored context, so check on every poll that
+	// its owner may still run it: a revoked owner ends the watch, and a failed
+	// check counts as a failed poll (backoff, then FAILED).
+	if checker := getOwnerAccessChecker(); checker != nil {
+		if err := checker(w); errors.Is(err, ErrOwnerAccessRevoked) {
+			e.terminate(rctx, logger, w, TerminalUpdate{Status: StatusFailed, ErrMsg: "the person who set up this watch no longer has access to this account"})
+			return
+		} else if err != nil {
+			e.recordFailure(rctx, logger, w, fmt.Sprintf("owner access check failed: %v", err), nil, pollPhaseObserve)
+			return
+		}
+	}
 
 	src, ok := GetSource(w.SourceKind)
 	if !ok {

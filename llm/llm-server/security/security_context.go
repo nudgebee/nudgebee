@@ -346,6 +346,14 @@ func (sc *SecurityContext) HasAccountAccess(accountId string, access SecurityAcc
 // HasScopedRole reports whether the user holds `role` scoped to `entityId`
 // (an account id, or the account-id half of a "<accountId>:<namespace>" k8s
 // grant). Mirrors the api-server helper of the same name.
+// CanRunAI reports whether the person may run Nubi on the account: read access
+// to it, or a custom-role grant to run AI there (ai_misc Execute or Write).
+func (sc *SecurityContext) CanRunAI(accountId string) bool {
+	return sc.HasAccountAccess(accountId, SecurityAccessTypeRead) ||
+		sc.HasScopedPermission(accountId, "ai_misc", "Execute") ||
+		sc.HasScopedPermission(accountId, "ai_misc", "Write")
+}
+
 func (sc *SecurityContext) HasScopedRole(role string, entityId string) bool {
 	return slices.Contains(sc.roles, role) && slices.Contains(sc.scopedEntityIds[role], entityId)
 }
@@ -642,10 +650,15 @@ func parseSecurityContextResponse(body []byte) (*SecurityContext, error) {
 	return &res.Context, nil
 }
 
+// ErrSecurityContextRejected is wrapped in the error NewSecurityContext returns
+// when services-server answers with a 4xx (for example an unknown or removed
+// user), as opposed to being unreachable or failing with a 5xx.
+var ErrSecurityContextRejected = errors.New("security: security context rejected")
+
 func shouldRetrySecurityContext(statusCode int) (bool, error) {
 	// Don't retry on 4xx client errors
 	if statusCode >= 400 && statusCode < 500 {
-		return false, fmt.Errorf("security: client error %d", statusCode)
+		return false, fmt.Errorf("%w: client error %d", ErrSecurityContextRejected, statusCode)
 	}
 
 	// Retry on 5xx server errors
