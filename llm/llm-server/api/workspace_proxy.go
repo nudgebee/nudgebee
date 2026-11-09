@@ -553,9 +553,9 @@ func workspaceExecuteAudit(ctx *security.RequestContext, req WorkspaceExecuteReq
 		status = audit.EventStatusFailure
 	}
 	// The audit keeps the command, not the credentials in it: a connection
-	// string, PGPASSWORD=... or token="..." is masked the way tool output is.
+	// string, PGPASSWORD=..., --token x, mysql -px or token="..." is masked.
 	// The relay still runs the command as given.
-	command := egressfilter.RedactSecrets(req.Command)
+	command := redactAuditCommand(req.Command)
 	return &audit.AuditRequest{Audits: []audit.Audit{{
 		AccountId:     targetAccountId,
 		TenantId:      tenantId,
@@ -580,14 +580,16 @@ func workspaceExecuteAudit(ctx *security.RequestContext, req WorkspaceExecuteReq
 }
 
 // redactAuditArguments masks credential values in a command's arguments as
-// its command line is masked. They are masked as JSON text so a value under a
-// secret-named key ("password": "...") is caught too. If the masked text no
-// longer parses, the arguments are left out rather than stored unmasked.
+// its command line is masked. Each string value is masked as a command line
+// first (an argument can be one: "--token abc"), then the whole set as JSON
+// text so a value under a secret-named key ("password": "...") is caught too.
+// If the masked text no longer parses, the arguments are left out rather than
+// stored unmasked. args is not modified.
 func redactAuditArguments(args map[string]any) map[string]any {
 	if len(args) == 0 {
 		return args
 	}
-	raw, err := json.Marshal(args)
+	raw, err := json.Marshal(redactCommandLineStrings(args))
 	if err != nil {
 		return nil
 	}
@@ -596,6 +598,35 @@ func redactAuditArguments(args map[string]any) map[string]any {
 		return nil
 	}
 	return masked
+}
+
+// redactCommandLineStrings returns a copy of v with every string in it masked
+// by egressfilter.RedactCommandLine.
+func redactCommandLineStrings(v any) any {
+	switch t := v.(type) {
+	case string:
+		return egressfilter.RedactCommandLine(t)
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, child := range t {
+			out[k] = redactCommandLineStrings(child)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, child := range t {
+			out[i] = redactCommandLineStrings(child)
+		}
+		return out
+	case []string:
+		out := make([]string, len(t))
+		for i, child := range t {
+			out[i] = egressfilter.RedactCommandLine(child)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 func virtualKubectlConfig(ctx *security.RequestContext, req WorkspaceExecuteRequest, defaultContext string) (string, bool, error) {

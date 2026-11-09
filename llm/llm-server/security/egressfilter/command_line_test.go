@@ -29,6 +29,15 @@ func TestRedactCommandLine(t *testing.T) {
 		{`redis-cli -h cache -a s3cret INFO`, "s3cret", "INFO"},
 		{`{"command":"PGPASSWORD=x psql -h db -p hunter2"}`, "hunter2", `{"command":"PGPASSWORD=`},
 		{`sh -c 'MYSQL_PWD=s3cret mysql -u root'`, "s3cret", "mysql -u root"},
+		{`curl -u admin:s3cret https://api.example.com`, "s3cret", "curl -u admin:"},
+		{`curl --user=admin:s3cret https://api.example.com`, "s3cret", "https://api.example.com"},
+		// The workspace relays each argument quoted.
+		{`kubectl 'get' 'pods' '--token' 's3cret'`, "s3cret", `kubectl 'get' 'pods' '--token'`},
+		{`kubectl 'get' 'pods' '--token=s3cret'`, "s3cret", `'--token=`},
+		{`kubectl 'exec' 'db-0' '--' 'mysql' '-uroot' '-ps3cret'`, "s3cret", `'mysql' '-uroot' '-p`},
+		{`kubectl 'exec' 'db-0' '--' 'psql' '-h' 'db' '-p' 's3cret'`, "s3cret", `'psql' '-h' 'db' '-p'`},
+		{`kubectl 'exec' 'cache-0' '--' 'redis-cli' '-a' 's3cret' 'INFO'`, "s3cret", `'INFO'`},
+		{`kubectl 'exec' 'x' '--' 'curl' '-u' 'admin:s3cret' 'https://api.example.com'`, "s3cret", `'curl' '-u' 'admin:`},
 	} {
 		got := RedactCommandLine(tc.command)
 		assert.NotContains(t, got, tc.secret, tc.command)
@@ -44,9 +53,12 @@ func TestRedactCommandLineLeavesPlainCommands(t *testing.T) {
 		`mysql -u root -h db -e 'select 1'`,
 		`helm upgrade api ./chart --set image.tag=1.2.3`,
 		`curl -X POST https://api.example.com/hooks`,
+		`curl -u admin https://api.example.com`,
+		`kubectl 'rollout' 'restart' 'deploy/api' '-n' 'shop'`,
 		``,
 	} {
 		assert.Equal(t, command, RedactCommandLine(command))
 	}
 	assert.False(t, strings.Contains(RedactCommandLine(`psql --password -h db`), commandLinePlaceholder), "a flag followed by another flag has no value to mask")
+	assert.False(t, strings.Contains(RedactCommandLine(`kubectl 'exec' 'db-0' '--' 'psql' '--password' '-h' 'db'`), commandLinePlaceholder), "a quoted flag followed by another flag has no value to mask")
 }

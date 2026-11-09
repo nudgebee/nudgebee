@@ -342,6 +342,41 @@ type ToolDto struct {
 	SwitchedOff bool `json:"switched_off,omitempty"`
 }
 
+// auditRedactedValue replaces a value an audit must not keep; it is the
+// placeholder the shared audit redactor writes.
+const auditRedactedValue = "[REDACTED]"
+
+// toolForAudit is the copy of a tool its audit records: every env_vars value
+// is replaced and the names are kept. A container tool's environment can hold
+// credentials under any name, and the audit is read by every tenant admin.
+// The tool itself is not modified.
+func toolForAudit(tool ToolDto) ToolDto {
+	var names []string
+	switch envVars := tool.Config["env_vars"].(type) {
+	case map[string]any:
+		for name := range envVars {
+			names = append(names, name)
+		}
+	case map[string]string:
+		for name := range envVars {
+			names = append(names, name)
+		}
+	default:
+		return tool
+	}
+	redacted := make(map[string]any, len(names))
+	for _, name := range names {
+		redacted[name] = auditRedactedValue
+	}
+	config := make(map[string]any, len(tool.Config))
+	for k, v := range tool.Config {
+		config[k] = v
+	}
+	config["env_vars"] = redacted
+	tool.Config = config
+	return tool
+}
+
 func getSystemToolDto(context *security.RequestContext, accountId string, toolName string, summary AccountConfigSummary) ToolDto {
 	nbTool, exists := GetNBTool(accountId, toolName)
 	if !exists {
@@ -714,7 +749,7 @@ func CreateCustomTool(context *security.RequestContext, accountId string, tool T
 					EventTime:     time.Now().UTC(),
 					EventCategory: "tool",
 					EventType:     "CUSTOM_TOOL_CREATE",
-					EventState:    toolInstance,
+					EventState:    toolForAudit(toolInstance),
 					EventActor:    audit.EventActor(context.GetSecurityContext().GetUserId()),
 					EventTarget:   toolInstance.Id,
 					EventAction:   audit.EventActionCreate,
@@ -886,7 +921,7 @@ func DeleteCustomTool(context *security.RequestContext, accountId, name string) 
 					EventTime:     time.Now().UTC(),
 					EventCategory: "tool",
 					EventType:     "CUSTOM_TOOL_DELETE",
-					EventState:    completeToolForAudit, // This is the state before deletion
+					EventState:    toolForAudit(completeToolForAudit), // This is the state before deletion
 					EventActor:    audit.EventActor(context.GetSecurityContext().GetUserId()),
 					EventTarget:   toolIdToDelete,
 					EventAction:   audit.EventActionDelete,
@@ -1067,7 +1102,7 @@ func UpdateCustomTool(context *security.RequestContext, accountId, name string, 
 				EventTime:     time.Now().UTC(),
 				EventCategory: "tool",
 				EventType:     "CUSTOM_TOOL_UPDATE",
-				EventState:    completeTool,
+				EventState:    toolForAudit(completeTool),
 				EventActor:    audit.EventActor(userId),
 				EventTarget:   toolId,
 				EventAction:   audit.EventActionUpdate,

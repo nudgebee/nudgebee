@@ -1077,20 +1077,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			if info, perr := core.GetPendingFollowupInfo(request.AgentId, request.AccountId, request.ConversationId); perr != nil {
 				logger.Warn("chat audit: failed to load pending followup info", "error", perr, "agent_id", request.AgentId)
 			} else if info != nil && (info.IsToolConfirmation || isWebChatSource(source)) {
-				// Consistent shape across follow-up events: query = originating user
-				// question, response = the user's answer, followup_type = the kind of
-				// follow-up (so credential/config selections stay filterable).
-				chatState := map[string]any{
-					"query":         truncateQueryForAudit(info.Query),
-					"response":      truncateQueryForAudit(request.Query),
-					"followup_type": info.FollowupType,
-				}
+				chatState := followupAuditState(info, request.Query)
 				chatEventType := audit.EventTypeChatClarificationRespond
 				if info.IsToolConfirmation {
 					chatEventType = audit.EventTypeChatToolConfirmationRespond
-					chatState["tool_name"] = info.ToolName
-					chatState["command"] = truncateQueryForAudit(info.Command)
-					chatState["decision"] = toolConfirmationDecision(request.Query)
 					// The signed-in identity that answered; request.UserId is
 					// rewritten to the system user for a super admin with no
 					// grant in this tenant.

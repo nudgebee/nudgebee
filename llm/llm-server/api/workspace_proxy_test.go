@@ -970,6 +970,12 @@ var auditedCommandShapes = []struct {
 	{"url basic auth", "kubectl 'exec' '-n' 'monitoring' 'deployment/grafana' '--' 'curl' '-s' 'http://admin:Qv7rTx2mWp9z@localhost:3000/api/v1/provisioning/alert-rules'", "@localhost:3000/api/v1/provisioning/alert-rules"},
 	{"password env", "kubectl 'exec' 'db-0' '-n' 'shop' '--' 'env' 'PGPASSWORD=Qv7rTx2mWp9z' 'psql' '-U' 'app_user' '-d' 'app_db' '-c' 'SHOW work_mem;'", "'psql' '-U' 'app_user'"},
 	{"token argument", `kubectl 'exec' 'notifier-0' '--' 'python3' '-c' 'from slack_sdk.web.client import WebClient; c = WebClient(token="Qv7rTx2mWp9z"); print(c.retry_handlers)'`, "print(c.retry_handlers)"},
+	// Shapes tool-output masking alone missed: a credential carried by a flag.
+	{"token flag", "kubectl 'get' 'pods' '-n' 'shop' '--token' 'Qv7rTx2mWp9z'", "'get' 'pods' '-n' 'shop'"},
+	{"mysql -p", "kubectl 'exec' 'db-0' '--' 'mysql' '-uroot' '-pQv7rTx2mWp9z' '-e' 'SHOW TABLES'", "'-e' 'SHOW TABLES'"},
+	{"redis-cli -a", "kubectl 'exec' 'cache-0' '--' 'redis-cli' '-a' 'Qv7rTx2mWp9z' 'INFO'", "'INFO'"},
+	{"curl -u", "kubectl 'exec' 'grafana-0' '--' 'curl' '-s' '-u' 'admin:Qv7rTx2mWp9z' 'http://localhost:3000/api/health'", "'http://localhost:3000/api/health'"},
+	{"jwt bearer token", "kubectl get pods --token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJRdjdyVHgybVdwOXoifQ.Qv7rTx2mWp9zQv7rTx2mWp9z", "kubectl get pods"},
 }
 
 // The audit keeps the command but not the credential in it.
@@ -1005,6 +1011,21 @@ func TestWorkspaceExecuteAuditMasksCredentials(t *testing.T) {
 		require.Equal(t, "SELECT 1", args["query"])
 		require.Contains(t, args["dsn"], "@db.example.com/app")
 		require.Equal(t, secret, req.Arguments["password"], "the relayed arguments are not changed")
+	})
+
+	t.Run("command-line arguments", func(t *testing.T) {
+		req := WorkspaceExecuteRequest{AccountId: "workspace", Tool: "redis", Command: "redis-cli INFO", Arguments: map[string]any{
+			"extra_args": "--tls --password " + secret,
+			"nested":     map[string]any{"cmd": "redis-cli -a " + secret + " INFO"},
+		}}
+		a := workspaceExecuteAudit(ctx, req, "redis", "workspace", true).Audits[0]
+		stored, err := json.Marshal(a)
+		require.NoError(t, err)
+		require.NotContains(t, string(stored), secret)
+		args := a.EventAttr["arguments"].(map[string]any)
+		require.Contains(t, args["extra_args"], "--tls --password")
+		require.Contains(t, args["nested"].(map[string]any)["cmd"], " INFO")
+		require.Equal(t, "--tls --password "+secret, req.Arguments["extra_args"], "the relayed arguments are not changed")
 	})
 }
 

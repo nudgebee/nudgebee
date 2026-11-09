@@ -21,7 +21,6 @@ import (
 	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
-	"nudgebee/llm/security/egressfilter"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
@@ -1684,7 +1683,7 @@ func remediationAudit(ctx *security.RequestContext, accountId, command, tool str
 		status = audit.EventStatusFailure
 	}
 	// Credentials in the command are masked as in workspaceExecuteAudit.
-	command = egressfilter.RedactSecrets(command)
+	command = redactAuditCommand(command)
 	return &audit.AuditRequest{
 		Audits: []audit.Audit{
 			{
