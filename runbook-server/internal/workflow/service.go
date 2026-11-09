@@ -23,6 +23,7 @@ import (
 	"nudgebee/runbook/services/integrations"
 	"nudgebee/runbook/services/security"
 	"nudgebee/runbook/services/ticket"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -745,7 +746,7 @@ func (s *Service) handleWorkflowTrigger(ctx *security.RequestContext, id, tenant
 	// We rely on the fact that we add SearchAttrWorkflowID to every schedule we create.
 	// Query: "nb_workflow_id = '<id>'"
 	listView, err := scheduleClient.List(ctx.GetContext(), client.ScheduleListOptions{
-		Query: fmt.Sprintf("%s = '%s'", model.SearchAttrWorkflowID, id),
+		Query: fmt.Sprintf("%s = '%s'", model.SearchAttrWorkflowID, escapeTemporalString(id)),
 	})
 	if err != nil {
 		slog.Error("failed to list schedules for cleanup", "workflowID", id, "error", err)
@@ -1819,11 +1820,28 @@ func dryRunWorkflowName(name string) string {
 	return "dry-run-" + time.Now().Format(time.RFC3339)
 }
 
-// escapeTemporalString escapes single quotes in a string to prevent injection in Temporal visibility queries.
-// Temporal uses SQL-like syntax where string literals are enclosed in single quotes, and single quotes
-// within the string are escaped by doubling them (e.g. ' -> ”).
+// escapeTemporalString escapes a value for a single-quoted string literal in a
+// Temporal visibility query. Temporal parses the query with a MySQL-style
+// tokenizer, which reads a backslash as an escape character as well as a doubled
+// quote, so both are escaped: backslashes first, then quotes. Every value written
+// into a visibility query goes through this.
 func escapeTemporalString(s string) string {
-	return strings.ReplaceAll(s, "'", "''")
+	return strings.ReplaceAll(strings.ReplaceAll(s, `\`, `\\`), "'", "''")
+}
+
+// temporalIDPattern matches the IDs a caller passes to the execution APIs:
+// UUIDs, and UUIDs with a prefix such as "dry-run-" or "workflow-schedule-".
+var temporalIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$`)
+
+// checkTemporalIDs refuses a caller-supplied ID that is not a plain ID, before
+// any visibility query is built from it.
+func checkTemporalIDs(ids ...string) error {
+	for _, id := range ids {
+		if !temporalIDPattern.MatchString(id) {
+			return common.ErrorBadRequest("invalid id")
+		}
+	}
+	return nil
 }
 
 // validateWorkflowInputs checks if the provided inputs conform to the workflow's defined inputs.
@@ -2070,9 +2088,9 @@ func (s *Service) reconcileRunningStatuses(ctx *security.RequestContext, workflo
 		}
 
 		query := fmt.Sprintf("%s='%s' AND %s='%s' AND %s='%s'",
-			model.SearchAttrTenantID, tenantID,
-			model.SearchAttrAccountID, workflows[i].AccountID,
-			model.SearchAttrWorkflowID, workflows[i].ID)
+			model.SearchAttrTenantID, escapeTemporalString(tenantID),
+			model.SearchAttrAccountID, escapeTemporalString(workflows[i].AccountID),
+			model.SearchAttrWorkflowID, escapeTemporalString(workflows[i].ID))
 
 		resp, err := s.temporalClient.ListWorkflow(ctx.GetContext(), &workflowservice.ListWorkflowExecutionsRequest{
 			Query:    query,
@@ -2507,7 +2525,7 @@ func (s *Service) teardownWorkflowExternals(ctx *security.RequestContext, accoun
 	// List ALL schedules for this workflow using Search Attribute and delete them.
 	// Query: "nb_workflow_id = '<id>'"
 	listView, err := scheduleClient.List(ctx.GetContext(), client.ScheduleListOptions{
-		Query: fmt.Sprintf("%s = '%s'", model.SearchAttrWorkflowID, id),
+		Query: fmt.Sprintf("%s = '%s'", model.SearchAttrWorkflowID, escapeTemporalString(id)),
 	})
 	if err != nil {
 		// The schedules cannot be enumerated, so the sequential probe below is a
@@ -2751,14 +2769,18 @@ func (s *Service) ListWorkflowExecutions(ctx *security.RequestContext, accountId
 		return model.ListWorkflowExecutionResponse{}, common.ErrorUnauthorized("account not accessible")
 	}
 
+	if err := checkTemporalIDs(accountId, workflowId); err != nil {
+		return model.ListWorkflowExecutionResponse{}, err
+	}
+
 	if request.Limit <= 0 {
 		request.Limit = 50
 	}
 
 	var conditions []string
-	conditions = append(conditions, fmt.Sprintf("%s='%s'", model.SearchAttrWorkflowID, workflowId))
-	conditions = append(conditions, fmt.Sprintf("%s='%s'", model.SearchAttrTenantID, ctx.GetSecurityContext().GetTenantId()))
-	conditions = append(conditions, fmt.Sprintf("%s='%s'", model.SearchAttrAccountID, accountId))
+	conditions = append(conditions, fmt.Sprintf("%s='%s'", model.SearchAttrTenantID, escapeTemporalString(ctx.GetSecurityContext().GetTenantId())))
+	conditions = append(conditions, fmt.Sprintf("%s='%s'", model.SearchAttrAccountID, escapeTemporalString(accountId)))
+	conditions = append(conditions, fmt.Sprintf("%s='%s'", model.SearchAttrWorkflowID, escapeTemporalString(workflowId)))
 
 	if request.Status != "" && request.Status != model.WorkflowExecutionStatusUnspecified {
 		// Temporal status values are case-sensitive in some contexts, but usually uppercase in query.
@@ -3019,7 +3041,10 @@ func (s *Service) GetDetailedWorkflowExecution(ctx *security.RequestContext, acc
 		var notFound *serviceerror.NotFound
 		if errors.As(err, &notFound) {
 			listResp, listErr := s.temporalClient.ListWorkflow(ctx.GetContext(), &workflowservice.ListWorkflowExecutionsRequest{
-				Query: fmt.Sprintf("RunId = '%s'", executionId),
+				Query: fmt.Sprintf("%s='%s' AND %s='%s' AND RunId='%s'",
+					model.SearchAttrTenantID, escapeTemporalString(ctx.GetSecurityContext().GetTenantId()),
+					model.SearchAttrAccountID, escapeTemporalString(accountId),
+					escapeTemporalString(executionId)),
 			})
 			if listErr == nil && len(listResp.Executions) > 0 {
 				// Use the found Temporal Workflow ID
@@ -3651,9 +3676,9 @@ func (s *Service) awaitExecutionClosed(ctx context.Context, temporalId, executio
 // being mislabelled.
 func (s *Service) syncLastExecutionStatus(ctx context.Context, tenantID, accountId, workflowId string) {
 	query := fmt.Sprintf("%s='%s' AND %s='%s' AND %s='%s'",
-		model.SearchAttrTenantID, tenantID,
-		model.SearchAttrAccountID, accountId,
-		model.SearchAttrWorkflowID, workflowId)
+		model.SearchAttrTenantID, escapeTemporalString(tenantID),
+		model.SearchAttrAccountID, escapeTemporalString(accountId),
+		model.SearchAttrWorkflowID, escapeTemporalString(workflowId))
 
 	resp, err := s.temporalClient.ListWorkflow(ctx, &workflowservice.ListWorkflowExecutionsRequest{
 		Query:    query,
@@ -4110,11 +4135,15 @@ func (s *Service) GetWorkflowState(ctx *security.RequestContext, accountId, id s
 // This is needed because the Temporal Workflow ID can be dynamic (e.g., for webhooks/events) while the API might receive the
 // static runbook workflow definition ID.
 func (s *Service) ResolveTemporalWorkflowID(reqCtx *security.RequestContext, accountID, workflowDefinitionID, runID string) (string, error) {
+	if err := checkTemporalIDs(accountID, workflowDefinitionID, runID); err != nil {
+		return "", err
+	}
 	for range 3 {
-		query := fmt.Sprintf("%s='%s' and RunId='%s' and %s='%s' and %s='%s'",
-			model.SearchAttrWorkflowID, workflowDefinitionID, runID,
-			model.SearchAttrTenantID, reqCtx.GetSecurityContext().GetTenantId(),
-			model.SearchAttrAccountID, accountID)
+		query := fmt.Sprintf("%s='%s' and %s='%s' and %s='%s' and RunId='%s'",
+			model.SearchAttrTenantID, escapeTemporalString(reqCtx.GetSecurityContext().GetTenantId()),
+			model.SearchAttrAccountID, escapeTemporalString(accountID),
+			model.SearchAttrWorkflowID, escapeTemporalString(workflowDefinitionID),
+			escapeTemporalString(runID))
 
 		listResp, err := s.temporalClient.ListWorkflow(reqCtx.GetContext(), &workflowservice.ListWorkflowExecutionsRequest{
 			Query:    query,
@@ -5117,12 +5146,16 @@ func (s *Service) CountWorkflowExecutions(ctx *security.RequestContext, req mode
 		return model.WorkflowExecutionCountResponse{}, common.ErrorUnauthorized("account not accessible")
 	}
 
+	if err := checkTemporalIDs(req.AccountID); err != nil {
+		return model.WorkflowExecutionCountResponse{}, err
+	}
+
 	tenantID := ctx.GetSecurityContext().GetTenantId()
 
 	// Build the Temporal query with filters
 	var conditions []string
-	conditions = append(conditions, fmt.Sprintf("%s='%s'", model.SearchAttrTenantID, tenantID))
-	conditions = append(conditions, fmt.Sprintf("%s='%s'", model.SearchAttrAccountID, req.AccountID))
+	conditions = append(conditions, fmt.Sprintf("%s='%s'", model.SearchAttrTenantID, escapeTemporalString(tenantID)))
+	conditions = append(conditions, fmt.Sprintf("%s='%s'", model.SearchAttrAccountID, escapeTemporalString(req.AccountID)))
 
 	if req.TriggerType != "" {
 		conditions = append(conditions, fmt.Sprintf("%s='%s'", model.SearchAttrWorkflowTrigger, escapeTemporalString(req.TriggerType)))
