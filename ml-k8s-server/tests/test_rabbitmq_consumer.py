@@ -6,12 +6,15 @@ so each test ends it from the patched reconnect sleep, which raises `_Stop` on i
 
 import asyncio
 import json
+import logging
 from types import SimpleNamespace
 
 import pytest
 from kombu.transport.pyamqp import Channel as KombuChannel
 
 import server.utils.rabbitmq as rabbitmq
+from server.exception import CancelPrediction
+from server.message import MlMessageAbstract, ml_server_message_handler
 
 
 class _Stop(BaseException):
@@ -224,6 +227,114 @@ def test_failed_message_goes_to_the_dead_letter_exchange_and_is_acked(monkeypatc
         {"exchange_name": "jobs_dlx", "routing_key": "jobs", "message": {"payload": "scan", "error": "scan failed"}}
     ]
     assert channel.events == [("ack", 3)]
+
+
+class FakeConnection:
+    def __init__(self, url):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def channel(self):
+        return None
+
+
+class FakeProducer:
+    def __init__(self, channel):
+        pass
+
+    def publish(self, message, **kwargs):
+        pass
+
+
+def test_publishing_logs_where_a_message_goes_and_not_what_it_carries(monkeypatch, caplog):
+    monkeypatch.setattr(rabbitmq, "Connection", FakeConnection)
+    monkeypatch.setattr(rabbitmq, "Producer", FakeProducer)
+    caplog.set_level(logging.INFO)
+
+    rabbitmq.publish_message("jobs", "jobs", json.loads(SCAN))
+
+    assert "to queue jobs exchange jobs" in caplog.text
+    assert "datadog_api_key" not in caplog.text
+
+
+def test_failed_message_is_logged_by_name_without_its_body(monkeypatch, caplog):
+    monkeypatch.setattr(rabbitmq, "Connection", FakeConnection)
+    monkeypatch.setattr(rabbitmq, "Producer", FakeProducer)
+    caplog.set_level(logging.INFO)
+
+    def fail(body):
+        raise RuntimeError("scan failed")
+
+    consumer = rabbitmq.KombuConsumerThread("amqp://broker//", "jobs", "jobs", "jobs", fail)
+    consumer.on_message(_message(FakeChannel([]), SCAN))
+
+    assert "Unable to process vertical_rightsizing_request for account acc-1" in caplog.text
+    assert "to queue jobs exchange jobs_dlx" in caplog.text
+    assert "datadog_api_key" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"action_name": "not_a_real_action", "datadog_api_key": "k"},
+        {"datadog_api_key": "k"},
+        {"action_name": "vertical_rightsizing_request", "datadog_api_key": "k"},
+    ],
+)
+def test_rejected_message_error_does_not_repeat_its_body(body):
+    with pytest.raises(ValueError) as rejected:
+        ml_server_message_handler(json.dumps(body))
+
+    assert "datadog_api_key" not in str(rejected.value)
+
+
+@pytest.mark.parametrize(
+    "body, described",
+    [
+        ({"action_name": "scan", "account_id": "acc-1"}, "scan for account acc-1"),
+        ({"action_name": "scan", "account": "acc-1"}, "scan for account acc-1"),
+        ({"action_name": "ml_recomm_sync", "recommendation_id": "r-1"}, "ml_recomm_sync"),
+        ({"account_id": "acc-1"}, "an unnamed message for account acc-1"),
+        ({}, "an unnamed message"),
+    ],
+)
+def test_a_message_is_described_by_the_fields_it_has(body, described):
+    assert rabbitmq._describe(json.dumps(body)) == described
+
+
+def test_a_body_too_deep_to_parse_is_still_dead_lettered(monkeypatch):
+    published: list = []
+    monkeypatch.setattr(rabbitmq, "publish_message", lambda **kwargs: published.append(kwargs))
+
+    def fail(body):
+        raise RuntimeError("scan failed")
+
+    consumer = rabbitmq.KombuConsumerThread("amqp://broker//", "jobs", "jobs", "jobs", fail)
+    consumer.on_message(_message(FakeChannel([]), "[" * 100000))
+
+    assert [call["exchange_name"] for call in published] == ["jobs_dlx"]
+
+
+def test_cancelled_message_is_logged_without_its_fields(caplog):
+    class CancelledScan(MlMessageAbstract):
+        action_name: str = "cancelled_scan"
+        span_name: str = "cancelled_scan"
+        exchange: str = "jobs"
+        queue: str = "jobs"
+        datadog_api_key: str = "k"
+
+        def process_message(self):
+            raise CancelPrediction("no data")
+
+    CancelledScan().process()
+
+    assert "cancelled_scan" in caplog.text
+    assert "datadog_api_key" not in caplog.text
 
 
 def test_message_is_acked_even_when_the_dead_letter_publish_fails(monkeypatch):

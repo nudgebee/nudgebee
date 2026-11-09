@@ -5,7 +5,7 @@ from datetime import datetime, UTC
 from typing import Any, Dict, List, Optional, Type
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from server.metrics.prometheus_metrics_hpa import PrometheusMetricsHPA
 from server.recommendation.recommendation_db import DBRecommendation
 from server.recommendation.vertical_rightsizing import generate_and_process_recommendation
@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 
 
 class MlMessageAbstract(BaseModel):
+    # A validation error would otherwise quote the message, which can carry credentials.
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     action_name: str
     span_name: str
     exchange: str
@@ -32,7 +35,7 @@ class MlMessageAbstract(BaseModel):
         try:
             self.process_message()
         except CancelPrediction as e:
-            logger.warning(f"Prediction for message {self.model_dump()} canceled with warning {e}")
+            logger.warning(f"Prediction for {self.action_name} canceled with warning {e}")
         except Exception as e:
             logger.exception(f"Error in processing message {e}")
             raise e
@@ -372,6 +375,6 @@ def ml_server_message_handler(body: str) -> None:
         if msg_obj:
             msg_obj(**parsed_message).process()
         else:
-            raise ValueError(f"Invalid message {parsed_message}")
+            raise ValueError(f"Invalid message action name {action_name}")
     else:
-        raise ValueError(f"Invalid message action name not present {parsed_message}")
+        raise ValueError("Invalid message action name not present")
