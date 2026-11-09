@@ -4008,6 +4008,9 @@ func (s *Service) ExecuteTask(ctx *security.RequestContext, accountId, taskType 
 
 	// Fetch configs and secrets for template rendering
 	var renderedParams map[string]any
+	// Masked out of the error and result below: unlike a workflow step, a Task
+	// Runner call does not go through TaskWrapper's scrubbing.
+	var secretValues []string
 	if s.configService != nil {
 		configs, err := s.configService.ListConfigsDecrypted(ctx.GetContext(), tenantId, &accountId, nil)
 		if err != nil {
@@ -4029,11 +4032,12 @@ func (s *Service) ExecuteTask(ctx *security.RequestContext, accountId, taskType 
 			templateContext := NewTemplateContext(nil, nil)
 			templateContext.Configs = configMap
 			templateContext.Secrets = secretMap
+			secretValues = logsafe.SecretValues(secretMap)
 
 			// Render params using template context
 			renderedValue, err := ProcessValue(params, templateContext)
 			if err != nil {
-				return nil, fmt.Errorf("failed to render task params: %w", err)
+				return nil, fmt.Errorf("failed to render task params: %s", logsafe.ScrubSecretValues(err.Error(), secretValues))
 			}
 			var ok bool
 			renderedParams, ok = renderedValue.(map[string]any)
@@ -4047,7 +4051,20 @@ func (s *Service) ExecuteTask(ctx *security.RequestContext, accountId, taskType 
 
 	// Isolated execution: real store/client, no fabricated workflow identity.
 	taskCtx := s.newIsolatedTaskContext(ctx, accountId)
-	return task.Execute(taskCtx, renderedParams)
+	result, err := task.Execute(taskCtx, renderedParams)
+	return maskTaskOutcome(result, err, secretValues)
+}
+
+// maskTaskOutcome replaces the account's secret values in a Task Runner
+// result and error, which go straight back to the caller.
+func maskTaskOutcome(result any, err error, secretValues []string) (any, error) {
+	if len(secretValues) == 0 {
+		return result, err
+	}
+	if err != nil {
+		err = errors.New(logsafe.ScrubSecretValues(err.Error(), secretValues))
+	}
+	return logsafe.ScrubValue(result, secretValues), err
 }
 
 func (s *Service) ListMCPTools(ctx *security.RequestContext, accountId string, params map[string]any) (any, error) {
