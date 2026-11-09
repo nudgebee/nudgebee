@@ -41,6 +41,28 @@ func hasCustomCategoryAccess(sc *security.SecurityContext, accountId, category s
 	}
 }
 
+// hasRoleAccess is the role half of ValidateAccess. It assumes accountId, when
+// set, has already been checked to belong to the context's tenant.
+func hasRoleAccess(sc *security.SecurityContext, accountId, category string, permission security.SecurityAccessType) bool {
+	if sc.IsTenantAdmin() {
+		return true
+	}
+	if sc.IsTenantReadAdmin() && permission == security.SecurityAccessTypeRead {
+		return true
+	}
+	if accountId != "" && sc.HasAccountAccess(accountId, permission) {
+		return true
+	}
+	if hasCustomCategoryAccess(sc, accountId, category, permission) {
+		// Dynamic-RBAC: a custom-role grant for this category's module
+		// (currently only TICKETS→tickets) authorizes the operation even
+		// without a built-in account role. Account-scoped; never widens
+		// which accounts exist for the user.
+		return true
+	}
+	return false
+}
+
 func ValidateAccess(request ValidateAccessRequest) (ValidateAccessResponse, error) {
 	err := common.ValidateStruct(request)
 	if err != nil {
@@ -54,8 +76,6 @@ func ValidateAccess(request ValidateAccessRequest) (ValidateAccessResponse, erro
 	securityContexts := map[string]*security.SecurityContext{}
 
 	for _, access := range request.Access {
-		allowed := false
-
 		securityContext, ok := securityContexts[access.TenantId]
 		if !ok {
 			tenantSecurityContext, err := security.NewSecurityContext(access.TenantId, request.UserId)
@@ -70,33 +90,32 @@ func ValidateAccess(request ValidateAccessRequest) (ValidateAccessResponse, erro
 			securityContexts[access.TenantId] = tenantSecurityContext
 		}
 
-		if securityContext.IsTenantAdmin() {
-			allowed = true
-		} else if securityContext.IsTenantReadAdmin() && access.Permission == security.SecurityAccessTypeRead {
-			allowed = true
-		} else if access.Args.AccountId != "" && securityContext.HasAccountAccess(access.Args.AccountId, access.Permission) {
-			allowed = true
-		} else if hasCustomCategoryAccess(securityContext, access.Args.AccountId, string(access.Category), access.Permission) {
-			// Dynamic-RBAC: a custom-role grant for this category's module
-			// (currently only TICKETS→tickets) authorizes the operation even
-			// without a built-in account role. Account-scoped; never widens
-			// which accounts exist for the user.
-			allowed = true
+		// The tenant shortcuts below answer "may this user act in access.TenantId",
+		// not "is this account in access.TenantId". Without this gate a tenant
+		// admin of any tenant — every SaaS self-signup is one — passed for another
+		// tenant's account id, and the relay/grafana proxies then forwarded to that
+		// tenant's agent. Runs before every branch, the K8s RBAC one included.
+		if access.Args.AccountId != "" && !securityContext.IsTenantAccount(access.Args.AccountId) {
+			response.Access = append(response.Access, ValidateAccessResponseAccess{
+				Allowed: false,
+				Message: "account does not belong to tenant",
+			})
+			continue
 		}
+
+		allowed := hasRoleAccess(securityContext, access.Args.AccountId, string(access.Category), access.Permission)
 		if IsFeatureEnabled(security.NewRequestContextForSuperAdmin(slog.Default(), nil, nil), access.TenantId, FEATURE_RBACK_K8S_ACCESS) && access.Args.K8sObjectName != "" && access.Args.K8sObjectType != "" {
-			allowed, err := securityContext.HasK8sAccess(access.Args.AccountId, access.Args.K8sObjectType, access.Args.K8sObjectName, security.K8sRbacPermissionType(string(access.Permission)))
+			// The K8s RBAC answer replaces the role answer. One result per item:
+			// callers read the response positionally.
+			k8sAllowed, err := securityContext.HasK8sAccess(access.Args.AccountId, access.Args.K8sObjectType, access.Args.K8sObjectName, security.K8sRbacPermissionType(string(access.Permission)))
 			if err != nil {
 				response.Access = append(response.Access, ValidateAccessResponseAccess{
 					Allowed: false,
 					Message: err.Error(),
 				})
 				continue
-			} else {
-				response.Access = append(response.Access, ValidateAccessResponseAccess{
-					Allowed: allowed,
-					Message: "",
-				})
 			}
+			allowed = k8sAllowed
 		}
 		response.Access = append(response.Access, ValidateAccessResponseAccess{
 			Allowed: allowed,

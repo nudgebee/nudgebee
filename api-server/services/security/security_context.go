@@ -11,6 +11,7 @@ import (
 
 	"slices"
 
+	"github.com/google/uuid"
 	"github.com/samber/lo"
 )
 
@@ -387,6 +388,40 @@ func (sc *SecurityContext) HasAccountAccess(accountId string, access SecurityAcc
 	}
 
 	return false
+}
+
+// IsTenantAccount reports whether accountId is one of the accounts of the tenant
+// this context is signed into. Check it before storing a caller-supplied account
+// id next to the context's tenant id, or the row pairs one tenant with another
+// tenant's account (#24005). Says nothing about the caller's role on the account
+// — that is HasAccountAccess — so a custom-role holder whose grant is tenant-wide
+// still passes.
+//
+// accountIds is cached for 30 minutes and cloud-collector inserts onboarded AWS
+// accounts without invalidating it, so a miss is confirmed against the database
+// before refusing a freshly created account.
+func (sc *SecurityContext) IsTenantAccount(accountId string) bool {
+	if sc == nil || accountId == "" || sc.tenantId == "" {
+		return false
+	}
+	if slices.Contains(sc.accountIds, accountId) {
+		return true
+	}
+	// Both columns are uuid. Reject non-uuid input here so the query can cast the
+	// parameters (keeping the indexes usable) without erroring on a bad id.
+	if uuid.Validate(accountId) != nil || uuid.Validate(sc.tenantId) != nil {
+		return false
+	}
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return false
+	}
+	var found bool
+	if err := dbms.Db.Get(&found, "SELECT EXISTS (SELECT 1 FROM cloud_accounts WHERE id = $1::uuid AND tenant = $2::uuid)", accountId, sc.tenantId); err != nil {
+		slog.Error("IsTenantAccount: account lookup failed", "error", err)
+		return false
+	}
+	return found
 }
 
 func (sc *SecurityContext) HasTenantAccess(access SecurityAccessType) bool {
