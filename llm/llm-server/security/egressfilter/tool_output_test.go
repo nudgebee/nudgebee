@@ -116,6 +116,17 @@ func TestRedactToolOutputKeepsJSONValid(t *testing.T) {
 	assert.NotContains(t, out, "abc.def.ghi-123456")
 }
 
+// A diff evidence carries the manifest as a YAML string, where the key's END
+// marker is line-folded, next to the same key as a JSON value.
+func TestRedactToolOutputPrivateKeyStaysInsideItsJSONString(t *testing.T) {
+	in := `[{"new":"value: '-----BEGIN PRIVATE KEY-----\\nMIIfold\\n-----END\n    PRIVATE KEY-----\\n'\n","updated_values":[{"new":{"value":"-----BEGIN PRIVATE KEY-----\nMIIjson\n-----END PRIVATE KEY-----\n"},"path":"env[3]"}]}]`
+	out := redactToolOutput(context.Background(), "t", in)
+	var parsed []map[string]any
+	assert.NoError(t, json.Unmarshal([]byte(out), &parsed), out)
+	assert.NotContains(t, out, "MIIfold")
+	assert.NotContains(t, out, "MIIjson")
+}
+
 // Shapes that look like secret settings but are not, taken from real tool
 // output (values are synthetic).
 func TestRedactToolOutputKeepsNonSecrets(t *testing.T) {
