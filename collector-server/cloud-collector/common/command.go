@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+	"unicode"
 
 	"strings"
 
@@ -98,10 +99,17 @@ type SecureCommandOptions struct {
 // (file://, fileb://, an Azure @path, or the value of a flag such as
 // --flags-file or --src-path) is refused when it names something that exists
 // here, resolving relative paths against dir, the command's own empty working
-// directory, so only paths outside it can match. Plain arguments are not
-// checked: CloudWatch log group names such as "/" or "/var/log" look like paths
-// but are not read from disk.
+// directory, so only paths outside it can match.
+//
+// Some CLI parameters read a plain path with no prefix: AWS streaming bodies
+// (glacier upload-archive --body), directory uploads (deploy push --source,
+// gcloud builds submit DIR). So every argument and flag value is also checked
+// by validatePlainValue against the protected locations in protectedRoots.
+// Only paths that exist on the collector are refused, so SSM parameter names
+// such as /dev/db/password and log group names such as /var/log/messages
+// still work.
 func ValidateUntrustedArgs(args []string, dir string) error {
+	roots := protectedRoots()
 	for i := 1; i < len(args); i++ {
 		arg := args[i]
 		if arg == "|" {
@@ -116,6 +124,8 @@ func ValidateUntrustedArgs(args []string, dir string) error {
 				}
 			} else if isFileFlag(arg) && i+1 < len(args) {
 				values = append(values, fileFlagPaths(args[i+1])...)
+			} else if len(arg) > 2 && arg[1] != '-' && isFileFlag(arg[:2]) {
+				values = append(values, fileFlagPaths(arg[2:])...) // -fPATH
 			}
 		}
 		for _, value := range values {
@@ -123,8 +133,134 @@ func ValidateUntrustedArgs(args []string, dir string) error {
 				return err
 			}
 		}
+
+		value, flag := arg, ""
+		switch {
+		case strings.HasPrefix(arg, "--"):
+			name, v, ok := strings.Cut(arg, "=")
+			if !ok {
+				continue
+			}
+			value, flag = v, name
+		case strings.HasPrefix(arg, "-") && len(arg) > 2:
+			value, flag = strings.TrimPrefix(arg[2:], "="), arg[:2] // -fPATH, -f=PATH
+		case strings.HasPrefix(arg, "-"):
+			continue
+		case i > 1 && strings.HasPrefix(args[i-1], "-") && !strings.Contains(args[i-1], "="):
+			flag = args[i-1]
+		}
+		if !validatePlainValue(value, flag, dir, roots) {
+			return fmt.Errorf("argument %q refers to a file on cloud-collector, which is not allowed", value)
+		}
 	}
 	return nil
+}
+
+// protectedRoots are the locations on the collector a caller's command must
+// never read from: process environments (/proc, which hold every platform
+// secret), kernel and device files, mounted service account and web-identity
+// tokens (/run, /var/run), and the temp dir, where other calls keep their
+// credential files. Symlinked roots (/var/run -> /run, /tmp -> /private/tmp)
+// are listed in both forms.
+func protectedRoots() []string {
+	var roots []string
+	for _, root := range []string{"/proc", "/sys", "/dev", "/run", "/var/run", "/tmp", os.TempDir()} {
+		roots = append(roots, filepath.Clean(root))
+		if resolved, err := filepath.EvalSymlinks(root); err == nil {
+			roots = append(roots, resolved)
+		}
+	}
+	return roots
+}
+
+// nonPathFlag reports whether a flag takes a name or separator that is often
+// "/" rather than a local path: --log-group-name-prefix /, --path-prefix /,
+// --delimiter /.
+func nonPathFlag(flag string) bool {
+	flag = strings.ToLower(flag)
+	for _, s := range []string{"prefix", "delimiter", "separator", "log-group"} {
+		if strings.Contains(flag, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// validatePlainValue reports whether value, an argument or the value of flag,
+// is safe to hand to the CLI. The whole value is refused when it names a
+// protected location, anything below one, or a directory above one ("/",
+// "/var"), whose recursive upload would include them; the last is allowed
+// after a flag that takes names (nonPathFlag). "~..." is refused: a CLI
+// expands it to a home directory on the collector. Every part of the value
+// split at separators (key=path, a,b, k:path, quotes, brackets) is also
+// refused when it names a protected location or anything below one, or starts
+// with "~/".
+func validatePlainValue(value, flag, dir string, roots []string) bool {
+	names := nonPathFlag(flag)
+	if strings.HasPrefix(value, "~") && !names {
+		return false
+	}
+	if protectedPath(value, dir, roots, !names) {
+		return false
+	}
+	for _, part := range strings.FieldsFunc(value, isValueSeparator) {
+		if strings.HasPrefix(part, "~/") || protectedPath(part, dir, roots, false) {
+			return false
+		}
+	}
+	return true
+}
+
+func isValueSeparator(r rune) bool {
+	return unicode.IsSpace(r) || strings.ContainsRune(",=:;|\"'`[]{}()<>", r)
+}
+
+// protectedPath reports whether path exists on the collector outside the
+// command's working directory dir and is a protected root or below one, or,
+// with ancestors, a directory above one. Relative paths are resolved against
+// dir and only matter when they leave it (".."). Symlinks are resolved, so
+// /var/run/secrets/... and /proc/self/root/proc/1/environ are caught.
+func protectedPath(path, dir string, roots []string, ancestors bool) bool {
+	if !strings.HasPrefix(path, "/") {
+		if !hasParentSegment(path) {
+			return false
+		}
+		path = filepath.Join(dir, path)
+	}
+	path = filepath.Clean(path)
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false // names nothing on disk
+	}
+	cleanDir := filepath.Clean(dir)
+	if resolvedDir, err := filepath.EvalSymlinks(dir); err == nil {
+		cleanDir = resolvedDir
+	}
+	if pathWithin(resolved, cleanDir) {
+		return false
+	}
+	for _, candidate := range []string{path, resolved} {
+		for _, root := range roots {
+			if pathWithin(candidate, root) || (ancestors && pathWithin(root, candidate)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasParentSegment(path string) bool {
+	for _, segment := range strings.Split(path, "/") {
+		if segment == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+// pathWithin reports whether path is root or below it. Both are clean and absolute.
+func pathWithin(path, root string) bool {
+	return path == root || root == "/" || strings.HasPrefix(path, root+"/")
 }
 
 // isFileFlag reports whether a flag's value is a local path by convention, e.g.

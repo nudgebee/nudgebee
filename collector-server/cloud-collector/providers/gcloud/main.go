@@ -516,6 +516,14 @@ func validateGcloudWorkspaceBoundary(args []string) error {
 		if (contains("auth") && !isGcloudPrintAccessToken(args)) || contains("config", "set") || contains("config", "unset") || contains("init") {
 			return errors.New("GCP authentication and persistent configuration commands are not allowed")
 		}
+		// The command runs as the account's activated service account. --account
+		// could name another credential gcloud can find on its own, such as the
+		// collector's own GCE/GKE metadata identity.
+		for _, arg := range args[1:] {
+			if arg == "--account" || strings.HasPrefix(arg, "--account=") {
+				return errors.New("GCP CLI commands run as the connected account; --account is not allowed")
+			}
+		}
 		if contains("storage", "cp") || contains("storage", "mv") || contains("storage", "rsync") || contains("compute", "scp") {
 			return errors.New("GCP CLI cannot transfer collector-local files")
 		}
