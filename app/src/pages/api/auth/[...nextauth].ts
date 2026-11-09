@@ -1183,7 +1183,13 @@ async function jwtUpdateTokenOnUpdateTrigger(token: any, session: any, trigger: 
     })
   );
   if (trigger === 'update' && (session.tenantId || session.tenantName)) {
-    const userEmail = session.user?.email ?? '';
+    // `session` is the payload the browser sent to update(); only the signed
+    // token says who is switching.
+    const userEmail = (token.email as string | undefined) ?? '';
+    if (!userEmail) {
+      console.warn('jwtUpdateTokenOnUpdateTrigger: token has no email, aborting switch');
+      return;
+    }
     let tenantId = session.tenantId;
     if (!tenantId && session.tenantName) {
       const isSuperAdmin = !!(token.isSuperAdmin || token.isSuperAdminReadonly);
@@ -1212,10 +1218,12 @@ async function jwtUpdateTokenOnUpdateTrigger(token: any, session: any, trigger: 
     if (tenantId && tenantId !== currentTenantId) {
       // `updated` counts the tenant_users rows flipped to is_default; the upstream
       // handler refuses (0 rows / error) for a user who is not a member of the
-      // tenant, so this doubles as the membership check for the fallback below.
-      const update = await updateTenantUser(tenantId, session.user.email);
+      // tenant, so this doubles as the membership check below. Role rows alone
+      // are not membership: rows written into a tenant the user never joined
+      // must not switch them into it.
+      const update = await updateTenantUser(tenantId, userEmail);
       const isTenantMember = (update?.data?.data?.users_update_default_tenant?.updated ?? 0) > 0;
-      if (response?.data?.length > 0) {
+      if (isTenantMember && response?.data?.length > 0) {
         token.tenant = { id: tenantId, name: tenantName };
         const roles = [];
         const accountIds = [];

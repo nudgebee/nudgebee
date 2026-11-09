@@ -15,6 +15,7 @@ import { isSessionRevoked } from '@lib/sessionRevocation';
 import { loadActionInputSchema, loadRpcRoutes, type RpcRoute, type SchemaFieldInfo } from '@lib/rpcRoutes';
 import { elevateRoles } from '@lib/authHooks';
 import { pickDefaultRole } from '@lib/rolePriority';
+import { stripSuperAdminRoles } from '@lib/superAdminRoles';
 import { isTokenScopeBlockedAction } from '@lib/permissionCatalog';
 
 // Shared primitives for the RPC-bypass path. Used by both /api/rpc
@@ -175,7 +176,10 @@ export type SessionVariables = {
 };
 
 export function buildSessionVariables(jwt: JWT): SessionVariables {
-  const userRoles = (jwt.roles as string[]) || [];
+  // A super-admin role among the tenant roles came from a tenant-scoped row and
+  // grants nothing: super admin comes only from jwt.isSuperAdmin* below.
+  // Stripped here, at request time, so sessions minted before the fix lose it too.
+  const userRoles = stripSuperAdminRoles((jwt.roles as string[]) || []);
   const tenantId = ((jwt.tenant as { id?: string } | undefined)?.id as string) || '';
   const userId = ((jwt.id || jwt.sub) as string) || '';
   // Default role: pick the highest-priority role the user holds (shared with

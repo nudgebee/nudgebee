@@ -13,7 +13,7 @@ import (
 )
 
 // Must match securityContextCacheNamespace in security/security_context.go.
-const securityContextCacheNs = "security_context_v2"
+const securityContextCacheNs = "security_context_v3"
 
 const tenantUserCountQuery = `SELECT count(*) as cnt FROM tenant_users WHERE tenant = $1 AND "user" = $2`
 const tenantUserCountQueryAccount = `SELECT count(*) FROM tenant_users WHERE tenant = $1 AND "user" = $2`

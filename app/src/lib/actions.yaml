@@ -5786,14 +5786,8 @@ actions:
       headers:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
-    permissions:
-      - role: tenant_usage
-      - role: tenant_admin
-      - role: tenant_admin_readonly
-      - role: account_admin
-      - role: account_admin_readonly
-      - role: k8s_namespace_admin
-      - role: k8s_namespace_admin_readonly
+  # userauths_create / userauths_delete: server-only. NextAuth's callbacks call them
+  # as the server, so no session role is granted access.
   - name: userauths_create
     comment: Create a login or SSO auth record for a user
     definition:
@@ -5803,13 +5797,6 @@ actions:
       headers:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
-    permissions:
-      - role: tenant_admin
-      - role: tenant_admin_readonly
-      - role: account_admin
-      - role: account_admin_readonly
-      - role: k8s_namespace_admin
-      - role: k8s_namespace_admin_readonly
   - name: userauths_delete
     comment: Delete a user's login or SSO auth record
     definition:
@@ -5819,13 +5806,6 @@ actions:
       headers:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
-    permissions:
-      - role: tenant_admin
-      - role: tenant_admin_readonly
-      - role: account_admin
-      - role: account_admin_readonly
-      - role: k8s_namespace_admin
-      - role: k8s_namespace_admin_readonly
   - name: users_get_details
     comment: Get a user's profile, status and assigned roles
     definition:
