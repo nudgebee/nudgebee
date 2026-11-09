@@ -14,6 +14,7 @@ import { Button as DsButton } from '@ui/Button';
 import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import IntegrationDynamicFormModal from '@components/integrations/modal/IntegrationDynamicFormModal';
+import { savedConfigFlags } from '@components/integrations/form/schemaForm';
 import WebhookActivityLogModal from '@components/integrations/modal/WebhookActivityLogModal';
 import AddLLMConfigModal from '@components/llm/AddLLMConfigModal';
 import VmAgentCredentialsDialog from '@components/integrations/modal/VmAgentCredentialsDialog';
@@ -433,6 +434,8 @@ const ListIntegrations = ({ integrationName }) => {
             account_id: item?.integrations_cloud_accounts?.map((d) => d.cloud_account_id),
             integration_config_name: item?.name,
           },
+          // Secret values arrive blank; the form masks and keeps them by these flags.
+          integration_config_has_value: savedConfigFlags(item?.integration_config_values),
         });
       }
       setOpenModal(true);

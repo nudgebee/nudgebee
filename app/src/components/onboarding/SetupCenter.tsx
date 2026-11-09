@@ -37,6 +37,7 @@ import { ALERT_PROVIDERS } from '@lib/onboarding/setupRegistry';
 import apiKnowledgeBase from '@api1/knowledge-base';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import IntegrationDynamicFormModal from '@components/integrations/modal/IntegrationDynamicFormModal';
+import { savedConfigFlags } from '@components/integrations/form/schemaForm';
 import K8sAccountModal from '@components/integrations/modal/K8sAccountModal';
 import K8sAgentInstallDialog from '@components/integrations/modal/K8sAgentInstallDialog';
 import JiraAccountModal from '@components/integrations/modal/JiraAccountModal';
@@ -136,7 +137,7 @@ interface ConnectedAiIntegration {
   id: string;
   type: string;
   name?: string;
-  integration_config_values: Array<{ name?: string; value?: unknown }>;
+  integration_config_values: Array<{ name?: string; value?: unknown; has_value?: boolean }>;
   integrations_cloud_accounts: unknown[];
   // The real row carries more (source, status, timestamps, …) — this modal's
   // `editData` contract is `Record<string, unknown>`, not this narrower shape.
@@ -194,6 +195,8 @@ const toDynamicFormEditData = (row: ConnectedAiIntegration): Record<string, unkn
     account_id: (row.integrations_cloud_accounts as Array<{ cloud_account_id?: string }> | undefined)?.map((a) => a?.cloud_account_id),
     integration_config_name: row.name,
   },
+  // Secret values arrive blank; the form masks and keeps them by these flags.
+  integration_config_has_value: savedConfigFlags(row.integration_config_values),
 });
 
 /**
