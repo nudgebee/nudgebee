@@ -2,7 +2,7 @@ import logging
 from typing import Any, Dict, Optional
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from slack_bolt.request import BoltRequest
@@ -16,6 +16,7 @@ from notifications_server.repositories.oauth_repository import (
     find_installation_by_tenant_and_platform,
     update_state_tenant,
 )
+from notifications_server.routers.common import verify_action_token
 from notifications_server.services.messaging_installations import ms_teams_aad_tenant_owner
 from notifications_server.services.ms_teams.ms_teams import MsTeamsService, aad_tenant_id_of
 from notifications_server.services.discord.discord import DiscordService
@@ -159,7 +160,7 @@ class DiscordInstallRequest(BaseModel):
     bot_token: str
 
 
-@router.post("/install/discord")
+@router.post("/install/discord", dependencies=[Depends(verify_action_token)])
 async def discord_install(request: Request, body: DiscordInstallRequest):
     """Install or rotate the tenant's Discord bot token (one install per tenant;
     re-posting updates the credential in place). Reports the bot's guild count and

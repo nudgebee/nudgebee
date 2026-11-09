@@ -18,6 +18,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return sendAuthenticationError(res);
     }
 
+    const roles = (auth.jwt.roles as string[]) || [];
+    const permissions = (auth.jwt.permissions as string[]) || [];
+    const canManageDiscord = roles.includes('tenant_admin') || auth.jwt.isSuperAdmin === true || permissions.includes('messagingplatforms:Write');
+    if (!canManageDiscord) {
+      return res.status(403).json({ error: 'forbidden' });
+    }
+
     const notificationServiceEndpoint = process.env.NOTIFICATION_SERVICE_URL || 'http://notifications:80';
     const url = `${notificationServiceEndpoint}/api/integrations/install/discord`;
 
@@ -29,6 +36,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         'tenant-id': tenantId,
         'x-user-email': userEmail || '',
         'x-request-id': requestId,
+        'X-ACTION-TOKEN': process.env.NOTIFICATION_SERVER_TOKEN || '',
       },
       body: JSON.stringify(req.body),
     });
