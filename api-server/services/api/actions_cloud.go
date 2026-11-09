@@ -9,6 +9,7 @@ import (
 	"nudgebee/services/internal/database"
 	"nudgebee/services/internal/database/models"
 	"nudgebee/services/security"
+	"slices"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -70,6 +71,11 @@ func handleCloudMetrics(actionPayload *ActionRequest, c *gin.Context, ctx *secur
 				Message: err.Error(),
 			},
 		})
+		return
+	}
+
+	if request.AccountId != "" && !canReadAccountOrTenantUsage(ctx, request.AccountId) {
+		c.JSON(403, common.ErrorActionForbidden("access denied for account"))
 		return
 	}
 
@@ -270,6 +276,11 @@ func handleDatabasePerformance(actionPayload *ActionRequest, c *gin.Context, ctx
 		return
 	}
 
+	if request.AccountId != "" && !canReadAccountOrTenantUsage(ctx, request.AccountId) {
+		c.JSON(403, common.ErrorActionForbidden("access denied for account"))
+		return
+	}
+
 	err = common.ValidateStruct(request)
 	if err != nil {
 		c.JSON(400, []common.Error{
@@ -305,6 +316,10 @@ func handleTriggerCloudSync(actionPayload *ActionRequest, c *gin.Context, ctx *s
 		return
 	}
 
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
+		c.JSON(403, common.ErrorActionForbidden("access denied for account"))
+		return
+	}
 	resp, err := cloud.TriggerCloudAccountSync(ctx, accountId)
 	if err != nil {
 		c.JSON(500, []common.Error{
@@ -349,6 +364,10 @@ func handleSyncCloudService(actionPayload *ActionRequest, c *gin.Context, ctx *s
 		}
 	}
 
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
+		c.JSON(403, common.ErrorActionForbidden("access denied for account"))
+		return
+	}
 	resp, err := cloud.SyncCloudService(ctx, accountId, serviceName, regions)
 	if err != nil {
 		c.JSON(500, []common.Error{
@@ -697,4 +716,16 @@ func handleCloudExecuteCommand(actionPayload *ActionRequest, c *gin.Context, ctx
 	}
 
 	c.JSON(200, resp)
+}
+
+// canReadAccountOrTenantUsage is the account check for a read that is also open
+// to tenant_usage: a role (or the action's grant) that reads the account, or
+// tenant_usage on an account of the caller's tenant (it has no per-account
+// scope, so a tenant check is all it gets, as in relay_alert.go).
+func canReadAccountOrTenantUsage(ctx *security.RequestContext, accountId string) bool {
+	if ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+		return true
+	}
+	sc := ctx.GetSecurityContext()
+	return sc != nil && slices.Contains(sc.GetRoles(), security.AUTH_TENANT_USAGE_ROLE) && sc.IsTenantAccount(accountId)
 }

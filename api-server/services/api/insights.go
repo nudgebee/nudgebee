@@ -28,6 +28,11 @@ func handleInsights(actionPayload *ActionRequest, c *gin.Context, tracer *trace.
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
 		}
+		// Open to usage roles, so check the tenant only, as relay_alert.go does.
+		if !ctx.GetSecurityContext().IsTenantAccount(insightRequest.AccountId) {
+			c.JSON(403, common.ErrorActionForbidden("access denied for account"))
+			return
+		}
 		resp, err := insight.GetInsights(ctx, insightRequest.AccountId)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))

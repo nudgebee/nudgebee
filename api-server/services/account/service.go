@@ -2665,6 +2665,9 @@ func UpsertAccountAttrs(context *security.RequestContext, request AccountAttrUps
 	}
 	uniqueAccountIds := make([]string, 0, len(accountIdSet))
 	for id := range accountIdSet {
+		if !context.GetSecurityContext().HasAccountAccess(id, security.SecurityAccessTypeUpdate) {
+			return AccountAttrUpsertResponse{}, common.ErrorUnauthorized("access denied for account")
+		}
 		uniqueAccountIds = append(uniqueAccountIds, id)
 	}
 

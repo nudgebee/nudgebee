@@ -440,3 +440,106 @@ func TestEventGetImpactRequiresAccountAccess(t *testing.T) {
 		})
 	}
 }
+
+// The triage reads below listed or explained an account's alerts without asking
+// whether the caller may read that account: an account admin of one account saw
+// a sibling account's duplicates, timeline, triage rules, rule matches and
+// threshold suggestions. Each now checks the account it reads.
+func TestTriageReadsRequireAccountAccess(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	manager := &database.DatabaseManager{}
+	database.RegisterDatabaseManagerHook(database.Metastore, func() (*database.DatabaseManager, error) {
+		return manager, nil
+	})
+	t.Cleanup(func() { database.RegisterDatabaseManagerHook(database.Metastore, nil) })
+
+	// An account admin of triageOwnAccount with no role on this one.
+	const unreadable = "77777777-7777-7777-7777-777777777777"
+	ownOnly := `{"TenantId":"tenant-1","UserId":"user-1",
+		"AccountIds":["` + triageOwnAccount + `","` + unreadable + `"],
+		"Roles":["account_admin"],"ScopedEntityIds":{"account_admin":["` + triageOwnAccount + `"]}}`
+
+	cases := []struct {
+		action     string
+		handler    func(*ActionRequest, *gin.Context, *security.RequestContext)
+		loadsEvent bool
+		input      func(accountID string) map[string]any
+	}{
+		{"event_get_duplicates", handleEventGetDuplicates, true, func(string) map[string]any { return map[string]any{"event_id": triageEventID} }},
+		{"event_get_timeline", handleEventGetTimeline, true, func(string) map[string]any { return map[string]any{"event_id": triageEventID} }},
+		{"event_get_threshold_suggestion", handleEventGetThresholdSuggestion, true, func(string) map[string]any { return map[string]any{"event_id": triageEventID} }},
+		{"event_get_triage_rules", handleEventGetTriageRules, false, func(a string) map[string]any { return map[string]any{"cloud_account_id": a} }},
+		{"events_dryrun_triage_rule", handleEventPreviewTriageRule, false, func(a string) map[string]any {
+			return map[string]any{"cloud_account_id": a, "rule_type": "suppression", "action": "suppress", "match_fingerprint": "fp-1"}
+		}},
+		{"event_get_triage_rule_events", handleEventGetTriageRuleEvents, false, func(a string) map[string]any {
+			return map[string]any{"rule_id": triageRuleID, "account_id": a}
+		}},
+	}
+
+	run := func(t *testing.T, handler func(*ActionRequest, *gin.Context, *security.RequestContext), loadsEvent bool, input map[string]any, caller, eventAccount string) (int, []string) {
+		var ran []string
+		db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherFunc(func(expected, actual string) error {
+			if expected != triageEventLoadSQL {
+				ran = append(ran, actual)
+			}
+			return sqlmock.QueryMatcherRegexp.Match(expected, actual)
+		})))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = db.Close() })
+		manager.Db = sqlx.NewDb(db, "postgres")
+		if loadsEvent {
+			mock.ExpectQuery(triageEventLoadSQL).
+				WillReturnRows(sqlmock.NewRows([]string{"id", "tenant", "cloud_account_id", "fingerprint"}).
+					AddRow(triageEventID, "tenant-1", eventAccount, "fp-1"))
+		}
+		var sc security.SecurityContext
+		require.NoError(t, json.Unmarshal([]byte(caller), &sc))
+		ctx := security.NewRequestContext(context.Background(), &sc, slog.Default(), nil, nil)
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+		handler(&ActionRequest{Input: input}, c, ctx)
+		return rec.Code, ran
+	}
+
+	// Without an account these list every account in the tenant: open to a
+	// tenant-wide reader, built-in or by a tenant-wide events grant, and not to
+	// an admin of one account.
+	for _, tc := range []struct {
+		name    string
+		handler func(*ActionRequest, *gin.Context, *security.RequestContext)
+		input   map[string]any
+	}{
+		{"event_get_triage_rules", handleEventGetTriageRules, map[string]any{}},
+		{"event_get_triage_rule_events", handleEventGetTriageRuleEvents, map[string]any{"rule_id": triageRuleID}},
+	} {
+		t.Run(tc.name+"/no account: tenant-wide events grant", func(t *testing.T) {
+			status, _ := run(t, tc.handler, false, tc.input, triageCustomRoleUser, "")
+			assert.NotEqual(t, http.StatusForbidden, status)
+		})
+		t.Run(tc.name+"/no account: admin of one account", func(t *testing.T) {
+			if tc.name == "event_get_triage_rules" {
+				return // narrowed to the caller's accounts instead of refused
+			}
+			status, _ := run(t, tc.handler, false, tc.input, ownOnly, "")
+			assert.Equal(t, http.StatusForbidden, status)
+		})
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.action+"/refused on an account the caller cannot read", func(t *testing.T) {
+			status, ran := run(t, tc.handler, tc.loadsEvent, tc.input(unreadable), ownOnly, unreadable)
+			assert.Equal(t, http.StatusForbidden, status)
+			assert.Empty(t, ran, "nothing past the access check ran")
+		})
+		t.Run(tc.action+"/refused on another tenant's account", func(t *testing.T) {
+			status, _ := run(t, tc.handler, tc.loadsEvent, tc.input(triageForeignAccount), triageCustomRoleUser, triageForeignAccount)
+			assert.Equal(t, http.StatusForbidden, status)
+		})
+		t.Run(tc.action+"/allowed on the caller's account", func(t *testing.T) {
+			status, _ := run(t, tc.handler, tc.loadsEvent, tc.input(triageOwnAccount), ownOnly, triageOwnAccount)
+			assert.NotEqual(t, http.StatusForbidden, status)
+		})
+	}
+}

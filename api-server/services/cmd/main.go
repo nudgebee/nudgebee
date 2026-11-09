@@ -216,6 +216,7 @@ func main() {
 	r.Use(sloggin.NewWithConfig(logger, slogginConfig))
 	r.Use(traceResponseHeaderMiddleware())
 	r.Use(authHandlerMiddleware())
+	r.Use(api.AccountTenantFloor())
 
 	var tracer = otel.Tracer(config.SERVICE_NAME)
 	var meter = otel.Meter(config.SERVICE_NAME)
