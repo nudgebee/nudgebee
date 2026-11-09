@@ -165,6 +165,15 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		return
 	}
 
+	if !authorizeIntegrationAction(ctx, actionPayload.Action.Name, actionPayload.Input) {
+		if _, known := integrationActionClass[actionPayload.Action.Name]; !known && !integrationActionsAuthorizedInHandler[actionPayload.Action.Name] {
+			c.JSON(400, common.ErrorActionBadRequest("invalid action name - "+actionPayload.Action.Name))
+			return
+		}
+		c.JSON(403, common.ErrorActionForbidden("not allowed to manage integrations"))
+		return
+	}
+
 	switch actionPayload.Action.Name {
 	case "integrations_create_config":
 		var request IntegrationCreateRequest
