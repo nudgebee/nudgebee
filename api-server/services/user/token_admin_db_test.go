@@ -57,7 +57,7 @@ func TestTenantTokens_DB(t *testing.T) {
 			updated_at timestamp NOT NULL DEFAULT now(), name varchar(255), expires_at timestamptz,
 			status text, provider text NOT NULL, accessed_at timestamp, tenant_id uuid)`)
 	require.NoError(t, err)
-	for _, m := range []string{"V783_llm_gateway_tables", "V964_api_key_policy", "V967_add_user_auths_scopes",
+	for _, m := range []string{"V803_llm_gateway_tables", "V964_api_key_policy", "V967_add_user_auths_scopes",
 		"V985_create_llm_gateway_access_policies", "V1012_user_auths_token_suffix"} {
 		files, err := filepath.Glob("../../migrations/migrations/app/*_" + m + ".up.sql")
 		require.NoError(t, err)
