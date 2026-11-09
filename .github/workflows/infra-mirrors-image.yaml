@@ -95,6 +95,10 @@ jobs:
           # never ran apt upgrade — 5C/40H/63M fixable had accrued). Consumed by
           # the nudgebee-agent chart's clickhouse subchart.
           - { image: clickhouse,        context: deploy/kubernetes/nudgebee-mirrors/clickhouse,        tag: 24.12.4-debian-12-r0-nb-3 }
+          # Official clickhouse-server image, same ClickHouse version, for the chart
+          # without the Bitnami subchart. The Bitnami-based tag above stays for
+          # charts released before the switch.
+          - { image: clickhouse,        context: deploy/kubernetes/nudgebee-mirrors/clickhouse-official, tag: 24.12.4-nb-1 }
           # Distroless passthrough of the upstream prometheus-community image
           # (replaces the CVE-heavy bitnamilegacy build: 2C/35H fixable + debian-11
           # floor -> 0/1/1, 0 unfixable). OS_PKG_EPOCH is accepted but unused there.
@@ -174,6 +178,7 @@ jobs:
       matrix:
         include:
           - { image: clickhouse,        tag: 24.12.4-debian-12-r0-nb-3 }
+          - { image: clickhouse,        tag: 24.12.4-nb-1 }
           - { image: postgres-exporter, tag: v0.20.1-nb3 }
           - { image: postgres,          tag: 16.15-alpine-nb1 }
           - { image: postgres,          tag: 16.15-trixie-nb1 }
