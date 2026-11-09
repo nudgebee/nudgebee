@@ -199,6 +199,21 @@ var triageAccessCases = []triageAccessCase{
 			mock.ExpectQuery("AS cloud_resource_id, w.namespace").WillReturnRows(sqlmock.NewRows([]string{"cloud_resource_id"}))
 		},
 	},
+	{
+		// ListThresholdSuggestions (unlike GetThresholdApplyOptions/Apply/Revert) has no
+		// *security.RequestContext of its own, so the handler is the only place that can
+		// check account access.
+		action:   "event_list_threshold_suggestions",
+		handler:  handleEventListThresholdSuggestions,
+		readOnly: true,
+		input: func(accountID string) map[string]any {
+			return map[string]any{"cloud_account_id": accountID}
+		},
+		queries: func(mock sqlmock.Sqlmock, _ string) {
+			mock.ExpectQuery("COUNT\\(\\*\\) FROM event_threshold_suggestions").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+			mock.ExpectQuery("ORDER BY").WillReturnRows(sqlmock.NewRows([]string{"alert_rule_key"}))
+		},
+	},
 }
 
 // TestTriageActionsRequireAccountAccess covers the /rpc/triage actions that act
@@ -253,6 +268,10 @@ func TestTriageActionsRequireAccountAccess(t *testing.T) {
 
 		rec := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(rec)
+		// handleEventListThresholdSuggestions reads c.Request.Context(), unlike every
+		// other handler here (which use ctx.GetContext()); CreateTestContext leaves
+		// Request nil, so give it one.
+		c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
 		tc.handler(&ActionRequest{Input: tc.input(accountID)}, c, ctx)
 
 		mu.Lock()
@@ -287,4 +306,68 @@ func TestTriageActionsRequireAccountAccess(t *testing.T) {
 			})
 		}
 	}
+}
+
+// TestEventListThresholdSuggestionsNoAccountFilter covers the case the table above
+// can't: a caller who supplies no cloud_account_id/cloud_account_ids at all.
+// ListThresholdSuggestions treats an empty filter as "every account in the tenant",
+// so a caller who isn't a tenant-wide reader must be narrowed to their own accounts.
+func TestEventListThresholdSuggestionsNoAccountFilter(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	manager := &database.DatabaseManager{}
+	database.RegisterDatabaseManagerHook(database.Metastore, func() (*database.DatabaseManager, error) {
+		return manager, nil
+	})
+	t.Cleanup(func() { database.RegisterDatabaseManagerHook(database.Metastore, nil) })
+
+	const tenantReadAdmin = `{"TenantId":"tenant-1","UserId":"user-3","Roles":["tenant_admin_readonly"]}`
+	const noAccountUser = `{"TenantId":"tenant-1","UserId":"user-4","Roles":[]}`
+
+	run := func(t *testing.T, caller string, setup func(sqlmock.Sqlmock)) (int, sqlmock.Sqlmock) {
+		t.Helper()
+		db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = db.Close() })
+		manager.Db = sqlx.NewDb(db, "postgres")
+		setup(mock)
+
+		var sc security.SecurityContext
+		require.NoError(t, json.Unmarshal([]byte(caller), &sc))
+		ctx := security.NewRequestContext(context.Background(), &sc, slog.Default(), nil, nil)
+
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+		handleEventListThresholdSuggestions(&ActionRequest{Input: map[string]any{}}, c, ctx)
+		return rec.Code, mock
+	}
+
+	t.Run("account-scoped admin is narrowed to their own accounts", func(t *testing.T) {
+		// Scoped to exactly the caller's readable accounts (triageOwnAccount,
+		// triageSiblingAccount): the query must carry an explicit account filter.
+		status, mock := run(t, triageAccountAdmin, func(mock sqlmock.Sqlmock) {
+			mock.ExpectQuery("COUNT\\(\\*\\) FROM event_threshold_suggestions.*cloud_account_id = ANY").
+				WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+			mock.ExpectQuery("ORDER BY").WillReturnRows(sqlmock.NewRows([]string{"alert_rule_key"}))
+		})
+		assert.Equal(t, http.StatusOK, status)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("tenant-wide reader gets an unscoped listing", func(t *testing.T) {
+		status, mock := run(t, tenantReadAdmin, func(mock sqlmock.Sqlmock) {
+			mock.ExpectQuery("COUNT\\(\\*\\) FROM event_threshold_suggestions").
+				WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+			mock.ExpectQuery("ORDER BY").WillReturnRows(sqlmock.NewRows([]string{"alert_rule_key"}))
+		})
+		assert.Equal(t, http.StatusOK, status)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("caller with no accessible accounts is forbidden", func(t *testing.T) {
+		status, mock := run(t, noAccountUser, func(sqlmock.Sqlmock) {})
+		assert.Equal(t, http.StatusForbidden, status)
+		assert.NoError(t, mock.ExpectationsWereMet(), "handler must not query before the account check")
+	})
 }

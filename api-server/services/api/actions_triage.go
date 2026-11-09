@@ -1520,8 +1520,9 @@ func handleEventGetThresholdSuggestion(h *ActionRequest, c *gin.Context, ctx *se
 
 // handleEventListThresholdSuggestions lists all cached threshold suggestions for a tenant.
 func handleEventListThresholdSuggestions(h *ActionRequest, c *gin.Context, ctx *security.RequestContext) {
+	sc := ctx.GetSecurityContext()
 	var tenantID string
-	if sc := ctx.GetSecurityContext(); sc != nil {
+	if sc != nil {
 		tenantID = sc.GetTenantId()
 	}
 	if tenantID == "" {
@@ -1541,6 +1542,28 @@ func handleEventListThresholdSuggestions(h *ActionRequest, c *gin.Context, ctx *
 	if len(cloudAccountIDs) == 0 {
 		if id, ok := h.Input["cloud_account_id"].(string); ok && id != "" {
 			cloudAccountIDs = []string{id}
+		}
+	}
+	// No account filter given: ListThresholdSuggestions treats an empty slice as "every
+	// account in the tenant", so a caller who isn't a tenant-wide reader must be narrowed
+	// to exactly the accounts they can read (built-in role grants and custom-role grants
+	// alike) instead of falling through to that tenant-wide default.
+	if len(cloudAccountIDs) == 0 && !sc.HasTenantAccess(security.SecurityAccessTypeRead) {
+		seen := map[string]bool{}
+		for _, id := range append(sc.ListAccountIds(), sc.ScopedAccountIdsForModule("events")...) {
+			if !seen[id] && sc.CanReadAccountData(id, "events") {
+				seen[id] = true
+				cloudAccountIDs = append(cloudAccountIDs, id)
+			}
+		}
+		if len(cloudAccountIDs) == 0 {
+			c.JSON(http.StatusForbidden, common.ErrorActionForbidden("access denied for account"))
+			return
+		}
+	}
+	for _, accID := range cloudAccountIDs {
+		if !requireTriageAccountAccess(c, ctx, accID, "events", security.SecurityAccessTypeRead) {
+			return
 		}
 	}
 	source, _ := h.Input["source"].(string)
@@ -1579,6 +1602,9 @@ func handleEventGetThresholdApplyOptions(h *ActionRequest, c *gin.Context, ctx *
 	cloudAccountID, _ := h.Input["cloud_account_id"].(string)
 	if alertRuleKey == "" || cloudAccountID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "alert_rule_key and cloud_account_id are required"})
+		return
+	}
+	if !requireTriageAccountAccess(c, ctx, cloudAccountID, "events", security.SecurityAccessTypeRead) {
 		return
 	}
 
@@ -1640,6 +1666,9 @@ func handleEventApplyThresholdSuggestion(h *ActionRequest, c *gin.Context, ctx *
 		c.JSON(http.StatusBadRequest, gin.H{"error": "alert_rule_key and cloud_account_id are required"})
 		return
 	}
+	if !requireTriageAccountAccess(c, ctx, req.CloudAccountID, "events", security.SecurityAccessTypeUpdate) {
+		return
+	}
 
 	auditEvent := audit.Audit{
 		UserId:        ctx.GetSecurityContext().GetUserId(),
@@ -1681,6 +1710,9 @@ func handleEventRevertThresholdSuggestion(h *ActionRequest, c *gin.Context, ctx 
 	cloudAccountID, _ := h.Input["cloud_account_id"].(string)
 	if alertRuleKey == "" || cloudAccountID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "alert_rule_key and cloud_account_id are required"})
+		return
+	}
+	if !requireTriageAccountAccess(c, ctx, cloudAccountID, "events", security.SecurityAccessTypeUpdate) {
 		return
 	}
 
