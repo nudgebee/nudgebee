@@ -62,10 +62,6 @@ class RecommendationService:
         account_id: str,
         config: Config,
         metrics_provider: Optional[str] = None,
-        datadog_api_key: Optional[str] = None,
-        datadog_app_key: Optional[str] = None,
-        datadog_site: Optional[str] = None,
-        elasticsearch: Optional[dict] = None,
         tenant_id: str = "",
         metric_provider: str = "",
         metric_provider_source: str = "",
@@ -77,11 +73,6 @@ class RecommendationService:
         self._executor = ThreadPoolExecutor(self._config.max_workers, thread_name_prefix="rightsizing")
         self.account_id = account_id
         self.tenant_id = tenant_id
-        # Both providers' queries now travel through api-server, which resolves the
-        # account's integration and its credentials. The keys and passwords below are
-        # only read when the rollback flag sends the queries straight to the provider.
-        via_api_server = ApiServerMetricsConfigs.via_api_server
-        elasticsearch = elasticsearch or {}
         # Annotated because there are now four branches: without it the field's type is
         # whichever service the first branch builds, and the other three read as
         # assignment errors.
@@ -143,38 +134,12 @@ class RecommendationService:
                 f"hint {metric_provider or 'none'}/{metric_provider_source or 'none'})"
             )
         elif metrics_provider == "ES":
-            # An ES account has no Prometheus to fall back to, so a missing connection
-            # has to fail loudly. Falling through to PrometheusMetricsService is what
-            # made rightsizing silently produce nothing for these accounts.
-            if not via_api_server and not elasticsearch:
-                raise ValueError(
-                    f"metrics_provider=ES for account {account_id} but no elasticsearch connection was supplied"
-                )
             self._metrics_service_loaders = ElasticsearchMetricsService(
-                config,
-                account_id,
-                self._executor,
-                url=elasticsearch.get("url", ""),
-                auth_type=elasticsearch.get("auth_type"),
-                username=elasticsearch.get("username"),
-                password=elasticsearch.get("password"),
-                api_key=elasticsearch.get("api_key"),
-                bearer_token=elasticsearch.get("bearer_token"),
-                metrics_index=elasticsearch.get("metrics_index"),
-                tls_skip_verify=bool(elasticsearch.get("tls_skip_verify", False)),
-                tenant_id=tenant_id,
-                via_api_server=via_api_server,
+                config, account_id, self._executor, tenant_id=tenant_id
             )
         elif metrics_provider == "datadog":
             self._metrics_service_loaders = DatadogMetricsService(
-                config,
-                account_id,
-                self._executor,
-                api_key=datadog_api_key or "",
-                app_key=datadog_app_key or "",
-                site=datadog_site or "",
-                tenant_id=tenant_id,
-                via_api_server=via_api_server,
+                config, account_id, self._executor, tenant_id=tenant_id
             )
         else:
             self._metrics_service_loaders = PrometheusMetricsService(

@@ -889,27 +889,21 @@ func triggerVerticalRightsizing(ctx *security.RequestContext, accountIds []strin
 		}
 
 		if metricsProvider == "datadog" {
-			apiKey, appKey, site, err := integrations.GetDatadogConfigs(tenantCtx, acc.AccountId)
-			if err != nil {
+			if _, _, _, err := integrations.GetDatadogConfigs(tenantCtx, acc.AccountId); err != nil {
 				tenantCtx.GetLogger().Error("vertical rightsizing: error getting datadog configs",
 					"account_id", acc.AccountId,
 					"tenant_id", acc.TenantId,
 					"error", err)
 				continue
 			}
-			request.DatadogApiKey = apiKey
-			request.DatadogAppKey = appKey
-			request.DatadogSite = site
 		}
 
 		if metricsProvider == "ES" {
-			esCfg, esErr := observability.ElasticsearchRightsizingConfig(tenantCtx, acc.AccountId)
-			if esErr != nil {
+			if esErr := observability.CheckElasticsearchRightsizing(tenantCtx, acc.AccountId); esErr != nil {
 				tenantCtx.GetLogger().Error("vertical rightsizing: error getting elasticsearch config",
 					"account_id", acc.AccountId, "tenant_id", acc.TenantId, "error", esErr)
 				continue
 			}
-			request.Elasticsearch = esCfg
 		}
 
 		_, err := ml.TriggerVerticalRightsizing(tenantCtx, request)

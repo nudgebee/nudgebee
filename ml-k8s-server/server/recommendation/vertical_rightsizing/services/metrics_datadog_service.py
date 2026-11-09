@@ -3,11 +3,10 @@ from __future__ import annotations
 import logging
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Any, List, Optional
+from typing import Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
-import requests
 
 from server.metrics.api_server_metrics import METRIC_PROVIDER_DATADOG, query_metrics_via_api_server
 
@@ -19,34 +18,6 @@ from server.utils.utils import safe_get
 from server.recommendation.vertical_rightsizing.services.metric_base_service import MetricsService
 
 logger = logging.getLogger("rightsizing")
-
-
-def entries_from_datadog_response(data: Dict[str, Any]) -> List[dict]:
-    """Datadog's own response in the shape api-server returns for every provider:
-    labels in ``metric``, and timestamps (seconds) aligned with values.
-
-    Only used when the direct-Datadog fallback is enabled; the api-server transport
-    already returns this shape. Both feed the same parsers, so there is one shape to
-    reason about rather than two.
-    """
-    entries: List[dict] = []
-    for series in data.get("series") or []:
-        tags: Dict[str, str] = {}
-        for part in (series.get("scope") or "").split(","):
-            part = part.strip()
-            if ":" in part:
-                key, value = part.split(":", 1)
-                tags[key] = value
-        timestamps: List[float] = []
-        values: List[Any] = []
-        for point in series.get("pointlist") or []:
-            # A null is a gap, not a zero: Datadog reports one for every interval the
-            # series had no data in.
-            if len(point) >= 2 and point[1] is not None:
-                timestamps.append(point[0] / 1000.0)  # Datadog timestamps are in ms
-                values.append(point[1])
-        entries.append({"metric": tags, "timestamps": timestamps, "values": values})
-    return entries
 
 
 def pods_from_series(entries: List[dict], live_cutoff: float) -> list[PodData]:
@@ -131,7 +102,7 @@ KIND_TO_TAG: Dict[str, str] = {
 
 class DatadogMetricsService(MetricsService):
     """
-    A class for fetching metrics from Datadog HTTP API.
+    A class for fetching metrics from Datadog, through api-server.
     """
 
     def __init__(
@@ -139,49 +110,16 @@ class DatadogMetricsService(MetricsService):
         config: Config,
         account_id: str,
         executor: ThreadPoolExecutor,
-        api_key: str = "",
-        app_key: str = "",
-        site: str = "",
         tenant_id: str = "",
-        via_api_server: bool = True,
     ) -> None:
         super().__init__(config, account_id, executor)
         self.account_id = account_id
         self.tenant_id = tenant_id
-        # The queries are the same either way; only who holds the credentials differs.
-        # Through api-server nothing here knows the keys, which is the point: they used
-        # to arrive in the request body and be logged with it.
-        self.via_api_server = via_api_server
-        self.api_key = api_key
-        self.app_key = app_key
-        self.site = site
-        self._base_url = f"https://{site}/api/v1/query"
-        self._headers = {
-            "DD-API-KEY": api_key,
-            "DD-APPLICATION-KEY": app_key,
-        }
 
     def check_connection(self):
-        """Verify Datadog API connectivity."""
-        if self.via_api_server:
-            # api-server holds the connection; a broken one surfaces on the first query
-            # with its own error, the same way the Prometheus path behaves.
-            return
-        try:
-            now = datetime.utcnow()
-            resp = requests.get(
-                self._base_url,
-                headers=self._headers,
-                params={
-                    "from": int((now - timedelta(minutes=5)).timestamp()),
-                    "to": int(now.timestamp()),
-                    "query": "avg:system.cpu.idle{*}",
-                },
-                timeout=10,
-            )
-            resp.raise_for_status()
-        except Exception as e:
-            raise ConnectionError(f"Datadog API connection failed: {e}") from e
+        """api-server holds the connection; a broken one surfaces on the first query
+        with its own error, the same way the Prometheus path behaves."""
+        return
 
     def _metrics_timeout(self) -> Optional[int]:
         """The caller's own budget, so an abandoned workload does not leave api-server
@@ -190,28 +128,15 @@ class DatadogMetricsService(MetricsService):
 
     def _query_datadog(self, query: str, from_ts: int, to_ts: int) -> List[dict]:
         """Run one Datadog query and return series as {metric, timestamps, values}."""
-        if self.via_api_server:
-            return query_metrics_via_api_server(
-                account_id=self.account_id,
-                tenant_id=self.tenant_id,
-                query=query,
-                start_time=datetime.fromtimestamp(from_ts, tz=timezone.utc),
-                end_time=datetime.fromtimestamp(to_ts, tz=timezone.utc),
-                metric_provider=METRIC_PROVIDER_DATADOG,
-                timeout=self._metrics_timeout(),
-            )
-        resp = requests.get(
-            self._base_url,
-            headers=self._headers,
-            params={
-                "from": from_ts,
-                "to": to_ts,
-                "query": query,
-            },
-            timeout=60,
+        return query_metrics_via_api_server(
+            account_id=self.account_id,
+            tenant_id=self.tenant_id,
+            query=query,
+            start_time=datetime.fromtimestamp(from_ts, tz=timezone.utc),
+            end_time=datetime.fromtimestamp(to_ts, tz=timezone.utc),
+            metric_provider=METRIC_PROVIDER_DATADOG,
+            timeout=self._metrics_timeout(),
         )
-        resp.raise_for_status()
-        return entries_from_datadog_response(resp.json())
 
     async def _async_query_datadog(self, query: str, from_ts: int, to_ts: int) -> List[dict]:
         """Async wrapper around _query_datadog using the thread pool executor."""

@@ -14,7 +14,12 @@ from kombu.transport.pyamqp import Channel as KombuChannel
 
 import server.utils.rabbitmq as rabbitmq
 from server.exception import CancelPrediction
-from server.message import MlMessageAbstract, ml_server_message_handler
+from server.message import (
+    MlMessageAbstract,
+    VerticalRightsizingRequest,
+    VolumeRightsizingRequest,
+    ml_server_message_handler,
+)
 
 
 class _Stop(BaseException):
@@ -318,6 +323,22 @@ def test_a_body_too_deep_to_parse_is_still_dead_lettered(monkeypatch):
     consumer.on_message(_message(FakeChannel([]), "[" * 100000))
 
     assert [call["exchange_name"] for call in published] == ["jobs_dlx"]
+
+
+@pytest.mark.parametrize(
+    "request_type, ids",
+    [
+        (VerticalRightsizingRequest, {"account_id": "acc-1", "tenant_id": "t-1"}),
+        (VolumeRightsizingRequest, {"account": "acc-1", "tenant": "t-1"}),
+    ],
+)
+def test_a_rightsizing_request_carries_no_credentials_even_from_an_older_sender(request_type, ids):
+    credentials = {"datadog_api_key", "datadog_app_key", "datadog_site", "elasticsearch"}
+
+    queued = request_type(**ids, **{name: "k" for name in credentials})
+
+    assert not credentials & set(request_type.model_fields)
+    assert not credentials & set(queued.message_body)
 
 
 def test_cancelled_message_is_logged_without_its_fields(caplog):

@@ -224,12 +224,6 @@ class VerticalRightsizingRequest(MlMessageAbstract):
     batch_by_namespace: bool = True
     max_recommendations: Optional[int] = None
     metrics_provider: Optional[str] = None
-    datadog_api_key: Optional[str] = None
-    datadog_app_key: Optional[str] = None
-    datadog_site: Optional[str] = None
-    # Elasticsearch connection for metrics_provider == "ES"; api-server resolves and
-    # sends it the same way it sends the Datadog keys above.
-    elasticsearch: Optional[Dict[str, Any]] = None
     # Set only when the account's own default metrics provider cannot answer the
     # rightsizing keys at all and its agent can. api-server decides that and sends
     # both fields or neither; this service forwards them without interpreting them.
@@ -254,10 +248,6 @@ class VerticalRightsizingRequest(MlMessageAbstract):
                     batch_by_namespace=self.batch_by_namespace,
                     max_recommendations=self.max_recommendations,
                     metrics_provider=self.metrics_provider,
-                    datadog_api_key=self.datadog_api_key,
-                    datadog_app_key=self.datadog_app_key,
-                    datadog_site=self.datadog_site,
-                    elasticsearch=self.elasticsearch,
                     metric_provider=self.metric_provider,
                     metric_provider_source=self.metric_provider_source,
                 )
@@ -278,10 +268,6 @@ class VerticalRightsizingRequest(MlMessageAbstract):
             "batch_by_namespace": self.batch_by_namespace,
             "max_recommendations": self.max_recommendations,
             "metrics_provider": self.metrics_provider,
-            "datadog_api_key": self.datadog_api_key,
-            "datadog_app_key": self.datadog_app_key,
-            "datadog_site": self.datadog_site,
-            "elasticsearch": self.elasticsearch,
             "metric_provider": self.metric_provider,
             "metric_provider_source": self.metric_provider_source,
         }
@@ -311,12 +297,6 @@ class VolumeRightsizingRequest(MlMessageAbstract):
     persist_recommendation: bool = False
     max_recommendations: Optional[int] = None
     metrics_provider: Optional[str] = None
-    datadog_api_key: Optional[str] = None
-    datadog_app_key: Optional[str] = None
-    datadog_site: Optional[str] = None
-    # Elasticsearch connection for metrics_provider == "ES"; api-server resolves and
-    # sends it the same way it sends the Datadog keys above.
-    elasticsearch: Optional[Dict[str, Any]] = None
     exchange: str = QueueConfig.ML_RECOMMENDATION_EXCHANGE
     queue: str = QueueConfig.ML_RECOMMENDATION_QUEUE
 
@@ -334,10 +314,6 @@ class VolumeRightsizingRequest(MlMessageAbstract):
                     persist_recommendation=self.persist_recommendation,
                     max_recommendations=self.max_recommendations,
                     metrics_provider=self.metrics_provider,
-                    datadog_api_key=self.datadog_api_key,
-                    datadog_app_key=self.datadog_app_key,
-                    datadog_site=self.datadog_site,
-                    elasticsearch=self.elasticsearch,
                 )
             )
             logger.info(
@@ -354,10 +330,6 @@ class VolumeRightsizingRequest(MlMessageAbstract):
             "persist_recommendation": self.persist_recommendation,
             "max_recommendations": self.max_recommendations,
             "metrics_provider": self.metrics_provider,
-            "datadog_api_key": self.datadog_api_key,
-            "datadog_app_key": self.datadog_app_key,
-            "datadog_site": self.datadog_site,
-            "elasticsearch": self.elasticsearch,
         }
 
 

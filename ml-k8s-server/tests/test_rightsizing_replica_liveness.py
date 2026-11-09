@@ -8,31 +8,24 @@ must reflect pods live NOW, and only non-deleted pods may feed the multiplier.
 """
 
 from server.recommendation.vertical_rightsizing.models.objects import PodData
-from server.recommendation.vertical_rightsizing.services.metrics_datadog_service import (
-    entries_from_datadog_response,
-    pods_from_series,
-)
+from server.recommendation.vertical_rightsizing.services.metrics_datadog_service import pods_from_series
 
 
 def test_pods_from_series_marks_stale_incarnations_deleted():
     cutoff = 1_000_000.0
-    data = {
-        "series": [
-            # Live pod: datapoints continue past the cutoff (ms timestamps).
-            {"scope": "pod_name:web-live-1", "pointlist": [[999_000_000.0, 1.0], [1_000_500_000.0, 1.0]]},
-            {"scope": "pod_name:web-live-2", "pointlist": [[1_000_100_000.0, 2.0]]},
-            # Churned incarnation: series stops before the cutoff.
-            {"scope": "pod_name:web-old-abc", "pointlist": [[900_000_000.0, 1.0]]},
-            # Null-only points carry no liveness signal.
-            {"scope": "pod_name:web-null", "pointlist": [[1_000_500_000.0, None]]},
-            # No pod_name tag: ignored entirely.
-            {"scope": "kube_container_name:istio", "pointlist": [[1_000_500_000.0, 1.0]]},
-        ]
-    }
+    entries = [
+        # Live pod: datapoints continue past the cutoff.
+        {"metric": {"pod_name": "web-live-1"}, "timestamps": [999_000.0, 1_000_500.0], "values": [1.0, 1.0]},
+        {"metric": {"pod_name": "web-live-2"}, "timestamps": [1_000_100.0], "values": [2.0]},
+        # Churned incarnation: series stops before the cutoff.
+        {"metric": {"pod_name": "web-old-abc"}, "timestamps": [900_000.0], "values": [1.0]},
+        # api-server drops nulls, so a null-only series has no points and no liveness signal.
+        {"metric": {"pod_name": "web-null"}, "timestamps": [], "values": []},
+        # No pod_name tag: ignored entirely.
+        {"metric": {"kube_container_name": "istio"}, "timestamps": [1_000_500.0], "values": [1.0]},
+    ]
 
-    # Written as Datadog's own response and read in the shape the service consumes,
-    # which is also what api-server returns for it. One fixture, both transports.
-    pods = {p.name: p for p in pods_from_series(entries_from_datadog_response(data), live_cutoff=cutoff)}
+    pods = {p.name: p for p in pods_from_series(entries, live_cutoff=cutoff)}
 
     assert pods["web-live-1"].deleted is False
     assert pods["web-live-2"].deleted is False

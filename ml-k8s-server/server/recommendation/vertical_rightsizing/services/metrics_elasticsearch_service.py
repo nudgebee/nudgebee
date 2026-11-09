@@ -11,7 +11,6 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from server.metrics.api_server_metrics import METRIC_PROVIDER_ELASTICSEARCH, query_metrics_via_api_server
-from server.recommendation.elasticsearch_client import ElasticsearchTransport
 from server.utils.utils import safe_get
 from server.recommendation.vertical_rightsizing.models.config import Config
 from server.recommendation.vertical_rightsizing.models.objects import K8sObjectData, PodData
@@ -43,10 +42,11 @@ MAX_PODS = 1000
 class ElasticsearchMetricsService(MetricsService):
     """Rightsizing metrics from an Elastic Agent / Metricbeat Elasticsearch.
 
-    Follows DatadogMetricsService: the connection travels with the trigger request and
-    this service queries the backend directly. Before it existed, an Elasticsearch
-    account fell through to PrometheusMetricsService and queried a Prometheus that does
-    not exist for such a cluster, so rightsizing produced nothing at all.
+    Follows DatadogMetricsService: the query is written here in the backend's own
+    language and runs through api-server, which holds the connection. Before it existed,
+    an Elasticsearch account fell through to PrometheusMetricsService and queried a
+    Prometheus that does not exist for such a cluster, so rightsizing produced nothing
+    at all.
 
     Only the two container-level fields above are read here. The full metric table that
     the api-server utilisation path carries is not duplicated: rightsizing needs usage,
@@ -58,72 +58,33 @@ class ElasticsearchMetricsService(MetricsService):
         config: Config,
         account_id: str,
         executor: ThreadPoolExecutor,
-        url: str,
-        auth_type: Optional[str] = None,
-        username: Optional[str] = None,
-        password: Optional[str] = None,
-        api_key: Optional[str] = None,
-        bearer_token: Optional[str] = None,
-        metrics_index: Optional[str] = None,
-        tls_skip_verify: bool = False,
         tenant_id: str = "",
-        via_api_server: bool = True,
         window: Optional[tuple] = None,
     ) -> None:
         super().__init__(config, account_id, executor)
         self.account_id = account_id
         self.tenant_id = tenant_id
-        # The _search body is the same either way; only who holds the connection
-        # differs. Through api-server the URL and password are never sent here, which
-        # is the point: they used to arrive in the request body and be logged with it.
-        self.via_api_server = via_api_server
-        self._transport = (
-            None
-            if via_api_server
-            # Transport (and its auth, including the cognito refusal) is shared with
-            # volume rightsizing so the two cannot drift apart.
-            else ElasticsearchTransport(
-                url=url,
-                auth_type=auth_type,
-                username=username,
-                password=password,
-                api_key=api_key,
-                bearer_token=bearer_token,
-                metrics_index=metrics_index,
-                tls_skip_verify=tls_skip_verify,
-            )
-        )
 
     # --- transport -----------------------------------------------------------
 
     def _search(self, body: Dict[str, Any]) -> List[dict]:
-        """Run one _search and return its aggregations as flattened series.
-
-        Both transports answer in the shape api-server returns for every provider:
-        one entry per value, its bucket keys in ``metric``. The direct path converts
-        its own response so there is one shape for the parsers to read.
+        """Run one _search through api-server and return its aggregations as flattened
+        series: one entry per value, its bucket keys in ``metric``.
         """
-        if self.via_api_server:
-            # The window is already a filter inside the body; api-server ANDs its own
-            # range clause with it, so the two must agree. Sending the body's own
-            # window keeps that a no-op.
-            start, end = _body_window(body)
-            return query_metrics_via_api_server(
-                account_id=self.account_id,
-                tenant_id=self.tenant_id,
-                query=json.dumps(body),
-                start_time=start,
-                end_time=end,
-                metric_provider=METRIC_PROVIDER_ELASTICSEARCH,
-                request={"query_type": "dsl", "batch": True},
-                timeout=getattr(self._config, "metrics_fetch_timeout", None),
-            )
-        if self._transport is None:
-            # Only reachable with the rollback flag off and no connection in the
-            # request. An ES account has no Prometheus to fall back to, so this has to
-            # fail loudly rather than read as "this workload has no data".
-            raise ValueError(f"no Elasticsearch connection was supplied for account {self.account_id}")
-        return entries_from_es_aggregations(self._transport.search(body))
+        # The window is already a filter inside the body; api-server ANDs its own
+        # range clause with it, so the two must agree. Sending the body's own
+        # window keeps that a no-op.
+        start, end = _body_window(body)
+        return query_metrics_via_api_server(
+            account_id=self.account_id,
+            tenant_id=self.tenant_id,
+            query=json.dumps(body),
+            start_time=start,
+            end_time=end,
+            metric_provider=METRIC_PROVIDER_ELASTICSEARCH,
+            request={"query_type": "dsl", "batch": True},
+            timeout=getattr(self._config, "metrics_fetch_timeout", None),
+        )
 
     async def _async_search(self, body: Dict[str, Any]) -> List[dict]:
         # Routed through _search rather than straight to the transport: _search is the
@@ -133,14 +94,9 @@ class ElasticsearchMetricsService(MetricsService):
         return await loop.run_in_executor(self.executor, lambda: self._search(body))
 
     def check_connection(self):
-        if self.via_api_server:
-            # api-server holds the connection; a broken one surfaces on the first query
-            # with its own error, the same way the Prometheus path behaves.
-            return
-        # Delegated, not re-implemented: this used to read self._url/_headers/_auth/
-        # _verify, which moved to the transport. Keeping a copy of those on the service
-        # would let the two drift; delegating cannot.
-        self._transport.check_connection()
+        """api-server holds the connection; a broken one surfaces on the first query
+        with its own error, the same way the Prometheus path behaves."""
+        return
 
     # --- query building ------------------------------------------------------
 
@@ -372,45 +328,6 @@ def _last_value(entry: Dict[str, Any]) -> Optional[float]:
         return float(values[-1])
     except (TypeError, ValueError):
         return None
-
-
-def entries_from_es_aggregations(data: Dict[str, Any]) -> List[dict]:
-    """An Elasticsearch response in the shape api-server returns for every provider.
-
-    Only used by the direct-Elasticsearch fallback, and only for the body this service
-    builds: a `pods` terms aggregation whose buckets carry pct / max / count /
-    last_seen.
-    """
-    entries: List[dict] = []
-    aggs = (data.get("aggregations") or {}).get("pods") or {}
-    if aggs.get("sum_other_doc_count"):
-        # A capped terms aggregation drops whole pods, which changes a percentile
-        # without changing anything visible about the result.
-        logger.warning(
-            f"Elasticsearch rightsizing: pod aggregation truncated at {MAX_PODS}, "
-            f"{aggs['sum_other_doc_count']} documents excluded"
-        )
-
-    def add(pod: str, name: str, value: Any, statistic: Optional[str] = None) -> None:
-        if value is None:
-            return
-        labels = {POD_LABEL: pod, NAME_LABEL: name}
-        if statistic is not None:
-            labels[STATISTIC_LABEL] = statistic
-        entries.append({"metric": labels, "timestamps": [0], "values": [value]})
-
-    for bucket in aggs.get("buckets", []):
-        pod = bucket.get("key")
-        if not pod:
-            continue
-        for name in ("max", "count", "last_seen"):
-            add(pod, name, (bucket.get(name) or {}).get("value"))
-        for statistic, value in ((bucket.get("pct") or {}).get("values") or {}).items():
-            add(pod, "pct", value, statistic=statistic)
-        if not any(name in bucket for name in ("max", "count", "last_seen", "pct")):
-            # A bare terms aggregation: load_pods asks only which pods exist.
-            add(pod, "doc_count", bucket.get("doc_count", 0))
-    return entries
 
 
 def _body_window(body: Dict[str, Any]) -> tuple:
