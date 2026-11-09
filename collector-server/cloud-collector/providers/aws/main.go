@@ -1401,7 +1401,7 @@ func validateAwsV2Command(command string) error {
 		return fmt.Errorf("command %q is not allowed", "sts "+positionals[1])
 	}
 	if len(positionals) > 1 && awsV2BlockedOperations[service][positionals[1]] {
-		return fmt.Errorf("AWS workspace CLI operation %s %s is not allowed", service, positionals[1])
+		return fmt.Errorf("AWS CLI operation %s %s is not allowed", service, positionals[1])
 	}
 	return nil
 }
@@ -1417,9 +1417,9 @@ func validateAwsV2Arguments(args []string) error {
 		case matchesAwsV2BlockedOption(lower, "--ca-bundle") || matchesAwsV2BlockedOption(lower, "--no-verify-ssl"):
 			return fmt.Errorf("custom AWS TLS settings are not allowed")
 		case matchesAwsV2BlockedOption(lower, "--with-decryption"):
-			return fmt.Errorf("decrypting AWS parameter values in the workspace CLI is not allowed")
+			return fmt.Errorf("decrypting AWS parameter values through cloud-collector is not allowed")
 		case strings.Contains(lower, "file://") || strings.Contains(lower, "fileb://"):
-			return fmt.Errorf("AWS workspace CLI cannot read files from cloud-collector")
+			return fmt.Errorf("AWS CLI cannot read files from cloud-collector")
 		}
 	}
 	return nil
@@ -1526,46 +1526,26 @@ func (a *awsProvider) ExecuteCliCommand(ctx providers.CloudProviderContext, acco
 		return "", err
 	}
 
+	// Handle backslash line continuations before parsing
+	cleanCommand := strings.ReplaceAll(command, "\\\r\n", " ")
+	cleanCommand = strings.ReplaceAll(cleanCommand, "\\\n", " ")
+
+	// The same boundary as the workspace path: no credential export, no
+	// collector-local file transfer.
+	if err := validateAwsV2Command(cleanCommand); err != nil {
+		return "", err
+	}
+
 	cmdEnv, err := awsCliEnv(ctx.GetContext(), account, command)
 	if err != nil {
 		return "", err
 	}
 
-	// Handle backslash line continuations before parsing
-	cleanCommand := strings.ReplaceAll(command, "\\\r\n", " ")
-	cleanCommand = strings.ReplaceAll(cleanCommand, "\\\n", " ")
-
-	var stdout, stderr string
-	opts := common.SecureCommandOptions{
-		Command: cleanCommand,
-		Env:     cmdEnv,
-	}
-
-	// Determine if the command uses a pipe (pipeline)
-	// We use shlex to properly handle quoted strings so that a pipe character inside a quote
-	// (e.g., in a query string) doesn't trigger pipeline execution.
-	usePipeline := false
-	args, err := shlex.Split(cleanCommand)
-	if err == nil {
-		for _, arg := range args {
-			if arg == "|" {
-				usePipeline = true
-				break
-			}
-		}
-	} else {
-		// If parsing fails, we fall back to a naive check
-		if strings.Contains(cleanCommand, "|") {
-			usePipeline = true
-		}
-	}
-
-	if usePipeline {
-		stdout, stderr, err = common.SecureExecutePipeline(ctx.GetContext(), opts)
-	} else {
-		stdout, stderr, err = common.SecureExecute(ctx.GetContext(), opts)
-	}
-
+	stdout, stderr, err := common.SecureExecute(ctx.GetContext(), common.SecureCommandOptions{
+		Command:   cleanCommand,
+		Env:       cmdEnv,
+		Untrusted: true,
+	})
 	if err != nil {
 		ctx.GetLogger().Error("AWS CLI command execution failed", "error", err, "stderr", stderr, "command", command)
 		return stdout, fmt.Errorf("AWS CLI command failed: %w, Stderr: %s", err, stderr)
@@ -1601,6 +1581,7 @@ func (a *awsProvider) ExecuteCliCommandV2(ctx providers.CloudProviderContext, ac
 		Timeout:         timeout,
 		MaxOutputBytes:  maxOutput,
 		OutputTruncated: &outputTruncated,
+		Untrusted:       true,
 	})
 	result := providers.CliExecutionResult{Stdout: stdout, Stderr: stderr, OutputTruncated: outputTruncated}
 	if execErr == nil {

@@ -340,6 +340,19 @@ func (a *gcloudProvider) ExecuteCliCommand(ctx providers.CloudProviderContext, a
 		return "", err
 	}
 
+	// Handle backslash line continuations before parsing
+	cleanCommand := strings.ReplaceAll(command, "\\\r\n", " ")
+	cleanCommand = strings.ReplaceAll(cleanCommand, "\\\n", " ")
+	execArgs, err := shlex.Split(cleanCommand)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse GCP CLI command: %w", err)
+	}
+	// The same boundary as the workspace path: no credential export, no
+	// collector-local file transfer.
+	if err := validateGcloudWorkspaceBoundary(execArgs); err != nil {
+		return "", err
+	}
+
 	session, err := getGcloudSessionFromAccount(ctx, account)
 	if err != nil {
 		return "", fmt.Errorf("failed to get access secret: %w", err)
@@ -408,44 +421,13 @@ func (a *gcloudProvider) ExecuteCliCommand(ctx providers.CloudProviderContext, a
 		return "", fmt.Errorf("gcloud auth failed: %w", err)
 	}
 
-	// Handle backslash line continuations before parsing
-	cleanCommand := strings.ReplaceAll(command, "\\\r\n", " ")
-	cleanCommand = strings.ReplaceAll(cleanCommand, "\\\n", " ")
-
-	// Execute the user command, choosing the executor based on pipelining.
 	// Reuse the same baseEnv (with CLOUDSDK_CONFIG) so gcloud finds the auth state
 	// from the activate-service-account call above.
-	var stdout string
-	opts := common.SecureCommandOptions{
-		Command: cleanCommand,
-		Env:     append(baseEnv, "GOOGLE_APPLICATION_CREDENTIALS="+tmpFile.Name()),
-	}
-
-	// Determine if the command uses a pipe (pipeline)
-	// We use shlex to properly handle quoted strings so that a pipe character inside a quote
-	// doesn't trigger pipeline execution.
-	usePipeline := false
-	execArgs, err := shlex.Split(cleanCommand)
-	if err == nil {
-		for _, arg := range execArgs {
-			if arg == "|" {
-				usePipeline = true
-				break
-			}
-		}
-	} else {
-		// If parsing fails, we fall back to a naive check
-		if strings.Contains(cleanCommand, "|") {
-			usePipeline = true
-		}
-	}
-
-	if usePipeline {
-		stdout, stderr, err = common.SecureExecutePipeline(ctx.GetContext(), opts)
-	} else {
-		stdout, stderr, err = common.SecureExecute(ctx.GetContext(), opts)
-	}
-
+	stdout, stderr, err := common.SecureExecute(ctx.GetContext(), common.SecureCommandOptions{
+		Command:   cleanCommand,
+		Env:       append(baseEnv, "GOOGLE_APPLICATION_CREDENTIALS="+tmpFile.Name()),
+		Untrusted: true,
+	})
 	if err != nil {
 		ctx.GetLogger().Error("gcloud CLI command execution failed", "error", err, "stderr", stderr, "command", command, "stdout", stdout)
 		return stdout, fmt.Errorf("gcloud CLI command failed: %w, Stderr: %s", err, stderr)
@@ -511,18 +493,18 @@ func validateGcloudWorkspaceBoundary(args []string) error {
 			return errors.New("GCP authentication and persistent configuration commands are not allowed")
 		}
 		if contains("storage", "cp") || contains("storage", "mv") || contains("storage", "rsync") || contains("compute", "scp") {
-			return errors.New("GCP workspace CLI cannot transfer collector-local files")
+			return errors.New("GCP CLI cannot transfer collector-local files")
 		}
 	case "gsutil":
 		if contains("config") {
 			return errors.New("gsutil config is not allowed")
 		}
 		if contains("cp") || contains("mv") || contains("rsync") {
-			return errors.New("GCP workspace CLI cannot transfer collector-local files")
+			return errors.New("GCP CLI cannot transfer collector-local files")
 		}
 	case "bq":
 		if contains("extract") || contains("load") {
-			return errors.New("BigQuery workspace CLI cannot transfer collector-local files")
+			return errors.New("BigQuery CLI cannot transfer collector-local files")
 		}
 	}
 	return nil
@@ -600,7 +582,7 @@ func executeGcloudStructured(ctx providers.CloudProviderContext, command string,
 		maxOutput = 1024 * 1024
 	}
 	truncated := false
-	stdout, stderr, err := common.SecureExecute(ctx.GetContext(), common.SecureCommandOptions{Command: command, Env: env, Timeout: timeout, MaxOutputBytes: maxOutput, OutputTruncated: &truncated})
+	stdout, stderr, err := common.SecureExecute(ctx.GetContext(), common.SecureCommandOptions{Command: command, Env: env, Timeout: timeout, MaxOutputBytes: maxOutput, OutputTruncated: &truncated, Untrusted: true})
 	result := providers.CliExecutionResult{Stdout: stdout, Stderr: stderr, OutputTruncated: truncated}
 	if err == nil {
 		return result, nil

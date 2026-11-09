@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -84,6 +85,105 @@ type SecureCommandOptions struct {
 	// drained. The process is never allowed to block merely because capture hit
 	// its limit.
 	OutputTruncated *bool
+	// Untrusted marks a command written by a caller (a user, an automation or
+	// the LLM) rather than by the collector itself. It must pass
+	// ValidateUntrustedArgs and runs from an empty working directory of its own,
+	// so it cannot point the CLI at local files.
+	Untrusted bool
+}
+
+// ValidateUntrustedArgs refuses a caller-written command that would make the
+// CLI read a file on the collector. Commands run as one process with no shell,
+// so a "|" token is refused rather than handed to the CLI. A file reference
+// (file://, fileb://, an Azure @path, or the value of a flag such as
+// --flags-file or --src-path) is refused when it names something that exists
+// here, resolving relative paths against dir, the command's own empty working
+// directory, so only paths outside it can match. Plain arguments are not
+// checked: CloudWatch log group names such as "/" or "/var/log" look like paths
+// but are not read from disk.
+func ValidateUntrustedArgs(args []string, dir string) error {
+	for i := 1; i < len(args); i++ {
+		arg := args[i]
+		if arg == "|" {
+			return errors.New("shell pipes are not supported: run one command and filter its output with --query, --filter or --format")
+		}
+		values := []string{arg}
+		if strings.HasPrefix(arg, "-") {
+			if name, value, ok := strings.Cut(arg, "="); ok {
+				values = []string{value}
+				if isFileFlag(name) {
+					values = append(values, fileFlagPaths(value)...)
+				}
+			} else if isFileFlag(arg) && i+1 < len(args) {
+				values = append(values, fileFlagPaths(args[i+1])...)
+			}
+		}
+		for _, value := range values {
+			if err := validateFileReference(value, dir); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// isFileFlag reports whether a flag's value is a local path by convention, e.g.
+// gcloud --flags-file / --metadata-from-file, az --template-file / --src-path,
+// or the short forms az uses for them (-f).
+func isFileFlag(flag string) bool {
+	flag = strings.ToLower(flag)
+	if flag == "-f" || flag == "-d" || flag == "-p" {
+		return true
+	}
+	for _, suffix := range []string{"file", "files", "path", "dir", "key", "cert", "config", "configuration", "token", "credential", "credentials", "license"} {
+		if strings.HasSuffix(flag, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// fileFlagPaths returns the paths in a file flag's value as @ references. The
+// value is a path or a comma-separated list of paths or key=path pairs, e.g.
+// gcloud --metadata-from-file startup-script=run.sh,ssh-keys=keys.txt.
+func fileFlagPaths(value string) []string {
+	paths := []string{"@" + value}
+	for _, part := range strings.Split(value, ",") {
+		if _, path, ok := strings.Cut(part, "="); ok {
+			part = path
+		}
+		paths = append(paths, "@"+part)
+	}
+	return paths
+}
+
+func validateFileReference(value, dir string) error {
+	lower := strings.ToLower(value)
+	var path string
+	switch {
+	case strings.HasPrefix(lower, "file://"):
+		path = value[len("file://"):]
+	case strings.HasPrefix(lower, "fileb://"):
+		path = value[len("fileb://"):]
+	case strings.HasPrefix(value, "@"):
+		path = value[1:]
+	default:
+		return nil
+	}
+	// The CLIs expand "~" and environment variables in file paths themselves.
+	if strings.HasPrefix(path, "~") || strings.Contains(path, "$") {
+		return fmt.Errorf("argument %q refers to a file on cloud-collector, which is not allowed", value)
+	}
+	if path == "" || path == "-" {
+		return nil
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(dir, path)
+	}
+	if _, err := os.Lstat(path); err == nil {
+		return fmt.Errorf("argument %q refers to a file on cloud-collector, which is not allowed", value)
+	}
+	return nil
 }
 
 // CommandExitError reports a process exit while preserving its concrete status
@@ -195,6 +295,18 @@ func SecureExecute(ctx context.Context, opts SecureCommandOptions) (string, stri
 		return "", "", fmt.Errorf("command cannot be empty")
 	}
 
+	var workDir string
+	if opts.Untrusted {
+		workDir, err = os.MkdirTemp("", "cli-workdir-*")
+		if err != nil {
+			return "", "", fmt.Errorf("failed to create working directory: %w", err)
+		}
+		defer func() { _ = os.RemoveAll(workDir) }()
+		if err := ValidateUntrustedArgs(args, workDir); err != nil {
+			return "", "", err
+		}
+	}
+
 	// Find the absolute path of the executable
 	path, err := exec.LookPath(args[0])
 	if err != nil {
@@ -221,6 +333,7 @@ func SecureExecute(ctx context.Context, opts SecureCommandOptions) (string, stri
 	// timeout/cancel paths below can kill the whole group it spawned via
 	// Kill(-pid, ...) instead of targeting a group that doesn't exist.
 	pid, err := syscall.ForkExec(path, args, &syscall.ProcAttr{
+		Dir:   workDir,
 		Env:   append(opts.Env, "PATH="+os.Getenv("PATH")),
 		Files: []uintptr{os.Stdin.Fd(), stdoutWriter.Fd(), stderrWriter.Fd()},
 		Sys:   &syscall.SysProcAttr{Setpgid: true},
@@ -332,106 +445,4 @@ func SecureExecute(ctx context.Context, opts SecureCommandOptions) (string, stri
 	}
 
 	return stdoutBuf.String(), stderrBuf.String(), nil
-}
-
-// SecureExecutePipeline handles the execution of piped commands.
-func SecureExecutePipeline(ctx context.Context, opts SecureCommandOptions) (string, string, error) {
-	// Use shlex to tokenize the entire command correctly (respecting quotes)
-	allTokens, err := shlex.Split(opts.Command)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to parse pipeline command: %w", err)
-	}
-
-	// Split tokens into stages separated by "|"
-	var stages [][]string
-	var currentStage []string
-	for _, token := range allTokens {
-		if token == "|" {
-			if len(currentStage) > 0 {
-				stages = append(stages, currentStage)
-				currentStage = nil
-			}
-		} else {
-			currentStage = append(currentStage, token)
-		}
-	}
-	if len(currentStage) > 0 {
-		stages = append(stages, currentStage)
-	}
-
-	if len(stages) == 0 {
-		return "", "", fmt.Errorf("empty command")
-	}
-
-	// Set a default timeout if none is provided
-	if opts.Timeout == 0 {
-		opts.Timeout = 60 * time.Second
-	}
-	cmdCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
-	defer cancel()
-
-	// Create commands for each stage of the pipeline
-	cmds := make([]*exec.Cmd, len(stages))
-	allowedTools := map[string]bool{"grep": true, "jq": true, "awk": true}
-
-	for i, args := range stages {
-		if len(args) == 0 {
-			return "", "", fmt.Errorf("pipeline stage %d is empty", i)
-		}
-
-		// Security Check: only allow specific tools after the first command
-		if i > 0 {
-			if !allowedTools[args[0]] {
-				return "", "", fmt.Errorf("tool '%s' is not allowed in a pipeline", args[0])
-			}
-		}
-
-		cmds[i] = exec.CommandContext(cmdCtx, args[0], args[1:]...)
-		// Set the environment for each command in the pipeline
-		cmds[i].Env = append(opts.Env, "PATH="+os.Getenv("PATH"))
-	}
-
-	// Connect the pipes between commands
-	for i := 0; i < len(cmds)-1; i++ {
-		stdoutPipe, err := cmds[i].StdoutPipe()
-		if err != nil {
-			return "", "", fmt.Errorf("failed to create stdout pipe for stage %d: %w", i, err)
-		}
-		cmds[i+1].Stdin = stdoutPipe
-	}
-
-	// Capture the final stdout and all stderr streams
-	var finalStdout bytes.Buffer
-	cmds[len(cmds)-1].Stdout = &finalStdout
-
-	stderrBufs := make([]*bytes.Buffer, len(cmds))
-	for i := range cmds {
-		stderrBufs[i] = new(bytes.Buffer)
-		cmds[i].Stderr = stderrBufs[i]
-	}
-
-	// Start all commands
-	for _, cmd := range cmds {
-		if err := cmd.Start(); err != nil {
-			return "", "", fmt.Errorf("failed to start command %q: %w", cmd.String(), err)
-		}
-	}
-
-	// Wait for all commands to finish
-	var finalErr error
-	for _, cmd := range cmds {
-		if err := cmd.Wait(); err != nil {
-			if finalErr == nil {
-				finalErr = fmt.Errorf("pipeline stage %q failed: %w", cmd.String(), err)
-			}
-		}
-	}
-
-	// Combine all stderr outputs
-	var combinedStderr bytes.Buffer
-	for _, buf := range stderrBufs {
-		combinedStderr.Write(buf.Bytes())
-	}
-
-	return finalStdout.String(), combinedStderr.String(), finalErr
 }
