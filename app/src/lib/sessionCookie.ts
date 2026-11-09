@@ -1,5 +1,6 @@
 import { getToken, type JWT } from 'next-auth/jwt';
 import type { NextApiRequest } from 'next';
+import { restrictSuperAdmin } from '@lib/superAdminAccess';
 
 /**
  * Read the NextAuth session cookie without depending on `NEXTAUTH_URL`.
@@ -22,10 +23,14 @@ import type { NextApiRequest } from 'next';
  * `NEXTAUTH_URL` can be unset safely. Hardcoding `secureCookie: true` would fix the
  * per-host case and re-break the on-prem HTTP one.
  *
- * This module deliberately imports nothing from the app: `sessionToken.ts` pulls in
- * `rpcGateway`, and `rpcGateway` is itself a caller, so the helper cannot live there
- * without a require cycle.
+ * This module deliberately imports nothing from the app except the import-free
+ * `superAdminAccess`: `sessionToken.ts` pulls in `rpcGateway`, and `rpcGateway` is
+ * itself a caller, so the helper cannot live there without a require cycle.
+ *
+ * Every cookie read in an API route comes through here, so this is also where a
+ * session minted as super admin stops working once super admin is off.
  */
 export async function readSessionToken(req: NextApiRequest): Promise<JWT | null> {
-  return (await getToken({ req, secureCookie: true })) ?? (await getToken({ req, secureCookie: false }));
+  const token = (await getToken({ req, secureCookie: true })) ?? (await getToken({ req, secureCookie: false }));
+  return token ? restrictSuperAdmin(token) : null;
 }

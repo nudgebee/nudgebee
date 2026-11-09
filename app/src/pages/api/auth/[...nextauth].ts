@@ -40,6 +40,7 @@ import { dummyCredsAdminEmail } from '@lib/dummyCredsAdmin';
 import { ldapBindName, ldapSearchFilter } from '@lib/ldapUsername';
 import { getLicenseDetails, SERVICES_SERVER_UNREACHABLE_MSG, type LicenseTier } from '@lib/license';
 import { enrichAuthToken, enrichSession, onReturningOAuthSignIn, onUnknownOAuthSignIn, resolveLicensedTenantUser } from '@lib/authHooks';
+import { isSuperAdminAccessEnabled, restrictSuperAdmin } from '@lib/superAdminAccess';
 
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
 import type { NextApiRequest, NextApiResponse } from 'next';
@@ -1350,6 +1351,14 @@ export const authOptions: NextAuthOptions = {
   providers: providers,
   callbacks: {
     async jwt({ token, user, account: oauthAccount, trigger, session }) {
+      // With super admin off, a session minted as super admin is ended
+      // before anything runs for it. Thrown outside the try below so NextAuth
+      // clears the cookie and answers with no session, which sends the browser to
+      // sign-in; returning {} would leave an empty session the client still
+      // treats as signed in. Sign-in never carries the claim: the enricher is off.
+      if (restrictSuperAdmin(token) === null) {
+        throw new Error('super admin is disabled: ending a super-admin session');
+      }
       try {
         // Server-side revocation gate. NextAuth's stateless JWT strategy
         // means a captured cookie survives logout until natural expiry on
@@ -1424,7 +1433,8 @@ export const authOptions: NextAuthOptions = {
             token.permissionsResolvedAt = Date.now();
           }
         }
-        return token;
+        // With super admin off, drop super-admin role strings.
+        return restrictSuperAdmin(token) ?? {};
       } catch (error) {
         console.log('jwt, unable to handle jwt token ', error);
       }
@@ -1655,8 +1665,8 @@ export const authOptions: NextAuthOptions = {
     signIn: async (message) => {
       if (message.user) {
         const nudgeBeeUser = message.user as NudgebeeUser;
-        // Skip login tracking for super admin (no trace)
-        const superAdminRole = nudgeBeeUser.id ? await getUserSuperAdminRole(nudgeBeeUser.id) : null;
+        // Skip login tracking for super admin (no trace), only while super admin is on
+        const superAdminRole = nudgeBeeUser.id && isSuperAdminAccessEnabled() ? await getUserSuperAdminRole(nudgeBeeUser.id) : null;
         if (!superAdminRole && nudgeBeeUser.userAccountId) {
           await updateUserAccountAccessed(nudgeBeeUser.userAccountId, nudgeBeeUser.tenant?.id);
         }

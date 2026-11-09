@@ -11,6 +11,7 @@ import {
 } from 'graphql';
 import { authenticateApiToken, isApiToken } from '@lib/apiToken';
 import { readSessionToken } from '@lib/sessionCookie';
+import { restrictSuperAdmin } from '@lib/superAdminAccess';
 import { isSessionRevoked } from '@lib/sessionRevocation';
 import { loadActionInputSchema, loadRpcRoutes, type RpcRoute, type SchemaFieldInfo } from '@lib/rpcRoutes';
 import { elevateRoles } from '@lib/authHooks';
@@ -133,7 +134,9 @@ export async function authenticateRequest(req: NextApiRequest): Promise<AuthCont
   // NextAuth cookie: running as the cookie's user while forwarding the PAT's
   // session upstream would split identity across the two hops.
   if (apiTokenJwt) {
-    jwt = apiTokenJwt;
+    // The cookie path is restricted in readSessionToken; an API key's session is
+    // built from its tenant's role rows, so restrict it here too.
+    jwt = restrictSuperAdmin(apiTokenJwt);
   }
   // Browser flow: jwt comes from the NextAuth cookie and is sufficient on
   // its own — no Bearer token is forwarded. `token` stays empty; downstream
