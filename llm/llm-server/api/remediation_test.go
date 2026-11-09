@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"nudgebee/llm/workspace"
@@ -8,11 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"nudgebee/llm/audit"
 	"nudgebee/llm/common"
 	"nudgebee/llm/events"
+	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestContainsShellMetacharacters_BlocksInjection covers the exact bypass strings from the security
@@ -48,6 +52,25 @@ func TestContainsShellMetacharacters_AllowsPlainCommands(t *testing.T) {
 	for _, cmd := range allowed {
 		assert.False(t, containsShellMetacharacters(cmd), "expected plain command to be allowed: %q", cmd)
 	}
+}
+
+// The remediation audit keeps the command but not the credential in it.
+func TestRemediationAuditMasksCredentials(t *testing.T) {
+	ctx := security.NewRequestContextForTenantAccountAdmin("audit-tenant", "audit-user", []string{"account"})
+	for _, tc := range auditedCommandShapes {
+		t.Run(tc.name, func(t *testing.T) {
+			a := remediationAudit(ctx, "account", tc.command, "kubectl", true, audit.EventActionCreate, "remediation-panel").Audits[0]
+			stored, err := json.Marshal(a)
+			require.NoError(t, err)
+			require.NotContains(t, string(stored), "Qv7rTx2mWp9z")
+			command := a.EventAttr["command"].(string)
+			require.Contains(t, command, "[REDACTED:")
+			require.Contains(t, command, tc.keep)
+			require.Equal(t, map[string]any{"command": command}, a.EventState)
+		})
+	}
+	plain := remediationAudit(ctx, "account", "kubectl rollout restart deployment api -n prod", "kubectl", true, audit.EventActionCreate, "remediation-panel").Audits[0]
+	require.Equal(t, "kubectl rollout restart deployment api -n prod", plain.EventAttr["command"])
 }
 
 // TestRemediationSubstrate_Routing verifies the executor is chosen from the ACCOUNT'S PROVIDER and

@@ -18,6 +18,7 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
+	"nudgebee/llm/security/egressfilter"
 	"nudgebee/llm/tools"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
@@ -544,6 +545,10 @@ func workspaceExecuteAudit(ctx *security.RequestContext, req WorkspaceExecuteReq
 	if !success {
 		status = audit.EventStatusFailure
 	}
+	// The audit keeps the command, not the credentials in it: a connection
+	// string, PGPASSWORD=... or token="..." is masked the way tool output is.
+	// The relay still runs the command as given.
+	command := egressfilter.RedactSecrets(req.Command)
 	return &audit.AuditRequest{Audits: []audit.Audit{{
 		AccountId:     targetAccountId,
 		TenantId:      tenantId,
@@ -555,16 +560,35 @@ func workspaceExecuteAudit(ctx *security.RequestContext, req WorkspaceExecuteReq
 		EventAction:   audit.EventActionCreate,
 		EventTarget:   toolName,
 		EventStatus:   status,
-		EventState:    map[string]any{"command": req.Command},
+		EventState:    map[string]any{"command": command},
 		EventAttr: map[string]any{
-			"command":              req.Command,
+			"command":              command,
 			"tool":                 req.Tool,
-			"arguments":            req.Arguments,
+			"arguments":            redactAuditArguments(req.Arguments),
 			"source":               "workspace-shim",
 			"workspace_account_id": req.AccountId,
 			"target_context":       req.TargetName,
 		},
 	}}}
+}
+
+// redactAuditArguments masks credential values in a command's arguments as
+// its command line is masked. They are masked as JSON text so a value under a
+// secret-named key ("password": "...") is caught too. If the masked text no
+// longer parses, the arguments are left out rather than stored unmasked.
+func redactAuditArguments(args map[string]any) map[string]any {
+	if len(args) == 0 {
+		return args
+	}
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return nil
+	}
+	var masked map[string]any
+	if err := json.Unmarshal([]byte(egressfilter.RedactSecrets(string(raw))), &masked); err != nil {
+		return nil
+	}
+	return masked
 }
 
 func virtualKubectlConfig(ctx *security.RequestContext, req WorkspaceExecuteRequest, defaultContext string) (string, bool, error) {

@@ -20,6 +20,7 @@ import (
 	"nudgebee/llm/events"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
+	"nudgebee/llm/security/egressfilter"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
@@ -1490,6 +1491,11 @@ func parseRelayExecResult(raw string) (stdout, stderr string, exitCode int, pars
 // browser-reachable and runs write commands, so — like handleWorkspaceExecute — every call is
 // audited. Fired in the background so auditing never blocks the response.
 func writeRemediationAudit(ctx *security.RequestContext, accountId, command, tool string, success bool, action audit.EventAction, source string) {
+	auditReq := remediationAudit(ctx, accountId, command, tool, success, action, source)
+	go func() { _ = audit.CreateAudit(ctx, auditReq) }()
+}
+
+func remediationAudit(ctx *security.RequestContext, accountId, command, tool string, success bool, action audit.EventAction, source string) *audit.AuditRequest {
 	var tenantId, userId string
 	if sc := ctx.GetSecurityContext(); sc != nil {
 		tenantId = sc.GetTenantId()
@@ -1499,7 +1505,9 @@ func writeRemediationAudit(ctx *security.RequestContext, accountId, command, too
 	if !success {
 		status = audit.EventStatusFailure
 	}
-	auditReq := &audit.AuditRequest{
+	// Credentials in the command are masked as in workspaceExecuteAudit.
+	command = egressfilter.RedactSecrets(command)
+	return &audit.AuditRequest{
 		Audits: []audit.Audit{
 			{
 				AccountId:     accountId,
@@ -1521,7 +1529,6 @@ func writeRemediationAudit(ctx *security.RequestContext, accountId, command, too
 			},
 		},
 	}
-	go func() { _ = audit.CreateAudit(ctx, auditReq) }()
 }
 
 // shellMetacharacters are command-separator, redirection, and substitution characters. A remediation
