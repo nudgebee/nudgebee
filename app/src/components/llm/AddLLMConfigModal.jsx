@@ -488,7 +488,6 @@ const FallbackModelEditor = ({
   optionsError,
   errors,
   secretsConfigured,
-  noAccounts,
   pricingRows,
   onModeChange,
   onPickRef,
@@ -795,7 +794,6 @@ FallbackModelEditor.propTypes = {
   optionsError: PropTypes.string,
   errors: PropTypes.object.isRequired,
   secretsConfigured: PropTypes.object.isRequired,
-  noAccounts: PropTypes.bool,
   pricingRows: PropTypes.array.isRequired,
   onModeChange: PropTypes.func.isRequired,
   onPickRef: PropTypes.func.isRequired,
@@ -2228,7 +2226,6 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       optionsError={fallbackOptionsError}
       errors={fallbackErrors[scope]}
       secretsConfigured={secretsConfigured}
-      noAccounts={selectedAccountIds.length === 0}
       pricingRows={pricingRows}
       onModeChange={(mode) => updateFallback(scope, { mode })}
       onPickRef={(value) => pickFallbackRef(scope, value)}

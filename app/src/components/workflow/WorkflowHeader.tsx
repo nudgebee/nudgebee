@@ -7,12 +7,11 @@ import { EditIcon } from '@assets';
 import CheckIcon from '@mui/icons-material/Check';
 import CloseIcon from '@mui/icons-material/Close';
 import NewToggleButtons from './NewToggleButtons';
-import { colors } from 'src/utils/colors';
+import { colors, ds } from 'src/utils/colors';
 import CustomBackButton from '@shared/CustomBackButton';
 import { useRouter } from 'next/router';
 import WorkflowStateStrip from './WorkflowStateStrip';
 import { useAccountOptions } from './hooks/useAccountOptions';
-import { ds } from 'src/utils/colors';
 
 // Width of the centered Editor / Executions tabs. The right-hand group is
 // capped against it so it cannot run underneath them.

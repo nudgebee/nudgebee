@@ -18,9 +18,8 @@ import FilterDropdown from '@ui/FilterDropdown';
 import { Button } from '@ui/Button';
 import { toast as snackbar } from '@ui/Toast';
 import Loader from '@shared/Loader';
-import { RefreshIcon } from '@assets';
+import { DeleteIconRed, RefreshIcon } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
-import DeleteOutlinedIcon from '@mui/icons-material/DeleteOutlined';
 import apiKnowledgeGraph from '@api1/knowledge-graph';
 import ManualDependenciesTable from './ManualDependenciesTable';
 import ResolveAmbiguityPanel from './ResolveAmbiguityPanel';
@@ -324,7 +323,12 @@ const ManualDependenciesSection = ({ open, schema, refreshKey, onNodesChanged })
             </Button>
           )}
           {rows.length > 0 && (
-            <Button tone='danger' size='md' onClick={handleDeleteAllClick} icon={<DeleteOutlinedIcon sx={{ fontSize: ds.text.bodyLg }} />}>
+            <Button
+              tone='danger'
+              size='md'
+              onClick={handleDeleteAllClick}
+              icon={<SafeIcon src={DeleteIconRed} alt='delete' width={14} height={14} />}
+            >
               Delete all
             </Button>
           )}
