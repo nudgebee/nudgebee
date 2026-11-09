@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log/slog"
 	"nudgebee/services/common"
+	"nudgebee/services/kubectlpolicy"
 	"nudgebee/services/relay"
 )
 
@@ -22,6 +23,9 @@ func (a *k8sKubectlAction) Execute(ctx PlaybookActionContext, rawParams map[stri
 
 	if params.Command == "" {
 		return nil, errors.New("command is required")
+	}
+	if err := kubectlpolicy.CheckSecretAccess(params.Command); err != nil {
+		return nil, err
 	}
 
 	if params.AccountId == "" {

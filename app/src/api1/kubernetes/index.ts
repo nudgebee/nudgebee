@@ -1,4 +1,4 @@
-import { queryGraphQL, gqlStringify, hitRelayServer, unwrapGraphQL } from '@lib/HttpService';
+import { queryGraphQL, gqlStringify, unwrapGraphQL } from '@lib/HttpService';
 
 import {
   getStartOfYear,
@@ -3330,42 +3330,6 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       };
     } catch (error) {
       console.log('Your Error is', error);
-      return error;
-    }
-  },
-  async hitRelayServer(data?: any, query_type_hint?: string) {
-    if (data.body.account_id === 'demo') {
-      const relayDemo = await getMockData('k8s-relay');
-      if (data.body.action_name === 'query_loki' && query_type_hint) {
-        return relayDemo['log_query'];
-      } else if (data.body.action_name === 'service_map') {
-        return relayDemo['service_map'];
-      } else if (data.body.action_name === 'prometheus_enricher' && data.body.action_params?.promql_query?.includes('container_log_messages_total')) {
-        return relayDemo['log_groups'];
-      } else if (
-        data.body.action_name == 'prometheus_enricher' &&
-        data.body.action_params.promql_query.includes('container_sensitive_log_messages_total')
-      ) {
-        return relayDemo['container_sensitive_log_messages_total'];
-      } else if (data.body.action_name === 'prometheus_enricher') {
-        return relayDemo['prometheus_enricher'];
-      } else if (data.body.action_name === 'prometheus_labels') {
-        return relayDemo['prometheus_labels'];
-      } else if (data.body.action_name === 'get_silences') {
-        return relayDemo['get_silences'];
-      } else if (data.body.action_name === 'get_resource' && data.body.action_params?.resource_type === 'services') {
-        return relayDemo['k8s_services'];
-      } else if (data.body.action_name === 'get_resource' && data.body.action_params?.resource_type === 'persistentvolumeclaims') {
-        return relayDemo['k8s_persistentvolumeclaims'];
-      } else if (data.body.action_name === 'get_resource' && data.body.action_params?.resource_type === 'persistentvolumes') {
-        return relayDemo['k8s_persistentvolumes'];
-      }
-    }
-    try {
-      const response: any = await hitRelayServer(data);
-      return response?.data;
-    } catch (error) {
-      console.error('failed to fetch data from relay', error);
       return error;
     }
   },

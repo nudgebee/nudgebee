@@ -26,12 +26,10 @@ const RELAY_PATH_LITERAL = /(?:getRelayServerEndpoint\s*\(\s*\)\s*\+\s*['"`]|\$\
  */
 describe('relay proxy endpoint allowlist', () => {
   /**
-   * Paths the app targets today. `hitRelayServer` (@lib/HttpService) selects
-   * `/request` or `/grafana` through a variable and XtermTerminal appends `/ws`, so
-   * a purely static scan cannot see all three. Add a path here when a new relay
-   * caller lands.
+   * Paths the app targets today: XtermTerminal appends `/ws`. Add a path here when
+   * a new relay caller lands.
    */
-  const PATHS_IN_USE = ['request', 'grafana', 'ws'];
+  const PATHS_IN_USE = ['ws'];
 
   it.each(PATHS_IN_USE)('allows %s, which the app actively targets', (segment) => {
     expect(ALLOWED_RELAY_ENDPOINTS.has(segment)).toBe(true);
@@ -40,7 +38,8 @@ describe('relay proxy endpoint allowlist', () => {
   it('rejects segments the app does not target, including traversal attempts', () => {
     // The allowlist exists to stop the dynamic segment reaching arbitrary upstream
     // paths (#28584); widening it must not weaken that.
-    for (const segment of ['', '..', '../request', 'register', 'status', 'admin', 'ws/../register']) {
+    // `request` and `grafana` forwarded any agent action for any role (finding 11).
+    for (const segment of ['', '..', '../request', 'request', 'grafana', 'register', 'status', 'admin', 'ws/../register']) {
       expect(ALLOWED_RELAY_ENDPOINTS.has(segment)).toBe(false);
     }
   });
@@ -93,7 +92,7 @@ describe('resolveRelayAccountId', () => {
   it('rejects a body whose nested and top-level account ids differ', () => {
     // Own account nested, another tenant's at the top level: the proxy used to check
     // the nested one while relay /ws exec'd into the top-level one.
-    const body = { account_id: 'victim', action: 'exec', body: { account_id: 'mine' } };
+    const body = { account_id: 'other', action: 'exec', body: { account_id: 'mine' } };
     for (const segment of ['ws', 'request', 'grafana']) {
       expect(resolveRelayAccountId(segment, body)).toEqual({ ok: false, error: expect.any(String) });
     }
@@ -129,8 +128,8 @@ describe('relayForwardBody', () => {
     // proxy authorised account_id.
     const body = {
       account_id: 'mine',
-      ACCOUNT_ID: 'victim',
-      Account_Id: 'victim',
+      ACCOUNT_ID: 'other',
+      Account_Id: 'other',
       action: 'exec',
       session_id: 's',
       command: 'ls',

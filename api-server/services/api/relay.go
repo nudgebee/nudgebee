@@ -2,13 +2,16 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"nudgebee/services/common"
 	"nudgebee/services/config"
+	"nudgebee/services/kubectlpolicy"
 	"nudgebee/services/security"
 	"regexp"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/metric"
@@ -185,6 +188,109 @@ func validateRelayAccountAccess(reqPayload *relayProxyRequest, sc *security.Secu
 	return accountId, actionName, nil
 }
 
+// relayResourceReadActions return whole objects for a `resource_type` (comma
+// list) or `kind`. Both are read actions, open to read-only roles, and agents
+// before k8s-agent#714 return Secret values unredacted, so secret-bearing kinds
+// are refused here.
+var relayResourceReadActions = map[string]bool{"get_resource": true, "get_resource_yaml": true}
+
+func refuseRelaySecretResource(action, actionName string, reqPayload *relayProxyRequest) error {
+	if action != "request" || !relayResourceReadActions[actionName] {
+		return nil
+	}
+	params, _ := reqPayload.Body["action_params"].(map[string]any)
+	var names []string
+	for _, key := range []string{"resource_type", "kind"} {
+		switch v := params[key].(type) {
+		case string:
+			names = append(names, strings.Split(v, ",")...)
+		case []any:
+			for _, item := range v {
+				if str, ok := item.(string); ok {
+					names = append(names, strings.Split(str, ",")...)
+				}
+			}
+		}
+	}
+	for _, name := range names {
+		if kubectlpolicy.IsSecretBearingKind(name) {
+			return fmt.Errorf("reading %q through Nudgebee is blocked", strings.TrimSpace(name))
+		}
+	}
+	return nil
+}
+
+// relayKubectlAction is the agent's kubectl action. This RPC never forwards a
+// command string for it from the client: the only caller, the workload Logs tab,
+// sends structured fields and buildRelayKubectlLogs assembles the command here,
+// so this RPC is not a general-purpose kubectl channel.
+const relayKubectlAction = "kubectl_command_executor"
+
+// relayKubectlLogKinds are the kinds `kubectl logs <kind>/<name>` resolves to pods
+// (observability kubectlLogKinds has the same set).
+var relayKubectlLogKinds = map[string]bool{
+	"deployment": true, "statefulset": true, "daemonset": true,
+	"replicaset": true, "job": true, "pod": true,
+}
+
+var (
+	relayK8sLabelPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+	relayK8sNamePattern  = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`)
+)
+
+const (
+	relayLogsDefaultTail = 1000
+	relayLogsMaxTail     = 10000
+)
+
+// buildRelayKubectlLogs rewrites a kubectl_command_executor request into a
+// `kubectl logs` command built from action_params {kind, name, namespace,
+// container?, tail?}. Every interpolated value is from a fixed set, matches a
+// Kubernetes name pattern, or is a bounded integer. A request carrying any other
+// shape, a raw `command` included, is refused.
+func buildRelayKubectlLogs(action, actionName string, reqPayload *relayProxyRequest) error {
+	if action != "request" || actionName != relayKubectlAction {
+		return nil
+	}
+	params, _ := reqPayload.Body["action_params"].(map[string]any)
+	if _, ok := params["command"]; ok {
+		return errors.New("kubectl commands are not accepted here; send kind, name and namespace to read workload logs")
+	}
+	kind, _ := params["kind"].(string)
+	name, _ := params["name"].(string)
+	namespace, _ := params["namespace"].(string)
+	container, _ := params["container"].(string)
+	kind = strings.ToLower(kind)
+	if !relayKubectlLogKinds[kind] {
+		return fmt.Errorf("logs are not available for kind %q", kind)
+	}
+	if len(name) == 0 || len(name) > 253 || !relayK8sNamePattern.MatchString(name) {
+		return errors.New("invalid workload name")
+	}
+	if len(namespace) == 0 || len(namespace) > 63 || !relayK8sLabelPattern.MatchString(namespace) {
+		return errors.New("invalid namespace")
+	}
+	if container != "" && (len(container) > 63 || !relayK8sLabelPattern.MatchString(container)) {
+		return errors.New("invalid container name")
+	}
+	tail := relayLogsDefaultTail
+	if v, ok := params["tail"]; ok {
+		f, isNum := v.(float64)
+		if !isNum || f != float64(int(f)) || f < 1 || f > relayLogsMaxTail {
+			return fmt.Errorf("tail must be a whole number from 1 to %d", relayLogsMaxTail)
+		}
+		tail = int(f)
+	}
+	containers := "--all-containers=true"
+	if container != "" {
+		containers = "-c " + container
+	}
+	reqPayload.Body["action_params"] = map[string]any{
+		"command": fmt.Sprintf("kubectl logs %s/%s -n %s --tail=%d %s", kind, name, namespace, tail, containers),
+	}
+	return nil
+}
+
 func forwardRelayRequest(c *gin.Context, action string, reqPayload *relayProxyRequest, userId, tenantId string, reqCtx *security.RequestContext) {
 	metricName := "relay_" + action
 	relayURL := config.Config.RelayServerEndpoint + "/" + action
@@ -270,6 +376,14 @@ func handleRelayApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, l
 			"account_id", accountId)
 
 		reqCtx := security.NewRequestContext(c.Request.Context(), securityContext, childLogger, tracer, meter)
+		if err := refuseRelaySecretResource(action, actionName, &reqPayload); err != nil {
+			c.JSON(http.StatusOK, gin.H{"data": gin.H{"success": false, "msg": err.Error()}})
+			return
+		}
+		if err := buildRelayKubectlLogs(action, actionName, &reqPayload); err != nil {
+			c.JSON(http.StatusOK, gin.H{"data": gin.H{"success": false, "msg": err.Error()}})
+			return
+		}
 		forwardRelayRequest(c, action, &reqPayload, userId, tenantId, reqCtx)
 	})
 }

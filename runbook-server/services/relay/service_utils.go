@@ -42,6 +42,11 @@ func ExecuteRelayJob(requestContext *security.RequestContext, accountId string, 
 	if !slices.Contains([]RelayJob{RelayJobShell, RelayJobPostgres, RelayJobMysql, RelayJobMssql, RelayJobOracle, RelayJobClickhouse, RelayJobKubectl, RelayJobRabbitmq, RelayJobRedis, RelayJobHelm, RelayJobArgoCD, RelayJobSSH}, module) {
 		return nil, errors.New("module not supported")
 	}
+	if module == RelayJobKubectl {
+		if err := checkKubectlSecretAccess(query); err != nil {
+			return nil, err
+		}
+	}
 
 	var integrationConfig integrations.IntegrationConfig
 	if integrationId == "" && module != RelayJobKubectl && module != RelayJobShell {

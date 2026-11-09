@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"nudgebee/services/cloud"
+	"nudgebee/services/kubectlpolicy"
 	"nudgebee/services/relay"
 	"nudgebee/services/security"
 	"regexp"
@@ -1559,6 +1560,10 @@ func validateAndSanitizeKubectlCommand(command string) ([]string, error) {
 	subcommand := parts[1]
 	if !kubectlAllowedCommands[subcommand] {
 		return nil, fmt.Errorf("kubectl subcommand '%s' is not allowed. Permitted commands: get, describe, logs, top, version, cluster-info, scale, patch, rollout, cordon, uncordon, drain", subcommand)
+	}
+
+	if err := kubectlpolicy.CheckSecretAccess(command); err != nil {
+		return nil, err
 	}
 
 	dangerousChars := []string{";", "&", "|", "`", "$", "(", ")", "<", ">", "\n", "\r"}

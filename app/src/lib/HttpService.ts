@@ -492,27 +492,3 @@ export function gqlStringify(obj_from_json: any, enums: string[] = [], pkey = ''
 export function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, '\\$&');
 }
-
-export const hitRelayServer = async (data: any, type = '') => {
-  try {
-    let headerObject = getTraceHeaders();
-    let pathVariable = '/request';
-    if (type && type == 'grafana') {
-      headerObject = {
-        ...headerObject,
-        'X-NB-ACCOUNT-ID': data.accountId,
-        'X-NB-REQUEST-ID': crypto.randomUUID(),
-        'X-SECRET-KEY': '',
-        'X-REQUEST-TYPE': 'grafana',
-      };
-      pathVariable = '/grafana';
-    }
-    const result = await getClient().post(getRelayServerEndpoint() + pathVariable, data, {
-      headers: headerObject,
-    });
-    return result;
-  } catch (error: any) {
-    console.error('error on external api call', error?.response?.status ?? error?.code ?? 'unknown', error?.message);
-    return error?.response;
-  }
-};
