@@ -3485,7 +3485,7 @@ func (s *Service) GetMultipleNodeNeighbors(reqCtx *security.RequestContext, node
 	}
 
 	// Step 2: Fetch all discovered nodes
-	allNodes, err := s.fetchNodesByIDs(discoveredNodeIDs)
+	allNodes, err := s.fetchNodesByIDs(tenantID, discoveredNodeIDs)
 	if err != nil {
 		return KnowledgeGraph{}, fmt.Errorf("failed to fetch nodes: %w", err)
 	}
@@ -3816,9 +3816,11 @@ func nodeTypesToStrings(types []NodeType) []string {
 	return out
 }
 
-// fetchNodesByIDs retrieves node details for a list of node IDs
-func (s *Service) fetchNodesByIDs(nodeIDs []string) ([]*DbNode, error) {
-	if len(nodeIDs) == 0 {
+// fetchNodesByIDs retrieves node details for a list of node IDs of tenantID.
+// Node ids are global, so an id from another tenant is simply not found; an
+// empty tenantID finds nothing.
+func (s *Service) fetchNodesByIDs(tenantID string, nodeIDs []string) ([]*DbNode, error) {
+	if len(nodeIDs) == 0 || tenantID == "" {
 		return []*DbNode{}, nil
 	}
 
@@ -3828,11 +3830,12 @@ func (s *Service) fetchNodesByIDs(nodeIDs []string) ([]*DbNode, error) {
 			   COALESCE(specific_type, ''), ontology_attributes
 		FROM knowledge_graph_node
 		WHERE id = ANY($1::uuid[])
+		  AND tenant_id = $2::uuid
 		  AND level = 'Tenant'
 		  AND is_active = true
 	`
 
-	rows, err := s.dbManager.Query(query, pq.Array(nodeIDs))
+	rows, err := s.dbManager.Query(query, pq.Array(nodeIDs), tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query nodes: %w", err)
 	}
@@ -3955,15 +3958,19 @@ func (s *Service) fetchEdgesBetweenNodes(nodeIDs []string) ([]*DbEdge, error) {
 	return edges, nil
 }
 
-// fetchEdgeByID retrieves a single edge by its ID
-func (s *Service) fetchEdgeByID(edgeID string) (*DbEdge, error) {
+// fetchEdgeByID retrieves a single edge of tenantID by its ID; an empty
+// tenantID finds nothing.
+func (s *Service) fetchEdgeByID(tenantID, edgeID string) (*DbEdge, error) {
+	if tenantID == "" {
+		return nil, nil
+	}
 	query := `
 		SELECT id, created_at, updated_at, relationship_type, properties,
 			   cloud_account_id, tenant_id, source_node_id, destination_node_id, level
 		FROM knowledge_graph_edge
-		WHERE id = $1 AND level = 'Tenant' AND is_active = true
+		WHERE id = $1 AND tenant_id = $2::uuid AND level = 'Tenant' AND is_active = true
 	`
-	rows, err := s.dbManager.Query(query, edgeID)
+	rows, err := s.dbManager.Query(query, edgeID, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query edge: %w", err)
 	}
@@ -4000,7 +4007,10 @@ func (s *Service) fetchEdgeByID(edgeID string) (*DbEdge, error) {
 
 // GetNodeByID retrieves a single KgNode by its ID with account name applied to unique_key
 func (s *Service) GetNodeByID(nodeID string) (*KgNode, error) {
-	nodes, err := s.fetchNodesByIDs([]string{nodeID})
+	if s.ctx == nil || s.ctx.GetSecurityContext() == nil {
+		return nil, nil
+	}
+	nodes, err := s.fetchNodesByIDs(s.ctx.GetSecurityContext().GetTenantId(), []string{nodeID})
 	if err != nil {
 		return nil, err
 	}
@@ -4040,7 +4050,10 @@ func (s *Service) GetNodeByID(nodeID string) (*KgNode, error) {
 
 // GetEdgeByID retrieves a single KgEdge by its ID
 func (s *Service) GetEdgeByID(edgeID string) (*KgEdge, error) {
-	dbEdge, err := s.fetchEdgeByID(edgeID)
+	if s.ctx == nil || s.ctx.GetSecurityContext() == nil {
+		return nil, nil
+	}
+	dbEdge, err := s.fetchEdgeByID(s.ctx.GetSecurityContext().GetTenantId(), edgeID)
 	if err != nil {
 		return nil, err
 	}
@@ -5255,7 +5268,7 @@ func (s *Service) TraverseDirectional(tenantID string, params TraverseParams) (*
 	}
 
 	// Fetch full node and edge data
-	dbNodes, err := s.fetchNodesByIDs(discoveredIDs)
+	dbNodes, err := s.fetchNodesByIDs(tenantID, discoveredIDs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch traversed nodes: %w", err)
 	}

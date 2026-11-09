@@ -188,6 +188,34 @@ var triageAccessCases = []triageAccessCase{
 		},
 	},
 	{
+		// The reads below take an event id from the input (from the AI's tools
+		// too, which pick it) and used to answer for any event, in any account.
+		action:     "event_get_triage",
+		handler:    handleEventGetTriage,
+		readOnly:   true,
+		loadsEvent: true,
+		input: func(string) map[string]any {
+			return map[string]any{"event_id": triageEventID}
+		},
+		queries: func(mock sqlmock.Sqlmock, _ string) {
+			mock.ExpectQuery("FROM event_duplicates").WillReturnRows(sqlmock.NewRows([]string{"event_id"}))
+		},
+	},
+	{
+		action:     "event_get_classification",
+		handler:    handleEventGetClassification,
+		readOnly:   true,
+		loadsEvent: true,
+		input: func(string) map[string]any {
+			return map[string]any{"event_id": triageEventID}
+		},
+		queries: func(mock sqlmock.Sqlmock, accountID string) {
+			mock.ExpectQuery("FROM event_classification").
+				WillReturnRows(sqlmock.NewRows([]string{"id", "event_id", "cloud_account_id", "classification"}).
+					AddRow("c-1", triageEventID, accountID, "true_positive"))
+		},
+	},
+	{
 		action:   "workload_list_criticality",
 		handler:  handleWorkloadListCriticality,
 		readOnly: true,
@@ -257,8 +285,8 @@ func TestTriageActionsRequireAccountAccess(t *testing.T) {
 
 		if tc.loadsEvent {
 			mock.ExpectQuery(triageEventLoadSQL).
-				WillReturnRows(sqlmock.NewRows([]string{"id", "tenant", "cloud_account_id"}).
-					AddRow(triageEventID, "tenant-of-the-event", accountID))
+				WillReturnRows(sqlmock.NewRows([]string{"id", "tenant", "cloud_account_id", "fingerprint"}).
+					AddRow(triageEventID, "tenant-of-the-event", accountID, "fp-1"))
 		}
 		tc.queries(mock, accountID)
 
@@ -370,4 +398,45 @@ func TestEventListThresholdSuggestionsNoAccountFilter(t *testing.T) {
 		assert.Equal(t, http.StatusForbidden, status)
 		assert.NoError(t, mock.ExpectationsWereMet(), "handler must not query before the account check")
 	})
+}
+
+// event_get_impact reads the event's subject and its blast radius from the
+// knowledge graph. Its allowed path walks the graph, so the table above can't
+// drive it; this pins the refusal: a caller who can't read events on the
+// event's account gets 403 before anything past the event load runs.
+func TestEventGetImpactRequiresAccountAccess(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	manager := &database.DatabaseManager{}
+	database.RegisterDatabaseManagerHook(database.Metastore, func() (*database.DatabaseManager, error) {
+		return manager, nil
+	})
+	t.Cleanup(func() { database.RegisterDatabaseManagerHook(database.Metastore, nil) })
+
+	for _, s := range []struct {
+		name, caller, accountID string
+	}{
+		{"account admin on another tenant's account", triageAccountAdmin, triageForeignAccount},
+		{"custom-role user on another tenant's account", triageCustomRoleUser, triageForeignAccount},
+	} {
+		t.Run(s.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = db.Close() })
+			manager.Db = sqlx.NewDb(db, "postgres")
+			mock.ExpectQuery(triageEventLoadSQL).
+				WillReturnRows(sqlmock.NewRows([]string{"id", "tenant", "cloud_account_id"}).
+					AddRow(triageEventID, "tenant-of-the-event", s.accountID))
+
+			var sc security.SecurityContext
+			require.NoError(t, json.Unmarshal([]byte(s.caller), &sc))
+			ctx := security.NewRequestContext(context.Background(), &sc, slog.Default(), nil, nil)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+			handleEventGetImpact(&ActionRequest{Input: map[string]any{"event_id": triageEventID}}, c, ctx)
+
+			assert.Equal(t, http.StatusForbidden, rec.Code)
+			assert.NoError(t, mock.ExpectationsWereMet(), "only the event load ran")
+		})
+	}
 }

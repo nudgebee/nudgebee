@@ -394,6 +394,13 @@ func handleEventGetImpact(h *ActionRequest, c *gin.Context, ctx *security.Reques
 		c.JSON(400, common.ErrorActionBadRequest("event not found"))
 		return
 	}
+	if ev.CloudAccountId == nil || *ev.CloudAccountId == "" {
+		c.JSON(400, common.ErrorActionBadRequest("event has no account ID"))
+		return
+	}
+	if !requireTriageAccountAccess(c, ctx, *ev.CloudAccountId, "events", security.SecurityAccessTypeRead) {
+		return
+	}
 
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {

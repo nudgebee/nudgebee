@@ -330,18 +330,36 @@ func isCloudAccountDisabled(sc *security.RequestContext, dbms *database.Database
 	return status == cloudAccountStatusDisabled
 }
 
+// GetEvent loads an event by id, within the caller's tenant: an event of
+// another tenant is not found. A server-internal context has no tenant (the
+// queue consumers learn it from the event they load) and loads any event; a
+// context with neither finds nothing. It does not check the caller's access to
+// the event's account: callers do that once they know which account it is.
 func GetEvent(context *security.RequestContext, id string) (models.Event, error) {
+	var sc *security.SecurityContext
+	if context != nil {
+		sc = context.GetSecurityContext()
+	}
+	if sc == nil || (sc.GetTenantId() == "" && !sc.IsSuperAdmin()) {
+		return models.Event{}, sql.ErrNoRows
+	}
 	databaseManager, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return models.Event{}, err
 	}
-	r := databaseManager.Db.QueryRowx(`SELECT id, created_at, updated_at, finding_id, title, description, source, aggregation_key,
+	query := `SELECT id, created_at, updated_at, finding_id, title, description, source, aggregation_key,
 			failure, finding_type, category, priority, subject_type, subject_name, subject_namespace,
 			subject_node, service_key, cluster, ends_at, starts_at, fingerprint, evidences, tenant,
 			cloud_account_id, cloud_resource_id, status, nb_status, nb_status_changed_at,
 			nb_status_changed_by, snoozed_until, principal, subject_owner, subject_owner_kind, labels,
 			urgency, computed_score, computed_priority, score_factors, score_confidence
-		FROM events WHERE id = $1`, id)
+		FROM events WHERE id = $1`
+	args := []any{id}
+	if tenantId := sc.GetTenantId(); tenantId != "" {
+		query += ` AND tenant = $2`
+		args = append(args, tenantId)
+	}
+	r := databaseManager.Db.QueryRowx(query, args...)
 	if r.Err() != nil {
 		return models.Event{}, r.Err()
 	}

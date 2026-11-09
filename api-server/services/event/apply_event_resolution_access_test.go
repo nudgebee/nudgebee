@@ -59,7 +59,7 @@ func expectApplyResolutionLoads(mock sqlmock.Sqlmock, requestedAccount string) {
 		WithArgs(requestedAccount).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "account_type"}).AddRow(requestedAccount, "kubernetes"))
 	mock.ExpectQuery("FROM events WHERE id = \\$1").
-		WithArgs(applyTestEventID).
+		WithArgs(applyTestEventID, sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "title", "tenant", "cloud_account_id"}).
 			AddRow(applyTestEventID, "Node not ready", applyTestTenant, applyTestEventAccount))
 }

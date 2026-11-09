@@ -410,7 +410,7 @@ func (s *Service) GetImpactedServices(tenantID, nodeID string, relationshipTypes
 
 	// Resolve the seed first: an absent node means impact is unknown, not zero —
 	// callers must not read that as "safe".
-	seedNodes, err := s.fetchNodesByIDs([]string{nodeID})
+	seedNodes, err := s.fetchNodesByIDs(tenantID, []string{nodeID})
 	if err != nil {
 		return nil, fmt.Errorf("fetch seed node %s: %w", nodeID, err)
 	}
@@ -490,7 +490,7 @@ func (s *Service) GetImpactedServices(tenantID, nodeID string, relationshipTypes
 		truncated = true
 	}
 
-	nodes, err := s.fetchNodesByIDs(discoveredIDs)
+	nodes, err := s.fetchNodesByIDs(tenantID, discoveredIDs)
 	if err != nil {
 		return nil, fmt.Errorf("fetch impacted nodes: %w", err)
 	}
@@ -695,7 +695,7 @@ func (s *Service) attachedInstanceDependents(tenantID, seedID string, accountEnv
 	if err != nil {
 		return nil, fmt.Errorf("attachment traversal for %s: %w", seedID, err)
 	}
-	nodes, err := s.fetchNodesByIDs(discoveredIDs)
+	nodes, err := s.fetchNodesByIDs(tenantID, discoveredIDs)
 	if err != nil {
 		return nil, fmt.Errorf("fetch attached nodes: %w", err)
 	}
@@ -848,7 +848,7 @@ func (s *Service) traverseDownstreamDependencies(tenantID, nodeID string, relTyp
 	if len(discoveredIDs) > maxImpactNodes {
 		discoveredIDs = discoveredIDs[:maxImpactNodes]
 	}
-	nodes, err := s.fetchNodesByIDs(discoveredIDs)
+	nodes, err := s.fetchNodesByIDs(tenantID, discoveredIDs)
 	if err != nil {
 		return nil, fmt.Errorf("fetch downstream nodes: %w", err)
 	}

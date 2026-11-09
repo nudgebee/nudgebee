@@ -57,7 +57,7 @@ func refreshTestContext(t *testing.T, wire string) *security.RequestContext {
 // refreshTestAccount in refreshTestTenant whoever asks for it.
 func expectRefreshedEventLoad(mock sqlmock.Sqlmock, findingType string) {
 	mock.ExpectQuery("FROM events WHERE id = \\$1").
-		WithArgs(refreshTestEventID).
+		WithArgs(refreshTestEventID, sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "title", "source", "aggregation_key", "finding_type", "subject_type", "subject_name",
 			"evidences", "labels", "tenant", "cloud_account_id",

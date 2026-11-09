@@ -185,6 +185,9 @@ func handleEventGetTriage(h *ActionRequest, c *gin.Context, ctx *security.Reques
 		c.JSON(400, common.ErrorActionBadRequest("event has no account ID"))
 		return
 	}
+	if !requireTriageAccountAccess(c, ctx, *ev.CloudAccountId, "events", security.SecurityAccessTypeRead) {
+		return
+	}
 
 	if ev.Fingerprint == nil || *ev.Fingerprint == "" {
 		c.JSON(400, common.ErrorActionBadRequest("event has no fingerprint"))
@@ -779,6 +782,9 @@ func handleEventGetClassification(h *ActionRequest, c *gin.Context, ctx *securit
 
 	if ev.CloudAccountId == nil || *ev.CloudAccountId == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "event has no account ID"})
+		return
+	}
+	if !requireTriageAccountAccess(c, ctx, *ev.CloudAccountId, "events", security.SecurityAccessTypeRead) {
 		return
 	}
 

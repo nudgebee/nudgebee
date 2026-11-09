@@ -45,7 +45,7 @@ func expectRollbackTargetLoadsFor(mock sqlmock.Sqlmock, aggregationKey string) {
 		WithArgs(applyTestEventAccount).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "account_type"}).AddRow(applyTestEventAccount, "kubernetes"))
 	mock.ExpectQuery("FROM events WHERE id = \\$1").
-		WithArgs(applyTestEventID).
+		WithArgs(applyTestEventID, sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "aggregation_key", "finding_type", "subject_namespace", "starts_at", "evidences", "tenant", "cloud_account_id", "cloud_resource_id"}).
 			AddRow(applyTestEventID, aggregationKey, "configuration_change", "shop", rollbackTestChangedAt, rollbackDiffEvidences("v1", "v2"),
 				applyTestTenant, applyTestEventAccount, rollbackTestResource))
