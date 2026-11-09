@@ -34,6 +34,9 @@ func TestRedactCommandLine(t *testing.T) {
 		{`{"command":"PGPASSWORD=hunter2 psql -h db -p 5432"}`, "hunter2", `psql -h db -p 5432"}`},
 		{`sh -c 'MYSQL_PWD=s3cret mysql -u root'`, "s3cret", "mysql -u root"},
 		{`curl -u admin:s3cret https://api.example.com`, "s3cret", "curl -u admin:"},
+		{`curl -u admin:'s3cr!t' https://api.example.com`, "s3cr!t", "curl -u admin:"},
+		{`curl -u admin:"s3cret" https://api.example.com`, "s3cret", " https://api.example.com"},
+		{`curl -uadmin:s3cret https://api.example.com`, "s3cret", "curl -uadmin:"},
 		{`curl --user=admin:s3cret https://api.example.com`, "s3cret", "https://api.example.com"},
 		// The workspace relays each argument quoted.
 		{`kubectl 'get' 'pods' '--token' 's3cret'`, "s3cret", `kubectl 'get' 'pods' '--token'`},

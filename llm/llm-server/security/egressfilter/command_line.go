@@ -24,8 +24,9 @@ var (
 	commandLineDBPasswordFlag = regexp.MustCompile(`(\s['"]?-p)(?:(['"]?\s+)('[^'-][^']*'|"[^"-][^"]*"|[^\s'"-][^\s'"]*)|('[^'\s][^']*'|"[^"\s][^"]*"|[^\s'"]+))`)
 	// redis-cli -a / --pass.
 	commandLineRedisPassword = regexp.MustCompile(`(?i)(redis-cli\b[^;|&]*?\s['"]?(?:-a|--pass)['"]?)(\s+)('[^']*'|"[^"]*"|\S+)`)
-	// curl -u user:pass / --user user:pass: the password after the colon.
-	commandLineCurlUser = regexp.MustCompile(`(?i)(\bcurl\b[^;|&]*?\s['"]?(?:-u|--user)['"]?(?:=|\s+)['"]?[^\s:'"]+:)([^\s'"]+)`)
+	// curl -u user:pass / --user=user:pass / -uuser:pass: the password after
+	// the colon, quotes and all when it is quoted on its own (user:'p@ss!').
+	commandLineCurlUser = regexp.MustCompile(`(?i)(\bcurl\b[^;|&]*?\s['"]?(?:-u|--user)['"]?(?:=|\s+)?['"]?[^\s:'"]+:)('[^']*'|"[^"]*"|[^\s'"]+)`)
 	// https://user:pass@host: the password part of URL userinfo.
 	commandLineURLUserinfo = regexp.MustCompile(`(?i)(\b[a-z][a-z0-9+.-]*://[^/\s:@'"]+:)([^@\s/'"]+)(@)`)
 	// Authorization: Bearer abc, X-Api-Key: abc, as header values.
