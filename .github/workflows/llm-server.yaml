@@ -202,3 +202,6 @@ jobs:
           go test ./triage/ ./eventrule/ -run '_DB$' -skip 'CascadePipeline' -v
           go test ./account/ -run 'NotificationRule.*_DB$' -v
           go test ./integrations/core/ -run 'MsTeams.*_DB$' -v
+          # tenant: who a group-membership change may add or remove is decided by
+          # a join on tenant_users / usergroup_users (#43747); sqlmock cannot evaluate it.
+          go test ./tenant/ -run '_DB$' -v

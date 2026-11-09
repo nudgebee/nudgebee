@@ -11085,7 +11085,10 @@ var table_metadata = map[string]TableDefinition{
 					))
 					FROM usergroup_users ugu2
 					INNER JOIN user_groups ug2 ON ug2.id = ugu2."group"
-					WHERE ugu2."user" = u.id),
+					-- this group's tenant only: a member's groups in other
+					-- tenants are not this tenant's to read (#43747)
+					WHERE ugu2."user" = u.id
+						AND ug2.tenant = ug.tenant),
 					'[]'::json
 				) as user_groups
 			FROM usergroup_users ugu

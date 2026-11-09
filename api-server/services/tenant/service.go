@@ -1285,6 +1285,14 @@ func UpsertK8sAccountNamespaceGroupRole(ctx *security.RequestContext, request Ac
 	}, nil
 }
 
+// groupAddLookupQuery resolves usernames to add to a group, among the caller's
+// tenant's members only. Args: tenant id, usernames.
+const groupAddLookupQuery = `SELECT u.id, u.username FROM users u JOIN tenant_users tu ON tu."user" = u.id AND tu.tenant = ? WHERE u.username IN (?)`
+
+// groupRemoveLookupQuery resolves usernames to remove from a group, among that
+// group's current members only. Args: group id, usernames.
+const groupRemoveLookupQuery = `SELECT u.id, u.username FROM users u JOIN usergroup_users ugu ON ugu."user" = u.id AND ugu."group" = ? WHERE u.username IN (?)`
+
 func ManageGroupUsers(ctx *security.RequestContext, request ManageGroupUsersRequest) (ManageGroupUsersResponse, error) {
 	ctx.GetLogger().Info("manage group users", "request", slog.AnyValue(request))
 	// tenant_admin or a usergroups:Write grant. The privilege check that keeps the
@@ -1335,7 +1343,11 @@ func ManageGroupUsers(ctx *security.RequestContext, request ManageGroupUsersRequ
 			Id       string `db:"id"`
 			Username string `db:"username"`
 		}
-		inQuery, inArgs, err := sqlx.In("SELECT id, username FROM users WHERE username IN (?)", request.AddUsernames)
+		// Only members of this tenant may join its groups. Resolving the username
+		// across every tenant let an admin add anyone with a login, from any
+		// organisation, and "not found" versus success told them whether an email
+		// had an account at all (#43747).
+		inQuery, inArgs, err := sqlx.In(groupAddLookupQuery, ctx.GetSecurityContext().GetTenantId(), request.AddUsernames)
 		if err != nil {
 			return ManageGroupUsersResponse{}, common.ErrorInternal("Error building user lookup query")
 		}
@@ -1352,7 +1364,9 @@ func ManageGroupUsers(ctx *security.RequestContext, request ManageGroupUsersRequ
 		for _, username := range request.AddUsernames {
 			id, ok := usernameToId[username]
 			if !ok {
-				return ManageGroupUsersResponse{}, common.ErrorBadRequest("User not found: " + username)
+				// One answer for "no such login" and "a login in another tenant", so
+				// the response says nothing about who exists elsewhere.
+				return ManageGroupUsersResponse{}, common.ErrorBadRequest("User is not a member of this organization: " + username)
 			}
 			addUserIds = append(addUserIds, id)
 		}
@@ -1393,7 +1407,11 @@ func ManageGroupUsers(ctx *security.RequestContext, request ManageGroupUsersRequ
 			Id       string `db:"id"`
 			Username string `db:"username"`
 		}
-		inQuery, inArgs, err := sqlx.In("SELECT id, username FROM users WHERE username IN (?)", request.RemoveUsernames)
+		// Resolved against this group's members, not every login on the platform:
+		// removing someone who is not in the group is a no-op, whether or not the
+		// email has an account, so this path cannot test emails either (#43747).
+		// A member added from another tenant before that fix can still be removed.
+		inQuery, inArgs, err := sqlx.In(groupRemoveLookupQuery, request.GroupId, request.RemoveUsernames)
 		if err != nil {
 			return ManageGroupUsersResponse{}, common.ErrorInternal("Error building user lookup query")
 		}
@@ -1403,16 +1421,12 @@ func ManageGroupUsers(ctx *security.RequestContext, request ManageGroupUsersRequ
 		if err != nil {
 			return ManageGroupUsersResponse{}, common.ErrorInternal("Error looking up users")
 		}
-		usernameToId := lo.SliceToMap(userRows, func(r userIdUsername) (string, string) {
-			return r.Username, r.Id
-		})
-		removeUserIds := make([]string, 0, len(request.RemoveUsernames))
-		for _, username := range request.RemoveUsernames {
-			id, ok := usernameToId[username]
-			if !ok {
-				return ManageGroupUsersResponse{}, common.ErrorBadRequest("User not found: " + username)
-			}
-			removeUserIds = append(removeUserIds, id)
+		removeUserIds := lo.Map(userRows, func(r userIdUsername, _ int) string { return r.Id })
+		if len(removeUserIds) == 0 {
+			return ManageGroupUsersResponse{
+				Status:  "success",
+				Message: "Group users updated successfully",
+			}, nil
 		}
 
 		query, args, err := sqlx.In("DELETE FROM usergroup_users WHERE \"group\" = ? AND \"user\" IN (?)", request.GroupId, removeUserIds)
