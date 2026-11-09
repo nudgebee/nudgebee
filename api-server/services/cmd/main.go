@@ -50,6 +50,8 @@ var logger = slog.New(
 		slogformatter.NewFormatterHandler(errorFormatter)(
 			slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 				Level: slog.LevelInfo,
+				// Webhooks authenticate with ?token=; keep it out of the access log.
+				ReplaceAttr: common.RedactRequestLogAttr,
 			}),
 		),
 	),

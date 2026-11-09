@@ -110,7 +110,7 @@ func genericWebhookHandler(webhookName string, tracer *trace.Tracer, meter *metr
 		if err != nil {
 			common.MetricsApiRequestsFailedTotal(c.Request.Context(), metricName, "validate_webhook_failed")
 			logger.Warn("integration: webhook validation failed",
-				"webhook", webhookName, "url", requestUrl, "error", err)
+				"webhook", webhookName, "url", common.RedactURLSecrets(requestUrl), "error", err)
 			c.JSON(400, common.ErrorActionBadRequest("webhook validation failed"))
 			return
 		}
@@ -121,7 +121,7 @@ func genericWebhookHandler(webhookName string, tracer *trace.Tracer, meter *metr
 			if procErr := core.ProcessStoredWebhook(sc, webhookRowID); procErr != nil {
 				common.MetricsApiRequestsFailedTotal(c.Request.Context(), metricName, "process_webhook_failed")
 				logger.Error("integration: error processing webhook request",
-					"webhook", webhookName, "url", requestUrl, "error", procErr)
+					"webhook", webhookName, "url", common.RedactURLSecrets(requestUrl), "error", procErr)
 			}
 		}
 
@@ -195,6 +195,12 @@ func azureEventGridWebhookHandler(tracer *trace.Tracer, meter *metric.Meter, log
 				common.HttpWithBody(io.NopCloser(bytes.NewReader(rawEvent))),
 			)
 			if err != nil {
+				// A transport error is a *url.Error whose message embeds the
+				// relay URL, token included; log it with the token redacted.
+				var urlErr *url.Error
+				if errors.As(err, &urlErr) {
+					err = &url.Error{Op: urlErr.Op, URL: common.RedactURLSecrets(urlErr.URL), Err: urlErr.Err}
+				}
 				logger.Error("azure-eventgrid: failed to relay event to cloud-collector", "error", err)
 				relayFailed = true
 				continue

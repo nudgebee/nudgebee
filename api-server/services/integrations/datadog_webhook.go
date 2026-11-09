@@ -1212,7 +1212,7 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 		if _, ok := outerPayload["event_type"]; ok {
 			innerPayloadStr = webhookPayloadString
 		} else {
-			sc.GetLogger().Error("datadogwebhook: unable to process webhook data", "data", webhookPayloadString)
+			sc.GetLogger().Error("datadogwebhook: unable to process webhook data", "payload_bytes", len(webhookPayloadString))
 			return nil, errors.New("datadogwebhook: unable to process webhook data")
 		}
 	}
