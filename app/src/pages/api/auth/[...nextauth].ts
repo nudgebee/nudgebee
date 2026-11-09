@@ -580,13 +580,18 @@ if (process.env.EMAIL_SERVER_HOST && (process.env.NEXTAUTH_MAGICLINK_CREDS_ENABL
         // to the end user — keep the diagnostic detail in server logs and the
         // outward-facing copy comes from app/src/pages/auth/error.tsx.
         const notificationServiceUrl = process.env.NOTIFICATION_SERVICE_URL ?? 'http://notifications:80';
+        const notificationToken = process.env.NOTIFICATION_SERVER_TOKEN;
         try {
-          await axios.post(`${notificationServiceUrl}/api/emails/send`, {
-            recipients: email,
-            subject: "Here's your sign-in link",
-            template: 'magic_link',
-            template_params: { magic_link_url: url, email },
-          });
+          await axios.post(
+            `${notificationServiceUrl}/api/emails/send`,
+            {
+              recipients: email,
+              subject: "Here's your sign-in link",
+              template: 'magic_link',
+              template_params: { magic_link_url: url, email },
+            },
+            notificationToken ? { headers: { 'X-ACTION-TOKEN': notificationToken } } : undefined
+          );
         } catch (err: any) {
           // axios throws on non-2xx by default. Capture status + body when
           // available, plus the raw error code for network failures
