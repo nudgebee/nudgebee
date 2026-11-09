@@ -2300,10 +2300,20 @@ func getRevertRecommendationRequest(cr models.Resource, r models.Event, undo boo
 		"kind":      kind,
 	}
 	revertPaths := extractRevertPaths(r, undo)
+	if path := firstRedactedPath(revertPaths); path != "" {
+		return map[string]any{}, common.ErrorBadRequest(fmt.Sprintf(
+			"event resolution: this change set a value Nudgebee does not keep (%s), so it cannot be put back from the record. "+
+				"Roll it back with `kubectl rollout undo` or the tool that deploys it", path))
+	}
 	if len(revertPaths) > 0 {
 		request["revert_paths"] = revertPaths
 	}
-	if oldYaml := extractDiffOldManifest(r); oldYaml != "" {
+	// A redacted manifest is never sent back: the legacy agent replaces the whole object with it,
+	// which would write markers into the workload and drop the annotations redaction removed
+	// (kubectl's last-applied copy is the merge base of the customer's next `kubectl apply`).
+	oldYaml := extractDiffOldManifest(r)
+	manifestRedacted := diffWasRedacted(r) || strings.Contains(oldYaml, redactionMarker)
+	if oldYaml != "" && !manifestRedacted {
 		var yamlMap map[string]any
 		if err := yaml.Unmarshal([]byte(oldYaml), &yamlMap); err != nil {
 			return map[string]any{}, common.ErrorBadRequest("event resolution: the recorded pre-change manifest is not valid YAML")
@@ -2311,6 +2321,10 @@ func getRevertRecommendationRequest(cr models.Resource, r models.Event, undo boo
 		request[strings.ToLower(kind)] = yamlMap
 	}
 	if len(revertPaths) == 0 && request[strings.ToLower(kind)] == nil {
+		if manifestRedacted {
+			return map[string]any{}, common.ErrorBadRequest("event resolution: this change's recorded manifest had secret values removed, so it cannot be put back from the record. " +
+				"Roll it back with `kubectl rollout undo` or the tool that deploys it")
+		}
 		return map[string]any{}, common.ErrorBadRequest("event resolution: cannot revert, this event has no recorded configuration change to undo")
 	}
 	return request, nil
@@ -2447,6 +2461,65 @@ func extractRevertPaths(r models.Event, undo bool) []any {
 		}
 	}
 	return paths
+}
+
+// redactionMarker starts the value the k8s-collector stores in recorded change evidence in place
+// of a secret or an inline env value: "[redacted]" or "[redacted:<fingerprint>]". The marker is
+// not the value, so a revert must never write it: the field would be set to the marker itself.
+// It is matched as a substring, not a whole value: a credential inside a longer string (a
+// connection string's password) is replaced in place, leaving the rest of the string around it.
+const redactionMarker = "[redacted"
+
+// firstRedactedPath returns the path of the first revert entry whose value to write holds a
+// redaction marker anywhere (a whole env entry or container is one value), or "".
+func firstRedactedPath(revertPaths []any) string {
+	for _, p := range revertPaths {
+		entry, _ := p.(map[string]any)
+		if containsRedactionMarker(entry["old"]) {
+			path, _ := entry["path"].(string)
+			return path
+		}
+	}
+	return ""
+}
+
+func containsRedactionMarker(v any) bool {
+	switch t := v.(type) {
+	case string:
+		return strings.Contains(t, redactionMarker)
+	case map[string]any:
+		for _, child := range t {
+			if containsRedactionMarker(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range t {
+			if containsRedactionMarker(child) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// diffWasRedacted reports whether the k8s-collector rewrote a diff block of r when it redacted it
+// (it sets data.redacted). Such a block's manifests are no longer the object as it was.
+func diffWasRedacted(r models.Event) bool {
+	if r.Evidences == nil || !r.Evidences.IsArray() {
+		return false
+	}
+	for _, item := range r.Evidences.Array() {
+		evidence, _ := item.(map[string]any)
+		if evidenceType, _ := evidence["type"].(string); evidenceType != "diff" {
+			continue
+		}
+		data, _ := evidence["data"].(map[string]any)
+		if redacted, _ := data["redacted"].(bool); redacted {
+			return true
+		}
+	}
+	return false
 }
 
 // hasInProgressRecommendation looks for an existing InProgress resolution for

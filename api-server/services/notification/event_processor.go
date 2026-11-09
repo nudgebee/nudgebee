@@ -268,7 +268,8 @@ func TriggerNotificationForEventResolution(ctx *security.RequestContext, event m
 			"finding": event,
 		},
 	}
-	ctx.GetLogger().Info(fmt.Sprintf("Publishing event resolution to notification - %s", event.Id), "message", slog.AnyValue(message))
+	// The event itself is not logged: its evidences carry recorded manifests and command output.
+	ctx.GetLogger().Info(fmt.Sprintf("Publishing event resolution to notification - %s", event.Id), "tenant_id", event.Tenant)
 	err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message, common.MqPublishWithContext(ctx.GetContext()))
 	if err != nil {
 		ctx.GetLogger().Error("Error publishing message to queue", "error", err)
