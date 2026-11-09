@@ -2,10 +2,14 @@ package query
 
 import (
 	"nudgebee/services/internal/database"
+	"nudgebee/services/internal/testenv"
+	"nudgebee/services/security"
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGenerateWhereClause_SQLInjection(t *testing.T) {
@@ -386,4 +390,68 @@ func TestGenerateWhereClause_RejectsNonScalarValues(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, "(count IN (1,2))", sql)
 	}
+}
+
+// resource_groupings_v2 and cloud_resources_list_v2 fill their templates' filter
+// placeholders. Filled one placeholder at a time, a filter value naming a later
+// placeholder had that placeholder's quoted fragment spliced into it, which
+// unbalanced the quotes and ran the rest of the value as SQL.
+func TestDefGenerator_PlaceholderNameInFilterValueStaysALiteral(t *testing.T) {
+	ctx := security.NewRequestContextForSuperAdmin(nil, nil, nil)
+
+	resourceGroupingsPlaceholders := []string{
+		"__resources_nostatus__where__", "__resources__where__", "__spends__where__",
+		"__recommendations__where__", "__spends_acct__where__", "__recommendations_acct__where__",
+	}
+	// Both template shapes: per-resource rows and the per-service rollup.
+	for _, groupBy := range [][]string{
+		{"tenant_id", "account_id", "resource_service_name", "resource_id", "resource_name"},
+		{"tenant_id", "account_id", "resource_service_name"},
+	} {
+		for _, placeholder := range resourceGroupingsPlaceholders {
+			value := "x" + placeholder + "y"
+			request := QueryRequest{
+				Table:   "resource_groupings_v2",
+				Columns: fromStringColsToQueryCols([]string{"tenant_id", "account_id", "resource_service_name", "count_resource", "sum_spend_amount", "count_recommendation"}),
+				Where: QueryWhereClause{Binary: BinaryWhereClause{
+					"account_id":            {Eq: testenv.FakeAccountID},
+					"resource_service_name": {Eq: value},
+					"recommendation_status": {Eq: "Open"},
+					"spend_date":            {Between: map[string]any{"_gte": "2025-01-01T00:00:00Z", "_lte": "2025-05-01T00:00:00Z"}},
+				}},
+				GroupBy: groupBy,
+				Limit:   10,
+			}
+			query, err := GenerateSqlQuery(ctx, uuid.NewString(), request, table_metadata["resource_groupings_v2"])
+			require.NoError(t, err)
+			assertEveryCopyIntact(t, query, value, "group by %v, placeholder %s", groupBy, placeholder)
+		}
+	}
+
+	for _, placeholder := range []string{"__cr__where__", "__spends__where__", "__metrics__where__"} {
+		value := "x" + placeholder + "y"
+		request := QueryRequest{
+			Table:   "cloud_resources_list_v2",
+			Columns: fromStringColsToQueryCols([]string{"id", "name", "account", "spend_amount"}),
+			Where: QueryWhereClause{Binary: BinaryWhereClause{
+				"account": {Eq: testenv.FakeAccountID},
+				"name":    {Eq: value},
+			}},
+			Limit: 10,
+		}
+		query, err := GenerateSqlQuery(ctx, uuid.NewString(), request, table_metadata["cloud_resources_list_v2"])
+		require.NoError(t, err)
+		assertEveryCopyIntact(t, query, value, "placeholder %s", placeholder)
+	}
+}
+
+// assertEveryCopyIntact checks that the filter value appears, and that every
+// literal starting with its first characters is the whole value. A template can
+// hold the value more than once, so one intact copy does not show that another
+// was not spliced into.
+func assertEveryCopyIntact(t *testing.T, query, value string, msgAndArgs ...any) {
+	t.Helper()
+	intact := strings.Count(query, "'"+value+"'")
+	assert.Positive(t, intact, msgAndArgs...)
+	assert.Equal(t, strings.Count(query, "'"+value[:1]), intact, msgAndArgs...)
 }

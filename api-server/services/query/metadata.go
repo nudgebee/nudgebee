@@ -6869,12 +6869,17 @@ var table_metadata = map[string]TableDefinition{
 				) as resource_group`, spendSelect, recSelect, spendJoin, recJoin)
 			}
 
-			baseQuery = strings.ReplaceAll(baseQuery, "__resources_nostatus__where__", resourceWhereStrNoStatus)
-			baseQuery = strings.ReplaceAll(baseQuery, "__resources__where__", resourceWhereStr)
-			baseQuery = strings.ReplaceAll(baseQuery, "__spends__where__", spendsWhereStr)
-			baseQuery = strings.ReplaceAll(baseQuery, "__recommendations__where__", recommendationWhereStr)
-			baseQuery = strings.ReplaceAll(baseQuery, "__spends_acct__where__", "1 = 1"+spendAcctTenantWhereSQL)
-			baseQuery = strings.ReplaceAll(baseQuery, "__recommendations_acct__where__", "1 = 1"+recAcctTenantWhereSQL)
+			// One pass: replacing the placeholders one after another would also
+			// replace a placeholder name inside a filter value an earlier pass
+			// inserted, splicing a quoted fragment into that value.
+			baseQuery = strings.NewReplacer(
+				"__resources_nostatus__where__", resourceWhereStrNoStatus,
+				"__resources__where__", resourceWhereStr,
+				"__spends__where__", spendsWhereStr,
+				"__recommendations__where__", recommendationWhereStr,
+				"__spends_acct__where__", "1 = 1"+spendAcctTenantWhereSQL,
+				"__recommendations_acct__where__", "1 = 1"+recAcctTenantWhereSQL,
+			).Replace(baseQuery)
 
 			return baseQuery, request, nil
 		},
@@ -9391,17 +9396,20 @@ var table_metadata = map[string]TableDefinition{
 				}
 			}
 
+			crWhere, spendsWhere := "", ""
 			if crWhereStr != "" {
-				baseQuery = strings.ReplaceAll(baseQuery, "__cr__where__", "WHERE "+crWhereStr)
-			} else {
-				baseQuery = strings.ReplaceAll(baseQuery, "__cr__where__", "")
+				crWhere = "WHERE " + crWhereStr
 			}
 			if spendsWhereStr != "" {
-				baseQuery = strings.ReplaceAll(baseQuery, "__spends__where__", "WHERE "+spendsWhereStr)
-			} else {
-				baseQuery = strings.ReplaceAll(baseQuery, "__spends__where__", "")
+				spendsWhere = "WHERE " + spendsWhereStr
 			}
-			baseQuery = strings.ReplaceAll(baseQuery, "__metrics__where__", metricsWhereStr)
+			// One pass, as in resource_groupings_v2: a sequential replace would
+			// rewrite a placeholder name inside an inserted filter value.
+			baseQuery = strings.NewReplacer(
+				"__cr__where__", crWhere,
+				"__spends__where__", spendsWhere,
+				"__metrics__where__", metricsWhereStr,
+			).Replace(baseQuery)
 			return baseQuery, request, nil
 		},
 		TenantIdColumnName:  "tenant",

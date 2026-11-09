@@ -64,6 +64,10 @@ func getDialect(source database.DatabaseManagerType) sqlDialect {
 //   - date_unit Args[0]    — validateDateUnits rejects anything outside
 //                            dateTruncUnits; every FuncDateTruncate also maps
 //                            it through safeDateUnit before splicing.
+//   - DefGenerator templates — fill all placeholders in one strings.Replacer
+//                            pass. A ReplaceAll per placeholder also rewrites
+//                            a placeholder name inside a value an earlier
+//                            pass inserted, and breaks its quoting.
 //
 // Identifiers cannot be bound via $N placeholders in Postgres, so the
 // allowlist (tableDef.Columns + table-metadata registry) is the canonical
