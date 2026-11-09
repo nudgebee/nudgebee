@@ -4296,6 +4296,23 @@ actions:
       - role: k8s_namespace_admin_readonly
       - role: k8s_namespace_admin
     comment: get feedback submitted by user via session id
+  - name: ai_list_own_conversation_feedback
+    definition:
+      kind: "synchronous"
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/ai'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_usage
+      - role: account_admin_readonly
+      - role: tenant_admin_readonly
+      - role: account_admin
+      - role: tenant_admin
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+    comment: get the authenticated caller's own feedback for a set of responses, scoped server-side to their user id
   - name: log_group
     comment: Get details for a grouped log pattern
     definition:

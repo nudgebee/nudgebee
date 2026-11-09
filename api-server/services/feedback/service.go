@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 )
 
 // GetConversationAccountAndSession resolves the owning cloud account and the
@@ -106,6 +107,49 @@ func CreateConversationAiFeedback(context *security.RequestContext, feedbackRequ
 
 	data["success"] = true
 	return data, nil
+}
+
+// ListOwnConversationFeedback returns the authenticated caller's own feedback
+// rows for the given responses. This is what the chat widget uses to decide
+// which icon to highlight — unlike ai_list_conversation_feedback (the
+// admin-facing table query, which intentionally returns every user's rows),
+// this is hard-scoped server-side to the caller's user_id so a teammate's
+// vote on a shared conversation can never show up as "your" vote.
+func ListOwnConversationFeedback(context *security.RequestContext, req ListOwnConversationFeedbackRequest) ([]OwnFeedbackRow, error) {
+	rows := []OwnFeedbackRow{}
+	if context == nil || context.GetSecurityContext() == nil || context.GetSecurityContext().GetUserId() == "" || context.GetSecurityContext().GetTenantId() == "" {
+		return rows, fmt.Errorf("unauthorized")
+	}
+	if req.CloudAccountId == "" {
+		return rows, fmt.Errorf("cloud_account_id cannot be empty")
+	}
+	if !context.GetSecurityContext().HasAccountAccess(req.CloudAccountId, security.SecurityAccessTypeRead) {
+		return rows, fmt.Errorf("unauthorized")
+	}
+	if len(req.SessionId) == 0 {
+		return rows, nil
+	}
+
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return rows, err
+	}
+
+	// DISTINCT ON picks one row per session_id (the edge case where the same
+	// session_id has rows under two different conversation_id values — see
+	// the one pre-existing duplicate found while investigating #32948 — would
+	// otherwise return 2 rows for that response and break the "one row per
+	// session_id" contract callers rely on).
+	query := `SELECT DISTINCT ON (session_id) session_id, useful, additional_notes
+		FROM llm_conversation_feedback
+		WHERE cloud_account_id = $1 AND tenant_id = $2 AND user_id = $3 AND session_id = ANY($4)
+		ORDER BY session_id, updated_at DESC`
+	err = dbms.Db.SelectContext(context.GetContext(), &rows, query,
+		req.CloudAccountId, context.GetSecurityContext().GetTenantId(), context.GetSecurityContext().GetUserId(), pq.Array(req.SessionId))
+	if err != nil {
+		return rows, err
+	}
+	return rows, nil
 }
 
 func SaveConversation(context *security.RequestContext, saveConversationRequest SaveOrDeleteConversationRequest) (map[string]bool, error) {

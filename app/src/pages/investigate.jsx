@@ -1140,13 +1140,13 @@ const Investigate = () => {
       const eventAccountId = row.cloud_account_id || router.query.accountId;
 
       apiAskNudgebee
-        .getFeedbackForSessionId({
-          account_id: eventAccountId,
+        .getOwnFeedbackForSessionId({
+          cloud_account_id: eventAccountId,
           session_id: row.id,
         })
         .then((res) => {
           if (cancelled || !isMountedRef.current) return;
-          const response = res?.data?.data?.ai_list_conversation_feedback?.rows ?? [];
+          const response = res?.data?.data?.ai_list_own_conversation_feedback?.rows ?? [];
           if (response.length == 1) {
             setSentFeedback({
               submitted: true,

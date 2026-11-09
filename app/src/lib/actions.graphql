@@ -1763,6 +1763,12 @@ type Query {
 }
 
 type Query {
+  ai_list_own_conversation_feedback(
+    request: ListOwnConversationFeedbackRequest!
+  ): ListOwnConversationFeedbackResponse
+}
+
+type Query {
   log_group(
     request: LogGroupRequest!
   ): LogGroupOutput
@@ -8138,6 +8144,21 @@ type AiFeedbackResponse {
   user_corrected_response: String
   conversation_id: String
   user_id: String
+}
+
+input ListOwnConversationFeedbackRequest {
+  cloud_account_id: String!
+  session_id: [String!]!
+}
+
+type ListOwnConversationFeedbackResponse {
+  rows: [OwnFeedbackRow]
+}
+
+type OwnFeedbackRow {
+  session_id: String
+  useful: Boolean
+  additional_notes: String
 }
 
 type InsightResponse {

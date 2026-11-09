@@ -73,12 +73,12 @@ const KubernetesLLMRequestResponse = (props) => {
     }
     if (props.toolCall.type == 'response') {
       apiAskNudgebee
-        .getFeedbackForSessionId({
-          account_id: props.accountId,
+        .getOwnFeedbackForSessionId({
+          cloud_account_id: props.accountId,
           session_id: props.toolCall.id,
         })
         .then((res) => {
-          const response = res?.data?.data?.ai_list_conversation_feedback?.rows ?? [];
+          const response = res?.data?.data?.ai_list_own_conversation_feedback?.rows ?? [];
           if (response.length == 1) {
             setSentFeedback({
               submitted: true,

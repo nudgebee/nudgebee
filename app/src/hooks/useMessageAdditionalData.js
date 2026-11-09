@@ -15,7 +15,7 @@ const TERMINAL_RESPONSE_STATUSES = ['COMPLETED', 'SUCCESS', 'FAILED', 'KILLED', 
  * per poll cycle (message_ids/session_id: [...newIds] — llm-server's ai_list_references,
  * ai_list_memory, and ai_list_conversation_feedback all accept an id array, scoped to just
  * the ids that changed), then groups the flat rows by message_id client-side. Replaces
- * one-getFeedbackForSessionId/listReferences/listMemory-call-per-message.
+ * one-getOwnFeedbackForSessionId/listReferences/listMemory-call-per-message.
  *
  * Memory (ai_list_memory / llm_conversation_memory) is legacy-only: when the tenant has the
  * Memory Module (b-Cortex) enabled, the backend's extraction path skips
@@ -86,7 +86,7 @@ export default function useMessageAdditionalData(groupedMessages, accountId, con
     Promise.all([
       shouldFetchReferences ? apiAskNudgebee.listReferences({ accountId, conversationId, messageIds: newReferenceIds }) : null,
       shouldFetchLegacyMemory ? apiAskNudgebee.listMemory(accountId, conversationId, undefined, undefined, undefined, newLegacyMemoryIds) : null,
-      shouldFetchFeedback ? apiAskNudgebee.getFeedbackForSessionId({ account_id: accountId, session_id: newFeedbackIds }) : null,
+      shouldFetchFeedback ? apiAskNudgebee.getOwnFeedbackForSessionId({ cloud_account_id: accountId, session_id: newFeedbackIds }) : null,
     ])
       .then(([refRes, memRes, feedbackRes]) => {
         if (controller.signal.aborted) return;
@@ -117,7 +117,7 @@ export default function useMessageAdditionalData(groupedMessages, accountId, con
             (memRes?.data || []).forEach((mem) => bucketFor(mem.message_id).memories.push(mem));
           }
           if (feedbackRes) {
-            const feedbackRows = feedbackRes?.data?.data?.ai_list_conversation_feedback?.rows ?? [];
+            const feedbackRows = feedbackRes?.data?.data?.ai_list_own_conversation_feedback?.rows ?? [];
             feedbackRows.forEach((row) => {
               bucketFor(row.session_id).feedback = {
                 submitted: true,
