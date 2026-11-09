@@ -1,0 +1,3 @@
+-- Irreversible on purpose: the removed values were secret material.
+-- The next KG build rewrites active nodes' annotations from the cluster,
+-- sanitised by core.SanitizeAnnotations.

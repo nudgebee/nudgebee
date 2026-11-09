@@ -1,4 +1,4 @@
-h1:t4DGJWCEx6VliDqeVYf6vLeTJV0wQmvtT1KTCMZuWN0=
+h1:jjySxVjI0skuIOyUkQ1NAfjm5qvnn1/ubeEYtEwJJyg=
 1665080411172_V0.up.sql h1:u69osJjPb3FctiXmgk+fpiFMTDQTnGpqDRH45K0pUdc=
 1665211266851_V1.up.sql h1:AGUExFXk9BDw9lpD7Cu1Bu5wn3mQA/Ul+5/jny32xYc=
 1665218608952_V2.up.sql h1:dWrFXuJESbVByq7iXDF7tFbOc1bgbwgCc0Fd8QETHwo=
@@ -1229,3 +1229,4 @@ h1:t4DGJWCEx6VliDqeVYf6vLeTJV0wQmvtT1KTCMZuWN0=
 1792068677779_V1029_signoz_webhook_integration.up.sql h1:Kmg3pQfWJk90xkBoGK6+ldzLVaWrPb2rS4Qdwe+1HXg=
 1792265564984_V1038_reseed_missing_model_pricing.up.sql h1:TUHwElYqq3cdaRqTsJQwfkmJxzovElEa05MMNRgZr50=
 1794076650908_V1107_forbid_tenant_scoped_super_admin.up.sql h1:ELk23Ao3Md0Jd1x0bT0bfGWvsOx9igJaPWzeOZEbfZk=
+1794112941794_V1108_kg_strip_secret_material_from_annotations.up.sql h1:YClQk3ymMoSNUIAJv2zPYayYH2w7YlFaFnHg55fXJC4=
