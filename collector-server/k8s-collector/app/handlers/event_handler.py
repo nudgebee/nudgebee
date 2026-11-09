@@ -3647,7 +3647,8 @@ class LLMTriggerHandler(BaseTriggerHandler):
         }
         return json.dumps(payload_dict)
 
-    def _build_llm_headers(self, tenant_id: str, user_id: str) -> Dict[str, str]:
+    @staticmethod
+    def _build_llm_headers(tenant_id: str, user_id: str) -> Dict[str, str]:
         """Build LLM request headers"""
         headers = {
             "x-tenant-id": tenant_id,
