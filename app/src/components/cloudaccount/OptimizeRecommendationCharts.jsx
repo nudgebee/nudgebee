@@ -94,18 +94,34 @@ const GraphSections = ({ accountId }) => {
       return;
     }
 
+    const ingressData = [];
+    const ingressLabels = [];
+    const egressData = [];
+    const egressLabels = [];
+
+    for (const item of networkData) {
+      if (!item) continue;
+
+      const valueInGb = item.avg_value == null ? null : Number(item.avg_value) / (1024 * 1024 * 1024);
+      if (item.metric === 'networkReceiveBytes') {
+        ingressData.push(valueInGb);
+        ingressLabels.push(getDateStringFromDateUnit(item.timestamp, chartUnit));
+      } else if (item.metric === 'networkTransferBytes') {
+        egressData.push(valueInGb);
+        egressLabels.push(getDateStringFromDateUnit(item.timestamp, chartUnit));
+      }
+    }
+
     const ingressLinechartData = {
-      data: networkData?.filter((i) => i.metric === 'networkTransferBytes')?.map((item) => formatMemory(item.avg_value, 'bytes', 'gb', false)) || [],
-      label:
-        networkData?.filter((i) => i.metric === 'networkTransferBytes')?.map((item) => getDateStringFromDateUnit(item.timestamp, chartUnit)) || [],
+      data: ingressData,
+      label: ingressLabels,
       chartLabel: ['Ingress (GB)'],
     };
     setIngressLinechartData(ingressLinechartData);
 
     const egressLinechartData = {
-      data: networkData?.filter((i) => i.metric === 'networkReceiveBytes')?.map((item) => formatMemory(item.avg_value, 'bytes', 'gb', false)) || [],
-      label:
-        networkData?.filter((i) => i.metric === 'networkReceiveBytes')?.map((item) => getDateStringFromDateUnit(item.timestamp, chartUnit)) || [],
+      data: egressData,
+      label: egressLabels,
       chartLabel: ['Egress (GB)'],
     };
     setEgressLinechartData(egressLinechartData);

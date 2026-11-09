@@ -25,6 +25,145 @@ type metadataFakeStore struct {
 	changedOn  []bool            // changedOn[i] = whether the i-th call changed any labels
 }
 
+type orderedMetadataStore struct {
+	fakeStore
+	mu        sync.Mutex
+	started   chan struct{}
+	release   chan struct{}
+	attempted chan struct{}
+	exists    bool
+	labels    map[string]any
+}
+
+func (f *orderedMetadataStore) UpsertAgentDatasources(ctx context.Context, accountID, agentType, agentID string, datasources []db.AgentDatasource) error {
+	close(f.started)
+	select {
+	case <-f.release:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	f.mu.Lock()
+	f.exists = true
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *orderedMetadataStore) UpdateDatasourceMetadata(ctx context.Context, accountID, agentType string, metadata map[string]map[string]any) ([]string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	select {
+	case f.attempted <- struct{}{}:
+	default:
+	}
+	if !f.exists {
+		return []string{"local:vm-agent"}, false, nil
+	}
+	f.labels = metadata["local:vm-agent"]
+	return nil, true, nil
+}
+
+func TestInventoryCompletesBeforeFollowingMetadata(t *testing.T) {
+	store := &orderedMetadataStore{started: make(chan struct{}), release: make(chan struct{}), attempted: make(chan struct{}, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	inventory := []byte(`{"action":"datasource_inventory","datasources":[{"id":"local:vm-agent","type":"ssh","name":"vm-agent"}]}`)
+	metadata := []byte(`{"action":"datasource_metadata","metadata":{"local:vm-agent":{"actions":["discovery_sweep"],"allowed_cidrs":["10.0.0.0/24"]}}}`)
+
+	var dispatch datasourceDispatch
+	dispatch.inventory(ctx, func() {
+		handleDatasourceInventory(ctx, store, nil, "acct-1", "proxy", "agent-1", inventory, discardLogger())
+	})
+	<-store.started
+	metadataDone := dispatch.metadata(ctx, func() {
+		handleDatasourceMetadata(ctx, store, nil, "acct-1", "proxy", metadata, discardLogger())
+	})
+	select {
+	case <-store.attempted:
+		t.Fatal("metadata ran before inventory completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(store.release)
+	select {
+	case <-metadataDone:
+	case <-time.After(time.Second):
+		t.Fatal("metadata did not finish after inventory")
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	assert.Equal(t, []any{"discovery_sweep"}, store.labels["actions"])
+	assert.Equal(t, []any{"10.0.0.0/24"}, store.labels["allowed_cidrs"])
+}
+
+func TestInventoryWaitStopsOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	called := make(chan struct{})
+	dispatch := datasourceDispatch{inventoryDone: make(chan struct{})}
+	done := dispatch.metadata(ctx, func() { close(called) })
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("waiting handler did not stop")
+	}
+	select {
+	case <-called:
+		t.Fatal("handler ran after cancellation")
+	default:
+	}
+}
+
+func TestMetadataSnapshotsStayInOrder(t *testing.T) {
+	var dispatch datasourceDispatch
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondStarted := make(chan struct{})
+	dispatch.metadata(context.Background(), func() {
+		close(firstStarted)
+		<-releaseFirst
+	})
+	<-firstStarted
+	secondDone := dispatch.metadata(context.Background(), func() { close(secondStarted) })
+	select {
+	case <-secondStarted:
+		t.Fatal("second metadata ran before the first completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releaseFirst)
+	select {
+	case <-secondDone:
+	case <-time.After(time.Second):
+		t.Fatal("second metadata did not finish")
+	}
+}
+
+func TestMetadataBeforeInventoryCanRetry(t *testing.T) {
+	orig := metadataRetryDelays
+	metadataRetryDelays = []time.Duration{100 * time.Millisecond, 100 * time.Millisecond}
+	t.Cleanup(func() { metadataRetryDelays = orig })
+	store := &orderedMetadataStore{started: make(chan struct{}), release: make(chan struct{}), attempted: make(chan struct{}, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var dispatch datasourceDispatch
+	metadata := metadataMsg(t)
+	metadataDone := dispatch.metadata(ctx, func() {
+		handleDatasourceMetadata(ctx, store, nil, "acct-1", "proxy", metadata, discardLogger())
+	})
+	<-store.attempted
+	dispatch.inventory(ctx, func() {
+		handleDatasourceInventory(ctx, store, nil, "acct-1", "proxy", "agent-1", []byte(`{"datasources":[{"id":"local:vm-agent","type":"ssh","name":"vm-agent"}]}`), discardLogger())
+	})
+	<-store.started
+	close(store.release)
+	select {
+	case <-metadataDone:
+	case <-time.After(time.Second):
+		t.Fatal("metadata did not complete after inventory")
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	assert.Equal(t, []any{"10.0.0.0/24"}, store.labels["allowed_hosts"])
+}
+
 func (f *metadataFakeStore) UpdateDatasourceMetadata(ctx context.Context, accountID, agentType string, metadata map[string]map[string]any) ([]string, bool, error) {
 	i := f.calls
 	f.calls++

@@ -60,6 +60,7 @@ import {
   awsDetailsSearchFragments,
   azureDetailsSearchFragments,
   gcpDetailsSearchFragments,
+  cloudFoundryDetailsSearchFragments,
   pathAcronym,
   wordsOf,
   fuzzyTokenMatches,
@@ -184,7 +185,7 @@ const AccountMentionChip = ({ account }) => (
 // account-name chip on rows that have one.
 const NAV_SEARCH_PATH_MAX_WIDTH = '60%';
 
-// Search rows for one provider's detail-page tabs (K8s/AWS/Azure/GCP), or []
+// Search rows for one provider's detail-page tabs (K8s/AWS/Azure/GCP/CloudFoundry), or []
 // if no account of that provider is resolvable yet (fresh tenant, no such
 // accounts). Pure function of its arguments — kept at module scope (not a
 // component closure) so each provider's rows can be memoized separately,
@@ -337,6 +338,7 @@ const SCOPED_SEARCH_PROVIDER_CONFIG = {
   AWS: { fragments: awsDetailsSearchFragments, basePath: '/cloud-account/details', label: 'AWS' },
   AZURE: { fragments: azureDetailsSearchFragments, basePath: '/cloud-account/details', label: 'Azure' },
   GCP: { fragments: gcpDetailsSearchFragments, basePath: '/cloud-account/details', label: 'GCP' },
+  CLOUDFOUNDRY: { fragments: cloudFoundryDetailsSearchFragments, basePath: '/cloud-account/details', label: 'CloudFoundry' },
 };
 
 // Matches a provider-detail search value stamped by navSearchProviderItems
@@ -912,8 +914,9 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
   const awsSearchAccountId = useMemo(() => resolveSearchAccountId('AWS'), [resolveSearchAccountId]);
   const azureSearchAccountId = useMemo(() => resolveSearchAccountId('Azure'), [resolveSearchAccountId]);
   const gcpSearchAccountId = useMemo(() => resolveSearchAccountId('GCP'), [resolveSearchAccountId]);
+  const cfSearchAccountId = useMemo(() => resolveSearchAccountId('CloudFoundry'), [resolveSearchAccountId]);
 
-  // Navigates to a search result or an Ask-AI hand-off. K8s/AWS/Azure/GCP
+  // Navigates to a search result or an Ask-AI hand-off. K8s/AWS/Azure/GCP/CloudFoundry
   // search results carry `accountId` for whichever account
   // resolveSearchAccountId picked; handleAskAi below passes its own resolved
   // accountId (e.g. a "@account" scoped pick) the same way. ClusterDropDown
@@ -1137,6 +1140,11 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
     () => (hasOpenedSearch ? navSearchProviderItems(gcpDetailsSearchFragments, 'GCP', gcpSearchAccountId, '/cloud-account/details') : []),
     [hasOpenedSearch, gcpSearchAccountId]
   );
+  const cfNavItems = useMemo(
+    () =>
+      hasOpenedSearch ? navSearchProviderItems(cloudFoundryDetailsSearchFragments, 'CloudFoundry', cfSearchAccountId, '/cloud-account/details') : [],
+    [hasOpenedSearch, cfSearchAccountId]
+  );
   // LLM_ANALYSER is a per-tenant feature flag, so it can only be resolved
   // client-side — same pattern as optimise/index.jsx, which owns the tab this
   // search entry jumps to. Fails closed until it resolves.
@@ -1185,7 +1193,7 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
   const canAccessAiGateway = isUiFeatureEnabled('llmGateway') && (hasReadAccess(selectedCluster?.value) || hasPermission('llm', 'Read'));
 
   // Provider-agnostic "some account" resolution — used by Automation/Agent
-  // Health's search entries (no K8s/AWS/Azure/GCP concept to key
+  // Health's search entries (no K8s/AWS/Azure/GCP/CloudFoundry concept to key
   // resolveSearchAccountId's per-provider cache off of) and by handleAskAi's
   // own accountId fallback
   // chain below. Falls back in the same order ClusterDropDown.jsx uses when it
@@ -1248,8 +1256,9 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
       ...awsNavItems,
       ...azureNavItems,
       ...gcpNavItems,
+      ...cfNavItems,
     ],
-    [isNavSearchItemVisible, automationNavItems, accountScopedNavItems, k8sNavItems, awsNavItems, azureNavItems, gcpNavItems]
+    [isNavSearchItemVisible, automationNavItems, accountScopedNavItems, k8sNavItems, awsNavItems, azureNavItems, gcpNavItems, cfNavItems]
   );
 
   // Kept out of navSearchItems/Suggested Pages so Integrations gets its own

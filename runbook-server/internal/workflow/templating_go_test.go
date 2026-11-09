@@ -7,6 +7,15 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestTemplateContextClonePreservesTemplateEngine(t *testing.T) {
+	ctx := NewTemplateContextWithEngine(nil, map[string]any{"items": []string{"a", "b"}}, "go")
+
+	rendered, err := ctx.Clone().Render("{{range .Inputs.items}}{{.}}:{{end}}")
+
+	assert.NoError(t, err)
+	assert.Equal(t, "a:b:", rendered)
+}
+
 func TestTemplateContext_Secrets(t *testing.T) {
 	t.Run("should correctly template secrets from environment variables", func(t *testing.T) {
 		// Set a dummy secret environment variable

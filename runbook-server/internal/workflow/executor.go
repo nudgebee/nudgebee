@@ -129,6 +129,12 @@ func extractEventIDFromInputs(inputs map[string]any) string {
 	return ""
 }
 
+func newWorkflowTemplateContext(ctx workflow.Context, inputs []model.Input, runtimeInputs map[string]any) *TemplateContext {
+	tplCtx := NewTemplateContext(inputs, runtimeInputs)
+	tplCtx.timeSource = func() time.Time { return workflow.Now(ctx) }
+	return tplCtx
+}
+
 const (
 	Internal_UpdateLastExecutionStatusActivity   = "Internal_UpdateLastExecutionStatusActivity"
 	FetchWorkflowDefinitionActivity              = "FetchWorkflowDefinitionActivity"
@@ -320,7 +326,7 @@ func createActivityCtxForAction(ctx workflow.Context) workflow.Context {
 	return ctxWithOptions
 }
 
-func handleTaskCompletion(ctx workflow.Context, workflowID string, taskID string, future workflow.Future, globalContext *TemplateContext, taskMap map[string]model.Task, isDryRun bool) error {
+func handleTaskCompletion(ctx workflow.Context, workflowID string, taskID string, future workflow.Future, globalContext *TemplateContext, taskMap map[string]model.Task, isDryRun bool, wf *model.Workflow) error {
 	logger := workflow.GetLogger(ctx)
 	var result any
 	err := future.Get(ctx, &result)
@@ -356,7 +362,7 @@ func handleTaskCompletion(ctx workflow.Context, workflowID string, taskID string
 		// find task to run on_failure
 		if currentTask.Hooks != nil && len(currentTask.Hooks.Failure) > 0 {
 			onFailureCtx := createActivityCtxForAction(ctx)
-			hookErr := executeSimpleActions(onFailureCtx, currentTask.Hooks.Failure, globalContext)
+			hookErr := executeSimpleActions(onFailureCtx, currentTask.Hooks.Failure, globalContext, wf)
 			if hookErr != nil {
 				logger.Error("OnFailure hook failed", "taskID", taskID, "error", hookErr)
 				return hookErr
@@ -490,7 +496,7 @@ func handleTaskCompletion(ctx workflow.Context, workflowID string, taskID string
 	// find task to run on_success
 	if currentTask.Hooks != nil && len(currentTask.Hooks.Success) > 0 {
 		onSuccessCtx := createActivityCtxForAction(ctx)
-		hookErr := executeSimpleActions(onSuccessCtx, currentTask.Hooks.Success, globalContext)
+		hookErr := executeSimpleActions(onSuccessCtx, currentTask.Hooks.Success, globalContext, wf)
 		if hookErr != nil {
 			logger.Error("OnSuccess hook failed", "taskID", taskID, "error", hookErr)
 			return hookErr
@@ -500,7 +506,7 @@ func handleTaskCompletion(ctx workflow.Context, workflowID string, taskID string
 	// find task to run finally
 	if currentTask.Hooks != nil && len(currentTask.Hooks.Always) > 0 {
 		onFinalCtx := createActivityCtxForAction(ctx)
-		hookErr := executeSimpleActions(onFinalCtx, currentTask.Hooks.Always, globalContext)
+		hookErr := executeSimpleActions(onFinalCtx, currentTask.Hooks.Always, globalContext, wf)
 		if hookErr != nil {
 			logger.Error("Finally hook failed", "taskID", taskID, "error", hookErr)
 			return hookErr
@@ -620,7 +626,7 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 
 	// Evaluate and upsert Execution Tags
 	if len(wf.Definition.SetExecutionTags) > 0 {
-		initialTplCtx := NewTemplateContext(wf.Definition.Inputs, inputs)
+		initialTplCtx := newWorkflowTemplateContext(ctx, wf.Definition.Inputs, inputs)
 		for _, input := range wf.Definition.Inputs {
 			initialTplCtx.Inputs[input.ID] = input.Default
 		}
@@ -736,7 +742,7 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 	}
 
 	// Initialize Template Context
-	templateContext := NewTemplateContext(wf.Definition.Inputs, inputs)
+	templateContext := newWorkflowTemplateContext(ctx, wf.Definition.Inputs, inputs)
 	if workflowState != nil {
 		templateContext.State = workflowState
 	}
@@ -1324,14 +1330,8 @@ func processTaskLoop(
 					paramMap[k] = v
 				}
 
-				paramMap[tasks.ParamTenantID] = wf.TenantID
-				paramMap[tasks.ParamAccountID] = wf.AccountID
-				paramMap[tasks.ParamWorkflowID] = wf.ID
 				eventID := extractEventIDFromInputs(tplCtx.Inputs)
-				if eventID != "" {
-					paramMap[tasks.ParamEventID] = eventID
-				}
-				paramMap[tasks.ParamUserID] = wf.UpdatedBy
+				setInternalTaskParams(paramMap, wf, eventID)
 				// Intentionally do NOT attach the full template Vars (tplCtx.Vars) to the
 				// activity input. Params are already rendered above via ProcessValue, and
 				// TaskWrapper strips ParamVars before Execute, so no task ever reads it.
@@ -1339,11 +1339,6 @@ func processTaskLoop(
 				// push payload) into EVERY activity input; a matrix/foreach fan-out then
 				// multiplied that past Temporal's 4MB gRPC limit, so RespondWorkflowTaskCompleted
 				// failed with ResourceExhausted and zero activities were ever committed.
-				paramMap[tasks.ParamWorkflowName] = wf.Name
-				if displayName := getUserDisplayName(wf); displayName != "" {
-					paramMap[tasks.ParamUserDisplayName] = displayName
-				}
-
 				// Check if task is an inline workflow (e.g. group, switch)
 				taskImpl, err := taskRegistry.GetTask(task.Type)
 				if err == nil {
@@ -1860,7 +1855,7 @@ func processTaskLoop(
 							return
 						}
 
-						err := handleTaskCompletion(ctx, wf.ID, id, f, templateContext, taskMap, wf.DryRun)
+						err := handleTaskCompletion(ctx, wf.ID, id, f, templateContext, taskMap, wf.DryRun, wf)
 						if err != nil {
 							logger.Error("Task completion error", "taskID", id, "error", err)
 							workflowError = err
@@ -1943,7 +1938,7 @@ func updateFinalWorkflowStatusAndExecuteHooks(ctx workflow.Context, wf *model.Wo
 		logger.Error("Workflow failed", "error", logsafe.ScrubSecretValues(workflowError.Error(), secretValues))
 		if wf != nil && wf.Definition.Hooks != nil && len(wf.Definition.Hooks.Failure) > 0 {
 			onFailureCtx := createActivityCtxForAction(ctx)
-			if err := executeSimpleActions(onFailureCtx, wf.Definition.Hooks.Failure, NewTemplateContext(wf.Definition.Inputs, inputs)); err != nil {
+			if err := executeSimpleActions(onFailureCtx, wf.Definition.Hooks.Failure, newWorkflowTemplateContext(ctx, wf.Definition.Inputs, inputs), wf); err != nil {
 				logger.Error("On.Failure hook failed", "error", err)
 			}
 		}
@@ -1951,20 +1946,39 @@ func updateFinalWorkflowStatusAndExecuteHooks(ctx workflow.Context, wf *model.Wo
 		logger.Info("Workflow completed successfully")
 		if wf != nil && wf.Definition.Hooks != nil && len(wf.Definition.Hooks.Success) > 0 {
 			onSuccessCtx := createActivityCtxForAction(ctx)
-			if err := executeSimpleActions(onSuccessCtx, wf.Definition.Hooks.Success, NewTemplateContext(wf.Definition.Inputs, inputs)); err != nil {
+			if err := executeSimpleActions(onSuccessCtx, wf.Definition.Hooks.Success, newWorkflowTemplateContext(ctx, wf.Definition.Inputs, inputs), wf); err != nil {
 				logger.Error("On.Success hook failed", "error", err)
 			}
 		}
 	}
 	if wf != nil && wf.Definition.Hooks != nil && len(wf.Definition.Hooks.Always) > 0 {
 		onFinalCtx := createActivityCtxForAction(ctx)
-		if err := executeSimpleActions(onFinalCtx, wf.Definition.Hooks.Always, NewTemplateContext(wf.Definition.Inputs, inputs)); err != nil {
+		if err := executeSimpleActions(onFinalCtx, wf.Definition.Hooks.Always, newWorkflowTemplateContext(ctx, wf.Definition.Inputs, inputs), wf); err != nil {
 			logger.Error("On.Always hook failed", "error", err)
 		}
 	}
 }
 
-func executeSimpleActions(ctx workflow.Context, actions []model.Action, tplCtx *TemplateContext) error {
+func setInternalTaskParams(params map[string]any, wf *model.Workflow, eventID string) {
+	params[tasks.ParamTenantID] = wf.TenantID
+	params[tasks.ParamAccountID] = wf.AccountID
+	params[tasks.ParamWorkflowID] = wf.ID
+	params[tasks.ParamUserID] = wf.UpdatedBy
+	params[tasks.ParamWorkflowName] = wf.Name
+
+	if eventID != "" {
+		params[tasks.ParamEventID] = eventID
+	} else {
+		delete(params, tasks.ParamEventID)
+	}
+	if displayName := getUserDisplayName(wf); displayName != "" {
+		params[tasks.ParamUserDisplayName] = displayName
+	} else {
+		delete(params, tasks.ParamUserDisplayName)
+	}
+}
+
+func executeSimpleActions(ctx workflow.Context, actions []model.Action, tplCtx *TemplateContext, wf *model.Workflow) error {
 	logger := workflow.GetLogger(ctx)
 	activityOptions := workflow.GetActivityOptions(ctx)
 	if activityOptions.StartToCloseTimeout == 0 && activityOptions.ScheduleToCloseTimeout == 0 {
@@ -1984,6 +1998,10 @@ func executeSimpleActions(ctx workflow.Context, actions []model.Action, tplCtx *
 	if actions == nil || tplCtx == nil {
 		return nil
 	}
+	if wf == nil {
+		return fmt.Errorf("workflow metadata is required to execute hook actions")
+	}
+	eventID := extractEventIDFromInputs(tplCtx.Inputs)
 
 	selector := workflow.NewSelector(ctx)
 	futures := make([]workflow.Future, 0, len(actions))
@@ -1998,17 +2016,9 @@ func executeSimpleActions(ctx workflow.Context, actions []model.Action, tplCtx *
 		if params == nil {
 			params = make(map[string]any)
 		}
-		if v, ok := tplCtx.Inputs[tasks.ParamTenantID]; ok {
-			params[tasks.ParamTenantID] = v
-		}
-		if v, ok := tplCtx.Inputs[tasks.ParamAccountID]; ok {
-			params[tasks.ParamAccountID] = v
-		}
-		if v, ok := tplCtx.Inputs[tasks.ParamWorkflowID]; ok {
-			params[tasks.ParamWorkflowID] = v
-		}
-		if eventID := extractEventIDFromInputs(tplCtx.Inputs); eventID != "" {
-			params[tasks.ParamEventID] = eventID
+		setInternalTaskParams(params, wf, eventID)
+		if wf.DryRun {
+			params[tasks.ParamDryRun] = true
 		}
 
 		future := workflow.ExecuteActivity(ctx, action.Type, params)

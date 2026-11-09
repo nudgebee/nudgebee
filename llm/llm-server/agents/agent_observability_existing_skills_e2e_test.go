@@ -43,7 +43,9 @@ func TestObservabilityExistingSkillLive(t *testing.T) {
 		core.ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{LlmConfigSource: "env:global"}))
 	require.NoError(t, err)
 	require.NotEmpty(t, response.Response)
-	conversationID, messageID := scenarioLastMsgID(t, session, user)
+	conversationID, messageID := response.ConversationId, response.MessageId
+	require.NotEmpty(t, conversationID)
+	require.NotEmpty(t, messageID)
 	t.Logf("OBS_RESULT session=%s conversation=%s message=%s status=%s", session, conversationID, messageID, response.Status)
 }
 
