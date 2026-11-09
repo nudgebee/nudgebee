@@ -26,6 +26,16 @@ import (
 // fallbackClient is a shared HTTP client with a timeout for all fallback requests.
 var fallbackClient = &http.Client{Timeout: 30 * time.Second}
 
+func headersForAgent(headers http.Header) http.Header {
+	forwarded := headers.Clone()
+	for key := range forwarded {
+		if strings.EqualFold(key, "X-SECRET-KEY") {
+			delete(forwarded, key)
+		}
+	}
+	return forwarded
+}
+
 // SerializeHTTPRequest turns an incoming *http.Request into your HTTPRequest model.
 // It strips the "/grafana" prefix, reads the body, and base64‑encodes it.
 // Uses a copy of the URL to avoid modifying the original request.
@@ -39,7 +49,7 @@ func SerializeHTTPRequest(req *http.Request) (r *models.HTTPRequest, err error) 
 	urlCopy.Path = strings.TrimPrefix(urlCopy.Path, "/grafana")
 	r.URL = urlCopy.String()
 	r.Method = req.Method
-	r.Header = req.Header
+	r.Header = headersForAgent(req.Header)
 	r.ContentLength = req.ContentLength
 
 	// convert req.Body to base64
@@ -67,7 +77,7 @@ func SerializePrometheusHTTPRequest(req *http.Request) (r *models.HTTPRequest, e
 	urlCopy.Path = strings.TrimPrefix(urlCopy.Path, "/prometheus-v2")
 	r.URL = urlCopy.String()
 	r.Method = req.Method
-	r.Header = req.Header
+	r.Header = headersForAgent(req.Header)
 	r.ContentLength = req.ContentLength
 
 	// Add header to identify this as a Prometheus request
@@ -101,7 +111,7 @@ func SerializeAPIProxyRequest(req *http.Request) (r *models.HTTPRequest, err err
 	urlCopy.Path = strings.TrimPrefix(urlCopy.Path, "/api/proxy")
 	r.URL = urlCopy.String()
 	r.Method = req.Method
-	r.Header = req.Header
+	r.Header = headersForAgent(req.Header)
 	r.ContentLength = req.ContentLength
 
 	// Add header to identify this as an API proxy request
