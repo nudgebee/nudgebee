@@ -354,13 +354,23 @@ func (sc *SecurityContext) HasScopedRole(role string, entityId string) bool {
 }
 
 func (sc *SecurityContext) HasAccountAccess(accountId string, access SecurityAccessType) bool {
-	if sc.IsSuperAdmin() {
+	// Synthetic server-side contexts carry no tenant, so there is nothing to
+	// check the account against.
+	if sc.isServerInternal {
 		return true
 	}
-	if sc.IsSuperAdminReadonly() {
-		return access == SecurityAccessTypeRead
+	// Everyone else — super admins included — may only touch accounts of the
+	// tenant they are signed into. A super admin reaches another tenant's
+	// account by switching tenant; letting them write it from here stored the
+	// session's tenant next to a foreign account. Super admins check
+	// through IsTenantAccount so an account onboarded minutes ago is not refused
+	// by the cached list (they used to bypass it entirely).
+	if sc.IsSuperAdmin() || sc.IsSuperAdminReadonly() {
+		if !sc.IsTenantAccount(accountId) {
+			return false
+		}
+		return sc.IsSuperAdmin() || access == SecurityAccessTypeRead
 	}
-
 	if !slices.Contains(sc.accountIds, accountId) {
 		return false
 	}
@@ -393,7 +403,7 @@ func (sc *SecurityContext) HasAccountAccess(accountId string, access SecurityAcc
 // IsTenantAccount reports whether accountId is one of the accounts of the tenant
 // this context is signed into. Check it before storing a caller-supplied account
 // id next to the context's tenant id, or the row pairs one tenant with another
-// tenant's account (#24005). Says nothing about the caller's role on the account
+// tenant's account. Says nothing about the caller's role on the account
 // — that is HasAccountAccess — so a custom-role holder whose grant is tenant-wide
 // still passes.
 //

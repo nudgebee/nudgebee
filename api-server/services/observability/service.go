@@ -4102,6 +4102,10 @@ func SaveUserHistoryForUser(ctx *security.RequestContext, userId, tenantId strin
 	if userHistoryRequest.Module == "" {
 		return nil, fmt.Errorf("module is required")
 	}
+	// The row stores tenantId next to the request's account.
+	if !ctx.GetSecurityContext().IsTenantAccount(userHistoryRequest.AccountId) {
+		return nil, common.ErrorUnauthorized("Account not found in tenant")
+	}
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		ctx.GetLogger().Error("observability.SaveUserHistory: failed to get database manager", "error", err)

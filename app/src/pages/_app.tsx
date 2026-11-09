@@ -14,6 +14,7 @@ import { AppErrorBoundary } from '@shared/ErrorBoundary';
 import { DataProvider } from '@context/DataContext';
 import { SetupGateProvider } from '@context/SetupGateContext';
 import { Toast as SnackbarComponent } from '@ui/Toast';
+import TabTenantBanner from '@components/common/TabTenantBanner';
 import { TourProvider } from '@components/common/tour';
 import { NubiGlobalChatProvider } from '@context/NubiGlobalChatContext';
 import NubiGlobalChat from '@components/llm/NubiGlobalChat';
@@ -96,6 +97,7 @@ export default function App({ Component, pageProps }: AppProps<{ session: Sessio
                       <PageLayout>
                         <Component {...pageProps} />
                         <SnackbarComponent />
+                        <TabTenantBanner />
                       </PageLayout>
                       <NubiGlobalChat />
                     </NubiGlobalChatProvider>

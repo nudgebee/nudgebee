@@ -1,7 +1,8 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import crypto from 'crypto';
 import { context, propagation, trace, SpanStatusCode } from '@opentelemetry/api';
-import { authenticateRequest, tryBypassGraphQL } from '@lib/rpcGateway';
+import { authenticateRequest, staleTabTenant, tryBypassGraphQL } from '@lib/rpcGateway';
+import { TENANT_CHANGED_CODE, TENANT_CHANGED_MESSAGE } from '@lib/tabTenant';
 import { checkIdentityRateLimit, checkPreAuthRateLimit } from '@lib/rateLimitHooks';
 
 const SLOW_THRESHOLD_MS = 500;
@@ -134,6 +135,19 @@ export async function handleGatewayRequest(req: NextApiRequest, res: NextApiResp
 
       const jwtSessionToken = auth.jwt;
       const token = auth.token;
+
+      // --- Step 1c: Stale tab ---
+      // The tab pinned a tenant that another tab has since switched away from.
+      // Refuse rather than act for the cookie's tenant on the old tenant's ids.
+      const staleTenant = staleTabTenant(req, jwtSessionToken);
+      if (staleTenant) {
+        res
+          .status(409)
+          .setHeader('traceparent', traceParent)
+          .setHeader('X-Request-ID', requestId)
+          .json({ errors: [{ message: TENANT_CHANGED_MESSAGE, extensions: { code: TENANT_CHANGED_CODE, tenant: staleTenant } }] });
+        return;
+      }
 
       // --- Step 2: Forward to upstream services via the RPC gateway ---
       if (typeof body?.query !== 'string') {

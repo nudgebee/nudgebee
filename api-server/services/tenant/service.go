@@ -1973,6 +1973,9 @@ func CreateNotificationChannelMapping(ctx *security.RequestContext, request Noti
 	if err != nil {
 		return NotificationChannelMappingCreateResponse{}, err
 	}
+	if err := requireTenantAccounts(ctx.GetSecurityContext(), request.AccountId); err != nil {
+		return NotificationChannelMappingCreateResponse{}, err
+	}
 
 	manager, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -2112,6 +2115,18 @@ func DeleteFeature(context *security.RequestContext, request DeleteFeatureReques
 	}, nil
 }
 
+// requireTenantAccounts refuses any non-empty account id that is not one of the
+// caller's tenant's accounts. Rows below store the caller's tenant_id next to the
+// request's account_id, so a foreign account would pair two tenants.
+func requireTenantAccounts(sc *security.SecurityContext, accountIds ...string) error {
+	for _, accountId := range accountIds {
+		if accountId != "" && !sc.IsTenantAccount(accountId) {
+			return common.ErrorUnauthorized("Account not found in tenant")
+		}
+	}
+	return nil
+}
+
 // Priority 3: Application Group operations
 
 func CreateApplicationGroup(ctx *security.RequestContext, request ApplicationGroupCreateRequest) (ApplicationGroupCreateResponse, error) {
@@ -2122,6 +2137,11 @@ func CreateApplicationGroup(ctx *security.RequestContext, request ApplicationGro
 
 	if !ctx.GetSecurityContext().CanManage("applications", "Write") {
 		return ApplicationGroupCreateResponse{}, common.ErrorUnauthorized("Not Allowed")
+	}
+	for _, m := range request.Mappings {
+		if err := requireTenantAccounts(ctx.GetSecurityContext(), m.AccountId); err != nil {
+			return ApplicationGroupCreateResponse{}, err
+		}
 	}
 
 	manager, err := database.GetDatabaseManager(database.Metastore)
@@ -2178,6 +2198,11 @@ func UpdateApplicationGroup(ctx *security.RequestContext, request ApplicationGro
 	if !ctx.GetSecurityContext().CanManage("applications", "Write") {
 		return ApplicationGroupUpdateResponse{}, common.ErrorUnauthorized("Not Allowed")
 	}
+	for _, m := range request.Mappings {
+		if err := requireTenantAccounts(ctx.GetSecurityContext(), m.AccountId); err != nil {
+			return ApplicationGroupUpdateResponse{}, err
+		}
+	}
 
 	manager, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -2194,13 +2219,18 @@ func UpdateApplicationGroup(ctx *security.RequestContext, request ApplicationGro
 	defer func() { _ = tx.Rollback() }()
 
 	// Update application group
-	_, err = tx.Exec(
+	result, err := tx.Exec(
 		`UPDATE application_group SET name = $1, description = $2, updated_by = $3, updated_at = now() WHERE id = $4 AND tenant_id = $5`,
 		request.Name, request.Description, userId, request.Id, tenantId,
 	)
 	if err != nil {
 		ctx.GetLogger().Error("Error updating application group", "error", err)
 		return ApplicationGroupUpdateResponse{}, common.ErrorInternal("Error updating application group")
+	}
+	// The mapping writes below key on group_id alone, so without this another
+	// tenant's group would have its mappings replaced with rows under ours.
+	if updated, err := result.RowsAffected(); err != nil || updated == 0 {
+		return ApplicationGroupUpdateResponse{}, common.ErrorNotFound("Application group not found")
 	}
 
 	// Delete existing mappings

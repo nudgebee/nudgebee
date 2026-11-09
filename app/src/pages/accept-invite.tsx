@@ -5,6 +5,7 @@ import { useRouter } from 'next/router';
 import { useSession } from 'next-auth/react';
 import Loader from '@shared/Loader';
 import cache from '@lib/cache';
+import { announceTenantSwitch, beginTenantSwitch, type TenantRef } from '@lib/tabTenant';
 
 /**
  * Landing page for tenant invitation links (see api-server user/service.go
@@ -45,7 +46,10 @@ function AcceptInvite() {
       const needsSwitch = !!invitedTenant && (!currentTenant || invitedTenant.toLowerCase() !== currentTenant.toLowerCase());
       if (needsSwitch) {
         try {
-          await update({ ...session, tenantName: invitedTenant });
+          // Same order as SwitchTenant.jsx — see @lib/tabTenant.
+          beginTenantSwitch();
+          const next = (await update({ ...session, tenantName: invitedTenant })) as { tenant?: TenantRef } | null;
+          announceTenantSwitch(next?.tenant);
           cache.clear();
         } catch {
           // Swallow: fall through to /home on the user's current/default tenant.

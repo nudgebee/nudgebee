@@ -18,6 +18,7 @@ import { elevateRoles } from '@lib/authHooks';
 import { pickDefaultRole } from '@lib/rolePriority';
 import { stripSuperAdminRoles } from '@lib/superAdminRoles';
 import { isTokenScopeBlockedAction } from '@lib/permissionCatalog';
+import { TAB_TENANT_HEADER } from '@lib/tabTenant';
 
 // Shared primitives for the RPC-bypass path. Used by both /api/rpc
 // (JSON-RPC envelope) and /api/graphql (GraphQL envelope when the bypass is
@@ -157,6 +158,20 @@ export async function authenticateRequest(req: NextApiRequest): Promise<AuthCont
     }
   }
   return { token: token ?? '', jwt };
+}
+
+// The session's tenant when the browser tab that sent `req` pinned a different
+// one — i.e. the tab is still on a tenant that another tab switched away from,
+// and anything it sends would pair this tenant with the old tenant's accounts
+// (see @lib/tabTenant). null when they agree, or when the caller sent
+// no pin: API tokens, nbctl and the server-side bypass never do.
+export function staleTabTenant(req: NextApiRequest, jwt: JWT): { id: string; name: string } | null {
+  const raw = req.headers[TAB_TENANT_HEADER];
+  const tabTenantId = Array.isArray(raw) ? raw[0] : raw;
+  if (!tabTenantId) return null;
+  const tenant = (jwt.tenant as { id?: string; name?: string } | undefined) || {};
+  if (tabTenantId === tenant.id) return null;
+  return { id: tenant.id || '', name: tenant.name || '' };
 }
 
 // SessionVariables is the body block sent to upstream action handlers.
