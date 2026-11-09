@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"nudgebee/services/common"
@@ -11,6 +12,27 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
+
+// authorizeUpgradeAccount gates a planner action on the caller's access to the
+// account named in the request. The gateway only checks the role, so the
+// account id in the request is checked here.
+func authorizeUpgradeAccount(ctx *security.RequestContext, c *gin.Context, accountID string, access security.SecurityAccessType) bool {
+	if ctx == nil || ctx.GetSecurityContext() == nil || !ctx.GetSecurityContext().HasAccountAccess(accountID, access) {
+		c.JSON(http.StatusForbidden, common.ErrorActionForbidden("access denied for account: "+accountID))
+		return false
+	}
+	return true
+}
+
+// upgradeError maps a planner error to a status: ids that do not resolve to the
+// caller's tenant and account are 404, so a foreign id looks like a missing one.
+func upgradeError(c *gin.Context, err error) {
+	if errors.Is(err, k8s_upgrade.ErrNotFound) {
+		c.JSON(http.StatusNotFound, common.ErrorActionBadRequest(err.Error()))
+		return
+	}
+	c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+}
 
 func handleUpgradePlanAction(actionPayload *ActionRequest, c *gin.Context, tracer *trace.Tracer, meter *metric.Meter, logger *slog.Logger) {
 	ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
@@ -30,6 +52,10 @@ func handleUpgradePlanAction(actionPayload *ActionRequest, c *gin.Context, trace
 			return
 		}
 
+		if !authorizeUpgradeAccount(ctx, c, request.AccountID, security.SecurityAccessTypeUpdate) {
+			return
+		}
+
 		response, err := k8s_upgrade.CreateUpgradePlan(ctx, tenantID, request)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
@@ -41,6 +67,10 @@ func handleUpgradePlanAction(actionPayload *ActionRequest, c *gin.Context, trace
 		err = common.UnmarshalMapToStruct(actionPayload.Input, &request)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest("Invalid request format: "+err.Error()))
+			return
+		}
+
+		if !authorizeUpgradeAccount(ctx, c, request.AccountID, security.SecurityAccessTypeRead) {
 			return
 		}
 
@@ -58,6 +88,10 @@ func handleUpgradePlanAction(actionPayload *ActionRequest, c *gin.Context, trace
 			return
 		}
 
+		if !authorizeUpgradeAccount(ctx, c, request.AccountID, security.SecurityAccessTypeRead) {
+			return
+		}
+
 		response, err := k8s_upgrade.GetAllUpgradePlans(ctx, tenantID, request)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
@@ -72,9 +106,13 @@ func handleUpgradePlanAction(actionPayload *ActionRequest, c *gin.Context, trace
 			return
 		}
 
+		if !authorizeUpgradeAccount(ctx, c, request.AccountID, security.SecurityAccessTypeUpdate) {
+			return
+		}
+
 		response, err := k8s_upgrade.UpdatePlannedTask(ctx, tenantID, request)
 		if err != nil {
-			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			upgradeError(c, err)
 			return
 		}
 		c.JSON(http.StatusOK, response)
@@ -83,6 +121,10 @@ func handleUpgradePlanAction(actionPayload *ActionRequest, c *gin.Context, trace
 		err = common.UnmarshalMapToStruct(actionPayload.Input, &request)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest("Invalid request format: "+err.Error()))
+			return
+		}
+
+		if !authorizeUpgradeAccount(ctx, c, request.AccountID, security.SecurityAccessTypeUpdate) {
 			return
 		}
 
@@ -129,9 +171,13 @@ func handleCheckClusterHealthAction(actionRequest map[string]any, ctx *security.
 		return
 	}
 
+	if !authorizeUpgradeAccount(ctx, c, request.AccountID, security.SecurityAccessTypeRead) {
+		return
+	}
+
 	response, err := k8s_upgrade.PerformHealthCheck(ctx, request)
 	if err != nil {
-		c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+		upgradeError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, response)
@@ -145,9 +191,13 @@ func handlePostFlightCheckAction(actionRequest map[string]any, ctx *security.Req
 		return
 	}
 
+	if !authorizeUpgradeAccount(ctx, c, request.AccountID, security.SecurityAccessTypeRead) {
+		return
+	}
+
 	response, err := k8s_upgrade.PerformPostFlightCheck(ctx, request)
 	if err != nil {
-		c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+		upgradeError(c, err)
 		return
 	}
 
@@ -161,10 +211,15 @@ func handleExecuteCommandAction(actionRequest map[string]any, ctx *security.Requ
 		c.JSON(400, common.ErrorActionBadRequest("Invalid request format: "+err.Error()))
 		return
 	}
+	// ExecuteCommand runs kubectl/aws against request.AccountID as given, so the
+	// caller must be able to write that account (as for cloud_execute_command).
+	if !authorizeUpgradeAccount(ctx, c, request.AccountID, security.SecurityAccessTypeUpdate) {
+		return
+	}
 
 	response, err := k8s_upgrade.ExecuteCommand(ctx, request)
 	if err != nil {
-		c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+		upgradeError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, response)
@@ -178,9 +233,13 @@ func handleUpgradePreFlightCheckAction(actionRequest map[string]any, ctx *securi
 		return
 	}
 
+	if !authorizeUpgradeAccount(ctx, c, request.AccountID, security.SecurityAccessTypeUpdate) {
+		return
+	}
+
 	response, err := k8s_upgrade.PerformPreFlightCheckWithStorage(ctx, request)
 	if err != nil {
-		c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+		upgradeError(c, err)
 		return
 	}
 
@@ -199,9 +258,13 @@ func handleUpgradePostFlightCheckAction(actionRequest map[string]any, ctx *secur
 		return
 	}
 
+	if !authorizeUpgradeAccount(ctx, c, request.AccountID, security.SecurityAccessTypeUpdate) {
+		return
+	}
+
 	response, err := k8s_upgrade.PerformPostFlightCheckWithComparison(ctx, request)
 	if err != nil {
-		c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+		upgradeError(c, err)
 		return
 	}
 
