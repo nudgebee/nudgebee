@@ -177,7 +177,13 @@ class Consumer:
                     ):
                         await self.consume_callback(headers, processed_body)
                 except Exception as e:
-                    LOG.error(f"Error processing message {delivery_tag}: {e}, message {raw_body}, headers {headers}")
+                    LOG.error(
+                        "Error processing message %s: %s, body_len=%d, headers %s",
+                        delivery_tag,
+                        e,
+                        len(raw_body or b""),
+                        headers,
+                    )
             self.acknowledge_message(delivery_tag, start_time)
 
     @staticmethod

@@ -95,17 +95,13 @@ FastAPIInstrumentor().instrument_app(app)
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    body = None
-    try:
-        body = await request.json()
-    except Exception:
-        pass
+    # Never log the body or the rejected values: they can carry tokens and
+    # customer content.
     LOG.error(
-        "Request validation error on %s %s: %s | body=%s",
+        "Request validation error on %s %s: %s",
         request.method,
         request.url.path,
-        exc.errors(),
-        body,
+        [{k: v for k, v in err.items() if k not in ("input", "ctx")} for err in exc.errors()],
     )
     safe_errors = []
     for err in exc.errors():
