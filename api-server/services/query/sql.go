@@ -273,7 +273,7 @@ func orderedCompareColumn(column string, columnDef ColumnDefinition, binaryType 
 		}
 		return columnDef.NumericCompareDef, true, nil
 	}
-	return lo.Ternary(columnDef.Def == "", column, columnDef.Def), false, nil
+	return resolveColumnReference(column, columnDef, true), false, nil
 }
 
 // generateWhereClause builds the WHERE (or HAVING, when isHaving=true) SQL
@@ -382,7 +382,7 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 
 				switch binaryType {
 				case IsNull:
-					binaryCondition.WriteString(lo.Ternary(columnDef.Def == "", column, columnDef.Def))
+					binaryCondition.WriteString(resolveColumnReference(column, columnDef, true))
 					switch valueType := value.(type) {
 					case bool:
 						if valueType {
@@ -395,7 +395,7 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 					}
 				case Contains:
 					if columnDef.Type == "string" || columnDef.Type == "json" {
-						binaryCondition.WriteString(lo.Ternary(columnDef.Def == "", column, columnDef.Def))
+						binaryCondition.WriteString(resolveColumnReference(column, columnDef, true))
 						binaryCondition.WriteString(" @> ")
 						binaryCondition.WriteString(dialect.QuoteLiteral(value) + "::jsonb")
 					} else {
@@ -403,7 +403,7 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 					}
 				case HasKey:
 					if columnDef.Type == "string" || columnDef.Type == "json" {
-						binaryCondition.WriteString(lo.Ternary(columnDef.Def == "", column, columnDef.Def))
+						binaryCondition.WriteString(resolveColumnReference(column, columnDef, true))
 						binaryCondition.WriteString(" ? ")
 						binaryCondition.WriteString(dialect.QuoteLiteral(value))
 					} else {
@@ -411,14 +411,14 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 					}
 				case ILike:
 					if columnDef.Type == "string" {
-						binaryCondition.WriteString(lo.Ternary(columnDef.Def == "", column, columnDef.Def))
+						binaryCondition.WriteString(resolveColumnReference(column, columnDef, true))
 						binaryCondition.WriteString(" ILIKE ")
 						binaryCondition.WriteString(dialect.QuoteLiteral(value))
 					} else {
 						return "", fmt.Errorf("contains clause %s not supported for non string type", binaryType)
 					}
 				case ILikeF:
-					binaryCondition.WriteString(lo.Ternary(columnDef.Def == "", column, columnDef.Def))
+					binaryCondition.WriteString(resolveColumnReference(column, columnDef, true))
 					binaryCondition.WriteString(" ILIKE ")
 					colStr, err := generateWhereClauseColumn(value.(string), tableDef)
 					if err != nil {
@@ -434,7 +434,7 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 						return "", fmt.Errorf("like clause %s not supported for non string type", binaryType)
 					}
 				case LikeF:
-					binaryCondition.WriteString(lo.Ternary(columnDef.Def == "", column, columnDef.Def))
+					binaryCondition.WriteString(resolveColumnReference(column, columnDef, true))
 					binaryCondition.WriteString(" LIKE ")
 					colStr, err := generateWhereClauseColumn(value.(string), tableDef)
 					if err != nil {
@@ -442,7 +442,7 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 					}
 					binaryCondition.WriteString(colStr)
 				case NLike:
-					binaryCondition.WriteString(lo.Ternary(columnDef.Def == "", column, columnDef.Def))
+					binaryCondition.WriteString(resolveColumnReference(column, columnDef, true))
 					binaryCondition.WriteString(" NOT LIKE ")
 					if columnDef.Type == "string" {
 						binaryCondition.WriteString(dialect.QuoteLiteral(value))
@@ -507,7 +507,7 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 						}
 					}
 				case EqF:
-					binaryCondition.WriteString(lo.Ternary(columnDef.Def == "", column, columnDef.Def))
+					binaryCondition.WriteString(resolveColumnReference(column, columnDef, true))
 					binaryCondition.WriteString(" = ")
 					colStr, err := generateWhereClauseColumn(value.(string), tableDef)
 					if err != nil {
@@ -515,7 +515,7 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 					}
 					binaryCondition.WriteString(colStr)
 				case Nq:
-					binaryCondition.WriteString(lo.Ternary(columnDef.Def == "", column, columnDef.Def))
+					binaryCondition.WriteString(resolveColumnReference(column, columnDef, true))
 					binaryCondition.WriteString(" != ")
 					switch columnDef.Type {
 					case "string":
@@ -528,7 +528,7 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 						}
 					}
 				case NqF:
-					binaryCondition.WriteString(lo.Ternary(columnDef.Def == "", column, columnDef.Def))
+					binaryCondition.WriteString(resolveColumnReference(column, columnDef, true))
 					binaryCondition.WriteString(" != ")
 					colStr, err := generateWhereClauseColumn(value.(string), tableDef)
 					if err != nil {
@@ -551,7 +551,7 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 						}
 					}
 				case LtF:
-					binaryCondition.WriteString(lo.Ternary(columnDef.Def == "", column, columnDef.Def))
+					binaryCondition.WriteString(resolveColumnReference(column, columnDef, true))
 					binaryCondition.WriteString(" < ")
 					colStr, err := generateWhereClauseColumn(value.(string), tableDef)
 					if err != nil {
@@ -574,7 +574,7 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 						}
 					}
 				case GtF:
-					binaryCondition.WriteString(lo.Ternary(columnDef.Def == "", column, columnDef.Def))
+					binaryCondition.WriteString(resolveColumnReference(column, columnDef, true))
 					binaryCondition.WriteString(" > ")
 					colStr, err := generateWhereClauseColumn(value.(string), tableDef)
 					if err != nil {
@@ -597,7 +597,7 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 						}
 					}
 				case LteF:
-					binaryCondition.WriteString(lo.Ternary(columnDef.Def == "", column, columnDef.Def))
+					binaryCondition.WriteString(resolveColumnReference(column, columnDef, true))
 					binaryCondition.WriteString(" <= ")
 					colStr, err := generateWhereClauseColumn(value.(string), tableDef)
 					if err != nil {
@@ -620,7 +620,7 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 						}
 					}
 				case GteF:
-					binaryCondition.WriteString(lo.Ternary(columnDef.Def == "", column, columnDef.Def))
+					binaryCondition.WriteString(resolveColumnReference(column, columnDef, true))
 					binaryCondition.WriteString(" >= ")
 					colStr, err := generateWhereClauseColumn(value.(string), tableDef)
 					if err != nil {
@@ -640,7 +640,7 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 								binaryCondition.WriteString("true")
 								break
 							}
-							binaryCondition.WriteString(lo.Ternary(columnDef.Def == "", column, columnDef.Def))
+							binaryCondition.WriteString(resolveColumnReference(column, columnDef, true))
 							binaryCondition.WriteString(inClauseType)
 							binaryCondition.WriteString("(")
 							for i, v := range valueType {
@@ -655,7 +655,7 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 								binaryCondition.WriteString("true")
 								break
 							}
-							binaryCondition.WriteString(lo.Ternary(columnDef.Def == "", column, columnDef.Def))
+							binaryCondition.WriteString(resolveColumnReference(column, columnDef, true))
 							binaryCondition.WriteString(inClauseType)
 							binaryCondition.WriteString("(")
 							for i, v := range valueType {
@@ -675,7 +675,7 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 								binaryCondition.WriteString("true")
 								break
 							}
-							binaryCondition.WriteString(lo.Ternary(columnDef.Def == "", column, columnDef.Def))
+							binaryCondition.WriteString(resolveColumnReference(column, columnDef, true))
 							binaryCondition.WriteString(inClauseType)
 							binaryCondition.WriteString("(")
 							for i, v := range valueType {
@@ -690,7 +690,7 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 								binaryCondition.WriteString("true")
 								break
 							}
-							binaryCondition.WriteString(lo.Ternary(columnDef.Def == "", column, columnDef.Def))
+							binaryCondition.WriteString(resolveColumnReference(column, columnDef, true))
 							binaryCondition.WriteString(inClauseType)
 							binaryCondition.WriteString("(")
 							for i, v := range valueType {
@@ -710,7 +710,7 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 								binaryCondition.WriteString("true")
 								break
 							}
-							binaryCondition.WriteString(lo.Ternary(columnDef.Def == "", column, columnDef.Def))
+							binaryCondition.WriteString(resolveColumnReference(column, columnDef, true))
 							binaryCondition.WriteString(inClauseType)
 							binaryCondition.WriteString("(")
 							for i, v := range valueType {
@@ -727,7 +727,7 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 								binaryCondition.WriteString("true")
 								break
 							}
-							binaryCondition.WriteString(lo.Ternary(columnDef.Def == "", column, columnDef.Def))
+							binaryCondition.WriteString(resolveColumnReference(column, columnDef, true))
 							binaryCondition.WriteString(inClauseType)
 							binaryCondition.WriteString("(")
 							for i, v := range valueType {
@@ -749,7 +749,7 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 								binaryCondition.WriteString("true")
 								break
 							}
-							binaryCondition.WriteString(lo.Ternary(columnDef.Def == "", column, columnDef.Def))
+							binaryCondition.WriteString(resolveColumnReference(column, columnDef, true))
 							binaryCondition.WriteString(inClauseType)
 							binaryCondition.WriteString("(")
 							for i, v := range valueType {
@@ -766,7 +766,7 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 								binaryCondition.WriteString("true")
 								break
 							}
-							binaryCondition.WriteString(lo.Ternary(columnDef.Def == "", column, columnDef.Def))
+							binaryCondition.WriteString(resolveColumnReference(column, columnDef, true))
 							binaryCondition.WriteString(inClauseType)
 							binaryCondition.WriteString("(")
 							for i, v := range valueType {
@@ -787,7 +787,7 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 							binaryCondition.WriteString("true")
 							break
 						}
-						binaryCondition.WriteString(lo.Ternary(columnDef.Def == "", column, columnDef.Def))
+						binaryCondition.WriteString(resolveColumnReference(column, columnDef, true))
 						binaryCondition.WriteString(inClauseType)
 						binaryCondition.WriteString("(")
 						for i, v := range valueSlice {
@@ -816,7 +816,7 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 						case "string":
 							return "", fmt.Errorf("binary clause type %s not supported for string type", binaryType)
 						case "datetime":
-							betweenPart.WriteString(lo.Ternary(columnDef.Def == "", column, columnDef.Def))
+							betweenPart.WriteString(resolveColumnReference(column, columnDef, true))
 							switch k {
 							case "_lt":
 								betweenPart.WriteString(" < ")
@@ -829,7 +829,7 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 							}
 							betweenPart.WriteString(dialect.FuncStringToDatetime(dialect.QuoteLiteral(v)))
 						case "float", "integer":
-							betweenPart.WriteString(lo.Ternary(columnDef.Def == "", column, columnDef.Def))
+							betweenPart.WriteString(resolveColumnReference(column, columnDef, true))
 							switch k {
 							case "_lt":
 								betweenPart.WriteString(" < ")

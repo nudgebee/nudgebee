@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -1212,6 +1213,14 @@ func chAttrQuote(s string) string {
 	return "'" + s + "'"
 }
 
+// traceAttributeKeyPattern bounds which referenced where-clause field names may be
+// registered as dynamic attribute columns. Real OTel attribute keys are dotted
+// identifiers (e.g. rpc.method, db.system), sometimes with '/' or ':'
+// (kubernetes.io/hostname, aws:ecs:clusterName). Those are safe inside the
+// single-quoted ClickHouse map lookup; anything with quotes, parentheses,
+// whitespace or a backslash is not a label and is refused here.
+var traceAttributeKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_.:/\-]+$`)
+
 // augmentTraceColumnsForAttributes returns the trace column set to use for WHERE
 // resolution: the curated schema plus a dynamic definition for every referenced
 // where-clause field that is not already a known column. Each dynamic field
@@ -1222,12 +1231,21 @@ func chAttrQuote(s string) string {
 // is already known; the base map is never mutated. Unknown/typo fields resolve to
 // an empty attribute value (no rows) and are then surfaced by
 // validateReferencedTraceLabels, which runs on empty/error results.
+//
+// Only keys matching traceAttributeKeyPattern become columns. The query builder
+// writes a column's name into SQL when the definition has no Def (ORDER BY, the
+// select list), so a key with quotes, spaces or parentheses must never be
+// registered. A rejected key stays unknown and the builder refuses the query.
 func augmentTraceColumnsForAttributes(base map[string]query.ColumnDefinition, where query.QueryWhereClause) map[string]query.ColumnDefinition {
 	referenced := map[string]struct{}{}
 	collectWhereFieldNames(where, referenced)
 	var extra []string
 	for k := range referenced {
-		if k == "" {
+		// A dynamic attribute key is a backend-discovered label name. Reject
+		// anything outside a conservative set so a crafted key can never be
+		// registered as a column; an unregistered key then fails the query
+		// engine's column-allowlist check instead of reaching SQL.
+		if !traceAttributeKeyPattern.MatchString(k) {
 			continue
 		}
 		if _, ok := base[k]; !ok {

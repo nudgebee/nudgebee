@@ -58,6 +58,21 @@ func ExecuteQuery(context *security.RequestContext, query QueryRequest) (QueryRe
 			sourceType = sourceDef
 		}
 	}
+	// A table with no tenant column has nothing to scope a read to, so it is
+	// open only when it is a global catalog, when the source checks the caller's
+	// account itself (the agent warehouses below), or for a super admin and the
+	// server's own identity (NextAuth's user lookups). Everyone else is refused,
+	// whatever tenant the session carries.
+	if tableDef.TenantIdColumnName == "" && !tableDef.GlobalCatalog && !checksAccountAccess(tableDef.Source) && !context.GetSecurityContext().IsSuperAdmin() {
+		context.GetLogger().Warn("refused query on a table without tenant scoping", "table", query.Table)
+		return QueryResponse{
+			Errors: []common.Error{
+				common.ErrorUnauthorized("Access Denied"),
+			},
+			ExecutionTimeMs: time.Since(startTime).Milliseconds(),
+		}, nil
+	}
+
 	// add security context restrictions
 	if context.GetSecurityContext().GetTenantId() != "" && tableDef.Source != database.AgentWarehouse && tableDef.Source != database.AgentWarehouseBigQuery && tableDef.Source != database.AgentWarehouseChronosphere {
 		columnName := tableDef.TenantIdColumnName
@@ -461,4 +476,11 @@ func updateQueryWithNamespace(ctx *security.RequestContext, tableDef TableDefini
 		query.Where.And = append(query.Where.And, scopedInClause(namespaceColumn, namespacesToFilter))
 	}
 	return query, QueryResponse{}, nil
+}
+
+// checksAccountAccess reports whether ExecuteQuery authorizes reads on this
+// source per account (CanReadAccountData on the requested account_id) rather
+// than through the tenant filter.
+func checksAccountAccess(source database.DatabaseManagerType) bool {
+	return source == database.AgentWarehouse || source == database.AgentWarehouseBigQuery || source == database.AgentWarehouseChronosphere
 }

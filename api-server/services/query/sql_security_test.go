@@ -392,6 +392,65 @@ func TestGenerateWhereClause_RejectsNonScalarValues(t *testing.T) {
 	}
 }
 
+// TestWhereClause_ResolvesWhereDefNotRawKey covers the trace-attribute path:
+// dynamically-registered attribute columns carry only WhereDef (the ClickHouse
+// map-access expression), and the key itself is caller-influenced. Every WHERE
+// operator must emit the WhereDef expression, never the raw key, so a crafted
+// key cannot be spliced into the SQL text.
+func TestWhereClause_ResolvesWhereDefNotRawKey(t *testing.T) {
+	const rawKey = "x') OR ('1'='1"
+	const whereDef = "if(mapContains(spanattributes, 'k'), spanattributes['k'], resourceattributes['k'])"
+	tableDef := TableDefinition{
+		Type:   Normal,
+		Source: database.Warehouse,
+		Name:   "traces",
+		Columns: map[string]ColumnDefinition{
+			rawKey: {Type: ColumnDefinitionTypeString, WhereDef: whereDef},
+		},
+	}
+
+	cases := map[string]map[BinaryWhereClauseType]any{
+		"_is_null": {IsNull: true},
+		"_in":      {In: []any{"a", "b"}},
+		"_not_in":  {NotIn: []any{"a"}},
+		"_neq":     {Nq: "a"},
+		"_has_key": {HasKey: "a"},
+		"_ilike":   {ILike: "%a%"},
+		"_nlike":   {NLike: "%a%"},
+	}
+	for name, binary := range cases {
+		t.Run(name, func(t *testing.T) {
+			sql, err := generateWhereClause(QueryWhereClause{Binary: BinaryWhereClause{rawKey: binary}}, tableDef)
+			assert.NoError(t, err)
+			assert.Contains(t, sql, whereDef, "must resolve via WhereDef")
+			assert.NotContains(t, sql, "OR ('1'='1", "raw attribute key must not reach SQL")
+		})
+	}
+}
+
+// TestWhereClause_DefAndNameResolutionUnchanged guards the no-op property of the
+// WhereDef change: a column with a plain Def still renders by Def, and a column
+// with neither Def nor WhereDef still renders by its name.
+func TestWhereClause_DefAndNameResolutionUnchanged(t *testing.T) {
+	tableDef := TableDefinition{
+		Type:   Normal,
+		Source: database.Metastore,
+		Name:   "t",
+		Columns: map[string]ColumnDefinition{
+			"by_def":  {Type: ColumnDefinitionTypeString, Def: "lower(real_col)"},
+			"by_name": {Type: ColumnDefinitionTypeString},
+		},
+	}
+
+	sql, err := generateWhereClause(QueryWhereClause{Binary: BinaryWhereClause{"by_def": {Eq: "x"}}}, tableDef)
+	assert.NoError(t, err)
+	assert.Equal(t, "(lower(real_col) = 'x')", sql)
+
+	sql, err = generateWhereClause(QueryWhereClause{Binary: BinaryWhereClause{"by_name": {Eq: "x"}}}, tableDef)
+	assert.NoError(t, err)
+	assert.Equal(t, "(by_name = 'x')", sql)
+}
+
 // resource_groupings_v2 and cloud_resources_list_v2 fill their templates' filter
 // placeholders. Filled one placeholder at a time, a filter value naming a later
 // placeholder had that placeholder's quoted fragment spliced into it, which

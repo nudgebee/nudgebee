@@ -114,6 +114,12 @@ type TableDefinition struct {
 	// clause still bounds the result. Leave false for tables whose NULL-account
 	// rows are sensitive or global-only.
 	TenantWideReadable bool
+	// GlobalCatalog marks a table that holds no tenant data (feature list,
+	// anomaly types, alert-rule knowledge base), so any caller may read it
+	// without a tenant filter. A table with no TenantIdColumnName that is not a
+	// global catalog is readable only by a super admin or the server itself
+	// (see ExecuteQuery). The set is pinned by TestGlobalCatalogTablesArePinned.
+	GlobalCatalog bool
 	// AccountScope, when set, replaces the account-id restriction applied to
 	// account-scoped readers with a table-specific SQL predicate. It must build
 	// SQL only from the quoted ids it is given. The result goes to the SQL
@@ -8944,9 +8950,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"cloud_resource_details_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "cloud_resource_details_v2",
+		Type:          Derived,
+		Source:        database.Metastore,
+		Name:          "cloud_resource_details_v2",
+		GlobalCatalog: true,
 		Def: `(
 			SELECT
 				id,
@@ -10885,10 +10892,11 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"knowledge_base_v2": {
-		Type:   Normal,
-		Source: database.Metastore,
-		Name:   "knowledge_base_v2",
-		Def:    "knowledge_base",
+		Type:          Normal,
+		Source:        database.Metastore,
+		Name:          "knowledge_base_v2",
+		GlobalCatalog: true,
+		Def:           "knowledge_base",
 		Columns: map[string]ColumnDefinition{
 			"id":          {Type: ColumnDefinitionTypeString, Def: "id"},
 			"rule_name":   {Type: ColumnDefinitionTypeString, Def: "rule_name"},
@@ -10967,9 +10975,10 @@ var table_metadata = map[string]TableDefinition{
 	// feature.category is NOT NULL with an FK to feature_category, so the inner
 	// join cannot drop a row.
 	"feature_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "feature_v2",
+		Type:          Derived,
+		Source:        database.Metastore,
+		Name:          "feature_v2",
+		GlobalCatalog: true,
 		Def: `(
 			SELECT
 				f.value as value,
@@ -11214,9 +11223,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"anomaly_type_v2": {
-		Type:   Derived,
-		Source: getSource("anomaly_type_v2"),
-		Name:   "anomaly_type_v2",
+		Type:          Derived,
+		Source:        getSource("anomaly_type_v2"),
+		Name:          "anomaly_type_v2",
+		GlobalCatalog: true,
 		Def: `(
 			SELECT
 				value,

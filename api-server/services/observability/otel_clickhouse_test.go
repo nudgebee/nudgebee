@@ -40,13 +40,25 @@ func TestAugmentTraceColumnsForAttributes(t *testing.T) {
 		assert.False(t, inBase, "shared base map must not be mutated")
 	})
 
-	t.Run("escapes single quotes in the key", func(t *testing.T) {
-		where := query.QueryWhereClause{Binary: query.BinaryWhereClause{
-			"a'b": {query.Eq: "x"},
-		}}
-		got := augmentTraceColumnsForAttributes(base, where)
-		require.Contains(t, got, "a'b")
-		assert.Contains(t, got["a'b"].WhereDef, "a\\'b")
+	t.Run("drops keys that are not plain attribute identifiers", func(t *testing.T) {
+		for _, k := range []string{"a'b", "x) OR (1=1", "has space", "sel\\ect", `a"b`, ""} {
+			where := query.QueryWhereClause{Binary: query.BinaryWhereClause{
+				k: {query.Eq: "x"},
+			}}
+			got := augmentTraceColumnsForAttributes(base, where)
+			_, registered := got[k]
+			assert.False(t, registered, "unsafe key %q must not be registered as a column", k)
+		}
+	})
+
+	t.Run("keeps normal attribute keys, including k8s/cloud forms with / and :", func(t *testing.T) {
+		for _, k := range []string{"http.response.status_code", "kubernetes.io/hostname", "aws:ecs:clusterName"} {
+			where := query.QueryWhereClause{Binary: query.BinaryWhereClause{
+				k: {query.Eq: "500"},
+			}}
+			got := augmentTraceColumnsForAttributes(base, where)
+			assert.Contains(t, got, k)
+		}
 	})
 }
 
