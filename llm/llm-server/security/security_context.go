@@ -343,9 +343,6 @@ func (sc *SecurityContext) HasAccountAccess(accountId string, access SecurityAcc
 	return false
 }
 
-// HasScopedRole reports whether the user holds `role` scoped to `entityId`
-// (an account id, or the account-id half of a "<accountId>:<namespace>" k8s
-// grant). Mirrors the api-server helper of the same name.
 // CanRunAI reports whether the person may run Nubi on the account: read access
 // to it, or a custom-role grant to run AI there (ai_misc Execute or Write).
 func (sc *SecurityContext) CanRunAI(accountId string) bool {
@@ -354,6 +351,9 @@ func (sc *SecurityContext) CanRunAI(accountId string) bool {
 		sc.HasScopedPermission(accountId, "ai_misc", "Write")
 }
 
+// HasScopedRole reports whether the user holds `role` scoped to `entityId`
+// (an account id, or the account-id half of a "<accountId>:<namespace>" k8s
+// grant). Mirrors the api-server helper of the same name.
 func (sc *SecurityContext) HasScopedRole(role string, entityId string) bool {
 	return slices.Contains(sc.roles, role) && slices.Contains(sc.scopedEntityIds[role], entityId)
 }

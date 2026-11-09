@@ -719,7 +719,7 @@ func handleCloudExecuteCommand(actionPayload *ActionRequest, c *gin.Context, ctx
 }
 
 // canReadAccountOrTenantUsage is the account check for a read that is also open
-// to tenant_usage: a role (or the action's grant) that reads the account, or
+// to tenant_usage: a role that reads the account, or
 // tenant_usage on an account of the caller's tenant (it has no per-account
 // scope, so a tenant check is all it gets, as in relay_alert.go).
 func canReadAccountOrTenantUsage(ctx *security.RequestContext, accountId string) bool {
