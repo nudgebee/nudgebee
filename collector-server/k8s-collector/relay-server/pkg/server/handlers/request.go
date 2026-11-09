@@ -85,6 +85,10 @@ func NewRequestHandler(
 
 		logger, _, _ := utils.BuildContextFromPayload(c, roottracer, rootmeter, rootLogger)
 
+		if !requireTenantOwnsAccount(c, store, logger, accountID, agentType) {
+			return
+		}
+
 		// Direct MCP: handle locally without agent routing
 		if handleDirectMCP(c, rawBody, logger, start, accountID) {
 			return
