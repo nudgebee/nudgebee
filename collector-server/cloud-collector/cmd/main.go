@@ -275,6 +275,16 @@ func main() {
 		}
 	}()
 
+	// One-off cleanup of secret values stored before the collector redacted them.
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("Meta redaction backfill panicked", "error", r)
+			}
+		}()
+		account.RunMetaRedactionBackfill(context.Background(), logger)
+	}()
+
 	// Start the MQ heartbeat that backs the /livez liveness probe. If a consumer or
 	// the RabbitMQ connection wedges (e.g. after a broker restart), the heartbeat
 	// round-trip stops, /livez fails, and Kubernetes restarts the pod.

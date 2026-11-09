@@ -72,6 +72,9 @@ func (a *auditedGcloudService) GetResources(ctx providers.CloudProviderContext, 
 	enrichedCtx := a.enrichContext(ctx, account)
 	resp, err := a.inner.GetResources(enrichedCtx, account, region)
 	a.checkAndRecord(ctx, account, region, "GetResources", err)
+	for i := range resp {
+		providers.RedactMetaSecrets(resp[i].Meta)
+	}
 	return resp, err
 }
 

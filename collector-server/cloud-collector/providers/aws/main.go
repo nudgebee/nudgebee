@@ -959,6 +959,8 @@ func (a *awsProvider) GetECSTaskDefinitionDetails(ctx providers.CloudProviderCon
 			resource.Tags[*tag.Key] = append(resource.Tags[*tag.Key], *tag.Value)
 		}
 	}
+	// Not a wrapped service call: this lands in event evidence, so redact here.
+	providers.RedactMetaSecrets(resource.Meta)
 	return resource, nil
 }
 
