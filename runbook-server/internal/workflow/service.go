@@ -3027,6 +3027,11 @@ func (s *Service) GetDetailedWorkflowExecution(ctx *security.RequestContext, acc
 	if !ctx.GetSecurityContext().CanReadAccountData(accountId, "workflows") {
 		return nil, common.ErrorUnauthorized("account not accessible")
 	}
+	// Validate at this entry point too (not only via ResolveTemporalWorkflowID),
+	// matching ListWorkflowExecutions so a malformed id fails fast.
+	if err := checkTemporalIDs(accountId, workflowId, executionId); err != nil {
+		return nil, err
+	}
 
 	temporalId, err := s.ResolveTemporalWorkflowID(ctx, accountId, workflowId, executionId)
 	if err != nil {
