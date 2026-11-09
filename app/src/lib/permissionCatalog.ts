@@ -316,6 +316,14 @@ const NON_GRANTABLE_ACTIONS = new Set<string>([
   // every key in the tenant, and revoking any of them, is tenant-admin only, #38965
   'users_list_tenant_tokens',
   'users_delete_tenant_token',
+  // sign-in internals, called only by the app server (NextAuth, SAML) as super
+  // admin. Their tables have no tenant column, so a grant would read any
+  // tenant's users: credential and token hashes (auth_by_username), roles and
+  // tenants.
+  'users_get_auth_by_username',
+  'users_get_by_provider_account',
+  'users_get_super_admin_role',
+  'tenant_by_user_v2',
 ]);
 
 export function normalizeModule(rawModule: string): string {

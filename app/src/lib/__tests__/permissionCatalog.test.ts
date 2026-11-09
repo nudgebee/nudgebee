@@ -107,6 +107,13 @@ describe('permissionCatalog', () => {
     // Every key in the tenant, and revoking any of them, is tenant-admin only (#38965).
     'users_list_tenant_tokens',
     'users_delete_tenant_token',
+    // Sign-in internals the app server calls as super admin. Their tables have
+    // no tenant column, so a users:Read / tenants:Read grant read any tenant's
+    // credential hashes, roles and tenants.
+    'users_get_auth_by_username',
+    'users_get_by_provider_account',
+    'users_get_super_admin_role',
+    'tenant_by_user_v2',
   ];
 
   it('classifies every action in actions.yaml except the non-grantable ones', () => {

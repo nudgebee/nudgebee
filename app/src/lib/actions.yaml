@@ -5855,14 +5855,6 @@ actions:
       headers:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
-    permissions:
-      - role: tenant_usage
-      - role: tenant_admin
-      - role: tenant_admin_readonly
-      - role: account_admin
-      - role: account_admin_readonly
-      - role: k8s_namespace_admin
-      - role: k8s_namespace_admin_readonly
   - name: userroles_sync
     comment: Replace a user's role assignments within the tenant
     definition:
@@ -7416,13 +7408,6 @@ actions:
       headers:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
-    permissions:
-      - role: tenant_admin
-      - role: tenant_admin_readonly
-      - role: account_admin
-      - role: account_admin_readonly
-      - role: k8s_namespace_admin
-      - role: k8s_namespace_admin_readonly
   - name: cloud_account_attrs_v2
     comment: List cloud-account attributes (key and value settings)
     definition:
