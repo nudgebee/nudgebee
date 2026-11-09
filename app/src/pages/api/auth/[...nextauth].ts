@@ -36,6 +36,7 @@ import {
 import { adapterUserUpdateDataOnUserRoles, groupBelongsToTenant } from '@lib/userPermissionMapper';
 import { pickDefaultTenant } from '@lib/defaultTenant';
 import { findTenantByDomain } from '@lib/tenantLookup';
+import { shouldRejectUnverifiedOAuthEmail } from '@lib/oauthEmailVerification';
 import { dummyCredsAdminEmail } from '@lib/dummyCredsAdmin';
 import { ldapBindName, ldapSearchFilter } from '@lib/ldapUsername';
 import { getLicenseDetails, SERVICES_SERVER_UNREACHABLE_MSG, type LicenseTier } from '@lib/license';
@@ -1557,10 +1558,16 @@ export const authOptions: NextAuthOptions = {
       }
       return baseUrl;
     },
-    async signIn({ user, account, email }) {
+    async signIn({ user, account, email, profile }) {
       console.log('signIn called', user, account, email);
       if (user?.email) {
         user.email = user.email.toLowerCase();
+      }
+      if (shouldRejectUnverifiedOAuthEmail({ user, account, profile })) {
+        console.warn('Refusing OAuth sign-in: IdP reports the email as unverified and the IdP account is not linked yet', {
+          provider: account?.provider,
+        });
+        return false;
       }
       if (
         (account?.provider === 'email' || account?.provider === 'credentials' || account?.provider === 'ldap' || account?.provider === 'teleport') &&
