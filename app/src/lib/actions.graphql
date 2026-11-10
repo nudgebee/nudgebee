@@ -6665,6 +6665,10 @@ input cloud_update_credentials_input {
   cloud_provider: String!
   client_secret: String
   credentials_json: String
+  assume_role: String
+  access_key: String
+  access_secret: String
+  validate_only: Boolean
 }
 
 input cloud_account_attr_object {

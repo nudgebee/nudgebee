@@ -928,9 +928,19 @@ const apiAccount = {
     }
   },
   // Rotate a connected account's stored credential in place (Azure client
-  // secret or GCP service-account key), on every account sharing it. Returns the full response so the caller can read both
+  // secret, GCP service-account key, AWS role or access keys), on every account
+  // sharing it. validate_only runs the same checks without saving. Returns the full response so the caller can read both
   // affected_rows and any GraphQL errors.
-  updateCredentials: async function (data: { id: string; cloud_provider: string; client_secret?: string; credentials_json?: string }) {
+  updateCredentials: async function (data: {
+    id: string;
+    cloud_provider: string;
+    client_secret?: string;
+    credentials_json?: string;
+    assume_role?: string;
+    access_key?: string;
+    access_secret?: string;
+    validate_only?: boolean;
+  }) {
     try {
       const response = await queryGraphQL(UPDATE_CREDENTIALS, 'UpdateCloudCredentials', {
         object: {
@@ -938,6 +948,10 @@ const apiAccount = {
           cloud_provider: data.cloud_provider,
           client_secret: data.client_secret,
           credentials_json: data.credentials_json,
+          assume_role: data.assume_role,
+          access_key: data.access_key,
+          access_secret: data.access_secret,
+          validate_only: data.validate_only,
         },
       });
       return response;

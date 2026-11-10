@@ -313,7 +313,7 @@ type AccountUpdateResponse struct {
 // AccountUpdateCredentialsRequest rotates the stored credential of a connected
 // cloud account in place, on every account sharing it (see
 // UpdateAccountCredentials). Azure sends ClientSecret, GCP sends
-// CredentialsJSON.
+// CredentialsJSON, AWS sends AssumeRole or AccessKey + AccessSecret.
 type AccountUpdateCredentialsRequest struct {
 	Id            string `json:"id" mapstructure:"id" validate:"required,uuid"`
 	CloudProvider string `json:"cloud_provider" mapstructure:"cloud_provider" validate:"required"`
@@ -323,9 +323,18 @@ type AccountUpdateCredentialsRequest struct {
 	// CredentialsJSON is the new GCP service-account key (the whole JSON file).
 	// It must belong to the same service account as the stored key.
 	CredentialsJSON string `json:"credentials_json,omitempty" mapstructure:"credentials_json"`
+	// AWS: a new role ARN for a role account, or a new key pair for an
+	// access-key account. Must belong to the account's AWS account ID.
+	AssumeRole   string `json:"assume_role,omitempty" mapstructure:"assume_role"`
+	AccessKey    string `json:"access_key,omitempty" mapstructure:"access_key"`
+	AccessSecret string `json:"access_secret,omitempty" mapstructure:"access_secret"`
+	// ValidateOnly runs every check and reports how many accounts a save would
+	// update, without writing anything.
+	ValidateOnly bool `json:"validate_only,omitempty" mapstructure:"validate_only"`
 }
 
-// AccountUpdateCredentialsResponse returns how many accounts got the new secret:
+// AccountUpdateCredentialsResponse returns how many accounts got the new secret
+// (with ValidateOnly, how many a save would update):
 // the one the rotation started from plus every other account on the same app
 // registration that the caller may update.
 type AccountUpdateCredentialsResponse struct {

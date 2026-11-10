@@ -3,6 +3,7 @@ package account
 import (
 	"nudgebee/services/common"
 	"nudgebee/services/config"
+	"nudgebee/services/internal/database/models"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -144,4 +145,79 @@ func TestStoredGcpServiceAccountEmail(t *testing.T) {
 	garbage := "zz"
 	_, err = storedGcpServiceAccountEmail(&garbage)
 	assert.Error(t, err)
+}
+
+func TestAwsRoleArnAccount(t *testing.T) {
+	account, ok := awsRoleArnAccount("arn:aws:iam::123456789012:role/nudgebee-CrossAccountRole-ABC")
+	assert.True(t, ok)
+	assert.Equal(t, "123456789012", account)
+
+	account, ok = awsRoleArnAccount("arn:aws-us-gov:iam::210987654321:role/path/to/role")
+	assert.True(t, ok)
+	assert.Equal(t, "210987654321", account)
+
+	account, ok = awsRoleArnAccount("arn:aws-iso-b:iam::210987654321:role/r")
+	assert.True(t, ok)
+	assert.Equal(t, "210987654321", account)
+
+	for _, bad := range []string{"", "nudgebee-role", "arn:aws:iam::12345:role/x", "arn:aws:iam::123456789012:user/alice", "arn:aws:iam::123456789012:role/", "arn:awsfoo:iam::123456789012:role/x", "arn:aws-:iam::123456789012:role/x"} {
+		_, ok = awsRoleArnAccount(bad)
+		assert.False(t, ok, bad)
+	}
+}
+
+func TestAwsCurConfig(t *testing.T) {
+	data := `{"cost_report_name":"nb-cur","cost_report_s3_bucket":"nb-cur-bucket","cur_source":"access_keys"}`
+	report, bucket := awsCurConfig(&data)
+	assert.Equal(t, []string{"nb-cur", "nb-cur-bucket"}, []string{report, bucket})
+	report, bucket = awsCurConfig(nil)
+	assert.Equal(t, []string{"", ""}, []string{report, bucket})
+}
+
+func TestAccountUpdateCredentialsRequest_DecodesAwsFields(t *testing.T) {
+	var request AccountUpdateCredentialsRequest
+	err := common.UnmarshalMapToStruct(map[string]any{
+		"id":             "00000000-0000-0000-0000-00000000000a",
+		"cloud_provider": "AWS",
+		"assume_role":    "arn:aws:iam::123456789012:role/r",
+		"access_key":     "AKIAEXAMPLE",
+		"access_secret":  "s3cr3t",
+		"validate_only":  true,
+	}, &request)
+	assert.NoError(t, err)
+	assert.Equal(t, "arn:aws:iam::123456789012:role/r", request.AssumeRole)
+	assert.Equal(t, "AKIAEXAMPLE", request.AccessKey)
+	assert.Equal(t, "s3cr3t", request.AccessSecret)
+	assert.True(t, request.ValidateOnly)
+}
+
+// TestPrepareAwsRotation_RefusesBeforeAnyCall covers the refusals that must
+// happen before any AWS call or database read: a mixed account, a type switch,
+// and a role in another AWS account (so the stored external ID is never sent
+// there). nil context and database prove nothing past the checks is reached.
+func TestPrepareAwsRotation_RefusesBeforeAnyCall(t *testing.T) {
+	str := func(s string) *string { return &s }
+	roleAcct := models.Account{AccountNumber: str("222222222222"), AssumeRole: str("arn:aws:iam::222222222222:role/old"), ExternalId: str("ext")}
+	keyAcct := models.Account{AccountNumber: str("111111111111"), AccessKey: str("AKIAOLD"), AccessSecret: str("enc")}
+	mixed := models.Account{AccountNumber: str("111111111111"), AssumeRole: str("arn:aws:iam::111111111111:role/r"), AccessKey: str("AKIAOLD")}
+
+	cases := []struct {
+		name    string
+		acct    models.Account
+		request AccountUpdateCredentialsRequest
+		want    string
+	}{
+		{"mixed account", mixed, AccountUpdateCredentialsRequest{AssumeRole: "arn:aws:iam::111111111111:role/new"}, "both an IAM role and access keys"},
+		{"keys on a role account", roleAcct, AccountUpdateCredentialsRequest{AccessKey: "AKIANEW", AccessSecret: "s"}, "connects with an IAM role"},
+		{"role on a key account", keyAcct, AccountUpdateCredentialsRequest{AssumeRole: "arn:aws:iam::111111111111:role/new"}, "connects with access keys"},
+		{"role in another account", roleAcct, AccountUpdateCredentialsRequest{AssumeRole: "arn:aws:iam::333333333333:role/x"}, "belongs to AWS account 333333333333"},
+		{"not a role ARN", roleAcct, AccountUpdateCredentialsRequest{AssumeRole: "arn:aws:iam::222222222222:user/alice"}, "is not an IAM role ARN"},
+		{"half a key pair", keyAcct, AccountUpdateCredentialsRequest{AccessKey: "AKIANEW"}, "access key ID and secret access key are required"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := prepareAwsRotation(nil, nil, "tenant", c.acct, c.request)
+			assert.ErrorContains(t, err, c.want)
+		})
+	}
 }

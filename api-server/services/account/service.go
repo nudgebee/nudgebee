@@ -21,6 +21,7 @@ import (
 	"nudgebee/services/license"
 	"nudgebee/services/security"
 	tenantpkg "nudgebee/services/tenant"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -2974,17 +2975,22 @@ func firstSubscription(assumeRole string) string {
 }
 
 // UpdateAccountCredentials rotates a connected account's stored credential in
-// place, keeping its history. Supported: an Azure client secret and a GCP
-// service-account key. The new credential is validated against the account's
-// stored identity before it is encrypted and written.
+// place, keeping its history. Supported: an Azure client secret, a GCP
+// service-account key, and AWS access keys or role ARN. The new credential is
+// validated against the account's stored identity before it is written.
 //
 // A credential belongs to an identity, not to one account: an Azure secret to
-// an app registration, a GCP key to a service account. Bulk onboarding stores a
+// an app registration, a GCP key to a service account, an AWS key to an IAM
+// user or a role ARN to a role. Bulk onboarding stores a
 // copy on every subscription's or project's row, so the write covers every
 // account in the tenant on the same identity that the caller may update —
 // otherwise the siblings keep the dead credential and stay dark. Collection
 // then restarts at once (resumeCollection) instead of waiting for the daily
 // cost sync and the events backoff.
+//
+// ValidateOnly runs every check — including the provider's live validation —
+// and reports how many accounts a save would update, without writing. The
+// modal's Validate button uses it, so it checks exactly what Save will.
 //
 // It deliberately does NOT extend the generic UpdateAccountByAction: rotation
 // is validate-before-write and security-sensitive, and does not belong in the
@@ -3027,16 +3033,13 @@ func UpdateAccountCredentials(context *security.RequestContext, request AccountU
 		rotation, err = prepareAzureRotation(context, dbms, tenantId, acct, request)
 	case "gcp":
 		rotation, err = prepareGcpRotation(context, dbms, tenantId, acct, request)
+	case "aws":
+		rotation, err = prepareAwsRotation(context, dbms, tenantId, acct, request)
 	default:
-		err = fmt.Errorf("credential rotation is supported for Azure and GCP accounts only")
+		err = fmt.Errorf("credential rotation is supported for Azure, GCP and AWS accounts only")
 	}
 	if err != nil {
 		return AccountUpdateCredentialsResponse{}, err
-	}
-
-	encryptedSecret, err := common.Encrypt(rotation.secret)
-	if err != nil {
-		return AccountUpdateCredentialsResponse{}, fmt.Errorf("failed to encrypt credential: %w", err)
 	}
 
 	targets := credentialRotationTargets(request.Id, rotation.group, func(id string) bool {
@@ -3046,11 +3049,20 @@ func UpdateAccountCredentials(context *security.RequestContext, request AccountU
 	for _, t := range targets {
 		ids = append(ids, t.Id)
 	}
+	if request.ValidateOnly {
+		return AccountUpdateCredentialsResponse{AffectedRows: len(ids)}, nil
+	}
 
+	// A NULL parameter leaves its column as it is, so one fixed statement
+	// serves every provider.
 	var updated []string
-	err = dbms.Db.Select(&updated,
-		"UPDATE cloud_accounts SET access_secret = $1, updated_by = $2, updated_at = now() WHERE id = ANY($3::uuid[]) AND tenant = $4 RETURNING id::text",
-		encryptedSecret, sc.GetUserId(), pq.Array(ids), tenantId)
+	err = dbms.Db.Select(&updated, `UPDATE cloud_accounts SET
+			access_secret = COALESCE($1, access_secret),
+			access_key = COALESCE($2, access_key),
+			assume_role = COALESCE($3, assume_role),
+			updated_by = $4, updated_at = now()
+		WHERE id = ANY($5::uuid[]) AND tenant = $6 RETURNING id::text`,
+		rotation.accessSecret, rotation.accessKey, rotation.assumeRole, sc.GetUserId(), pq.Array(ids), tenantId)
 	if err != nil {
 		return AccountUpdateCredentialsResponse{}, fmt.Errorf("failed to update credentials: %w", err)
 	}
@@ -3077,12 +3089,24 @@ func UpdateAccountCredentials(context *security.RequestContext, request AccountU
 	return AccountUpdateCredentialsResponse{AffectedRows: affected}, nil
 }
 
-// credentialRotation is what a provider's preparation hands back: the validated
-// plaintext credential to store, and every account in the tenant on the same
-// identity (before the caller's per-account access check).
+// credentialRotation is what a provider's preparation hands back: the
+// cloud_accounts credential columns to write (nil leaves a column unchanged;
+// accessSecret is already encrypted), and every account in the tenant on the
+// same identity (before the caller's per-account access check).
 type credentialRotation struct {
-	secret string
-	group  []credentialGroupMember
+	accessSecret *string
+	accessKey    *string
+	assumeRole   *string
+	group        []credentialGroupMember
+}
+
+// encryptSecret encrypts a credential for the access_secret column.
+func encryptSecret(secret string) (*string, error) {
+	encrypted, err := common.Encrypt(secret)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encrypt credential: %w", err)
+	}
+	return &encrypted, nil
 }
 
 // prepareAzureRotation validates a new client secret against the account's
@@ -3118,7 +3142,11 @@ func prepareAzureRotation(context *security.RequestContext, dbms *database.Datab
 	if err != nil {
 		return credentialRotation{}, fmt.Errorf("failed to find accounts sharing this app registration: %w", err)
 	}
-	return credentialRotation{secret: request.ClientSecret, group: group}, nil
+	secret, err := encryptSecret(request.ClientSecret)
+	if err != nil {
+		return credentialRotation{}, err
+	}
+	return credentialRotation{accessSecret: secret, group: group}, nil
 }
 
 // gcpServiceAccountKey is the part of a GCP service-account key JSON that
@@ -3229,7 +3257,154 @@ func prepareGcpRotation(context *security.RequestContext, dbms *database.Databas
 			group = append(group, credentialGroupMember{Id: r.Id, Status: r.Status})
 		}
 	}
-	return credentialRotation{secret: request.CredentialsJSON, group: group}, nil
+	secret, err := encryptSecret(request.CredentialsJSON)
+	if err != nil {
+		return credentialRotation{}, err
+	}
+	return credentialRotation{accessSecret: secret, group: group}, nil
+}
+
+// awsRoleArnPattern matches an IAM role ARN in the aws partition or a
+// hyphenated one (aws-cn, aws-us-gov, aws-iso-b, ...) and captures the 12-digit
+// AWS account ID it belongs to.
+var awsRoleArnPattern = regexp.MustCompile(`^arn:aws(?:-[a-z]+)*:iam::(\d{12}):role/.+$`)
+
+// awsRoleArnAccount returns the AWS account ID an IAM role ARN belongs to.
+func awsRoleArnAccount(roleArn string) (string, bool) {
+	m := awsRoleArnPattern.FindStringSubmatch(roleArn)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
+// awsCurConfig reads the Cost & Usage Report an AWS account was set up with
+// (cloud_accounts.data), so new credentials are checked against the same
+// report the cost sync reads. Empty strings when none is recorded.
+func awsCurConfig(data *string) (reportName, bucket string) {
+	if data == nil || *data == "" {
+		return "", ""
+	}
+	var parsed struct {
+		ReportName string `json:"cost_report_name"`
+		Bucket     string `json:"cost_report_s3_bucket"`
+	}
+	if err := json.Unmarshal([]byte(*data), &parsed); err != nil {
+		return "", ""
+	}
+	return parsed.ReportName, parsed.Bucket
+}
+
+func trimmedOrEmpty(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return strings.TrimSpace(*v)
+}
+
+// prepareAwsRotation replaces an AWS account's credentials in the mode it was
+// connected with: a new role ARN for a role account, a new key pair for an
+// access-key account. Switching modes is refused — the collector picks the mode
+// from which columns are set, and does so in a different order in its SDK and
+// CLI paths, so an account must never hold both. The external ID is kept:
+// CloudFormation accounts also use it to match their EventBridge events.
+//
+// The new credentials must belong to the account's AWS account ID. For a role
+// that is checked from the ARN before any AWS call, so the stored external ID is
+// never sent to a role in another AWS account; for keys, STS reports it.
+func prepareAwsRotation(context *security.RequestContext, dbms *database.DatabaseManager, tenantId string, acct models.Account, request AccountUpdateCredentialsRequest) (credentialRotation, error) {
+	awsAccountID := trimmedOrEmpty(acct.AccountNumber)
+	if awsAccountID == "" {
+		return credentialRotation{}, fmt.Errorf("account %s is missing its AWS account ID", request.Id)
+	}
+	storedRole := trimmedOrEmpty(acct.AssumeRole)
+	storedKey := trimmedOrEmpty(acct.AccessKey)
+	if storedRole != "" && storedKey != "" {
+		// Onboarding never stores both, but the org registrar can add a role to a
+		// key account. The collector's SDK path prefers the key and its CLI path
+		// the role, so rotating either one would leave the other in charge
+		// somewhere. Re-adding the account resolves it cleanly.
+		return credentialRotation{}, fmt.Errorf("account: this account has both an IAM role and access keys stored, so it isn't clear which one to replace. Re-add it with a single connection type")
+	}
+	newRole := strings.TrimSpace(request.AssumeRole)
+	newKey := strings.TrimSpace(request.AccessKey)
+	newSecret := strings.TrimSpace(request.AccessSecret)
+	curReport, curBucket := awsCurConfig(acct.Data)
+
+	validationRequest := AwsValidateInternalRequest{
+		Region:        trimmedOrEmpty(acct.Region),
+		CurReportName: curReport,
+		CurS3Bucket:   curBucket,
+	}
+	var rotation credentialRotation
+	switch {
+	case storedRole != "":
+		if newKey != "" || newSecret != "" {
+			return credentialRotation{}, fmt.Errorf("account: this account connects with an IAM role. Enter the new role ARN; switching to access keys isn't supported here")
+		}
+		if newRole == "" {
+			return credentialRotation{}, fmt.Errorf("account: a new role ARN is required")
+		}
+		roleAccount, ok := awsRoleArnAccount(newRole)
+		if !ok {
+			return credentialRotation{}, fmt.Errorf("account: %q is not an IAM role ARN (arn:aws:iam::<account-id>:role/<name>)", newRole)
+		}
+		if roleAccount != awsAccountID {
+			return credentialRotation{}, fmt.Errorf("account: the role belongs to AWS account %s, but this account is %s", roleAccount, awsAccountID)
+		}
+		validationRequest.AssumeRole = newRole
+		validationRequest.ExternalID = trimmedOrEmpty(acct.ExternalId)
+		rotation.assumeRole = &newRole
+	case storedKey != "":
+		if newRole != "" {
+			return credentialRotation{}, fmt.Errorf("account: this account connects with access keys. Enter a new access key pair; switching to a role isn't supported here")
+		}
+		if newKey == "" || newSecret == "" {
+			return credentialRotation{}, fmt.Errorf("account: a new access key ID and secret access key are required")
+		}
+		validationRequest.AccessKey = newKey
+		validationRequest.AccessSecret = newSecret
+		secret, err := encryptSecret(newSecret)
+		if err != nil {
+			return credentialRotation{}, err
+		}
+		rotation.accessKey = &newKey
+		rotation.accessSecret = secret
+	default:
+		return credentialRotation{}, fmt.Errorf("account %s has no stored AWS role or access key to replace", request.Id)
+	}
+
+	validation := validateAWSCredentialsInternal(context.GetContext(), validationRequest)
+	if !validation.Success {
+		context.GetLogger().Warn("aws credential rotation: validation failed",
+			"account_id", request.Id, "error", validation.ErrorMessage)
+		msg := validation.ErrorMessage
+		if msg == "" {
+			msg = "the new credentials could not be validated with AWS"
+		}
+		return credentialRotation{}, fmt.Errorf("account: %s", msg)
+	}
+	if validation.AccountNumber == "" {
+		return credentialRotation{}, fmt.Errorf("account: AWS didn't report which account these credentials belong to, so they can't be matched to %s", awsAccountID)
+	}
+	if validation.AccountNumber != awsAccountID {
+		return credentialRotation{}, fmt.Errorf("account: these credentials belong to AWS account %s, but this account is %s", validation.AccountNumber, awsAccountID)
+	}
+
+	// Match siblings on the column's stored value as-is, not the trimmed one, so
+	// stray whitespace in stored data doesn't drop the group.
+	var err error
+	if rotation.assumeRole != nil {
+		err = dbms.Db.Select(&rotation.group, `SELECT id::text AS id, status FROM cloud_accounts
+			WHERE tenant = $1 AND lower(cloud_provider) = 'aws' AND assume_role = $2`, tenantId, *acct.AssumeRole)
+	} else {
+		err = dbms.Db.Select(&rotation.group, `SELECT id::text AS id, status FROM cloud_accounts
+			WHERE tenant = $1 AND lower(cloud_provider) = 'aws' AND access_key = $2`, tenantId, *acct.AccessKey)
+	}
+	if err != nil {
+		return credentialRotation{}, fmt.Errorf("failed to find accounts sharing these AWS credentials: %w", err)
+	}
+	return rotation, nil
 }
 
 // storedGcpServiceAccountEmail decrypts a stored GCP key and returns the
@@ -3250,7 +3425,8 @@ func storedGcpServiceAccountEmail(accessSecret *string) (string, error) {
 }
 
 // credentialGroupMember is one account on the same identity (Azure app
-// registration, GCP service account) as the account being rotated.
+// registration, GCP service account, AWS role or access key) as the account
+// being rotated.
 type credentialGroupMember struct {
 	Id     string `db:"id"`
 	Status string `db:"status"`

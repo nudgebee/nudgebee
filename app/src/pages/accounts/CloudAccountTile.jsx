@@ -1,6 +1,7 @@
 import { Box, Grid, Typography, Stack } from '@mui/material';
 import { Banner } from '@ui/Banner';
 import { Input } from '@ui/Input';
+import { ToggleGroup } from '@ui/ToggleGroup';
 import { getBrandTitle } from '@hooks/useTenantBranding';
 import { ContentCopy, Visibility, VisibilityOff } from '@mui/icons-material';
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
@@ -101,13 +102,13 @@ const renderStatus = (item) => {
 };
 
 // Per-provider wording for the Rotate credential modal. A credential belongs to
-// an identity (Azure app registration, GCP service account) and is rotated on
-// every account that uses it.
+// an identity (Azure app registration, GCP service account, AWS role or access
+// key) and is rotated on every account that uses it.
 const ROTATE_COPY = {
   Azure: {
     title: 'Rotate Client Secret',
     label: 'Client secret',
-    identity: 'app registration',
+    identity: 'this app registration',
     validated: () => 'Secret authenticated with Azure.',
     invalid: 'The new secret could not be validated with Azure.',
     info: 'The new secret replaces the old one on every Azure account connected with this app registration (same tenant and client ID), and syncing restarts straight away. Account history is kept.',
@@ -115,12 +116,25 @@ const ROTATE_COPY = {
   GCP: {
     title: 'Rotate Service Account Key',
     label: 'Service account key',
-    identity: 'service account',
+    identity: 'this service account',
     validated: (email) => `Key for ${email} authenticated with GCP.`,
     invalid: 'The new key could not be validated with GCP.',
     info: 'The new key replaces the old one on every GCP account that uses this service account, and syncing restarts straight away. Account history is kept. The key must be for the same service account the account was connected with.',
   },
+  AWS: {
+    title: 'Update AWS Credentials',
+    label: 'AWS credentials',
+    identity: 'these credentials',
+    validated: (message) => message,
+    invalid: 'The new credentials could not be validated with AWS.',
+    info: 'Use the type the account was connected with: a new role ARN for an IAM role, or a new key pair for access keys. The credentials must belong to this AWS account. Every account using the same role or access key is updated, and syncing restarts straight away. Account history is kept.',
+  },
 };
+
+const AWS_ROTATE_MODES = [
+  { value: 'role', label: 'IAM role' },
+  { value: 'keys', label: 'Access keys' },
+];
 
 // parseGcpKey returns the service-account key's client_email, or an error
 // message for a paste that isn't a complete service-account key.
@@ -197,9 +211,14 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
   const [eventAnalysisForm, setEventAnalysisForm] = useState(DEFAULT_EVENT_ANALYSIS_FORM);
   const [eventAnalysisLoading, setEventAnalysisLoading] = useState(false);
   const [webhookAccountIds, setWebhookAccountIds] = useState(new Set());
-  // Rotate credential (Azure client secret, GCP service-account key): replace it in place.
+  // Rotate credential (Azure client secret, GCP service-account key, AWS role or
+  // access keys): replace it in place. rotateSecret holds the Azure secret, the
+  // GCP key JSON, or the AWS secret access key.
   const [rotateModalOpen, setRotateModalOpen] = useState(false);
   const [rotateSecret, setRotateSecret] = useState('');
+  const [rotateAwsMode, setRotateAwsMode] = useState('role');
+  const [rotateRoleArn, setRotateRoleArn] = useState('');
+  const [rotateAccessKey, setRotateAccessKey] = useState('');
   const [showRotateSecret, setShowRotateSecret] = useState(false);
   const [rotateLoading, setRotateLoading] = useState(false);
   const [rotateValidationResult, setRotateValidationResult] = useState(null);
@@ -473,6 +492,10 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
         label: 'Update Permissions',
         id: 'update-permissions',
       });
+      items.push({
+        label: 'Update Credentials',
+        id: 'rotate-secret',
+      });
     }
     return items;
   };
@@ -520,6 +543,9 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
     } else if (menuItem.id === 'rotate-secret') {
       setSelectedAccount(data);
       setRotateSecret('');
+      setRotateAwsMode('role');
+      setRotateRoleArn('');
+      setRotateAccessKey('');
       setShowRotateSecret(false);
       setRotateValidationResult(null);
       setRotateModalOpen(true);
@@ -773,6 +799,9 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
     setRotateModalOpen(false);
     setSelectedAccount(null);
     setRotateSecret('');
+    setRotateAwsMode('role');
+    setRotateRoleArn('');
+    setRotateAccessKey('');
     setShowRotateSecret(false);
     setRotateLoading(false);
     setRotateValidationResult(null);
@@ -781,6 +810,40 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
 
   const rotateCopy = ROTATE_COPY[cloudProvider] || ROTATE_COPY.Azure;
   const isGcpRotation = cloudProvider === 'GCP';
+  const isAwsRotation = cloudProvider === 'AWS';
+  // Save unlocks only after Validate passes for exactly what is in the fields:
+  // every field's onChange clears rotateValidationResult, so any edit locks it
+  // again. The server re-validates on Save regardless.
+  const rotateValidated = rotateValidationResult?.success === true;
+  const rotateReady = isAwsRotation
+    ? rotateAwsMode === 'role'
+      ? !!rotateRoleArn.trim()
+      : !!rotateAccessKey.trim() && !!rotateSecret
+    : !!rotateSecret;
+
+  // AWS sends only the fields of the chosen type; the server refuses a type
+  // different from the one the account was connected with.
+  const awsRotationPayload = (validateOnly) => ({
+    id: selectedAccount.id,
+    cloud_provider: 'AWS',
+    ...(rotateAwsMode === 'role' ? { assume_role: rotateRoleArn.trim() } : { access_key: rotateAccessKey.trim(), access_secret: rotateSecret }),
+    ...(validateOnly ? { validate_only: true } : {}),
+  });
+
+  // AWS Validate is a dry run of the save itself: the stored external ID and the
+  // account's CUR settings never reach the browser, so the server checks exactly
+  // what Save will, and reports how many accounts a save would update.
+  const validateAwsRotation = async () => {
+    const res = await apiAccount.updateCredentials(awsRotationPayload(true));
+    if (res?.data?.errors?.length > 0) {
+      return { success: false, message: res.data.errors[0]?.message || rotateCopy.invalid };
+    }
+    const count = res?.data?.data?.cloud_update_credentials?.affected_rows || 1;
+    return {
+      success: true,
+      message: `Credentials accepted for AWS account ${selectedAccount.account_number}. Save will update ${count} account${count > 1 ? 's' : ''}.`,
+    };
+  };
 
   // GCP validates the pasted key against the account's project and billing export
   // (the stored key never leaves the server). Azure resolves the stored tenant,
@@ -810,7 +873,19 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
 
   // Live check that the new credential authenticates, before it is saved.
   const handleValidateRotateSecret = async () => {
-    if (!selectedAccount || !rotateSecret) {
+    if (!selectedAccount || !rotateReady) {
+      return;
+    }
+    if (isAwsRotation) {
+      setIsValidatingRotate(true);
+      setRotateValidationResult(null);
+      try {
+        setRotateValidationResult(await validateAwsRotation());
+      } catch {
+        setRotateValidationResult({ success: false, message: 'Failed to validate the new credentials.' });
+      } finally {
+        setIsValidatingRotate(false);
+      }
       return;
     }
     let gcpEmail = '';
@@ -838,17 +913,22 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
     }
   };
 
+  const rotateSavePayload = () => {
+    if (isAwsRotation) {
+      return awsRotationPayload(false);
+    }
+    return isGcpRotation
+      ? { id: selectedAccount.id, cloud_provider: 'GCP', credentials_json: rotateSecret }
+      : { id: selectedAccount.id, cloud_provider: 'Azure', client_secret: rotateSecret };
+  };
+
   const handleRotateSubmit = () => {
-    if (!selectedAccount || !rotateSecret) {
+    if (!selectedAccount || !rotateReady || !rotateValidated) {
       return;
     }
     setRotateLoading(true);
     apiAccount
-      .updateCredentials(
-        isGcpRotation
-          ? { id: selectedAccount.id, cloud_provider: 'GCP', credentials_json: rotateSecret }
-          : { id: selectedAccount.id, cloud_provider: 'Azure', client_secret: rotateSecret }
-      )
+      .updateCredentials(rotateSavePayload())
       .then((res) => {
         if (res?.data?.errors?.length > 0) {
           const error = res?.data?.errors?.[0]?.message || `Failed to rotate ${rotateCopy.label.toLowerCase()}`;
@@ -857,7 +937,7 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
           const updated = res?.data?.data?.cloud_update_credentials?.affected_rows || 1;
           snackbar.success(
             updated > 1
-              ? `${rotateCopy.label} updated on ${updated} accounts that use this ${rotateCopy.identity}. Syncing has restarted.`
+              ? `${rotateCopy.label} updated on ${updated} accounts that use ${rotateCopy.identity}. Syncing has restarted.`
               : `${rotateCopy.label} updated. Syncing has restarted.`
           );
           closeRotateModal();
@@ -1287,7 +1367,7 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
               id='rotate-secret-validate-btn'
               tone='secondary'
               size='md'
-              disabled={rotateLoading || isValidatingRotate || !rotateSecret}
+              disabled={rotateLoading || isValidatingRotate || !rotateReady}
               loading={isValidatingRotate}
               onClick={handleValidateRotateSecret}
             >
@@ -1297,7 +1377,7 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
               id='rotate-secret-save-btn'
               tone='primary'
               size='md'
-              disabled={rotateLoading || isValidatingRotate || !rotateSecret}
+              disabled={rotateLoading || isValidatingRotate || !rotateReady || !rotateValidated}
               loading={rotateLoading}
               onClick={handleRotateSubmit}
             >
@@ -1307,7 +1387,77 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
         }
       >
         <Box sx={{ px: ds.space[4], py: ds.space[2] }}>
-          {isGcpRotation ? (
+          {isAwsRotation ? (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[3] }}>
+              <ToggleGroup
+                selection='single'
+                size='sm'
+                ariaLabel='Credential type'
+                options={AWS_ROTATE_MODES}
+                value={rotateAwsMode}
+                onChange={(mode) => {
+                  setRotateAwsMode(mode);
+                  setRotateValidationResult(null);
+                }}
+              />
+              {rotateAwsMode === 'role' ? (
+                <Input
+                  value={rotateRoleArn}
+                  size='sm'
+                  id='rotate-role-arn-input'
+                  label='New Role ARN'
+                  required
+                  placeholder='arn:aws:iam::123456789012:role/your-role'
+                  onChange={(value) => {
+                    setRotateRoleArn(value);
+                    setRotateValidationResult(null);
+                  }}
+                  help='IAM > Roles > your role > ARN. It must be in this AWS account. The external ID stays the same.'
+                />
+              ) : (
+                <>
+                  <Input
+                    value={rotateAccessKey}
+                    size='sm'
+                    id='rotate-access-key-input'
+                    label='New Access Key ID'
+                    required
+                    placeholder='AKIA...'
+                    onChange={(value) => {
+                      setRotateAccessKey(value);
+                      setRotateValidationResult(null);
+                    }}
+                    help='IAM > Users > your user > Security credentials > Create access key.'
+                  />
+                  <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: ds.space[2] }}>
+                    <Box sx={{ flex: 1 }}>
+                      <Input
+                        value={rotateSecret}
+                        size='sm'
+                        id='rotate-access-secret-input'
+                        label='New Secret Access Key'
+                        required
+                        type={showRotateSecret ? 'text' : 'password'}
+                        onChange={(value) => {
+                          setRotateSecret(value);
+                          setRotateValidationResult(null);
+                        }}
+                      />
+                    </Box>
+                    <Box sx={{ mt: ds.space[5] }}>
+                      <DsButton
+                        tone='ghost'
+                        composition='icon-only'
+                        aria-label='toggle secret visibility'
+                        onClick={() => setShowRotateSecret((v) => !v)}
+                        icon={showRotateSecret ? <VisibilityOff /> : <Visibility />}
+                      />
+                    </Box>
+                  </Box>
+                </>
+              )}
+            </Box>
+          ) : isGcpRotation ? (
             <Input
               value={rotateSecret}
               size='sm'
