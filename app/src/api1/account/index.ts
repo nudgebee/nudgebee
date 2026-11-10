@@ -262,6 +262,14 @@ mutation UpdateCloudAccount($object: cloud_account_update_input!) {
 }
 `;
 
+export const UPDATE_CREDENTIALS = `
+mutation UpdateCloudCredentials($object: cloud_update_credentials_input!) {
+  cloud_update_credentials(object: $object) {
+    affected_rows
+  }
+}
+`;
+
 export const AZURE_LIST_SUBSCRIPTIONS = `
 mutation AzureListSubscriptions($object: AzureListSubscriptionsInput!) {
   azure_list_subscriptions(object: $object) {
@@ -916,6 +924,20 @@ const apiAccount = {
       return response?.data?.data?.cloud_check_credentials;
     } catch (err) {
       console.log('validateCloudCredentials error:', err);
+      throw err;
+    }
+  },
+  // Rotate a single connected account's stored credential in place. v1: Azure
+  // client secret. Returns the full response so the caller can read both
+  // affected_rows and any GraphQL errors.
+  updateCredentials: async function (data: { id: string; cloud_provider: string; client_secret: string }) {
+    try {
+      const response = await queryGraphQL(UPDATE_CREDENTIALS, 'UpdateCloudCredentials', {
+        object: { id: data.id, cloud_provider: data.cloud_provider, client_secret: data.client_secret },
+      });
+      return response;
+    } catch (err) {
+      console.log('updateCredentials error:', err);
       throw err;
     }
   },

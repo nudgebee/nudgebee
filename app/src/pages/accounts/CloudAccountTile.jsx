@@ -2,7 +2,7 @@ import { Box, Grid, Typography, Stack } from '@mui/material';
 import { Banner } from '@ui/Banner';
 import { Input } from '@ui/Input';
 import { getBrandTitle } from '@hooks/useTenantBranding';
-import { ContentCopy } from '@mui/icons-material';
+import { ContentCopy, Visibility, VisibilityOff } from '@mui/icons-material';
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import apiAccount from '@api1/account';
 import apiIntegrations from '@api1/integrations';
@@ -158,6 +158,13 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
   const [eventAnalysisForm, setEventAnalysisForm] = useState(DEFAULT_EVENT_ANALYSIS_FORM);
   const [eventAnalysisLoading, setEventAnalysisLoading] = useState(false);
   const [webhookAccountIds, setWebhookAccountIds] = useState(new Set());
+  // Rotate Client Secret (Azure): replace this account's expired secret in place.
+  const [rotateModalOpen, setRotateModalOpen] = useState(false);
+  const [rotateSecret, setRotateSecret] = useState('');
+  const [showRotateSecret, setShowRotateSecret] = useState(false);
+  const [rotateLoading, setRotateLoading] = useState(false);
+  const [rotateValidationResult, setRotateValidationResult] = useState(null);
+  const [isValidatingRotate, setIsValidatingRotate] = useState(false);
   const [existedIntegrations, setExistedIntegrations] = useState({});
   const [enabledWebhookIntegrations, setEnabledWebhookIntegrations] = useState([]);
 
@@ -389,6 +396,10 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
         label: realtimeEventAccountIds.has(item.id) ? 'Manage Event Grid' : 'Connect Event Grid',
         id: 'event-grid',
       });
+      items.push({
+        label: 'Rotate Client Secret',
+        id: 'rotate-secret',
+      });
     }
     if (cloudProvider === 'AWS') {
       items.push({
@@ -463,6 +474,12 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
       setSavedRegions(current);
       setRegionsInput(current);
       setRegionsModalOpen(true);
+    } else if (menuItem.id === 'rotate-secret') {
+      setSelectedAccount(data);
+      setRotateSecret('');
+      setShowRotateSecret(false);
+      setRotateValidationResult(null);
+      setRotateModalOpen(true);
     } else if (menuItem.id === 'real-time-alerts') {
       setWebhookModalAccount(data);
       setWebhookModalOpen(true);
@@ -706,6 +723,74 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
       })
       .finally(() => {
         setRegionsLoading(false);
+      });
+  };
+
+  const closeRotateModal = () => {
+    setRotateModalOpen(false);
+    setSelectedAccount(null);
+    setRotateSecret('');
+    setShowRotateSecret(false);
+    setRotateLoading(false);
+    setRotateValidationResult(null);
+    setIsValidatingRotate(false);
+  };
+
+  // Live check that the new secret authenticates, before it is saved. The stored
+  // tenant/client ID and subscription are resolved server-side from account_id —
+  // only the fresh secret is sent from the client.
+  const handleValidateRotateSecret = async () => {
+    if (!selectedAccount || !rotateSecret) {
+      return;
+    }
+    setIsValidatingRotate(true);
+    setRotateValidationResult(null);
+    try {
+      const result = await apiAccount.validateCloudCredentials({
+        cloud_provider: 'Azure',
+        account_id: selectedAccount.id,
+        client_secret: rotateSecret,
+      });
+      if (result?.success) {
+        setRotateValidationResult({ success: true, message: 'Secret authenticated with Azure.' });
+      } else {
+        setRotateValidationResult({ success: false, message: result?.errorMessage || 'The new secret could not be validated with Azure.' });
+      }
+    } catch {
+      setRotateValidationResult({ success: false, message: 'Failed to validate the new secret.' });
+    } finally {
+      setIsValidatingRotate(false);
+    }
+  };
+
+  const handleRotateSubmit = () => {
+    if (!selectedAccount || !rotateSecret) {
+      return;
+    }
+    setRotateLoading(true);
+    apiAccount
+      .updateCredentials({ id: selectedAccount.id, cloud_provider: 'Azure', client_secret: rotateSecret })
+      .then((res) => {
+        if (res?.data?.errors?.length > 0) {
+          const error = res?.data?.errors?.[0]?.message || 'Failed to rotate client secret';
+          snackbar.error(error);
+        } else {
+          const updated = res?.data?.data?.cloud_update_credentials?.affected_rows || 1;
+          snackbar.success(
+            updated > 1
+              ? `Client secret updated on ${updated} accounts that use this app registration. Syncing has restarted.`
+              : 'Client secret updated. Syncing has restarted.'
+          );
+          closeRotateModal();
+          listCloudAccounts();
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to rotate client secret:', error);
+        snackbar.error('Failed to rotate client secret');
+      })
+      .finally(() => {
+        setRotateLoading(false);
       });
   };
 
@@ -1099,6 +1184,87 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
           />
           <Box sx={{ mt: ds.space[3] }}>
             <Banner tone='info' message='The new list applies on the next sync of this account. No reconnection is needed.' />
+          </Box>
+        </Box>
+      </Modal>
+      <Modal
+        width='sm'
+        open={rotateModalOpen}
+        handleClose={rotateLoading ? () => {} : closeRotateModal}
+        title='Rotate Client Secret'
+        loader={rotateLoading}
+        actionButtons={
+          <>
+            <DsButton
+              id='rotate-secret-cancel-btn'
+              tone='secondary'
+              size='md'
+              onClick={closeRotateModal}
+              disabled={rotateLoading || isValidatingRotate}
+            >
+              Cancel
+            </DsButton>
+            <DsButton
+              id='rotate-secret-validate-btn'
+              tone='secondary'
+              size='md'
+              disabled={rotateLoading || isValidatingRotate || !rotateSecret}
+              loading={isValidatingRotate}
+              onClick={handleValidateRotateSecret}
+            >
+              Validate
+            </DsButton>
+            <DsButton
+              id='rotate-secret-save-btn'
+              tone='primary'
+              size='md'
+              disabled={rotateLoading || isValidatingRotate || !rotateSecret}
+              loading={rotateLoading}
+              onClick={handleRotateSubmit}
+            >
+              Save
+            </DsButton>
+          </>
+        }
+      >
+        <Box sx={{ px: ds.space[4], py: ds.space[2] }}>
+          <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: ds.space[2] }}>
+            <Box sx={{ flex: 1 }}>
+              <Input
+                value={rotateSecret}
+                size='sm'
+                id='rotate-secret-input'
+                label='New Client Secret'
+                required
+                type={showRotateSecret ? 'text' : 'password'}
+                placeholder='Paste the new Azure client secret'
+                onChange={(value) => {
+                  setRotateSecret(value);
+                  setRotateValidationResult(null);
+                }}
+                help='Azure Portal > App Registrations > your app > Certificates & secrets. Paste the secret Value, not its ID.'
+              />
+            </Box>
+            <Box sx={{ mt: ds.space[5] }}>
+              <DsButton
+                tone='ghost'
+                composition='icon-only'
+                aria-label='toggle secret visibility'
+                onClick={() => setShowRotateSecret((v) => !v)}
+                icon={showRotateSecret ? <VisibilityOff /> : <Visibility />}
+              />
+            </Box>
+          </Box>
+          {rotateValidationResult && (
+            <Box sx={{ mt: ds.space[3] }}>
+              <Banner tone={rotateValidationResult.success ? 'success' : 'critical'} message={rotateValidationResult.message} />
+            </Box>
+          )}
+          <Box sx={{ mt: ds.space[3] }}>
+            <Banner
+              tone='info'
+              message='The new secret replaces the old one on every Azure account connected with this app registration (same tenant and client ID), and syncing restarts straight away. Account history is kept.'
+            />
           </Box>
         </Box>
       </Modal>

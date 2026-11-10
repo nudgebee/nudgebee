@@ -310,6 +310,25 @@ type AccountUpdateResponse struct {
 	AffectedRows int `json:"affected_rows"`
 }
 
+// AccountUpdateCredentialsRequest rotates the stored credential of a connected
+// cloud account in place. v1 handles Azure only: ClientSecret is the new
+// application (client) secret, written to every account sharing the app
+// registration (see UpdateAccountCredentials).
+type AccountUpdateCredentialsRequest struct {
+	Id            string `json:"id" mapstructure:"id" validate:"required,uuid"`
+	CloudProvider string `json:"cloud_provider" mapstructure:"cloud_provider" validate:"required"`
+	// ClientSecret is the new Azure client secret. Required in v1 (rotation
+	// always supplies a new secret, so there is nothing to keep blank).
+	ClientSecret string `json:"client_secret,omitempty" mapstructure:"client_secret"`
+}
+
+// AccountUpdateCredentialsResponse returns how many accounts got the new secret:
+// the one the rotation started from plus every other account on the same app
+// registration that the caller may update.
+type AccountUpdateCredentialsResponse struct {
+	AffectedRows int `json:"affected_rows"`
+}
+
 // AzureListSubscriptionsRequest is the input for discovering Azure subscriptions
 type AzureListSubscriptionsRequest struct {
 	TenantID     string `json:"tenant_id" mapstructure:"tenant_id" validate:"required"`

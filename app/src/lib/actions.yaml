@@ -2918,6 +2918,18 @@ actions:
     permissions:
       - role: tenant_admin
       - role: account_admin
+  - name: cloud_update_credentials
+    comment: Rotate a cloud account's stored credential in place, on every account sharing it, and restart its sync
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/account'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
   - name: accounts_create
     comment: Onboard a new cloud account into the tenant
     definition:
@@ -8427,6 +8439,7 @@ custom_types:
     - name: recommendation_rule_list_input
     - name: AiGetWorspaceFile
     - name: cloud_account_update_input
+    - name: cloud_update_credentials_input
     - name: cloud_account_attr_object
     - name: cloud_account_attrs_upsert_input
     - name: messaging_platform_list_input

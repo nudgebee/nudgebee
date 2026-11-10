@@ -1039,6 +1039,12 @@ type Mutation {
 }
 
 type Mutation {
+  cloud_update_credentials(
+    object: cloud_update_credentials_input!
+  ): cloud_account_update_output
+}
+
+type Mutation {
   accounts_create(
     object: cloud_accounts_insert_one_input!
   ): cloud_accounts_insert_one_output
@@ -6652,6 +6658,12 @@ input cloud_account_update_input {
   account_env: String
   data: jsonb
   regions: [String!]
+}
+
+input cloud_update_credentials_input {
+  id: uuid!
+  cloud_provider: String!
+  client_secret: String
 }
 
 input cloud_account_attr_object {
