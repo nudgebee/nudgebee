@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import NextAuth, { type NextAuthOptions, type Account, type Session } from 'next-auth';
 import type { AdapterUser, AdapterSession, VerificationToken, AdapterAccount } from 'next-auth/adapters';
+import type { JWT } from 'next-auth/jwt';
 import GoogleProvider from 'next-auth/providers/google';
 import EmailProvider from 'next-auth/providers/email';
 import OktaProvider from 'next-auth/providers/okta';
@@ -1358,6 +1359,51 @@ function getSessionUpdateSeconds() {
 // /api/auth/session poll doesn't turn into a per-minute RPC per tab.
 const PERMISSIONS_REFRESH_MS = 5 * 60 * 1000;
 
+// Built-in roles are baked into the token at sign-in and on a tenant switch, and
+// were never read again, so a demoted or removed admin kept the old roles for as
+// long as the session lived — and sessions slide. The gateway admits on them, and
+// so do services that take the forwarded x-user-roles without asking the database
+// (the AI Gateway's settings and request-body reads, ticket-server's integration
+// settings, notifications-server's rules). Re-read them on the grants' cadence,
+// with the lookup and row mapping a tenant switch uses. A failed lookup keeps the
+// current roles: an outage must not strip everyone's access, and a throw here
+// would reach the callback's catch, which ends the session. A super-admin session
+// is left as it is: its tenant roles were synthesized on the switch.
+async function refreshTenantRoles(token: JWT): Promise<void> {
+  const email = token.email as string | undefined;
+  const tenantId = (token.tenant as { id?: string } | undefined)?.id;
+  if (!email || !tenantId || token.isSuperAdmin || token.isSuperAdminReadonly) return;
+  try {
+    const response = await listUserTenantRoles(email, tenantId);
+    if (!response || response.errored) return;
+    const roles: string[] = [];
+    const accountIds: string[] = [];
+    const readOnlyAccountIds: string[] = [];
+    const namespacedAccountIds: string[] = [];
+    const namespacedReadOnlyAccountIds: string[] = [];
+    const k8sNamespaces: Record<string, string[]> = {};
+    // No tenant filter: the lookup already returns only this tenant's rows, and
+    // blanks entity_id on tenant rows, which the filter would then drop.
+    adapterUserUpdateDataOnUserRoles(
+      response.data,
+      roles,
+      accountIds,
+      readOnlyAccountIds,
+      namespacedAccountIds,
+      namespacedReadOnlyAccountIds,
+      k8sNamespaces
+    );
+    token.roles = [...new Set(roles)];
+    token.accountIds = [...new Set(accountIds)];
+    token.readOnlyAccountIds = [...new Set(readOnlyAccountIds)];
+    token.namespacedAccountIds = [...new Set(namespacedAccountIds)];
+    token.namespacedReadOnlyAccountIds = [...new Set(namespacedReadOnlyAccountIds)];
+    token.k8sNamespaces = k8sNamespaces;
+  } catch (err) {
+    console.error('refreshTenantRoles: keeping the current roles', err);
+  }
+}
+
 // Account-bound grants per account for users holding any `scoped:` key, for the
 // UI's per-account gates (hasGrantOnAccount in @lib/auth). Served in the session
 // JSON, never stored in the token: a role bound to many accounts would otherwise
@@ -1486,6 +1532,7 @@ export const authOptions: NextAuthOptions = {
             const refreshed = await resolveUserCustomPermissions(token.id as string, (token.tenant as any).id);
             token.permissions = refreshed.permissions;
             token.customRolesEnabled = refreshed.enabled;
+            await refreshTenantRoles(token);
             token.permissionsResolvedAt = Date.now();
           }
         }
