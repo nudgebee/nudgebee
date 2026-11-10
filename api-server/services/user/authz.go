@@ -33,6 +33,32 @@ func mayAssignTenantRole(sc *security.SecurityContext) bool {
 	return sc != nil && (sc.IsTenantAdmin() || sc.IsSuperAdmin())
 }
 
+// maySuspend reports whether the caller may set userId's status to `status` in
+// tenantId. Suspending a tenant admin ends their access as surely as taking
+// their role away, so a caller admitted only by a users:Write grant may not do
+// it — the same line mayAssignTenantRole draws. Any other status, or any other
+// target, is left to canAdministerUsers. Group-held tenant_admin counts, like it
+// does in the security context.
+func maySuspend(sc *security.SecurityContext, manager *database.DatabaseManager, tenantId, userId, status string) (bool, error) {
+	if !strings.EqualFold(status, userStatusSuspended) || mayAssignTenantRole(sc) {
+		return true, nil
+	}
+	var isAdmin bool
+	err := manager.Db.Get(&isAdmin, `SELECT EXISTS (
+			SELECT 1 FROM user_roles
+			WHERE tenant_id = $1 AND user_id = $2 AND role = $3
+			UNION ALL
+			SELECT 1 FROM group_roles gr
+			JOIN user_groups ug ON ug.id = gr.group_id
+			JOIN usergroup_users ugu ON ugu."group" = ug.id
+			WHERE ug.tenant = $1 AND ugu."user" = $2 AND gr.role = $3)`,
+		tenantId, userId, security.AUTH_TENANT_ADMIN_ROLE)
+	if err != nil {
+		return false, err
+	}
+	return !isAdmin, nil
+}
+
 // syncableRole reports whether role sync (SyncUserRoles) may write role as a
 // tenant-wide user_roles row: the tenant roles, plus the account roles SAML group
 // mappings assign. Anything else in the roles table is refused, super admin above

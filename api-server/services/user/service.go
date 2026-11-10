@@ -1295,6 +1295,15 @@ func UpdateUserStatus(context *security.RequestContext, request UserUpdateStatus
 		return UserUpdateStatusResponse{}, err
 	}
 
+	allowed, err := maySuspend(context.GetSecurityContext(), manager, context.GetSecurityContext().GetTenantId(), request.UserId, request.Status)
+	if err != nil {
+		context.GetLogger().Error("Error checking the user's tenant role", "error", err)
+		return UserUpdateStatusResponse{}, common.ErrorInternal("Error updating user status")
+	}
+	if !allowed {
+		return UserUpdateStatusResponse{}, common.ErrorUnauthorized("Suspending a tenant admin requires a tenant admin")
+	}
+
 	// Scope the write to the caller's tenant. `WHERE id = $1` alone is global, so
 	// any role that reaches this handler — and actions.yaml grants users_update_status
 	// to all six built-in roles — could deactivate a user in another tenant by id.
@@ -1325,6 +1334,11 @@ func UpdateUserStatus(context *security.RequestContext, request UserUpdateStatus
 		TableName:     "users",
 		NewData:       map[string]any{"id": request.UserId, "status": request.Status},
 	})
+
+	if err := endSessionsIfSuspended(context, request.UserId, request.Status); err != nil {
+		context.GetLogger().Error("Suspended user's sessions were not ended", "error", err, "user_id", request.UserId)
+		return UserUpdateStatusResponse{}, common.ErrorInternal("The user is suspended, but their open sessions could not be ended. Save again to retry.")
+	}
 
 	return UserUpdateStatusResponse{Id: request.UserId}, nil
 }
@@ -1359,6 +1373,14 @@ func UpdateUserProfile(ctx *security.RequestContext, request UserUpdateProfileRe
 	if roleChanged && !mayAssignTenantRole(sc) {
 		return UserUpdateProfileResponse{}, common.ErrorUnauthorized("Changing a user's role requires a tenant admin")
 	}
+	allowed, err := maySuspend(sc, manager, sc.GetTenantId(), target.id, request.Status)
+	if err != nil {
+		ctx.GetLogger().Error("Error checking the user's tenant role", "error", err)
+		return UserUpdateProfileResponse{}, common.ErrorInternal("Error updating user profile")
+	}
+	if !allowed {
+		return UserUpdateProfileResponse{}, common.ErrorUnauthorized("Suspending a tenant admin requires a tenant admin")
+	}
 
 	// Update display_name and status. Scoped by the id resolved within the tenant
 	// above — `WHERE username = $1` alone reaches every tenant.
@@ -1379,6 +1401,11 @@ func UpdateUserProfile(ctx *security.RequestContext, request UserUpdateProfileRe
 		TableName:     "users",
 		NewData:       map[string]any{"username": request.Username, "display_name": request.DisplayName, "status": request.Status},
 	})
+
+	if err := endSessionsIfSuspended(ctx, target.id, request.Status); err != nil {
+		ctx.GetLogger().Error("Suspended user's sessions were not ended", "error", err, "user_id", target.id)
+		return UserUpdateProfileResponse{}, common.ErrorInternal("The user is suspended, but their open sessions could not be ended. Save again to retry.")
+	}
 
 	// Sync the tenant role only when the caller actually sent the field AND it
 	// differs from what the user already holds. A nil pointer means "role omitted
