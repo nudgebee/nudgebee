@@ -2,6 +2,7 @@ package account
 
 import (
 	"nudgebee/services/common"
+	"nudgebee/services/config"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -39,7 +40,7 @@ func TestAccountUpdateCredentialsRequest_Decodes(t *testing.T) {
 // registration the caller may update gets the new secret, the starting account
 // always does, and accounts the caller can't update are left alone.
 func TestCredentialRotationTargets(t *testing.T) {
-	group := []azureCredentialGroupMember{
+	group := []credentialGroupMember{
 		{Id: "a", Status: "active"},
 		{Id: "b", Status: "active"},
 		{Id: "c", Status: "disabled"},
@@ -48,7 +49,7 @@ func TestCredentialRotationTargets(t *testing.T) {
 	canUpdate := func(id string) bool { return id != "d" }
 
 	targets := credentialRotationTargets("a", group, canUpdate)
-	assert.Equal(t, []azureCredentialGroupMember{
+	assert.Equal(t, []credentialGroupMember{
 		{Id: "a", Status: "active"},
 		{Id: "b", Status: "active"},
 		{Id: "c", Status: "disabled"},
@@ -57,17 +58,17 @@ func TestCredentialRotationTargets(t *testing.T) {
 	// The starting account was access-checked before validation, so it is
 	// written even when the per-account check below would say no.
 	targets = credentialRotationTargets("d", group, func(string) bool { return false })
-	assert.Equal(t, []azureCredentialGroupMember{{Id: "d", Status: "active"}}, targets)
+	assert.Equal(t, []credentialGroupMember{{Id: "d", Status: "active"}}, targets)
 
 	// A group query that missed the starting account still rotates it.
 	targets = credentialRotationTargets("z", nil, canUpdate)
-	assert.Equal(t, []azureCredentialGroupMember{{Id: "z", Status: "active"}}, targets)
+	assert.Equal(t, []credentialGroupMember{{Id: "z", Status: "active"}}, targets)
 }
 
 // TestActiveTargets: only accounts that were actually updated and are active get
 // their collection restarted.
 func TestActiveTargets(t *testing.T) {
-	targets := []azureCredentialGroupMember{
+	targets := []credentialGroupMember{
 		{Id: "a", Status: "active"},
 		{Id: "b", Status: "disabled"},
 		{Id: "c", Status: "active"},
@@ -83,4 +84,64 @@ func TestAccountUpdateCredentialsRequest_RejectsMalformedId(t *testing.T) {
 	assert.Error(t, err)
 	err = common.ValidateStruct(AccountUpdateCredentialsRequest{Id: "00000000-0000-0000-0000-00000000000a", CloudProvider: "Azure", ClientSecret: "s"})
 	assert.NoError(t, err)
+}
+
+// TestAccountUpdateCredentialsRequest_DecodesGcpKey guards the GCP payload
+// field the same way: a dropped credentials_json would make rotation refuse
+// with "key is required" instead of storing the key.
+func TestAccountUpdateCredentialsRequest_DecodesGcpKey(t *testing.T) {
+	var request AccountUpdateCredentialsRequest
+	err := common.UnmarshalMapToStruct(map[string]any{
+		"id":               "00000000-0000-0000-0000-00000000000a",
+		"cloud_provider":   "GCP",
+		"credentials_json": `{"type":"service_account"}`,
+	}, &request)
+	assert.NoError(t, err)
+	assert.Equal(t, `{"type":"service_account"}`, request.CredentialsJSON)
+}
+
+func TestParseGcpServiceAccountKey(t *testing.T) {
+	key, err := parseGcpServiceAccountKey(`{"type":"service_account","project_id":"p1","client_email":"sa@p1.iam.gserviceaccount.com","private_key":"-----BEGIN PRIVATE KEY-----"}`)
+	assert.NoError(t, err)
+	assert.Equal(t, "sa@p1.iam.gserviceaccount.com", key.ClientEmail)
+
+	_, err = parseGcpServiceAccountKey(`not json`)
+	assert.ErrorContains(t, err, "not valid JSON")
+	_, err = parseGcpServiceAccountKey(`{"type":"authorized_user","project_id":"p1","client_email":"a","private_key":"k"}`)
+	assert.ErrorContains(t, err, "not a service-account key")
+	_, err = parseGcpServiceAccountKey(`{"type":"service_account","project_id":"p1","client_email":"sa@p1.iam.gserviceaccount.com"}`)
+	assert.ErrorContains(t, err, "missing")
+}
+
+func TestGcpBillingConfig(t *testing.T) {
+	data := `{"project_id":"p1","billing_data":{"billing_project_id":"bp","dataset_name":"ds","table_name":"tbl"}}`
+	p, d, tb := gcpBillingConfig(&data)
+	assert.Equal(t, []string{"bp", "ds", "tbl"}, []string{p, d, tb})
+
+	none := `{"project_id":"p1"}`
+	p, d, tb = gcpBillingConfig(&none)
+	assert.Equal(t, []string{"", "", ""}, []string{p, d, tb})
+	p, d, tb = gcpBillingConfig(nil)
+	assert.Equal(t, []string{"", "", ""}, []string{p, d, tb})
+}
+
+// TestStoredGcpServiceAccountEmail round-trips a key through the same
+// encryption the account rows use, so grouping reads exactly what onboarding
+// stored.
+func TestStoredGcpServiceAccountEmail(t *testing.T) {
+	previous := config.Config.NudgebeeEncryptionKey
+	config.Config.NudgebeeEncryptionKey = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+	t.Cleanup(func() { config.Config.NudgebeeEncryptionKey = previous })
+
+	stored, err := common.Encrypt(`{"type":"service_account","client_email":"sa@p1.iam.gserviceaccount.com"}`)
+	assert.NoError(t, err)
+	email, err := storedGcpServiceAccountEmail(&stored)
+	assert.NoError(t, err)
+	assert.Equal(t, "sa@p1.iam.gserviceaccount.com", email)
+
+	_, err = storedGcpServiceAccountEmail(nil)
+	assert.Error(t, err)
+	garbage := "zz"
+	_, err = storedGcpServiceAccountEmail(&garbage)
+	assert.Error(t, err)
 }

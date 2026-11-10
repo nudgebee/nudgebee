@@ -6664,6 +6664,7 @@ input cloud_update_credentials_input {
   id: uuid!
   cloud_provider: String!
   client_secret: String
+  credentials_json: String
 }
 
 input cloud_account_attr_object {

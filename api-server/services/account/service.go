@@ -2974,16 +2974,20 @@ func firstSubscription(assumeRole string) string {
 }
 
 // UpdateAccountCredentials rotates a connected account's stored credential in
-// place, keeping its history. v1: Azure client-secret only. The new secret is
-// validated against the account's stored identity before it is encrypted and
-// written. A secret belongs to the app registration, not to one subscription,
-// and bulk onboarding stores a copy on every subscription's row, so the write
-// covers every Azure account in the tenant with the same tenant and client ID
-// that the caller may update — otherwise the siblings keep the dead secret and
-// stay dark. Collection then restarts at once (resumeAzureCollection) instead
-// of waiting for the daily cost sync and the events backoff. It deliberately
-// does NOT extend the generic UpdateAccountByAction: rotation is
-// validate-before-write and security-sensitive, and does not belong in the
+// place, keeping its history. Supported: an Azure client secret and a GCP
+// service-account key. The new credential is validated against the account's
+// stored identity before it is encrypted and written.
+//
+// A credential belongs to an identity, not to one account: an Azure secret to
+// an app registration, a GCP key to a service account. Bulk onboarding stores a
+// copy on every subscription's or project's row, so the write covers every
+// account in the tenant on the same identity that the caller may update —
+// otherwise the siblings keep the dead credential and stay dark. Collection
+// then restarts at once (resumeCollection) instead of waiting for the daily
+// cost sync and the events backoff.
+//
+// It deliberately does NOT extend the generic UpdateAccountByAction: rotation
+// is validate-before-write and security-sensitive, and does not belong in the
 // generic column setter.
 func UpdateAccountCredentials(context *security.RequestContext, request AccountUpdateCredentialsRequest) (AccountUpdateCredentialsResponse, error) {
 	if err := common.ValidateStruct(request); err != nil {
@@ -3008,36 +3012,8 @@ func UpdateAccountCredentials(context *security.RequestContext, request AccountU
 	if acct.Tenant != tenantId {
 		return AccountUpdateCredentialsResponse{}, common.ErrorUnauthorized("Not Allowed")
 	}
-
-	provider := strings.TrimSpace(request.CloudProvider)
-	if !strings.EqualFold(provider, "Azure") || !strings.EqualFold(acct.CloudProvider, "Azure") {
-		return AccountUpdateCredentialsResponse{}, fmt.Errorf("credential rotation is supported for Azure accounts only")
-	}
-	if acct.AccountNumber == nil || acct.AccessKey == nil || acct.AssumeRole == nil {
-		return AccountUpdateCredentialsResponse{}, fmt.Errorf("account %s is missing its Azure tenant, client ID or subscription", request.Id)
-	}
-	if strings.TrimSpace(request.ClientSecret) == "" {
-		return AccountUpdateCredentialsResponse{}, fmt.Errorf("a new client secret is required")
-	}
-
-	// Validate the NEW secret against the account's stored identity before any
-	// write. assume_role holds comma-joined subscription IDs — validate against
-	// the first as a representative sample.
-	validation := validateAzureCredentialsInternal(context.GetContext(),
-		*acct.AccountNumber, *acct.AccessKey, request.ClientSecret, firstSubscription(*acct.AssumeRole))
-	if !validation.Success {
-		context.GetLogger().Warn("azure credential rotation: validation failed",
-			"account_id", request.Id, "error", validation.ErrorMessage)
-		msg := validation.ErrorMessage
-		if msg == "" {
-			msg = "the new secret could not be validated with Azure"
-		}
-		return AccountUpdateCredentialsResponse{}, fmt.Errorf("account: %s", msg)
-	}
-
-	encryptedSecret, err := common.Encrypt(request.ClientSecret)
-	if err != nil {
-		return AccountUpdateCredentialsResponse{}, fmt.Errorf("failed to encrypt secret: %w", err)
+	if !strings.EqualFold(strings.TrimSpace(request.CloudProvider), acct.CloudProvider) {
+		return AccountUpdateCredentialsResponse{}, fmt.Errorf("account %s is not a %s account", request.Id, request.CloudProvider)
 	}
 
 	dbms, err := database.GetDatabaseManager(database.Metastore)
@@ -3045,14 +3021,25 @@ func UpdateAccountCredentials(context *security.RequestContext, request AccountU
 		return AccountUpdateCredentialsResponse{}, fmt.Errorf("failed to get database: %w", err)
 	}
 
-	var group []azureCredentialGroupMember
-	err = dbms.Db.Select(&group, `SELECT id::text AS id, status FROM cloud_accounts
-		WHERE tenant = $1 AND lower(cloud_provider) = 'azure' AND account_number = $2 AND access_key = $3`,
-		tenantId, *acct.AccountNumber, *acct.AccessKey)
-	if err != nil {
-		return AccountUpdateCredentialsResponse{}, fmt.Errorf("failed to find accounts sharing this app registration: %w", err)
+	var rotation credentialRotation
+	switch strings.ToLower(acct.CloudProvider) {
+	case "azure":
+		rotation, err = prepareAzureRotation(context, dbms, tenantId, acct, request)
+	case "gcp":
+		rotation, err = prepareGcpRotation(context, dbms, tenantId, acct, request)
+	default:
+		err = fmt.Errorf("credential rotation is supported for Azure and GCP accounts only")
 	}
-	targets := credentialRotationTargets(request.Id, group, func(id string) bool {
+	if err != nil {
+		return AccountUpdateCredentialsResponse{}, err
+	}
+
+	encryptedSecret, err := common.Encrypt(rotation.secret)
+	if err != nil {
+		return AccountUpdateCredentialsResponse{}, fmt.Errorf("failed to encrypt credential: %w", err)
+	}
+
+	targets := credentialRotationTargets(request.Id, rotation.group, func(id string) bool {
 		return sc.HasAccountAccess(id, security.SecurityAccessTypeUpdate)
 	})
 	ids := make([]string, 0, len(targets))
@@ -3069,7 +3056,7 @@ func UpdateAccountCredentials(context *security.RequestContext, request AccountU
 	}
 	affected := len(updated)
 
-	// Never record the secret itself in the audit trail.
+	// Never record the credential itself in the audit trail.
 	for _, id := range updated {
 		audit.LogChange(context, audit.ChangeInput{
 			EventCategory: audit.EventCategoryAccount,
@@ -3078,31 +3065,203 @@ func UpdateAccountCredentials(context *security.RequestContext, request AccountU
 			TargetID:      id,
 			AccountID:     id,
 			TableName:     "cloud_accounts",
-			NewData:       map[string]any{"id": id, "cloud_provider": "Azure", "credential_rotated": true, "rotated_from_account": request.Id},
+			NewData:       map[string]any{"id": id, "cloud_provider": acct.CloudProvider, "credential_rotated": true, "rotated_from_account": request.Id},
 		})
 	}
 
-	resumeAzureCollection(context, dbms, tenantId, activeTargets(targets, updated))
+	resumeCollection(context, dbms, tenantId, activeTargets(targets, updated))
 
-	context.GetLogger().Info("azure credential rotation succeeded",
-		"account_id", request.Id, "accounts_updated", affected, "accounts_sharing_app", len(group))
+	context.GetLogger().Info("credential rotation succeeded", "provider", acct.CloudProvider,
+		"account_id", request.Id, "accounts_updated", affected, "accounts_sharing_identity", len(rotation.group))
 
 	return AccountUpdateCredentialsResponse{AffectedRows: affected}, nil
 }
 
-// azureCredentialGroupMember is one Azure account connected with the same app
-// registration (tenant ID + client ID) as the account being rotated.
-type azureCredentialGroupMember struct {
+// credentialRotation is what a provider's preparation hands back: the validated
+// plaintext credential to store, and every account in the tenant on the same
+// identity (before the caller's per-account access check).
+type credentialRotation struct {
+	secret string
+	group  []credentialGroupMember
+}
+
+// prepareAzureRotation validates a new client secret against the account's
+// stored tenant, client ID and first subscription, and finds every Azure
+// account on the same app registration.
+func prepareAzureRotation(context *security.RequestContext, dbms *database.DatabaseManager, tenantId string, acct models.Account, request AccountUpdateCredentialsRequest) (credentialRotation, error) {
+	if acct.AccountNumber == nil || acct.AccessKey == nil || acct.AssumeRole == nil {
+		return credentialRotation{}, fmt.Errorf("account %s is missing its Azure tenant, client ID or subscription", request.Id)
+	}
+	if strings.TrimSpace(request.ClientSecret) == "" {
+		return credentialRotation{}, fmt.Errorf("a new client secret is required")
+	}
+
+	// Validate the NEW secret against the account's stored identity before any
+	// write. assume_role holds comma-joined subscription IDs — validate against
+	// the first as a representative sample.
+	validation := validateAzureCredentialsInternal(context.GetContext(),
+		*acct.AccountNumber, *acct.AccessKey, request.ClientSecret, firstSubscription(*acct.AssumeRole))
+	if !validation.Success {
+		context.GetLogger().Warn("azure credential rotation: validation failed",
+			"account_id", request.Id, "error", validation.ErrorMessage)
+		msg := validation.ErrorMessage
+		if msg == "" {
+			msg = "the new secret could not be validated with Azure"
+		}
+		return credentialRotation{}, fmt.Errorf("account: %s", msg)
+	}
+
+	var group []credentialGroupMember
+	err := dbms.Db.Select(&group, `SELECT id::text AS id, status FROM cloud_accounts
+		WHERE tenant = $1 AND lower(cloud_provider) = 'azure' AND account_number = $2 AND access_key = $3`,
+		tenantId, *acct.AccountNumber, *acct.AccessKey)
+	if err != nil {
+		return credentialRotation{}, fmt.Errorf("failed to find accounts sharing this app registration: %w", err)
+	}
+	return credentialRotation{secret: request.ClientSecret, group: group}, nil
+}
+
+// gcpServiceAccountKey is the part of a GCP service-account key JSON that
+// rotation checks. The rest of the key is stored as given.
+type gcpServiceAccountKey struct {
+	Type        string `json:"type"`
+	ProjectID   string `json:"project_id"`
+	ClientEmail string `json:"client_email"`
+	PrivateKey  string `json:"private_key"`
+}
+
+// parseGcpServiceAccountKey checks that keyJSON is a complete service-account
+// key — the same fields the onboarding modal requires.
+func parseGcpServiceAccountKey(keyJSON string) (gcpServiceAccountKey, error) {
+	var key gcpServiceAccountKey
+	if err := json.Unmarshal([]byte(keyJSON), &key); err != nil {
+		return gcpServiceAccountKey{}, fmt.Errorf("the new key is not valid JSON")
+	}
+	if key.Type != "service_account" {
+		return gcpServiceAccountKey{}, fmt.Errorf("the new key is not a service-account key (type is %q)", key.Type)
+	}
+	if key.ProjectID == "" || key.ClientEmail == "" || key.PrivateKey == "" {
+		return gcpServiceAccountKey{}, fmt.Errorf("the new key is missing project_id, client_email or private_key")
+	}
+	return key, nil
+}
+
+// gcpBillingConfig reads the BigQuery billing export an account was set up
+// with (cloud_accounts.data.billing_data), so the new key is checked against
+// the same table the cost sync reads. Empty strings when none is configured.
+func gcpBillingConfig(data *string) (projectID, datasetID, tableID string) {
+	if data == nil || *data == "" {
+		return "", "", ""
+	}
+	var parsed struct {
+		BillingData struct {
+			BillingProjectID string `json:"billing_project_id"`
+			DatasetName      string `json:"dataset_name"`
+			TableName        string `json:"table_name"`
+		} `json:"billing_data"`
+	}
+	if err := json.Unmarshal([]byte(*data), &parsed); err != nil {
+		return "", "", ""
+	}
+	b := parsed.BillingData
+	return b.BillingProjectID, b.DatasetName, b.TableName
+}
+
+// prepareGcpRotation validates a new service-account key for the account's
+// project (and its billing export, if set up) and finds every GCP account in the
+// tenant using the same service account. The new key must belong to the same
+// service account as the stored one: a different service account carries
+// different permissions, which is a re-onboarding, not a rotation.
+//
+// The service account's email lives only inside the encrypted key, so finding
+// the accounts that share it means decrypting each GCP account's key in the
+// tenant. An account whose key can't be read is left out of the group.
+func prepareGcpRotation(context *security.RequestContext, dbms *database.DatabaseManager, tenantId string, acct models.Account, request AccountUpdateCredentialsRequest) (credentialRotation, error) {
+	if acct.AccountNumber == nil || *acct.AccountNumber == "" {
+		return credentialRotation{}, fmt.Errorf("account %s is missing its GCP project ID", request.Id)
+	}
+	if strings.TrimSpace(request.CredentialsJSON) == "" {
+		return credentialRotation{}, fmt.Errorf("a new service-account key is required")
+	}
+	newKey, err := parseGcpServiceAccountKey(request.CredentialsJSON)
+	if err != nil {
+		return credentialRotation{}, fmt.Errorf("account: %w", err)
+	}
+
+	storedEmail, err := storedGcpServiceAccountEmail(acct.AccessSecret)
+	if err != nil {
+		return credentialRotation{}, fmt.Errorf("account: can't read the key stored on this account, so the new key can't be matched to it: %w", err)
+	}
+	if !strings.EqualFold(newKey.ClientEmail, storedEmail) {
+		return credentialRotation{}, fmt.Errorf("account: the new key belongs to %s, but this account uses %s. Upload a new key for %s", newKey.ClientEmail, storedEmail, storedEmail)
+	}
+
+	billingProject, billingDataset, billingTable := gcpBillingConfig(acct.Data)
+	validation := validateGCPCredentialsInternal(context.GetContext(), request.CredentialsJSON, *acct.AccountNumber, billingProject, billingDataset, billingTable)
+	if !validation.Success {
+		context.GetLogger().Warn("gcp credential rotation: validation failed",
+			"account_id", request.Id, "error", validation.ErrorMessage)
+		msg := validation.ErrorMessage
+		if msg == "" {
+			msg = "the new key could not be validated with GCP"
+		}
+		return credentialRotation{}, fmt.Errorf("account: %s", msg)
+	}
+
+	var rows []struct {
+		Id           string  `db:"id"`
+		Status       string  `db:"status"`
+		AccessSecret *string `db:"access_secret"`
+	}
+	err = dbms.Db.Select(&rows, `SELECT id::text AS id, status, access_secret FROM cloud_accounts
+		WHERE tenant = $1 AND lower(cloud_provider) = 'gcp'`, tenantId)
+	if err != nil {
+		return credentialRotation{}, fmt.Errorf("failed to find accounts sharing this service account: %w", err)
+	}
+	var group []credentialGroupMember
+	for _, r := range rows {
+		email, err := storedGcpServiceAccountEmail(r.AccessSecret)
+		if err != nil {
+			context.GetLogger().Warn("gcp credential rotation: skipping an account whose stored key can't be read", "account_id", r.Id, "error", err)
+			continue
+		}
+		if strings.EqualFold(email, storedEmail) {
+			group = append(group, credentialGroupMember{Id: r.Id, Status: r.Status})
+		}
+	}
+	return credentialRotation{secret: request.CredentialsJSON, group: group}, nil
+}
+
+// storedGcpServiceAccountEmail decrypts a stored GCP key and returns the
+// service account it belongs to.
+func storedGcpServiceAccountEmail(accessSecret *string) (string, error) {
+	if accessSecret == nil || *accessSecret == "" {
+		return "", fmt.Errorf("no key stored")
+	}
+	decrypted, err := common.Decrypt(*accessSecret)
+	if err != nil {
+		return "", fmt.Errorf("decrypt: %w", err)
+	}
+	var key gcpServiceAccountKey
+	if err := json.Unmarshal([]byte(decrypted), &key); err != nil || key.ClientEmail == "" {
+		return "", fmt.Errorf("stored key has no client_email")
+	}
+	return key.ClientEmail, nil
+}
+
+// credentialGroupMember is one account on the same identity (Azure app
+// registration, GCP service account) as the account being rotated.
+type credentialGroupMember struct {
 	Id     string `db:"id"`
 	Status string `db:"status"`
 }
 
 // credentialRotationTargets picks the accounts a rotation writes: every member
-// of the app registration's group the caller may update. The account the
-// rotation was started from is always included (its access was checked before
-// validation), even if the group query somehow missed it.
-func credentialRotationTargets(requestedId string, group []azureCredentialGroupMember, canUpdate func(id string) bool) []azureCredentialGroupMember {
-	targets := make([]azureCredentialGroupMember, 0, len(group)+1)
+// of the identity's group the caller may update. The account the rotation was
+// started from is always included (its access was checked before validation),
+// even if the group query somehow missed it.
+func credentialRotationTargets(requestedId string, group []credentialGroupMember, canUpdate func(id string) bool) []credentialGroupMember {
+	targets := make([]credentialGroupMember, 0, len(group)+1)
 	foundRequested := false
 	for _, m := range group {
 		if m.Id == requestedId {
@@ -3115,15 +3274,15 @@ func credentialRotationTargets(requestedId string, group []azureCredentialGroupM
 		}
 	}
 	if !foundRequested {
-		targets = append(targets, azureCredentialGroupMember{Id: requestedId, Status: "active"})
+		targets = append(targets, credentialGroupMember{Id: requestedId, Status: "active"})
 	}
 	return targets
 }
 
 // activeTargets returns the ids among targets that were actually updated and are
-// active. Disabled accounts get the new secret but aren't collected, so there is
-// nothing to restart for them.
-func activeTargets(targets []azureCredentialGroupMember, updated []string) []string {
+// active. Disabled accounts get the new credential but aren't collected, so
+// there is nothing to restart for them.
+func activeTargets(targets []credentialGroupMember, updated []string) []string {
 	wasUpdated := make(map[string]bool, len(updated))
 	for _, id := range updated {
 		wasUpdated[id] = true
@@ -3137,18 +3296,19 @@ func activeTargets(targets []azureCredentialGroupMember, updated []string) []str
 	return ids
 }
 
-// resumeAzureCollection restarts collection for accounts whose secret was just
+// resumeCollection restarts collection for accounts whose credential was just
 // rotated, so the user doesn't wait for the schedules to notice:
-//   - Events: a rejected secret backs event polling off to once an hour (#40393).
-//     Dropping retry_after and auth_failures from agent.connection_status.events
-//     puts the account back on the next 10-minute tick.
+//   - Events: a rejected credential backs event polling off to once an hour
+//     (#40393). Dropping retry_after and auth_failures from
+//     agent.connection_status.events puts the account back on the next
+//     10-minute tick.
 //   - Cost: the cost sync is daily. One current-month job per account, the same
 //     job onboarding publishes. One per account only — the collector drops a
 //     second concurrent job for the same account.
 //
-// Best-effort: the secret is already saved, and the schedules recover on their
-// own if any of this fails, so errors are logged and not returned.
-func resumeAzureCollection(context *security.RequestContext, dbms *database.DatabaseManager, tenantId string, accountIds []string) {
+// Best-effort: the credential is already saved, and the schedules recover on
+// their own if any of this fails, so errors are logged and not returned.
+func resumeCollection(context *security.RequestContext, dbms *database.DatabaseManager, tenantId string, accountIds []string) {
 	if len(accountIds) == 0 {
 		return
 	}
@@ -3156,7 +3316,7 @@ func resumeAzureCollection(context *security.RequestContext, dbms *database.Data
 		SET connection_status = connection_status #- '{events,retry_after}' #- '{events,auth_failures}'
 		WHERE cloud_account_id = ANY($1::uuid[]) AND connection_status->'events' IS NOT NULL`,
 		pq.Array(accountIds)); err != nil {
-		context.GetLogger().Error("azure credential rotation: failed to clear events backoff", "error", err, "accounts", accountIds)
+		context.GetLogger().Error("credential rotation: failed to clear events backoff", "error", err, "accounts", accountIds)
 	}
 
 	now := time.Now().UTC()
@@ -3170,7 +3330,7 @@ func resumeAzureCollection(context *security.RequestContext, dbms *database.Data
 		}
 		if err := common.MqPublish(config.Config.RabbitMqCloudAccountCostReportExchange, config.Config.RabbitMqCloudAccountCostReportQueue, job,
 			common.MqPublishWithContext(context.GetContext())); err != nil {
-			context.GetLogger().Error("azure credential rotation: failed to publish cost sync job", "account", id, "error", err)
+			context.GetLogger().Error("credential rotation: failed to publish cost sync job", "account", id, "error", err)
 		}
 	}
 }

@@ -100,6 +100,45 @@ const renderStatus = (item) => {
   return <Label text={item.status || '-'} />;
 };
 
+// Per-provider wording for the Rotate credential modal. A credential belongs to
+// an identity (Azure app registration, GCP service account) and is rotated on
+// every account that uses it.
+const ROTATE_COPY = {
+  Azure: {
+    title: 'Rotate Client Secret',
+    label: 'Client secret',
+    identity: 'app registration',
+    validated: () => 'Secret authenticated with Azure.',
+    invalid: 'The new secret could not be validated with Azure.',
+    info: 'The new secret replaces the old one on every Azure account connected with this app registration (same tenant and client ID), and syncing restarts straight away. Account history is kept.',
+  },
+  GCP: {
+    title: 'Rotate Service Account Key',
+    label: 'Service account key',
+    identity: 'service account',
+    validated: (email) => `Key for ${email} authenticated with GCP.`,
+    invalid: 'The new key could not be validated with GCP.',
+    info: 'The new key replaces the old one on every GCP account that uses this service account, and syncing restarts straight away. Account history is kept. The key must be for the same service account the account was connected with.',
+  },
+};
+
+// parseGcpKey returns the service-account key's client_email, or an error
+// message for a paste that isn't a complete service-account key.
+const parseGcpKey = (value) => {
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed.type !== 'service_account') {
+      return { error: 'This is not a service-account key. Paste the whole JSON key file.' };
+    }
+    if (!parsed.project_id || !parsed.private_key || !parsed.client_email) {
+      return { error: 'The key is missing project_id, private_key or client_email.' };
+    }
+    return { email: parsed.client_email };
+  } catch {
+    return { error: 'Invalid JSON. Paste the whole service-account key file.' };
+  }
+};
+
 const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addAccountButtonText, AddOrgModalComponent, addOrgButtonText }) => {
   const [loading, setLoading] = useState(false);
   const [rawAccounts, setRawAccounts] = useState([]);
@@ -158,7 +197,7 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
   const [eventAnalysisForm, setEventAnalysisForm] = useState(DEFAULT_EVENT_ANALYSIS_FORM);
   const [eventAnalysisLoading, setEventAnalysisLoading] = useState(false);
   const [webhookAccountIds, setWebhookAccountIds] = useState(new Set());
-  // Rotate Client Secret (Azure): replace this account's expired secret in place.
+  // Rotate credential (Azure client secret, GCP service-account key): replace it in place.
   const [rotateModalOpen, setRotateModalOpen] = useState(false);
   const [rotateSecret, setRotateSecret] = useState('');
   const [showRotateSecret, setShowRotateSecret] = useState(false);
@@ -415,6 +454,10 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
       items.push({
         label: realtimeEventAccountIds.has(item.id) ? 'Manage Real-Time Alerts' : 'Enable Real-Time Alerts',
         id: 'real-time-alerts',
+      });
+      items.push({
+        label: 'Rotate Service Account Key',
+        id: 'rotate-secret',
       });
     }
     if (cloudProvider === 'AWS') {
@@ -736,25 +779,57 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
     setIsValidatingRotate(false);
   };
 
-  // Live check that the new secret authenticates, before it is saved. The stored
-  // tenant/client ID and subscription are resolved server-side from account_id —
-  // only the fresh secret is sent from the client.
+  const rotateCopy = ROTATE_COPY[cloudProvider] || ROTATE_COPY.Azure;
+  const isGcpRotation = cloudProvider === 'GCP';
+
+  // GCP validates the pasted key against the account's project and billing export
+  // (the stored key never leaves the server). Azure resolves the stored tenant,
+  // client ID and subscription server-side from account_id.
+  const rotateValidationPayload = () => {
+    if (!isGcpRotation) {
+      return { cloud_provider: 'Azure', account_id: selectedAccount.id, client_secret: rotateSecret };
+    }
+    let accountData = selectedAccount.data || {};
+    if (typeof accountData === 'string') {
+      try {
+        accountData = JSON.parse(accountData);
+      } catch {
+        accountData = {};
+      }
+    }
+    const billing = accountData.billing_data || {};
+    return {
+      cloud_provider: 'GCP',
+      credentials_json: rotateSecret,
+      project_id: selectedAccount.account_number,
+      billing_project_id: billing.billing_project_id || undefined,
+      billing_dataset_id: billing.dataset_name || undefined,
+      billing_table_id: billing.table_name || undefined,
+    };
+  };
+
+  // Live check that the new credential authenticates, before it is saved.
   const handleValidateRotateSecret = async () => {
     if (!selectedAccount || !rotateSecret) {
       return;
     }
+    let gcpEmail = '';
+    if (isGcpRotation) {
+      const key = parseGcpKey(rotateSecret);
+      if (key.error) {
+        setRotateValidationResult({ success: false, message: key.error });
+        return;
+      }
+      gcpEmail = key.email;
+    }
     setIsValidatingRotate(true);
     setRotateValidationResult(null);
     try {
-      const result = await apiAccount.validateCloudCredentials({
-        cloud_provider: 'Azure',
-        account_id: selectedAccount.id,
-        client_secret: rotateSecret,
-      });
+      const result = await apiAccount.validateCloudCredentials(rotateValidationPayload());
       if (result?.success) {
-        setRotateValidationResult({ success: true, message: 'Secret authenticated with Azure.' });
+        setRotateValidationResult({ success: true, message: rotateCopy.validated(gcpEmail) });
       } else {
-        setRotateValidationResult({ success: false, message: result?.errorMessage || 'The new secret could not be validated with Azure.' });
+        setRotateValidationResult({ success: false, message: result?.errorMessage || rotateCopy.invalid });
       }
     } catch {
       setRotateValidationResult({ success: false, message: 'Failed to validate the new secret.' });
@@ -769,25 +844,29 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
     }
     setRotateLoading(true);
     apiAccount
-      .updateCredentials({ id: selectedAccount.id, cloud_provider: 'Azure', client_secret: rotateSecret })
+      .updateCredentials(
+        isGcpRotation
+          ? { id: selectedAccount.id, cloud_provider: 'GCP', credentials_json: rotateSecret }
+          : { id: selectedAccount.id, cloud_provider: 'Azure', client_secret: rotateSecret }
+      )
       .then((res) => {
         if (res?.data?.errors?.length > 0) {
-          const error = res?.data?.errors?.[0]?.message || 'Failed to rotate client secret';
+          const error = res?.data?.errors?.[0]?.message || `Failed to rotate ${rotateCopy.label.toLowerCase()}`;
           snackbar.error(error);
         } else {
           const updated = res?.data?.data?.cloud_update_credentials?.affected_rows || 1;
           snackbar.success(
             updated > 1
-              ? `Client secret updated on ${updated} accounts that use this app registration. Syncing has restarted.`
-              : 'Client secret updated. Syncing has restarted.'
+              ? `${rotateCopy.label} updated on ${updated} accounts that use this ${rotateCopy.identity}. Syncing has restarted.`
+              : `${rotateCopy.label} updated. Syncing has restarted.`
           );
           closeRotateModal();
           listCloudAccounts();
         }
       })
       .catch((error) => {
-        console.error('Failed to rotate client secret:', error);
-        snackbar.error('Failed to rotate client secret');
+        console.error('Failed to rotate credential:', error);
+        snackbar.error(`Failed to rotate ${rotateCopy.label.toLowerCase()}`);
       })
       .finally(() => {
         setRotateLoading(false);
@@ -1191,7 +1270,7 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
         width='sm'
         open={rotateModalOpen}
         handleClose={rotateLoading ? () => {} : closeRotateModal}
-        title='Rotate Client Secret'
+        title={rotateCopy.title}
         loader={rotateLoading}
         actionButtons={
           <>
@@ -1228,43 +1307,58 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
         }
       >
         <Box sx={{ px: ds.space[4], py: ds.space[2] }}>
-          <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: ds.space[2] }}>
-            <Box sx={{ flex: 1 }}>
-              <Input
-                value={rotateSecret}
-                size='sm'
-                id='rotate-secret-input'
-                label='New Client Secret'
-                required
-                type={showRotateSecret ? 'text' : 'password'}
-                placeholder='Paste the new Azure client secret'
-                onChange={(value) => {
-                  setRotateSecret(value);
-                  setRotateValidationResult(null);
-                }}
-                help='Azure Portal > App Registrations > your app > Certificates & secrets. Paste the secret Value, not its ID.'
-              />
+          {isGcpRotation ? (
+            <Input
+              value={rotateSecret}
+              size='sm'
+              id='rotate-key-input'
+              label='New Service Account Key (JSON)'
+              required
+              type='textarea'
+              rows={8}
+              placeholder='Paste the entire new service account JSON key here'
+              onChange={(value) => {
+                setRotateSecret(value);
+                setRotateValidationResult(null);
+              }}
+              help='Google Cloud console > IAM & Admin > Service Accounts > your service account > Keys > Add key (JSON).'
+            />
+          ) : (
+            <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: ds.space[2] }}>
+              <Box sx={{ flex: 1 }}>
+                <Input
+                  value={rotateSecret}
+                  size='sm'
+                  id='rotate-secret-input'
+                  label='New Client Secret'
+                  required
+                  type={showRotateSecret ? 'text' : 'password'}
+                  placeholder='Paste the new Azure client secret'
+                  onChange={(value) => {
+                    setRotateSecret(value);
+                    setRotateValidationResult(null);
+                  }}
+                  help='Azure Portal > App Registrations > your app > Certificates & secrets. Paste the secret Value, not its ID.'
+                />
+              </Box>
+              <Box sx={{ mt: ds.space[5] }}>
+                <DsButton
+                  tone='ghost'
+                  composition='icon-only'
+                  aria-label='toggle secret visibility'
+                  onClick={() => setShowRotateSecret((v) => !v)}
+                  icon={showRotateSecret ? <VisibilityOff /> : <Visibility />}
+                />
+              </Box>
             </Box>
-            <Box sx={{ mt: ds.space[5] }}>
-              <DsButton
-                tone='ghost'
-                composition='icon-only'
-                aria-label='toggle secret visibility'
-                onClick={() => setShowRotateSecret((v) => !v)}
-                icon={showRotateSecret ? <VisibilityOff /> : <Visibility />}
-              />
-            </Box>
-          </Box>
+          )}
           {rotateValidationResult && (
             <Box sx={{ mt: ds.space[3] }}>
               <Banner tone={rotateValidationResult.success ? 'success' : 'critical'} message={rotateValidationResult.message} />
             </Box>
           )}
           <Box sx={{ mt: ds.space[3] }}>
-            <Banner
-              tone='info'
-              message='The new secret replaces the old one on every Azure account connected with this app registration (same tenant and client ID), and syncing restarts straight away. Account history is kept.'
-            />
+            <Banner tone='info' message={rotateCopy.info} />
           </Box>
         </Box>
       </Modal>

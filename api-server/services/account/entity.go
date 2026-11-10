@@ -311,15 +311,18 @@ type AccountUpdateResponse struct {
 }
 
 // AccountUpdateCredentialsRequest rotates the stored credential of a connected
-// cloud account in place. v1 handles Azure only: ClientSecret is the new
-// application (client) secret, written to every account sharing the app
-// registration (see UpdateAccountCredentials).
+// cloud account in place, on every account sharing it (see
+// UpdateAccountCredentials). Azure sends ClientSecret, GCP sends
+// CredentialsJSON.
 type AccountUpdateCredentialsRequest struct {
 	Id            string `json:"id" mapstructure:"id" validate:"required,uuid"`
 	CloudProvider string `json:"cloud_provider" mapstructure:"cloud_provider" validate:"required"`
 	// ClientSecret is the new Azure client secret. Required in v1 (rotation
 	// always supplies a new secret, so there is nothing to keep blank).
 	ClientSecret string `json:"client_secret,omitempty" mapstructure:"client_secret"`
+	// CredentialsJSON is the new GCP service-account key (the whole JSON file).
+	// It must belong to the same service account as the stored key.
+	CredentialsJSON string `json:"credentials_json,omitempty" mapstructure:"credentials_json"`
 }
 
 // AccountUpdateCredentialsResponse returns how many accounts got the new secret:

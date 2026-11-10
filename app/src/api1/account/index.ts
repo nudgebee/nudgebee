@@ -927,13 +927,18 @@ const apiAccount = {
       throw err;
     }
   },
-  // Rotate a single connected account's stored credential in place. v1: Azure
-  // client secret. Returns the full response so the caller can read both
+  // Rotate a connected account's stored credential in place (Azure client
+  // secret or GCP service-account key), on every account sharing it. Returns the full response so the caller can read both
   // affected_rows and any GraphQL errors.
-  updateCredentials: async function (data: { id: string; cloud_provider: string; client_secret: string }) {
+  updateCredentials: async function (data: { id: string; cloud_provider: string; client_secret?: string; credentials_json?: string }) {
     try {
       const response = await queryGraphQL(UPDATE_CREDENTIALS, 'UpdateCloudCredentials', {
-        object: { id: data.id, cloud_provider: data.cloud_provider, client_secret: data.client_secret },
+        object: {
+          id: data.id,
+          cloud_provider: data.cloud_provider,
+          client_secret: data.client_secret,
+          credentials_json: data.credentials_json,
+        },
       });
       return response;
     } catch (err) {
