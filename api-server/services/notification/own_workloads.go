@@ -50,7 +50,7 @@ const OwnNamespacesSQL = `
 // is the "namespace/..." prefix of account_object_id, taken only when it is a
 // valid namespace name; cloud ids (ARNs) contain colons and never match.
 const RecommendationNamespaceSQL = `COALESCE(r.recommendation->'metadata'->>'namespace', r.recommendation->>'namespace', ` + models.PopeyeNamespaceSQL + `,
-	substring(r.account_object_id from '^([a-z0-9](?:[-a-z0-9]*[a-z0-9])?)/'))`
+	substring(r.account_object_id from '^([a-z0-9]([-a-z0-9]*[a-z0-9]){0,1})/'))`
 
 // NotOwnRecommendationSQL is a WHERE condition that keeps out recommendations
 // (aliased as r) on NudgeBee's own workloads.

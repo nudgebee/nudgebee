@@ -170,3 +170,16 @@ func TestOwnWorkloads_DB(t *testing.T) {
 	require.NoError(t, db.Select(&kept, `SELECT e.subject_namespace FROM events e WHERE `+NotOwnEventSQL("e")+` ORDER BY 1`))
 	assert.Equal(t, []string{"nudgebee-agent", "payments"}, kept)
 }
+
+// DatabaseManager's query helpers turn every "?" into a bind parameter, even
+// inside a string literal, so a "?" in these fragments breaks the queries that
+// embed them.
+func TestOwnWorkloadFragments_NoQuestionMark(t *testing.T) {
+	for name, fragment := range map[string]string{
+		"NotOwnRecommendationSQL": NotOwnRecommendationSQL,
+		"NotOwnImageSQL":          NotOwnImageSQL("$1"),
+		"NotOwnEventSQL":          NotOwnEventSQL("e"),
+	} {
+		assert.NotContains(t, fragment, "?", name)
+	}
+}
