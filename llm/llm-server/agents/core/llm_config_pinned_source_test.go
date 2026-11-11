@@ -1229,3 +1229,103 @@ func TestResolveFromPinnedSource_AllScope_RejectsAModelSentAlongside(t *testing.
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "selects a whole config")
 }
+
+// ─── whole config resolves like an account default ─────────────────────────
+
+func ctxWithWholePin(source string, tier ModelTier) *security.RequestContext {
+	base := security.NewRequestContextForSuperAdmin()
+	goCtx := context.WithValue(base.GetContext(), ContextKeyLlmConfigSourceOverride, source)
+	if tier != "" {
+		goCtx = context.WithValue(goCtx, ContextKeyModelTier, tier)
+	}
+	return security.NewRequestContext(goCtx, base.GetSecurityContext(), base.GetLogger(), base.GetTracer(), base.GetMeter())
+}
+
+// seedChosenAndDefault seeds an account whose default (int-default) has no
+// fallback and a second config (int-chosen) with a fallback, a tier and an agent override.
+func seedChosenAndDefault(t *testing.T, acct string) {
+	t.Helper()
+	seedDBConfig(t, acct, map[string]string{
+		"llm_provider": "openai", "llm_model_name": "gpt-default", "llm_provider_api_key": "default-key",
+	})
+	seedLLMIntegrations(t, acct,
+		llmIntegration{Id: "int-default", Name: "Default", Config: map[string]string{
+			"llm_provider": "openai", "llm_model_name": "gpt-default", "llm_provider_api_key": "default-key"}},
+		llmIntegration{Id: "int-chosen", Name: "Chosen", Config: map[string]string{
+			"llm_provider":                "googleai",
+			"llm_model_name":              "gemini-2.5-flash",
+			"llm_provider_api_key":        "chosen-key",
+			"llm_tier_provider_reasoning": "googleai",
+			"llm_tier_model_reasoning":    "gemini-3.1-pro-preview",
+			"llm_provider_triage_agent":   "googleai",
+			"llm_model_name_triage_agent": "gemini-2.5-pro",
+			llmFallbackProviderKey:        "openai",
+			llmFallbackModelKey:           "gpt-5.6-terra",
+			"llm_fallback_api_key":        "fallback-key",
+		}},
+	)
+}
+
+func TestResolveLLMConfig_WholeConfig_UsesThatConfigsFallback(t *testing.T) {
+	seedChosenAndDefault(t, "acct-whole")
+	ctx := ctxWithWholePin("db:int-chosen:all", "")
+
+	res, err := ResolveLLMConfig(ctx, "acct-whole", "", "")
+	require.NoError(t, err)
+	assert.False(t, res.IsOverridden, "a whole config must not switch off fallbacks and retries")
+	assert.Equal(t, "gemini-2.5-flash", res.Model)
+	assert.Equal(t, "chosen-key", getLLMApiKey("acct-whole", "googleai", "", false, res))
+	assert.Equal(t, "db:int-chosen:all", configSourceOf(res))
+
+	fb, err := configuredFallback(ctx, "acct-whole", res)
+	require.NoError(t, err)
+	require.NotNil(t, fb, "the chosen config's fallback, not the account default's (which has none)")
+	assert.Equal(t, "gpt-5.6-terra", fb.Model)
+	assert.Equal(t, "fallback-key", getLLMApiKey("acct-whole", "openai", "", false, fb.Resolution))
+}
+
+func TestResolveLLMConfig_WholeConfig_UsesThatConfigsTiersAndAgentOverrides(t *testing.T) {
+	seedChosenAndDefault(t, "acct-whole-tiers")
+
+	reasoning, err := ResolveLLMConfig(ctxWithWholePin("db:int-chosen:all", ModelTierReasoning), "acct-whole-tiers", "", "")
+	require.NoError(t, err)
+	assert.Equal(t, "gemini-3.1-pro-preview", reasoning.Model)
+
+	agent, err := ResolveLLMConfig(ctxWithWholePin("db:int-chosen:all", ""), "acct-whole-tiers", "triage_agent", "")
+	require.NoError(t, err)
+	assert.Equal(t, "gemini-2.5-pro", agent.Model, "the chosen config's agent override applies")
+}
+
+func TestResolveLLMConfig_WholeConfig_RejectsAModelSentAlongside(t *testing.T) {
+	seedChosenAndDefault(t, "acct-whole-rej")
+	base := ctxWithProviderModel("googleai", "gemini-2.5-flash")
+	goCtx := context.WithValue(base.GetContext(), ContextKeyLlmConfigSourceOverride, "db:int-chosen:all")
+	ctx := security.NewRequestContext(goCtx, base.GetSecurityContext(), base.GetLogger(), base.GetTracer(), base.GetMeter())
+
+	_, err := ResolveLLMConfig(ctx, "acct-whole-rej", "", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "selects a whole config")
+}
+
+func TestResolveLLMConfig_WholeEnvConfig_IgnoresTheAccountsConfig(t *testing.T) {
+	seedChosenAndDefault(t, "acct-whole-env")
+	origProvider, origModel := config.Config.LlmProvider, config.Config.LlmModel
+	config.Config.LlmProvider, config.Config.LlmModel = "googleai", "gemini-3-flash-preview"
+	t.Cleanup(func() { config.Config.LlmProvider, config.Config.LlmModel = origProvider, origModel })
+
+	res, err := ResolveLLMConfig(ctxWithWholePin("env:all", ""), "acct-whole-env", "", "")
+	require.NoError(t, err)
+	assert.Equal(t, "gemini-3-flash-preview", res.Model, "System must not pick up the account's own config")
+	fb, err := configuredFallback(nil, "acct-whole-env", res)
+	require.NoError(t, err)
+	assert.Nil(t, fb)
+}
+
+func TestResolveLLMConfig_SingleSlotPin_StillSkipsFallbacks(t *testing.T) {
+	seedChosenAndDefault(t, "acct-single")
+
+	res, err := ResolveLLMConfig(ctxWithWholePin("db:int-chosen", ""), "acct-single", "", "")
+	require.NoError(t, err)
+	assert.True(t, res.IsOverridden, "choosing one model uses only that model")
+	assert.Equal(t, "db:int-chosen", res.PinnedConfigSource)
+}

@@ -2177,6 +2177,9 @@ type LLMConfigResolution struct {
 	AccountId    string            `json:"-"`                     // Account the resolution ran for; lets downstream catalog lookups see tenant rows
 	Hierarchy    []LLMConfigLayer  `json:"hierarchy"`             // Full resolution chain
 	dbConfig     map[string]string // unexported cache for optimized downstream lookups
+	// chosenConfigSource is the whole-config source id (env:all, db:<uuid>:all)
+	// the call resolved through, recorded for usage attribution.
+	chosenConfigSource string
 
 	// Pinned* fields are set only when Source == "pinned:<id>" (i.e., the request
 	// carried NBQueryConfig.LlmConfigSource). Downstream credential resolvers
@@ -2412,7 +2415,13 @@ func ResolveLLMConfig(ctx *security.RequestContext, accountId, agentName string,
 			}
 		}
 	}
-	if pinnedSource != "" {
+	// A whole config is resolved like an account default with that config in
+	// place of the account's, so its fallbacks, tiers and agent overrides apply.
+	whole, err := wholeConfigChoiceFor(ctx, pinnedSource, pinnedTierModel, accountId)
+	if err != nil {
+		return nil, err
+	}
+	if pinnedSource != "" && whole == nil {
 		var pinnedCache *LLMResolutionCache
 		pinnedCacheKey := fmt.Sprintf("pinned:%s:%s:%s", pinnedSource, agentName, tier)
 		if ctx != nil {
@@ -2457,12 +2466,15 @@ func ResolveLLMConfig(ctx *security.RequestContext, accountId, agentName string,
 
 	// Optimization: Check per-request cache if context is provided
 	var cache *LLMResolutionCache
+	cacheKey := fmt.Sprintf("%s:%s:%s:%s", accountId, agentName, conversationId, tier)
+	if whole != nil {
+		cacheKey = "whole:" + whole.source + ":" + cacheKey
+	}
 	if ctx != nil {
 		// Guard against zero-value RequestContext (nil internal context).
 		if goCtx := ctx.GetContext(); goCtx != nil {
 			if val := goCtx.Value(ContextKeyLLMResolution); val != nil {
 				cache = val.(*LLMResolutionCache)
-				cacheKey := fmt.Sprintf("%s:%s:%s:%s", accountId, agentName, conversationId, tier)
 				if res, ok := cache.Get(cacheKey); ok {
 					slog.Debug("Reusing per-request LLM config resolution", "cacheKey", cacheKey)
 					return res, nil
@@ -2486,7 +2498,10 @@ func ResolveLLMConfig(ctx *security.RequestContext, accountId, agentName string,
 
 	// Fetch DB config ONCE for the entire resolution process
 	var dbConfig map[string]string
-	if accountId != "" {
+	if whole != nil {
+		result.dbConfig = whole.dbConfig
+		result.chosenConfigSource = whole.source
+	} else if accountId != "" {
 		dbFetchStart := time.Now()
 		result.dbConfig, _ = getLLMIntegrationConfig(ctx, accountId)
 		slog.Debug("Fetched LLM integration config from DB", "duration", time.Since(dbFetchStart).String(), "accountId", accountId)
@@ -2660,7 +2675,8 @@ func ResolveLLMConfig(ctx *security.RequestContext, accountId, agentName string,
 	//                to the lower-precedence layers (no surprise blanket
 	//                substitute — that's a UX choice; the UI warns about
 	//                it when the user picks per-category mode).
-	if conversationId != "" {
+	// A chosen whole config replaces the conversation and request model overrides.
+	if conversationId != "" && whole == nil {
 		if p, m, tierOverrides, _, err := GetConversationOverride(conversationId); err == nil {
 			// Blanket conversation override.
 			if p != "" && m != "" {
@@ -2698,7 +2714,7 @@ func ResolveLLMConfig(ctx *security.RequestContext, accountId, agentName string,
 	//     map applied only when the call is tier-tagged; the matching key's
 	//     pick wins. Both can coexist, but the per-tier override sits above
 	//     the single-model override for tagged calls.
-	if ctx != nil {
+	if ctx != nil && whole == nil {
 		op, _ := ctx.GetContext().Value(ContextKeyLlmProviderOverride).(string)
 		om, _ := ctx.GetContext().Value(ContextKeyLlmModelOverride).(string)
 		if op != "" && om != "" {
@@ -2767,7 +2783,6 @@ func ResolveLLMConfig(ctx *security.RequestContext, accountId, agentName string,
 
 	// Save to per-request cache if available
 	if cache != nil {
-		cacheKey := fmt.Sprintf("%s:%s:%s:%s", accountId, agentName, conversationId, tier)
 		cache.Set(cacheKey, result)
 	}
 
@@ -3275,6 +3290,44 @@ func parseConfigSourceId(sourceId string) (*parsedConfigSource, error) {
 		return nil, fmt.Errorf("invalid llm_config_source %q: unknown layer %q (expected env|db)", sourceId, p.Layer)
 	}
 	return p, nil
+}
+
+// wholeConfigChoice is the config a whole-config source (env:all, db:<uuid>:all)
+// names, read in place of the account's own config.
+type wholeConfigChoice struct {
+	source   string
+	dbConfig map[string]string // empty, not nil, for env:all so the account's config is never read
+}
+
+// wholeConfigChoiceFor returns the whole config sourceId chooses, or nil when the
+// call is not a whole-config choice (no pin, a single slot, or a per-task model).
+func wholeConfigChoiceFor(ctx *security.RequestContext, sourceId, pinnedModel, accountId string) (*wholeConfigChoice, error) {
+	if sourceId == "" || pinnedModel != "" {
+		return nil, nil
+	}
+	parsed, err := parseConfigSourceId(sourceId)
+	if err != nil || parsed.Scope != "all" {
+		return nil, nil
+	}
+	if ctx != nil && ctx.GetContext() != nil {
+		reqProvider := contextString(ctx, ContextKeyLlmProviderOverride)
+		reqModel := contextString(ctx, ContextKeyLlmModelOverride)
+		if reqProvider != "" || reqModel != "" {
+			return nil, fmt.Errorf("llm_config_source %q selects a whole config; llm_provider/llm_model_name must not be sent with it (got %q/%q)",
+				sourceId, reqProvider, reqModel)
+		}
+	}
+	choice := &wholeConfigChoice{source: sourceId, dbConfig: map[string]string{}}
+	if parsed.Layer == "db" {
+		cfg, err := integrationConfigForPin(ctx, accountId, "", parsed.IntegrationUuid)
+		if err != nil {
+			return nil, err
+		}
+		if cfg != nil {
+			choice.dbConfig = cfg
+		}
+	}
+	return choice, nil
 }
 
 // slotForWholeConfig turns an ":all" pin — "use this whole config" — into the
