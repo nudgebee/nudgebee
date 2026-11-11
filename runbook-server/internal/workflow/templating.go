@@ -3,6 +3,7 @@ package workflow
 import (
 	"bytes"
 	"fmt"
+	"nudgebee/runbook/internal/gonjasafe"
 	"nudgebee/runbook/internal/model"
 	"os"
 	"regexp"
@@ -11,12 +12,11 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/nikolalohinski/gonja/v2"
 	"github.com/nikolalohinski/gonja/v2/exec"
 )
 
 // compiledTemplateCache memoises parsed Gonja templates keyed by their source
-// string. Parsing (gonja.FromString) is pure CPU and, on the render hot path,
+// string. Parsing (gonjasafe.FromString) is pure CPU and, on the render hot path,
 // runs inline in the Temporal workflow goroutine via renderGonja. Without
 // memoisation a workflow with many tasks — or a large matrix fan-out — re-parses
 // the same template strings on every render, and that accumulated inline CPU is
@@ -38,7 +38,7 @@ func compileGonjaTemplate(tpl string) (*exec.Template, error) {
 		ct := cached.(compiledTemplate)
 		return ct.tpl, ct.err
 	}
-	t, err := gonja.FromString(tpl)
+	t, err := gonjasafe.FromString(tpl)
 	compiledTemplateCache.Store(tpl, compiledTemplate{tpl: t, err: err})
 	return t, err
 }

@@ -6,9 +6,8 @@ import (
 	"sort"
 	"strings"
 
+	"nudgebee/runbook/internal/gonjasafe"
 	"nudgebee/runbook/internal/model"
-
-	"github.com/nikolalohinski/gonja/v2"
 )
 
 var (
@@ -122,7 +121,7 @@ func engineTemplateIn(v any) (string, bool) {
 func holdsEngineTemplate(s string) bool {
 	for _, block := range templateBlockRe.FindAllString(rawSpanRe.ReplaceAllString(s, ""), -1) {
 		if strings.HasPrefix(block, "{{") {
-			if _, err := gonja.FromString(block); err != nil {
+			if _, err := gonjasafe.FromString(block); err != nil {
 				continue
 			}
 		}

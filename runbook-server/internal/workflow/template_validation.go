@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nikolalohinski/gonja/v2"
+	"nudgebee/runbook/internal/gonjasafe"
 )
 
 // Regexes that pull the literal string argument out of a date filter call so we can
@@ -82,7 +82,7 @@ func tryParseTemplate(tpl string) error {
 	if !strings.Contains(tpl, "{{") && !strings.Contains(tpl, "{%") {
 		return nil
 	}
-	_, err := gonja.FromString(tpl)
+	_, err := gonjasafe.FromString(tpl)
 	if err != nil {
 		return fmt.Errorf("template parse error: %s", err.Error())
 	}

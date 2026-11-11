@@ -4,8 +4,9 @@ import (
 	"strings"
 	"time"
 
+	"nudgebee/runbook/internal/gonjasafe"
+
 	"github.com/go-playground/validator/v10"
-	"github.com/nikolalohinski/gonja/v2"
 )
 
 type WorkflowDefinition struct {
@@ -580,7 +581,7 @@ func (t Trigger) Validate(sl validator.StructLevel) {
 				return
 			}
 			if filterStr != "" {
-				if _, err := gonja.FromString(filterStr); err != nil {
+				if _, err := gonjasafe.FromString(filterStr); err != nil {
 					sl.ReportError(t.Params, "params", "Params", "filter_invalid_syntax", "Invalid Jinja (Gonja) filter: "+err.Error())
 					return
 				}
@@ -667,7 +668,7 @@ func (t Trigger) Validate(sl validator.StructLevel) {
 				return
 			}
 			if s != "" {
-				if _, err := gonja.FromString(s); err != nil {
+				if _, err := gonjasafe.FromString(s); err != nil {
 					sl.ReportError(t.Params, "params", "Params", "filter_invalid_syntax", "Invalid Jinja (Gonja) filter: "+err.Error())
 					return
 				}
@@ -724,7 +725,7 @@ func (t Trigger) Validate(sl validator.StructLevel) {
 				return
 			}
 			if filterStr != "" {
-				if _, err := gonja.FromString(filterStr); err != nil {
+				if _, err := gonjasafe.FromString(filterStr); err != nil {
 					sl.ReportError(t.Params, "params", "Params", "filter_invalid_syntax", "Invalid Jinja (Gonja) filter: "+err.Error())
 					return
 				}
