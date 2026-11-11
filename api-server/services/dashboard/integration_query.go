@@ -71,6 +71,12 @@ const (
 // half must not reach for an environment variable.
 var unsafeCommandChars = regexp.MustCompile("[;&|<>`$\\\\\n\r\t\"']")
 
+// A RabbitMQ panel's arguments after the verb are object types and column names
+// (`queues`, `message_stats.publish_details.rate`, `apply-to`). Nothing else is
+// allowed: no option (a leading `-`), and no character a shell could expand into
+// one (`{--host,x}` under bash brace expansion, globs).
+var rabbitmqArg = regexp.MustCompile(`^[A-Za-z0-9_.][A-Za-z0-9_.-]*$`)
+
 // SQL is the one command language that legitimately needs quotes — `WHERE state
 // = 'active'` is an ordinary query — so single quotes are allowed and the rest
 // of the blocklist tightens instead:
@@ -236,6 +242,19 @@ func ValidatePanelCommand(datasource, command string) error {
 	}
 	if datasource == DatasourceKubectl {
 		return validateKubectlArgs(fields[1:])
+	}
+	if datasource == DatasourceRabbitMQ {
+		// rabbitmqadmin reads options anywhere on its command line and the last
+		// one wins, so a trailing --host / --port / --username would replace the
+		// connection the credentialed prefix sets up — and hand the broker's
+		// credentials to whatever host it names. A panel names object types and
+		// columns, never options. (redis-cli stops reading options at the command
+		// name, so a Redis panel's arguments cannot do the same.)
+		for _, arg := range fields[1:] {
+			if !rabbitmqArg.MatchString(arg) {
+				return fmt.Errorf("%q: a %s panel may pass only object types and column names (letters, digits, _ . and a non-leading -), not options", arg, datasource)
+			}
+		}
 	}
 	if len(subcommands) == 0 {
 		return nil
