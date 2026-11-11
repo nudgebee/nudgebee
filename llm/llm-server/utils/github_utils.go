@@ -3,9 +3,11 @@ package utils
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -50,7 +52,7 @@ func CreateGithubClient(ctx context.Context, apiUrl, authType, username, passwor
 	}
 
 	// Configure for GitHub Enterprise if apiUrl is provided and not github.com
-	if client != nil && apiUrl != "" && !strings.Contains(apiUrl, "api.github.com") {
+	if client != nil && !isPublicGithub(apiUrl) {
 		client, err = configureEnterpriseURLs(client, apiUrl)
 		if err != nil {
 			return nil, err
@@ -76,7 +78,7 @@ func CreateGithubClientWithInstallationToken(ctx context.Context, apiUrl string,
 	client := github.NewClient(tc)
 
 	// Configure for GitHub Enterprise if apiUrl is provided and not github.com
-	if apiUrl != "" && !strings.Contains(apiUrl, "api.github.com") {
+	if !isPublicGithub(apiUrl) {
 		client, err = configureEnterpriseURLs(client, apiUrl)
 		if err != nil {
 			return nil, err
@@ -119,8 +121,10 @@ func GetGithubAppInstallationToken(ctx context.Context, apiUrl string, installat
 		return "", fmt.Errorf("failed to sign JWT: %w", err)
 	}
 
-	// Build installation token URL (supports GitHub Enterprise)
-	installationTokenURL := buildInstallationTokenURL(apiUrl, installationID)
+	installationTokenURL, err := buildInstallationTokenURL(apiUrl, installationID)
+	if err != nil {
+		return "", err
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", installationTokenURL, nil)
 	if err != nil {
@@ -159,22 +163,41 @@ func replaceEscapedNewlines(privateKeyPEM string) string {
 	return strings.ReplaceAll(privateKeyPEM, `\n`, "\n")
 }
 
-// buildInstallationTokenURL constructs the installation token URL for GitHub or GitHub Enterprise.
-func buildInstallationTokenURL(apiUrl string, installationID int64) string {
-	// Default to GitHub.com
-	if apiUrl == "" || strings.Contains(apiUrl, "api.github.com") {
-		return fmt.Sprintf("https://api.github.com/app/installations/%d/access_tokens", installationID)
+// ErrGithubAppOnEnterprise is returned when an integration on a host other than
+// github.com asks for a token from Nudgebee's GitHub App.
+var ErrGithubAppOnEnterprise = errors.New("the Nudgebee GitHub App works only with github.com; for GitHub Enterprise Server use a personal access token")
+
+// buildInstallationTokenURL returns where Nudgebee's GitHub App mints an
+// installation token. The request carries a JWT signed with the platform-wide
+// GITHUB_PRIVATE_KEY, which can mint tokens for every installation of the App,
+// so it only ever goes to github.com. The App is registered on github.com and
+// cannot be installed on a GitHub Enterprise Server, so no other host is valid.
+func buildInstallationTokenURL(apiUrl string, installationID int64) (string, error) {
+	if !isPublicGithub(apiUrl) {
+		return "", ErrGithubAppOnEnterprise
 	}
+	return fmt.Sprintf("https://api.github.com/app/installations/%d/access_tokens", installationID), nil
+}
 
-	// For GitHub Enterprise, ensure we have the correct API endpoint
-	baseURL := strings.TrimSuffix(apiUrl, "/")
-
-	// If the URL doesn't end with /api/v3, append it
-	if !strings.HasSuffix(baseURL, "/api/v3") {
-		baseURL = baseURL + "/api/v3"
+// isPublicGithub reports whether an integration URL names github.com: empty,
+// github.com, www.github.com or api.github.com, with or without scheme or port.
+func isPublicGithub(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return true
 	}
-
-	return fmt.Sprintf("%s/app/installations/%d/access_tokens", baseURL, installationID)
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "github.com", "www.github.com", "api.github.com":
+		return true
+	}
+	return false
 }
 
 // configureEnterpriseURLs configures the GitHub client for Enterprise installations.
