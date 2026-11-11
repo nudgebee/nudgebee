@@ -147,9 +147,11 @@ func loadSeedResourceTags(ctx context.Context, db sqlx.ExtContext, event *models
 	if event.CloudResourceId == nil || *event.CloudResourceId == "" || !isCloudResourceAlarm(deref(event.Source)) {
 		return resourceTags{}, nil
 	}
+	// sqlx scans each row into a plain string even for []*string, so the NULL
+	// jsonb_object_agg gives for a resource with no matching tags is coalesced.
 	var raw []*string
 	if err := sqlx.SelectContext(ctx, db, &raw,
-		`SELECT `+fmt.Sprintf(resourceTagsSQL, "$2")+`::text FROM cloud_resourses r WHERE r.id = $1`,
+		`SELECT coalesce(`+fmt.Sprintf(resourceTagsSQL, "$2")+`::text, '') FROM cloud_resourses r WHERE r.id = $1`,
 		*event.CloudResourceId, pq.Array(resourceTagKeys())); err != nil {
 		return resourceTags{}, fmt.Errorf("failed to load the alarm's resource tags: %w", err)
 	}
