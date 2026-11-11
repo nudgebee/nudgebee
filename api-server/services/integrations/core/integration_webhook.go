@@ -13,6 +13,7 @@ import (
 	"nudgebee/services/config"
 	eventtypes "nudgebee/services/event/types"
 	"nudgebee/services/internal/database"
+	"nudgebee/services/internal/gonjasafe"
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 	"strings"
@@ -1314,7 +1315,7 @@ func newLabelExtractorCache(logger *slog.Logger, mappings ...*WebhookLabelMappin
 				if _, done := cache.templates[keySpec]; done {
 					continue
 				}
-				tpl, err := gonja.FromString(keySpec)
+				tpl, err := gonjasafe.FromString(keySpec)
 				if err != nil {
 					logger.Warn("integrations: invalid gonja template in webhook_label_mapping", "template", keySpec, "error", err)
 					continue

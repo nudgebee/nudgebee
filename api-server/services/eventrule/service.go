@@ -10,6 +10,7 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/eventrule/playbooks"
 	"nudgebee/services/internal/database"
+	"nudgebee/services/internal/gonjasafe"
 	"nudgebee/services/observability/alertrule"
 	"nudgebee/services/relay"
 	"nudgebee/services/security"
@@ -1805,7 +1806,7 @@ func evaluateRawParamsTemplatesWithExtraContext(rawParams map[string]any, event 
 		templateCtx[k] = v
 	}
 
-	tpl, err := gonja.FromString(string(rawData))
+	tpl, err := gonjasafe.FromString(string(rawData))
 	if err != nil {
 		return nil, err
 	}
