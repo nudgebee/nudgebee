@@ -2203,6 +2203,9 @@ func configSourceOf(res *LLMConfigResolution) string {
 	if res.PinnedConfigSource != "" {
 		return res.PinnedConfigSource
 	}
+	if res.chosenConfigSource != "" {
+		return res.chosenConfigSource
+	}
 	return res.Source
 }
 
