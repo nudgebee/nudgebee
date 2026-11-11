@@ -761,29 +761,6 @@ const Header1 = ({ showBorder = false }) => {
       {showReloadNotification && (
         <GlobalBanner tone='warning' dismissible onDismiss={() => setShowReloadNotification(false)} title='New version deployed' html={reloadMsg} />
       )}
-      {!setupLocked && allCluster && allCluster.length > 0 && !allCluster.some((c) => c.value !== 'demo') && !loading && (
-        <GlobalBanner
-          testId='demo-account-banner'
-          tone='warning'
-          actionsPlacement='inline'
-          title='Demo data shown'
-          html='Connect your AWS, Azure, GCP, or Kubernetes account to see your own infrastructure.'
-          actions={[
-            {
-              id: 'demo-banner-connect-account',
-              label: 'Connect Account',
-              tone: 'primary',
-              onClick: () => router.push('/user-management?integration=account#integrations'),
-            },
-            {
-              id: 'demo-banner-help',
-              label: 'Need help?',
-              tone: 'link',
-              onClick: () => window.open(docsUrl('/docs/features/'), '_blank', 'noopener'),
-            },
-          ]}
-        />
-      )}
 
       <Box
         id='app-sticky-header'
@@ -853,19 +830,17 @@ const Header1 = ({ showBorder = false }) => {
             </Box>
             <Box display={'flex'} alignItems={'center'} justifyContent={'flex-end'} gap={ds.space[3]}>
               <Box sx={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: ds.space[2] }}>
-                {anchorActiveTab.connectClusterButton &&
-                  hasWriteAccess() &&
-                  allCluster?.some((c) => c.value !== 'demo' && c.cloud_provider?.toUpperCase() === 'K8S') && (
-                    <DsButton
-                      onClick={() => {
-                        router.push(`/accounts/account-form?cloudProvider=K8S`);
-                      }}
-                      size='md'
-                      tone='primary'
-                    >
-                      Connect cluster
-                    </DsButton>
-                  )}
+                {anchorActiveTab.connectClusterButton && hasWriteAccess() && allCluster?.some((c) => c.cloud_provider?.toUpperCase() === 'K8S') && (
+                  <DsButton
+                    onClick={() => {
+                      router.push(`/accounts/account-form?cloudProvider=K8S`);
+                    }}
+                    size='md'
+                    tone='primary'
+                  >
+                    Connect cluster
+                  </DsButton>
+                )}
                 {anchorActiveTab.connectAccountButton && hasWriteAccess() && (
                   <DropdownMenu
                     align='end'

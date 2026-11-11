@@ -875,7 +875,7 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
     }
     let active = true;
     homeApi
-      .getCloudAccounts('', false, true)
+      .getCloudAccounts()
       .then((res) => {
         if (active) {
           setAllCluster(transformClusters(res));

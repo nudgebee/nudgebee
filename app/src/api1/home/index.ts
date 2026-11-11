@@ -33,8 +33,6 @@ query GetCloudAccounts {
 
 // Account queries still in flight, keyed by query text. The cache only fills once a fetch lands, so
 // callers mounting together (a page effect + the header dropdown) each hit the network without this.
-// Keyed on the query, not the caller's args: includeDemoAccount only changes what happens after the
-// fetch, so callers that differ on it still share the one request.
 const cloudAccountsInFlight = new Map<string, Promise<any>>();
 
 function queryCloudAccountsOnce(query: string): Promise<any> {
@@ -46,7 +44,7 @@ function queryCloudAccountsOnce(query: string): Promise<any> {
   return pending;
 }
 
-// Lists getCloudAccounts returned because the request failed: empty, or Demo only. A tenant with no
+// Lists getCloudAccounts returned because the request failed: always empty. A tenant with no
 // accounts gets a list that looks the same, so a caller that must tell "could not load" from "has no
 // accounts" asks isCloudAccountsLoadFailure(list).
 const failedCloudAccountLists = new WeakSet<object>();
@@ -61,12 +59,10 @@ export function isCloudAccountsLoadFailure(list: unknown): boolean {
 }
 
 const apiDashboard = {
-  getCloudAccounts: async function (cloud_provider = '', refresh = false, includeDemoAccount = false) {
-    const cacheKeyWithDemo = (cloud_provider ? 'accounts-' + cloud_provider : 'all-accounts') + '-demo';
-    const cacheKeyWithoutDemo = cloud_provider ? 'accounts-' + cloud_provider : 'all-accounts';
+  getCloudAccounts: async function (cloud_provider = '', refresh = false) {
+    const cacheKey = cloud_provider ? 'accounts-' + cloud_provider : 'all-accounts';
     try {
       if (!refresh) {
-        const cacheKey = includeDemoAccount ? cacheKeyWithDemo : cacheKeyWithoutDemo;
         const cachedAccounts = cache.get(cacheKey);
         if (cachedAccounts?.length) {
           return cachedAccounts;
@@ -104,51 +100,12 @@ const apiDashboard = {
         };
       });
 
-      // Always cache the real account list.
-      cache.set(cacheKeyWithoutDemo, data, 60 * 60);
-
-      // Only hit the demo mock endpoint (/api/public/mock/home) when the caller actually
-      // wants the demo account in the list. Skipping it here avoids firing the mock API on
-      // pages that only need real accounts (e.g. Troubleshoot). Note: we must NOT write the
-      // with-demo cache on this path, otherwise a later includeDemoAccount=true call would
-      // read a demo-less list from cache and never fetch the demo account.
-      if (!includeDemoAccount) {
-        return data;
-      }
-
-      let demoAccount = null;
-      try {
-        const mockData = await getMockData('home');
-        const mockAccount = mockData.GetCloudAccount;
-        if (mockAccount && mockAccount.status === 'active') {
-          if (!cloud_provider || mockAccount.cloud_provider === cloud_provider) {
-            demoAccount = mockAccount;
-          }
-        }
-      } catch (mockErr) {
-        console.log('Failed to fetch demo account, skipping:', mockErr);
-      }
-
-      const dataWithDemo = [...data, demoAccount].filter((item) => item !== null && item !== undefined);
-      cache.set(cacheKeyWithDemo, dataWithDemo, 60 * 60);
-      return dataWithDemo;
+      cache.set(cacheKey, data, 60 * 60);
+      return data;
     } catch {
       // Return an empty list (not the Error object) so callers that do accounts.map() don't
       // crash the page on a backend hiccup; the cache is not written here, so the next call
-      // retries fresh. If the caller wants the demo account, still surface it so the UI
-      // isn't left with zero accounts to select from.
-      if (!includeDemoAccount) {
-        return asLoadFailure([]);
-      }
-      try {
-        const mockData = await getMockData('home');
-        const mockAccount = mockData.GetCloudAccount;
-        if (mockAccount && mockAccount.status === 'active' && (!cloud_provider || mockAccount.cloud_provider === cloud_provider)) {
-          return asLoadFailure([mockAccount]);
-        }
-      } catch (mockErr) {
-        console.log('Failed to fetch demo account, skipping:', mockErr);
-      }
+      // retries fresh.
       return asLoadFailure([]);
     }
   },

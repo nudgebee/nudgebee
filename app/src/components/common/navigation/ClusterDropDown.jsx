@@ -14,9 +14,6 @@ import { isAccountGuardActive } from '@lib/accountGuard';
 // once it runs out the dropdown stops asking, so a backend that stays down is not polled forever.
 const RELOAD_DELAYS_MS = [2000, 5000, 10000, 20000];
 
-// Demo is a sample account the frontend adds to every list, not one the tenant owns.
-const isDemo = (accountId) => accountId === 'demo';
-
 /**
  * Custom Hook: Handles fetching and Context synchronization.
  */
@@ -25,12 +22,12 @@ const useClusterData = (allCluster, setAllCluster) => {
   // Reloads tried since the list last held a real account; at RELOAD_DELAYS_MS.length it stops.
   const [reloads, setReloads] = React.useState(0);
 
-  // A list with no real account is either a tenant that has none, or the Demo-only stand-in
-  // getCloudAccounts returns when the request failed. The stand-in would otherwise stay until the
-  // page is reloaded, so ask again. Keyed on the list, not on who fetched it, so a stand-in written
+  // An empty list is either a tenant that has no accounts, or the stand-in getCloudAccounts
+  // returns when the request failed. The stand-in would otherwise stay until the page is
+  // reloaded, so ask again. Keyed on the list, not on who fetched it, so a stand-in written
   // by another caller or before this dropdown mounted recovers too.
   React.useEffect(() => {
-    if (allCluster == null || allCluster.some((cluster) => cluster?.value !== 'demo')) {
+    if (allCluster == null || allCluster.length > 0) {
       setReloads(0); // a later failure gets the full set of tries again
       return undefined;
     }
@@ -39,10 +36,10 @@ const useClusterData = (allCluster, setAllCluster) => {
       return undefined;
     }
     const timer = setTimeout(async () => {
-      const response = await homeApi.getCloudAccounts('', false, true);
+      const response = await homeApi.getCloudAccounts();
       if (isCloudAccountsLoadFailure(response)) {
         setReloads((count) => count + 1); // still failing: wait longer, then give up
-      } else if (response.some((account) => account?.id !== 'demo')) {
+      } else if (response.length > 0) {
         setAllCluster(transformClusters(response));
       } else {
         setReloads(RELOAD_DELAYS_MS.length); // loaded fine: this tenant has no accounts
@@ -54,7 +51,7 @@ const useClusterData = (allCluster, setAllCluster) => {
   const fetchClusters = React.useCallback(async () => {
     setIsLoading(true);
     try {
-      const response = await homeApi.getCloudAccounts('', false, true); // Pass `includeDemoAccount=true` to ensure demo accounts are included in the dropdown
+      const response = await homeApi.getCloudAccounts();
       const transformed = transformClusters(response);
       setAllCluster(transformed);
       return transformed;
@@ -99,27 +96,18 @@ const ClusterDropdown = ({ onChange, onClusterDataLoaded, disableRouteChanges = 
 
   const [clusterValue, setClusterValue] = React.useState('');
   const dataLoadedRef = React.useRef(false);
-  // True while the selection is a Demo that nobody asked for, so it can be left once a real account loads.
-  const autoPickedDemoRef = React.useRef(false);
-  // A ?accountId= Demo the selection overrode. The URL still shows it until the route update lands, and
+  // A ?accountId= the selection overrode. The URL still shows it until the route update lands, and
   // the Back/Forward sync below must not read that as the user navigating back to it.
   const overriddenUrlIdRef = React.useRef(null);
 
   const urlAccountId = router.query?.accountId || router.query?.KubernetesDetails || router.query?.CloudAccountDetails; // OPTIMIZATION: Centralize the logic for finding the ID in the URL
 
-  // Picks the account to open with: the URL's, else the saved one, else the first real account.
-  // While the tenant has a real account, Demo is never opened on its own: a saved or ?accountId=
-  // Demo is skipped, because that is what the first login writes on an install whose cluster had
-  // not registered yet, and honouring it kept the tenant on Demo indefinitely. Demo still opens when
-  // the page itself is Demo's (/kubernetes/details/demo) or when someone picks it in the dropdown.
+  // Picks the account to open with: the URL's, else the saved one, else the first account.
   const selectInitialCluster = React.useCallback(
     (currentClusters, requestedId) => {
-      const hasRealAccount = currentClusters?.some((c) => !isDemo(c?.value));
-      const pinnedByPath = Boolean(requestedId) && !router.query?.accountId;
-      const candidateId = requestedId || userApi.getUserPreferences()[PREFERENCE_LAST_ACCOUNT_ID];
-      const preferredId = hasRealAccount && isDemo(candidateId) && !pinnedByPath ? undefined : candidateId;
+      const preferredId = requestedId || userApi.getUserPreferences()[PREFERENCE_LAST_ACCOUNT_ID];
       const validCluster = currentClusters?.find((item) => item.value === preferredId);
-      const fallbackCluster = currentClusters?.find((c) => !isDemo(c?.value)) ?? currentClusters?.[0];
+      const fallbackCluster = currentClusters?.[0];
       const initialId = validCluster ? validCluster.value : fallbackCluster?.value;
       if (!initialId) {
         return;
@@ -136,13 +124,9 @@ const ClusterDropdown = ({ onChange, onClusterDataLoaded, disableRouteChanges = 
       }
       setSelectedCluster(newClusterObj);
       setClusterValue(initialId);
-      autoPickedDemoRef.current = isDemo(initialId) && !pinnedByPath;
-      // Not saved when Demo was only the fallback, so it cannot outlive the empty account list.
-      if (!autoPickedDemoRef.current) {
-        userApi.storeUserPreferences(PREFERENCE_LAST_ACCOUNT_ID, initialId);
-        if (newClusterObj?.cloud_provider) {
-          userApi.setLastAccountIdForProvider(newClusterObj.cloud_provider, initialId, tenantId);
-        }
+      userApi.storeUserPreferences(PREFERENCE_LAST_ACCOUNT_ID, initialId);
+      if (newClusterObj?.cloud_provider) {
+        userApi.setLastAccountIdForProvider(newClusterObj.cloud_provider, initialId, tenantId);
       }
       fetchProviderCapabilities(initialId);
     },
@@ -207,14 +191,6 @@ const ClusterDropdown = ({ onChange, onClusterDataLoaded, disableRouteChanges = 
   }, [selectedCluster, clusterValue, allCluster, disableRouteChanges, router, urlAccountId, selectInitialCluster]);
 
   React.useEffect(() => {
-    // Effect: Leave a Demo that was only picked because no real account had loaded yet — on a
-    // fresh install the first login usually beats the bundled cluster's registration.
-    if (autoPickedDemoRef.current && isDemo(clusterValue) && allCluster?.some((c) => !isDemo(c?.value))) {
-      selectInitialCluster(allCluster, urlAccountId);
-    }
-  }, [allCluster, clusterValue, urlAccountId, selectInitialCluster]);
-
-  React.useEffect(() => {
     // Effect: Sync state when Browser Back/Forward button is used
     if (urlAccountId === overriddenUrlIdRef.current) {
       return;
@@ -235,7 +211,6 @@ const ClusterDropdown = ({ onChange, onClusterDataLoaded, disableRouteChanges = 
       const newValue = e.target.value;
       const newClusterObj = allCluster?.find((item) => item.value === newValue);
       setClusterValue(newValue); // 1. Update Local State
-      autoPickedDemoRef.current = false; // a Demo chosen here is a choice, not a fallback
       userApi.storeUserPreferences(PREFERENCE_LAST_ACCOUNT_ID, newValue); // 2. Persist Preference
       if (newClusterObj?.cloud_provider) {
         userApi.setLastAccountIdForProvider(newClusterObj.cloud_provider, newValue, tenantId); // 2b. Persist per-provider preference
