@@ -469,6 +469,9 @@ func CreateEventRule(context *security.RequestContext, eventRequest EventConfig)
 	if !context.GetSecurityContext().CanAccessAccount(eventRequest.AccountID, security.SecurityAccessTypeCreate) {
 		return data, fmt.Errorf("account unauthorized")
 	}
+	if err := checkActionParamAccess(context.GetSecurityContext(), eventRequest.AccountID, security.SecurityAccessTypeCreate, eventRequest.ActionParams); err != nil {
+		return data, err
+	}
 
 	// Fail fast on a blank name: below, the relay and external-provider branches
 	// create the rule in the other system before the local write, so letting
@@ -584,6 +587,9 @@ func UpdateEventRule(context *security.RequestContext, eventRequest EventConfig)
 
 	if !context.GetSecurityContext().CanAccessAccount(eventRequest.AccountID, security.SecurityAccessTypeUpdate) {
 		return data, common.ErrorUnauthorized("unauthorized")
+	}
+	if err := checkActionParamAccess(context.GetSecurityContext(), eventRequest.AccountID, security.SecurityAccessTypeUpdate, eventRequest.ActionParams); err != nil {
+		return data, err
 	}
 
 	// Fail fast on a blank name: below, the relay and external-provider branches
@@ -1446,7 +1452,11 @@ func ExecutePlaybook(context *security.RequestContext, accountId string, event p
 					}
 
 					actionStart := time.Now()
-					result, err := action.Execute(execContext, svcParams)
+					var result playbooks.PlaybookActionResponse
+					err := checkActionScope(accountId, svcParams)
+					if err == nil {
+						result, err = action.Execute(execContext, svcParams)
+					}
 					svcResponse.DurationSeconds = time.Since(actionStart).Seconds()
 					if err != nil {
 						if strings.Contains(err.Error(), "agent not connected") {
