@@ -398,7 +398,7 @@ All config is read by Viper from environment variables (and an optional `.env` f
 |---|---|---|
 | `nudgebee_namespace` | `nudgebee` | K8s namespace. Auto-detected from `/var/run/secrets/kubernetes.io/serviceaccount/namespace` when running inside a pod. |
 | `runbook_server_event_sync_interval_seconds` | `30` | Event registry refresh interval. |
-| `runbook_server_task_scripting_mode` | `agent` | How scripting tasks are dispatched. |
+| `runbook_server_task_scripting_mode` | `agent` | How scripting tasks are dispatched when the step's account doesn't decide it: `agent` or `kubernetes`. Scripts never run inside runbook-server itself. |
 | `runbook_server_relay_command_execution_timeout_seconds` | `120` | |
 | `runbook_server_relay_pod_execution_timeout_seconds` | `120` | |
 | `runbook_server_llm_retry_attempts` | `180` | |
@@ -631,7 +631,7 @@ Output lands in `docs/swagger/`. At runtime, browse it at <http://localhost:8000
 
 ## Deployment notes
 
-- The [`Dockerfile`](Dockerfile) is multi-stage and Alpine-based. The final image bundles `iputils`, `ca-certificates`, `nodejs`, and PowerShell 7.4 so scripting tasks can run inside the container.
+- The [`Dockerfile`](Dockerfile) is multi-stage, with a UBI 9 micro runtime. The final image bundles `iputils`, `traceroute` and `ca-certificates` for the network tasks; scripting tasks never run inside the container.
 - When running in Kubernetes, the process auto-detects the namespace from `/var/run/secrets/kubernetes.io/serviceaccount/namespace` and overwrites `nudgebee_namespace`.
 - The first run in a new Temporal namespace needs the Temporal **search attributes** registered (`nb_tenant_id`, `nb_account_id`, `nb_workflow_id`, etc.). The local `temporal-setup-job` from `docker-compose.test.yml` does this for dev; production clusters need an equivalent one-shot job.
 - The HTTP server only needs port `API_PORT` exposed. Everything else (Temporal, RabbitMQ, Postgres) is outbound.
