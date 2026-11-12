@@ -2048,7 +2048,7 @@ const IntegrationDynamicFormModal = ({
   // token-in-URL as the only thing to copy.
   const existingWebhookTemplate =
     existingWebhookUrl && webhookConfig[integrationName]?.buildTemplate
-      ? webhookConfig[integrationName].buildTemplate(editData.integration_config_values.token)
+      ? webhookConfig[integrationName].buildTemplate(editData?.integration_config_values?.token)
       : '';
 
   // List rows carry integrations_cloud_accounts / integration_config_values as
