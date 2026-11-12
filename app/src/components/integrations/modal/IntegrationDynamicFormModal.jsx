@@ -39,7 +39,7 @@ import cache from '@lib/cache';
 import VmAgentCredentialsDialog from './VmAgentCredentialsDialog';
 import k8sApi from '@api1/kubernetes';
 import { clustersCollectingClickHouseLogs, showsAgentProviderToggle } from './clickHouseLogsToggle';
-import { buildWebhookUrl } from '@lib/webhookUrl';
+import { buildAlertmanagerReceiverSnippet, buildWebhookBaseUrl, buildWebhookUrl } from '@lib/webhookUrl';
 import { docsUrl } from '@lib/externalUrls';
 import ModelAliasList from '@components/common/forms/ModelAliasList';
 import McpWriteToolsField from '@components/common/forms/McpWriteToolsField';
@@ -1890,6 +1890,10 @@ const IntegrationDynamicFormModal = ({
         url: docsUrl('/docs/integrations/Webhooks/prometheus_alertmanager_webhook/'),
         text: 'how to configure Alertmanager Webhook',
       },
+      // Alertmanager can send the token as a Bearer header, which keeps it out of
+      // access logs and proxies that record the query string.
+      buildTemplate: (token) => buildAlertmanagerReceiverSnippet(buildWebhookBaseUrl('prometheus_alertmanager_webhook'), token),
+      templateMessage: 'For Prometheus Alertmanager, prefer this receiver — it sends the token in the Authorization header instead of the URL:',
     },
     datadog_webhook: {
       endpoint: 'datadog',
@@ -2039,6 +2043,13 @@ const IntegrationDynamicFormModal = ({
     const token = editData?.integration_config_values?.token;
     return typeof token === 'string' ? buildWebhookUrl(integrationName, token) : '';
   }, [editData, integrationName]);
+  // The header-auth setup the create screen offers (the Alertmanager receiver),
+  // rebuilt for a reopened row, so the edit view does not leave the
+  // token-in-URL as the only thing to copy.
+  const existingWebhookTemplate =
+    existingWebhookUrl && webhookConfig[integrationName]?.buildTemplate
+      ? webhookConfig[integrationName].buildTemplate(editData.integration_config_values.token)
+      : '';
 
   // List rows carry integrations_cloud_accounts / integration_config_values as
   // JSON strings; the edit row arrives already parsed. Accept either.
@@ -2075,6 +2086,10 @@ const IntegrationDynamicFormModal = ({
           accountName: accountName || acc.cloud_account_id,
           webhookName: row.name,
           url: `${window.location.origin}/api/webhooks/prometheus-alertmanager?token=${encodeURIComponent(token)}${cluster}`,
+          snippet: buildAlertmanagerReceiverSnippet(
+            `${buildWebhookBaseUrl('prometheus_alertmanager_webhook')}${accountName ? `?cluster=${encodeURIComponent(accountName)}` : ''}`,
+            token
+          ),
         });
       });
     });
@@ -2124,6 +2139,27 @@ const IntegrationDynamicFormModal = ({
                 >
                   {receiver.url}
                 </Typography>
+                <Typography variant='body2' sx={{ fontSize: 'var(--ds-text-body)', color: ds.gray[400], mt: ds.space[2], mb: ds.space[1] }}>
+                  Or add this receiver, which sends the token in the Authorization header instead of the URL:
+                </Typography>
+                <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: ds.space[2] }}>
+                  <Typography
+                    component='pre'
+                    sx={{
+                      color: ds.gray[600],
+                      fontSize: 'var(--ds-text-body)',
+                      fontFamily: ds.font.mono,
+                      lineHeight: 1.6,
+                      flex: 1,
+                      m: 0,
+                      overflow: 'auto',
+                    }}
+                    data-testid='prometheus-alert-delivery-snippet'
+                  >
+                    {receiver.snippet}
+                  </Typography>
+                  <CopyButton text={receiver.snippet} />
+                </Box>
               </Box>
               <CopyButton text={receiver.url} />
             </Box>
@@ -2140,6 +2176,7 @@ const IntegrationDynamicFormModal = ({
     }
 
     const url = `${window.location.origin}/api/webhooks/${config.endpoint}?token=${response.value}`;
+    const template = config.buildTemplate ? config.buildTemplate(response.value) : config.template;
 
     return (
       <Grid container mt={2} mb={1} mr={1} sx={{ display: 'flex', flexDirection: 'column' }}>
@@ -2170,7 +2207,7 @@ const IntegrationDynamicFormModal = ({
           <CopyButton text={url} />
         </Box>
 
-        {config.template && (
+        {template && (
           <>
             <Typography variant='subtitle1' sx={{ fontSize: 'var(--ds-text-body-lg)' }}>
               {config.templateMessage}
@@ -2202,9 +2239,9 @@ const IntegrationDynamicFormModal = ({
                 }}
                 id={`${config.endpoint}-template`}
               >
-                {config.template}
+                {template}
               </Typography>
-              <CopyButton text={config.template} />
+              <CopyButton text={template} />
             </Box>
           </>
         )}
@@ -2238,7 +2275,8 @@ const IntegrationDynamicFormModal = ({
           >
             <Typography sx={{ fontSize: 'var(--ds-text-body)', color: ds.brand[500], lineHeight: 1.6, textAlign: 'justify' }}>
               <strong>Tip (optional):</strong> When you paste this URL into your webhook provider, you can optionally append extra query parameters
-              (e.g. <code>&amp;env=prod</code>, <code>&amp;cluster=us-east-1</code>) directly to the URL inside the provider&apos;s configuration.
+              (e.g. <code>&amp;env=prod</code>, <code>&amp;cluster=us-east-1</code>; start with <code>?</code> instead of <code>&amp;</code> when the
+              URL has no query string yet) directly to the URL inside the provider&apos;s configuration.
               {` Every event delivered through that URL will be tagged with those labels in ${getBrandTitle()}.`}
               <br />
               <br />
@@ -2447,6 +2485,39 @@ const IntegrationDynamicFormModal = ({
                         {existingWebhookUrl}
                       </Typography>
                       <CopyButton text={existingWebhookUrl} size='sm' />
+                    </Box>
+                  )}
+                  {existingWebhookTemplate && (
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
+                      <Typography variant='body2' sx={{ fontSize: 'var(--ds-text-body)', color: ds.gray[600] }}>
+                        {webhookConfig[integrationName].templateMessage}
+                      </Typography>
+                      <Box
+                        data-testid='existing-webhook-template'
+                        sx={{
+                          display: 'flex',
+                          alignItems: 'flex-start',
+                          gap: ds.space[2],
+                          border: `1px solid ${ds.brand[200]}`,
+                          borderRadius: ds.radius.lg,
+                          p: ds.space[4],
+                        }}
+                      >
+                        <Typography
+                          component='pre'
+                          sx={{
+                            flex: 1,
+                            m: 0,
+                            overflow: 'auto',
+                            color: ds.gray[600],
+                            fontSize: 'var(--ds-text-body)',
+                            fontFamily: ds.font.mono,
+                          }}
+                        >
+                          {existingWebhookTemplate}
+                        </Typography>
+                        <CopyButton text={existingWebhookTemplate} size='sm' />
+                      </Box>
                     </Box>
                   )}
                   {webhookConfig[integrationName]?.learnMore && (
