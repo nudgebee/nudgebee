@@ -10,10 +10,6 @@ import ClusterDropdown from '../ClusterDropDown';
 // The real account-list API runs here, on top of a stubbed network, so each test counts the
 // GetCloudAccounts requests the dropdown really causes (a cache hit is not a request).
 jest.mock('@lib/HttpService', () => ({ queryGraphQL: jest.fn(), gqlStringify: () => '{}' }));
-jest.mock('@api1/mock', () => ({
-  __esModule: true,
-  default: () => Promise.resolve({ GetCloudAccount: { id: 'demo', account_name: 'Demo', status: 'active', cloud_provider: 'K8s' } }),
-}));
 jest.mock('@api1/user', () => ({
   __esModule: true,
   PREFERENCE_LAST_ACCOUNT_ID: 'last_account',
@@ -41,7 +37,7 @@ const LIST_FAILED = { data: { errors: [{ message: 'upstream unavailable' }] } };
 const listOf = (rows) => ({ data: { data: { cloud_accounts: { rows } } } });
 const K8S_DEV = { id: 'acc-1', account_name: 'k8s-dev', cloud_provider: 'K8s', status: 'active', agents: [] };
 
-const pickerOptions = () => screen.getAllByRole('listitem').map((item) => item.textContent);
+const pickerOptions = () => screen.queryAllByRole('listitem').map((item) => item.textContent);
 // Lets pending requests settle, then moves the clock forward a second at a time: React only
 // re-renders (and arms the next timer) between steps, so one big jump would hide every retry.
 const wait = async (ms = 0) => {
@@ -87,25 +83,26 @@ describe('ClusterDropdown when the account list has no real account', () => {
     mockRouter.query = { accountId: 'acc-1' }; // as in /home?accountId=acc-1
     renderDropdown();
     await wait();
-    expect(pickerOptions()).toEqual(['Demo']);
+    expect(pickerOptions()).toEqual([]);
 
     await wait(2000);
 
-    expect(pickerOptions()).toEqual(['k8s-dev', 'Demo']);
+    expect(pickerOptions()).toEqual(['k8s-dev']);
     expect(screen.getByTestId('picker')).toHaveAttribute('data-selected', 'acc-1');
     expect(queryGraphQL).toHaveBeenCalledTimes(2);
   });
 
-  it('asks once, and never again, for a tenant that has no accounts', async () => {
+  it('asks once more, and never again, for a tenant that has no accounts', async () => {
     queryGraphQL.mockResolvedValue(listOf([]));
     const listLookups = jest.spyOn(homeApi, 'getCloudAccounts');
     renderDropdown();
 
     await wait(TWO_MINUTES);
 
-    expect(pickerOptions()).toEqual(['Demo']);
-    expect(queryGraphQL).toHaveBeenCalledTimes(1);
-    // The first load, then one read of the cached list that confirms the tenant has no accounts.
+    expect(pickerOptions()).toEqual([]);
+    // An empty list is never served from cache, so the confirming read reaches the network too.
+    expect(queryGraphQL).toHaveBeenCalledTimes(2);
+    // The first load, then one read that confirms the tenant has no accounts.
     expect(listLookups).toHaveBeenCalledTimes(2);
   });
 
@@ -115,26 +112,27 @@ describe('ClusterDropdown when the account list has no real account', () => {
 
     await wait(TWO_MINUTES);
 
-    expect(pickerOptions()).toEqual(['Demo']);
+    expect(pickerOptions()).toEqual([]);
     expect(queryGraphQL).toHaveBeenCalledTimes(5);
   });
 
   it('recovers from a later failed refresh, after it had stopped asking for a tenant with no accounts', async () => {
     queryGraphQL
       .mockResolvedValueOnce(listOf([]))
+      .mockResolvedValueOnce(listOf([])) // the read that confirms the tenant has no accounts
       .mockResolvedValueOnce(listOf([K8S_DEV]))
       .mockResolvedValueOnce(LIST_FAILED);
     renderDropdown();
     await wait(TWO_MINUTES);
-    expect(pickerOptions()).toEqual(['Demo']);
+    expect(pickerOptions()).toEqual([]);
 
     await refreshList(); // the tenant connected its first cluster
-    expect(pickerOptions()).toEqual(['k8s-dev', 'Demo']);
+    expect(pickerOptions()).toEqual(['k8s-dev']);
 
-    await refreshList(); // this refresh fails and leaves the Demo-only stand-in
-    expect(pickerOptions()).toEqual(['Demo']);
+    await refreshList(); // this refresh fails and leaves the empty stand-in
+    expect(pickerOptions()).toEqual([]);
     await wait(2000);
 
-    expect(pickerOptions()).toEqual(['k8s-dev', 'Demo']);
+    expect(pickerOptions()).toEqual(['k8s-dev']);
   });
 });
