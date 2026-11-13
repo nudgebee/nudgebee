@@ -82,6 +82,37 @@ func stubSafetyRow(mock sqlmock.Sqlmock, band any) {
 		AddRow("pod_right_sizing", "Open", band, "2 production dependent(s) in the blast radius", 3, 2, 41.0))
 }
 
+func TestDoApiServerActionRequestResponseJSON(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{name: "malformed object", body: `{not valid json`, wantErr: true},
+		{name: "malformed array", body: `[{"status":]`, wantErr: true},
+		{name: "valid object", body: `{"status":"applied"}`},
+		{name: "valid array", body: `[{"status":"applied"}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cleanup := startRPCStub(t, "/rpc/recommendation", func(string, map[string]any) (int, string) {
+				return http.StatusOK, tc.body
+			})
+			defer cleanup()
+
+			body, err := doApiServerActionRequest(newTriageToolContext("acc-7"), "/rpc/recommendation", "recommendations_apply", map[string]any{"object": map[string]any{}}, "recommendation_apply")
+			if tc.wantErr {
+				assert.Error(t, err)
+				assert.Empty(t, body)
+				assert.Contains(t, err.Error(), "the request may have been processed")
+				assert.Contains(t, err.Error(), "verify its outcome before retrying")
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, tc.body, body)
+		})
+	}
+}
+
 func TestRecommendationApplyTool(t *testing.T) {
 	// One mocked metastore for the whole test: the database manager is cached
 	// after its first use, so a per-subtest mock would hand later subtests a
@@ -363,6 +394,21 @@ func TestRecommendationTicketResolutionTool(t *testing.T) {
 }
 
 func TestRecommendationDismissalTool(t *testing.T) {
+	t.Run("reports an unknown write outcome when success response is malformed", func(t *testing.T) {
+		cleanup := startRPCStub(t, "/rpc/recommendation", func(string, map[string]any) (int, string) {
+			return http.StatusOK, `{"applied":`
+		})
+		defer cleanup()
+
+		resp, err := RecommendationDismissalTool{}.Call(newTriageToolContext("acc-7"), core.NBToolCallRequest{
+			Arguments: map[string]any{"recommendation_id": "rec-1", "action": "dismiss"},
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
+		assert.Contains(t, resp.Data, "the request may have been processed")
+		assert.Contains(t, resp.Data, "verify its outcome before retrying")
+	})
+
 	t.Run("requires recommendation_id and a known action", func(t *testing.T) {
 		resp, err := RecommendationDismissalTool{}.Call(newTriageToolContext("acc-7"), core.NBToolCallRequest{
 			Arguments: map[string]any{"action": "dismiss"},
