@@ -4,7 +4,6 @@ import Title from '@shared/Title';
 import BarChart from '@shared/charts/BarChart';
 import ChartSwitcher from '@shared/widgets/ChartSwitcher';
 import LineChart from '@shared/charts/LineCharts';
-import { formatNumber, formatMemory } from '@lib/formatter';
 import { getDateStringFromDateUnit, getLastSixMonths } from '@lib/datetime';
 import kuberneteApi from '@api1/kubernetes';
 import { ds } from 'src/utils/colors';
@@ -19,6 +18,11 @@ const FREQUENCY_OPTIONS = [
   { label: 'Week', value: 'Week' },
   { label: 'Month', value: 'Month' },
 ];
+
+const BYTES_PER_GB = 1024 * 1024 * 1024;
+// Chart data must stay numeric: keep 0, map missing values to null, leave rounding to the chart.
+const toNumber = (value) => (value == null ? null : Number(value));
+const bytesToGb = (value) => (value == null ? null : Number(value) / BYTES_PER_GB);
 
 const findOption = (options, value) => (value ? options?.find((o) => o.value === value) ?? null : null);
 
@@ -72,17 +76,14 @@ const GraphSections = ({ accountId }) => {
     }
 
     const cpuLinechartData = {
-      data: [clusterData?.map((item) => formatNumber(item.avg_cpu_used_node)), clusterData?.map((item) => formatNumber(item.total_cpu_allocatable))],
+      data: [clusterData?.map((item) => toNumber(item.avg_cpu_used_node)), clusterData?.map((item) => toNumber(item.total_cpu_allocatable))],
       label: clusterData?.map((item) => getDateStringFromDateUnit(item.timestamp, chartUnit)) || [],
       chartLabel: ['Avg CPU', 'Allocatable CPU'],
     };
     setCpuLinechartData(cpuLinechartData);
 
     const memLinechartData = {
-      data: [
-        clusterData?.map((item) => formatMemory(item.avg_memory_used_node, 'bytes', 'gb', false)),
-        clusterData?.map((item) => formatMemory(item.total_memory_allocatable, 'bytes', 'gb', false)),
-      ],
+      data: [clusterData?.map((item) => bytesToGb(item.avg_memory_used_node)), clusterData?.map((item) => bytesToGb(item.total_memory_allocatable))],
       label: clusterData?.map((item) => getDateStringFromDateUnit(item.timestamp, chartUnit)) || [],
       chartLabel: ['Avg Mem', 'Allocatable Mem'],
     };
@@ -102,7 +103,7 @@ const GraphSections = ({ accountId }) => {
     for (const item of networkData) {
       if (!item) continue;
 
-      const valueInGb = item.avg_value == null ? null : Number(item.avg_value) / (1024 * 1024 * 1024);
+      const valueInGb = bytesToGb(item.avg_value);
       if (item.metric === 'networkReceiveBytes') {
         ingressData.push(valueInGb);
         ingressLabels.push(getDateStringFromDateUnit(item.timestamp, chartUnit));

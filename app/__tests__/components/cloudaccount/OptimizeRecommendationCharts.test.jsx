@@ -80,3 +80,47 @@ describe('OptimizeRecommendationCharts network series', () => {
     expect([...ingress.data, ...egress.data].every((value) => value === null || Number.isFinite(value))).toBe(true);
   });
 });
+
+describe('OptimizeRecommendationCharts CPU and memory series', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    kuberneteApi.getMetrices.mockResolvedValue({ data: { cloud_resource_metrics_groupings: [] } });
+    kuberneteApi.getk8ClusterTrendData.mockResolvedValue({
+      data: {
+        cloudaccount_k8s_aggregate: [
+          { timestamp: 1, avg_cpu_used_node: 0, total_cpu_allocatable: 1234.5, avg_memory_used_node: 0, total_memory_allocatable: 2048 * 1024 ** 3 },
+          { timestamp: 2, avg_cpu_used_node: null, total_cpu_allocatable: '8', avg_memory_used_node: null, total_memory_allocatable: undefined },
+        ],
+      },
+    });
+  });
+
+  it('passes raw numbers (0 kept, >=1000 unformatted, missing as null) to the CPU and memory charts', async () => {
+    render(<OptimizeRecommendationCharts accountId='account-1' />);
+
+    const propsFor = (label) =>
+      mockBarChart.mock.calls
+        .map(([props]) => props)
+        .filter((props) => props.chartLabel?.[0] === label)
+        .at(-1);
+
+    await waitFor(() => {
+      expect(propsFor('Avg CPU')?.data[0]).toHaveLength(2);
+    });
+
+    const cpu = propsFor('Avg CPU');
+    const mem = propsFor('Avg Mem');
+
+    expect(cpu.data).toEqual([
+      [0, null],
+      [1234.5, 8],
+    ]);
+    expect(mem.data).toEqual([
+      [0, null],
+      [2048, null],
+    ]);
+    expect(cpu.labels).toEqual(['t1', 't2']);
+    expect(mem.labels).toEqual(['t1', 't2']);
+    expect([...cpu.data.flat(), ...mem.data.flat()].every((value) => value === null || Number.isFinite(value))).toBe(true);
+  });
+});
