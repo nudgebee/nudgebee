@@ -341,6 +341,13 @@ func (s *OpenObserveTraceSource) buildSQL(req TracesV3Request, stream string) (s
 	if err != nil {
 		return "", err
 	}
+	if strings.TrimSpace(req.Query) != "" {
+		limit := req.QueryRequest.Limit
+		if limit <= 0 || limit > 10000 {
+			limit = 10000
+		}
+		return buildOpenObserveRawSQL(req.Query, stream, whereClause, "_timestamp DESC", limit)
+	}
 
 	// The UI and the agents always pass a limit; a caller that passes none — the service map
 	// — wants every span in the window. Defaulting to 100 built the map from 100 of ~4000

@@ -1017,6 +1017,9 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 	// above. Providers that consume the where-clause natively emit no query string, so
 	// fall back to the canonical where JSON.
 	usedQuery := fetchLogRequest.Query
+	if details.ExecutedQuery != "" {
+		usedQuery = details.ExecutedQuery
+	}
 	if usedQuery == "" && hasWhereData(fetchLogRequest.QueryRequest.Where) {
 		if b, mErr := json.Marshal(fetchLogRequest.QueryRequest.Where); mErr == nil {
 			usedQuery = string(b)
@@ -3202,6 +3205,12 @@ func resolveExecutedTraceQuery(ctx *security.RequestContext, source TraceSource,
 		return ""
 	}
 	if req.Query != "" {
+		if _, ok := source.(*OpenObserveTraceSource); !ok {
+			return req.Query
+		}
+		if q, err := source.GetQuery(ctx, req); err == nil && q != "" {
+			return q
+		}
 		return req.Query
 	}
 	if q, err := source.GetQuery(ctx, req); err != nil {
