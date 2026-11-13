@@ -6,6 +6,7 @@ import PodAllocationSummary from './PodAllocationSummary';
 import MemoryAllocationIcon from '@assets/investigation/resource-allocation.svg';
 import RenderMemoryLeakData from './RenderMemoryLeakData';
 import { safeJSONParse } from 'src/utils/common';
+import { withUtcTimezone } from './timestamp';
 import recommendationApi from '@api1/recommendation';
 import { Box, Typography } from '@mui/material';
 import { useEffect, useMemo, useState } from 'react';
@@ -221,7 +222,7 @@ class MemoryAllocationCard {
       if (jsonData.name === 'container_metric') {
         for (const element of jsonData.data) {
           const containerMetricObject = {};
-          const occurredAt = new Date(row?.starts_at + 'Z').toLocaleTimeString();
+          const occurredAt = new Date(withUtcTimezone(row?.starts_at)).toLocaleTimeString();
           const labelLength = jsonData.data[0].timestamps.length;
           const timeRange = jsonData.data[0].timestamps.map((d) => new Date(d * 1000).toLocaleTimeString());
           const insertIndex = timeRange.findIndex((time, index) => {
@@ -270,7 +271,7 @@ class MemoryAllocationCard {
           // Per blob: an event carries a cpu and a memory pod_metric, and one
           // must not relabel the other.
           const resourceType = String(jsonData?.resource_type ?? 'memory').toLowerCase();
-          const occurredAt = new Date(row?.starts_at + 'Z').toLocaleTimeString();
+          const occurredAt = new Date(withUtcTimezone(row?.starts_at)).toLocaleTimeString();
           for (const element of jsonData.data) {
             const podMetricObject = {};
             const labelLength = element.timestamps.length;

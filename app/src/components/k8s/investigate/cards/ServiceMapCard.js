@@ -1,6 +1,7 @@
 import dynamic from 'next/dynamic';
 import { Box, CircularProgress } from '@mui/material';
 import { formatDateForPlusMinusDuration } from 'src/utils/common';
+import { withUtcTimezone } from './timestamp';
 import ServiceMapIcon from '@assets/kubernetes/monitoring/service-map-icon.icon.svg';
 import apiKubernetes from '@api1/kubernetes';
 import { formatDate } from '@lib/formatter';
@@ -116,7 +117,7 @@ class ServiceMapCard {
       }
 
       // Check trace data
-      const timeRangeValue = formatDateForPlusMinusDuration(new Date(`${this.event.starts_at}Z`).getTime(), 30);
+      const timeRangeValue = formatDateForPlusMinusDuration(new Date(withUtcTimezone(this.event.starts_at)).getTime(), 30);
 
       // Validate cloud_account_id
       if (!this.event?.cloud_account_id) {
@@ -253,7 +254,7 @@ class ServiceMapCard {
         return null;
       }
 
-      const timeRangeValue = formatDateForPlusMinusDuration(new Date(`${this.event.starts_at}Z`).getTime(), 30);
+      const timeRangeValue = formatDateForPlusMinusDuration(new Date(withUtcTimezone(this.event.starts_at)).getTime(), 30);
 
       // Validate required props
       if (!this.event?.cloud_account_id) {

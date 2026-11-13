@@ -1,5 +1,6 @@
 import AppDashboard, { getDashboardStats, getDashboardData } from '@components/dashboards/AppDashboard';
 import ApplicationsIconblue from '@assets/kubernetes/app-nodes-icons/ApplicationsIconBlue.icon.svg';
+import { withUtcTimezone } from './timestamp';
 
 class ApplicationMetricsCard {
   constructor() {
@@ -72,7 +73,7 @@ class ApplicationMetricsCard {
   };
 
   renderAppDashboard = () => {
-    let createdAt = new Date(this.event.starts_at.endsWith('Z') ? this.event.starts_at : this.event.starts_at + 'Z');
+    let createdAt = new Date(withUtcTimezone(this.event.starts_at));
     let startDate = new Date(createdAt.getTime() - 1 * 60 * 60 * 1000);
     let endDate = new Date(createdAt.getTime() + 10 * 60 * 1000);
     return (
