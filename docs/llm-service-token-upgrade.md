@@ -1,5 +1,10 @@
 # LLM service token upgrade
 
+> **Upgrade requirement:** installations using `global.existingNudgebeeSecretName`
+> (including ESO-managed Secrets) must provide a non-empty `LLM_SERVER_TOKEN`.
+> Without it, every private llm-server route returns 503 after upgrade. Offline
+> GitOps renders must pin the token in values or the referenced Secret.
+
 Private llm-server routes require a configured `LLM_SERVER_TOKEN` and a matching
 `X-ACTION-TOKEN` request header. An unconfigured server returns 503; a missing or
 incorrect request token returns 401. Existing health, docs, and workspace-route
@@ -15,7 +20,7 @@ on a Helm upgrade. Do not rotate the token on only one side of a connection.
 External Secret managers must supply a non-empty `LLM_SERVER_TOKEN` in the shared
 Secret before upgrading. Offline GitOps renders cannot read the existing Secret:
 set a stable `nudgebee_secret.LLM_SERVER_TOKEN` explicitly or reference an external
-Secret containing it. Otherwise private requests return 503 or fail to authenticate.
+Secret containing it.
 
 Docker Compose supplies the matching local-development value from the root
 `.env.example`. For standalone processes, set the same destination token in each
@@ -39,5 +44,3 @@ the same name at both endpoints. Code-analysis workspace clients use workspace
 credentials on separately authenticated workspace routes; do not replace those
 credentials with the shared service token.
 
-See [focused live upgrade validation](llm-service-token-live-validation.md) for
-the observed Helm/caller/database checks and their deployment limits.
