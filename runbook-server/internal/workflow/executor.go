@@ -329,7 +329,7 @@ func createActivityCtxForAction(ctx workflow.Context) workflow.Context {
 func handleTaskFailure(ctx workflow.Context, taskID string, taskErr error, currentTask model.Task, globalContext *TemplateContext, wf *model.Workflow) error {
 	// Libraries put the failing request in the message — a URL carrying an
 	// api_key, say — so credential values are scrubbed before it goes anywhere.
-	errText := ScrubSecretValues(taskErr.Error(), SecretValues(globalContext.Secrets))
+	errText := logsafe.ScrubSecretValues(taskErr.Error(), logsafe.SecretValues(globalContext.Secrets))
 	globalContext.Tasks[taskID] = map[string]any{
 		"status": model.TaskStatusFailed,
 		"error":  errText,
