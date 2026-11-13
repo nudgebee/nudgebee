@@ -60,7 +60,7 @@ var logger = slog.New(
 func authHandlerMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 
-		if strings.HasPrefix(c.Request.URL.Path, "/health") || strings.HasPrefix(c.Request.URL.Path, "/api/webhooks") || strings.HasPrefix(c.Request.URL.Path, "/swagger") || c.Request.URL.Path == "/openapi.json" {
+		if c.Request.URL.Path == "/health" || strings.HasPrefix(c.Request.URL.Path, "/api/webhooks") || strings.HasPrefix(c.Request.URL.Path, "/swagger") || c.Request.URL.Path == "/openapi.json" {
 			c.Set(CTX_IS_PUBLIC, true)
 			c.Next()
 			return
@@ -107,6 +107,30 @@ func cleanup() {
 // @in              header
 // @name            X-ACTION-TOKEN
 // @description     Internal service-to-service auth token. Default header name (configurable via `action_api_server_token_header`); value is the `action_api_server_token` config value.
+
+// newEngine returns the router with its middleware chain and the pprof routes.
+// API routes, and middleware that must not wrap pprof, are added by the caller.
+func newEngine() *gin.Engine {
+	r := gin.New()
+	r.Use(gin.Recovery())
+	// otelgin must run before sloggin so the server span is on the request
+	// context when the access log line is emitted with trace_id/span_id.
+	r.Use(otelgin.Middleware(config.SERVICE_NAME))
+	slogginConfig := sloggin.DefaultConfig()
+	slogginConfig.WithTraceID = true
+	slogginConfig.WithSpanID = true
+	// 499 is a request the caller abandoned (api.StatusClientClosedRequest). sloggin
+	// would log it at Warn like any 4xx; the handler already logs it at Info.
+	slogginConfig.Filters = []sloggin.Filter{sloggin.IgnorePath("/health"), sloggin.IgnoreStatus(api.StatusClientClosedRequest)}
+	r.Use(sloggin.NewWithConfig(logger, slogginConfig))
+	r.Use(traceResponseHeaderMiddleware())
+	r.Use(authHandlerMiddleware())
+	// Registered after the auth middleware: gin applies middleware only to routes
+	// added after Use, and heap dumps can contain decrypted credentials.
+	pprof.Register(r)
+	return r
+}
+
 func main() {
 	slog.SetDefault(logger)
 
@@ -201,21 +225,7 @@ func main() {
 	api.RunEEStartupHooks()
 
 	gin.SetMode(gin.ReleaseMode)
-	r := gin.New()
-	pprof.Register(r)
-	r.Use(gin.Recovery())
-	// otelgin must run before sloggin so the server span is on the request
-	// context when the access log line is emitted with trace_id/span_id.
-	r.Use(otelgin.Middleware(config.SERVICE_NAME))
-	slogginConfig := sloggin.DefaultConfig()
-	slogginConfig.WithTraceID = true
-	slogginConfig.WithSpanID = true
-	// 499 is a request the caller abandoned (api.StatusClientClosedRequest). sloggin
-	// would log it at Warn like any 4xx; the handler already logs it at Info.
-	slogginConfig.Filters = []sloggin.Filter{sloggin.IgnorePath("/health"), sloggin.IgnoreStatus(api.StatusClientClosedRequest)}
-	r.Use(sloggin.NewWithConfig(logger, slogginConfig))
-	r.Use(traceResponseHeaderMiddleware())
-	r.Use(authHandlerMiddleware())
+	r := newEngine()
 	r.Use(api.AccountTenantFloor())
 
 	var tracer = otel.Tracer(config.SERVICE_NAME)
