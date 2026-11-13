@@ -4,9 +4,10 @@ import { plusMinus5TimeRangePrometheusOfDate } from 'src/utils/common';
 import PropTypes from 'prop-types';
 import { ds } from 'src/utils/colors';
 import apiKubernetes1 from '@api1/kubernetes1';
+import { withUtcTimezone } from './timestamp';
 
 export const getDataFromProemtheus = async (event) => {
-  const startsAt = event.starts_at.endsWith('Z') ? event.starts_at : event.starts_at + 'Z';
+  const startsAt = withUtcTimezone(event.starts_at);
   const timeRange = plusMinus5TimeRangePrometheusOfDate(startsAt);
 
   try {
