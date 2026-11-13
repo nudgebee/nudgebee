@@ -497,7 +497,8 @@ type ListProviderCapabilitiesRequest struct {
 
 // GetLabelMappingRequest is the request for observability_get_label_mapping.
 type GetLabelMappingRequest struct {
-	AccountId string `json:"account_id" mapstructure:"account_id" validate:"required"`
+	AccountId     string `json:"account_id" mapstructure:"account_id" validate:"required"`
+	IntegrationId string `json:"integration_id" mapstructure:"integration_id"`
 	// ProviderType is accepted (and today must be "logs" or empty) so the trace
 	// mirror becomes an additive change rather than a contract break.
 	ProviderType string `json:"provider_type" mapstructure:"provider_type"`

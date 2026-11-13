@@ -127,7 +127,7 @@ const (
 )
 
 func GetChronosphereAuth(ctx *security.RequestContext, accountId string) (string, string, error) {
-	integrationDto, err := core.ListIntegrationConfigs(ctx, accountId, "chronosphere")
+	integrationDto, err := core.ListActiveIntegrationConfigs(ctx, accountId, "chronosphere")
 	if err != nil {
 		return "", "", fmt.Errorf("failed to get chronosphere integration: %w", err)
 	}

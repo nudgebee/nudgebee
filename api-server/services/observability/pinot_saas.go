@@ -51,7 +51,7 @@ type PinotConfig struct {
 
 // GetPinotConfig reads and decrypts the Pinot integration configuration.
 func GetPinotConfig(ctx *security.RequestContext, accountId string) (*PinotConfig, error) {
-	dtos, err := core.ListIntegrationConfigs(ctx, accountId, "pinot")
+	dtos, err := core.ListActiveIntegrationConfigs(ctx, accountId, "pinot")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pinot integration: %w", err)
 	}
