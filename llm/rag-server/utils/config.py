@@ -282,7 +282,8 @@ class Config:
     llm_server_url = os.environ.get("LLM_SERVER_URL", "")
     # llm-server's authHandlerMiddleware (cmd/main.go) requires this header on
     # every route when LLM_SERVER_TOKEN is configured server-side. Same shared
-    # secret both services already read; empty token means the gate is a no-op.
+    # secret both services already read; an empty token omits this header and
+    # fails against llm-server's required private-route authentication.
     llm_server_token = os.environ.get("LLM_SERVER_TOKEN", "")
     llm_server_token_header = os.environ.get("LLM_SERVER_TOKEN_HEADER", "X-ACTION-TOKEN")
 
