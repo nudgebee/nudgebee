@@ -22,6 +22,9 @@ import (
 
 // This is runtime integration coverage with a scripted model, not a model-quality benchmark.
 func TestMetricProvenancePlannerExecution(t *testing.T) {
+	if testing.Short() {
+		t.Skip("planner execution test uses long-running planner retries")
+	}
 	previous := config.Config
 	t.Cleanup(func() { config.Config = previous })
 	previousDAO := GetConversationDao()
