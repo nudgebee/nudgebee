@@ -28,6 +28,8 @@ def _any_active_account_id() -> str | None:
 
 
 def _fetch_catalog(account_id: str) -> List[Dict[str, Any]]:
+    if not account_id:
+        raise ValueError("account_id must be non-empty")
     url = Config.llm_server_url.rstrip("/") + "/v1/capabilities/catalog"
     headers = {Config.llm_server_token_header: Config.llm_server_token} if Config.llm_server_token else {}
     resp = httpx.post(url, json={"account_id": account_id}, headers=headers, timeout=_TIMEOUT_SECONDS)
