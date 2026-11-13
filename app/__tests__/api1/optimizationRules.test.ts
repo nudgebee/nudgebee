@@ -19,14 +19,13 @@ beforeEach(() => {
   query.mockResolvedValue({ data: { data: { recommendation_groupings_v2: { rows: [] } } } });
 });
 
-it('scopes optimization rules to the selected account', async () => {
-  await recommendationApi.getDistinctOptimizationRules(['aws-account']);
+it('scopes optimization rules to the selected provider accounts', async () => {
+  await recommendationApi.getDistinctOptimizationRules(['aws-account', 'aws-account-2']);
   expect(stringify).toHaveBeenCalledWith(
     {
       category: { _in: ['RightSizing', 'InfraUpgrade', 'Configuration', 'K8sSpotRecommendation'] },
       account_id: { _in: ['aws-account', 'aws-account-2'] },
-    },
-    []
+    }
   );
   expect(query).toHaveBeenCalledWith(expect.stringContaining('"account_id":{"_in":["aws-account","aws-account-2"]}'), 'GetDistinctOptimizationRules');
 });
