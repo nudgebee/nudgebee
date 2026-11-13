@@ -39,8 +39,8 @@ with `openssl rand -hex 32`; development example values are not production secre
 | Kubernetes collector | LLM trigger requests now read the token/header and retain tenant/user headers |
 | Benchmark tools | Standard client uses `LLM_SERVER_TOKEN`; tbench/orcabench/swebench supply `NUBI_TOKEN`, which must match the server token |
 
-`LLM_SERVER_TOKEN_HEADER` defaults to `X-ACTION-TOKEN`. If overriding it, configure
-the same name at both endpoints. Code-analysis workspace clients use workspace
-credentials on separately authenticated workspace routes; do not replace those
-credentials with the shared service token.
+`LLM_SERVER_TOKEN_HEADER` defaults to `X-ACTION-TOKEN`. Keep that default for the
+Kubernetes collector, which sends this header name directly. Code-analysis
+workspace clients use workspace credentials on separately authenticated
+workspace routes; do not replace those credentials with the shared service token.
 

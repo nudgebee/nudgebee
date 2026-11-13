@@ -3669,7 +3669,7 @@ class LLMTriggerHandler(BaseTriggerHandler):
             "Content-Type": "application/json",
         }
         if Configs.LLM_SERVER_TOKEN:
-            headers[Configs.LLM_SERVER_TOKEN_HEADER] = Configs.LLM_SERVER_TOKEN
+            headers["X-ACTION-TOKEN"] = Configs.LLM_SERVER_TOKEN
         return headers
 
     def _send_llm_request(self, url: str, payload: str, headers: Dict[str, str]):
