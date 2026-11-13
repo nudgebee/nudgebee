@@ -40,7 +40,8 @@ function promStepToSeconds(step: string) {
 
 // `parseFloat(v) || null` collapses a valid 0 reading to null; a metric value of
 // 0 is real data, so only missing or non-numeric values map to null.
-function parseMetric(value: string): number | null {
+function parseMetric(value: string | null | undefined): number | null {
+  if (value == null) return null;
   const parsed = parseFloat(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
