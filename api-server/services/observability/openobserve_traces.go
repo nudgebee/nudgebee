@@ -572,20 +572,41 @@ func parseOpenObserveTraceHits(hits []map[string]any) []common.OpenTelemetryTrac
 	return outputs
 }
 
+func buildOpenObserveTraceCountSQL(req TracesV3Request, stream string) (string, int, bool, error) {
+	whereClause, err := buildOpenObserveTraceWhereClause(req.QueryRequest.Where)
+	if err != nil {
+		return "", 0, false, err
+	}
+	limit, hasLimit := 0, false
+	if req.Query != "" {
+		parsed, where, err := openObserveRawQueryScope(req.Query, stream, whereClause)
+		if err != nil {
+			return "", 0, false, err
+		}
+		whereClause = where
+		if parsed.hasLimit {
+			limit, hasLimit = min(parsed.limit, 10000), true
+		}
+	}
+	if !integrations.IsSafeOpenObserveStreamName(stream) {
+		return "", 0, false, fmt.Errorf("invalid or unsafe stream name: %q", stream)
+	}
+	sql := fmt.Sprintf(`SELECT count(*) as count FROM "%s"`, stream)
+	if whereClause != "" {
+		sql += " WHERE " + whereClause
+	}
+	return sql, limit, hasLimit, nil
+}
+
 func (s *OpenObserveTraceSource) CountTraces(ctx *security.RequestContext, req TracesV3Request) (common.OpenTelemetryTraceCount, error) {
 	cfg, err := integrations.GetOpenObserveConfigs(ctx, req.AccountId)
 	if err != nil {
 		return common.OpenTelemetryTraceCount{}, fmt.Errorf("failed to get OpenObserve configs: %w", err)
 	}
 
-	whereClause, err := buildOpenObserveTraceWhereClause(req.QueryRequest.Where)
+	sql, rawLimit, hasRawLimit, err := buildOpenObserveTraceCountSQL(req, cfg.TraceStream)
 	if err != nil {
 		return common.OpenTelemetryTraceCount{}, err
-	}
-
-	sql := fmt.Sprintf(`SELECT count(*) as count FROM "%s"`, cfg.TraceStream)
-	if whereClause != "" {
-		sql += " WHERE " + whereClause
 	}
 
 	startTimeMicros := req.StartTime * 1000
@@ -638,6 +659,9 @@ func (s *OpenObserveTraceSource) CountTraces(ctx *security.RequestContext, req T
 		}
 	}
 
+	if hasRawLimit && count > rawLimit {
+		count = rawLimit
+	}
 	return common.OpenTelemetryTraceCount{Count: count}, nil
 }
 

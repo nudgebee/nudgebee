@@ -102,12 +102,19 @@ func TestOpenObserveLogRawSQLIncludesMappedStructuredFilter(t *testing.T) {
 
 func TestOpenObserveTraceRawSQLIncludesRootSpanFilter(t *testing.T) {
 	req := withOpenObserveRootSpans(TracesV3Request{
-		Query:        `SELECT * FROM default WHERE service_name = 'checkout'`,
+		Query:        `SELECT * FROM default WHERE service_name = 'checkout' LIMIT 50000`,
 		QueryRequest: TracesQueryBuilderRequest{Limit: 50},
 	})
 	sql, err := (&OpenObserveTraceSource{}).buildSQL(req, integrations.OpenObserveDefaultTraceStream)
 	require.NoError(t, err)
-	assert.Equal(t, `SELECT * FROM "default" WHERE (service_name = 'checkout') AND (reference_parent_span_id IS NULL) ORDER BY _timestamp DESC LIMIT 50`, sql)
+	where := `(service_name = 'checkout') AND (reference_parent_span_id IS NULL)`
+	assert.Equal(t, `SELECT * FROM "default" WHERE `+where+` ORDER BY _timestamp DESC LIMIT 50`, sql)
+
+	countSQL, rawLimit, hasRawLimit, err := buildOpenObserveTraceCountSQL(req, integrations.OpenObserveDefaultTraceStream)
+	require.NoError(t, err)
+	assert.Equal(t, `SELECT count(*) as count FROM "default" WHERE `+where, countSQL)
+	assert.Equal(t, 10000, rawLimit)
+	assert.True(t, hasRawLimit)
 }
 
 func TestOpenObserveTraceRawSQLIncludesMappedStandingFilter(t *testing.T) {
@@ -120,4 +127,13 @@ func TestOpenObserveTraceRawSQLIncludesMappedStandingFilter(t *testing.T) {
 	sql, err := (&OpenObserveTraceSource{}).buildSQL(req, integrations.OpenObserveDefaultTraceStream)
 	require.NoError(t, err)
 	assert.Equal(t, `SELECT * FROM "default" WHERE (service_name = 'frontend') AND (service_name = 'checkout') ORDER BY _timestamp DESC LIMIT 10000`, sql)
+}
+
+func TestOpenObserveRawTraceGroupingReturnsExplicitUnsupportedError(t *testing.T) {
+	source := &OpenObserveTraceSource{}
+	req := TracesV3Request{Query: `SELECT * FROM default WHERE service_name = 'checkout'`}
+	_, err := source.QueryGroupedTraces(nil, req)
+	require.ErrorContains(t, err, "not implemented")
+	_, err = source.QueryGroupedTracesCount(nil, req)
+	require.ErrorContains(t, err, "not implemented")
 }

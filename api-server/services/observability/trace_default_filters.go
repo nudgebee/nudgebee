@@ -96,22 +96,28 @@ func InvalidateDefaultTraceFiltersCache(accountId string) {
 //     execution. Other providers still fail closed. Resolution itself fails open,
 //     so an account with no filter configured is never affected.
 func ApplyDefaultTraceFilters(ctx *security.RequestContext, req *TracesV3Request) error {
+	if req == nil {
+		return nil
+	}
+	return applyDefaultTraceFiltersForSource(ctx, req, nil, req.ProviderType, req.ProviderSource)
+}
+
+func applyDefaultTraceFiltersForSource(ctx *security.RequestContext, req *TracesV3Request, source TraceSource, provider, providerSource string) error {
 	if req == nil || ctx == nil {
 		return nil
 	}
-	defaults := getDefaultTraceFilters(ctx, req.AccountId, req.ProviderType, req.ProviderSource)
+	defaults := getDefaultTraceFilters(ctx, req.AccountId, provider, providerSource)
+	return applyDefaultTraceFiltersToSource(req, defaults, source)
+}
+
+func applyDefaultTraceFiltersToSource(req *TracesV3Request, defaults query.QueryWhereClause, source TraceSource) error {
+	if req == nil {
+		return nil
+	}
 	if !hasWhereData(defaults) || req.Query == "" {
 		return applyDefaultTraceFilters(req, defaults)
 	}
-	provider, _, _, err := getLogsMetricsTracesProviderWithIntegration(ctx, req.AccountId, req.ProviderType, "traces", req.ProviderSource)
-	if err == nil && provider == "openobserve" {
-		return applyDefaultTraceFiltersForProvider(req, defaults, provider)
-	}
-	return applyDefaultTraceFilters(req, defaults)
-}
-
-func applyDefaultTraceFiltersForProvider(req *TracesV3Request, defaults query.QueryWhereClause, provider string) error {
-	if provider != "openobserve" || req == nil || req.Query == "" {
+	if _, ok := source.(*OpenObserveTraceSource); !ok {
 		return applyDefaultTraceFilters(req, defaults)
 	}
 	rawQuery := req.Query

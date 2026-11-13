@@ -28,17 +28,9 @@ const openObserveRawQueryMaxBytes = 16 * 1024
 // buildOpenObserveRawSQL permits only the typed source's SELECT * shape. Trusted
 // structured filters are ANDed into the raw predicate before the query is executed.
 func buildOpenObserveRawSQL(raw, stream, enforcedWhere, defaultOrder string, maxRows int) (string, error) {
-	parsed, err := parseOpenObserveRawSelect(raw, stream)
+	parsed, where, err := openObserveRawQueryScope(raw, stream, enforcedWhere)
 	if err != nil {
 		return "", err
-	}
-	where := parsed.where
-	if enforcedWhere != "" {
-		if where != "" {
-			where = "(" + where + ") AND (" + enforcedWhere + ")"
-		} else {
-			where = enforcedWhere
-		}
 	}
 	if parsed.order == "" {
 		parsed.order = defaultOrder
@@ -54,6 +46,22 @@ func buildOpenObserveRawSQL(raw, stream, enforcedWhere, defaultOrder string, max
 		return fmt.Sprintf(`SELECT * FROM "%s" ORDER BY %s LIMIT %d`, stream, parsed.order, limit), nil
 	}
 	return fmt.Sprintf(`SELECT * FROM "%s" WHERE %s ORDER BY %s LIMIT %d`, stream, where, parsed.order, limit), nil
+}
+
+func openObserveRawQueryScope(raw, stream, enforcedWhere string) (openObserveRawSelect, string, error) {
+	parsed, err := parseOpenObserveRawSelect(raw, stream)
+	if err != nil {
+		return openObserveRawSelect{}, "", err
+	}
+	where := parsed.where
+	if enforcedWhere != "" {
+		if where != "" {
+			where = "(" + where + ") AND (" + enforcedWhere + ")"
+		} else {
+			where = enforcedWhere
+		}
+	}
+	return parsed, where, nil
 }
 
 func parseOpenObserveRawSelect(raw, stream string) (openObserveRawSelect, error) {
