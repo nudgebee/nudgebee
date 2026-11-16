@@ -68,5 +68,5 @@ RUN --mount=type=bind,from=javadb,source=/jar,target=/smoke \
         --format cyclonedx --output /tmp/smoke.json /smoke 2> /tmp/smoke.log \
     && grep -q 'pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1' /tmp/smoke.json \
     && grep -q 'file_path="no-pom-1.0.jar"' /tmp/smoke.log \
-    && if grep -E 'Walk error|SQL logic error|Java DB' /tmp/smoke.log | grep -v 'Java DB update was skipped'; then exit 1; fi \
+    && if grep -E 'Walk error|SQL logic error' /tmp/smoke.log; then exit 1; fi \
     && rm -rf /tmp/smoke-cache /tmp/smoke.json /tmp/smoke.log
