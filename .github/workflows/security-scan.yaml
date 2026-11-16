@@ -242,7 +242,7 @@ jobs:
           # --- on-demand scanner images the platform launches ---
           - ghcr.io/nudgebee/nova:2026-11-01T06-52-28_672e9c0c399afd5b92709ce34a52434e6f05d603
           - ghcr.io/nudgebee/kube-bench:v0.16.0-nb2
-          - ghcr.io/nudgebee/trivy:0.76.1-nb2
+          - ghcr.io/nudgebee/trivy:0.76.1-nb3
           - ghcr.io/nudgebee/popeye:v0.11.1-nudgebee.2
           # --- agent-chart runtime dependencies (clickhouse mirror + otel) ---
           - ghcr.io/nudgebee/clickhouse:24.12.4-debian-12-r0-nb-3
