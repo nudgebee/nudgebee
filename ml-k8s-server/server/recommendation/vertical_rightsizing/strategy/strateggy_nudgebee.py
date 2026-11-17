@@ -95,15 +95,17 @@ class NudgebeeStrategySettings(StrategySettings):
     def calculate_cpu_proposal(self, data: Dict[str, PodsTimeData]) -> Dict[str, float]:
         result = {}
         for percentile_name, per_data in data.items():
-            if len(per_data) == 0:
+            # Ignore scrape gaps so one unavailable pod cannot hide valid CPU data.
+            data_ = [
+                float(np.nanmax(values[:, 1]))
+                for values in per_data.values()
+                if len(values) > 0 and not np.isnan(values[:, 1]).all()
+            ]
+            if len(data_) == 0:
                 result[percentile_name] = float("NaN")
                 continue
 
-            if len(per_data) > 1:
-                data_ = np.concatenate([values[:, 1] for values in per_data.values()])
-            else:
-                data_ = list(per_data.values())[0][:, 1]
-            result[percentile_name] = np.max(data_)
+            result[percentile_name] = max(data_)
         return result
 
 
