@@ -154,14 +154,10 @@ func openObserveSimpleOrder(tokens []openObserveSQLToken) (string, bool) {
 	var out []string
 	for i := 0; i < len(tokens); {
 		field := tokens[i]
-		if (field.kind != 'w' && field.kind != 'i') || field.depth != 0 || !isSafeIdentifier(field.text) {
+		if field.kind != 'w' || field.depth != 0 || !isSafeIdentifier(field.text) {
 			return "", false
 		}
-		fieldName := field.text
-		if field.kind == 'i' {
-			fieldName = `"` + fieldName + `"`
-		}
-		out = append(out, fieldName)
+		out = append(out, field.text)
 		i++
 		if i < len(tokens) && (openObserveWord(tokens[i], "asc") || openObserveWord(tokens[i], "desc")) {
 			out = append(out, strings.ToUpper(tokens[i].text))

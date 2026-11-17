@@ -26,10 +26,9 @@ func TestBuildOpenObserveRawSQLUsesStructuredFilterWithoutRawWhere(t *testing.T)
 	assert.Equal(t, `SELECT * FROM "logs" WHERE service_name = 'api' ORDER BY _timestamp DESC LIMIT 25`, sql)
 }
 
-func TestOpenObserveRawSQLPreservesQuotedOrderIdentifiers(t *testing.T) {
-	sql, err := buildOpenObserveRawSQL(`SELECT * FROM logs ORDER BY "order" ASC`, "logs", "", "_timestamp DESC", 10)
-	require.NoError(t, err)
-	assert.Equal(t, `SELECT * FROM "logs" ORDER BY "order" ASC LIMIT 10`, sql)
+func TestOpenObserveRawSQLRejectsQuotedOrderIdentifiers(t *testing.T) {
+	_, err := buildOpenObserveRawSQL(`SELECT * FROM logs ORDER BY "order" ASC`, "logs", "", "_timestamp DESC", 10)
+	require.Error(t, err)
 }
 
 func TestOpenObserveRawSQLKeepsQuotedKeywordsAndDoubledQuotesInPredicate(t *testing.T) {
