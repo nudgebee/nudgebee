@@ -114,18 +114,18 @@ func (d *dummyAwsProvider) ListResources(ctx providers.CloudProviderContext, acc
 	return providers.ListResourcesResponse{Items: []providers.Resource{{Id: "dummy-resource", Name: "Dummy Resource", ServiceName: query.ServiceName}}}, nil
 }
 
-func (d *dummyAwsProvider) LookupCloudTrailEvents(ctx providers.CloudProviderContext, account providers.Account, region string, input *cloudtrail.LookupEventsInput) ([]types.Event, error) {
+func (d *dummyAwsProvider) LookupCloudTrailEvents(ctx providers.CloudProviderContext, account providers.Account, region string, input *cloudtrail.LookupEventsInput) (*cloudtrail.LookupEventsOutput, error) {
 	d.lookupCloudTrailEventsCallCount++
 	d.lookupCloudTrailEventsLastArgs.input = input
 	ctx.GetLogger().Info("dummyAwsProvider: LookupCloudTrailEvents called", "region", region, "input", fmt.Sprintf("%+v", input))
 
 	sampleEventTime := time.Now()
-	return []types.Event{{
+	return &cloudtrail.LookupEventsOutput{Events: []types.Event{{
 		EventId:         ptr.String("dummy-cloudtrail-event-id"),
 		EventName:       ptr.String("DummyEventName"),
 		EventTime:       &sampleEventTime,
 		CloudTrailEvent: ptr.String(`{"userIdentity":{"type":"DummyUser"},"eventSource":"dummy.amazonaws.com"}`),
-	}}, nil
+	}}}, nil
 }
 func (d *dummyAwsProvider) GetECSServiceDetails(ctx providers.CloudProviderContext, account providers.Account, region, clusterIdentifier, serviceIdentifier string) (providers.Resource, error) {
 	d.getECSServiceDetailsCallCount++

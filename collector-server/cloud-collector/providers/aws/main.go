@@ -966,7 +966,7 @@ func (a *awsProvider) GetECSTaskDefinitionDetails(ctx providers.CloudProviderCon
 
 // LookupCloudTrailEvents implements the awsProviderAPI method to fetch CloudTrail events.
 // This wraps the cloudtrail.LookupEvents API call.
-func (a *awsProvider) LookupCloudTrailEvents(ctx providers.CloudProviderContext, account providers.Account, region string, input *cloudtrail.LookupEventsInput) ([]trailtypes.Event, error) {
+func (a *awsProvider) LookupCloudTrailEvents(ctx providers.CloudProviderContext, account providers.Account, region string, input *cloudtrail.LookupEventsInput) (*cloudtrail.LookupEventsOutput, error) {
 	logger := ctx.GetLogger()
 	cfg, err := getAwsConfigFromAccount(ctx.GetContext(), account)
 	if err != nil {
@@ -992,11 +992,7 @@ func (a *awsProvider) LookupCloudTrailEvents(ctx providers.CloudProviderContext,
 
 	svc := cloudtrail.NewFromConfig(cfg)
 
-	// Note: This implementation does NOT handle pagination (NextToken).
-	// For action use cases, MaxResults is typically sufficient.
-	// If full historical lookup is needed, pagination would be required here.
-	output, err := svc.LookupEvents(ctx.GetContext(), input)
-	return output.Events, err
+	return svc.LookupEvents(ctx.GetContext(), input)
 }
 
 func (a *awsProvider) DescribeECSTasks(ctx providers.CloudProviderContext, account providers.Account, region, clusterIdentifier string, taskArns []string) ([]ecstypes.Task, error) {
