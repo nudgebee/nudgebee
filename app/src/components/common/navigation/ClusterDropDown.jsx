@@ -210,6 +210,9 @@ const ClusterDropdown = ({ onChange, onClusterDataLoaded, disableRouteChanges = 
       // Handler: User Manually Changes Dropdown
       const newValue = e.target.value;
       const newClusterObj = allCluster?.find((item) => item.value === newValue);
+      // router.push below is async, so the URL still reads the old id for a tick --
+      // mark it overridden or the Back/Forward sync effect reverts this pick.
+      overriddenUrlIdRef.current = urlAccountId;
       setClusterValue(newValue); // 1. Update Local State
       userApi.storeUserPreferences(PREFERENCE_LAST_ACCOUNT_ID, newValue); // 2. Persist Preference
       if (newClusterObj?.cloud_provider) {
@@ -231,7 +234,7 @@ const ClusterDropdown = ({ onChange, onClusterDataLoaded, disableRouteChanges = 
         }
       }
     },
-    [allCluster, disableRouteChanges, router, onChange, setSelectedCluster, fetchProviderCapabilities, tenantId]
+    [allCluster, disableRouteChanges, router, onChange, setSelectedCluster, fetchProviderCapabilities, tenantId, urlAccountId]
   );
 
   return (

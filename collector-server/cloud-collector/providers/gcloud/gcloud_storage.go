@@ -108,15 +108,6 @@ func (s *cloudStorageService) bucketToResource(bucket *storage.BucketAttrs, proj
 	}
 }
 
-func normalizeGCPLocation(location string) string {
-	// Cloud Storage locations can be:
-	// - Regional: us-central1, europe-west1
-	// - Multi-regional: us, eu, asia
-	// - Dual-region: nam4, eur4
-	// Return as-is, converted to lowercase for consistency
-	return strings.ToLower(location)
-}
-
 func (s *cloudStorageService) GetRecommendations(ctx providers.CloudProviderContext, account providers.Account, filter providers.ListRecommendationsRequest, existingResources []providers.Resource) ([]providers.Recommendation, error) {
 	recommendations := []providers.Recommendation{}
 

@@ -846,6 +846,31 @@ func storeResourcesInsert(ctx *security.RequestContext, dbms *common.DatabaseMan
 			}
 		}
 
+		// nb-40328: the AWS/GCP conflict clause above deliberately skips `region`,
+		// so any provider's casing fix for region (not just the BigQuery one that
+		// prompted this) never reaches pre-existing rows. Backfill here for every
+		// AWS/GCP service, case-only, guarded against the 5-column unique index.
+		if !strings.EqualFold(cloudProvider, "azure") {
+			if _, normalizeErr := tx.Exec(`
+				update cloud_resourses t
+				set region = lower(t.region)
+				where t.account = $1
+				  and lower(t.service_name) = $2
+				  and t.region <> lower(t.region)
+				  and not exists (
+				    select 1 from cloud_resourses d
+				    where d.account = t.account
+				      and d.resourse_id = t.resourse_id
+				      and d.type = t.type
+				      and d.service_name = t.service_name
+				      and d.region = lower(t.region)
+				      and d.id <> t.id
+				  )`,
+				accountId, strings.ToLower(serviceName)); normalizeErr != nil {
+				return nil, fmt.Errorf("normalize stored region casing for %s: %w", serviceName, normalizeErr)
+			}
+		}
+
 		// Reconcile billing-sourced resources: API discovery is source of truth.
 		// Deactivate billing resources for this service/account/regions that were NOT returned by the API.
 		fetchedIDs := make([]string, 0, len(resourceMap))

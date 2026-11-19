@@ -85,6 +85,20 @@ func getGcloudSessionFromAccount(ctx providers.CloudProviderContext, account pro
 	return gcloudAuthSession{}, fmt.Errorf("missing credentials: either AccessSecret must be set on account or GOOGLE_APPLICATION_CREDENTIALS must point to a service account key file")
 }
 
+// normalizeGCPLocation normalizes a GCP location string for consistent region
+// filtering across services. Locations can be:
+// - Regional: us-central1, europe-west1
+// - Multi-regional: us, eu, asia
+// - Dual-region: nam4, eur4
+// GCP's APIs are inconsistent about multi-region casing across services (e.g.
+// BigQuery returns "US", Cloud Storage returns "US" too but we'd lowercased
+// only that path previously). Every GCP service that sets providers.Resource.Region
+// from a raw API location must go through this so the same region never shows
+// up under two different casings in the frontend filter.
+func normalizeGCPLocation(location string) string {
+	return strings.ToLower(location)
+}
+
 // GetInstanceNumericIdFromResourceId extracts instance information from a resource ID and fetches its numeric ID from GCP.
 // This is useful for services that need to query logs or metrics using the numeric instance ID.
 //

@@ -46,6 +46,10 @@ func TestTableToResourceMetaIsCompactAndReadable(t *testing.T) {
 
 	res := (&bigQueryService{}).tableToResource("ds", "big_table", md, "US", "proj")
 
+	// nb-40328: BigQuery's "US" location must normalize the same way Cloud
+	// Storage's does, so the two services don't produce two Region filter entries.
+	assert.Equal(t, "us", res.Region, "table Region must be lowercased for cross-service filter consistency")
+
 	// Column schema must never survive into Meta, under any key or casing.
 	for _, k := range []string{"Schema", "schema", "ExternalDataConfig", "externalDataConfig"} {
 		if v, ok := res.Meta[k]; ok {
@@ -88,6 +92,8 @@ func TestDatasetToResourceMetaReadable(t *testing.T) {
 
 	res := (&bigQueryService{}).datasetToResource("analytics", md, "proj")
 
+	// nb-40328: see TestNormalizeGCPLocation / TestTableToResourceMetaIsCompactAndReadable.
+	assert.Equal(t, "us", res.Region, "dataset Region must be lowercased for cross-service filter consistency")
 	assert.True(t, hasDefaultTableExpiration(res.Meta), "hasDefaultTableExpiration must read defaultTableExpiration")
 	assert.True(t, hasCMEK(res.Meta), "hasCMEK must read defaultEncryptionConfiguration.kmsKeyName")
 	assert.Equal(t, "projects/proj/datasets/analytics", res.Meta["selfLink"])

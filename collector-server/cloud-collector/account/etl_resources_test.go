@@ -1,16 +1,20 @@
 package account
 
 import (
+	"nudgebee/collector/cloud/common"
 	"nudgebee/collector/cloud/providers"
 	"nudgebee/collector/cloud/security"
 	"os"
 	"testing"
+	"time"
 
 	_ "nudgebee/collector/cloud/providers/aws"
 	_ "nudgebee/collector/cloud/providers/azure"
 	_ "nudgebee/collector/cloud/providers/gcloud"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestResolveGCPCrawlRegions proves the region set fed to the GCP crawl: the
@@ -31,6 +35,61 @@ func TestResolveGCPCrawlRegionsEmpty(t *testing.T) {
 	assert.Empty(t, resolveGCPCrawlRegions(nil, nil, nil))
 	// Only junk in → nothing crawlable out.
 	assert.Empty(t, resolveGCPCrawlRegions([]string{"global", "us"}, nil, []string{"eu"}))
+}
+
+// TestStoreResourcesInsertBackfillsStaleRegionCasing guards nb-40328: the
+// AWS/GCP conflict clause in storeResourcesInsert deliberately skips `region`
+// on update, so a row written before a region-casing fix shipped (e.g.
+// normalizeGCPLocation for BigQuery) would otherwise keep its stale casing
+// forever even though every later sync recomputes it correctly.
+func TestStoreResourcesInsertBackfillsStaleRegionCasing(t *testing.T) {
+	dbms := deriveTestDatabase(t)
+	accountId := uuid.New().String()
+	tenantId := uuid.New().String()
+	ctx := security.NewRequestContextForTenantAdmin(tenantId)
+
+	externalId := common.BuildExternalResourceId("gcp", accountId, "US", "BigQuery", "bigquery.googleapis.com/Dataset", "ds1", "")
+
+	// Simulate a dataset row synced before normalizeGCPLocation() shipped.
+	_, err := dbms.Exec(`insert into cloud_resourses
+		(id, account, cloud_provider, resourse_id, type, region, service_name, external_resource_id, is_active)
+		values ($1, $2, 'gcp', 'ds1', 'bigquery.googleapis.com/Dataset', 'US', 'BigQuery', $3, true)`,
+		uuid.New().String(), accountId, externalId)
+	require.NoError(t, err)
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	resourceMap := map[string]map[string]any{
+		externalId: {
+			"id":                   uuid.New().String(),
+			"created_at":           now,
+			"created_by":           nil,
+			"updated_at":           now,
+			"updated_by":           nil,
+			"resourse_id":          "ds1",
+			"name":                 "ds1",
+			"type":                 "bigquery.googleapis.com/Dataset",
+			"status":               "Active",
+			"resourse_created_on":  time.Now().UTC(),
+			"account":              accountId,
+			"cloud_provider":       "gcp",
+			"region":               "us", // normalized, as the fixed collector now computes it
+			"arn":                  "projects/proj/datasets/ds1",
+			"tenant":               tenantId,
+			"tags":                 "{}",
+			"meta":                 "{}",
+			"service_name":         "BigQuery",
+			"first_seen":           now,
+			"last_seen":            now,
+			"is_active":            true,
+			"external_resource_id": externalId,
+		},
+	}
+
+	require.NoError(t, storeResourcesInsert(ctx, dbms, accountId, "BigQuery", resourceMap, nil))
+
+	var region string
+	require.NoError(t, dbms.QueryRowAndScan(&region, `select region from cloud_resourses where account = $1 and resourse_id = 'ds1'`, accountId))
+	assert.Equal(t, "us", region, "pre-existing row's stale 'US' casing must be backfilled to 'us'")
 }
 
 func TestStoreResourcesAwsEc2(t *testing.T) {

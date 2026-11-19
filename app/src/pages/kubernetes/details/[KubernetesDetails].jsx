@@ -152,6 +152,7 @@ import { Chip } from '@ui/Chip';
 import apiRecommendations from '@api1/recommendation';
 import { EmptyState } from '@ui/EmptyState';
 import SafeIcon from '@shared/icons/SafeIcon';
+import { isCloudProvider, isSelfHostedProvider } from '@components/overview/providers';
 
 const KubernetesLogs = dynamic(() => import('@components/k8s/details/KubernetesLogs'), {
   ssr: false,
@@ -398,6 +399,19 @@ const KubernetesDetails = () => {
   }, [podTab]);
 
   const kubeId = router.query.KubernetesDetails;
+
+  // This route renders K8s accounts only -- redirect a VM/cloud account to its
+  // own page instead. Gated on selectedCluster matching kubeId so we
+  // don't redirect on the previous account's provider mid-resolve.
+  useEffect(() => {
+    if (!kubeId || selectedCluster?.value !== kubeId) return;
+    if (isSelfHostedProvider(selectedCluster?.cloud_provider)) {
+      router.replace(`/vm?accountId=${kubeId}#summary`);
+    } else if (isCloudProvider(selectedCluster?.cloud_provider)) {
+      router.replace(`/cloud-account/details/${kubeId}#summary`);
+    }
+  }, [kubeId, selectedCluster, router]);
+
   const [clusterSummary, setClusterSummary] = useState({});
   const [selectedTab, setSelectedTab] = useState(null);
   const [selectedSubTab, setSelectedSubTab] = useState(0);
