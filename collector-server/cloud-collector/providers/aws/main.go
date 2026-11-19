@@ -996,7 +996,10 @@ func (a *awsProvider) LookupCloudTrailEvents(ctx providers.CloudProviderContext,
 	// For action use cases, MaxResults is typically sufficient.
 	// If full historical lookup is needed, pagination would be required here.
 	output, err := svc.LookupEvents(ctx.GetContext(), input)
-	return output.Events, err
+	if err != nil {
+		return nil, err
+	}
+	return output.Events, nil
 }
 
 func (a *awsProvider) DescribeECSTasks(ctx providers.CloudProviderContext, account providers.Account, region, clusterIdentifier string, taskArns []string) ([]ecstypes.Task, error) {
