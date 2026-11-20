@@ -2493,7 +2493,7 @@ const apiKubernetes1 = {
 
     try {
       return await queryGraphQL(
-        DORA_AGGREGATES.replaceAll('__WHERE_DEPLOYS__', gqlStringify(deploys)).replaceAll('__WHERE_RECOVERY__', gqlStringify(recovery)),
+        DORA_AGGREGATES.replace(/__WHERE_DEPLOYS__/g, gqlStringify(deploys)).replace(/__WHERE_RECOVERY__/g, gqlStringify(recovery)),
         'TroubleshootDoraAggregates',
         {}
       );
