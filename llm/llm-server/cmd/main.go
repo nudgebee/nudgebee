@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"fmt"
 	"log/slog"
@@ -101,19 +102,18 @@ func authHandlerMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// Single auth contract: if LLM_SERVER_TOKEN is configured, every
-		// request must carry a matching header; if it's unset, the gate is a
-		// no-op. Actual user authentication happens at the api-server layer
-		// — this token only authenticates service-to-service callers
-		// (frontend gateway, notifications-server, etc.) when the operator
-		// chose to enforce it.
-		if config.Config.LlmServerToken != "" {
-			authHeader := c.Request.Header.Get(config.Config.LlmServerTokenHeader)
-			if !api.ServiceTokenMatches(authHeader) {
-				logger.Error("main: invalid service token", "path", c.Request.URL.Path, "method", c.Request.Method)
-				c.AbortWithStatusJSON(401, gin.H{"message": "invalid " + config.Config.LlmServerTokenHeader})
-				return
-			}
+		// Actual user authentication happens at the api-server layer; this token
+		// authenticates service-to-service callers (frontend gateway, notifications-server, etc.).
+		if config.Config.LlmServerToken == "" {
+			logger.Error("main: service token is not configured", "path", c.Request.URL.Path, "method", c.Request.Method)
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"message": "service authentication is not configured"})
+			return
+		}
+		authHeader := c.Request.Header.Get(config.Config.LlmServerTokenHeader)
+		if !serviceTokenMatches(authHeader, config.Config.LlmServerToken) {
+			logger.Error("main: invalid service token", "path", c.Request.URL.Path, "method", c.Request.Method)
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"message": "invalid " + config.Config.LlmServerTokenHeader})
+			return
 		}
 		c.Set(CTX_IS_PUBLIC, false)
 		c.Next()
@@ -128,13 +128,21 @@ func debugRequestAuthorized(req *http.Request) bool {
 	if token == "" {
 		return false
 	}
-	// Length check first so an oversized header is never copied for comparison.
 	headerToken := req.Header.Get(config.Config.LlmServerTokenHeader)
-	if len(headerToken) == len(token) && subtle.ConstantTimeCompare([]byte(headerToken), []byte(token)) == 1 {
+	if serviceTokenMatches(headerToken, token) {
 		return true
 	}
 	bearer, ok := strings.CutPrefix(req.Header.Get("Authorization"), "Bearer ")
-	return ok && len(bearer) == len(token) && subtle.ConstantTimeCompare([]byte(bearer), []byte(token)) == 1
+	return ok && serviceTokenMatches(bearer, token)
+}
+
+func serviceTokenMatches(candidate, configured string) bool {
+	if configured == "" {
+		return false
+	}
+	candidateHash := sha256.Sum256([]byte(candidate))
+	configuredHash := sha256.Sum256([]byte(configured))
+	return subtle.ConstantTimeCompare(candidateHash[:], configuredHash[:]) == 1
 }
 
 // newRouter builds the engine with every global middleware attached. Gin only
