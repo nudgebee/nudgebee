@@ -66,6 +66,7 @@ const headCellSx = {
 
 export default function EffectiveLabelMappingPanel({
   accountId,
+  integrationId,
   provider,
   providerSource,
   draftMappings,
@@ -97,6 +98,7 @@ export default function EffectiveLabelMappingPanel({
     try {
       const data = await observability.getLabelMapping({
         account_id: accountId,
+        integration_id: integrationId,
         provider,
         provider_source: providerSource || 'user',
         provider_type: providerType,
@@ -111,7 +113,7 @@ export default function EffectiveLabelMappingPanel({
       if (seq !== seqRef.current) return;
       setState({ loading: false, data: null, error: err?.message || 'Could not resolve the effective mapping.' });
     }
-  }, [accountId, provider, providerSource, providerType, draftKey]);
+  }, [accountId, integrationId, provider, providerSource, providerType, draftKey]);
 
   useEffect(() => {
     // Debounced: typing a field name should not fire a request per keystroke. The
@@ -308,6 +310,7 @@ export default function EffectiveLabelMappingPanel({
 
 EffectiveLabelMappingPanel.propTypes = {
   accountId: PropTypes.string,
+  integrationId: PropTypes.string,
   provider: PropTypes.string,
   providerSource: PropTypes.string,
   // Canonical -> provider field, as currently typed in the card (may be unsaved).

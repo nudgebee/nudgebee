@@ -171,7 +171,12 @@ func GetLogLabelMapping(ctx *security.RequestContext, request GetLabelMappingReq
 	// returns a nil DTO whenever the caller pins both provider and source — which the
 	// integration form always does — so trusting it would report every saved integration
 	// as unsaved and make the panel label live mappings "(unsaved)".
-	_, integrationSaved := lookupLogIntegrationConfigs(ctx, request.AccountId, provider, integrationSource)
+	var integrationSaved bool
+	if request.IntegrationId != "" {
+		integrationSaved = integrationSavedByID(ctx, request.AccountId, provider, integrationSource, request.IntegrationId)
+	} else {
+		_, integrationSaved = lookupLogIntegrationConfigs(ctx, request.AccountId, provider, integrationSource)
+	}
 
 	resolved := resolveLogLabelMapping(ctx, request.AccountId, source, draft)
 	return LabelMappingResponse{

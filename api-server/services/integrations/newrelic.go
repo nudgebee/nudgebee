@@ -175,7 +175,7 @@ func GetNewRelicConfigs(sc *security.RequestContext, accountId string) (string, 
 	nrAccountId := ""
 	region := NewRelicRegionUS
 
-	newRelicIntegrations, err := core.ListIntegrationConfigs(sc, accountId, IntegrationNewRelic)
+	newRelicIntegrations, err := core.ListActiveIntegrationConfigs(sc, accountId, IntegrationNewRelic)
 	if err != nil {
 		return apiKey, nrAccountId, region, fmt.Errorf("failed to list New Relic integration configs: %w", err)
 	}
@@ -209,7 +209,7 @@ func GetNewRelicConfigs(sc *security.RequestContext, accountId string) (string, 
 // or the stored value is empty/unrecognized. Errors are returned only for hard
 // integration-config lookup failures; missing config is not an error.
 func GetNewRelicKGSource(sc *security.RequestContext, accountId string) (string, error) {
-	configs, err := core.ListIntegrationConfigs(sc, accountId, IntegrationNewRelic)
+	configs, err := core.ListActiveIntegrationConfigs(sc, accountId, IntegrationNewRelic)
 	if err != nil {
 		return NewRelicKGSourceNRQL, fmt.Errorf("failed to list New Relic integration configs: %w", err)
 	}

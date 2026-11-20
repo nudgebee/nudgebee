@@ -31,7 +31,7 @@ func newLokiSaasCtx() *security.RequestContext {
 func patchLokiIntegration(t *testing.T, dtos []core.IntegrationDto) {
 	t.Helper()
 	patches := gomonkey.NewPatches()
-	patches.ApplyFunc(core.ListIntegrationConfigs,
+	patches.ApplyFunc(core.ListActiveIntegrationConfigs,
 		func(_ *security.RequestContext, _ string, _ string) ([]core.IntegrationDto, error) {
 			return dtos, nil
 		})

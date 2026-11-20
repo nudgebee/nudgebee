@@ -1090,7 +1090,25 @@ func applyLLMTenantDefault(dbms sqlx.Execer, tenantId, userId, integrationId, va
 	return cleared == 0, nil
 }
 
+// Keep this entry point patchable by provider tests that replace its DB lookup.
+//
+//go:noinline
 func ListIntegrationConfigs(context *security.RequestContext, accountId string, integrationName string) ([]IntegrationDto, error) {
+	return listIntegrationConfigs(context, accountId, integrationName, false)
+}
+
+// ListActiveIntegrationConfigs returns non-disabled integrations for an account.
+// Keep it patchable by tests that replace its DB lookup.
+//
+//go:noinline
+func ListActiveIntegrationConfigs(context *security.RequestContext, accountId string, integrationName string) ([]IntegrationDto, error) {
+	if accountId == "" {
+		return nil, errors.New("integrations: accountId is required")
+	}
+	return listIntegrationConfigs(context, accountId, integrationName, true)
+}
+
+func listIntegrationConfigs(context *security.RequestContext, accountId string, integrationName string, activeOnly bool) ([]IntegrationDto, error) {
 	configs := []IntegrationDto{}
 
 	if integrationName == "" {
@@ -1129,8 +1147,13 @@ func ListIntegrationConfigs(context *security.RequestContext, accountId string, 
 
 	// Use string interpolation via BuildInClause instead of parameterized queries ($1, $2, $3)
 	// to avoid lib/pq unnamed prepared statement collisions under concurrent goroutines.
+	selectKeyword := "SELECT"
+	if activeOnly {
+		// A single account can link an integration under more than one role.
+		selectKeyword = "SELECT DISTINCT"
+	}
 	query := fmt.Sprintf(`
-		SELECT i.id::text,
+		%s i.id::text,
 		       i.tenant_id::text,
 		       ica.cloud_account_id::text AS account_id,
 		       i.name::text,
@@ -1142,11 +1165,14 @@ func ListIntegrationConfigs(context *security.RequestContext, accountId string, 
 		  ON i.id = ica.integration_id
 		WHERE i.type = %s
 		  AND i.tenant_id = %s
-	`, dbms.BuildInClause(integrationName), dbms.BuildInClause(tenantId))
+	`, selectKeyword, dbms.BuildInClause(integrationName), dbms.BuildInClause(tenantId))
 
 	var rows *sqlx.Rows
 	if accountId != "" {
 		query += fmt.Sprintf(" AND ica.cloud_account_id = %s", dbms.BuildInClause(accountId))
+	}
+	if activeOnly {
+		query += " AND i.status != 'disabled' AND ica.tenant_id = i.tenant_id AND EXISTS (SELECT 1 FROM cloud_accounts ca WHERE ca.id = ica.cloud_account_id AND ca.tenant = i.tenant_id)"
 	}
 	rows, err = dbms.Db.Queryx(query)
 	if err != nil {
@@ -2094,11 +2120,21 @@ func ConnectionNotesForIntegration(ctx *security.RequestContext, integrationType
 		return nil
 	}
 
-	rows, err := ListIntegrationConfigs(ctx, accountID, integrationType)
+	rows, err := ListActiveIntegrationConfigs(ctx, accountID, integrationType)
 	if err != nil || len(rows) == 0 {
 		return nil
 	}
-	values, err := DecryptConfigValues(rows[0].Configs)
+	var values []IntegrationConfigValue
+	for _, row := range rows {
+		if row.Source == source {
+			values = row.Configs
+			break
+		}
+	}
+	if values == nil {
+		return nil
+	}
+	values, err = DecryptConfigValues(values)
 	if err != nil {
 		// Advisory: failing to read a note must not surface as a fault.
 		ctx.GetLogger().Warn("integrations: could not decrypt config for connection notes",

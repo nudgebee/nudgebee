@@ -318,7 +318,7 @@ func GetObserveConfigs(sc *security.RequestContext, accountId string) (ObserveCo
 	logDatasetID := ""
 	domain := ""
 
-	observeIntegrations, err := core.ListIntegrationConfigs(sc, accountId, IntegrationObserve)
+	observeIntegrations, err := core.ListActiveIntegrationConfigs(sc, accountId, IntegrationObserve)
 	if err != nil {
 		return ObserveConfig{}, fmt.Errorf("failed to list observe integration configs: %w", err)
 	}

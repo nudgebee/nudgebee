@@ -205,7 +205,7 @@ func lookupIntegrationConfigs(ctx *security.RequestContext, accountId, provider,
 
 	// The resolver DTO carries no Configs; re-list to get the populated config
 	// values (same path GetPinotConfig uses).
-	dtos, err := core.ListIntegrationConfigs(ctx, accountId, provider)
+	dtos, err := core.ListActiveIntegrationConfigs(ctx, accountId, provider)
 	if err != nil || len(dtos) == 0 {
 		return nil, false
 	}
@@ -235,6 +235,22 @@ func lookupIntegrationConfigs(ctx *security.RequestContext, accountId, provider,
 		}
 	}
 	return nil, false
+}
+
+func integrationSavedByID(ctx *security.RequestContext, accountId, provider, source, integrationID string) bool {
+	if integrationID == "" {
+		return false
+	}
+	dtos, err := core.ListIntegrationConfigs(ctx, accountId, provider)
+	if err != nil {
+		return false
+	}
+	for _, dto := range dtos {
+		if dto.Id == integrationID && dto.Source == source {
+			return true
+		}
+	}
+	return false
 }
 
 // loadDefaultLogFilters resolves the account's log integration for this

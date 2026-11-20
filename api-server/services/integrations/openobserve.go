@@ -378,12 +378,15 @@ func GetOpenObserveConfigs(sc *security.RequestContext, accountId string) (OpenO
 		TraceStream: OpenObserveDefaultTraceStream,
 	}
 
-	openobserveIntegrations, err := core.ListIntegrationConfigs(sc, accountId, IntegrationOpenObserve)
+	openobserveIntegrations, err := core.ListActiveIntegrationConfigs(sc, accountId, IntegrationOpenObserve)
 	if err != nil {
 		return cfg, fmt.Errorf("failed to list OpenObserve integration configs: %w", err)
 	}
 	if len(openobserveIntegrations) == 0 {
 		return cfg, fmt.Errorf("openobserve integration not found for account: %s", accountId)
+	}
+	if len(openobserveIntegrations) > 1 {
+		return cfg, fmt.Errorf("multiple active openobserve integrations for account: %s", accountId)
 	}
 	openobserveIntegration := openobserveIntegrations[0]
 	for _, config := range openobserveIntegration.Configs {
