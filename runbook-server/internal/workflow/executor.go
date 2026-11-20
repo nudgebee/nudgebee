@@ -33,6 +33,30 @@ type WorkflowExecutor struct {
 	workflowStore  model.WorkflowStore
 }
 
+type childWorkflowIDs struct {
+	DefinitionID string
+	ExecutionID  string
+}
+
+// Record random IDs in history so a child is identified the same way during replay.
+func newChildWorkflowIDs(ctx workflow.Context, parentID, taskID string) (childWorkflowIDs, error) {
+	generate := func() childWorkflowIDs {
+		return childWorkflowIDs{
+			DefinitionID: fmt.Sprintf("inline-%s-%s", taskID, uuid.NewString()),
+			ExecutionID:  fmt.Sprintf("%s-%s-%s", parentID, taskID, uuid.NewString()),
+		}
+	}
+	if workflow.GetVersion(ctx, "record-child-workflow-ids", workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+		// Legacy histories have no ID marker; retain their original command shape.
+		return generate(), nil
+	}
+	var ids childWorkflowIDs
+	if err := workflow.SideEffect(ctx, func(workflow.Context) interface{} { return generate() }).Get(&ids); err != nil {
+		return childWorkflowIDs{}, fmt.Errorf("decode child workflow IDs: %w", err)
+	}
+	return ids, nil
+}
+
 // buildRoutingDef converts the activity result returned by a case-routing task
 // (e.g. core.switch) back into the WorkflowDefinition the executor needs to
 // run the matched branch as an inline coroutine. The result is read as
@@ -1412,9 +1436,14 @@ func processTaskLoop(
 								childWfDef = def
 							}
 
+							ids, err := newChildWorkflowIDs(ctx, wf.ID, task.ID)
+							if err != nil {
+								return completedTasks, nil, err
+							}
+
 							// Construct a synthetic Workflow object
 							// We use "inline-" prefix so GetDetailedWorkflowExecution reconstructs definition from history input
-							childWfID := fmt.Sprintf("inline-%s-%s", task.ID, uuid.New().String())
+							childWfID := ids.DefinitionID
 							childWf := &model.Workflow{
 								ID:                  childWfID,
 								TenantID:            wf.TenantID,
@@ -1440,7 +1469,7 @@ func processTaskLoop(
 							applyCalleeRunTags(childSearchAttrs, childMemo, calleeWfID, calleeVersion)
 
 							cwo := workflow.ChildWorkflowOptions{
-								WorkflowID:       fmt.Sprintf("%s-%s-%s", wf.ID, task.ID, uuid.New().String()), // Unique Run ID
+								WorkflowID:       ids.ExecutionID,
 								TaskQueue:        config.Config.RunbookServerTemporalQueue,
 								Memo:             childMemo,
 								SearchAttributes: childSearchAttrs,
