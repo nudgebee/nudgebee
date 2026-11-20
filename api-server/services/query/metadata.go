@@ -714,6 +714,55 @@ var analysisDependentColumns = map[string]bool{
 	"minutes_to_first_analysis": true,
 }
 
+// DORA delivery-metric definitions for event_groupings_v2 (#300). They are
+// expressions over the outer `events` row rather than joins, so a query that
+// does not select them pays nothing for them, and every inner read is bound to
+// the outer row's tenant and account, so they cannot see past the scoping the
+// engine applied to it.
+const (
+	// doraFailureWindow is how long after a rollout an issue on the same
+	// workload counts against it, and how far before it the same alert must
+	// have been quiet for the issue to count as caused rather than continuing.
+	doraFailureWindow = "INTERVAL '60 minutes'"
+
+	// doraIsRolloutDef: a configuration change whose diff touched the pod
+	// template (see the is_rollout column).
+	doraIsRolloutDef = `(events.finding_type = 'configuration_change' AND EXISTS (
+		SELECT 1
+		FROM jsonb_array_elements(CASE WHEN jsonb_typeof(events.evidences) = 'array' THEN events.evidences ELSE '[]'::jsonb END) dora_ev,
+			jsonb_array_elements(CASE WHEN jsonb_typeof(dora_ev->'data'->'updated_values') = 'array' THEN dora_ev->'data'->'updated_values' ELSE '[]'::jsonb END) dora_uv
+		WHERE dora_ev->>'type' = 'diff' AND dora_uv->>'path' LIKE 'spec.template.%'))`
+
+	// doraChangeFailedDef: a HIGH/CRITICAL issue on the change's workload
+	// (service_key, "<namespace>/<workload>" — the key the collector already
+	// uses to attach a change to an alert) started inside the window after it,
+	// and its alert had not fired inside the window before it. The lookups ride
+	// the (tenant, cloud_account_id, starts_at) and (fingerprint,
+	// cloud_account_id, starts_at) indexes on events.
+	doraChangeFailedDef = `(NULLIF(events.service_key, '') IS NOT NULL AND EXISTS (
+		SELECT 1 FROM events dora_issue
+		WHERE dora_issue.tenant = events.tenant
+			AND dora_issue.cloud_account_id = events.cloud_account_id
+			AND dora_issue.service_key = events.service_key
+			AND dora_issue.finding_type = 'issue'
+			AND dora_issue.priority IN ('HIGH', 'CRITICAL')
+			AND dora_issue.starts_at > events.starts_at
+			AND dora_issue.starts_at <= events.starts_at + ` + doraFailureWindow + `
+			AND NOT EXISTS (
+				SELECT 1 FROM events dora_prior
+				WHERE dora_prior.fingerprint = dora_issue.fingerprint
+					AND dora_prior.cloud_account_id = dora_issue.cloud_account_id
+					AND dora_prior.tenant = dora_issue.tenant
+					AND dora_prior.starts_at >= events.starts_at - ` + doraFailureWindow + `
+					AND dora_prior.starts_at <= events.starts_at)))`
+
+	// doraResolvedDef: a row that ran for a real interval and was closed,
+	// excluding firings triage marked as duplicates of another, which would
+	// count one outage several times. upper() because the close path matches
+	// status case-insensitively (isCloseStatus), so stored case is not a contract.
+	doraResolvedDef = `(upper(events.status) IN ('RESOLVED', 'CLOSED') AND events.ends_at > events.starts_at AND events.nb_status IS DISTINCT FROM 'DUPLICATE')`
+)
+
 // Columns that depend on the event_log_analysis JOIN
 var prDependentColumns = map[string]bool{
 	"pr_url":   true,
@@ -2032,6 +2081,47 @@ var table_metadata = map[string]TableDefinition{
 				Def: "percentile_cont(0.5) WITHIN GROUP (ORDER BY " +
 					"CASE WHEN ela.first_analysed_at >= events.created_at " +
 					"THEN EXTRACT(EPOCH FROM (ela.first_analysed_at - events.created_at)) / 60 END)",
+				IsAggregated: true,
+			},
+			// DORA delivery metrics (#300). Each definition lives here, once, so
+			// every caller that counts deploys or failures counts the same thing.
+			//
+			// is_rollout: a configuration change that touched the pod template.
+			// Kubernetes rolls out new pods for exactly those changes and no
+			// others, so a replica bump — an HPA scaling a workload dozens of
+			// times a day — is a change but not a deployment. Counting it would
+			// inflate deployment frequency and dilute change failure rate.
+			"is_rollout": {
+				Type: ColumnDefinitionTypeBoolean,
+				Def:  doraIsRolloutDef,
+			},
+			// count_failed_changes: the rollouts that were followed, within
+			// doraFailureWindow, by a HIGH/CRITICAL issue on the same workload
+			// that had not already been firing in the same window before it. The
+			// second condition stops a flapping alert from marking every deploy of
+			// its workload as a failure. Divide by event_count over the same rows
+			// for the change failure rate.
+			"count_failed_changes": {
+				Type:         ColumnDefinitionTypeInt,
+				Def:          "count(DISTINCT CASE WHEN " + doraIsRolloutDef + " AND " + doraChangeFailedDef + " THEN events.id END)",
+				IsAggregated: true,
+			},
+			// minutes_to_resolve: median minutes from start to end of the resolved
+			// rows. Median for the same long-tail reason as
+			// minutes_to_first_analysis. ends_at > starts_at drops point-in-time
+			// events, which close with ends_at == starts_at and would otherwise
+			// pull the median to zero.
+			"minutes_to_resolve": {
+				Type: ColumnDefinitionTypeFloat,
+				Def: "percentile_cont(0.5) WITHIN GROUP (ORDER BY CASE WHEN " + doraResolvedDef +
+					" THEN EXTRACT(EPOCH FROM (events.ends_at - events.starts_at)) / 60 END)",
+				IsAggregated: true,
+			},
+			// count_resolved_issues: how many rows minutes_to_resolve is the median
+			// of, so a caller can decline to quote a median of two samples.
+			"count_resolved_issues": {
+				Type:         ColumnDefinitionTypeInt,
+				Def:          "count(CASE WHEN " + doraResolvedDef + " THEN 1 END)",
 				IsAggregated: true,
 			},
 			"fingerprint_event_count": {
