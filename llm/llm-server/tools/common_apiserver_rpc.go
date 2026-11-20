@@ -100,8 +100,8 @@ func doApiServerActionRequest(nbCtx core.NbToolContext, rpcPath string, actionNa
 	}
 
 	trimmed := bytes.TrimLeft(jsonBody, " \t\r\n")
-	if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') {
-		return "", fmt.Errorf("%s: %s unexpected response shape: %s", errPrefix, actionName, string(jsonBody))
+	if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') || !json.Valid(trimmed) {
+		return "", fmt.Errorf("%s: %s returned an invalid response; the request may have been processed, so verify its outcome before retrying: %s", errPrefix, actionName, string(jsonBody))
 	}
 
 	return string(jsonBody), nil
