@@ -369,6 +369,16 @@ func (s *OpenObserveLogSource) buildSQL(req FetchLogRequest, stream string) (str
 	if err != nil {
 		return "", err
 	}
+	if strings.TrimSpace(req.Query) != "" {
+		limit := req.Limit
+		if limit <= 0 {
+			limit = 100
+		}
+		if limit > 10000 {
+			limit = 10000
+		}
+		return buildOpenObserveRawSQL(req.Query, stream, whereClause, "_timestamp DESC", limit)
+	}
 
 	limit := req.Limit
 	if limit == 0 {
@@ -629,15 +639,22 @@ func splitOpenObserveList(v any) []any {
 }
 
 func (s *OpenObserveLogSource) QueryLogs(ctx *security.RequestContext, req FetchLogRequest) ([]OutputLog, error) {
+	logs, _, err := s.QueryLogsDetailed(ctx, req)
+	return logs, err
+}
+
+func (s *OpenObserveLogSource) QueryLogsDetailed(ctx *security.RequestContext, req FetchLogRequest) ([]OutputLog, LogQueryDetails, error) {
+	details := LogQueryDetails{}
 	cfg, err := integrations.GetOpenObserveConfigs(ctx, req.AccountId)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get OpenObserve configs: %w", err)
+		return nil, details, fmt.Errorf("failed to get OpenObserve configs: %w", err)
 	}
 
 	sql, err := s.buildSQL(s.withSchemaFallbacks(ctx, req, cfg), cfg.LogStream)
 	if err != nil {
-		return nil, err
+		return nil, details, err
 	}
+	details.ExecutedQuery = sql
 
 	// OpenObserve requires microseconds
 	startTimeMicros := req.StartTime * 1000
@@ -650,7 +667,7 @@ func (s *OpenObserveLogSource) QueryLogs(ctx *security.RequestContext, req Fetch
 
 	payloadBytes, err := json.Marshal(searchReq)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal search request: %w", err)
+		return nil, details, fmt.Errorf("failed to marshal search request: %w", err)
 	}
 
 	endpoint := fmt.Sprintf("%s/api/%s/_search", cfg.URL, cfg.OrgID)
@@ -665,7 +682,7 @@ func (s *OpenObserveLogSource) QueryLogs(ctx *security.RequestContext, req Fetch
 		common.HttpWithTimeout(30*time.Second),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("OpenObserve API request failed: %w", err)
+		return nil, details, fmt.Errorf("OpenObserve API request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -680,15 +697,15 @@ func (s *OpenObserveLogSource) QueryLogs(ctx *security.RequestContext, req Fetch
 		// the log backend as disconnected. The metric search path already collapses
 		// these — see isOpenObserveEmptyResultError.
 		if isOpenObserveEmptyResultError(text) {
-			return []OutputLog{}, nil
+			return []OutputLog{}, details, nil
 		}
 
-		return nil, fmt.Errorf("OpenObserve query failed with status %d: %s", resp.StatusCode, text)
+		return nil, details, fmt.Errorf("OpenObserve query failed with status %d: %s", resp.StatusCode, text)
 	}
 
 	searchResp, err := decodeOpenObserveSearchResponse(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode OpenObserve response: %w", err)
+		return nil, details, fmt.Errorf("failed to decode OpenObserve response: %w", err)
 	}
 
 	var outputs []OutputLog
@@ -732,7 +749,7 @@ func (s *OpenObserveLogSource) QueryLogs(ctx *security.RequestContext, req Fetch
 		outputs = append(outputs, out)
 	}
 
-	return outputs, nil
+	return outputs, details, nil
 }
 
 func buildOpenObserveLabelSampleRequest(req FetchLogLabelRequest, now time.Time) FetchLogRequest {

@@ -104,6 +104,25 @@ func TestApplyDefaultTraceFiltersFailsClosedOnRawQuery(t *testing.T) {
 	assert.True(t, isEmptyWhereClause(req.QueryRequest.Where))
 }
 
+func TestApplyDefaultTraceFiltersComposesOpenObserveRawSQL(t *testing.T) {
+	defaults := traceFilterClause(defaultFilterRow{Key: "service_name", Value: "checkout"})
+	req := TracesV3Request{AccountId: "acc-1", Query: `SELECT * FROM default WHERE span_name = 'GET /'`}
+	require.NoError(t, applyDefaultTraceFiltersToSource(&req, defaults, &OpenObserveTraceSource{}))
+	assert.Equal(t, `SELECT * FROM default WHERE span_name = 'GET /'`, req.Query)
+	assert.Equal(t, defaults, req.QueryRequest.Where)
+
+	for name, source := range map[string]TraceSource{
+		"another provider":  &DatadogTraceSource{},
+		"unresolved source": nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := TracesV3Request{AccountId: "acc-1", Query: `SELECT * FROM traces_view`}
+			require.Error(t, applyDefaultTraceFiltersToSource(&req, defaults, source))
+			assert.True(t, isEmptyWhereClause(req.QueryRequest.Where))
+		})
+	}
+}
+
 // TestDescribeTraceFilterClauseIsStable guards the error message against Go's
 // randomised map iteration: an error that reads differently on every call is not
 // something support can match against.

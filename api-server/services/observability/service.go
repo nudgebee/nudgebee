@@ -1017,6 +1017,9 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 	// above. Providers that consume the where-clause natively emit no query string, so
 	// fall back to the canonical where JSON.
 	usedQuery := fetchLogRequest.Query
+	if details.ExecutedQuery != "" {
+		usedQuery = details.ExecutedQuery
+	}
 	if usedQuery == "" && hasWhereData(fetchLogRequest.QueryRequest.Where) {
 		if b, mErr := json.Marshal(fetchLogRequest.QueryRequest.Where); mErr == nil {
 			usedQuery = string(b)
@@ -2968,7 +2971,7 @@ func GetGroupedTraces(context *security.RequestContext, TraceQuery TracesV3Reque
 	if err := validateTraceWhere(source, TraceQuery.QueryRequest.Where); err != nil {
 		return []TraceGroupingValues{}, err
 	}
-	if err := ApplyDefaultTraceFilters(context, &TraceQuery); err != nil {
+	if err := applyDefaultTraceFiltersForSource(context, &TraceQuery, source, traceProvider, integrationSource); err != nil {
 		return []TraceGroupingValues{}, err
 	}
 	// Resolved, not static — see the note in GetTraces.
@@ -3004,7 +3007,7 @@ func GetGroupedTracesCount(context *security.RequestContext, TraceQuery TracesV3
 	if err := validateTraceWhere(source, TraceQuery.QueryRequest.Where); err != nil {
 		return common.OpenTelemetryTraceGroupCount{}, err
 	}
-	if err := ApplyDefaultTraceFilters(context, &TraceQuery); err != nil {
+	if err := applyDefaultTraceFiltersForSource(context, &TraceQuery, source, traceProvider, integrationSource); err != nil {
 		return common.OpenTelemetryTraceGroupCount{}, err
 	}
 	// Resolved, not static — see the note in GetTraces.
@@ -3062,7 +3065,7 @@ func CountTraces(context *security.RequestContext, fetchTracesRequest TracesV3Re
 	if err := validateTraceWhere(source, fetchTracesRequest.QueryRequest.Where); err != nil {
 		return common.OpenTelemetryTraceCount{}, err
 	}
-	if err := ApplyDefaultTraceFilters(context, &fetchTracesRequest); err != nil {
+	if err := applyDefaultTraceFiltersForSource(context, &fetchTracesRequest, source, traceProvider, integrationSource); err != nil {
 		return common.OpenTelemetryTraceCount{}, err
 	}
 	// Resolved, not static — see the note in GetTraces.
@@ -3105,7 +3108,7 @@ func GetTraces(context *security.RequestContext, fetchTracesRequest TracesV3Requ
 	// translated by the same mapping every other clause goes through. This also
 	// puts them inside the ValidateRequest snapshot and the executed-query
 	// recording, so an empty result names the filter that caused it.
-	if err := ApplyDefaultTraceFilters(context, &fetchTracesRequest); err != nil {
+	if err := applyDefaultTraceFiltersForSource(context, &fetchTracesRequest, source, traceProvider, integrationSource); err != nil {
 		return TracesResult{}, err
 	}
 	// The RESOLVED mapping, not the provider's static one. Every trace query path used
@@ -3202,6 +3205,12 @@ func resolveExecutedTraceQuery(ctx *security.RequestContext, source TraceSource,
 		return ""
 	}
 	if req.Query != "" {
+		if _, ok := source.(*OpenObserveTraceSource); !ok {
+			return req.Query
+		}
+		if q, err := source.GetQuery(ctx, req); err == nil && q != "" {
+			return q
+		}
 		return req.Query
 	}
 	if q, err := source.GetQuery(ctx, req); err != nil {
@@ -3241,7 +3250,7 @@ func GetRootSpansByTrace(context *security.RequestContext, fetchTracesRequest Tr
 	if err := validateTraceWhere(source, fetchTracesRequest.QueryRequest.Where); err != nil {
 		return nil, err
 	}
-	if err := ApplyDefaultTraceFilters(context, &fetchTracesRequest); err != nil {
+	if err := applyDefaultTraceFiltersForSource(context, &fetchTracesRequest, source, traceProvider, integrationSource); err != nil {
 		return nil, err
 	}
 	// Resolved, not static — see the note in GetTraces.
@@ -3280,7 +3289,7 @@ func CountTracesByTrace(context *security.RequestContext, fetchTracesRequest Tra
 	if err := validateTraceWhere(source, fetchTracesRequest.QueryRequest.Where); err != nil {
 		return common.OpenTelemetryTraceCount{}, err
 	}
-	if err := ApplyDefaultTraceFilters(context, &fetchTracesRequest); err != nil {
+	if err := applyDefaultTraceFiltersForSource(context, &fetchTracesRequest, source, traceProvider, integrationSource); err != nil {
 		return common.OpenTelemetryTraceCount{}, err
 	}
 	// Resolved, not static — see the note in GetTraces.
@@ -3333,7 +3342,7 @@ func GetTracesWithRawResult(context *security.RequestContext, fetchTracesRequest
 	// This path only ever runs with a raw ClickHouse SQL string (the handler sets
 	// IncludeRawResult only then), so a standing filter cannot be AND-ed in and the
 	// call is refused rather than run unscoped. Accounts with no filter are unaffected.
-	if err := ApplyDefaultTraceFilters(context, &fetchTracesRequest); err != nil {
+	if err := applyDefaultTraceFiltersForSource(context, &fetchTracesRequest, source, traceProvider, integrationSource); err != nil {
 		return TracesQueryResult{}, err
 	}
 	// Resolved, not static — see the note in GetTraces.

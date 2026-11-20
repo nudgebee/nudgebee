@@ -90,18 +90,41 @@ func InvalidateDefaultTraceFiltersCache(accountId string) {
 //     resolveExecutedTraceQuery reports the filter in the recorded query.
 //
 //  2. It can return an error. A request carrying a provider-native query string
-//     (raw ClickHouse SQL, a Datadog query, Chronosphere JSON) has no where clause
-//     to AND into — the string is executed verbatim — so a standing filter cannot
-//     be honoured. Since the filter exists precisely to keep one account off
-//     another environment's spans, running unscoped is the wrong failure: refuse
-//     instead, and say why. Resolution itself still fails open, so an account with
-//     no filter configured is never affected.
+//     has no where clause to AND into — the string is executed verbatim — so a
+//     standing filter cannot be honoured. OpenObserve is the exception: its source
+//     accepts only a restricted SELECT * and ANDs this mapped clause into it before
+//     execution. Other providers still fail closed. Resolution itself fails open,
+//     so an account with no filter configured is never affected.
 func ApplyDefaultTraceFilters(ctx *security.RequestContext, req *TracesV3Request) error {
+	if req == nil {
+		return nil
+	}
+	return applyDefaultTraceFiltersForSource(ctx, req, nil, req.ProviderType, req.ProviderSource)
+}
+
+func applyDefaultTraceFiltersForSource(ctx *security.RequestContext, req *TracesV3Request, source TraceSource, provider, providerSource string) error {
 	if req == nil || ctx == nil {
 		return nil
 	}
-	defaults := getDefaultTraceFilters(ctx, req.AccountId, req.ProviderType, req.ProviderSource)
-	return applyDefaultTraceFilters(req, defaults)
+	defaults := getDefaultTraceFilters(ctx, req.AccountId, provider, providerSource)
+	return applyDefaultTraceFiltersToSource(req, defaults, source)
+}
+
+func applyDefaultTraceFiltersToSource(req *TracesV3Request, defaults query.QueryWhereClause, source TraceSource) error {
+	if req == nil {
+		return nil
+	}
+	if !hasWhereData(defaults) || req.Query == "" {
+		return applyDefaultTraceFilters(req, defaults)
+	}
+	if _, ok := source.(*OpenObserveTraceSource); !ok {
+		return applyDefaultTraceFilters(req, defaults)
+	}
+	rawQuery := req.Query
+	req.Query = ""
+	err := applyDefaultTraceFilters(req, defaults)
+	req.Query = rawQuery
+	return err
 }
 
 // applyDefaultTraceFilters is the pure half of ApplyDefaultTraceFilters, split out

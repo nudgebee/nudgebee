@@ -13,6 +13,8 @@ import (
 // LogQueryDetails is what a source knows about a log result beyond its lines: how many
 // lines matched, and the counts the query asked the provider for.
 type LogQueryDetails struct {
+	// ExecutedQuery is the provider SQL actually sent, when the source can report it.
+	ExecutedQuery string
 	// Total is the provider's match count; nil when it did not report one.
 	Total *int64
 	// TotalRelation is "eq" when Total is exact, "gte" when it is a lower bound.
