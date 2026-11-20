@@ -11,6 +11,15 @@ import { Card } from '@ui/Card';
 import TimeSeriesChart from '@components/common/charts/TimeSeriesChart';
 import { useBriefingWindow } from '@components/troubleshoot/briefing/useBriefingData';
 import { resolveTimeSaved } from '@components/troubleshoot/analytics/timeSaved';
+import { Label, type LabelTone } from '@ui/Label';
+import {
+  DORA_MIN_SAMPLES,
+  deriveDora,
+  formatDeployRate,
+  formatRecovery,
+  type DoraLevel,
+  type DoraModel,
+} from '@components/troubleshoot/analytics/dora';
 import { appliedIsCurrent, offersNumber, recommendationTypeOf } from '@components/triage/thresholdVerdict';
 import { useRouter } from 'next/router';
 import { ds } from 'src/utils/colors';
@@ -59,6 +68,9 @@ interface Row {
   fingerprint_event_count?: number;
   fingerprint_first_seen_at?: string;
   event_count?: number;
+  count_failed_changes?: number;
+  minutes_to_resolve?: number;
+  count_resolved_issues?: number;
 }
 
 const rowsOf = (block: any): Row[] => block?.rows ?? [];
@@ -206,6 +218,16 @@ const DeltaStat = ({
   );
 };
 
+// Status axis, not a judgement colour: Low is a level to improve on, not an error.
+const DORA_LEVEL_TONE: Record<DoraLevel, LabelTone> = { Elite: 'success', High: 'info', Medium: 'warning', Low: 'neutral' };
+
+const DoraLevelLabel = ({ level }: { level: DoraLevel | null }) =>
+  level ? (
+    <Label tone={DORA_LEVEL_TONE[level]} size='sm'>
+      {level}
+    </Label>
+  ) : null;
+
 export default function TroubleshootAnalytics({ onDrillDown, filters }: Props) {
   const router = useRouter();
   const window = useBriefingWindow();
@@ -253,6 +275,47 @@ export default function TroubleshootAnalytics({ onDrillDown, filters }: Props) {
   // which is the difference between a value claim you can defend and one you
   // cannot.
   const [effort, setEffort] = useState<any>(null);
+
+  // DORA delivery metrics. Fetched on their own so a failure here leaves the
+  // rest of the tab standing — the section reports its own error instead.
+  const [dora, setDora] = useState<{ loading: boolean; error: boolean; model: DoraModel | null; deploys: number; failedChanges: number }>({
+    loading: true,
+    error: false,
+    model: null,
+    deploys: 0,
+    failedChanges: 0,
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    setDora((previous) => ({ ...previous, loading: true, error: false }));
+    apiKubernetes1
+      .doraAggregates({ startDate: new Date(window.startMs).toISOString(), endDate: new Date(window.endMs).toISOString(), accountId: accountIds })
+      .then((response: any) => {
+        if (cancelled) return;
+        if (!response?.data?.data || response?.data?.errors?.length) throw new Error(response?.data?.errors?.[0]?.message || 'empty response');
+        const data = response.data.data;
+        const deploys = num(rowsOf(data.deploys)[0]?.event_count);
+        const failedChanges = num(rowsOf(data.deploys)[0]?.count_failed_changes);
+        const model = deriveDora({
+          deploys,
+          failedChanges,
+          deployedWorkloads: num(rowsOf(data.deployed_workloads)[0]?.event_count),
+          resolvedIssues: num(rowsOf(data.recovery)[0]?.count_resolved_issues),
+          medianRecoveryMinutes: num(rowsOf(data.recovery)[0]?.minutes_to_resolve),
+          windowDays: (window.endMs - window.startMs) / 86400000,
+        });
+        setDora({ loading: false, error: false, model, deploys, failedChanges });
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        console.error('Failed to load delivery metrics:', error);
+        setDora({ loading: false, error: true, model: null, deploys: 0, failedChanges: 0 });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [window.startMs, window.endMs, accountIds]);
 
   useEffect(() => {
     let cancelled = false;
@@ -729,6 +792,93 @@ export default function TroubleshootAnalytics({ onDrillDown, filters }: Props) {
         </Box>
         <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[600], marginTop: 'var(--ds-space-2)' }}>
           Compared against the {Math.max(1, Math.round((window.endMs - window.startMs) / 3600000))} hours immediately before this window.
+        </Typography>
+      </Box>
+
+      {/* DORA delivery performance (#300). Three of the four metrics come from
+          what is already recorded: Kubernetes workload changes and the urgent
+          issues that follow them. Lead time needs commit and merge times, which
+          nothing records yet, so its tile says that rather than guessing. Each
+          tile withholds its level below DORA_MIN_SAMPLES for the same reason the
+          MTTU tile above does. */}
+      <Box data-testid='analytics-dora-section'>
+        <SectionHeading>Delivery performance (DORA)</SectionHeading>
+        {dora.error ? (
+          <Banner
+            tone='warning'
+            surface='section'
+            title='Delivery metrics unavailable'
+            message="Couldn't load deployments and recoveries for this window. The rest of this tab is unaffected."
+          />
+        ) : dora.loading || !dora.model ? (
+          <Skeleton shape='rect' height={120} />
+        ) : (
+          (() => {
+            const { deploymentFrequency, changeFailureRate, recovery } = dora.model;
+            return (
+              <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', lg: 'repeat(4, 1fr)' }, gap: 'var(--ds-space-3)' }}>
+                <Card sx={CARD_SX} data-testid='analytics-dora-deployment-frequency'>
+                  <Stat
+                    size='md'
+                    label='Deployment frequency'
+                    value={dora.deploys > 0 ? formatDeployRate(deploymentFrequency.perDay) : '—'}
+                    sub={
+                      dora.deploys > 0
+                        ? `${dora.deploys.toLocaleString()} rollouts; level is per workload (${formatDeployRate(
+                            deploymentFrequency.perWorkloadPerDay
+                          )} each)`
+                        : 'no workload rollouts recorded in this window'
+                    }
+                    headerRight={<DoraLevelLabel level={deploymentFrequency.level} />}
+                    info={{
+                      tooltip:
+                        'Counts changes to a Deployment, StatefulSet, DaemonSet or Rollout that replaced its pods. Scaling replicas is a change but not a deployment, so it is left out.',
+                    }}
+                  />
+                </Card>
+                <Card sx={CARD_SX} data-testid='analytics-dora-change-failure-rate'>
+                  <Stat
+                    size='md'
+                    label='Change failure rate'
+                    value={changeFailureRate.rate === null ? '—' : `${Math.round(changeFailureRate.rate * 100)}%`}
+                    sub={
+                      changeFailureRate.rate === null
+                        ? 'no rollouts to measure'
+                        : `${dora.failedChanges.toLocaleString()} of ${dora.deploys.toLocaleString()} rollouts followed by an urgent issue`
+                    }
+                    headerRight={<DoraLevelLabel level={changeFailureRate.level} />}
+                    info={{
+                      tooltip:
+                        'A rollout counts as failed when a high or critical issue started on the same workload within an hour of it, and that alert had not already fired in the hour before.',
+                    }}
+                  />
+                </Card>
+                <Card sx={CARD_SX} data-testid='analytics-dora-time-to-restore'>
+                  <Stat
+                    size='md'
+                    label='Time to restore'
+                    value={recovery.level && recovery.minutes !== null ? formatRecovery(recovery.minutes) : '—'}
+                    sub={
+                      recovery.level
+                        ? 'typical time for a high or critical issue to resolve'
+                        : `needs at least ${DORA_MIN_SAMPLES} resolved high or critical issues to give a typical time`
+                    }
+                    headerRight={<DoraLevelLabel level={recovery.level} />}
+                    info={{
+                      tooltip:
+                        'Median time from when a high or critical issue started to when it resolved. Instant events and duplicates of another issue are left out.',
+                    }}
+                  />
+                </Card>
+                <Card sx={CARD_SX} data-testid='analytics-dora-lead-time'>
+                  <Stat size='md' label='Lead time for changes' value='—' sub='not available yet — needs commit and merge times for each rollout' />
+                </Card>
+              </Box>
+            );
+          })()
+        )}
+        <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[600], marginTop: 'var(--ds-space-2)' }}>
+          Levels follow the DORA benchmarks (Elite, High, Medium, Low) and are shown once there are at least {DORA_MIN_SAMPLES} samples.
         </Typography>
       </Box>
 
