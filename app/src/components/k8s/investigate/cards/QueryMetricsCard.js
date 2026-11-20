@@ -3,6 +3,7 @@ import QueryMetrics from '@components/k8s/details/QueryMetrics';
 import { formatDateForPlusMinusDuration, safeJSONParse } from 'src/utils/common';
 import { formatMetricValue } from '@lib/promqlUnit';
 import { summarizeQueryMetrics } from './cardSummaries';
+import { withUtcTimezone } from './timestamp';
 
 let queryMetricsCardIdx = 0;
 
@@ -54,7 +55,7 @@ class QueryMetricsCard {
   };
 
   renderMetricsQueryResult = () => {
-    const startDate = `${this.event.starts_at}Z`;
+    const startDate = withUtcTimezone(this.event.starts_at);
     const plusMinus30MinDuration = formatDateForPlusMinusDuration(new Date(startDate).getTime(), 30);
     return (
       <QueryMetrics
