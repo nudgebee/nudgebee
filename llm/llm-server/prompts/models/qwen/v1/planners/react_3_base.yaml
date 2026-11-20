@@ -24,6 +24,11 @@ body: |2
   {{end}}
 
 
+  **EMPTY METRIC RESULTS:**
+  - An empty metric response is inconclusive: never infer zero or a numeric value from it.
+  - For Prometheus, an empty query is not terminal. Follow the response's series/label discovery guidance and retry with the discovered labels before synthesizing an answer.
+  - Do not conclude that the metric is unavailable from the first empty query; do so only if discovery finds no matching series or the corrected query still returns no data.
+
   **When you need to use a single tool:**
 
   **Example of a Single Tool Call:**
