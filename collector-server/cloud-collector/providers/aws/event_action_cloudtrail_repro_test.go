@@ -7,7 +7,6 @@ import (
 	"nudgebee/collector/cloud/providers"
 
 	"github.com/aws/aws-sdk-go-v2/service/cloudtrail"
-	"github.com/aws/aws-sdk-go-v2/service/cloudtrail/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -21,7 +20,7 @@ type capturingCloudTrailProvider struct {
 	lookupCalls []*cloudtrail.LookupEventsInput
 }
 
-func (d *capturingCloudTrailProvider) LookupCloudTrailEvents(ctx providers.CloudProviderContext, account providers.Account, region string, input *cloudtrail.LookupEventsInput) ([]types.Event, error) {
+func (d *capturingCloudTrailProvider) LookupCloudTrailEvents(ctx providers.CloudProviderContext, account providers.Account, region string, input *cloudtrail.LookupEventsInput) (*cloudtrail.LookupEventsOutput, error) {
 	d.lookupCalls = append(d.lookupCalls, input)
 	return d.dummyAwsProvider.LookupCloudTrailEvents(ctx, account, region, input)
 }
