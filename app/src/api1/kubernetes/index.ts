@@ -38,6 +38,14 @@ function promStepToSeconds(step: string) {
   return parseInt(match[1], 10) * unit[match[2]];
 }
 
+// `parseFloat(v) || null` collapses a valid 0 reading to null; a metric value of
+// 0 is real data, so only missing or non-numeric values map to null.
+function parseMetric(value: string | null | undefined): number | null {
+  if (value == null) return null;
+  const parsed = parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function parseInsightJsonFields(rows: any[]) {
   if (!rows) return rows;
   return rows.map((row: any) => ({
@@ -2889,15 +2897,15 @@ query k8s_event_groupings($limit:Int,$offset:Int){
     const result = timestamps.map((timestamp: number, index: number) => {
       return {
         timestamp: formatDateTime(timestamp),
-        avg_cpu_used: parseFloat(cpuUsageVals[index]) || null,
-        avg_cpu_request: parseFloat(cpuRequestVals[index]) || null,
-        avg_cpu_limit: parseFloat(cpuLimitVals[index]) || null,
-        avg_memory_used: parseFloat(memUsageVals[index]) || null,
-        avg_memory_request: parseFloat(memRequestVals[index]) || null,
-        avg_memory_limit: parseFloat(memLimitVals[index]) || null,
-        pod_count: parseFloat(podCountVals[index]) || null,
-        max_pod_cpu_used: parseFloat(cpuMaxPodVals[index]) || null,
-        max_pod_memory_used: parseFloat(memMaxPodVals[index]) || null,
+        avg_cpu_used: parseMetric(cpuUsageVals[index]),
+        avg_cpu_request: parseMetric(cpuRequestVals[index]),
+        avg_cpu_limit: parseMetric(cpuLimitVals[index]),
+        avg_memory_used: parseMetric(memUsageVals[index]),
+        avg_memory_request: parseMetric(memRequestVals[index]),
+        avg_memory_limit: parseMetric(memLimitVals[index]),
+        pod_count: parseMetric(podCountVals[index]),
+        max_pod_cpu_used: parseMetric(cpuMaxPodVals[index]),
+        max_pod_memory_used: parseMetric(memMaxPodVals[index]),
         disk_total: null,
         disk_used: null,
         pod_cost: '',
