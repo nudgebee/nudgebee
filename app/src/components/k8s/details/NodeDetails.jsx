@@ -2,7 +2,7 @@ import { memo, useState } from 'react';
 import dynamic from 'next/dynamic';
 import PropTypes from 'prop-types';
 import { getTableData4 } from '@components/k8s/investigate/cards/util';
-import CustomTable from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { ListingLayout } from '@ui/ListingLayout';
 import { Box, Typography, Chip } from '@mui/material';
 import Tooltip from '@ui/Tooltip';

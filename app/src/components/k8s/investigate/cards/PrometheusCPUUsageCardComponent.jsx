@@ -1,4 +1,4 @@
-import { LineChart } from '@shared';
+import Chart from '@ui/Chart';
 import { EmptyState } from '@ui/EmptyState';
 import { useEffect, useState } from 'react';
 import { plusMinus5TimeRangePrometheusOfDate } from 'src/utils/common';
@@ -91,7 +91,7 @@ function PrometheusCPUUsageCardComponent(props) {
   }
 
   return (
-    <LineChart
+    <Chart.Line
       labels={cpuUsageData.labels}
       dataset={[
         {
