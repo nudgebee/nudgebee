@@ -1213,8 +1213,6 @@ func CreateTriageRule(ctx context.Context, db *sqlx.DB, req CreateTriageRuleRequ
 		return nil, err
 	}
 
-	ClearTriageRulesCache()
-
 	// Record provenance for a class-level pin (append-only; best-effort — never fail rule creation
 	// on a logging error). Per-event corrections are logged atomically in ClassifyEvent instead.
 	if rule.RuleType == RuleTypePriorityPin {

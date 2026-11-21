@@ -1249,9 +1249,9 @@ func seedChosenAndDefault(t *testing.T, acct string) {
 		"llm_provider": "openai", "llm_model_name": "gpt-default", "llm_provider_api_key": "default-key",
 	})
 	seedLLMIntegrations(t, acct,
-		llmIntegration{Id: "int-default", Name: "Default", Config: map[string]string{
+		LLMIntegration{Id: "int-default", Name: "Default", Config: map[string]string{
 			"llm_provider": "openai", "llm_model_name": "gpt-default", "llm_provider_api_key": "default-key"}},
-		llmIntegration{Id: "int-chosen", Name: "Chosen", Config: map[string]string{
+		LLMIntegration{Id: "int-chosen", Name: "Chosen", Config: map[string]string{
 			"llm_provider":                "googleai",
 			"llm_model_name":              "gemini-2.5-flash",
 			"llm_provider_api_key":        "chosen-key",

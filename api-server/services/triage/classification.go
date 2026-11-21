@@ -992,8 +992,19 @@ func UpdateNBStatus(ctx context.Context, db *sqlx.DB, req UpdateNBStatusRequest,
 		return nil, fmt.Errorf("failed to update nb_status: %w", err)
 	}
 
-	// Log to event_history
-	go logStatusChangeToHistory(ctx, db, req.EventID, cloudAccountID, userID, prevStatus, req.NBStatus)
+	// Log to event_history, carrying the user's reason (if any) so the timeline shows why.
+	reason := ""
+	if req.ReasonText != nil {
+		reason = strings.TrimSpace(*req.ReasonText)
+	}
+	// Detach from the request context: this fire-and-forget write outlives the HTTP request, and the
+	// request ctx is cancelled the moment the handler returns its response. Using it here failed the
+	// insert with "context canceled" and silently dropped EVERY manual status-change history row.
+	go func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		logStatusChangeToHistory(bgCtx, db, req.EventID, cloudAccountID, userID, prevStatus, req.NBStatus, reason)
+	}()
 
 	return &UpdateNBStatusResponse{
 		Success:    true,
@@ -1002,8 +1013,9 @@ func UpdateNBStatus(ctx context.Context, db *sqlx.DB, req UpdateNBStatusRequest,
 	}, nil
 }
 
-// logStatusChangeToHistory logs status changes to event_history
-func logStatusChangeToHistory(ctx context.Context, db *sqlx.DB, eventID, cloudAccountID, userID, prevStatus, newStatus string) {
+// logStatusChangeToHistory logs status changes to event_history. reason is the optional user-provided
+// note for the change; when empty it falls back to the generic "manual_status_update" marker.
+func logStatusChangeToHistory(ctx context.Context, db *sqlx.DB, eventID, cloudAccountID, userID, prevStatus, newStatus, reason string) {
 	// Get tenant_id for the event
 	var tenantID string
 	err := db.GetContext(ctx, &tenantID, "SELECT tenant FROM events WHERE id = $1", eventID)
@@ -1026,7 +1038,12 @@ func logStatusChangeToHistory(ctx context.Context, db *sqlx.DB, eventID, cloudAc
 	oldValue, _ := json.Marshal(map[string]string{"nb_status": prevStatus})
 	newValue, _ := json.Marshal(map[string]string{"nb_status": newStatus})
 
-	_, err = db.ExecContext(ctx, query, historyID, eventID, cloudAccountID, tenantID, changeType, userID, string(oldValue), string(newValue), "manual_status_update")
+	changeReason := "manual_status_update"
+	if reason != "" {
+		changeReason = reason
+	}
+
+	_, err = db.ExecContext(ctx, query, historyID, eventID, cloudAccountID, tenantID, changeType, userID, string(oldValue), string(newValue), changeReason)
 	if err != nil {
 		slog.WarnContext(ctx, "Failed to log status change to history", "error", err)
 	}

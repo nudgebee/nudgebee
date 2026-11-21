@@ -1,13 +1,10 @@
 package analytics
 
 import (
-	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
 	"nudgebee/llm/common"
-	"nudgebee/llm/security"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/jmoiron/sqlx"
@@ -15,25 +12,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-const (
-	analyticsGrantTenant   = "88888888-8888-8888-8888-888888888888"
-	analyticsGrantAccountA = "88888888-0000-0000-0000-00000000000a"
-	analyticsGrantAccountB = "88888888-0000-0000-0000-00000000000b"
-)
-
-func analyticsGrantCaller(t *testing.T, roles []string, scoped map[string][]string, perms map[string]bool, scopedPerms map[string]map[string]bool) *security.RequestContext {
-	t.Helper()
-	sc := &security.SecurityContext{}
-	raw, err := json.Marshal(map[string]any{
-		"TenantId": analyticsGrantTenant, "UserId": "u1", "AccountIds": []string{analyticsGrantAccountA, analyticsGrantAccountB},
-		"Roles": roles, "ScopedEntityIds": scoped,
-		"CustomPermissions": perms, "ScopedCustomPermissions": scopedPerms,
-	})
-	require.NoError(t, err)
-	require.NoError(t, sc.UnmarshalJSON(raw))
-	return security.NewRequestContext(context.Background(), sc, nil, nil, nil)
-}
 
 // TestGetCritiqueList_ConversationLink is a regression test for #35815: the
 // Browse view's row now needs account_id/conversation_id/message_id (already
@@ -146,7 +124,7 @@ func TestGetCritiqueSummary_ScopedToCallerAccounts(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &Store{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 	now := time.Now()
 	accounts := `{"` + analyticsGrantAccountA + `"}`
 

@@ -891,7 +891,7 @@ func kbUpsertDocumentCategory(c *gin.Context, context *security.RequestContext, 
 		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: account_id, kb_id and document_key are required")}))
 		return
 	}
-	if !core.ValidKBNoteCategory(request.NoteCategory) {
+	if !knowledge.ValidKBNoteCategory(request.NoteCategory) {
 		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: note_category must be 'sop', 'fact', or empty to clear")}))
 		return
 	}
@@ -900,7 +900,7 @@ func kbUpsertDocumentCategory(c *gin.Context, context *security.RequestContext, 
 		c.JSON(403, BuildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
 		return
 	}
-	err := core.SetKBDocumentCategory(context, request.AccountId, request.KbId, request.DocumentKey, request.NoteCategory)
+	err := knowledge.SetKBDocumentCategory(context, request.AccountId, request.KbId, request.DocumentKey, request.NoteCategory)
 	if err != nil {
 		slog.Error("kb: failed to set document category", "error", err, "kb_id", request.KbId)
 		c.JSON(kbDocumentsStatus(err), BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))

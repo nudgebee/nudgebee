@@ -21,15 +21,15 @@ import (
 
 const testTenant = "aaaaaaaa-0000-0000-0000-000000000001"
 
-func callerWith(t *testing.T, wire string) *security.RequestContext {
+func roleSyncCaller(t *testing.T, wire string) *security.RequestContext {
 	t.Helper()
 	var sc security.SecurityContext
 	require.NoError(t, common.UnmarshalJson([]byte(wire), &sc))
 	return security.NewRequestContext(context.Background(), &sc, nil, nil, nil)
 }
 
-func tenantAdmin(t *testing.T) *security.RequestContext {
-	return callerWith(t, `{"TenantId":"`+testTenant+`","UserId":"bbbbbbbb-0000-0000-0000-000000000009","Roles":["tenant_admin"]}`)
+func roleSyncTenantAdmin(t *testing.T) *security.RequestContext {
+	return roleSyncCaller(t, `{"TenantId":"`+testTenant+`","UserId":"bbbbbbbb-0000-0000-0000-000000000009","Roles":["tenant_admin"]}`)
 }
 
 func TestRoleSyncAssignsOnlyTenantAndAccountRoles(t *testing.T) {
@@ -54,7 +54,7 @@ func TestATenantAdminCannotSyncSuperAdminOntoAnyone(t *testing.T) {
 			mock := mockMetastore(t)
 			expectTenant(mock, testTenant)
 
-			_, err := SyncUserRoles(tenantAdmin(t), UserSyncRolesRequest{
+			_, err := SyncUserRoles(roleSyncTenantAdmin(t), UserSyncRolesRequest{
 				Username: "me@corp.com", TenantId: testTenant, TargetRoles: []string{"tenant_admin", role}, RemoveOldRoles: true,
 			})
 			var cerr common.Error
@@ -72,7 +72,7 @@ func TestRoleSyncStillAcceptsTheRolesSAMLAssigns(t *testing.T) {
 	// Past the role check the handler resolves the user; answering "no such user" ends the call there.
 	mock.ExpectQuery(`SELECT id FROM users WHERE username`).WithArgs("me@corp.com").WillReturnError(sql.ErrNoRows)
 
-	_, err := SyncUserRoles(tenantAdmin(t), UserSyncRolesRequest{
+	_, err := SyncUserRoles(roleSyncTenantAdmin(t), UserSyncRolesRequest{
 		Username: "me@corp.com", TenantId: testTenant, TargetRoles: []string{"account_admin", "account_admin_readonly", "tenant_admin_readonly"},
 	})
 	assert.ErrorContains(t, err, "user not found")
@@ -89,7 +89,7 @@ func TestALoginCannotBeAddedToSomeoneElse(t *testing.T) {
 	for name, wire := range callers {
 		t.Run(name, func(t *testing.T) {
 			mock := mockMetastore(t)
-			_, err := CreateUserAuth(callerWith(t, wire), UserCreateAuthRequest{
+			_, err := CreateUserAuth(roleSyncCaller(t, wire), UserCreateAuthRequest{
 				UserId: "cccccccc-0000-0000-0000-000000000001", Provider: "google", ProviderType: "oauth", AccountId: "someone-elses-subject", Name: "google", Status: "active",
 			})
 			var cerr common.Error
@@ -124,7 +124,7 @@ func TestOnlyTheSignInServiceRemovesALogin(t *testing.T) {
 	for name, wire := range callers {
 		t.Run(name, func(t *testing.T) {
 			mock := mockMetastore(t)
-			_, err := DeleteUserAuth(callerWith(t, wire), UserDeleteAuthRequest{Id: login})
+			_, err := DeleteUserAuth(roleSyncCaller(t, wire), UserDeleteAuthRequest{Id: login})
 			var cerr common.Error
 			require.ErrorAs(t, err, &cerr)
 			assert.Equal(t, 403, cerr.Code)
@@ -162,5 +162,5 @@ func TestLoginHandlersFailClosedWithoutASecurityContext(t *testing.T) {
 
 // NextAuth's callbacks run as the server and add logins for whoever is signing in.
 func serverInternal(t *testing.T) *security.RequestContext {
-	return callerWith(t, `{"IsServerInternal":true}`)
+	return roleSyncCaller(t, `{"IsServerInternal":true}`)
 }
