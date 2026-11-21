@@ -2764,8 +2764,6 @@ class Events:
             await self.async_query_llm_server(payload, headers)
             if thinking:
                 await teams_thinking.start_poller(thread_ts)
-            if alert_context:
-                await self.cache.aio.update_event_entry(thread_ts, alert_context_sent=True)
 
         except aiohttp.ClientError as e:
             LOG.error(f"Failed to process Teams message: {e}")
