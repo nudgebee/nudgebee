@@ -4,9 +4,6 @@
  * dynamic-import constraint as EgressFilterAdminTab.jsx. scripts/oss-patches.sh
  * range-replaces the marker-delimited block below with a () => null stub.
  */
-// OSS-STRIP-BEGIN-ADMIN-INVESTIGATION-DEPTH-DYNAMIC-IMPORT
-import dynamic from 'next/dynamic';
-const InvestigationDepthAdminTab = dynamic(() => import('@ee/components/investigation-depth/InvestigationDepthTab'), { ssr: false });
-// OSS-STRIP-END-ADMIN-INVESTIGATION-DEPTH-DYNAMIC-IMPORT
+const InvestigationDepthAdminTab = () => null;
 
 export default InvestigationDepthAdminTab;
