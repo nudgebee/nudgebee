@@ -1020,6 +1020,8 @@ export const cloudServiceLabel = (service?: string | null): string => {
   return `${friendly} (${convertStringCase(resource)})`;
 };
 
+export const capitalize = (str: string): string => (str ? str.charAt(0).toUpperCase() + str.slice(1).toLowerCase() : str);
+
 export const toKebabCase = (str: string) => {
   return str
     .trim()

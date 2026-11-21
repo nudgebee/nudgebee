@@ -641,6 +641,9 @@ class SlackSender(BaseSender):
         while True:
             try:
                 channels = self.extract_channels(installation)
+                if not channels:
+                    LOG.warning("No Slack channel resolved for tenant %s; skipping send", tenant)
+                    return None
                 for channel in channels:
                     channel_id = channel.get("id")
                     if thread_id:
@@ -1714,6 +1717,16 @@ class MessageService:
         integration_installs = []
         for platform in target_platforms:
             integration_installs += await load_integration_installations_async(session, tenant_id, platform)
+        # Google Chat (service-account model): bound spaces live in `integrations`
+        # (google_chat_space), not messaging_platforms. Synthesize one transient
+        # install so Google Chat participates in rule/default routing like every other
+        # platform. The default space is resolved fresh per send in
+        # _apply_gchat_default_fallback — deliberately left off this (cached) install so
+        # changing the default takes effect without waiting for cache expiry.
+        if requested in (None, "google_chat"):
+            gchat = await MessageService._build_google_chat_installation(session, tenant_id)
+            if gchat is not None:
+                integration_installs.append(gchat)
         # Webhook targets: many per tenant, no legacy counterpart, routed per-target
         # in get_channels_from_request_or_defaults (never a tenant default).
         if requested is None or requested in WEBHOOK_PLATFORM_TYPES:
@@ -2187,6 +2200,30 @@ class MessageService:
             return webhook_failure("slack_webhook", response, **destination_fields(ip)), None
 
         return success_response("slack_webhook", channel_id=str(ip.id)), None
+
+    @staticmethod
+    async def _build_google_chat_installation(session, tenant_id):
+        """A single transient Google Chat install for the tenant (service-account
+        model), or None when the SA isn't configured or no space is bound. Carries no
+        channel — the default space is applied per send in _apply_gchat_default_fallback."""
+        if not tenant_id or not GoogleChatAppClient.is_enabled():
+            return None
+        result = await session.execute(
+            select(Integration.id)
+            .where(
+                Integration.tenant_id == tenant_id,
+                Integration.type == "google_chat_space",
+                Integration.status != "disabled",
+            )
+            .limit(1)
+        )
+        if result.first() is None:
+            return None
+        ip = MessagingPlatform()
+        ip.platform = "google_chat"
+        ip.tenant_id = tenant_id
+        ip.channels = None
+        return ip
 
     @staticmethod
     async def _resolve_default_gchat_space(session, tenant_id):

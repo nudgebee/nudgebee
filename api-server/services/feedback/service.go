@@ -56,6 +56,11 @@ func CreateConversationAiFeedback(context *security.RequestContext, feedbackRequ
 		return data, fmt.Errorf("unauthorized")
 	}
 
+	cloudAccountID := feedbackRequest.CloudAccountId
+	if cloudAccountID == "" {
+		return data, fmt.Errorf("cloud_account_id cannot be empty")
+	}
+
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return data, err

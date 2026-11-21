@@ -151,6 +151,14 @@ func ListAgents(context *security.RequestContext, accountId string, allowOnlyEna
 
 	// First, add system agents
 	for agent := range nbSystemAgents {
+		// Skip alias entries — RegisterNBAgentFactoryWithAliases registers
+		// each alias as its own key in nbSystemAgents so @-invocation and
+		// stored-history lookups resolve, but the picker only wants one
+		// entry per underlying agent. Without this, an agent registered
+		// with N aliases showed up N+1 times.
+		if IsSystemAgentAlias(agent) {
+			continue
+		}
 		//ignor agents which have same name as system agent as system agents already cover those
 		if _, ok := agentMap[agent]; ok {
 			continue

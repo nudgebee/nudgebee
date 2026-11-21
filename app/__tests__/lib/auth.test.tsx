@@ -11,6 +11,9 @@ jest.mock('@shared/Loader', () => () => null);
 let mockSession: { data: any; status: string } = { data: {}, status: 'authenticated' };
 jest.mock('next-auth/react', () => ({
   useSession: () => mockSession,
+  // withAuth's unauthenticated-recovery path calls this; never reached here
+  // because every case below renders with an authenticated session.
+  getSession: jest.fn(),
 }));
 
 import {

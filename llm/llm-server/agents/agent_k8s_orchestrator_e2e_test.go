@@ -1525,14 +1525,50 @@ func TestK8sAgent_FunctionExecutionWithApproval(t *testing.T) {
 
 func TestK8sAgent_LoadSkillsForSubagents(t *testing.T) {
 	skipIfNoFixtureEnv(t)
-	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
+	agent := newK8sOrchestratorAgent("25f42d26-f179-4acd-9946-271ee0cf1b73")
 
 	tc := k8sTestCase{
 		Name:              "ci_failure_investigation",
 		SessionId:         "ut-skills-subagents-1",
-		AccountId:         os.Getenv("TEST_ACCOUNT"),
+		AccountId:         "25f42d26-f179-4acd-9946-271ee0cf1b73",
 		UserId:            os.Getenv("TEST_USER"),
 		Query:             "can you get me memory usage of llm-server in nudgebee namespace.",
+		ApprovalResponses: []string{},
+	}
+	runTestMinimal(t, agent, tc)
+}
+
+func TestK8sAgent_LoadSkillsForSubagents2(t *testing.T) {
+	skipIfNoFixtureEnv(t)
+	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
+
+	tc := k8sTestCase{
+		Name:      "ci_failure_investigation",
+		SessionId: "ut-tool-calls-8",
+		AccountId: os.Getenv("TEST_ACCOUNT"),
+		UserId:    os.Getenv("TEST_USER"),
+		Query: `In namespace nudgebee:
+
+1. Report the current replica count and readiness of deployment app-dev.
+2. Apply the deployment’s existing replica count again without changing its desired state.
+3. After approval and execution, verify that deployment readiness remains unchanged.
+
+Do not change the replica count to a different value.`,
+		ApprovalResponses: []string{"yes"},
+	}
+	runTestMinimal(t, agent, tc)
+}
+
+func TestK8sAgent_LoadSkillsForSubagents3(t *testing.T) {
+	skipIfNoFixtureEnv(t)
+	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
+
+	tc := k8sTestCase{
+		Name:              "ci_failure_investigation",
+		SessionId:         "ut-tool-calls-3",
+		AccountId:         os.Getenv("TEST_ACCOUNT"),
+		UserId:            os.Getenv("TEST_USER"),
+		Query:             "Can you get me max memory usage in last 7 days for each namespace.",
 		ApprovalResponses: []string{},
 	}
 	runTestMinimal(t, agent, tc)

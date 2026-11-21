@@ -206,6 +206,7 @@ const GET_LLM_CONVERSATION_V3_QUERY = `
         references
         tool_id
         status
+        metadata
         created_at
         updated_at
       }

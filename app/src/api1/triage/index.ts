@@ -390,11 +390,13 @@ mutation EventUpdateNBStatus(
   $event_id: String!
   $nb_status: String!
   $snoozed_until: String
+  $reason_text: String
 ) {
   event_update_nb_status(
     event_id: $event_id
     nb_status: $nb_status
     snoozed_until: $snoozed_until
+    reason_text: $reason_text
   ) {
     success
     prev_status
@@ -461,6 +463,7 @@ mutation EventGetTriageRuleEvents(
       starts_at
       classified_at
       classification
+      fingerprint
     }
     total
     limit
@@ -768,6 +771,8 @@ export interface UpdateNBStatusInput {
   event_id: string;
   nb_status: 'OPEN' | 'ACKNOWLEDGED' | 'INVESTIGATING' | 'ACTION_REQUIRED' | 'SNOOZED' | 'SUPPRESSED' | 'DROPPED' | 'DUPLICATE' | 'RESOLVED';
   snoozed_until?: string;
+  /** Optional free-text note explaining why the status was changed; shown on the event timeline. */
+  reason_text?: string;
 }
 
 export interface TriageRule {
@@ -1228,6 +1233,7 @@ const apiTriage = {
         event_id: data.event_id,
         nb_status: data.nb_status,
         snoozed_until: data.snoozed_until,
+        reason_text: data.reason_text,
       });
       return response?.data?.data?.event_update_nb_status;
     } catch (error) {

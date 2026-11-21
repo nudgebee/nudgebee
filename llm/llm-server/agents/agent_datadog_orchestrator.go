@@ -239,6 +239,7 @@ func getDatadogPlannerSupportedTools(ctx *security.RequestContext, accountId str
 		SearchToolsToolName,        // MCP tools and automations when they are not declared
 		tools.SearchSkillsToolName, // Search knowledge bases by query (#34819)
 	}
+	supportedToolNames = appendMemoryToolName(supportedToolNames)
 
 	summary, err := toolcore.GetAccountConfigSummary(ctx, accountId)
 	if err != nil {

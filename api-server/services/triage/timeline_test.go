@@ -37,6 +37,40 @@ func TestTimeline(t *testing.T) {
 	t.Logf("Service Map: %s", jsonStr)
 }
 
+func TestFormatHistoryEntrySummary_StatusReason(t *testing.T) {
+	sp := func(s string) *string { return &s }
+
+	cases := []struct {
+		name       string
+		oldV, newV json.RawMessage
+		reason     *string
+		want       string
+	}{
+		{"object shape + user note", json.RawMessage(`{"nb_status":"OPEN"}`), json.RawMessage(`{"nb_status":"RESOLVED"}`),
+			sp("restarted the pod, monitoring"), "Status: OPEN → RESOLVED — restarted the pod, monitoring"},
+		{"bare string shape", json.RawMessage(`"OPEN"`), json.RawMessage(`"RESOLVED"`),
+			sp("noisy alert"), "Status: OPEN → RESOLVED — noisy alert"},
+		{"system marker suppressed (manual)", json.RawMessage(`{"nb_status":"OPEN"}`), json.RawMessage(`{"nb_status":"RESOLVED"}`),
+			sp("manual_status_update"), "Status: OPEN → RESOLVED"},
+		{"system marker suppressed (resource_inactive)", json.RawMessage(`{"nb_status":"FIRING"}`), json.RawMessage(`{"nb_status":"CLOSED"}`),
+			sp("resource_inactive"), "Status: FIRING → CLOSED"},
+		{"nil reason", json.RawMessage(`{"nb_status":"OPEN"}`), json.RawMessage(`{"nb_status":"RESOLVED"}`),
+			nil, "Status: OPEN → RESOLVED"},
+		{"empty reason", json.RawMessage(`{"nb_status":"OPEN"}`), json.RawMessage(`{"nb_status":"RESOLVED"}`),
+			sp("   "), "Status: OPEN → RESOLVED"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := formatHistoryEntrySummary("status", c.reason, c.oldV, c.newV, nil)
+			assert.Equal(t, c.want, got)
+		})
+	}
+
+	assert.True(t, isSystemReasonCode("manual_status_update"))
+	assert.True(t, isSystemReasonCode("Resource_Inactive"))
+	assert.False(t, isSystemReasonCode("restarted the pod"))
+}
+
 func TestExtractConfigChangeSummary(t *testing.T) {
 	tests := []struct {
 		name     string

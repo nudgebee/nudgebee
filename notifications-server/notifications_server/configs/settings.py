@@ -576,6 +576,15 @@ class GoogleChatSettings(BaseSettings):
     rate_limit_sleep: int = Field(
         10, validation_alias=AliasChoices("GOOGLE_CHAT_RATE_LIMIT_SLEEP", "google_chat_rate_limit_sleep")
     )
+    api_timeout: int = Field(
+        15,
+        validation_alias=AliasChoices("GOOGLE_CHAT_API_TIMEOUT", "google_chat_api_timeout"),
+        description=(
+            "Hard socket timeout (seconds) for outbound Google Chat API/token calls. "
+            "googleapiclient/httplib2 default to no timeout, so a stalled TLS session "
+            "would otherwise hang a worker until the OS TCP timeout (minutes)."
+        ),
+    )
     sa_key: Optional[str] = Field(
         None,
         validation_alias=AliasChoices("GOOGLE_CHAT_SA_KEY", "google_chat_sa_key"),

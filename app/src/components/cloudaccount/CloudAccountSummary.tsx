@@ -812,6 +812,7 @@ const CloudAccountSummary = ({ accountId = '', clusterSummary = {}, loading = fa
               columnGap: ds.space[4],
               rowGap: ds.space[5],
               mb: ds.space[4],
+              mt: ds.space[5],
             }}
           >
             <ClusterSummary accountId={accountId} cloudProvider={cloudProvider} />

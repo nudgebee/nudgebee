@@ -351,6 +351,7 @@ SELECT
     t.references           AS references,
     t.tool_id              AS tool_id,
     t.status               AS status,
+    t.metadata::text       AS metadata,
     t.created_at           AS created_at,
     t.updated_at           AS updated_at
 FROM llm_conversation_tool_calls t

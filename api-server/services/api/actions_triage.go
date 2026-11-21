@@ -1415,6 +1415,12 @@ func handleEventUpdateNBStatus(h *ActionRequest, c *gin.Context, ctx *security.R
 		NBStatus: nbStatus,
 	}
 
+	// Optional free-text reason for the status change (surfaced on the event timeline).
+	if reasonText, ok := h.Input["reason_text"].(string); ok && strings.TrimSpace(reasonText) != "" {
+		trimmed := strings.TrimSpace(reasonText)
+		req.ReasonText = &trimmed
+	}
+
 	// Parse snoozed_until if provided
 	if snoozedUntilStr, ok := h.Input["snoozed_until"].(string); ok && snoozedUntilStr != "" {
 		t, err := parseTime(snoozedUntilStr)

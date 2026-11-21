@@ -122,6 +122,7 @@ type ToolCall struct {
 	References   *string   `json:"references" db:"references"`
 	ToolId       *string   `json:"tool_id" db:"tool_id"`
 	Status       *string   `json:"status" db:"status"`
+	Metadata     *string   `json:"metadata" db:"metadata"`
 	CreatedAt    time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at" db:"updated_at"`
 }
