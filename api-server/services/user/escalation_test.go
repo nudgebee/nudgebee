@@ -3,11 +3,11 @@ package user
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"testing"
 	"time"
 
 	"nudgebee/services/common"
+	"nudgebee/services/internal/database/models"
 	"nudgebee/services/security"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -15,22 +15,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// These cases pin what a tenant admin may do outside its own tenant role set:
-// role sync writes only tenant and account roles, and logins are added or
-// removed only for the caller's own user or by the sign-in service.
-
-const testTenant = "aaaaaaaa-0000-0000-0000-000000000001"
-
-func roleSyncCaller(t *testing.T, wire string) *security.RequestContext {
-	t.Helper()
-	var sc security.SecurityContext
-	require.NoError(t, common.UnmarshalJson([]byte(wire), &sc))
-	return security.NewRequestContext(context.Background(), &sc, nil, nil, nil)
-}
-
-func roleSyncTenantAdmin(t *testing.T) *security.RequestContext {
-	return roleSyncCaller(t, `{"TenantId":"`+testTenant+`","UserId":"bbbbbbbb-0000-0000-0000-000000000009","Roles":["tenant_admin"]}`)
-}
+// Every self sign-up is the tenant admin of its own tenant, so whatever a tenant
+// admin can reach, an outsider can reach (#43649). These cases pin the two doors
+// that led out of the caller's own tenant.
 
 func TestRoleSyncAssignsOnlyTenantAndAccountRoles(t *testing.T) {
 	// Case-insensitive like the citext column: a SAML mapping in another case keeps syncing.
@@ -52,10 +39,10 @@ func TestATenantAdminCannotSyncSuperAdminOntoAnyone(t *testing.T) {
 	for _, role := range []string{"super_admin", "super_admin_readonly"} {
 		t.Run(role, func(t *testing.T) {
 			mock := mockMetastore(t)
-			expectTenant(mock, testTenant)
+			expectTenant(mock, beeTenant)
 
-			_, err := SyncUserRoles(roleSyncTenantAdmin(t), UserSyncRolesRequest{
-				Username: "me@corp.com", TenantId: testTenant, TargetRoles: []string{"tenant_admin", role}, RemoveOldRoles: true,
+			_, err := SyncUserRoles(tenantAdmin(t), UserSyncRolesRequest{
+				Username: "me@corp.com", TenantId: beeTenant, TargetRoles: []string{"tenant_admin", role}, RemoveOldRoles: true,
 			})
 			var cerr common.Error
 			require.ErrorAs(t, err, &cerr)
@@ -68,12 +55,12 @@ func TestATenantAdminCannotSyncSuperAdminOntoAnyone(t *testing.T) {
 // SAML group mappings assign account roles through the same handler; they still pass.
 func TestRoleSyncStillAcceptsTheRolesSAMLAssigns(t *testing.T) {
 	mock := mockMetastore(t)
-	expectTenant(mock, testTenant)
+	expectTenant(mock, beeTenant)
 	// Past the role check the handler resolves the user; answering "no such user" ends the call there.
 	mock.ExpectQuery(`SELECT id FROM users WHERE username`).WithArgs("me@corp.com").WillReturnError(sql.ErrNoRows)
 
-	_, err := SyncUserRoles(roleSyncTenantAdmin(t), UserSyncRolesRequest{
-		Username: "me@corp.com", TenantId: testTenant, TargetRoles: []string{"account_admin", "account_admin_readonly", "tenant_admin_readonly"},
+	_, err := SyncUserRoles(tenantAdmin(t), UserSyncRolesRequest{
+		Username: "me@corp.com", TenantId: beeTenant, TargetRoles: []string{"account_admin", "account_admin_readonly", "tenant_admin_readonly"},
 	})
 	assert.ErrorContains(t, err, "user not found")
 	assert.NoError(t, mock.ExpectationsWereMet())
@@ -82,14 +69,14 @@ func TestRoleSyncStillAcceptsTheRolesSAMLAssigns(t *testing.T) {
 func TestALoginCannotBeAddedToSomeoneElse(t *testing.T) {
 	const caller = "bbbbbbbb-0000-0000-0000-000000000009"
 	callers := map[string]string{
-		"tenant admin":           `{"TenantId":"` + testTenant + `","UserId":"` + caller + `","Roles":["tenant_admin"]}`,
-		"read-only account role": `{"TenantId":"` + testTenant + `","UserId":"` + caller + `","Roles":["account_admin_readonly"]}`,
-		"super admin by role":    `{"TenantId":"` + testTenant + `","UserId":"` + caller + `","Roles":["super_admin"]}`,
+		"tenant admin":           `{"TenantId":"` + beeTenant + `","UserId":"` + caller + `","Roles":["tenant_admin"]}`,
+		"read-only account role": `{"TenantId":"` + beeTenant + `","UserId":"` + caller + `","Roles":["account_admin_readonly"]}`,
+		"super admin by role":    `{"TenantId":"` + beeTenant + `","UserId":"` + caller + `","Roles":["super_admin"]}`,
 	}
 	for name, wire := range callers {
 		t.Run(name, func(t *testing.T) {
 			mock := mockMetastore(t)
-			_, err := CreateUserAuth(roleSyncCaller(t, wire), UserCreateAuthRequest{
+			_, err := CreateUserAuth(callerWith(t, wire), UserCreateAuthRequest{
 				UserId: "cccccccc-0000-0000-0000-000000000001", Provider: "google", ProviderType: "oauth", AccountId: "someone-elses-subject", Name: "google", Status: "active",
 			})
 			var cerr common.Error
@@ -103,14 +90,14 @@ func TestALoginCannotBeAddedToSomeoneElse(t *testing.T) {
 func TestALoginCanStillBeAddedToYourOwnAccount(t *testing.T) {
 	mock := mockMetastore(t)
 	// keyOwner's session carries its ids upper-cased; the gate still recognises them.
-	// Past the gate the handler inserts the row: failing the insert ends the call there.
-	errPastGate := errors.New("past the gate")
-	mock.ExpectQuery(`INSERT INTO user_auths`).WillReturnError(errPastGate)
+	// Past the gate the bee check reads the user: answering "bee" ends the call there.
+	mock.ExpectQuery(`SELECT kind FROM users WHERE id = \$1`).WithArgs(storedUser).
+		WillReturnRows(sqlmock.NewRows([]string{"kind"}).AddRow(models.UserKindBee))
 
 	_, err := CreateUserAuth(keyOwner(t), UserCreateAuthRequest{
 		UserId: storedUser, Provider: "google", ProviderType: "oauth", AccountId: "1", Name: "google", Status: "active",
 	})
-	assert.ErrorIs(t, err, errPastGate, "the call got past the own-account gate")
+	assert.ErrorIs(t, err, ErrBeeAccount, "the call got past the own-account gate")
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -118,13 +105,13 @@ func TestOnlyTheSignInServiceRemovesALogin(t *testing.T) {
 	const login = "dddddddd-0000-0000-0000-000000000001"
 	const caller = "bbbbbbbb-0000-0000-0000-000000000009"
 	callers := map[string]string{
-		"tenant admin":        `{"TenantId":"` + testTenant + `","UserId":"` + caller + `","Roles":["tenant_admin"]}`,
-		"super admin by role": `{"TenantId":"` + testTenant + `","UserId":"` + caller + `","Roles":["super_admin"]}`,
+		"tenant admin":        `{"TenantId":"` + beeTenant + `","UserId":"` + caller + `","Roles":["tenant_admin"]}`,
+		"super admin by role": `{"TenantId":"` + beeTenant + `","UserId":"` + caller + `","Roles":["super_admin"]}`,
 	}
 	for name, wire := range callers {
 		t.Run(name, func(t *testing.T) {
 			mock := mockMetastore(t)
-			_, err := DeleteUserAuth(roleSyncCaller(t, wire), UserDeleteAuthRequest{Id: login})
+			_, err := DeleteUserAuth(callerWith(t, wire), UserDeleteAuthRequest{Id: login})
 			var cerr common.Error
 			require.ErrorAs(t, err, &cerr)
 			assert.Equal(t, 403, cerr.Code)
@@ -162,5 +149,5 @@ func TestLoginHandlersFailClosedWithoutASecurityContext(t *testing.T) {
 
 // NextAuth's callbacks run as the server and add logins for whoever is signing in.
 func serverInternal(t *testing.T) *security.RequestContext {
-	return roleSyncCaller(t, `{"IsServerInternal":true}`)
+	return callerWith(t, `{"IsServerInternal":true}`)
 }

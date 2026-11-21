@@ -66,7 +66,8 @@ func TestABeeCannotBeGivenALogin(t *testing.T) {
 	mock.ExpectQuery(`SELECT kind FROM users WHERE id = \$1`).WithArgs("cccccccc-0000-0000-0000-000000000001").
 		WillReturnRows(sqlmock.NewRows([]string{"kind"}).AddRow(models.UserKindBee))
 
-	_, err := CreateUserAuth(tenantAdmin(t), UserCreateAuthRequest{
+	// The server is the only caller that may add a login to another user (#43649).
+	_, err := CreateUserAuth(serverInternal(t), UserCreateAuthRequest{
 		UserId: "cccccccc-0000-0000-0000-000000000001", Provider: "google", ProviderType: "oauth", AccountId: "1", Name: "google", Status: "active",
 	})
 	assert.ErrorIs(t, err, ErrBeeAccount)
