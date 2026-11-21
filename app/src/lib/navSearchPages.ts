@@ -729,8 +729,7 @@ export const navSearchIgnoredFragments: string[] = [
   // Needs a runtime taskId like the provider detail pages above, so it would
   // need its own `autoPilotTaskSearchFragments`-style array fed by a live task
   // listing (same shape as navSearchWorkflowItems/navSearchDashboardItems in
-  // GlobalPageSearch.jsx), not a static path. Tracked as a follow-up to
-  // nudgebee-enterprise#40890. NOT confirmed intentional.
+  // GlobalPageSearch.jsx), not a static path. NOT confirmed intentional.
   'auto-pilot/task#tasks',
   'auto-pilot/task#details',
 

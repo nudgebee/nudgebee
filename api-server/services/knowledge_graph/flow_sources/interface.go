@@ -284,8 +284,7 @@ func (e *CentralizedExternalServiceEnricher) prepareMatchingContext(
 	// this, a VM account's unresolved destinations would fall through to every
 	// AWS account in the tenant below, and a VM's private IP (common ranges
 	// repeat across accounts) could false-match an unrelated account's RDS/
-	// ElastiCache on a reused CIDR (nudgebee-enterprise pull request #41090
-	// review). Scope to the same discovery-datasource account set the VM's
+	// ElastiCache on a reused CIDR. Scope to the same discovery-datasource account set the VM's
 	// hosts themselves can live in instead.
 	if _, mapped := k8sToAwsMap[cloudAccountID]; !mapped {
 		if scoped, err := core.GetDiscoveryLinkedCloudAccounts(tenantID, cloudAccountID, "AWS"); err != nil {

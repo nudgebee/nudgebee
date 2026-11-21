@@ -1,5 +1,5 @@
 // Package logql2ch translates LogQL into one ClickHouse SELECT over the
-// otel_logs table, for the bundled log store (nudgebee-enterprise#40143).
+// otel_logs table, for the bundled log store.
 //
 // Translate takes LogQL (Code mode, the workflow builder); WhereCond takes a
 // canonical where-clause (Builder mode, nubi, event rules) without rendering

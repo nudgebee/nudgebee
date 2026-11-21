@@ -343,7 +343,7 @@ func requestedMetricName(req FetchMetricsLabelValueRequest) string {
 }
 
 // requestedLabelMatchers reads the optional other label=value filters the query
-// builder already has selected (Grafana-style chaining, nudgebee-enterprise#19997),
+// builder already has selected (Grafana-style chaining),
 // so e.g. a `pod` value lookup made after `namespace=foo` only returns pods that
 // exist in that namespace. Entries this account can't render as a PromQL matcher
 // (missing label/value, or an operator injectPromQLMatchers doesn't support yet,

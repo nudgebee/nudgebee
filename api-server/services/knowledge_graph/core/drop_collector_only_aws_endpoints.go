@@ -27,7 +27,7 @@ var awsRegionalControlPlaneHost = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*\.[a-z]
 // "elasticache.sa-east-1.amazonaws.com", so cloud_enrichment never matches and
 // collapses them) when every observed caller is Nudgebee's own
 // cloud-collector-server workload. A node any customer workload also calls is
-// left alone. See github.com/nudgebee/nudgebee-enterprise#40703.
+// left alone.
 func DropCollectorOnlyAWSEndpoints(
 	nodes []*DbNode,
 	edges []*DbEdge,

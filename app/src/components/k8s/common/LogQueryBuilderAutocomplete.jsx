@@ -79,7 +79,7 @@ const shouldNormalizeOperators = (provider) => provider !== 'service_map' && pro
 const normalizeChip = (chip) => (chip?.operator ? { ...chip, operator: normalizeLegacyOperator(chip.operator) } : chip);
 const normalizeOperation = (op) => (op?.op ? { ...op, op: normalizeLegacyOperator(op.op) } : op);
 
-// Grafana-style chaining for the Prometheus label-value picker (nudgebee-enterprise#19997):
+// Grafana-style chaining for the Prometheus label-value picker:
 // scope a label's value lookup by the other label=value chips already selected, so
 // picking `pod` after `namespace=foo` only offers pods that exist in that namespace.
 // Only operators the backend's PromQL matcher builder supports qualify (GetSupportedOperators);
@@ -113,7 +113,7 @@ const buildLabelMatchersForScoping = (queryItems, excludeLabel) => {
   return matchers;
 };
 
-// Loki counterpart of buildLabelMatchersForScoping above (nudgebee-enterprise#19998):
+// Loki counterpart of buildLabelMatchersForScoping above:
 // scope a label's value lookup by sibling chips as a LogQL stream selector, the same
 // chaining the Prometheus picker got. LogQL selectors use the same four matcher
 // operators as PromQL (=, !=, =~, !~); GetSupportedOperators() in loki.go also lists
@@ -176,7 +176,7 @@ const buildLokiSelectorForScoping = (queryItems, excludeLabel) => {
 // chips on the same label into one regex matcher, but any other combination (mixing
 // `=`/`!=`, or anything alongside `_regex`/`_nregex`) has no single valid PromQL
 // matcher -- block adding that chip instead of silently building a query that will
-// fail (nudgebee-enterprise#19997 follow-up). Returns a user-facing reason, or null
+// fail. Returns a user-facing reason, or null
 // when the chip is fine to add.
 //
 // Knowledge Graph sends its chips as one object keyed by name (labels / attributes are

@@ -1,5 +1,4 @@
-# LogQL corpus for the #40145 spike: every LogQL form found in nudgebee-enterprise
-# (the #40145 spike memo on #40143, "What we emit") has at least one entry.
+# LogQL corpus: every LogQL form the product emits has at least one entry.
 #
 # v1 entries carry the hand-written ClickHouse translation; TestTranslate_Corpus
 # requires the translator to produce exactly it. Each was checked against Loki 3.4.2

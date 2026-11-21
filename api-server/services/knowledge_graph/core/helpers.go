@@ -1515,8 +1515,7 @@ func GetVMAccountsForTenant(tenantID string, cloudAccountIDs []string) ([]VMAcco
 // depending on where a discovery datasource was pointed, and so can the cloud
 // resources those hosts call — an unresolved destination must be checked
 // against the same account set the hosts themselves can live in, not the
-// VM account alone and not every account in the tenant (nudgebee-enterprise
-// pull request #41090 review).
+// VM account alone and not every account in the tenant.
 func GetDiscoveryLinkedCloudAccounts(tenantID, accountID, cloudProvider string) ([]string, error) {
 	dbManager, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {

@@ -131,8 +131,8 @@ func TestRewritePRView(t *testing.T) {
 		},
 		{
 			name:   "pr view with explicit repo",
-			args:   []string{"pr", "view", "40303", "--repo", "nudgebee/nudgebee-enterprise"},
-			want:   []string{"pr", "view", "40303", "--repo", "nudgebee/nudgebee-enterprise", "--json", defaultPRViewJSONFields},
+			args:   []string{"pr", "view", "40303", "--repo", "example-org/example-repo"},
+			want:   []string{"pr", "view", "40303", "--repo", "example-org/example-repo", "--json", defaultPRViewJSONFields},
 			wantOK: true,
 		},
 		{
