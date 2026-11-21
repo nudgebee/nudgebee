@@ -15,9 +15,9 @@ requires-python = ">=3.11,<=3.13"
 dependencies = [
     # --- Core framework ---
     "aiofiles==25.1.0",
-    "fastapi==0.141.1",
-    "uvicorn[standard]==0.52.3",
-    "python-dotenv==1.2.2",
+    "fastapi==0.143.2",
+    "uvicorn[standard]==0.54.0",
+    "python-dotenv==1.2.4",
 
     # --- Observability ---
     "opentelemetry-distro==0.66b1",
@@ -25,17 +25,17 @@ dependencies = [
     "opentelemetry-instrumentation-fastapi==0.66b1",
     "opentelemetry-instrumentation-requests==0.66b1",
     "opentelemetry-instrumentation-httpx==0.66b1",
-    "python-json-logger==4.1.0",
+    "python-json-logger==4.2.0",
 
     # --- Vector database ---
-    "qdrant-client==1.19.0",
-    "redis==5.2.1",
+    "qdrant-client==1.19.1",
+    "redis==8.1.0",
 
     # --- Database & storage ---
-    "psycopg2-binary==2.9.12",
-    "boto3==1.43.72",
-    "botocore==1.43.72",
-    "sqlalchemy==2.0.52",
+    "psycopg2-binary==2.9.13",
+    "boto3==1.43.114",
+    "botocore==1.43.114",
+    "sqlalchemy==2.0.55",
 
     # --- AI/LLM SDKs (direct, no langchain) ---
     "openai==2.53.0",
@@ -52,16 +52,16 @@ dependencies = [
     # that backend working), and force transformers 5.x. transformers 5.x in turn
     # requires huggingface-hub >=1.5 (we use only the stable hf_hub_download API).
     "sentence-transformers>=5.6.0",
-    "transformers>=5.5.0",
+    "transformers>=5.14.1",
     "onnxruntime>=1.23.2",
-    "huggingface-hub>=1.5.0",
-    "numpy>=1.26.0",
+    "huggingface-hub>=1.7.0",
+    "numpy>=2.2.6",
 
     # --- Document processing ---
-    "tiktoken==0.13.0",
+    "tiktoken==0.14.0",
     "beautifulsoup4==4.15.0",
     "lxml==6.1.1",
-    "markdownify==1.2.0",
+    "markdownify==1.2.3",
     "pymupdf==1.28.2",
     "jq==1.12.0",
 
@@ -74,7 +74,7 @@ dependencies = [
     "onnx>=1.22.0",
     "pypdf>=6.21.4",
     "starlette>=1.3.1",
-    "setuptools>=83",
+    "setuptools>=83.0.0",
 
     # --- External integrations ---
     "atlassian-python-api==4.0.7",
@@ -86,8 +86,8 @@ dependencies = [
     "requests==2.34.2",
     "urllib3==2.8.0",
     "psutil==7.2.2",
-    "pydantic>=2.11.2",
-    "cryptography==50.0.1",
+    "pydantic>=2.11.3",
+    "cryptography==50.0.2",
 
     # --- Type stubs ---
     "types-aiofiles==25.1.0.20260518",
@@ -95,13 +95,13 @@ dependencies = [
     "types-botocore==1.0.2",
     "types-beautifulsoup4==4.12.0.20250516",
     "types-psutil==7.2.2.20260130",
-    "types-awscrt==0.36.2",
+    "types-awscrt==0.37.0",
     "types-html5lib==1.1.11.20260402",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pre-commit==4.6.2",
+    "pre-commit==4.7.0",
     "black==26.10.1",
     # mypy 1.16.1 crashes (INTERNAL ERROR, RuntimeError: Not implemented
     # TypeGuardedType) while resolving indirect dependencies of the openai and
@@ -111,7 +111,7 @@ dev = [
 ]
 test = [
     "pytest==9.1.1",
-    "pytest-benchmark==5.2.3"
+    "pytest-benchmark==5.3.0"
 ]
 
 [tool.uv]
@@ -139,7 +139,7 @@ constraint-dependencies = [
     "cfgv==3.5.0",
     "charset-normalizer==3.4.9",
     "click==8.4.2",
-    "cryptography==50.0.1",
+    "cryptography==50.0.2",
     "dataclasses-json==0.6.7",
     "defusedxml==0.7.1",
     "deprecated==1.3.1",
@@ -147,7 +147,7 @@ constraint-dependencies = [
     "distro==1.9.0",
     "docstring-parser==0.18.0",
     "emoji==2.15.0",
-    "fastapi==0.141.1",
+    "fastapi==0.143.2",
     "filetype==1.2.0",
     "flake8==6.1.0",
     "flatbuffers==25.12.19",
@@ -181,7 +181,7 @@ constraint-dependencies = [
     "llvmlite==0.48.0",
     "lxml==6.1.1",
     "markdown-it-py==4.2.0",
-    "markdownify==1.2.0",
+    "markdownify==1.2.3",
     "markupsafe==3.0.3",
     "marshmallow==3.26.2",
     "mccabe==0.7.0",
@@ -221,7 +221,7 @@ constraint-dependencies = [
     "portalocker==3.2.0",
     "protobuf==6.33.6",
     "psutil==7.2.2",
-    "psycopg2-binary==2.9.12",
+    "psycopg2-binary==2.9.13",
     "py-cpuinfo==9.0.0",
     "pyasn1==0.6.5",
     "pyasn1-modules==0.4.2",
@@ -236,12 +236,12 @@ constraint-dependencies = [
     "pypdfium2==5.11.0",
     "pysnow==0.7.17",
     "pytest==9.1.1",
-    "pytest-benchmark==5.2.3",
+    "pytest-benchmark==5.3.0",
     "python-dateutil==2.9.0.post0",
     "python-discovery==1.6.7",
-    "python-dotenv==1.2.2",
+    "python-dotenv==1.2.4",
     "python-iso639==2026.4.20",
-    "python-json-logger==4.1.0",
+    "python-json-logger==4.2.0",
     "python-magic==0.4.27",
     "python-oxmsg==0.0.2",
     "pytokens==0.4.1",
@@ -267,7 +267,7 @@ constraint-dependencies = [
     "sympy==1.14.0",
     "tenacity==9.1.4",
     "threadpoolctl==3.6.0",
-    "tiktoken==0.13.0",
+    "tiktoken==0.14.0",
     "tokenizers==0.22.2",
     "torch==2.13.0",
     "tqdm==4.68.4",
