@@ -56,7 +56,7 @@ func newSynthService(t *testing.T) (*Service, sqlmock.Sqlmock) {
 // knowledge_graph_edge holds no row for them.
 func expectEdgeMiss(mock sqlmock.Sqlmock, edgeID string) {
 	mock.ExpectQuery(`FROM knowledge_graph_edge`).
-		WithArgs(edgeID).
+		WithArgs(edgeID, synthTenant).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 }
 

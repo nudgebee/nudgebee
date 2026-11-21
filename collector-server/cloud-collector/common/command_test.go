@@ -329,6 +329,7 @@ func TestSecureExecuteUntrusted(t *testing.T) {
 	_, _, err := SecureExecute(context.Background(), SecureCommandOptions{Command: `echo "hello world" | grep hello`, Untrusted: true})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "shell pipes are not supported")
+	assert.False(t, IsCommandOutcome(err), "a refused command never ran")
 
 	stdout, _, err := SecureExecute(context.Background(), SecureCommandOptions{Command: "ls -A", Untrusted: true})
 	require.NoError(t, err)

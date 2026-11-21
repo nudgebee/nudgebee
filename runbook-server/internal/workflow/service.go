@@ -4369,7 +4369,7 @@ func (s *Service) ExecuteTask(ctx *security.RequestContext, accountId, taskType 
 		StepAccountID: tasks.StepAccount(renderedParams, accountId),
 		Params:        renderedParams,
 	}); err != nil {
-		return nil, common.ErrorUnauthorized(err.Error())
+		return nil, common.ErrorUnauthorized(logsafe.ScrubSecretValues(err.Error(), secretValues))
 	}
 
 	// Isolated execution: real store/client, no fabricated workflow identity.

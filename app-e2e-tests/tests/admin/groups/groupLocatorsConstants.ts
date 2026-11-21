@@ -786,10 +786,11 @@ export async function openUsersPage(page: Page): Promise<UserLocators> {
     await page.goto("/user-management");
     await page.waitForURL("**/user-management**", { timeout: 20000 });
   });
-  // Admin now defaults to the Overview tab; the Users controls live under Access & Users, so land there.
-  await page.goto("/user-management#access-users");
-  // A hash change inside /user-management does not move the sub-tab, so a page that last showed Groups stays on Groups.
-  await page.locator("#users").or(page.getByRole("tab", { name: "Users", exact: true })).first().click();
+  // Admin now defaults to the Overview tab; the Users controls live under Access
+  // & Users, so land on that tab explicitly before waiting on them. A hash-only goto on
+  // /user-management keeps the Overview body mounted, so the reload is what renders Users.
+  await page.goto("/user-management#access-users", { waitUntil: "domcontentloaded" });
+  await page.reload({ waitUntil: "domcontentloaded" });
   // The URL changes before the list renders, and a click on a control that is not there yet only gets the
   // action timeout to find it - 10s on dev, which a slow load loses.
   await users.statusButton.waitFor({ state: "visible", timeout: 20000 });

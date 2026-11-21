@@ -23,6 +23,7 @@ func (cardDao) GetConversation(string) (Conversation, error) {
 // in the conversation, as ReAct3 always did (#41546); an accepted answer
 // leaves none.
 func TestReAct4RefineWritesCritiqueCard(t *testing.T) {
+	pinClaimAuditOnly(t) // standalone critique path, as the sibling critique tests use
 	previous := config.Config.ClaimCritiqueFeedbackEnabled
 	config.Config.ClaimCritiqueFeedbackEnabled = false // legacy decision only, no claim audit call
 	t.Cleanup(func() { config.Config.ClaimCritiqueFeedbackEnabled = previous })

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"testing"
@@ -26,7 +27,7 @@ func TestGetEdgeByIDReturnsSource(t *testing.T) {
 
 	now := time.Now()
 	mock.ExpectQuery(`COALESCE\(source, ''\)\s+FROM knowledge_graph_edge`).
-		WithArgs("edge-1").
+		WithArgs("edge-1", "tenant-1").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "created_at", "updated_at", "relationship_type", "properties",
 			"cloud_account_id", "tenant_id", "source_node_id", "destination_node_id", "level", "source",
@@ -36,7 +37,7 @@ func TestGetEdgeByIDReturnsSource(t *testing.T) {
 		))
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	service := NewService(security.NewRequestContextForTenantAdmin("tenant-1", logger, nil, nil), logger, dbm)
+	service := NewService(security.NewRequestContext(context.Background(), security.NewSecurityContextForAuditRelay("tenant-1", ""), logger, nil, nil), logger, dbm)
 
 	got, err := service.GetEdgeByID("edge-1")
 	if err != nil {

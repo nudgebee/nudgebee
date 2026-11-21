@@ -67,6 +67,38 @@ func TestActionsRefuseAnotherTenantsAccount(t *testing.T) {
 			input:       map[string]any{"account_id": accessTestForeignAccount, "profile_id": "task-1"},
 			confirmMiss: true,
 		},
+		{
+			// It used to run the insight rules on any account of any tenant.
+			name:        "insights_aggregate",
+			action:      "insights_aggregate",
+			handler:     func(a *ActionRequest, c *gin.Context) { handleInsights(a, c, nil, nil, slog.Default()) },
+			input:       map[string]any{"request": map[string]any{"account_id": accessTestForeignAccount}},
+			confirmMiss: true,
+		},
+		{
+			name:    "cloud_list_metrics",
+			action:  "cloud_list_metrics",
+			handler: func(a *ActionRequest, c *gin.Context) { handleCloudAction(a, c, nil, nil, slog.Default()) },
+			input:   map[string]any{"request": map[string]any{"account_id": accessTestForeignAccount, "query": map[string]any{"namespace": "AWS/EC2", "metric_name": "CPUUtilization"}}},
+		},
+		{
+			name:    "database_performance_insights",
+			action:  "database_performance_insights",
+			handler: func(a *ActionRequest, c *gin.Context) { handleCloudAction(a, c, nil, nil, slog.Default()) },
+			input:   map[string]any{"request": map[string]any{"account_id": accessTestForeignAccount, "database_identifier": "db-1", "region": "us-east-1"}},
+		},
+		{
+			name:    "accounts_sync",
+			action:  "accounts_sync",
+			handler: func(a *ActionRequest, c *gin.Context) { handleCloudAction(a, c, nil, nil, slog.Default()) },
+			input:   map[string]any{"account_id": accessTestForeignAccount},
+		},
+		{
+			name:    "cloud_sync_service",
+			action:  "cloud_sync_service",
+			handler: func(a *ActionRequest, c *gin.Context) { handleCloudAction(a, c, nil, nil, slog.Default()) },
+			input:   map[string]any{"account_id": accessTestForeignAccount, "service_name": "AmazonEC2"},
+		},
 	}
 
 	for _, tc := range cases {

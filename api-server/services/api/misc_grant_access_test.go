@@ -300,8 +300,8 @@ func TestMiscHandlersHonourCustomGrants(t *testing.T) {
 				userId := fmt.Sprintf("user-misc-%d-%d", i, j)
 				sc := strings.NewReplacer("KEY", tc.key, "OTHER", other).Replace(caller.context)
 				sc = `{"TenantId":"` + tenantId + `","UserId":"` + userId + `",` + sc[1:]
-				require.NoError(t, common.CacheSet("security_context_v2", tenantId+":"+userId, []byte(sc)))
-				t.Cleanup(func() { _ = common.CacheDelete("security_context_v2", tenantId+":"+userId) })
+				require.NoError(t, common.CacheSet("security_context_v3", tenantId+":"+userId, []byte(sc)))
+				t.Cleanup(func() { _ = common.CacheDelete("security_context_v3", tenantId+":"+userId) })
 
 				rec := httptest.NewRecorder()
 				c, _ := gin.CreateTestContext(rec)

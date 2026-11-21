@@ -38,7 +38,7 @@ class FakeChannel:
         pass
 
     async def declare_queue(self, name, durable, arguments=None, robust=True):
-        if name.endswith("_delayed") and self.fail_delayed_declare:
+        if name.endswith("_delayed_v2") and self.fail_delayed_declare:
             raise aio_pika.exceptions.ChannelPreconditionFailed("inequivalent arg 'x-message-ttl'")
         return FakeQueue(self)
 
@@ -126,7 +126,7 @@ async def _live_scenario(host, port, user, password):
     # redeclaration fail with PRECONDITION_FAILED, as a changed retry delay would.
     admin = await aio_pika.connect(**params)
     channel = await admin.channel()
-    await channel.declare_queue(queue + "_delayed", durable=True, arguments={"x-message-ttl": 1})
+    await channel.declare_queue(queue + "_delayed_v2", durable=True, arguments={"x-message-ttl": 1})
 
     delivered = []
 
@@ -139,7 +139,7 @@ async def _live_scenario(host, port, user, password):
         await asyncio.sleep(2)
         assert await consumer_count() == 0
 
-        await channel.queue_delete(queue + "_delayed")
+        await channel.queue_delete(queue + "_delayed_v2")
         for _ in range(100):
             if await consumer_count() == 1:
                 break
@@ -160,7 +160,7 @@ async def _live_scenario(host, port, user, password):
             await run_task
         except asyncio.CancelledError:
             pass
-        for name in (queue, queue + "_delayed"):
+        for name in (queue, queue + "_delayed_v2", queue + "_dlq"):
             await channel.queue_delete(name)
         await channel.exchange_delete(queue + "_exchange")
         await admin.close()

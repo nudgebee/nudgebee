@@ -117,8 +117,8 @@ func kgGrantRequest(t *testing.T, sc *security.SecurityContext, action string, i
 	t.Helper()
 	raw, err := json.Marshal(sc)
 	require.NoError(t, err)
-	require.NoError(t, common.CacheSet("security_context_v2", kgGrantTenant+":"+sc.GetUserId(), raw))
-	t.Cleanup(func() { _ = common.CacheDelete("security_context_v2", kgGrantTenant+":"+sc.GetUserId()) })
+	require.NoError(t, common.CacheSet("security_context_v3", kgGrantTenant+":"+sc.GetUserId(), raw))
+	t.Cleanup(func() { _ = common.CacheDelete("security_context_v3", kgGrantTenant+":"+sc.GetUserId()) })
 
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

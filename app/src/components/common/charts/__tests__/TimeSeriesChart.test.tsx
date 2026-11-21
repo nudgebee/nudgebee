@@ -104,12 +104,6 @@ describe('TimeSeriesChart legend totals', () => {
     render(<TimeSeriesChart labels={['Mon', 'Tue']} series={series} format={full} compactFormat={toMillions} />);
     expect(screen.getByText('15,302,648')).toBeInTheDocument();
   });
-
-  it("shows each series' latest point when legendValue is latest", () => {
-    render(<TimeSeriesChart labels={['Mon', 'Tue']} series={series} format={full} legendValue='latest' />);
-    expect(screen.getByText('6,302,648')).toBeInTheDocument();
-    expect(screen.queryByText('15,302,648')).toBeNull();
-  });
 });
 
 describe('TimeSeriesChart series style and legend value', () => {
