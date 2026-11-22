@@ -1,5 +1,5 @@
 import MarkDowns from '@shared/viewers/MarkDowns';
-import CustomTable from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { getTableDataFromArrayOfObject } from '@lib/util';
 import PropTypes from 'prop-types';
 import React, { useCallback, useContext } from 'react';
@@ -277,10 +277,11 @@ const LLMAnswerRenderer = ({ toolCall, messages = [], onNavigateToTask, groupInd
         throw new Error('parsed JSON is a primitive; render as markdown');
       }
 
-      // Code analysis (agent_code_2) — render with purpose-built sections instead of a generic table.
+      // Code analysis (code_analyzer; agent_code_2 is the legacy name kept for
+      // pre-rename conversation history) — render with purpose-built sections instead of a generic table.
       // Sniff on agent name AND payload shape so we don't accidentally match other agents that happen
       // to return a `title` field.
-      if (toolCall.agentName === 'agent_code_2' && isCodeAnalysisShape(jsonParsed)) {
+      if ((toolCall.agentName === 'code_analyzer' || toolCall.agentName === 'agent_code_2') && isCodeAnalysisShape(jsonParsed)) {
         return <CodeAnalysisRenderer data={jsonParsed} onLinkClick={onLinkClickProp} />;
       }
 

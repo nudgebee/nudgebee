@@ -36,7 +36,7 @@ func TestReplaceKeyLimits_KeepsAlertStateOfUnchangedLimits_DB(t *testing.T) {
 		_, _ = db.Exec(`DROP SCHEMA IF EXISTS ` + schema + ` CASCADE`)
 		_ = db.Close()
 	})
-	for _, m := range []string{"V783_llm_gateway_tables", "V1039_add_llm_gateway_rate_limit_soft_pct"} {
+	for _, m := range []string{"V803_llm_gateway_tables", "V1039_add_llm_gateway_rate_limit_soft_pct"} {
 		files, err := filepath.Glob("../../migrations/migrations/app/*_" + m + ".up.sql")
 		require.NoError(t, err)
 		require.Len(t, files, 1, m)

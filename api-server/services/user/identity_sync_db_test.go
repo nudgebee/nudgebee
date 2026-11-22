@@ -53,7 +53,7 @@ func TestUpsertAccounts_DuplicateExternalUser_DB(t *testing.T) {
 		CREATE TABLE integrations (id uuid PRIMARY KEY);
 		CREATE TABLE users (id uuid PRIMARY KEY)`)
 	require.NoError(t, err)
-	files, err := filepath.Glob("../../migrations/migrations/app/*_V759_create_integration_user_accounts.up.sql")
+	files, err := filepath.Glob("../../migrations/migrations/app/*_V771_create_integration_user_accounts.up.sql")
 	require.NoError(t, err)
 	require.Len(t, files, 1)
 	ddl, err := os.ReadFile(files[0])
