@@ -3118,63 +3118,50 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       });
 
       const results = response?.data?.data?.metrics_aggregate_utilisation?.results || [];
-      const seriesFor = (key: string) => results.find((r: any) => r.query_key === key)?.payload?.[0];
-      const valuesFor = (key: string) => seriesFor(key)?.values || [];
-
-      let result: any[] = [];
-      const timestamps = Array.from(wanted)
-        .map((k) => seriesFor(k)?.timestamps)
-        .find((t: any) => t?.length);
-
-      if (timestamps) {
-        const rx = valuesFor('network_receive_bytes_increase');
-        const tx = valuesFor('network_transmit_bytes_increase');
-        const cpuUsed = valuesFor('cpu_usage_trend');
-        const cpuTotal = valuesFor('cpu_total');
-        const memUsed = valuesFor('mem_usage_trend');
-        const memTotal = valuesFor('mem_total');
-
-        result = timestamps.flatMap((timestamp: any, index: any) => {
-          // One object per metric FAMILY, never a merged row with null members: the
-          // summary tiles decide what a row is by which keys it carries
-          // (`'avg_cpu_used_node' in item`), so a null-valued key would add phantom
-          // points to a chart the caller never asked for.
-          const response: any = [];
-          if (metric?.includes('networkTransferBytes')) {
-            response.push({
-              timestamp: formatDateTime(timestamp),
-              metric: 'networkTransferBytes',
-              avg_value: parseFloat(tx[index]),
-              account_id: accountId,
-            });
+      const timestamps = new Set<number>();
+      const valuesFor = (key: string) => {
+        const series = results.find((r: any) => r.query_key === key)?.payload?.[0];
+        const values = new Map<number, number>();
+        (series?.timestamps ?? []).forEach((timestamp: number, index: number) => {
+          const value = parseFloat(series.values?.[index]);
+          if (Number.isFinite(timestamp) && Number.isFinite(value)) {
+            timestamps.add(timestamp);
+            values.set(timestamp, value);
           }
-          if (metric?.includes('networkReceiveBytes')) {
-            response.push({
-              timestamp: formatDateTime(timestamp),
-              metric: 'networkReceiveBytes',
-              avg_value: parseFloat(rx[index]),
-              account_id: accountId,
-            });
+        });
+        return values;
+      };
+      const rx = valuesFor('network_receive_bytes_increase');
+      const tx = valuesFor('network_transmit_bytes_increase');
+      const cpuUsed = valuesFor('cpu_usage_trend');
+      const cpuTotal = valuesFor('cpu_total');
+      const memUsed = valuesFor('mem_usage_trend');
+      const memTotal = valuesFor('mem_total');
+
+      // Providers can return different timestamps for each series, even for usage and capacity.
+      const result = [...timestamps]
+        .sort((a, b) => a - b)
+        .flatMap((timestamp) => {
+          const row = { timestamp: formatDateTime(timestamp), account_id: accountId };
+          const response = [];
+          if (metric?.includes('networkTransferBytes') && tx.has(timestamp)) {
+            response.push({ ...row, metric: 'networkTransferBytes', avg_value: tx.get(timestamp) });
           }
-          if (metric?.includes('cpu')) {
-            response.push({
-              timestamp: formatDateTime(timestamp),
-              avg_cpu_used_node: parseFloat(cpuUsed[index]),
-              total_cpu_allocatable: parseFloat(cpuTotal[index]),
-              account_id: accountId,
-            });
+          if (metric?.includes('networkReceiveBytes') && rx.has(timestamp)) {
+            response.push({ ...row, metric: 'networkReceiveBytes', avg_value: rx.get(timestamp) });
           }
-          if (metric?.includes('memory')) {
+          if (metric?.includes('cpu') && (cpuUsed.has(timestamp) || cpuTotal.has(timestamp))) {
+            response.push({ ...row, avg_cpu_used_node: cpuUsed.get(timestamp) ?? null, total_cpu_allocatable: cpuTotal.get(timestamp) ?? null });
+          }
+          if (metric?.includes('memory') && (memUsed.has(timestamp) || memTotal.has(timestamp))) {
             response.push({
-              timestamp: formatDateTime(timestamp),
-              avg_memory_used_node: parseFloat(memUsed[index]),
-              total_memory_allocatable: parseFloat(memTotal[index]),
-              account_id: accountId,
+              ...row,
+              avg_memory_used_node: memUsed.get(timestamp) ?? null,
+              total_memory_allocatable: memTotal.get(timestamp) ?? null,
             });
           }
           return response;
         });
-      }
       return {
         data: {
           cloud_resource_metrics_groupings: result,
