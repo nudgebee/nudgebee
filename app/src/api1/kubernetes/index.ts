@@ -3122,7 +3122,8 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       const valuesFor = (key: string) => {
         const series = results.find((r: any) => r.query_key === key)?.payload?.[0];
         const values = new Map<number, number>();
-        (series?.timestamps ?? []).forEach((timestamp: number, index: number) => {
+        if (!series?.timestamps) return values;
+        series.timestamps.forEach((timestamp: number, index: number) => {
           const value = parseFloat(series.values?.[index]);
           if (Number.isFinite(timestamp) && Number.isFinite(value)) {
             timestamps.add(timestamp);
