@@ -46,7 +46,7 @@ func resolveGithubToken(ctx context.Context, authType, apiUrl, password string) 
 	}
 	var installationID int64
 	if _, err := fmt.Sscanf(password, "%d", &installationID); err != nil {
-		return "", fmt.Errorf("github: invalid installation_id in password field: %w", err)
+		return "", errors.New("github: invalid installation_id in password field: not a number")
 	}
 	token, err := utils.GetGithubAppInstallationToken(ctx, apiUrl, installationID)
 	if err != nil {

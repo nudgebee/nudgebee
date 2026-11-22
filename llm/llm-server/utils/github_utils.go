@@ -33,7 +33,7 @@ func CreateGithubClient(ctx context.Context, apiUrl, authType, username, passwor
 		// GitHub App authentication - password contains installation_id
 		installationID := int64(0)
 		if _, err := fmt.Sscanf(password, "%d", &installationID); err != nil {
-			return nil, fmt.Errorf("invalid installation_id in password field: %w", err)
+			return nil, errors.New("invalid installation_id in password field: not a number")
 		}
 		if installationID == 0 {
 			return nil, fmt.Errorf("installation_id is required for GitHub App authentication")

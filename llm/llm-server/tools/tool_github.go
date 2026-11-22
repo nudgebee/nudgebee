@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"errors"
 	"fmt"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
@@ -119,7 +120,7 @@ func (m GithubCliTool) Call(nbRequestContext core.NbToolContext, input core.NBTo
 		} else {
 			installationID := int64(0)
 			if _, err := fmt.Sscanf(password, "%d", &installationID); err != nil {
-				return core.NBToolResponse{}, fmt.Errorf("invalid installation_id in password field: %w", err)
+				return core.NBToolResponse{}, errors.New("invalid installation_id in password field: not a number")
 			}
 
 			token, err := utils.GetGithubAppInstallationToken(nbRequestContext.Ctx.GetContext(), apiUrl, installationID)
